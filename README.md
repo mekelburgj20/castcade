@@ -9,7 +9,8 @@ Windows desktop producer for **Arcaid Witness**, reporting live VPX scores to Ar
 
 ## Status
 
-Design complete, nothing built (2026-10-17). Start with
+Design complete; Phase 0 spike kit staged on the owner's rig, play sessions pending (2026-10-17, see
+[`docs/phase-0-spike.md`](docs/phase-0-spike.md)). Start with
 [`docs/design/arcaid-integration-gap-analysis.md`](docs/design/arcaid-integration-gap-analysis.md),
 then the ADRs in [`docs/decisions/`](docs/decisions/). The phased roadmap with gates is in §6 of the gap analysis.
 

@@ -1,6 +1,7 @@
 # fixtures/
 
-**Status: not started — populated from Phase 0 onward (first real journals), used by CI from Phase 2–3.**
+**Status: empty — the Phase 0 sessions (`docs/phase-0-spike.md` §8) produce the first journals; used by CI from Phase 2–3.**
+Journals are written by the hook to `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below.
 
 Recorded evidence the detector and the patcher are tested against: NVRAM journals written by the
 in-VPX hook, script-event logs from originals, and (later) RetroArch memory-read traces. The

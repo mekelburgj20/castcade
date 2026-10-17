@@ -1,0 +1,382 @@
+' =====================================================================================
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.1.0 (Phase 0 spike)
+' -------------------------------------------------------------------------------------
+'  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
+'  is modified).  A per-table sidecar loads it with
+'      ExecuteGlobal GetTextFile("castcade.vbs")
+'      Castcade_Init "<table-id>", "<recipe>", "<recipe-version>", "<rom or empty>"
+'
+'  Working agreement (castcade/CLAUDE.md):
+'   * No real work in VBScript.  This file appends lines to a journal and reads one lock flag.
+'     Decoding, detection and networking live in the companion.
+'   * Every host touch runs under On Error Resume Next.  A failure here must never stop a table.
+'   * Controller.ChangedNVRAM is a destructive single-consumer read.  The ONLY place that sets
+'     NVRAMCallback is Castcade_RegisterNVRAM, which chains any callback already installed.
+'
+'  Journal  : %LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl   (one JSON object per line)
+'  Lock flag: %LOCALAPPDATA%\Castcade\lock\turn.lock              (file exists = NOT your turn)
+'
+'  Journal events (key "event"; every line also carries "t" = seconds since table load):
+'    table_loaded   table, recipe, recipe_version, rom, lib, session, locked
+'    nvram_hook     chained, use_nvram            (VPM tables: callback registered)
+'    nvram_full     n, bytes[]                    (VPM: full Controller.NVRAM baseline)
+'    nvram_delta    n, d[[offset,new,old],...]    (VPM: Controller.ChangedNVRAM batch)
+'    game_start     players                       (originals)
+'    current_scores scores[], player, ball        (originals; player and ball are 1-based)
+'    ball_end       player, ball, extra_balls     (originals)
+'    game_end       scores[], players             (originals)
+'    lock           locked                        (lock state seen at a key press changed)
+'    key_blocked    key                           (a play key was swallowed while locked)
+'    warn           msg, err
+'    table_exit     lines, nvram_callbacks, blocked_keys
+'  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
+' =====================================================================================
+
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.1.0"
+Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
+Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
+Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
+Dim Castcade_PrevNVRAM, Castcade_NVRAMRegistered, Castcade_NVn
+Dim Castcade_PlayKeys, Castcade_PlayKeysReady, Castcade_ExtraKeyNames, Castcade_Swallowed, Castcade_LastLocked
+Dim Castcade_LastScores, Castcade_Blocked
+
+Castcade_LogOpen = False
+Castcade_NVRAMRegistered = False
+Castcade_PlayKeysReady = False
+Castcade_ExtraKeyNames = Array()
+Castcade_LastScores = ""
+Castcade_Blocked = 0
+Castcade_NVn = 0
+Castcade_Lines = 0
+
+' ---------------------------------------------------------------- init / exit ----------
+
+Sub Castcade_Init(tableId, recipe, recipeVer, rom)
+    On Error Resume Next
+    Castcade_TableId = tableId : Castcade_Recipe = recipe : Castcade_RecipeVer = recipeVer : Castcade_Rom = rom
+    Castcade_T0 = Timer
+    Castcade_LastLocked = Empty
+    Set Castcade_Swallowed = CreateObject("Scripting.Dictionary")
+    Set Castcade_fso = CreateObject("Scripting.FileSystemObject")
+    Set Castcade_shell = CreateObject("WScript.Shell")
+
+    Castcade_Root = ""
+    Castcade_Root = Castcade_shell.ExpandEnvironmentStrings("%LOCALAPPDATA%")
+    If Castcade_Root = "" Or Left(Castcade_Root, 1) = "%" Then Castcade_Root = Castcade_shell.ExpandEnvironmentStrings("%TEMP%")
+    If Castcade_Root = "" Or Left(Castcade_Root, 1) = "%" Then Castcade_Root = "C:\Castcade"
+    Castcade_Root = Castcade_Root & "\Castcade"
+    Castcade_EnsureDir Castcade_Root
+    Castcade_EnsureDir Castcade_Root & "\journal"
+    Castcade_EnsureDir Castcade_Root & "\lock"
+    Castcade_JournalPath = Castcade_Root & "\journal\" & Castcade_SafeName(tableId) & ".jsonl"
+    Castcade_LockPath = Castcade_Root & "\lock\turn.lock"
+    Castcade_Session = Castcade_Stamp()
+
+    Castcade_OpenLog
+    Castcade_Emit "table_loaded", _
+        """table"":" & Castcade_Q(tableId) & ",""recipe"":" & Castcade_Q(recipe) & _
+        ",""recipe_version"":" & Castcade_Q(recipeVer) & ",""rom"":" & Castcade_Q(rom) & _
+        ",""lib"":" & Castcade_Q(Castcade_LibVersion) & ",""session"":" & Castcade_Q(Castcade_Session) & _
+        ",""locked"":" & Castcade_Bool(Castcade_Locked())
+End Sub
+
+Sub Castcade_Exit()
+    On Error Resume Next
+    Castcade_Emit "table_exit", """lines"":" & Castcade_Lines & ",""nvram_callbacks"":" & Castcade_NVn & ",""blocked_keys"":" & Castcade_Blocked
+    If Castcade_LogOpen Then Castcade_Log.Close
+    Castcade_LogOpen = False
+End Sub
+
+' ---------------------------------------------------------------- turn lock ------------
+
+Function Castcade_Locked()
+    On Error Resume Next
+    Castcade_Locked = False
+    If IsObject(Castcade_fso) Then Castcade_Locked = Castcade_fso.FileExists(Castcade_LockPath)
+End Function
+
+' Call from the sidecar's <Table>_KeyDown wrapper.  True = swallow this key-down.
+Function Castcade_KeyDownBlocked(keycode)
+    On Error Resume Next
+    Dim locked
+    Castcade_KeyDownBlocked = False
+    locked = Castcade_Locked()
+    If IsEmpty(Castcade_LastLocked) Then
+        Castcade_LastLocked = locked
+        Castcade_Emit "lock", """locked"":" & Castcade_Bool(locked)
+    ElseIf locked <> Castcade_LastLocked Then
+        Castcade_LastLocked = locked
+        Castcade_Emit "lock", """locked"":" & Castcade_Bool(locked)
+    End If
+    If Not locked Then Exit Function
+    If Castcade_IsPlayKey(keycode) Then
+        Castcade_Swallowed(CStr(keycode)) = True
+        Castcade_Blocked = Castcade_Blocked + 1
+        Castcade_Emit "key_blocked", """key"":" & keycode
+        Castcade_KeyDownBlocked = True
+    End If
+End Function
+
+' Call from the sidecar's <Table>_KeyUp wrapper.  A key-up is swallowed only when its key-down
+' was swallowed, so a flipper that went down always comes back up.
+Function Castcade_KeyUpBlocked(keycode)
+    On Error Resume Next
+    Castcade_KeyUpBlocked = False
+    If Castcade_Swallowed.Exists(CStr(keycode)) Then
+        Castcade_Swallowed.Remove CStr(keycode)
+        Castcade_KeyUpBlocked = True
+    End If
+End Function
+
+' Extra table-specific key constant NAMES (e.g. staged-flipper keys).  Call before the first key press.
+Sub Castcade_AddPlayKeys(names)
+    On Error Resume Next
+    Castcade_ExtraKeyNames = names
+    Castcade_PlayKeysReady = False
+End Sub
+
+Function Castcade_IsPlayKey(keycode)
+    On Error Resume Next
+    If Not Castcade_PlayKeysReady Then Castcade_BuildPlayKeys
+    Castcade_IsPlayKey = Castcade_PlayKeys.Exists(CStr(keycode))
+End Function
+
+Sub Castcade_BuildPlayKeys()
+    On Error Resume Next
+    Dim names, i
+    Set Castcade_PlayKeys = CreateObject("Scripting.Dictionary")
+    ' VPX host constants: flippers, plunger/launch, start, nudges, lockbar, magna-saves.
+    ' Never ExitGame or the coin/service keys: a locked player must still be able to leave.
+    names = Array("LeftFlipperKey", "RightFlipperKey", "PlungerKey", "StartGameKey", _
+                  "LeftTiltKey", "RightTiltKey", "CenterTiltKey", "MechanicalTilt", _
+                  "LockBarKey", "LeftMagnaSave", "RightMagnaSave")
+    For i = 0 To UBound(names)
+        Castcade_AddKeyByName names(i)
+    Next
+    For i = 0 To UBound(Castcade_ExtraKeyNames)
+        Castcade_AddKeyByName Castcade_ExtraKeyNames(i)
+    Next
+    Castcade_PlayKeysReady = True
+End Sub
+
+Sub Castcade_AddKeyByName(name)
+    On Error Resume Next
+    Dim v
+    Err.Clear
+    If IsNumeric(name) Then
+        v = CLng(name)
+    Else
+        v = Eval(name)
+    End If
+    If Err.Number = 0 Then
+        If Not IsEmpty(v) Then
+            If IsNumeric(v) Then Castcade_PlayKeys(CStr(CLng(v))) = name
+        End If
+    End If
+    Err.Clear
+End Sub
+
+' ---------------------------------------------------------------- VPM / NVRAM ----------
+
+' The one place NVRAMCallback is ever assigned.  Idempotent; chains an existing callback.
+Sub Castcade_RegisterNVRAM()
+    On Error Resume Next
+    Dim chained, useNv
+    If Castcade_NVRAMRegistered Then Exit Sub
+    Castcade_PrevNVRAM = Empty
+    chained = False
+    Err.Clear
+    If IsObject(NVRAMCallback) Then
+        Set Castcade_PrevNVRAM = NVRAMCallback
+        chained = True
+    End If
+    Err.Clear
+    Set NVRAMCallback = GetRef("Castcade_NVRAM")
+    If Err.Number <> 0 Then
+        Castcade_Emit "warn", """msg"":""NVRAMCallback registration failed (core.vbs not loaded yet?)"",""err"":" & Castcade_Q(Err.Description)
+        Err.Clear
+        Exit Sub
+    End If
+    Castcade_NVRAMRegistered = True
+    useNv = Empty
+    useNv = Eval("UseNVRAM")
+    Err.Clear
+    Castcade_Emit "nvram_hook", """chained"":" & Castcade_Bool(chained) & ",""use_nvram"":" & Castcade_Q(CStr(useNv))
+End Sub
+
+' Receives Controller.ChangedNVRAM batches from core.vbs PinMAMETimer_Timer: chg(i,0)=offset, (i,1)=new, (i,2)=old
+Sub Castcade_NVRAM(chg)
+    On Error Resume Next
+    Dim i, n, parts, t
+    Castcade_NVn = Castcade_NVn + 1
+    If Castcade_NVn <= 300000 Then                      ' runaway guard
+        t = Castcade_T()
+        n = UBound(chg, 1)
+        ReDim parts(n)
+        For i = 0 To n
+            parts(i) = "[" & chg(i, 0) & "," & chg(i, 1) & "," & chg(i, 2) & "]"
+        Next
+        Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & (n + 1) & ",""d"":[" & Join(parts, ",") & "]}", False
+        If Castcade_NVn = 1 Or (Castcade_NVn Mod 5000) = 0 Then Castcade_NVRAMFull t
+    End If
+    If IsObject(Castcade_PrevNVRAM) Then Castcade_PrevNVRAM chg
+End Sub
+
+Sub Castcade_NVRAMFull(t)
+    On Error Resume Next
+    Dim arr, i, parts
+    arr = Controller.NVRAM
+    If Not IsArray(arr) Then Exit Sub
+    ReDim parts(UBound(arr))
+    For i = 0 To UBound(arr)
+        parts(i) = CStr(arr(i))
+    Next
+    Castcade_Write "{""event"":""nvram_full"",""t"":" & t & ",""n"":" & (UBound(arr) + 1) & ",""bytes"":[" & Join(parts, ",") & "]}", True
+End Sub
+
+' ---------------------------------------------------------------- originals ------------
+
+Sub Castcade_GameStart(players)
+    On Error Resume Next
+    Castcade_LastScores = ""
+    Castcade_Emit "game_start", """players"":" & Castcade_Num(players)
+End Sub
+
+' scores = Array(Score(0), Score(1), ...)   player, ball = 1-based
+Sub Castcade_Scores(scores, player, ball)
+    On Error Resume Next
+    Dim js, sig
+    js = Castcade_NumArray(scores)
+    sig = js & "|" & player & "|" & ball
+    If sig = Castcade_LastScores Then Exit Sub
+    Castcade_LastScores = sig
+    Castcade_Write "{""event"":""current_scores"",""t"":" & Castcade_T() & ",""scores"":" & js & ",""player"":" & Castcade_Num(player) & ",""ball"":" & Castcade_Num(ball) & "}", False
+End Sub
+
+Sub Castcade_BallEnd(player, ball, extraBalls)
+    On Error Resume Next
+    Castcade_Emit "ball_end", """player"":" & Castcade_Num(player) & ",""ball"":" & Castcade_Num(ball) & ",""extra_balls"":" & Castcade_Num(extraBalls)
+End Sub
+
+Sub Castcade_GameEnd(scores, players)
+    On Error Resume Next
+    Castcade_Emit "game_end", """scores"":" & Castcade_NumArray(scores) & ",""players"":" & Castcade_Num(players)
+End Sub
+
+' Free-form event for recipe-specific anchors.  extraJson is the inside of the object, no braces.
+Sub Castcade_Event(name, extraJson)
+    On Error Resume Next
+    Castcade_Emit name, extraJson
+End Sub
+
+' ---------------------------------------------------------------- journal plumbing -----
+
+Sub Castcade_Emit(ev, extraJson)
+    On Error Resume Next
+    Dim line
+    line = "{""event"":" & Castcade_Q(ev) & ",""t"":" & Castcade_T()
+    If Len(extraJson) > 0 Then line = line & "," & extraJson
+    line = line & "}"
+    Castcade_Write line, True
+End Sub
+
+' flush=True closes and reopens the file so the companion sees the line now.  nvram_delta and
+' current_scores pass False and are flushed every 50 lines (this runs at frame rate inside
+' PinMAMETimer; a close/reopen per frame would stutter the table).
+Sub Castcade_Write(line, flush)
+    On Error Resume Next
+    If Not Castcade_LogOpen Then Castcade_OpenLog
+    If Not Castcade_LogOpen Then Exit Sub
+    Castcade_Log.WriteLine line
+    Castcade_Lines = Castcade_Lines + 1
+    If flush Or (Castcade_Lines Mod 50) = 0 Then
+        Castcade_Log.Close
+        Castcade_LogOpen = False
+        Castcade_OpenLog
+    End If
+End Sub
+
+Sub Castcade_OpenLog()
+    On Error Resume Next
+    Castcade_LogOpen = False
+    If Not IsObject(Castcade_fso) Then Exit Sub
+    Err.Clear
+    Set Castcade_Log = Castcade_fso.OpenTextFile(Castcade_JournalPath, 8, True)
+    If Err.Number = 0 Then Castcade_LogOpen = True
+    Err.Clear
+End Sub
+
+Sub Castcade_EnsureDir(p)
+    On Error Resume Next
+    If Not Castcade_fso.FolderExists(p) Then Castcade_fso.CreateFolder p
+End Sub
+
+' ---------------------------------------------------------------- helpers --------------
+
+Function Castcade_T()
+    On Error Resume Next
+    Dim d
+    d = Timer - Castcade_T0
+    If d < 0 Then d = d + 86400              ' Timer wraps at midnight
+    Castcade_T = Replace(CStr(Round(d, 3)), ",", ".")
+End Function
+
+Function Castcade_Stamp()
+    On Error Resume Next
+    Dim n
+    n = Now
+    Castcade_Stamp = Year(n) & "-" & Right("0" & Month(n), 2) & "-" & Right("0" & Day(n), 2) & "T" & _
+                     Right("0" & Hour(n), 2) & ":" & Right("0" & Minute(n), 2) & ":" & Right("0" & Second(n), 2)
+End Function
+
+Function Castcade_Q(s)
+    On Error Resume Next
+    Dim r
+    r = CStr(s)
+    r = Replace(r, "\", "\\")
+    r = Replace(r, """", "\""")
+    r = Replace(r, vbCr, " ")
+    r = Replace(r, vbLf, " ")
+    r = Replace(r, vbTab, " ")
+    Castcade_Q = """" & r & """"
+End Function
+
+Function Castcade_Bool(b)
+    If b Then Castcade_Bool = "true" Else Castcade_Bool = "false"
+End Function
+
+' Integers of any size as plain digits (CStr of a large Double would use exponent notation).
+Function Castcade_Num(v)
+    On Error Resume Next
+    Castcade_Num = "0"
+    If IsNumeric(v) Then Castcade_Num = Replace(FormatNumber(v, 0, -1, 0, 0), ",", "")
+    If Castcade_Num = "" Then Castcade_Num = "0"
+End Function
+
+Function Castcade_NumArray(arr)
+    On Error Resume Next
+    Dim i, parts
+    Castcade_NumArray = "[]"
+    If Not IsArray(arr) Then Exit Function
+    ReDim parts(UBound(arr))
+    For i = 0 To UBound(arr)
+        parts(i) = Castcade_Num(arr(i))
+    Next
+    Castcade_NumArray = "[" & Join(parts, ",") & "]"
+End Function
+
+Function Castcade_SafeName(s)
+    On Error Resume Next
+    Dim i, c, r
+    r = ""
+    For i = 1 To Len(s)
+        c = Mid(s, i, 1)
+        If InStr("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-", c) > 0 Then
+            r = r & c
+        ElseIf c = " " Then
+            r = r & "_"
+        End If
+    Next
+    If r = "" Then r = "table"
+    Castcade_SafeName = r
+End Function

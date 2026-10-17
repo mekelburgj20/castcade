@@ -91,9 +91,10 @@ Dim Castcade_Journal, Castcade_Locked
 ExecuteGlobal GetTextFile("castcade.vbs")   ' shared library installed in VPX\scripts\
 Castcade_Init "<table-id>", "<recipe>", "<recipe-version>"
 ```
-`castcade.vbs` provides: journal open/append/flush-every-N (the T7 probe's pattern), a 250 ms lock-file poll
-into `Castcade_Locked`, an idempotent `NVRAMCallback` registration that **chains** any existing callback, and a
-`VPinball.ScoreServer`-compatible object for class D. It lives in the VPX `scripts\` folder (installed by the
+`castcade.vbs` provides: journal open/append/flush-every-N (the T7 probe's pattern), the lock-file check
+`Castcade_Locked` (read at each key press, no timer), an idempotent `NVRAMCallback` registration that **chains**
+any existing callback, and (Phase 3) a `VPinball.ScoreServer`-compatible object for class D. Version 0.1.0 exists
+in `vpx-hook/castcade.vbs` (Phase 0 spike); the event list is in its header. It lives in the VPX `scripts\` folder (installed by the
 companion alongside `core.vbs`; it is a new file, so nothing existing is touched).
 
 **Recipe A (VPM):**
@@ -118,15 +119,20 @@ companion alongside `core.vbs`; it is a new file, so nothing existing is touched
 **Block L — turn lock (all recipes):**
 ```vbs
 Sub Table1_KeyDown(ByVal KeyCode)              ' renamed original: Castcade_Orig_KeyDown
-    If Castcade_Locked Then
-        If Castcade_IsPlayKey(KeyCode) Then Exit Sub     ' flippers, plunger, lockbar, nudges, start
-    End If
+    If Castcade_KeyDownBlocked(KeyCode) Then Exit Sub    ' locked AND a play key: flippers, plunger, lockbar, nudges, start, magna-saves
     Castcade_Orig_KeyDown KeyCode
 End Sub
+Sub Table1_KeyUp(ByVal KeyCode)
+    If Castcade_KeyUpBlocked(KeyCode) Then Exit Sub      ' swallowed only if this key's key-down was swallowed
+    Castcade_Orig_KeyUp KeyCode
+End Sub
 ```
-Same for `_KeyUp` (a locked key-up is always forwarded so a flipper never sticks). `Castcade_IsPlayKey` reads the
-table's own key constants captured by the analyzer. The lock file is written by the companion on every
-`TURN_GRANT` transition; the 250 ms poll bounds the handoff latency.
+A key-up is swallowed only when its key-down was, so a flipper that went down always comes back up, even across
+a lock transition. The play-key set is the VPX host constants plus table-specific names the analyzer captures
+(`Castcade_AddPlayKeys Array("KeyUpperLeft", ...)` for staged flippers); `ExitGame` and the coin keys are never
+locked. The lock file is written by the companion on every `TURN_GRANT` transition and read at the key press
+itself (no poll, no timer object needed), so the handoff latency is the companion's write latency. Every swallowed
+press is journaled as `key_blocked`, which is how the verification run proves the lock worked.
 
 **Non-goals in the script:** no network calls, no signature checks, no decoding. Those live in the companion.
 

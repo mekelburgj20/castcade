@@ -1,6 +1,7 @@
 # vpx-hook/
 
-**Status: not started — Phase 3 (Phase 0 probes run from ArcAid's staged T7 sidecar first).**
+**Status: Phase 0 spike kit present (2026-10-17): `castcade.vbs` 0.1.0 and `spike/` (renderer, staging,
+tailer, lock, capture test). Runbook and results: `docs/phase-0-spike.md`. Production recipes = Phase 3.**
 
 Everything that runs inside the Visual Pinball X process. Pure VBScript, no DLL, no COM registration
 (ADR 0001). The script does one job: append events to a journal file and read one lock flag. All
@@ -9,9 +10,14 @@ decoding, detection and networking happen in the companion.
 ## What lives here
 
 - `castcade.vbs` — the shared library every patched table `ExecuteGlobal`s: journal writer
-  (buffered; flush every N callbacks), the `NVRAMCallback` **chaining guard**, the `_KeyDown` /
-  `_KeyUp` turn-lock wrapper, helper subs for originals (`CastcadeScore`, `CastcadeGameStart`,
-  `CastcadeGameEnd`).
+  (buffered; events flush at once, `nvram_delta` / `current_scores` every 50 lines), the
+  `NVRAMCallback` **chaining guard** (`Castcade_RegisterNVRAM`), the lock check the sidecar's
+  `_KeyDown` / `_KeyUp` wrappers call (`Castcade_KeyDownBlocked` / `Castcade_KeyUpBlocked`), helper
+  subs for originals (`Castcade_GameStart`, `Castcade_Scores`, `Castcade_BallEnd`, `Castcade_GameEnd`).
+  The event list is in the file header. Exercised outside VPX with a `cscript` harness (2026-10-17).
+- `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
+  and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
+  ball-end detector, the ancestor of the companion detector), `lock.ps1`, `capture-test.ps1`.
 - `recipes/<family>.md` → code later: one recipe per table family — `vpm-rom`, `original-jpsalas`,
   `original-vpw`, `scorbit-anchored`, `scoreserver-anchored`, plus `unsupported` reasons. A recipe
   states its anchors (what the analyzer must find), the lines it inserts, and how it verifies.

@@ -14,9 +14,14 @@ VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 
 ## Current state (2026-10-17)
 
-Docs and skeleton only. **No code, no package manifest, no build or test tooling yet.** Check the tree
-before assuming a toolchain; when the stack lands (Electron + TypeScript is the ruled direction), add
+Docs, skeleton, and the **Phase 0 spike kit** (`vpx-hook/castcade.vbs` + `vpx-hook/spike/`: Python and
+PowerShell only, no Node). **No companion code, no package manifest, no build or test tooling yet.**
+Phase 0 is staged on the owner's rig and waiting for play sessions; the runbook and the results table are
+`docs/phase-0-spike.md`. When the stack lands (Electron + TypeScript is the ruled direction), add
 build / lint / test / single-test commands here.
+
+Spike checks that exist today: `cscript` harness for the library (see `vpx-hook/README.md`), and
+`python vpx-hook/spike/tail-journal.py <journal>` replays a journal through the decoder and detector.
 
 ## Session start — read in this order
 
@@ -47,7 +52,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 |---|---|---|
 | `protocol/` | JSON schemas for every match message, version constant, generated spec | 1 |
 | `companion/` | Electron + TS app: modules `patcher`, `witness`, `match`, `media`, `launch` | 2+ |
-| `vpx-hook/` | `castcade.vbs` shared library, patch recipes, optional `core.vbs` bulk patch | 3 |
+| `vpx-hook/` | `castcade.vbs` shared library (0.1.0 present), `spike/` Phase 0 tooling, patch recipes, optional `core.vbs` bulk patch | 0, 3 |
 | `fakeclient/` | scripted protocol player, no emulator, for CI | 1 |
 | `arcade/` | RetroArch launch profiles, core allowlist, ROM memory maps | 6 |
 | `fixtures/` | recorded NVRAM journals + script-event logs for detector replay in CI | 2–3 |
@@ -61,7 +66,7 @@ Not present on purpose: `plugin-vpx/` (deferred), `rommaps/` (use the `pinmame-n
 - **Journal file format is the product boundary** between in-VPX script and the companion. Change it only with a version bump and a fixture.
 - **`ChangedNVRAM` is a destructive single-consumer read.** Every registration of `NVRAMCallback` goes through the one chaining routine in `castcade.vbs`.
 - **Badge, never gate** (ArcAid doctrine): no verdict Castcade produces may filter a board or change a rank on the ArcAid side.
-- **No real work in VBScript.** The script appends journal lines and reads one lock flag; decoding, detection and networking live in the companion.
+- **No real work in VBScript.** The script appends journal lines and reads one lock flag (checked at each key press, not polled; a key-up is swallowed only when its key-down was); decoding, detection and networking live in the companion.
 - **Never commit** a ROM, a table file, a NVRAM file from someone else's machine, or a pairing token. Fixtures are journals we recorded.
 - Line endings: this repo is LF. The Write tool emits LF; prefer Edit for existing files.
 - Build before committing once a build exists; subagent worktree conventions from `C:\code\repos\CLAUDE.md` apply.
