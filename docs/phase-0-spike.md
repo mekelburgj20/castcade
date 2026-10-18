@@ -1,7 +1,7 @@
 # Phase 0 spike — runbook and results
 
 **Status:** run on the owner's rig 2026-10-17 (desktop VPX, driven by `spike/autoplay.py`); **all five gates passed**, see §8.
-Still open for the owner: the hands-on feel of the lock (flippers visibly dead), VR controller / analog plunger inputs, and reading the F11 FPS overlay during a capture.
+Still open for the owner: the hands-on feel of the lock (flippers visibly dead), VR controller / analog plunger inputs, and reading the F11 FPS overlay during a capture, all on the **VR build (`VPinballX_GL64.exe`)** the owner actually plays, see §8 "VR build". MM game 1 in the recorded fixture was played by the owner by hand, not by autoplay (§8).
 **Decides:** the five open questions the plan's Phase 0 row names (`docs/design/arcaid-integration-gap-analysis.md` §6).
 Nothing in Phases 1–6 that touches VPX can start honestly until the gates below are read.
 
@@ -131,13 +131,20 @@ build, windowed 1920×1440). Keys came from `spike/autoplay.py`: one credit, Sta
 tailer reported `game_end`; the 0c exercise ran mid-game on TFTC and Iron Maiden and after game over on MM. Each table was quit with
 the exit key, so `table_exit` closed every journal. The three journals are in `fixtures/` (gzipped) with `.meta.json` sidecars.
 
+**Exception, MM game 1 was hand-played.** The owner, not told the run was unattended, inserted the coins, pressed Start and flipped
+the first MM game: the journal shows credits 4→5→6 at t≈47 s and t≈70 s and `game_start` at t=169 s, 16 s *before* autoplay's first
+Start press (t≈185 s); autoplay then plunged into that game's balls 2–3 and ran game 2 (t=278–350 s) on its own, with the owner possibly
+still touching the flippers early in it. The MM fixture is therefore a **mixed human/autoplay recording**. That does not weaken the 0a
+gate (who pressed the keys is irrelevant to NVRAM decoding, and a hand-played game is the more realistic fixture), but the metadata says
+so and finding 1 carries the caveat. It was not re-recorded: the owner's upcoming hands-on session on the VR build is the next MM fixture.
+
 | Item | Table | Result | Evidence / notes |
 |---|---|---|---|
 | 0e | TFTC | **PASS** | journal `table_loaded` 2 s after launch; no dialog (screenshot); no `%TEMP%` breadcrumb |
 | 0e | MM | **PASS** | same; `Castcade` folder, `scripts\castcade.vbs` found via `GetTextFile` |
 | 0e | Iron Maiden | **PASS** | same (23k-line class-B sidecar compiled and ran) |
 | 0a | TFTC (`tftc_400`) | **PASS** | live NVRAM **8238 = on-disk .nv 8238, offset +0 (97% agreement) → SAME INDEXING**; `game_start` t=61.6, `ball_end` 1/2/3 at 91.6/127.0/169.4, `game_end` score 2,318,430; 22,235 deltas in 185 s |
-| 0a | MM (`mm_109c`) | **PASS** | live NVRAM **12334 = .nv 12334, offset +0 (98%) → SAME INDEXING**; two games: `ball_end` 1/2/3 + `game_end` (277,500) then again (1,089,510); 77,547 deltas in 387 s; no extra ball lit (autoplay never flips) — extra-ball fixture still to record |
+| 0a | MM (`mm_109c`) | **PASS** | live NVRAM **12334 = .nv 12334, offset +0 (98%) → SAME INDEXING**; two games: `ball_end` 1/2/3 + `game_end` (277,500) then again (1,089,510); 77,547 deltas in 387 s; no extra ball lit in either game (game 1 hand-played by the owner, game 2 autoplay, see "Exception" above) — extra-ball fixture still to record |
 | 0b | Iron Maiden | **PASS** | `game_start`, 206 `current_scores` climbing, `ball_end` 1/2/3 (the `ball` value is the ball that just ended, `extra_balls` 0), `game_end` 384,260. **End-of-ball bonus is added after `ball_end`** (259,760 at ball_end → 384,260 at game_end) |
 | 0c | keyboard (synthesized scancodes) | **PASS (journal)** | on all three tables: `lock locked=true` once, then `key_blocked` for LShift 42, RShift 54, Enter 28, Start 2 while locked; a flipper held down while locked had its key-up swallowed (no stuck flipper), a flipper held down across unlock→lock released normally; exit key still worked. TFTC also caught a real autoplay plunge (28) while locked. **Owner still confirms the table visibly did nothing** |
 | 0c | VR controllers | open | owner: VPX maps joystick buttons to keycodes before `_KeyDown`, expected to pass; `PlungerAxis = 5` is configured on this rig, so an **analog plunger exists → test it** |
@@ -160,6 +167,10 @@ IM   0e PASS · 0b PASS (game_start=1 current_scores=206 ball_end=3 game_end=1) 
    unpatched MM baseline run, and the patched TFTC and Iron Maiden runs, logged no long frame at all. Fix: journal only the bytes inside
    the map's `game_state` region (≈100 bytes, known at render time from the map), throttle deltas to ≥50 ms, and take the full snapshot
    only at hook time and on request. 0d's "<5 % frame cost" therefore holds for capture but **not yet for the 0.1.0 hook on WPC**.
+   Caveat: the patched MM run contained the owner's hand-played game 1 while the unpatched baseline was autoplay-only, so the two runs
+   are not strictly like for like. The conclusion stands anyway: the 148/51 ms spikes sit at `nvram_full` snapshots, which do not depend
+   on play, and the ~200 deltas/s rate held through attract mode (WPC timers, not flipper activity). The owner's VR session gives a
+   second patched run to compare.
 2. **ROM boot garbage.** MM fills NVRAM with 0x55 then 0xAA during its power-on RAM test (`current_player` decodes as 85/170). The first
    tailer pass derived a fake `game_start`/`ball_end`/`game_end` from it. The detector now rejects implausible states (`plausible()`:
    player 0–4, ball within range, integer scores) and only ends a game that had a ball in play; both fixtures replay clean.
@@ -184,5 +195,21 @@ IM   0e PASS · 0b PASS (game_start=1 current_scores=206 ball_end=3 game_end=1) 
   Fails for analog devices only → OS-level hook becomes a Phase 3 item for those devices. (Keyboard path passed 2026-10-17; the
   analog plunger on this rig is the open case.)
 - **0d passes** → `media` module plan stands (ddagrab + NVENC via the host companion). Fails → test the alternative capture path before Phase 4.
+
+### VR build
+
+The owner plays the **OpenGL / VR build**, `VPinballX_GL64.exe` (10.8.0.2078, links `openvr_api`), not `VPinballX64.exe`
+(10.8.0.2079, no OpenVR) that the unattended run used. Checked 2026-10-17: both exes sit in the same folder, read the same portable
+`VPinballX.ini` and the same `scripts\castcade.vbs`, and the sidecar `.vbs` is found beside the `.vpx` regardless of the exe, so 0e, 0a
+and 0b do not depend on the renderer and need no re-run. What does differ, and is why the hands-on pass should be on the GL64 build:
+
+- **0c inputs.** VR controller buttons and the analog plunger (`PlungerAxis = 5`, `PBWEnabled = 1`) are the untested input paths. The
+  joystick keys in the ini (`JoyLFlipKey = 5`, `JoyRFlipKey = 6`, `JoyPlungerKey = 10`) are mapped to key actions before `_KeyDown`, so
+  they should be swallowed like the keyboard; an analog plunger pull drives the plunger body directly and will **not** be, which is the
+  expected open case.
+- **0d capture.** The owner's ini has `VRPreview = 0`, so in VR the desktop window shows no preview and `ddagrab` would capture nothing
+  useful. A spectator feed in VR needs `VRPreview` set to one eye (1 or 2) and the frame cost re-read against the headset's 90 Hz budget,
+  not the uncapped desktop rate. The F11 overlay is read inside the headset.
+- **Logging.** `EnableLog = 1` in the owner's own ini (or an `-Ini` copy) writes `vpinball.log` beside the exe for either build.
 
 Any gate that fails is written up here first; the ADR it affects (0001 for 0a/0e, the match design for 0c) is amended only after the owner reads it.
