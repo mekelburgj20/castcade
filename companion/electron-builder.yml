@@ -1,0 +1,46 @@
+# electron-builder configuration for the Castcade companion (Windows x64, per-user NSIS).
+# Run from companion/: `npm run dist:win` (local), `npm run release:win` (publishes to GitHub Releases).
+# Unsigned for the PoC: no certificate config here on purpose (see README "Packaging").
+appId: app.arcaid.castcade
+productName: Castcade
+copyright: GPL-3.0-only
+directories:
+  output: release
+  buildResources: build
+# The companion is an npm workspace: dependencies are hoisted to the monorepo root node_modules.
+# electron-builder 26 resolves them from there via `npm list`; we never rebuild natives (there are none).
+npmRebuild: false
+asar: true
+files:
+  - dist/**
+  - package.json
+  - build/icon.png
+  - build/tray.ico
+  - "!dist/.tsbuildinfo"
+  - "!dist/**/*.map"
+  - "!dist/**/*.d.ts"
+  - "!dist/**/*.d.ts.map"
+extraResources:
+  # The pinmame-nvram-maps corpus (ODbL), fetched by `npm run fetch-maps -w companion` before packaging.
+  - from: resources/maps
+    to: maps
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: Castcade-Setup-${version}.${ext}
+  signAndEditExecutable: true
+  verifyUpdateCodeSignature: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  deleteAppDataOnUninstall: false
+  shortcutName: Castcade
+publish:
+  provider: github
+  owner: mekelburgj20
+  repo: castcade
+  releaseType: release

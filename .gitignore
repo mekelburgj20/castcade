@@ -25,3 +25,9 @@ desktop.ini
 
 # Python
 __pycache__/
+
+# Castcade companion: packaging output and the fetched maps corpus (never tracked)
+companion/release/
+companion/resources/
+# companion/build holds committed icon assets; the generic build/ rule above would hide it
+!companion/build/

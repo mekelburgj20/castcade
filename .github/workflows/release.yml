@@ -1,0 +1,44 @@
+name: Release (Windows installer)
+
+# Tag push `v*` → build, publish to the GitHub Release (electron-updater's latest.yml included).
+# workflow_dispatch → build only; the installer is attached to the run as a workflow artifact.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Castcade-Setup (windows x64, nsis, unsigned)
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fetch the pinmame-nvram-maps corpus into companion/resources/maps
+        run: npm run fetch-maps -w companion
+      - run: npm run build
+      - name: Package (publish to the release on tag pushes only)
+        working-directory: companion
+        run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      - name: Upload installer as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Castcade-Setup-windows-x64
+          if-no-files-found: error
+          path: |
+            companion/release/*.exe
+            companion/release/*.exe.blockmap
+            companion/release/latest.yml
