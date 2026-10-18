@@ -34,7 +34,8 @@ export async function startUpdater(log: Logger, cb: UpdaterCallbacks): Promise<U
     if (!updater) throw new Error('electron-updater did not expose autoUpdater');
     updater.autoDownload = true;
     updater.autoInstallOnAppQuit = true;
-    updater.allowPrerelease = false;
+    // The PoC ships as GitHub pre-releases (unsigned until GA); installed apps must still see them.
+    updater.allowPrerelease = true;
     updater.logger = {
       info: (m: unknown) => log.info(`updater: ${String(m)}`),
       warn: (m: unknown) => log.warn(`updater: ${String(m)}`),

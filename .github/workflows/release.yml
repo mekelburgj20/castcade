@@ -30,6 +30,10 @@ jobs:
       - name: Fetch the pinmame-nvram-maps corpus into companion/resources/maps
         run: npm run fetch-maps -w companion
       - run: npm run build
+      - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept."
       - name: Package (publish to the release on tag pushes only)
         working-directory: companion
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
