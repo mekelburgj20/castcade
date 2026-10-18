@@ -1,7 +1,8 @@
 # fixtures/
 
 **Status: first three fixtures recorded 2026-10-17 (Phase 0, `docs/phase-0-spike.md` §8): `nvram/mm_109c`, `nvram/tftc_400`,
-`script/iron-maiden-lotb`. Used by CI from Phase 2–3.** Journals are written by the hook to
+`script/iron-maiden-lotb`. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
+exit) is archived locally only, 18.7 MB gzipped is too large for git; see `docs/phase-0-spike.md` §8 "Owner's hands-on pass". Journals are written by the hook to
 `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below. NVRAM journals are large
 (the 0.1.0 hook writes every changed byte: 37 MB for two games of Medieval Madness) so they are stored **gzipped**
 (`.jsonl.gz`, `gzip -9 -n`); the tailer reads both. Replay: `python vpx-hook/spike/tail-journal.py fixtures/nvram/mm_109c/2026-10-17-1.jsonl.gz`.

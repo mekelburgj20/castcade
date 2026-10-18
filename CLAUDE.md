@@ -16,7 +16,7 @@ VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 
 Docs, skeleton, and the **Phase 0 spike kit** (`vpx-hook/castcade.vbs` + `vpx-hook/spike/`: Python and
 PowerShell only, no Node). **No companion code, no package manifest, no build or test tooling yet.**
-Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e); results, the
+Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e; 0c also confirmed by the owner by hand); results, the
 findings Phase 3 must absorb (journal volume, boot-garbage gate, bonus-after-ball_end) and what the owner still
 confirms by hand are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`. When the stack lands (Electron + TypeScript is the ruled direction), add
 build / lint / test / single-test commands here.

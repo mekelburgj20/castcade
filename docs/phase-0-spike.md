@@ -1,7 +1,7 @@
 # Phase 0 spike — runbook and results
 
-**Status:** run on the owner's rig 2026-10-17 (desktop VPX, driven by `spike/autoplay.py`); **all five gates passed**, see §8.
-Still open for the owner: the hands-on feel of the lock (flippers visibly dead), VR controller / analog plunger inputs, and reading the F11 FPS overlay during a capture, all on the **VR build (`VPinballX_GL64.exe`)** the owner actually plays, see §8 "VR build". MM game 1 in the recorded fixture was played by the owner by hand, not by autoplay (§8).
+**Status:** run on the owner's rig 2026-10-17 (desktop VPX, driven by `spike/autoplay.py`), then **0c confirmed by the owner by hand the same evening** (MM, desktop build, keyboard); **all five gates passed**, see §8.
+Still open for the owner, all optional for the Phase 3 decision: VR controller buttons and the analog plunger under the lock (needs the VR build and a plunger table such as TFTC), and an FPS number during a capture (VPX's F11 overlay on this rig shows plots without a readable value, Game Bar showed `--`).
 **Decides:** the five open questions the plan's Phase 0 row names (`docs/design/arcaid-integration-gap-analysis.md` §6).
 Nothing in Phases 1–6 that touches VPX can start honestly until the gates below are read.
 
@@ -147,9 +147,9 @@ so and finding 1 carries the caveat. It was not re-recorded: the owner's upcomin
 | 0a | TFTC (`tftc_400`) | **PASS** | live NVRAM **8238 = on-disk .nv 8238, offset +0 (97% agreement) → SAME INDEXING**; `game_start` t=61.6, `ball_end` 1/2/3 at 91.6/127.0/169.4, `game_end` score 2,318,430; 22,235 deltas in 185 s |
 | 0a | MM (`mm_109c`) | **PASS** | live NVRAM **12334 = .nv 12334, offset +0 (98%) → SAME INDEXING**; two games: `ball_end` 1/2/3 + `game_end` (277,500) then again (1,089,510); 77,547 deltas in 387 s; no extra ball lit in either game (game 1 hand-played by the owner, game 2 autoplay, see "Exception" above) — extra-ball fixture still to record |
 | 0b | Iron Maiden | **PASS** | `game_start`, 206 `current_scores` climbing, `ball_end` 1/2/3 (the `ball` value is the ball that just ended, `extra_balls` 0), `game_end` 384,260. **End-of-ball bonus is added after `ball_end`** (259,760 at ball_end → 384,260 at game_end) |
-| 0c | keyboard (synthesized scancodes) | **PASS (journal)** | on all three tables: `lock locked=true` once, then `key_blocked` for LShift 42, RShift 54, Enter 28, Start 2 while locked; a flipper held down while locked had its key-up swallowed (no stuck flipper), a flipper held down across unlock→lock released normally; exit key still worked. TFTC also caught a real autoplay plunge (28) while locked. **Owner still confirms the table visibly did nothing** |
-| 0c | VR controllers | open | owner: VPX maps joystick buttons to keycodes before `_KeyDown`, expected to pass; `PlungerAxis = 5` is configured on this rig, so an **analog plunger exists → test it** |
-| 0c | other inputs | open | analog plunger / nudge if present (`PBWEnabled = 1` in the ini) |
+| 0c | keyboard, **owner by hand** (MM, desktop build, session 23:03–23:20) | **PASS** | owner: "everything was locked: auto fire, flippers, nudge". Journal: 11 lock transitions, 56 `key_blocked` (LShift 42, RShift 54, Enter 28, LCtrl 29, KP-Enter 156, Space 57). Held-flipper cases exactly as designed: a flipper held *before* the lock stayed up through it and dropped on release (its key-down passed, so its key-up passes); a flipper held *through* an unlock stayed dead until re-pressed (its key-down was swallowed, so no new key-down reached the table). A new press right after that was blocked again by the next lock. Exit key worked. Earlier synthesized-key pass on all three tables stands |
+| 0c | VR controllers | open, optional | VPX maps joystick/controller buttons to keycodes before `_KeyDown`, expected to pass; not yet tried on the VR build |
+| 0c | analog plunger / nudge (`PlungerAxis = 5`, `PBWEnabled = 1`) | open, optional | bypasses the script by design; needs a plunger table (TFTC), MM launches with the Fire button. Expected result: the plunger still works under the lock; the companion's OS-level fallback or an overlay covers it |
 | 0d | MM, game in progress | **PASS (CPU/encoder), FPS unread** | `0d \| attempt=2 \| frames=898/900 \| ffmpeg cpu=1.7% \| enc=3.7% \| vpx fps before=__ during=__`; attempt 1 (GPU-resident `hwmap` to CUDA) fails on this ffmpeg build with `-40`, attempt 2 (ddagrab → hwdownload → h264_nvenc) works; VPX CPU 8.5% unchanged during capture; GPU already at ~80–85% because `MaxFramerate = 0` (uncapped). The F11 overlay did not appear on a synthesized F11, so FPS before/during is the owner's to read |
 
 Tailer summaries (verbatim gate lines):
@@ -186,6 +186,9 @@ IM   0e PASS · 0b PASS (game_start=1 current_scores=206 ball_end=3 game_end=1) 
 7. **ffmpeg path.** On this build `ddagrab` → `hwmap(cuda)` is unavailable; `ddagrab` → `hwdownload` → `h264_nvenc` costs 1.7 % CPU
    and 3.7 % of the encoder at 720p30. Phase 4 should also try `-filter_complex ddagrab=output_fmt=…,hwmap=derive_device=cuda` with
    a newer ffmpeg, or capture via the companion's own D3D11 path, but the fallback is good enough.
+8. **Exit mid-game.** The hand-played session ended on ball 3 of game 3 with the exit key. The journal closes with `table_exit` while
+   `game_over` is false; the detector must turn that into a `game_abandoned` (or `game_end` with a flag) so a match never waits on a
+   player who quit the table. Needs a fixture; the archived session 2 journal has it.
 
 ### What the results decide
 
@@ -193,6 +196,8 @@ IM   0e PASS · 0b PASS (game_start=1 current_scores=206 ball_end=3 game_end=1) 
 - **0a SAME INDEXING** → the companion decodes the live array with the maps as-is. SHIFT → one constant per platform family, recorded in the maps adapter.
 - **0a/0b pass** → Phase 3's detector gets its first fixtures; Phase 2 (Witness basic mode) can proceed independently.
 - **0c passes on all the owner's inputs** → script-side lock is the v1 turn lock; the OS-level hook is dropped from Phase 3 scope.
+  **Decided 2026-10-17 on the hand-played pass:** the script-side lock is the v1 turn lock for keyboard and button inputs. The
+  analog plunger stays an open, optional check; whatever it shows, the fix is on the companion side, not in the script.
   Fails for analog devices only → OS-level hook becomes a Phase 3 item for those devices. (Keyboard path passed 2026-10-17; the
   analog plunger on this rig is the open case.)
 - **0d passes** → `media` module plan stands (ddagrab + NVENC via the host companion). Fails → test the alternative capture path before Phase 4.
@@ -212,6 +217,15 @@ and 0b do not depend on the renderer and need no re-run. What does differ, and i
   useful. A spectator feed in VR needs `VRPreview` set to one eye (1 or 2) and the frame cost re-read against the headset's 90 Hz budget,
   not the uncapped desktop rate. The F11 overlay is read inside the headset.
 - **Logging.** `EnableLog = 1` in the owner's own ini (or an `-Ini` copy) writes `vpinball.log` beside the exe for either build.
+
+**Owner's hands-on pass (2026-10-17, 23:03–23:20, desktop build via `play-staged.ps1 MM -Exe DX64`).** Two full games
+(8,733,230 and 3,525,610) plus a third abandoned on ball 3 at exit; `ball_end` 1/2/3 and `game_end` derived for both finished games,
+nothing spurious, offset +0 throughout. The lock observations are in the 0c row above. The journal is **101 MB raw, 18.7 MB gzipped**
+(233,695 deltas in 1,024 s ≈ 228/s), too large to commit; it is archived locally at `tmp/spike/journal-archive/mm_109c-2026-10-17-2.jsonl.gz`
+(sha256 `7693482a…a80c95`, raw sha256 `26d4886e…16b51`) and will be re-recorded as the hand-played MM fixture once the Phase 3 hook
+journals only the mapped region. Two more things it showed: (a) the hook's cost scales with session length, not play, which fixes the
+caveat on finding 1; (b) a **table exit mid-game** (`table_exit` with a game in progress) must make the detector emit an abandon event,
+finding 8.
 
 **Owner's first hands-on attempt (2026-10-17, 21:53–22:05) is void.** No journal was written and no breadcrumb file appeared, and the
 ini's recent-file list (written 22:05) names `tables\Medieval Madness (Williams 1997) VPW v1.0.1.vpx`, the real table, not the staged
