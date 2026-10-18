@@ -23,6 +23,7 @@ Nothing in Phases 1–6 that touches VPX can start honestly until the gates belo
 | Tailer | `vpx-hook/spike/tail-journal.py` | Decodes a journal (maps corpus for VPM, script events for originals), runs the ball-end detector, prints the gate verdicts |
 | Lock | `vpx-hook/spike/lock.ps1` | Creates / removes `turn.lock`; `cycle` mode toggles on a timer with beeps for hands-on-table testing |
 | Capture | `vpx-hook/spike/capture-test.ps1` | ffmpeg ddagrab + NVENC 720p30 for 30 s, samples CPU/GPU/encoder, prints a paste line |
+| Launcher | `vpx-hook/spike/play-staged.ps1 MM\|TFTC\|IM [-Exe GL64\|GL\|DX64]` | Opens the **staged** copy in the chosen build (VR build by default) and starts the tailer in its own window; absolute paths, so the unpatched table in `tables\` cannot be opened by mistake |
 
 What is modified on the rig: one new file `scripts\castcade.vbs`, one new folder `%LOCALAPPDATA%\Castcade`,
 and copies under `castcade\tmp\spike\tables\`. The real tables, `core.vbs`, nvram and `user\` folders are untouched.
@@ -211,5 +212,12 @@ and 0b do not depend on the renderer and need no re-run. What does differ, and i
   useful. A spectator feed in VR needs `VRPreview` set to one eye (1 or 2) and the frame cost re-read against the headset's 90 Hz budget,
   not the uncapped desktop rate. The F11 overlay is read inside the headset.
 - **Logging.** `EnableLog = 1` in the owner's own ini (or an `-Ini` copy) writes `vpinball.log` beside the exe for either build.
+
+**Owner's first hands-on attempt (2026-10-17, 21:53–22:05) is void.** No journal was written and no breadcrumb file appeared, and the
+ini's recent-file list (written 22:05) names `tables\Medieval Madness (Williams 1997) VPW v1.0.1.vpx`, the real table, not the staged
+copy in `tmp\spike\tables`. The real table has no sidecar, so "flippers and the Fire button kept working under the lock" was observed on
+an unpatched table and says nothing about 0c. Lesson for the product: the sidecar lives beside the file that is actually opened, and a
+hands-on test must launch that exact file. `play-staged.ps1` exists for the re-run. Note also: MM has no plunger, launch is the Fire
+button (a key), so the analog-plunger question needs a plunger table (TFTC) instead.
 
 Any gate that fails is written up here first; the ADR it affects (0001 for 0a/0e, the match design for 0c) is amended only after the owner reads it.
