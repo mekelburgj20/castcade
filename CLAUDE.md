@@ -12,16 +12,30 @@ The companion is also the Windows desktop producer for **Arcaid Witness** (ADR 0
 Remote: https://github.com/mekelburgj20/castcade · License: GPLv3 (owner ruling; nothing from VPX,
 VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 
-## Current state (2026-10-17)
+## Current state (2026-10-18)
 
-Docs, skeleton, and the **Phase 0 spike kit** (`vpx-hook/castcade.vbs` + `vpx-hook/spike/`: Python and
-PowerShell only, no Node). **No companion code, no package manifest, no build or test tooling yet.**
-Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e; 0c also confirmed by the owner by hand); results, the
-findings Phase 3 must absorb (journal volume, boot-garbage gate, bonus-after-ball_end) and what the owner still
-confirms by hand are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`. When the stack lands (Electron + TypeScript is the ruled direction), add
-build / lint / test / single-test commands here.
+Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e; 0c also
+confirmed by the owner by hand); results, the findings Phase 3 must absorb (journal volume, boot-garbage
+gate, bonus-after-ball_end, exit mid-game) are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`.
+**Phase 1 is in progress (started 2026-10-18):** npm workspaces with `protocol/` (v1 schemas + generated
+`SPEC.md`, done), `companion/` (match engine + minimal Electron shell) and `fakeclient/`; GitHub Actions CI.
 
-Spike checks that exist today: `cscript` harness for the library (see `vpx-hook/README.md`), and
+## Commands
+
+```bash
+npm ci                         # install all workspaces (Node 22+)
+npm run check                  # lint + typecheck (tsc -b) + all tests; run before committing
+npm run lint                   # eslint (flat config at the root)
+npm run typecheck              # tsc -b over protocol, companion, fakeclient
+npm test                       # vitest, all packages (tests import workspace packages from sources)
+npx vitest run protocol        # one package; or a path / test-file name for a single test
+npm run build                  # tsc -b in every workspace (+ renderer bundle in companion)
+npm run protocol:generate      # regenerate protocol/schemas/*.json and protocol/SPEC.md after editing protocol/src
+npm run generate -w protocol -- --check   # what CI runs: fails if the generated files are stale
+python fixtures/check.py       # replay the recorded journals through the Phase 0 detector (needs the maps corpus, see fixtures/README.md)
+```
+
+Spike tooling (Python/PowerShell, no Node): `vpx-hook/spike/` (see `vpx-hook/README.md`);
 `python vpx-hook/spike/tail-journal.py <journal|fixture.jsonl.gz>` replays a journal through the decoder and
 detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing spurious).
 

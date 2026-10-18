@@ -1,0 +1,22 @@
+# Keep dependency CVEs from re-accumulating (the ws / electron / vite chain in particular).
+# Castcade is a single npm workspace rooted at /, so one npm entry covers protocol, companion
+# and fakeclient; minor+patch bumps arrive as one grouped PR.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used by ci.yml
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

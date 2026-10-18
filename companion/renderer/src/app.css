@@ -1,0 +1,33 @@
+:root {
+  color-scheme: dark;
+  font-family: system-ui, sans-serif;
+  background: #14161a;
+  color: #e6e6e6;
+}
+body {
+  margin: 0;
+}
+.shell {
+  padding: 2rem;
+}
+.shell h1 {
+  margin: 0 0 1rem;
+  font-size: 1.75rem;
+  letter-spacing: 0.02em;
+}
+.shell dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0 0 1.5rem;
+}
+.shell dt {
+  color: #9aa0a6;
+}
+.shell dd {
+  margin: 0;
+}
+.status {
+  color: #9aa0a6;
+  font-size: 0.9rem;
+}

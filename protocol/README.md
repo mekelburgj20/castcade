@@ -1,12 +1,22 @@
 # protocol/
 
-**Status: not started — Phase 1.**
+**Status: version 1 implemented (Phase 1, 2026-10-18).** `src/messages.ts` is the source of truth (zod
+schemas); `schemas/*.schema.json` and [`SPEC.md`](SPEC.md) are generated from it plus `docs/prose.md` by
+`npm run protocol:generate`, and CI fails when they are stale. Behaviour (joining, rotation, pauses, host
+transfer, result) is specified in `SPEC.md`; the table below is the original sketch and `SPEC.md` wins
+where they differ (it adds `HELLO_ACK`, `REFUSE`, `HOST_TRANSFER_ACK`, `REJECT`, and `shootAgain` on `BALL_END`).
 
 Language-neutral contract between every Castcade participant: JSON Schema for each match message,
 one `PROTOCOL_VERSION` constant, and a markdown spec generated from the schemas. The companion
 (host and client modes), `fakeclient/`, and any future in-VPX producer validate against these.
 Transport is JSON over one WebSocket per client to the host's companion; ArcAid only relays the
 WebRTC signaling that bootstraps those connections (ADR 0002).
+
+## Package
+
+`@castcade/protocol` (npm workspace): `PROTOCOL_VERSION`, `canonicalJson`, the zod schemas and their
+TypeScript types, `buildMessage` / `parseMessage` / `decodeFrame` / `encodeFrame` / `isType`.
+Tests: `npx vitest run protocol`. Conformance samples for canonical JSON: `fixtures/canonical.json`.
 
 ## Messages (from the handoff design, renamed per ADR 0002)
 
@@ -29,10 +39,11 @@ counts); a Throwdown marked simultaneous skips the grant messages entirely.
 
 ## What lives here
 
-- `schemas/*.schema.json`, one per message, plus a shared envelope (`type`, `matchId`, `seq`, `ts`).
-- `version.ts` / `version.json` — the single `PROTOCOL_VERSION`.
-- `SPEC.md` — generated, never hand-edited.
-- Conformance fixtures: one valid and one invalid sample per message.
+- `src/messages.ts`, `src/envelope.ts`, `src/canonical.ts`, `src/version.ts` — the implementation.
+- `schemas/*.schema.json`, one per message plus `Envelope`, `GameFingerprint`, `ParticipantInfo`,
+  `GrantBody`, and `schemas/index.json` — generated.
+- `SPEC.md` — generated from `docs/prose.md` (behaviour) + the schemas (shapes); never hand-edited.
+- `fixtures/canonical.json` — pinned canonical-JSON samples; `test/` — vitest.
 
 ## What does not live here
 

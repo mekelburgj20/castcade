@@ -45,6 +45,26 @@ present.
   sibling `.meta.json`.
 - Journals are append-only evidence; a bad recording is deleted and re-recorded, never edited.
 
+## CI check
+
+`python fixtures/check.py` replays every `*.jsonl[.gz]` that has a sibling `.meta.json` through
+`vpx-hook/spike/tail-journal.py --quiet-scores` and asserts, from `meta.games` (and
+`meta.balls_per_game`, default 3): `game_start == games`, `game_end == games`,
+`ball_end == balls_per_game * games`, balls seen ending `== [1 .. balls_per_game]`. Recipe A fixtures
+are judged on the detector's `derived:*` counts, script recipes on the raw script events. One
+`PASS`/`FAIL` line per fixture, exit 1 on any failure. `CASTCADE_NVRAM_DIR` is pointed at an empty
+temp dir so no on-disk `.nv` is consulted. The `fixtures` job in `.github/workflows/ci.yml` runs it on
+every push and pull request against pinned clones of the corpus and parser:
+
+| Dependency | Env var | Pinned commit |
+|---|---|---|
+| `tomlogic/pinmame-nvram-maps` | `CASTCADE_MAPS` | `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7` |
+| `tomlogic/py-pinmame-nvmaps` | `CASTCADE_NVPARSER` | `00ea7847545c9edd84613db99c7dd54976ddf568` |
+
+Locally, point both variables at the clones under `C:\code\repos\ArcAid\tmp\vpx-desktop-witness\`.
+A new fixture needs only its `.meta.json` with `games` (and `recipe`) set; bump the pins here and in
+`ci.yml` together.
+
 ## What does not live here
 
 - The maps corpus (a dependency, bundled by the companion), the detector code (`companion/match`),
