@@ -5,7 +5,7 @@
  * real one shells out to `reg query` so nothing here needs a native module, and tests use a fake.
  */
 import { execFile } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { win32 as winPath } from 'node:path';
 import { isNotFound, type WitnessFs } from './fs.js';
 
 export const VPM_GLOBALS_KEY = 'HKCU\\Software\\Freeware\\Visual PinMame\\globals';
@@ -69,7 +69,8 @@ export function createStaticRegistry(values: Record<string, string>): RegistryRe
 
 /** The VPX installation root for a running exe: the exe's directory. */
 export function vpxRootFromExe(exe: string): string {
-  return dirname(exe);
+  // Windows paths even when the tests run on Linux CI: use the win32 flavour explicitly.
+  return winPath.dirname(exe);
 }
 
 export function expandEnvVars(value: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -114,7 +115,7 @@ export async function resolveNvramDir(opts: ResolveNvramDirOptions): Promise<Res
   }
 
   if (opts.vpxExe) {
-    const candidate = join(vpxRootFromExe(opts.vpxExe), 'VPinMAME', 'nvram');
+    const candidate = winPath.join(vpxRootFromExe(opts.vpxExe), 'VPinMAME', 'nvram');
     if (await isDir(opts.fs, candidate)) return { dir: candidate, source: 'exe' };
   }
 

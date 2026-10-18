@@ -23,7 +23,13 @@ arbiter, client, hash-chained log, Ed25519 keys, in-memory + WebSocket transport
 shell, and `fakeclient/` (scenarios, CLI, the gate test). CI: `.github/workflows/ci.yml` (ubuntu check, windows
 build + smoke, fixture replay). Known gaps carried to later phases: host transfer over WebSocket (clients must
 reconnect to the new host), client reconnect after a drop, simultaneous mode untested, no ArcAid posting yet.
-Next: Phase 2 (Witness basic mode, pairing, installer + signing) per the gap analysis §6.
+**Phase 2 built 2026-10-18 (v0.2.0, unsigned PoC):** `companion/src/witness/` is the Arcaid Witness desktop
+producer in basic mode (process watch, `.nv` decode with the pinmame-nvram-maps corpus, GET posts to the
+existing witness endpoints, offline queue, heartbeat) behind a tray shell (pairing / status / settings),
+packaged by electron-builder (NSIS per-user) from `.github/workflows/release.yml` on `v*` tags. Tester guide:
+`docs/phase-2-witness.md`. ArcAid PRs #363 (`witness_devices.device_type`, migration 183) and #364 (docs)
+are open. **Phase 2 gate not yet passed:** needs the owner's end-to-end run (pair, play, score lands with the
+badge) and a clean-machine install; code signing is deferred until GA (owner ruling 2026-10-18).
 
 ## Commands
 
@@ -38,6 +44,9 @@ npm run build                  # tsc -b in every workspace (+ renderer bundle in
 npm run protocol:generate      # regenerate protocol/schemas/*.json and protocol/SPEC.md after editing protocol/src
 npm run generate -w protocol -- --check   # what CI runs: fails if the generated files are stale
 python fixtures/check.py       # replay the recorded journals through the Phase 0 detector (needs the maps corpus, see fixtures/README.md)
+npm run fetch-maps -w companion   # fetch the pinned pinmame-nvram-maps corpus into companion/resources/maps (gitignored; needed to package)
+npm run pack:dir -w companion     # unpacked app in companion/release/win-unpacked (then run Castcade.exe --smoke)
+npm run dist:win -w companion     # NSIS installer in companion/release (unsigned)
 ```
 
 Spike tooling (Python/PowerShell, no Node): `vpx-hook/spike/` (see `vpx-hook/README.md`);

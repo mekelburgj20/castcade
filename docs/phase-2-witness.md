@@ -10,8 +10,8 @@ board with the **Witness** badge. It changes nothing in your Visual Pinball setu
 - **Visual Pinball X 10.8.0** with **VPinMAME** installed. Any way of launching tables is fine (PinUP
   Popper, Pinball Y/X, Baller Installer, or just the VPX editor).
 - At least one **ROM-based table** whose ROM has a *last game* map in the
-  [pinmame-nvram-maps](https://github.com/tomlogic/pinmame-nvram-maps) corpus (look for a file
-  under `maps/<rom>.nv.json` with a `game_state` block). Classic Williams/Bally WPC, Data East,
+  [pinmame-nvram-maps](https://github.com/tomlogic/pinmame-nvram-maps) corpus (its `index.json`
+  lists every ROM; the map file it points at must have a `game_state` block). Classic Williams/Bally WPC, Data East,
   Sega/Whitestar and Gottlieb System 3 tables are the safe bets. Examples known to work:
   Medieval Madness (`mm_109c`), Tales from the Crypt (`tftc_400`).
 - An **ArcAid account** at <https://arcaid.app> (sign in with the account that owns the board you
@@ -33,8 +33,8 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
 
 ## 3. Pair
 
-1. In ArcAid, open **Account Settings → Witness** and click **Generate pairing code** (6 characters,
-   short-lived). The companion's Pairing view also has a link straight there.
+1. In ArcAid, open **Account Settings**, find the **Arcaid Witness** section and create a pairing
+   code (6 characters, expires in about 10 minutes). The companion's Pairing view has a link there.
 2. In Castcade (click the tray icon or **Open Castcade** in its menu), the **Pairing** view is
    shown. Optionally change the *Device label* (defaults to your PC name), type the code, click
    **Pair**.

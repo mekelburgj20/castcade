@@ -14,7 +14,10 @@ live NVRAM on WPC + Data East, script-side scoring on an original, script turn l
 capture). Results, findings and the first fixtures: [`docs/phase-0-spike.md`](docs/phase-0-spike.md) §8.
 **Phase 1 (protocol + host mode) gate passed 2026-10-18:** protocol v1 with a generated
 [`SPEC.md`](protocol/SPEC.md), the match engine in `companion/src/match`, and `fakeclient/`, whose gate test
-(four players, three balls, one host transfer, identical signed logs) runs green in GitHub Actions. Start with
+(four players, three balls, one host transfer, identical signed logs) runs green in GitHub Actions.
+**Phase 2 (Arcaid Witness basic mode, v0.2.0) built 2026-10-18:** a tray app that pairs with ArcAid and posts the
+last game's score when VPX exits, shipped as an unsigned per-user installer for the test group
+([tester guide](docs/phase-2-witness.md)); its gate (score lands with the badge, clean-machine install) is pending. Start with
 [`docs/design/arcaid-integration-gap-analysis.md`](docs/design/arcaid-integration-gap-analysis.md),
 then the ADRs in [`docs/decisions/`](docs/decisions/). The phased roadmap with gates is in §6 of the gap analysis.
 
