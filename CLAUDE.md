@@ -28,8 +28,13 @@ producer in basic mode (process watch, `.nv` decode with the pinmame-nvram-maps 
 existing witness endpoints, offline queue, heartbeat) behind a tray shell (pairing / status / settings),
 packaged by electron-builder (NSIS per-user) from `.github/workflows/release.yml` on `v*` tags. Tester guide:
 `docs/phase-2-witness.md`. ArcAid PRs #363 (`witness_devices.device_type`, migration 183) and #364 (docs)
-are open. **Phase 2 gate not yet passed:** needs the owner's end-to-end run (pair, play, score lands with the
-badge) and a clean-machine install; code signing is deferred until GA (owner ruling 2026-10-18).
+are open. **Phase 2 gate, half 1 passed 2026-10-18 with v0.2.2 on the owner's rig:** paired against arcaid.app,
+Monster Bash (VR build, opened from the editor without `-Play`) played to the end, the score landed on the
+room's tournament board with the Witness badge. Two field fixes got there: capture on `.nv` change while VPX
+stays open with the table from the window title (0.2.1), and the catalogue-grade wire name
+`catalogueTableName` + ROM name as `slug` (0.2.2). Half 2 (clean-machine install by a tester) is pending.
+Code signing is deferred until GA (owner ruling 2026-10-18). Proposed next (not started, owner to confirm):
+VPS game/table ids on the companion and ArcAid side so matching stops depending on names.
 
 ## Commands
 
