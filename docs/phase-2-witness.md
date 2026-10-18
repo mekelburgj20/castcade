@@ -60,9 +60,13 @@ heartbeat so ArcAid shows the device as online.
 
 ## 5. Known limits of this build
 
-- **Basic mode only.** Castcade reads the ROM's *last game* memory when VPX exits. Killing VPX from
-  Task Manager, a crash, or a Windows shutdown with VPX open loses that game.
-- **One game per VPX session is posted** — the last one. Play one game, quit, play again.
+- **Basic mode only.** Castcade reads the ROM's *last game* memory when the player closes (VPinMAME
+  writes it then). Killing VPX from Task Manager, a crash, or a Windows shutdown while a game is
+  running loses that game.
+- **One game per player session is posted** — the last one played before the player closed. You may
+  stay in the editor between games: load a table (from `-Play`, a double-clicked `.vpx`, the editor's
+  recent files or Open), play, quit the player, play again. Quitting the player or VPX triggers the
+  capture; two games played back to back without leaving the player count as one (the last).
 - **Multi-player games are not posted** (that is Castcade's Phase 3 job).
 - **Modern Stern SAM/SPIKE ROMs** have no last-game maps, so nothing is posted for them.
 - **Original (non-ROM) tables** have no last-game score in basic mode. Nothing is posted.

@@ -1,9 +1,11 @@
 /**
  * Watch for Visual Pinball X. Every `intervalMs` (2 s) an injectable `ProcessLister` is asked for
  * the running processes; a `VPinballX*.exe` pid that was not there before is a launch, one that
- * disappeared is an exit. The table comes from `-Play "<path>.vpx"` on the command line (null for
- * the editor). The real lister runs one PowerShell `Get-CimInstance Win32_Process` query; tests
- * drive a fake lister and a `ManualClock`.
+ * disappeared is an exit, and a changed main window title is a `title` event. The table comes from
+ * `-Play "<path>.vpx"` or a positional `<path>.vpx` (file association) on the command line, else
+ * from the editor's window title `Visual Pinball - [<table>]` once it shows one (null until then).
+ * The real lister runs one PowerShell query joining `Get-CimInstance Win32_Process` with
+ * `Get-Process` for the title; tests drive a fake lister and a `ManualClock`.
  */
 import { execFile } from 'node:child_process';
 import { basename, parse as parsePath } from 'node:path';
@@ -18,6 +20,8 @@ export interface ProcessInfo {
   commandLine: string;
   /** Process start, epoch ms, when the lister knows it. */
   startedAt: number | null;
+  /** Main window title (`Get-Process.MainWindowTitle`), null when there is no window yet. */
+  windowTitle: string | null;
 }
 
 export interface ProcessLister {
@@ -58,10 +62,13 @@ export function splitCommandLine(commandLine: string): string[] {
   return args;
 }
 
+/** How the table name of a session was established, strongest first. */
+export type TableSource = 'play' | 'arg' | 'title' | 'romname' | 'rom';
+
 /**
  * The table file given to `-Play` / `/Play` (case-insensitive). A quoted path is taken whole; an
  * unquoted one runs to the next switch (`-Minimized`, `/Primary` ...). Null when VPX was started
- * without a table (the editor).
+ * without `-Play`.
  */
 export function parsePlayArg(commandLine: string): string | null {
   const args = splitCommandLine(commandLine);
@@ -82,6 +89,48 @@ export function parsePlayArg(commandLine: string): string | null {
   return null;
 }
 
+/**
+ * A positional `<path>.vpx` argument: what a file-association launch (`"<exe>" "<table>.vpx"`) or
+ * `-Edit <table>.vpx` carries. Null when there is none.
+ */
+export function parsePositionalVpx(commandLine: string): string | null {
+  const args = splitCommandLine(commandLine);
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a !== undefined && /\.vpx$/i.test(a) && !/^[-/]/.test(a)) return a;
+  }
+  return null;
+}
+
+/** Table path from the command line: `-Play` first, then a positional `.vpx`. */
+export function parseTableArg(commandLine: string): { path: string; source: 'play' | 'arg' } | null {
+  const play = parsePlayArg(commandLine);
+  if (play) return { path: play, source: 'play' };
+  const positional = parsePositionalVpx(commandLine);
+  return positional ? { path: positional, source: 'arg' } : null;
+}
+
+export interface ParsedTitle {
+  /** `editor` = the editor window (table null until one is loaded); `player` = the player is up. */
+  kind: 'editor' | 'player' | 'unknown';
+  table: string | null;
+}
+
+/**
+ * VPX main window titles: `Visual Pinball - [<table>]` (editor with a table; `.vpx` and a modified
+ * marker stripped), `Visual Pinball` (editor, nothing loaded), `Visual Pinball Player` (the
+ * in-process player is up).
+ */
+export function parseWindowTitle(title: string | null): ParsedTitle {
+  const t = (title ?? '').trim();
+  if (!t) return { kind: 'unknown', table: null };
+  if (/^Visual Pinball(?: X)? Player\b/i.test(t)) return { kind: 'player', table: null };
+  const m = /^Visual Pinball(?: X)?(?:\s*-\s*\[(.+)\])?\s*$/i.exec(t);
+  if (!m) return { kind: 'unknown', table: null };
+  const inner = (m[1] ?? '').replace(/\s*\*$/, '').replace(/\.vpx$/i, '').trim();
+  return { kind: 'editor', table: inner.length > 0 ? inner : null };
+}
+
 /** `C:\tables\Medieval Madness (Williams 1997).vpx` → `Medieval Madness (Williams 1997)`. */
 export function tableNameFromPath(path: string): string {
   return parsePath(path.replace(/\\/g, '/')).name;
@@ -89,9 +138,17 @@ export function tableNameFromPath(path: string): string {
 
 // ------------------------------------------------------------------------------- real lister --
 
+/**
+ * One PowerShell invocation: Win32_Process for the command line and start time, joined with
+ * Get-Process for the main window title (which CIM does not have). Works on Windows PowerShell 5.1
+ * (dates as `\/Date(ms)\/`) and PowerShell 7 (ISO dates).
+ */
 export const VPX_PROCESS_QUERY =
-  "Get-CimInstance Win32_Process -Filter \"Name LIKE 'VPinballX%'\" | " +
-  'Select-Object ProcessId,ExecutablePath,CommandLine,Name,CreationDate | ConvertTo-Json -Compress';
+  "Get-CimInstance Win32_Process -Filter \"Name LIKE 'VPinballX%'\" | ForEach-Object { " +
+  '$p = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; ' +
+  '[pscustomobject]@{ ProcessId=$_.ProcessId; Name=$_.Name; ExecutablePath=$_.ExecutablePath; ' +
+  'CommandLine=$_.CommandLine; CreationDate=$_.CreationDate; MainWindowTitle=$p.MainWindowTitle } } | ' +
+  'ConvertTo-Json -Compress';
 
 interface CimProcess {
   ProcessId?: unknown;
@@ -99,6 +156,7 @@ interface CimProcess {
   CommandLine?: unknown;
   Name?: unknown;
   CreationDate?: unknown;
+  MainWindowTitle?: unknown;
 }
 
 /**
@@ -138,6 +196,7 @@ export function parseCimProcesses(stdout: string): ProcessInfo[] {
       exe,
       commandLine: typeof p.CommandLine === 'string' ? p.CommandLine : '',
       startedAt: parseCimDate(p.CreationDate),
+      windowTitle: typeof p.MainWindowTitle === 'string' && p.MainWindowTitle.trim() ? p.MainWindowTitle : null,
     });
   }
   return out;
@@ -172,13 +231,16 @@ export function createPowershellLister(exec: ExecFileLike = execFile as unknown 
 export interface VpxLaunch {
   pid: number;
   exe: string;
-  /** Table file from `-Play`, or null for the editor. */
+  /** Table file from the command line (`-Play` or positional), or null. */
   tablePath: string | null;
-  /** Basename without extension, or null for the editor. */
+  /** Table name: from the command line at launch, later from the editor title; null until known. */
   table: string | null;
+  tableSource: TableSource | null;
   /** When the watch first saw it (clock ms), not the process creation time. */
   seenAt: number;
   startedAt: number | null;
+  /** Latest main window title seen. */
+  title: string | null;
 }
 
 export interface VpxExit {
@@ -187,9 +249,18 @@ export interface VpxExit {
   exitedAt: number;
 }
 
+export interface VpxTitle {
+  launch: VpxLaunch;
+  title: string | null;
+  parsed: ParsedTitle;
+  at: number;
+}
+
 export interface ProcessWatchEvents extends Record<string, unknown> {
   launch: VpxLaunch;
   exit: VpxExit;
+  /** The main window title changed (editor table loaded, player up/down). */
+  title: VpxTitle;
   error: Error;
 }
 
@@ -246,7 +317,7 @@ export class ProcessWatch {
     }, this.intervalMs);
   }
 
-  /** One poll: diff the lister against the known set and emit launches/exits. Safe to call directly. */
+  /** One poll: diff the lister against the known set and emit launches/exits/titles. Safe to call directly. */
   pollOnce(): Promise<void> {
     if (this.polling) return this.polling;
     this.polling = this.doPoll().finally(() => {
@@ -269,23 +340,42 @@ export class ProcessWatch {
     for (const p of procs) {
       if (!isVpxExe(p.exe)) continue;
       seen.add(p.pid);
-      if (this.known.has(p.pid)) continue;
-      const tablePath = parsePlayArg(p.commandLine);
+      const title = p.windowTitle && p.windowTitle.trim() ? p.windowTitle : null;
+      const existing = this.known.get(p.pid);
+      if (existing) {
+        if (existing.title !== title) this.applyTitle(existing, title, now);
+        continue;
+      }
+      const arg = parseTableArg(p.commandLine);
       const launch: VpxLaunch = {
         pid: p.pid,
         exe: p.exe,
-        tablePath,
-        table: tablePath ? tableNameFromPath(tablePath) : null,
+        tablePath: arg?.path ?? null,
+        table: arg ? tableNameFromPath(arg.path) : null,
+        tableSource: arg?.source ?? null,
         seenAt: now,
         startedAt: p.startedAt,
+        title: null,
       };
       this.known.set(p.pid, launch);
       this.emitter.emit('launch', launch);
+      if (title !== null) this.applyTitle(launch, title, now);
     }
     for (const [pid, launch] of [...this.known]) {
       if (seen.has(pid)) continue;
       this.known.delete(pid);
       this.emitter.emit('exit', { launch, exitedAt: now });
     }
+  }
+
+  private applyTitle(launch: VpxLaunch, title: string | null, at: number): void {
+    launch.title = title;
+    const parsed = parseWindowTitle(title);
+    // The command line is the stronger claim; the title fills in when it said nothing.
+    if (parsed.kind === 'editor' && parsed.table && launch.tableSource !== 'play' && launch.tableSource !== 'arg') {
+      launch.table = parsed.table;
+      launch.tableSource = 'title';
+    }
+    this.emitter.emit('title', { launch, title, parsed, at });
   }
 }

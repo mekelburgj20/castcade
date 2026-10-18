@@ -13,6 +13,7 @@ import {
   NvMemory,
   romFromNvName,
   sameGame,
+  stripRomVersion,
   toInt,
   type Json,
 } from './maps.js';
@@ -103,6 +104,18 @@ describe('fixture replay decodes like the reference parser', () => {
     const empty = createMapCorpus('/nowhere', new MemoryFs());
     expect(await empty.mapFor('mm_109c')).toBeNull();
     expect(await empty.version()).toBeNull();
+    expect(await empty.romName('mm_109c')).toBeNull();
+  });
+
+  it('names a ROM from romnames.json without its version parenthetical', async () => {
+    expect(await corpus.romName('mb_106b')).toBe('Monster Bash');
+    expect(await corpus.romName('mm_109c')).toBe('Medieval Madness');
+    expect(await corpus.romName('tftc_400.nv')).toBe('Tales from the Crypt');
+    expect(await corpus.romName('zzz_999')).toBeNull();
+    expect(stripRomVersion('Monster Bash (1.06b)')).toBe('Monster Bash');
+    expect(stripRomVersion('Tales from the Crypt (4.00 unofficial MOD)')).toBe('Tales from the Crypt');
+    expect(stripRomVersion('(1.0)')).toBe('(1.0)');
+    expect(stripRomVersion('Plain')).toBe('Plain');
   });
 });
 

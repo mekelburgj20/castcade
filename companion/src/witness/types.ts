@@ -63,14 +63,15 @@ export interface WitnessStatus {
   queued: number;
   lastHeartbeatAt: string | null;
   lastError: string | null;
-  /** Informational, not an error: e.g. "VPX is running without -Play (editor): nothing to capture". */
+  /** Informational, not an error: e.g. "VPX is open; no table known yet". */
   note?: string | null;
 }
 
 export interface WitnessEvents {
   status: (status: WitnessStatus) => void;
-  launch: (info: { table: string; exe: string; pid: number; at: string }) => void;
-  exit: (info: { table: string; at: string; durationSec: number }) => void;
+  /** Every VPX process; `table` is null until the command line or the editor title names one. */
+  launch: (info: { table: string | null; exe: string; pid: number; at: string }) => void;
+  exit: (info: { table: string | null; at: string; durationSec: number }) => void;
   capture: (capture: LastCapture) => void;
   error: (message: string) => void;
 }

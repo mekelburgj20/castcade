@@ -5,12 +5,16 @@ import {
   parseCimDate,
   parseCimProcesses,
   parsePlayArg,
+  parsePositionalVpx,
+  parseTableArg,
+  parseWindowTitle,
   ProcessWatch,
   splitCommandLine,
   tableNameFromPath,
   type ProcessInfo,
   type VpxExit,
   type VpxLaunch,
+  type VpxTitle,
 } from './process-watch.js';
 
 const flush = async () => {
@@ -42,6 +46,27 @@ describe('command line parsing', () => {
     expect(parsePlayArg(`"${exe}" -Play`)).toBeNull();
   });
 
+  it('takes a positional .vpx (file association, -Edit) when there is no -Play', () => {
+    expect(parsePositionalVpx(`"${exe}" "C:\\t\\Monster Bash (Williams 1998).vpx"`)).toBe('C:\\t\\Monster Bash (Williams 1998).vpx');
+    expect(parsePositionalVpx(`"${exe}" -Edit C:\\t\\x.VPX`)).toBe('C:\\t\\x.VPX');
+    expect(parsePositionalVpx(`"${exe}" `)).toBeNull();
+    expect(parsePositionalVpx(`"${exe}" -Minimized`)).toBeNull();
+    expect(parseTableArg(`"${exe}" -Play "C:\\t\\a.vpx" "C:\\t\\b.vpx"`)).toEqual({ path: 'C:\\t\\a.vpx', source: 'play' });
+    expect(parseTableArg(`"${exe}" "C:\\t\\b.vpx"`)).toEqual({ path: 'C:\\t\\b.vpx', source: 'arg' });
+    expect(parseTableArg(`"${exe}" `)).toBeNull();
+  });
+
+  it('reads the editor table and the player state from the window title', () => {
+    expect(parseWindowTitle('Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]')).toEqual({ kind: 'editor', table: 'Monster Bash (Williams 1998) VPWmod v1.0' });
+    expect(parseWindowTitle('Visual Pinball - [Monster Bash.vpx *]')).toEqual({ kind: 'editor', table: 'Monster Bash' });
+    expect(parseWindowTitle('Visual Pinball')).toEqual({ kind: 'editor', table: null });
+    expect(parseWindowTitle('Visual Pinball Player')).toEqual({ kind: 'player', table: null });
+    expect(parseWindowTitle('Visual Pinball X Player (table)')).toEqual({ kind: 'player', table: null });
+    expect(parseWindowTitle('')).toEqual({ kind: 'unknown', table: null });
+    expect(parseWindowTitle(null)).toEqual({ kind: 'unknown', table: null });
+    expect(parseWindowTitle('Something else')).toEqual({ kind: 'unknown', table: null });
+  });
+
   it('derives the table name and recognises VPX exes', () => {
     expect(tableNameFromPath('C:\\Tables\\Tales from the Crypt (Data East 1993) VPW v1.22.vpx')).toBe('Tales from the Crypt (Data East 1993) VPW v1.22');
     expect(tableNameFromPath('/tables/x.VPX')).toBe('x');
@@ -61,7 +86,7 @@ describe('CIM output parsing', () => {
       JSON.stringify({ ProcessId: 4242, ExecutablePath: 'C:\\VPX\\VPinballX64.exe', CommandLine: '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\x.vpx"', Name: 'VPinballX64.exe', CreationDate: '2026-10-17T18:08:42.123-05:00' }),
     );
     expect(one).toEqual([
-      { pid: 4242, exe: 'C:\\VPX\\VPinballX64.exe', commandLine: '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\x.vpx"', startedAt: Date.parse('2026-10-17T18:08:42.123-05:00') },
+      { pid: 4242, exe: 'C:\\VPX\\VPinballX64.exe', commandLine: '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\x.vpx"', startedAt: Date.parse('2026-10-17T18:08:42.123-05:00'), windowTitle: null },
     ]);
     const many = parseCimProcesses(
       JSON.stringify([
@@ -76,6 +101,25 @@ describe('CIM output parsing', () => {
     expect(many[1]?.startedAt).toBe(Date.UTC(2026, 9, 17, 18, 8, 42, 123) + 300 * 60_000);
   });
 
+  it('parses the real joined query output from the owner rig (Windows PowerShell 5.1, editor-launched VR build)', () => {
+    // Captured 2026-10-18 with VPX_PROCESS_QUERY while Monster Bash was loaded in the editor (pid 22548).
+    const real =
+      '{"ProcessId":22548,"Name":"VPinballX_GL64.exe","ExecutablePath":"C:\\\\Users\\\\mekel\\\\Documents\\\\Emulators\\\\VPX\\\\VisualPinballX\\\\VPinballX_GL64.exe",' +
+      '"CommandLine":"\\"C:\\\\Users\\\\mekel\\\\Documents\\\\Emulators\\\\VPX\\\\VisualPinballX\\\\VPinballX_GL64.exe\\" ","CreationDate":"\\/Date(1792344207728)\\/",' +
+      '"MainWindowTitle":"Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]"}';
+    const [p] = parseCimProcesses(real);
+    expect(p).toEqual({
+      pid: 22548,
+      exe: 'C:\\Users\\mekel\\Documents\\Emulators\\VPX\\VisualPinballX\\VPinballX_GL64.exe',
+      commandLine: '"C:\\Users\\mekel\\Documents\\Emulators\\VPX\\VisualPinballX\\VPinballX_GL64.exe" ',
+      startedAt: 1792344207728,
+      windowTitle: 'Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]',
+    });
+    expect(parseTableArg(p?.commandLine ?? '')).toBeNull();
+    expect(parseWindowTitle(p?.windowTitle ?? null)).toEqual({ kind: 'editor', table: 'Monster Bash (Williams 1998) VPWmod v1.0' });
+    expect(parseCimProcesses(JSON.stringify({ ProcessId: 1, Name: 'VPinballX64.exe', MainWindowTitle: '' }))[0]?.windowTitle).toBeNull();
+  });
+
   it('parseCimDate rejects junk', () => {
     expect(parseCimDate(null)).toBeNull();
     expect(parseCimDate('yesterday')).toBeNull();
@@ -84,7 +128,7 @@ describe('CIM output parsing', () => {
 });
 
 describe('ProcessWatch', () => {
-  const vpx = (pid: number, cmd: string, exe = 'C:\\VPX\\VPinballX64.exe'): ProcessInfo => ({ pid, exe, commandLine: cmd, startedAt: null });
+  const vpx = (pid: number, cmd: string, exe = 'C:\\VPX\\VPinballX64.exe', windowTitle: string | null = null): ProcessInfo => ({ pid, exe, commandLine: cmd, startedAt: null, windowTitle });
 
   it('emits launch for a new pid and exit when it disappears, on the poll interval', async () => {
     const clock = new ManualClock();
@@ -99,14 +143,14 @@ describe('ProcessWatch', () => {
     await flush();
     expect(launches).toHaveLength(0);
 
-    procs = [vpx(10, '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\Medieval Madness.vpx" -Minimized'), { pid: 11, exe: 'C:\\Windows\\explorer.exe', commandLine: '', startedAt: null }];
+    procs = [vpx(10, '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\Medieval Madness.vpx" -Minimized'), { pid: 11, exe: 'C:\\Windows\\explorer.exe', commandLine: '', startedAt: null, windowTitle: null }];
     clock.advance(1999);
     await flush();
     expect(launches).toHaveLength(0);
     clock.advance(1);
     await flush();
     expect(launches).toHaveLength(1);
-    expect(launches[0]).toMatchObject({ pid: 10, table: 'Medieval Madness', tablePath: 'C:\\t\\Medieval Madness.vpx', seenAt: clock.now() });
+    expect(launches[0]).toMatchObject({ pid: 10, table: 'Medieval Madness', tablePath: 'C:\\t\\Medieval Madness.vpx', tableSource: 'play', seenAt: clock.now() });
     expect(watch.current()).toHaveLength(1);
 
     clock.advance(2000);
@@ -129,27 +173,61 @@ describe('ProcessWatch', () => {
     expect(clock.pending()).toBe(0);
   });
 
-  it('reports the editor as a launch with a null table, and lister failures as errors', async () => {
+  it('reports the editor as a launch with a null table, fills the table from the title, and surfaces lister failures', async () => {
     const clock = new ManualClock();
     let fail = false;
+    let title: string | null = null;
     const watch = new ProcessWatch({
       lister: {
         list: async () => {
           if (fail) throw new Error('powershell missing');
-          return [vpx(5, '"C:\\VPX\\VPinballX64.exe"')];
+          return [vpx(5, '"C:\\VPX\\VPinballX_GL64.exe" ', 'C:\\VPX\\VPinballX_GL64.exe', title)];
         },
       },
       clock,
     });
     const launches: VpxLaunch[] = [];
+    const titles: VpxTitle[] = [];
     const errors: Error[] = [];
     watch.on('launch', (l) => launches.push(l));
+    watch.on('title', (t) => titles.push(t));
     watch.on('error', (e) => errors.push(e));
     await watch.pollOnce();
-    expect(launches).toEqual([{ pid: 5, exe: 'C:\\VPX\\VPinballX64.exe', tablePath: null, table: null, seenAt: clock.now(), startedAt: null }]);
+    expect(launches).toEqual([
+      { pid: 5, exe: 'C:\\VPX\\VPinballX_GL64.exe', tablePath: null, table: null, tableSource: null, seenAt: clock.now(), startedAt: null, title: null },
+    ]);
+    expect(titles).toEqual([]);
+
+    title = 'Visual Pinball';
+    await watch.pollOnce();
+    expect(titles).toHaveLength(1);
+    expect(titles[0]?.parsed).toEqual({ kind: 'editor', table: null });
+    expect(watch.current()[0]?.table).toBeNull();
+
+    title = 'Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]';
+    await watch.pollOnce();
+    await watch.pollOnce(); // unchanged title: no second event
+    expect(titles).toHaveLength(2);
+    expect(watch.current()[0]).toMatchObject({ table: 'Monster Bash (Williams 1998) VPWmod v1.0', tableSource: 'title', title });
+
+    title = 'Visual Pinball Player';
+    await watch.pollOnce();
+    expect(titles[2]?.parsed).toEqual({ kind: 'player', table: null });
+    expect(watch.current()[0]?.table).toBe('Monster Bash (Williams 1998) VPWmod v1.0'); // the player title does not unset the table
+
     fail = true;
     await watch.pollOnce();
     expect(errors.map((e) => e.message)).toEqual(['powershell missing']);
     expect(watch.current()).toHaveLength(1); // a failed poll is not an exit
+  });
+
+  it('a -Play launch keeps its command-line table whatever the title says', async () => {
+    const clock = new ManualClock();
+    const watch = new ProcessWatch({
+      lister: { list: async () => [vpx(7, '"C:\\VPX\\VPinballX64.exe" -Play "C:\\t\\Afm.vpx"', 'C:\\VPX\\VPinballX64.exe', 'Visual Pinball - [Other]')] },
+      clock,
+    });
+    await watch.pollOnce();
+    expect(watch.current()[0]).toMatchObject({ table: 'Afm', tableSource: 'play', title: 'Visual Pinball - [Other]' });
   });
 });

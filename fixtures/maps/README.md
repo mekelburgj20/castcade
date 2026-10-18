@@ -7,7 +7,8 @@ nothing outside this repository: only the maps and platform files the recorded j
 
 - Source: `https://github.com/tomlogic/pinmame-nvram-maps`
 - Commit: `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7` (the pin in `.github/workflows/ci.yml`; also in `VERSION`)
-- Files are byte-identical to that commit except `index.json`, which is cut down to the ROMs below.
+- Files are byte-identical to that commit except `index.json` and `romnames.json`, which are cut down to the ROMs below
+  (`romnames.json` is what the companion falls back to for a table name when VPX gave it none).
 
 | ROMs | Map | Platform |
 |---|---|---|

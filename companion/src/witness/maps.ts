@@ -492,6 +492,16 @@ export interface MapCorpus {
   mapFor(rom: string): Promise<CompiledMap | null>;
   /** Corpus identity: contents of `VERSION` or `.commit` in the corpus dir, else null. */
   version(): Promise<string | null>;
+  /**
+   * The ROM's descriptive name from `romnames.json` (`"mb_106b": "Monster Bash (1.06b)"`), with
+   * the trailing version parenthetical removed → `Monster Bash`; null when unknown.
+   */
+  romName(rom: string): Promise<string | null>;
+}
+
+/** `Monster Bash (1.06b)` → `Monster Bash`; `Tales from the Crypt (4.00 unofficial MOD)` → `Tales from the Crypt`. */
+export function stripRomVersion(name: string): string {
+  return name.replace(/\s*\([^()]*\)\s*$/, '').trim() || name.trim();
 }
 
 /** `rom_for_nvpath`: a `.nv` basename minus the extension and any `-suffix`. */
@@ -508,6 +518,7 @@ function joinPath(dir: string, rel: string): string {
 
 export function createMapCorpus(dir: string, fs: WitnessFs = nodeFs): MapCorpus {
   let index: Promise<Record<string, string> | null> | null = null;
+  let romnames: Promise<Record<string, string> | null> | null = null;
   const maps = new Map<string, Promise<CompiledMap | null>>();
   const platforms = new Map<string, Json | null>();
   const decoder = new TextDecoder();
@@ -567,6 +578,17 @@ export function createMapCorpus(dir: string, fs: WitnessFs = nodeFs): MapCorpus 
       if (!idx) return null;
       const rel = idx[rom] ?? idx[romFromNvName(rom)];
       return rel ? loadMap(rel) : null;
+    },
+    async romName(rom) {
+      romnames ??= readJson(joinPath(dir, 'romnames.json')).then((json) => {
+        if (!isObject(json)) return null;
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(json)) if (!k.startsWith('_') && typeof v === 'string') out[k] = v;
+        return out;
+      });
+      const names = await romnames;
+      const raw = names?.[rom] ?? names?.[romFromNvName(rom)];
+      return raw ? stripRomVersion(raw) : null;
     },
     async version() {
       for (const name of ['VERSION', '.commit']) {

@@ -56,25 +56,42 @@ and last-game VPX scores reach ArcAid with the Witnessed badge, before any netpl
 
 ## Witness module (`src/witness/`, Phase 2 basic mode)
 
-The Arcaid Witness desktop producer, basic mode: **no change to the player's VPX**. It watches for
-`VPinballX*.exe -Play "<table>.vpx"`, snapshots the VPinMAME nvram directory at launch, and when VPX
-exits decodes the `.nv` VPinMAME rewrote with the bundled `pinmame-nvram-maps` corpus to read the last
-game's per-player scores, then posts to ArcAid's existing cabinet-Witness GET endpoints. The shell
-depends only on `types.ts` (the contract; additive changes only) and `createWitness(store, deps?)` from
-`index.ts`. Everything Windows-specific or networked is injectable (`WitnessDeps`), so the whole module
-runs under vitest on Linux with fakes.
+The Arcaid Witness desktop producer, basic mode: **no change to the player's VPX**. It watches for any
+`VPinballX*.exe` (launched with `-Play`, by file association, or bare and driven from the editor),
+keeps a baseline of the VPinMAME nvram directory while VPX is open, and whenever the in-process player
+closes (VPinMAME rewrites the ROM's `.nv`) or VPX exits with a changed `.nv`, decodes that file with the
+bundled `pinmame-nvram-maps` corpus to read the last game's per-player scores and posts to ArcAid's
+existing cabinet-Witness GET endpoints. The shell depends only on `types.ts` (the contract; additive
+changes only) and `createWitness(store, deps?)` from `index.ts`. Everything Windows-specific or
+networked is injectable (`WitnessDeps`), so the whole module runs under vitest on Linux with fakes.
+
+**One capture per player session.** VPX is long-lived on the desktop (a table opened from the editor
+or a recent-files entry keeps the process alive between games), so the unit of capture is the player
+session, not the process: a `.nv` that changes and then stays unchanged for the settle window (5 s,
+polled every 3 s while VPX is open) triggers decode → decide → post, and the baseline is refreshed so
+the next game is compared against the state this one left. Process exit is the final chance for a
+`.nv` that changed without a capture yet; an unchanged `.nv` at exit produces nothing (no duplicate).
+`started` is the later of the process start (CIM `CreationDate`) and the previous capture for that
+process, `ended` is the `.nv` mtime. You may stay in the editor between games.
+
+**Table identity, strongest first:** `-Play <path>.vpx` → a positional `<path>.vpx` (file association,
+`-Edit`) → the editor's window title `Visual Pinball - [<table>]` (polled with the process list) →
+the ROM's name from the corpus's `romnames.json` with its version parenthetical stripped → the ROM id.
+A capture is never refused for want of a name; `LastCapture.detail` says how the name was derived.
+`launch`/`exit` fire for every VPX process with `table` null until one is known; `status.note` reads
+"VPX is open; no table known yet" meanwhile and `currentTable` follows the title.
 
 | File | Does |
 |---|---|
 | `maps.ts` | TypeScript port of the read side of `nvram_parser.py` (tomlogic/py-pinmame-nvmaps): `bcd`/`int`/`bits`/`bool`/`enum`/`ch`/`wpc_rtc`, nibble high/low, start/length/end/offsets, endian, scale/offset, mask, `special_values`, `char_map`, platform files, synthetic platform for old maps; decodes `game_state` (+ deprecated `last_game`), `high_scores`, `last_played`. Lazy `MapCorpus` over `index.json`; `mapsVersion` = `VERSION` or `.commit` in the corpus dir. |
 | `journal-replay.ts` | Rebuilds the NVRAM buffer from a `vpx-hook` journal (`nvram_full` + `nvram_delta`, triples `[index, new, old]`); the fixture tests decode it like the on-disk `.nv`. |
-| `process-watch.ts` | 2 s poll of a `ProcessLister` (real: one PowerShell `Get-CimInstance Win32_Process` query, JSON) → `launch`/`exit`; `-Play`/`/Play` parsing, table = file basename; the editor is a launch with `table: null`. |
+| `process-watch.ts` | 2 s poll of a `ProcessLister` (real: one PowerShell query joining `Get-CimInstance Win32_Process` with `Get-Process` for `MainWindowTitle`, JSON, 5.1 and 7 date shapes) → `launch`/`exit`/`title`; `-Play`/`/Play` and positional `.vpx` parsing, `Visual Pinball - [<table>]` / `Visual Pinball Player` title parsing. |
 | `nvram-dir.ts` | Settings override → `HKCU\Software\Freeware\Visual PinMame\globals\nvram_directory` (via `reg query`) → `<vpx root>\VPinMAME\nvram`. |
-| `nvram-snapshot.ts` | `.nv` snapshots (size, mtime, bytes), diff, and the ≤5 s wait for VPinMAME's rewrite after exit. |
+| `nvram-snapshot.ts` | `.nv` snapshots (size, mtime, bytes), diff, and the ≤5 s wait for VPinMAME's rewrite after exit; the alive poll in `witness.ts` uses the same snapshot/diff. |
 | `capture.ts` | The post decision as a pure function (below). |
 | `arcaid-client.ts` | GET wrapper (15 s timeout, injectable fetch, `x-witness-token` header): `pair`, `report`, `score`, `heartbeat`; failures classified `network`/`server` (retry) vs `auth`/`client` (final). |
 | `queue.ts` | Offline queue: JSON lines in `<dataDir>/witness-queue.jsonl`, backoff 5 s → 10 min, survives restart. |
-| `witness.ts` | The orchestrator behind `createWitness`. |
+| `witness.ts` | The orchestrator behind `createWitness`: sessions per pid, the alive nvram poll + settle, the one capture path shared by the player-closed and exit triggers, table-name resolution. |
 
 **ArcAid contract (read from `ArcAid/src/services/WitnessService.ts`, `VpxScoreIngestService.ts`, routes in
 `global.ts`, ADRs 0020–0022):** all timestamps on the wire are **epoch seconds**; `GET /api/witness/report?device&table&launch&exit&dur`
@@ -88,8 +105,10 @@ token was revoked: the capture is `rejected`, `lastError` reads "unpaired by Arc
 (nonzero score or `player_count`) is skipped whole; a `.nv` rewritten with an unchanged game state is "no new
 game"; a session under 20 s posts nothing; a table whose ROM has no map, or no `.nv` at all (originals), is
 `skipped` with the reason in `detail`. The score is posted with `reason=exit_sample` and `started` = the
-session launch: basic mode reads one score at exit and has no game start of its own, which is exactly the
-cabinet's exit-sample case (`sample='exit'` server-side, never `flagged`). `restarts`/`partial` are launcher
+player session's start bound (process start or the previous capture): basic mode reads one score when the
+player closes and has no game start of its own, which is exactly the cabinet's exit-sample case
+(`sample='exit'` server-side, never `flagged`). A `report` (session) is posted per capture with the same
+bounds. `restarts`/`partial` are launcher
 facts basic mode cannot know and are not sent; `via` is never set — `via=retro` is for sessions reconstructed
 from disk that the device did not watch, and basic mode watches every session it reports, even when the post
 is delivered late from the queue. Wire `status` → outcome: `ingested`/`global` → `ingested`,

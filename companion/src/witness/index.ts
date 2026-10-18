@@ -3,7 +3,17 @@
  * in `./types.js`; everything else is exported for tests, tooling and later phases (live mode).
  */
 export * from './types.js';
-export { createWitness, outcomeForWire, outcomeForPost, DEFAULT_HEARTBEAT_INTERVAL_MS, type WitnessDeps } from './witness.js';
+export {
+  createWitness,
+  outcomeForWire,
+  outcomeForPost,
+  resolveTableName,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_NV_ALIVE_POLL_MS,
+  UNKNOWN_TABLE,
+  type WitnessDeps,
+  type ResolvedTable,
+} from './witness.js';
 export { ArcaidClient, ArcaidError, buildUrl, type FetchLike, type FetchResponseLike, type ArcaidFailureKind, type ScoreWireStatus } from './arcaid-client.js';
 export { decideCapture, countPlayers, MIN_SESSION_SEC, EXIT_SAMPLE_REASON, type CaptureDecision, type CaptureInput } from './capture.js';
 export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat } from './fs.js';
@@ -18,6 +28,7 @@ export {
   hasScores,
   romFromNvName,
   sameGame,
+  stripRomVersion,
   NvMemory,
   type CompiledMap,
   type GameState,
@@ -41,6 +52,9 @@ export {
   ProcessWatch,
   createPowershellLister,
   parsePlayArg,
+  parsePositionalVpx,
+  parseTableArg,
+  parseWindowTitle,
   parseCimProcesses,
   parseCimDate,
   splitCommandLine,
@@ -50,5 +64,8 @@ export {
   type ProcessLister,
   type VpxLaunch,
   type VpxExit,
+  type VpxTitle,
+  type ParsedTitle,
+  type TableSource,
 } from './process-watch.js';
 export { PostQueue, QUEUE_FILE, type QueuedPost, type PostInput, type PostResult } from './queue.js';
