@@ -42,8 +42,6 @@ jobs:
       - run: npm run build
       - run: npm run test
       - name: Electron smoke (prints version and quits before any window)
-        # Verified locally on Windows 11; not yet verified on a hosted runner, hence non-blocking.
-        continue-on-error: true
         run: npx electron companion --smoke
 
   fixtures:

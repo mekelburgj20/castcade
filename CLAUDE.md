@@ -17,8 +17,13 @@ VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e; 0c also
 confirmed by the owner by hand); results, the findings Phase 3 must absorb (journal volume, boot-garbage
 gate, bonus-after-ball_end, exit mid-game) are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`.
-**Phase 1 is in progress (started 2026-10-18):** npm workspaces with `protocol/` (v1 schemas + generated
-`SPEC.md`, done), `companion/` (match engine + minimal Electron shell) and `fakeclient/`; GitHub Actions CI.
+**Phase 1 gate passed 2026-10-18** (first CI run green): npm workspaces with `protocol/` (v1 schemas +
+generated `SPEC.md`, the normative behaviour text is `protocol/docs/prose.md`), `companion/src/match/` (host
+arbiter, client, hash-chained log, Ed25519 keys, in-memory + WebSocket transports) behind a minimal Electron
+shell, and `fakeclient/` (scenarios, CLI, the gate test). CI: `.github/workflows/ci.yml` (ubuntu check, windows
+build + smoke, fixture replay). Known gaps carried to later phases: host transfer over WebSocket (clients must
+reconnect to the new host), client reconnect after a drop, simultaneous mode untested, no ArcAid posting yet.
+Next: Phase 2 (Witness basic mode, pairing, installer + signing) per the gap analysis §6.
 
 ## Commands
 
