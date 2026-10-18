@@ -1,0 +1,13 @@
+{
+  "name": "silent-client-pause",
+  "description": "p2 ignores its ball-1 grant; the host pauses on ball_end_timeout, p2 resumes, the host re-grants and the match finishes.",
+  "matchId": "TD-SILENT",
+  "ballsPerGame": 2,
+  "host": "p1",
+  "ballEndTimeoutMs": 60000,
+  "players": [
+    { "playerId": "p1", "scores": [1000, 2000] },
+    { "playerId": "p2", "scores": [3000, 7000], "silentOnBall": 1 }
+  ],
+  "expect": { "winner": "p2", "ranks": { "p2": 1, "p1": 2 } }
+}

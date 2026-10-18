@@ -1,0 +1,15 @@
+{
+  "name": "four-player-transfer-requested",
+  "description": "4 players, 3 balls; the host hands over to p2 (host_requested) after its own ball 2. p3 wins, p1 and p2 tie for third.",
+  "matchId": "TD-4P-REQ",
+  "ballsPerGame": 3,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [1000, 2000, 3000] },
+    { "playerId": "p2", "scores": [900, 2100, 3000] },
+    { "playerId": "p3", "scores": [5000, 9000, 12000] },
+    { "playerId": "p4", "scores": [4000, 6000, 8000] }
+  ],
+  "transfer": { "afterHostBall": 2, "to": "p2", "reason": "host_requested" },
+  "expect": { "winner": "p3", "ranks": { "p3": 1, "p4": 2, "p1": 3, "p2": 3 }, "hostTransfers": 1 }
+}

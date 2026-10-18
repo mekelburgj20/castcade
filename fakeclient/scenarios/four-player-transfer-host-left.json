@@ -1,0 +1,16 @@
+{
+  "name": "four-player-transfer-host-left",
+  "description": "4 players, 3 balls; the host drops after its own ball 2. p2 (lowest remaining id) takes over; p1 is forfeited when its ball 3 comes up.",
+  "matchId": "TD-4P-LEFT",
+  "ballsPerGame": 3,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [1000, 2000, 3000] },
+    { "playerId": "p2", "scores": [900, 2100, 3300] },
+    { "playerId": "p3", "scores": [5000, 9000, 12000] },
+    { "playerId": "p4", "scores": [4000, 6000, 8000] }
+  ],
+  "transfer": { "afterHostBall": 2, "to": "p2", "reason": "host_left" },
+  "hostPolicy": { "onDisconnect": "forfeit" },
+  "expect": { "winner": "p3", "ranks": { "p3": 1, "p4": 2, "p2": 3, "p1": 4 }, "hostTransfers": 1, "statuses": { "p1": "disconnected", "p2": "finished", "p3": "finished", "p4": "finished" } }
+}

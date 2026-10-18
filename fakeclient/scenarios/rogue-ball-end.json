@@ -1,0 +1,13 @@
+{
+  "name": "rogue-ball-end",
+  "description": "p3 sends a BALL_END while p1 holds the grant (not_grant_holder) and a stale one on its own ball 2 (stale_grant). Both are rejected and change nothing.",
+  "matchId": "TD-ROGUE",
+  "ballsPerGame": 2,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [3000, 6000] },
+    { "playerId": "p2", "scores": [1000, 2000] },
+    { "playerId": "p3", "scores": [2000, 4000], "rogueBallEnd": true, "staleBallEndOnBall": 2 }
+  ],
+  "expect": { "winner": "p1", "ranks": { "p1": 1, "p3": 2, "p2": 3 } }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "game-over-early",
+  "description": "p2 reports GAME_OVER after ball 1; the rotation skips it and p1 plays its remaining balls alone. Scores tie, so winner is null.",
+  "matchId": "TD-GO",
+  "ballsPerGame": 3,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [1000, 2000, 3000] },
+    { "playerId": "p2", "scores": [3000, 9000, 9999], "gameOverAfterBall": 1 }
+  ],
+  "expect": { "winner": null, "ranks": { "p1": 1, "p2": 1 } }
+}

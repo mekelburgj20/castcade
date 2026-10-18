@@ -1,0 +1,14 @@
+{
+  "name": "fingerprint-mismatch",
+  "description": "p2 brings a different tableHash and must be refused naming the field; p1 and p3 play on.",
+  "matchId": "TD-FP",
+  "ballsPerGame": 1,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [1000] },
+    { "playerId": "p2", "scores": [1000], "game": { "tableHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" } },
+    { "playerId": "p3", "scores": [2000] }
+  ],
+  "expectRefused": ["p2"],
+  "expect": { "winner": "p3", "ranks": { "p1": 2, "p3": 1 } }
+}

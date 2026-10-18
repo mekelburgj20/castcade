@@ -1,0 +1,12 @@
+{
+  "name": "extra-ball",
+  "description": "p1 earns an extra ball on ball 2: the first BALL_END says shootAgain and the host re-grants the same player and ball.",
+  "matchId": "TD-EB",
+  "ballsPerGame": 3,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "scores": [1000, 5000, 6000], "shootAgainOn": [2] },
+    { "playerId": "p2", "scores": [1500, 2500, 3500] }
+  ],
+  "expect": { "winner": "p1", "ranks": { "p1": 1, "p2": 2 } }
+}

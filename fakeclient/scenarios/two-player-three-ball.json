@@ -1,0 +1,12 @@
+{
+  "name": "two-player-three-ball",
+  "description": "Plain 2-player, 3-ball match. p2 wins.",
+  "matchId": "TD-2P",
+  "ballsPerGame": 3,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Host One", "scores": [1000, 2500, 4000] },
+    { "playerId": "p2", "displayName": "Player Two", "scores": [1500, 3000, 5500] }
+  ],
+  "expect": { "winner": "p2", "ranks": { "p1": 2, "p2": 1 }, "hostTransfers": 0 }
+}
