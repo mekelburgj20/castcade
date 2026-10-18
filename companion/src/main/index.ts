@@ -1,29 +1,82 @@
 /**
- * Electron main process entry (Phase 2 shell). One window, no tray, no IPC beyond the preload's
- * contextBridge. `--smoke` prints the bundle identity and exits before any window exists, so
- * humans and CI can verify the build without a display.
+ * Electron main process entry (Phase 2: tray app + Arcaid Witness producer).
+ *
+ * Order matters: `--smoke` prints the bundle identity and exits before anything else (no window,
+ * no tray, no settings file; CI runs it on a headless Windows runner). Then the single-instance
+ * lock, then on `ready`: logger → settings store → witness host → window → tray → IPC → updater.
+ * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
+ * ends the process.
  */
-import { app, BrowserWindow } from 'electron';
-import { dirname, join } from 'node:path';
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION } from '@castcade/protocol';
+import { isAllowedExternalUrl } from './allowlist.js';
+import { IPC, type AppVersions, type LoginItemState } from './ipc-types.js';
+import { createLogger, describeError, type Logger } from './log.js';
+import {
+  DEFAULT_ARCAID_BASE_URL,
+  openSettingsStore,
+  plainTokenCodec,
+  redactSettings,
+  sanitizePatch,
+  type SettingsStore,
+  type TokenCodec,
+} from './settings.js';
+import { createTray, type TrayHandle } from './tray.js';
+import { startUpdater, type UpdaterHandle } from './updater.js';
+import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
+const companionDir = resolve(here, '..', '..');
 const appVersion = app.getVersion();
+const argv = process.argv.slice(1);
 
-if (process.argv.includes('--smoke')) {
+let quitting = false;
+let win: BrowserWindow | null = null;
+let log: Logger | null = null;
+let tray: TrayHandle | null = null;
+
+if (argv.includes('--smoke')) {
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION}\n`);
   app.exit(0);
+} else if (!app.requestSingleInstanceLock()) {
+  app.exit(0);
 } else {
-  void app.whenReady().then(createWindow);
-  app.on('window-all-closed', () => app.quit());
+  app.setAppUserModelId('app.arcaid.castcade');
+  app.on('second-instance', () => showWindow());
+  app.on('window-all-closed', () => {
+    /* tray app: keep running */
+  });
+  app.on('before-quit', () => {
+    quitting = true;
+  });
+  void app.whenReady().then(main);
 }
 
-function createWindow(): void {
-  const win = new BrowserWindow({
-    width: 720,
-    height: 480,
+function showWindow(): void {
+  if (!win || win.isDestroyed()) {
+    win = createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+function createWindow(): BrowserWindow {
+  const w = new BrowserWindow({
+    width: 420,
+    height: 640,
+    minWidth: 380,
+    minHeight: 520,
     title: 'Castcade',
+    show: false,
+    autoHideMenuBar: true,
+    icon: join(app.getAppPath(), 'build', 'icon.png'),
+    backgroundColor: '#14161a',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -37,12 +90,168 @@ function createWindow(): void {
       ],
     },
   });
-  win.removeMenu();
+  w.removeMenu();
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  w.webContents.on('will-navigate', (e) => e.preventDefault());
+  w.on('close', (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    w.hide();
+  });
+  w.on('closed', () => {
+    if (win === w) win = null;
+  });
 
   const devUrl = process.env.CASTCADE_RENDERER_URL;
-  if (devUrl) {
-    void win.loadURL(devUrl);
+  if (devUrl) void w.loadURL(devUrl);
+  else void w.loadFile(join(here, '..', 'renderer', 'index.html'));
+  return w;
+}
+
+function tokenCodec(logger: Logger): TokenCodec {
+  if (safeStorage.isEncryptionAvailable()) {
+    return {
+      scheme: 'safeStorage',
+      encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+      decrypt: (stored) => safeStorage.decryptString(Buffer.from(stored, 'base64')),
+    };
+  }
+  logger.warn('settings: OS encryption (safeStorage) unavailable; the witness token is stored in plain text');
+  return plainTokenCodec;
+}
+
+function loginItemState(): LoginItemState {
+  if (!app.isPackaged) return { supported: false, openAtLogin: false };
+  return { supported: true, openAtLogin: app.getLoginItemSettings({ args: ['--hidden'] }).openAtLogin };
+}
+
+function setLoginItem(openAtLogin: boolean): LoginItemState {
+  if (!app.isPackaged) return loginItemState();
+  app.setLoginItemSettings({ openAtLogin, args: ['--hidden'] });
+  log?.info(`login item: openAtLogin=${openAtLogin}`);
+  return loginItemState();
+}
+
+async function quit(host: WitnessHost): Promise<void> {
+  quitting = true;
+  await host.stop();
+  log?.info('quit');
+  app.quit();
+}
+
+function registerIpc(store: SettingsStore, host: WitnessHost, logger: Logger): void {
+  const str = (v: unknown, what: string): string => {
+    if (typeof v !== 'string') throw new Error(`${what} must be a string`);
+    return v;
+  };
+  ipcMain.handle(IPC.witnessStatus, () => host.status());
+  ipcMain.handle(IPC.witnessPair, async (_e, code: unknown) => {
+    try {
+      return await host.pair(str(code, 'pairing code'));
+    } catch (e) {
+      logger.warn(`pair failed: ${describeError(e)}`);
+      throw e;
+    }
+  });
+  ipcMain.handle(IPC.witnessUnpair, () => host.unpair());
+  ipcMain.handle(IPC.witnessSetPaused, (_e, paused: unknown) => host.setPaused(paused === true));
+  ipcMain.handle(IPC.settingsGet, () => redactSettings(store.get()));
+  ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
+    const clean = sanitizePatch(patch);
+    await store.set(clean);
+    logger.info(`settings: updated ${Object.keys(clean).join(', ')}`);
+    return redactSettings(store.get());
+  });
+  ipcMain.handle(IPC.appOpenExternal, async (_e, url: unknown) => {
+    const target = str(url, 'url');
+    if (!isAllowedExternalUrl(target, store.get().arcaidBaseUrl)) {
+      logger.warn(`openExternal refused: ${target}`);
+      return false;
+    }
+    await shell.openExternal(target);
+    return true;
+  });
+  ipcMain.handle(IPC.appVersions, (): AppVersions => ({
+    app: appVersion,
+    protocol: PROTOCOL_VERSION,
+    electron: process.versions.electron ?? 'unknown',
+    chrome: process.versions.chrome ?? 'unknown',
+    node: process.versions.node,
+    packaged: app.isPackaged,
+  }));
+  ipcMain.handle(IPC.appLoginItemGet, () => loginItemState());
+  ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
+  ipcMain.handle(IPC.appLogPath, () => logger.file);
+}
+
+async function main(): Promise<void> {
+  const userData = app.getPath('userData');
+  const logger = createLogger({
+    file: join(userData, 'logs', 'companion.log'),
+    mirrorToStderr: !app.isPackaged,
+  });
+  log = logger;
+  logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged}`);
+
+  const store = openSettingsStore({
+    file: join(userData, 'settings.json'),
+    defaults: {
+      mapsDir: app.isPackaged ? join(process.resourcesPath, 'maps') : resolve(companionDir, 'resources', 'maps'),
+      dataDir: join(userData, 'witness'),
+      deviceLabel: hostname(),
+      newDeviceId: () => randomUUID(),
+    },
+    codec: tokenCodec(logger),
+    log: logger,
+  });
+  const s = store.get();
+  logger.info(`settings: arcaid=${s.arcaidBaseUrl} device=${s.deviceId} label=${s.deviceLabel} paired=${s.token !== null} maps=${s.mapsDir}`);
+  if (s.arcaidBaseUrl !== DEFAULT_ARCAID_BASE_URL) logger.warn(`settings: non-production ArcAid URL ${s.arcaidBaseUrl}`);
+
+  const host = createWitnessHost(store, logger);
+  store.onChange((next, prev) => {
+    if (needsWitnessRestart(prev, next)) void host.restart('settings changed');
+  });
+
+  registerIpc(store, host, logger);
+
+  if (!argv.includes('--hidden')) win = createWindow();
+  if (win) win.once('ready-to-show', () => win?.show());
+
+  let updater: UpdaterHandle | null = null;
+  tray = createTray(join(app.getAppPath(), 'build', 'tray.ico'), {
+    open: showWindow,
+    setPaused: (p) => void host.setPaused(p),
+    isPaused: () => host.isPaused(),
+    loginItemSupported: () => loginItemState().supported,
+    getOpenAtLogin: () => loginItemState().openAtLogin,
+    setOpenAtLogin: (on) => {
+      setLoginItem(on);
+      tray?.refresh(host.status());
+    },
+    pendingUpdate: () => updater?.pendingVersion() ?? null,
+    restartToUpdate: () => {
+      quitting = true;
+      updater?.quitAndInstall();
+    },
+    quit: () => void quit(host),
+  }, host.status());
+
+  host.onStatus((status) => {
+    tray?.refresh(status);
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
+  });
+
+  await host.start();
+
+  if (app.isPackaged) {
+    updater = await startUpdater(logger, {
+      onDownloaded: (version) => {
+        tray?.refresh(host.status());
+        tray?.notify('Castcade update', `Update available: v${version}. Quit and reopen (or use the tray menu) to install.`);
+      },
+    });
   } else {
-    void win.loadFile(join(here, '..', 'renderer', 'index.html'));
+    logger.info('updater: skipped (not packaged)');
   }
 }

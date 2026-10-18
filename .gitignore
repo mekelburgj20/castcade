@@ -26,6 +26,10 @@ desktop.ini
 # Python
 __pycache__/
 
-# Bundled maps corpus (fetched by `npm run fetch-maps -w companion`, never committed)
+# Castcade companion: packaging output and the fetched maps corpus (never tracked)
+companion/release/
 companion/resources/
+# companion/build holds committed icon assets; the generic build/ rule above would hide it
+!companion/build/
+# Claude Code agent worktrees
 .claude/
