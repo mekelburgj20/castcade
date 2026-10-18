@@ -1,17 +1,44 @@
 # companion/
 
-**Status (2026-10-18): Phase 1 match engine + a minimal Electron shell.** No Witness, patcher, media or
-launch code yet (Phase 2+).
+**Status (2026-10-18): Phase 1 match engine + the Phase 2 tray shell (v0.2.0).** The Witness producer
+(`src/witness/`, basic mode) lands alongside; patcher, media and launch are Phase 3+.
 
 - `src/match/` — the pure match engine, no Electron, no I/O except through a `Transport`: `HostMatch`
   (arbiter), `ClientMatch`, hash-chained `MatchLog`, `MatchState` as a fold over the log, `Session`,
   Ed25519 `keys`, `MemoryBus` (tests, full mesh) and WebSocket transports, `ManualClock`. Exported from
   `@castcade/companion` for `fakeclient/` and tests. Behaviour follows `protocol/SPEC.md`.
-- `src/main/` + `src/preload/` + `renderer/` — the Electron shell: one window showing versions,
-  sandboxed preload with a `contextBridge`, Vite + React renderer bundled to `dist/renderer`.
-  `npm run dev -w companion` builds and opens it; `npm run smoke -w companion` prints
-  `castcade <version> protocol <n>` and exits (what CI runs on Windows).
-- Tests: `npx vitest run companion`.
+- `src/witness/` — the Arcaid Witness desktop producer. `types.ts` is the contract between it and the
+  shell (`createWitness(store)`); the shell imports nothing else from the folder.
+- `src/main/` — the Electron main process: single-instance tray app (window close hides to the tray;
+  tray menu: Open, Pause/Resume watching, Start with Windows, Quit), `settings.ts` (JSON store at
+  `%APPDATA%\Castcade\settings.json`, token encrypted with `safeStorage`, deviceId generated once),
+  `witness-host.ts` (owns the witness instance, restarts it when the ArcAid URL or nvram dir changes),
+  `log.ts` (rotating `%APPDATA%\Castcade\logs\companion.log`), `updater.ts` (electron-updater, packaged
+  builds only, log + one tray balloon), `allowlist.ts` (`openExternal` limited to the ArcAid origin and
+  the project page). `--smoke` prints `castcade <version> protocol <n>` and exits before any of this.
+- `src/preload/index.cts` — sandboxed CommonJS preload exposing the typed `window.castcade` bridge
+  (`ipc-types.ts` is the single description; `renderer/src/castcade.d.ts` mirrors it by hand).
+- `renderer/` — Vite + React, one 420×640 window with three views: Pairing, Status, Settings/About
+  (with the ODbL attribution for the maps corpus). `npm run typecheck:renderer -w companion`.
+- Commands: `npm run dev -w companion` (build + open with the Vite dev server), `npm run smoke -w companion`,
+  `npx vitest run companion`, `npm run pack:dir -w companion` (unpacked app in `release/win-unpacked`),
+  `npm run dist:win -w companion` (installer in `release/`), `npm run release:win -w companion` (also
+  publishes to GitHub Releases; needs `GH_TOKEN`).
+- Tester guide: `docs/phase-2-witness.md`.
+
+### Packaging as built (Phase 2)
+
+`electron-builder.yml`: NSIS, x64 only, per-user (`perMachine: false`, no elevation), assisted installer
+(`oneClick: false`, directory choice), artifact `Castcade-Setup-<version>.exe`, `files` = `dist/**` +
+`package.json` + the two icons in `build/`, `extraResources` = `resources/maps` → `resources/maps` in the
+install (the corpus is fetched by `npm run fetch-maps -w companion` before packaging; `release.yml` does
+this). `npmRebuild: false` and an **exact** `electron` version in `package.json` are required because the
+companion is an npm workspace (hoisted `node_modules`). Publish target: GitHub Releases
+(`mekelburgj20/castcade`), which is also where electron-updater looks.
+
+**The PoC is unsigned.** SmartScreen shows *"Windows protected your PC"*; testers click *More info →
+Run anyway*. No signing configuration exists in the repo yet; a certificate remains the launch blocker
+below before anything ships outside the test group.
 
 The Castcade desktop app for Windows: Electron + TypeScript. It is also the Windows desktop producer
 for Arcaid Witness (ADR 0003), and its first shippable release is exactly that: install, pair, play,
