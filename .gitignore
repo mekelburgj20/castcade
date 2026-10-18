@@ -25,3 +25,7 @@ desktop.ini
 
 # Python
 __pycache__/
+
+# Bundled maps corpus (fetched by `npm run fetch-maps -w companion`, never committed)
+companion/resources/
+.claude/

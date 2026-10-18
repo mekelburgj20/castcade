@@ -63,6 +63,8 @@ export interface WitnessStatus {
   queued: number;
   lastHeartbeatAt: string | null;
   lastError: string | null;
+  /** Informational, not an error: e.g. "VPX is running without -Play (editor): nothing to capture". */
+  note?: string | null;
 }
 
 export interface WitnessEvents {

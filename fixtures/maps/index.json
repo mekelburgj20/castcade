@@ -1,0 +1,12 @@
+{
+  "_note": "Subset of tomlogic/pinmame-nvram-maps index.json at f16a0cc6c347370706bf1a3f2c7a77568b3f69e7: only the ROMs the companion witness tests replay. See README.md.",
+  "mm_109": "maps/williams/wpc/mm_109.map.json",
+  "mm_109b": "maps/williams/wpc/mm_109.map.json",
+  "mm_109c": "maps/williams/wpc/mm_109.map.json",
+  "tftc_104": "maps/dataeast/version3/tftc_400.map.json",
+  "tftc_200": "maps/dataeast/version3/tftc_400.map.json",
+  "tftc_300": "maps/dataeast/version3/tftc_400.map.json",
+  "tftc_302": "maps/dataeast/version3/tftc_400.map.json",
+  "tftc_303": "maps/dataeast/version3/tftc_400.map.json",
+  "tftc_400": "maps/dataeast/version3/tftc_400.map.json"
+}

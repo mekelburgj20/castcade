@@ -16,7 +16,8 @@
     "build": "tsc -b && vite build",
     "dev": "tsc -b && vite",
     "smoke": "electron . --smoke",
-    "typecheck:renderer": "tsc -p renderer --noEmit"
+    "typecheck:renderer": "tsc -p renderer --noEmit",
+    "fetch-maps": "node scripts/fetch-maps.mjs"
   },
   "dependencies": {
     "@castcade/protocol": "*",
