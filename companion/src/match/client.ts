@@ -55,7 +55,7 @@ export interface DroppedInfo {
   from: PlayerId;
   type: MessageType;
   seq: number;
-  reason: 'seq' | 'bad_signature' | 'stale_grant' | 'not_host' | 'unexpected';
+  reason: 'seq' | 'bad_signature' | 'stale_grant' | 'not_host' | 'unexpected' | 'bad_transfer';
 }
 
 export interface DesyncInfo {
@@ -493,6 +493,7 @@ export class ClientMatch {
       'HOST_TRANSFER',
       {
         proposer: this.localId,
+        newHost: this.localId,
         reason: 'host_left',
         logHash: head.hash,
         logLength: head.length,
@@ -517,9 +518,14 @@ export class ClientMatch {
     } else {
       if (!this.hostLost || msg.from !== p.proposer || !st.players[msg.from]) return this.drop(msg, 'unexpected');
     }
+    // newHostPublicKey must be newHost's roster key (and for host_left the proposer is the new host);
+    // otherwise the proposal is ignored outright: no log entry, no ack.
+    const target = st.participants.find((x) => x.playerId === p.newHost);
+    if (!target || target.publicKey !== p.newHostPublicKey || (p.reason === 'host_left' && p.newHost !== p.proposer)) {
+      return this.drop(msg, 'bad_transfer');
+    }
     const headBefore = this.s.log.head();
-    const target = st.participants.find((x) => x.publicKey === p.newHostPublicKey);
-    const accept = target !== undefined && p.logHash === headBefore.hash && p.logLength === headBefore.length;
+    const accept = p.logHash === headBefore.hash && p.logLength === headBefore.length;
     this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
     this.events.emit('transferProposed', p);
     const ack = this.s.build('HOST_TRANSFER_ACK', { proposer: p.proposer, accept, logHash: headBefore.hash }, this.matchIdForWire());

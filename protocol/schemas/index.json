@@ -25,7 +25,7 @@
       "schema": "MATCH_READY.schema.json"
     },
     "TURN_GRANT": {
-      "direction": "host->client",
+      "direction": "host->all",
       "schema": "TURN_GRANT.schema.json"
     },
     "STATE": {

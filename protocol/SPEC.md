@@ -15,7 +15,9 @@ participants are **clients**; the turn token is a **grant**.
   the host's companion; a WebRTC data channel is a drop-in replacement later. ArcAid only relays the
   signaling that bootstraps those connections.
 - `seq` is per sender and strictly increasing within a connection. A receiver drops a frame whose `seq`
-  is not greater than the last one it accepted from that sender and answers with `REJECT`.
+  is not greater than the last one it accepted from that sender; the host answers with `REJECT`, a client
+  drops silently (`REJECT` is host -> client only). Frames the host relays keep the original sender's
+  `seq`, so receivers track one counter per `from`.
 - `v` must equal the receiver's protocol version or the receiver answers `REFUSE` (`protocol_version`)
   and closes.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
@@ -43,10 +45,12 @@ base64-encoded.
 
 - Every participant plays their own one-player game of `ballsPerGame` balls (Architecture B). Grants go
   ball 1 to each player in `playerOrder`, then ball 2 to each, and so on.
-- A `TURN_GRANT` names the player and the ball. The signature is over `canonicalJson(grant)` with the
-  host's key from `MATCH_READY` (or the key announced in an accepted `HOST_TRANSFER`). A client releases
-  its input lock only for a grant that verifies, names itself, and carries a `grantSeq` greater than any it
-  has seen.
+- A `TURN_GRANT` names the player and the ball and goes to **every** participant, not only the holder.
+  The signature is over `canonicalJson(grant)` with the host's key from `MATCH_READY` (or the key
+  announced in an accepted `HOST_TRANSFER`). A client releases its input lock only for a grant that
+  verifies, names itself, and carries a `grantSeq` greater than any it has seen. `grant.logHash` is the
+  host's log head before the grant was appended; a client whose head differs raises a desync for the UI
+  and the ArcAid badge but still accepts the grant (badge, never gate).
 - The grant holder answers with `BALL_END`. The host accepts `BALL_END` only from the holder and only
   with the current `grantSeq`; anything else gets `REJECT` and changes nothing.
 - `shootAgain: true` means the detector saw an extra ball. The host re-grants the **same player and the
@@ -55,36 +59,78 @@ base64-encoded.
   bonus after the drain (NVRAM counts it down, script tables add it after `EndOfBall`), so a detector
   reports the score at the next boundary or after a quiet period, never at the drain instant.
 - A player's game ends after `BALL_END` for ball `ballsPerGame` (with `shootAgain: false`), or on
-  `GAME_OVER`, or on `FORFEIT`. The host keeps rotating among players whose games have not ended.
-- The host logs every accepted message and every grant it issues. When every game has ended it sends the
-  final log hash to all clients implicitly through `RESULT`; before that each client sends `LOG_SIGN` over
-  `{matchId, logHash, logLength}` of the log as *it* received it. A client whose log hash differs still
-  signs its own hash; the host records the disagreement. Mismatches are stored and flagged on the ArcAid
-  side, never rejected (badge, never gate).
+  `GAME_OVER`, or on `FORFEIT`. The host keeps rotating among players whose games have not ended. A
+  `GAME_OVER` for a game that has already ended is answered with `REJECT` (`unexpected_state`).
+- If the next grant would go to a player the host knows to be disconnected, the host sends
+  `PAUSE(disconnect, player)` instead of the grant. Whether to `FORFEIT` that player and `RESUME` is a
+  policy decision above the protocol (the host UI, or the fake client's scenario).
+
+## The match log
+
+- Every state-changing message the host accepts is broadcast **verbatim to all participants**, the
+  sender included: the echo is the sender's acknowledgement that it was accepted. Each participant
+  appends the broadcast stream, in order, to its own append-only log, so host and clients hold the same
+  entries without any further coordination.
+- Logged, in stream order: `MATCH_READY`, every `TURN_GRANT` the host issues, accepted `BALL_END`,
+  `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, and one derived `host_transfer` event per
+  accepted transfer (below). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the *other*
+  participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
+  `HOST_TRANSFER_ACK`, `RESULT`.
+- Each entry is `{index, prevHash, ts, kind, from, message | event}` with
+  `hash = sha256(canonicalJson(entry))` and `prevHash` the previous hash (64 zeros before the first
+  entry). `ts` is always the message's own `ts`, never a local clock, so hashes agree across machines.
+  `kind` is `grant` for a `TURN_GRANT`, `event` for the derived transfer entry, `msg` otherwise.
+- The log **freezes at the entry that ends the last game**. `LOG_SIGN` and `RESULT.logHash` refer to
+  that head; nothing is appended after it.
+- A client sends `LOG_SIGN` over `{matchId, logHash, logLength}` as soon as its own log shows every
+  game ended (every player finished or forfeited), using the head as *it* holds it. A client whose head
+  differs from the host's still signs its own; the host records the disagreement and `RESULT.signatures`
+  carries what each participant actually signed. Mismatches are flagged on the ArcAid side, never
+  rejected (badge, never gate).
+- The host sends `RESULT` once every connected non-host participant has signed, or after a log-sign
+  timeout (default 10 s) with the signatures it has.
 
 ## Pauses and timeouts
 
 - A dropped connection, or no `BALL_END` within 20 minutes of a grant, moves the match to paused
   (`PAUSE` from the host). Any participant may `RESUME`; the host then re-issues the outstanding grant with
   a new `grantSeq`. Any participant may `FORFEIT` themselves; the host may forfeit a participant who does
-  not return.
+  not return. A `BALL_END` for the outstanding grant is still accepted while paused. A client `PAUSE`
+  while already paused, or a `RESUME` while not paused, gets `REJECT` (`unexpected_state`).
+- In `RESULT`, a forfeited player whose connection was still up has status `forfeit`; one whose
+  connection was gone has status `disconnected`.
 
 ## Host transfer
 
 - Every client keeps the full log, so any client can become host. The current host may hand over
   (`host_requested`); when the host is gone any client may propose itself (`host_left`).
-- A `HOST_TRANSFER` carries the proposer's log head, the last grant it saw and its public key. It takes
-  effect when a strict majority of the remaining participants (the proposer included) answer
-  `HOST_TRANSFER_ACK` with `accept: true`; an acker must hold the same log hash to accept.
-- After an accepted transfer the new host re-issues the outstanding grant with a new `grantSeq`, signed
-  with its own key, and the match resumes at the same handoff. `RESULT.hostTransfers` counts transfers.
+- A `HOST_TRANSFER` names `newHost` and carries the proposer's log head, the last grant it saw and the
+  new host's public key, which must equal `newHost`'s roster entry (a receiver ignores a proposal where it
+  does not: no log entry, no ack). For `host_requested` the proposer is the current host; for `host_left`
+  the proposer is `newHost` itself, the lowest remaining `playerId`. Every participant logs the
+  `HOST_TRANSFER`.
+- It takes effect when a strict majority of the remaining participants (connected and not forfeited,
+  the departed host excluded, the proposer counted as accepting) answer `HOST_TRANSFER_ACK` with
+  `accept: true`; an acker must hold the log head the proposal names to accept. Only the prospective new
+  host counts acks. Everyone else commits the transfer when the first host-only message (`TURN_GRANT`,
+  `PAUSE`, `RESUME`, `FORFEIT`, `RESULT`, `REJECT`) arrives from the new host, so the commit lands at the
+  same log position everywhere regardless of the order acks travel in.
+- Committing appends the derived `host_transfer` event `{type, reason, proposer, from, to,
+  newHostPublicKey}` with `ts` equal to the `HOST_TRANSFER` message's `ts`. From then on grants are
+  verified with the new key.
+- While a `host_requested` transfer is pending the old host answers `BALL_END`, `GAME_OVER`,
+  `FORFEIT`, `PAUSE` and `RESUME` with `REJECT` (`unexpected_state`), so no entry can land between the
+  `HOST_TRANSFER` entry and the commit event; the holder answers the re-issued grant instead.
+- After the commit the new host re-issues the outstanding grant with a new `grantSeq`, signed with its
+  own key, and the match resumes at the same handoff. `RESULT.hostTransfers` counts transfers.
 
 ## Result
 
-- `RESULT` lists every participant with score, balls played, status and rank (ties share a rank), the
-  final log hash and length, the host's signature over `{matchId, logHash, logLength}`, and every
-  `LOG_SIGN` received. The host posts the same object to ArcAid as the Throwdown's scores plus a
-  `castcade_matches` record.
+- `RESULT` lists every participant with score, balls played, status and rank (competition ranking: ties
+  share a rank, the next rank skips; `winner` is `null` on a tie for first), the frozen log hash and
+  length, the host's signature over `{matchId, logHash, logLength}`, and every `LOG_SIGN` received with
+  the head it signed. `RESULT` itself is not logged. The host posts the same object to ArcAid as the
+  Throwdown's scores plus a `castcade_matches` record.
 
 ## Simultaneous mode (arcade)
 
@@ -104,7 +150,7 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `HELLO_ACK` | host->client | host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. |
 | `REFUSE` | host->client | host -> client. The HELLO was rejected; the host closes the connection after sending. |
 | `MATCH_READY` | host->all | host -> all. The roster is final; grants follow. |
-| `TURN_GRANT` | host->client | host -> one client. The only message that unlocks input. Verified by the companion before the lock is released. |
+| `TURN_GRANT` | host->all | host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released. |
 | `STATE` | any | client -> host at up to 10 Hz, mirrored host -> other clients with `from` preserved. Drives the overlay; never trusted for results. |
 | `DMD_FRAME` | any | client -> host on change, mirrored to the other clients. Drawn crisp in the overlay. |
 | `BALL_END` | client->host | client -> host. Accepted only from the current grant holder. |
@@ -188,9 +234,9 @@ host -> all. The roster is final; grants follow.
 
 ### `TURN_GRANT`
 
-Direction: host->client.
+Direction: host->all.
 
-host -> one client. The only message that unlocks input. Verified by the companion before the lock is released.
+host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -269,12 +315,13 @@ host -> all, or client -> all when the host is gone. Takes effect when a majorit
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `proposer` | string (`^[A-Za-z0-9_.:-]+$`) | yes | The participant offering to become host (the current host when planned, any client when the host is gone). |
+| `proposer` | string (`^[A-Za-z0-9_.:-]+$`) | yes | Who sent the proposal: the current host when planned, the candidate itself when the host is gone. |
+| `newHost` | string (`^[A-Za-z0-9_.:-]+$`) | yes | Who becomes host; equals proposer for host_left. |
 | `reason` | `"host_left"` \| `"host_requested"` | yes |  |
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | The proposer's log head; acceptors must hold the same hash. |
 | `logLength` | integer | yes |  |
 | `currentGrant` | object \| null | yes | The last grant the proposer saw, so the match resumes at the same handoff. |
-| `newHostPublicKey` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | Grants after the transfer are signed with this key. |
+| `newHostPublicKey` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | Grants after the transfer are signed with this key. Must equal the roster entry for newHost. |
 
 ### `HOST_TRANSFER_ACK`
 
@@ -314,7 +361,7 @@ host -> all, and posted to ArcAid as the Throwdown result plus a castcade_matche
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | Lower-case hex SHA-256. |
 | `logLength` | integer | yes |  |
 | `hostSignature` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | Ed25519 signature, 64 raw bytes, base64, over canonical JSON. |
-| `signatures` | array of object | yes | Every LOG_SIGN received; missing or disagreeing ones are flagged on the ArcAid side, never rejected. |
+| `signatures` | array of object | yes | Every LOG_SIGN received, with the head each participant actually signed; missing or disagreeing ones are flagged on the ArcAid side, never rejected. |
 | `hostTransfers` | integer | yes |  |
 | `startedAt` | integer | yes |  |
 | `finishedAt` | integer | yes |  |

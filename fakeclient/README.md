@@ -1,6 +1,16 @@
 # fakeclient/
 
-**Status: not started — Phase 1.**
+**Status (2026-10-18): implemented; the Phase 1 gate test passes in CI.**
+
+```
+npm run start -w fakeclient -- local --players 4 --balls 3 --transfer     # whole match in-process, prints RESULT + log heads
+npm run start -w fakeclient -- host --players 3 --balls 3 --port 47891    # real host over WebSocket
+npm run start -w fakeclient -- join ws://127.0.0.1:47891 --player p2      # one client; --table-hash ff.. to get refused
+npx vitest run fakeclient                                                 # scenarios + gate + ws smoke
+```
+
+Scenarios live in `scenarios/*.json`; the gate is `src/gate.test.ts`. Host transfer is covered over the
+in-memory full mesh only; over WebSocket clients would have to reconnect to the new host (later phase).
 
 A scripted Castcade participant that speaks the protocol with no emulator present. It lets the host
 arbiter, the match log, host transfer and the ArcAid result path be tested on Linux CI long before

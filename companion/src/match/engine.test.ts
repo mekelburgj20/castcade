@@ -9,8 +9,9 @@ import { buildMessage, PROTOCOL_VERSION, type GameFingerprint, type ParticipantI
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { HostMatch, type RejectInfo } from './host.js';
-import { generateKeys, signCanonical, type KeyPair } from './keys.js';
+import { generateKeys, signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { MatchLog } from './log.js';
+import { logSignBody } from './result.js';
 import { Session } from './session.js';
 import { MemoryBus } from './transport.js';
 
@@ -338,7 +339,7 @@ describe('resumeFromLog', () => {
     const log = MatchLog.fromJSON(json);
     const bKey = r.keys['b'] as KeyPair;
     const head = log.head();
-    const transfer = buildMessage('HOST_TRANSFER', { proposer: 'h', reason: 'host_requested', logHash: head.hash, logLength: head.length, currentGrant: r.host.state.currentGrant, newHostPublicKey: bKey.publicKeyB64 }, { matchId: 'M', seq: 77, from: 'h', ts: 123 });
+    const transfer = buildMessage('HOST_TRANSFER', { proposer: 'h', newHost: 'b', reason: 'host_requested', logHash: head.hash, logLength: head.length, currentGrant: r.host.state.currentGrant, newHostPublicKey: bKey.publicKeyB64 }, { matchId: 'M', seq: 77, from: 'h', ts: 123 });
     log.append({ ts: 123, kind: 'msg', from: 'h', message: transfer });
     log.append({ ts: 123, kind: 'event', from: 'h', event: { type: 'host_transfer', reason: 'host_requested', proposer: 'h', from: 'h', to: 'b', newHostPublicKey: bKey.publicKeyB64 } });
 
@@ -363,6 +364,34 @@ describe('resumeFromLog', () => {
   });
 });
 
+describe('host transfer validation', () => {
+  it("a HOST_TRANSFER whose key is not newHost's roster key is ignored: no log entry, no ack", async () => {
+    const r = await rig(['a', 'b'], 1);
+    r.host.start();
+    await flush();
+    const a = r.clients['a'] as ClientMatch;
+    const dropped: string[] = [];
+    a.on('dropped', (d) => dropped.push(d.reason));
+    const acks: string[] = [];
+    (r.clients['b'] as ClientMatch).on('transferAck', (m) => acks.push(m.from));
+    const head = a.log.head();
+    const before = a.log.length;
+    const wrongKey = generateKeys().publicKeyB64;
+    // Use the host's real seq counter so the genuine proposal below is not dropped as a replay.
+    r.host.session.transport.send('a', buildMessage('HOST_TRANSFER', { proposer: 'h', newHost: 'b', reason: 'host_requested', logHash: head.hash, logLength: head.length, currentGrant: null, newHostPublicKey: wrongKey }, { matchId: 'M', seq: r.host.session.nextSeq(), from: 'h', ts: 5 }));
+    await flush();
+    expect(dropped).toEqual(['bad_transfer']);
+    expect(a.log.length).toBe(before);
+    expect(a.state.pendingTransfer).toBeNull();
+    expect(acks).toEqual([]);
+    // The genuine proposal from the host is accepted and acked.
+    r.host.transferHost('b');
+    await flush();
+    expect(a.state.hostId).toBe('b');
+    expect(a.log.entries().filter((e) => e.kind === 'event')).toHaveLength(1);
+  });
+});
+
 describe('desync detection', () => {
   it('a client whose log diverged reports desync on the next grant and still signs its own hash', async () => {
     const r = await rig(['a', 'b'], 1);
@@ -378,6 +407,8 @@ describe('desync detection', () => {
     expect(desyncs).toEqual(['grant.logHash']);
     const signs: { playerId: string; agrees: boolean }[] = [];
     r.host.on('logSign', (s) => signs.push({ playerId: s.playerId, agrees: s.agrees }));
+    const results: PayloadOf<'RESULT'>[] = [];
+    r.host.on('result', (x) => results.push(x.result));
     a.reportBallEnd(6, 'script');
     await flush();
     (r.clients['b'] as ClientMatch).reportBallEnd(7, 'script');
@@ -388,5 +419,14 @@ describe('desync detection', () => {
     ]);
     // Every later grant carries a head a's fork cannot match, and the RESULT head differs too.
     expect(desyncs).toEqual(['grant.logHash', 'grant.logHash', 'result.logHash']);
+    // RESULT.signatures carries what each participant actually signed, so a's can still be verified.
+    const result = results[0];
+    if (!result) throw new Error('no result');
+    const sa = result.signatures.find((s) => s.playerId === 'a');
+    const sb = result.signatures.find((s) => s.playerId === 'b');
+    expect(sb).toMatchObject({ logHash: result.logHash, logLength: result.logLength });
+    expect(sa?.logHash).not.toBe(result.logHash);
+    expect(sa).toMatchObject({ logHash: a.log.head().hash, logLength: a.log.head().length });
+    expect(verifyCanonical(logSignBody('M', sa?.logHash ?? '', sa?.logLength ?? 0), sa?.signature ?? '', r.keys['a']?.publicKeyB64 ?? '')).toBe(true);
   });
 });

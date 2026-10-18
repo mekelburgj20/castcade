@@ -118,12 +118,25 @@ describe('state fold', () => {
     grant(log, 'p2', 1, 1);
     const transfer = buildMessage(
       'HOST_TRANSFER',
-      { proposer: 'p1', reason: 'host_requested', logHash: log.head().hash, logLength: log.length, currentGrant: null, newHostPublicKey: otherKey },
+      { proposer: 'p1', newHost: 'p2', reason: 'host_requested', logHash: log.head().hash, logLength: log.length, currentGrant: null, newHostPublicKey: otherKey },
       { matchId: 'M', seq: ++seq, from: 'p1', ts: 20 },
     );
     log.append({ ts: 20, kind: 'msg', from: 'p1', message: transfer });
     let st = replayLog(log);
     expect(st.pendingTransfer).toMatchObject({ proposer: 'p1', newHost: 'p2', reason: 'host_requested', proposedTs: 20 });
+    // A key that is not newHost's roster key leaves newHost unresolved.
+    const bad = MatchLog.fromJSON(log.toJSON().slice(0, 2));
+    bad.append({
+      ts: 21,
+      kind: 'msg',
+      from: 'p1',
+      message: buildMessage(
+        'HOST_TRANSFER',
+        { proposer: 'p1', newHost: 'p2', reason: 'host_requested', logHash: bad.head().hash, logLength: bad.length, currentGrant: null, newHostPublicKey: key },
+        { matchId: 'M', seq: 999, from: 'p1', ts: 21 },
+      ),
+    });
+    expect(replayLog(bad).pendingTransfer?.newHost).toBeNull();
     log.append({ ts: 20, kind: 'event', from: 'p1', event: { type: 'host_transfer', reason: 'host_requested', proposer: 'p1', from: 'p1', to: 'p2', newHostPublicKey: otherKey } });
     st = replayLog(log);
     expect(st.hostId).toBe('p2');

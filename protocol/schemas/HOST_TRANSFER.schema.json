@@ -8,7 +8,14 @@
       "minLength": 1,
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_.:-]+$",
-      "description": "The participant offering to become host (the current host when planned, any client when the host is gone)."
+      "description": "Who sent the proposal: the current host when planned, the candidate itself when the host is gone."
+    },
+    "newHost": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Who becomes host; equals proposer for host_left."
     },
     "reason": {
       "type": "string",
@@ -94,7 +101,7 @@
             "grantSig"
           ],
           "additionalProperties": false,
-          "description": "host -> one client. The only message that unlocks input. Verified by the companion before the lock is released."
+          "description": "host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released."
         },
         {
           "type": "null"
@@ -105,11 +112,12 @@
     "newHostPublicKey": {
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]+={0,2}$",
-      "description": "Grants after the transfer are signed with this key."
+      "description": "Grants after the transfer are signed with this key. Must equal the roster entry for newHost."
     }
   },
   "required": [
     "proposer",
+    "newHost",
     "reason",
     "logHash",
     "logLength",

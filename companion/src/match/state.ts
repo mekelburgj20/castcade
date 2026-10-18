@@ -25,7 +25,7 @@ export interface GrantTarget {
 
 export interface PendingTransfer {
   proposer: PlayerId;
-  /** Resolved from `newHostPublicKey` against the roster; null if nobody holds that key. */
+  /** `newHost` from the message; null if that participant is unknown or does not hold `newHostPublicKey`. */
   newHost: PlayerId | null;
   newHostPublicKey: string;
   reason: 'host_left' | 'host_requested';
@@ -174,10 +174,10 @@ function applyMessage(st: MatchState, msg: AnyMessage): void {
     }
     case 'HOST_TRANSFER': {
       const p = msg.payload;
-      const target = st.participants.find((x) => x.publicKey === p.newHostPublicKey);
+      const target = st.participants.find((x) => x.playerId === p.newHost);
       st.pendingTransfer = {
         proposer: p.proposer,
-        newHost: target ? target.playerId : null,
+        newHost: target && target.publicKey === p.newHostPublicKey ? target.playerId : null,
         newHostPublicKey: p.newHostPublicKey,
         reason: p.reason,
         logHash: p.logHash,

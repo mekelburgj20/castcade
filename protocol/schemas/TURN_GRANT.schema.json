@@ -65,5 +65,5 @@
     "grantSig"
   ],
   "additionalProperties": false,
-  "description": "host -> one client. The only message that unlocks input. Verified by the companion before the lock is released."
+  "description": "host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released."
 }

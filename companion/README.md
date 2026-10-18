@@ -1,6 +1,17 @@
 # companion/
 
-**Status: not started — Phase 2 (shell + Witness basic mode), then Phases 3–4.**
+**Status (2026-10-18): Phase 1 match engine + a minimal Electron shell.** No Witness, patcher, media or
+launch code yet (Phase 2+).
+
+- `src/match/` — the pure match engine, no Electron, no I/O except through a `Transport`: `HostMatch`
+  (arbiter), `ClientMatch`, hash-chained `MatchLog`, `MatchState` as a fold over the log, `Session`,
+  Ed25519 `keys`, `MemoryBus` (tests, full mesh) and WebSocket transports, `ManualClock`. Exported from
+  `@castcade/companion` for `fakeclient/` and tests. Behaviour follows `protocol/SPEC.md`.
+- `src/main/` + `src/preload/` + `renderer/` — the Electron shell: one window showing versions,
+  sandboxed preload with a `contextBridge`, Vite + React renderer bundled to `dist/renderer`.
+  `npm run dev -w companion` builds and opens it; `npm run smoke -w companion` prints
+  `castcade <version> protocol <n>` and exits (what CI runs on Windows).
+- Tests: `npx vitest run companion`.
 
 The Castcade desktop app for Windows: Electron + TypeScript. It is also the Windows desktop producer
 for Arcaid Witness (ADR 0003), and its first shippable release is exactly that: install, pair, play,

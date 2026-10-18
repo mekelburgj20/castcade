@@ -143,7 +143,7 @@ export const TurnGrant = z
     grant: GrantBody,
     grantSig: Signature.describe("Host's signature over canonicalJson(grant)."),
   })
-  .describe('host -> one client. The only message that unlocks input. Verified by the companion before the lock is released.');
+  .describe('host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released.');
 
 export const State = z
   .object({
@@ -191,12 +191,13 @@ export const GameOver = z
 
 export const HostTransfer = z
   .object({
-    proposer: PlayerId.describe('The participant offering to become host (the current host when planned, any client when the host is gone).'),
+    proposer: PlayerId.describe('Who sent the proposal: the current host when planned, the candidate itself when the host is gone.'),
+    newHost: PlayerId.describe('Who becomes host; equals proposer for host_left.'),
     reason: z.enum(['host_left', 'host_requested']),
     logHash: Sha256Hex.describe("The proposer's log head; acceptors must hold the same hash."),
     logLength: z.number().int().min(0),
     currentGrant: TurnGrant.nullable().describe('The last grant the proposer saw, so the match resumes at the same handoff.'),
-    newHostPublicKey: PublicKey.describe('Grants after the transfer are signed with this key.'),
+    newHostPublicKey: PublicKey.describe('Grants after the transfer are signed with this key. Must equal the roster entry for newHost.'),
   })
   .describe('host -> all, or client -> all when the host is gone. Takes effect when a majority of the remaining participants ack it.');
 
@@ -232,7 +233,9 @@ export const Result = z
     logHash: Sha256Hex,
     logLength: z.number().int().min(0),
     hostSignature: Signature,
-    signatures: z.array(z.object({ playerId: PlayerId, signature: Signature })).describe('Every LOG_SIGN received; missing or disagreeing ones are flagged on the ArcAid side, never rejected.'),
+    signatures: z
+      .array(z.object({ playerId: PlayerId, signature: Signature, logHash: Sha256Hex, logLength: z.number().int().min(0) }))
+      .describe('Every LOG_SIGN received, with the head each participant actually signed; missing or disagreeing ones are flagged on the ArcAid side, never rejected.'),
     hostTransfers: z.number().int().min(0),
     startedAt: z.number().int(),
     finishedAt: z.number().int(),
@@ -300,7 +303,7 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   HELLO_ACK: 'host->client',
   REFUSE: 'host->client',
   MATCH_READY: 'host->all',
-  TURN_GRANT: 'host->client',
+  TURN_GRANT: 'host->all',
   STATE: 'any',
   DMD_FRAME: 'any',
   BALL_END: 'client->host',

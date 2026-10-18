@@ -31,7 +31,9 @@ function checkExpectations(run: LocalRun): void {
   for (const sig of first.signatures) {
     const key = outcomes[sig.playerId]?.publicKey;
     expect(key, `key of ${sig.playerId}`).toBeTruthy();
-    expect(verifyCanonical(logSignBody(first.matchId, first.logHash, first.logLength), sig.signature, key ?? '')).toBe(true);
+    expect(sig.logHash).toBe(first.logHash);
+    expect(sig.logLength).toBe(first.logLength);
+    expect(verifyCanonical(logSignBody(first.matchId, sig.logHash, sig.logLength), sig.signature, key ?? '')).toBe(true);
   }
 }
 

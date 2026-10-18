@@ -335,6 +335,7 @@ export class HostMatch {
       'HOST_TRANSFER',
       {
         proposer: this.localId,
+        newHost: to,
         reason: 'host_requested',
         logHash: head.hash,
         logLength: head.length,
@@ -786,7 +787,7 @@ export class HostMatch {
       logHash: head.hash,
       logLength: head.length,
       hostSignature: signCanonical(logSignBody(this.matchId, head.hash, head.length), this.s.keys.privateKey),
-      signatures: [...this.signatures.values()].map((r) => ({ playerId: r.playerId, signature: r.signature })),
+      signatures: [...this.signatures.values()].map((r) => ({ playerId: r.playerId, signature: r.signature, logHash: r.logHash, logLength: r.logLength })),
       hostTransfers: st.hostTransfers,
       startedAt: st.startedAt ?? head.length,
       finishedAt: st.endedAt ?? this.s.clock.now(),
