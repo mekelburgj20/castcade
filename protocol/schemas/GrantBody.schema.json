@@ -1,0 +1,53 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/GrantBody.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "matchId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+    },
+    "player": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Who may play."
+    },
+    "ballNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99,
+      "description": "Which ball of their game this grant covers."
+    },
+    "grantSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "Monotonic per match; a client ignores a grant with a lower seq than one it has seen."
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991,
+      "description": "Host clock, ms since epoch."
+    },
+    "logHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the host log head when the grant was issued; lets a client detect a forked log."
+    }
+  },
+  "required": [
+    "matchId",
+    "player",
+    "ballNumber",
+    "grantSeq",
+    "issuedAt",
+    "logHash"
+  ],
+  "additionalProperties": false,
+  "description": "The signed part of a TURN_GRANT. Signature is over canonicalJson(GrantBody)."
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@castcade/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Castcade match protocol: message schemas, version constant, canonical JSON, generated spec.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "SPEC.md"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "generate": "tsx scripts/generate.ts"
+  },
+  "dependencies": {
+    "zod": "^4.1.0"
+  }
+}

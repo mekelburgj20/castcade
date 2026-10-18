@@ -1,0 +1,8 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/RESUME.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "description": "either direction. Clears a PAUSE."
+}

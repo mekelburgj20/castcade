@@ -1,0 +1,37 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/PAUSE.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "reason": {
+      "type": "string",
+      "enum": [
+        "disconnect",
+        "ball_end_timeout",
+        "desync",
+        "requested"
+      ]
+    },
+    "player": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The participant the pause is about, if any."
+    }
+  },
+  "required": [
+    "reason",
+    "player"
+  ],
+  "additionalProperties": false,
+  "description": "either direction. The match is held; TURN_GRANTs stop until RESUME."
+}

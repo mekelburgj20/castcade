@@ -1,0 +1,24 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/FORFEIT.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "player": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "player",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "description": "either direction. The named player leaves the match; their remaining balls are scored as played."
+}

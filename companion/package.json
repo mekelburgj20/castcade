@@ -1,0 +1,32 @@
+{
+  "name": "@castcade/companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Castcade companion: Electron desktop app (host/client match engine, Witness producer, media, launch).",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "main": "dist/main/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@castcade/protocol": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.18.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^38.2.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "vite": "^7.1.0"
+  }
+}

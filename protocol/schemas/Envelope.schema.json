@@ -1,0 +1,77 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/Envelope.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "v": {
+      "type": "number",
+      "const": 1,
+      "description": "Protocol version; peers with a different value refuse each other."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "HELLO",
+        "HELLO_ACK",
+        "REFUSE",
+        "MATCH_READY",
+        "TURN_GRANT",
+        "STATE",
+        "DMD_FRAME",
+        "BALL_END",
+        "GAME_OVER",
+        "HOST_TRANSFER",
+        "HOST_TRANSFER_ACK",
+        "LOG_SIGN",
+        "RESULT",
+        "PAUSE",
+        "RESUME",
+        "FORFEIT",
+        "REJECT"
+      ]
+    },
+    "matchId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Per-sender, strictly increasing within a connection."
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991,
+      "description": "Sender's clock, ms since epoch. Informational."
+    },
+    "from": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The original sender. Preserved when the host mirrors STATE / DMD_FRAME."
+    },
+    "payload": {}
+  },
+  "required": [
+    "v",
+    "type",
+    "matchId",
+    "seq",
+    "ts",
+    "from",
+    "payload"
+  ],
+  "additionalProperties": false
+}

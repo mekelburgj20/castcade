@@ -1,0 +1,68 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/HELLO_ACK.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "hostPlayerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+    },
+    "hostPublicKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "description": "Clients verify every TURN_GRANT against this key."
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "publicKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+            "description": "Ed25519 public key, 32 raw bytes, base64."
+          },
+          "rig": {
+            "type": "string",
+            "enum": [
+              "pc",
+              "vr_headset",
+              "real_cabinet"
+            ],
+            "description": "The player's declared rig, for provenance (ArcAid badge, never a gate)."
+          }
+        },
+        "required": [
+          "playerId",
+          "displayName",
+          "publicKey",
+          "rig"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Everyone accepted so far, in join order."
+    }
+  },
+  "required": [
+    "hostPlayerId",
+    "hostPublicKey",
+    "participants"
+  ],
+  "additionalProperties": false,
+  "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY."
+}

@@ -1,0 +1,50 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/BALL_END.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "grantSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "The grant this ball end answers. Must match the current grant or the host rejects it."
+    },
+    "ballNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99,
+      "description": "1-based ball number within a game."
+    },
+    "finalScore": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000000,
+      "description": "The player's score after end-of-ball bonus (see SPEC: sample at the next boundary, not at the drain)."
+    },
+    "detectorReason": {
+      "type": "string",
+      "enum": [
+        "nvram",
+        "script",
+        "display",
+        "physical",
+        "manual",
+        "timeout"
+      ],
+      "description": "Which signal produced the ball end: ROM NVRAM map, table script hook, display text, physical heuristic, a human click, or the host timeout."
+    },
+    "shootAgain": {
+      "type": "boolean",
+      "description": "True when the detector saw an extra ball: the host re-grants the same player and ball."
+    }
+  },
+  "required": [
+    "grantSeq",
+    "ballNumber",
+    "finalScore",
+    "detectorReason",
+    "shootAgain"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host. Accepted only from the current grant holder."
+}

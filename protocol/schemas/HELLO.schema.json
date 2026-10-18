@@ -1,0 +1,173 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/HELLO.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "protocolVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "companionVersion": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "throwdownCode": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The Throwdown the client wants to join."
+    },
+    "participant": {
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+          "description": "Ed25519 public key, 32 raw bytes, base64."
+        },
+        "rig": {
+          "type": "string",
+          "enum": [
+            "pc",
+            "vr_headset",
+            "real_cabinet"
+          ],
+          "description": "The player's declared rig, for provenance (ArcAid badge, never a gate)."
+        }
+      },
+      "required": [
+        "playerId",
+        "displayName",
+        "publicKey",
+        "rig"
+      ],
+      "additionalProperties": false
+    },
+    "game": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "vpx",
+            "arcade"
+          ],
+          "description": "Emulator family."
+        },
+        "tableName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human name of the table or ROM set."
+        },
+        "tableHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the ORIGINAL .vpx (never the patched copy), or of the arcade ROM zip."
+        },
+        "romName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PinMAME ROM set name (e.g. mm_109c) or arcade ROM name; null for originals."
+        },
+        "romHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the ROM zip; null for originals."
+        },
+        "physicsHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hash of the physics-relevant table settings; null when not computed."
+        },
+        "recipeVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Castcade patch recipe version applied to this table (ADR 0004); null for arcade."
+        },
+        "sidecarHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the generated sidecar .vbs; proves both players run the same patch."
+        },
+        "emulatorVersion": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "VPX or RetroArch core version string."
+        }
+      },
+      "required": [
+        "kind",
+        "tableName",
+        "tableHash",
+        "romName",
+        "romHash",
+        "physicsHash",
+        "recipeVersion",
+        "sidecarHash",
+        "emulatorVersion"
+      ],
+      "additionalProperties": false,
+      "description": "Everything that must match between participants for a fair match. The host compares these at HELLO."
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "companionVersion",
+    "throwdownCode",
+    "participant",
+    "game"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host. First message on a connection."
+}

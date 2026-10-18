@@ -1,0 +1,107 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/GameFingerprint.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "vpx",
+        "arcade"
+      ],
+      "description": "Emulator family."
+    },
+    "tableName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Human name of the table or ROM set."
+    },
+    "tableHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the ORIGINAL .vpx (never the patched copy), or of the arcade ROM zip."
+    },
+    "romName": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "PinMAME ROM set name (e.g. mm_109c) or arcade ROM name; null for originals."
+    },
+    "romHash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lower-case hex SHA-256."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "SHA-256 of the ROM zip; null for originals."
+    },
+    "physicsHash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lower-case hex SHA-256."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Hash of the physics-relevant table settings; null when not computed."
+    },
+    "recipeVersion": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 32
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Castcade patch recipe version applied to this table (ADR 0004); null for arcade."
+    },
+    "sidecarHash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lower-case hex SHA-256."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "SHA-256 of the generated sidecar .vbs; proves both players run the same patch."
+    },
+    "emulatorVersion": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "VPX or RetroArch core version string."
+    }
+  },
+  "required": [
+    "kind",
+    "tableName",
+    "tableHash",
+    "romName",
+    "romHash",
+    "physicsHash",
+    "recipeVersion",
+    "sidecarHash",
+    "emulatorVersion"
+  ],
+  "additionalProperties": false,
+  "description": "Everything that must match between participants for a fair match. The host compares these at HELLO."
+}

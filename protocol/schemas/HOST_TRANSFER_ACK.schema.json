@@ -1,0 +1,29 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/HOST_TRANSFER_ACK.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "proposer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+    },
+    "accept": {
+      "type": "boolean"
+    },
+    "logHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The acker's own log head, for diagnosis when accept is false."
+    }
+  },
+  "required": [
+    "proposer",
+    "accept",
+    "logHash"
+  ],
+  "additionalProperties": false,
+  "description": "client -> proposer (and all)."
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@castcade/fakeclient",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scripted Castcade participant with no emulator, for CI and one-PC match tests.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "bin": {
+    "fakeclient": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@castcade/companion": "*",
+    "@castcade/protocol": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.0"
+  }
+}

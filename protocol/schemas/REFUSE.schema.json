@@ -1,0 +1,70 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/REFUSE.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "protocol_version",
+        "fingerprint_mismatch",
+        "match_full",
+        "unknown_throwdown",
+        "duplicate_player",
+        "match_started",
+        "other"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "mismatches": {
+      "default": [],
+      "description": "Populated for fingerprint_mismatch so the UI can say exactly which side differs.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "GameFingerprint field name."
+          },
+          "expected": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "received": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedFrom": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Which participant the host compared against."
+          }
+        },
+        "required": [
+          "field",
+          "expected",
+          "received",
+          "expectedFrom"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "code",
+    "message",
+    "mismatches"
+  ],
+  "additionalProperties": false,
+  "description": "host -> client. The HELLO was rejected; the host closes the connection after sending."
+}

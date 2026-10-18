@@ -1,0 +1,80 @@
+{
+  "protocolVersion": 1,
+  "envelope": "Envelope.schema.json",
+  "shared": [
+    "Envelope.schema.json",
+    "GameFingerprint.schema.json",
+    "ParticipantInfo.schema.json",
+    "GrantBody.schema.json"
+  ],
+  "messages": {
+    "HELLO": {
+      "direction": "client->host",
+      "schema": "HELLO.schema.json"
+    },
+    "HELLO_ACK": {
+      "direction": "host->client",
+      "schema": "HELLO_ACK.schema.json"
+    },
+    "REFUSE": {
+      "direction": "host->client",
+      "schema": "REFUSE.schema.json"
+    },
+    "MATCH_READY": {
+      "direction": "host->all",
+      "schema": "MATCH_READY.schema.json"
+    },
+    "TURN_GRANT": {
+      "direction": "host->client",
+      "schema": "TURN_GRANT.schema.json"
+    },
+    "STATE": {
+      "direction": "any",
+      "schema": "STATE.schema.json"
+    },
+    "DMD_FRAME": {
+      "direction": "any",
+      "schema": "DMD_FRAME.schema.json"
+    },
+    "BALL_END": {
+      "direction": "client->host",
+      "schema": "BALL_END.schema.json"
+    },
+    "GAME_OVER": {
+      "direction": "client->host",
+      "schema": "GAME_OVER.schema.json"
+    },
+    "HOST_TRANSFER": {
+      "direction": "any",
+      "schema": "HOST_TRANSFER.schema.json"
+    },
+    "HOST_TRANSFER_ACK": {
+      "direction": "any",
+      "schema": "HOST_TRANSFER_ACK.schema.json"
+    },
+    "LOG_SIGN": {
+      "direction": "client->host",
+      "schema": "LOG_SIGN.schema.json"
+    },
+    "RESULT": {
+      "direction": "host->all",
+      "schema": "RESULT.schema.json"
+    },
+    "PAUSE": {
+      "direction": "any",
+      "schema": "PAUSE.schema.json"
+    },
+    "RESUME": {
+      "direction": "any",
+      "schema": "RESUME.schema.json"
+    },
+    "FORFEIT": {
+      "direction": "any",
+      "schema": "FORFEIT.schema.json"
+    },
+    "REJECT": {
+      "direction": "host->client",
+      "schema": "REJECT.schema.json"
+    }
+  }
+}

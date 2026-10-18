@@ -1,0 +1,10 @@
+[
+  { "input": { "b": 1, "a": 2 }, "output": "{\"a\":2,\"b\":1}" },
+  { "input": { "z": { "y": [3, 2, { "d": null, "c": true }] }, "a": "x" }, "output": "{\"a\":\"x\",\"z\":{\"y\":[3,2,{\"c\":true,\"d\":null}]}}" },
+  { "input": { "n": 1.5, "i": 10, "neg": -0.25, "big": 1000000000000 }, "output": "{\"big\":1000000000000,\"i\":10,\"n\":1.5,\"neg\":-0.25}" },
+  { "input": { "s": "quote\" backslash\\ newline\n unicode é 🎮" }, "output": "{\"s\":\"quote\\\" backslash\\\\ newline\\n unicode é 🎮\"}" },
+  { "input": { "B": 1, "a": 2, "_": 3, "aa": 4, "a0": 5 }, "output": "{\"B\":1,\"_\":3,\"a\":2,\"a0\":5,\"aa\":4}" },
+  { "input": [], "output": "[]" },
+  { "input": {}, "output": "{}" },
+  { "input": { "matchId": "TD-1234", "player": "p2", "ballNumber": 1, "grantSeq": 1, "issuedAt": 1760745600000, "logHash": "0000000000000000000000000000000000000000000000000000000000000000" }, "output": "{\"ballNumber\":1,\"grantSeq\":1,\"issuedAt\":1760745600000,\"logHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"matchId\":\"TD-1234\",\"player\":\"p2\"}" }
+]

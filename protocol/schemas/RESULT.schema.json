@@ -1,0 +1,149 @@
+{
+  "$id": "https://castcade.dev/protocol/v1/RESULT.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "matchId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+    },
+    "entries": {
+      "minItems": 2,
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "score": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000000000000,
+            "description": "Score as an integer; no decimals."
+          },
+          "ballsPlayed": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "finished",
+              "forfeit",
+              "abandoned",
+              "disconnected"
+            ]
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "1 = winner; ties share a rank."
+          }
+        },
+        "required": [
+          "playerId",
+          "score",
+          "ballsPlayed",
+          "status",
+          "rank"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "winner": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "null on a tie for first."
+    },
+    "logHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lower-case hex SHA-256."
+    },
+    "logLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "hostSignature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "description": "Ed25519 signature, 64 raw bytes, base64, over canonical JSON."
+    },
+    "signatures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "signature": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+            "description": "Ed25519 signature, 64 raw bytes, base64, over canonical JSON."
+          }
+        },
+        "required": [
+          "playerId",
+          "signature"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Every LOG_SIGN received; missing or disagreeing ones are flagged on the ArcAid side, never rejected."
+    },
+    "hostTransfers": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "startedAt": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "finishedAt": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "matchId",
+    "entries",
+    "winner",
+    "logHash",
+    "logLength",
+    "hostSignature",
+    "signatures",
+    "hostTransfers",
+    "startedAt",
+    "finishedAt"
+  ],
+  "additionalProperties": false,
+  "description": "host -> all, and posted to ArcAid as the Throwdown result plus a castcade_matches record."
+}

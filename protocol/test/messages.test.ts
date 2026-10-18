@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildMessage,
+  decodeFrame,
+  encodeFrame,
+  MESSAGE_DIRECTION,
+  MESSAGE_TYPES,
+  parseMessage,
+  ProtocolError,
+  PROTOCOL_VERSION,
+  type GameFingerprint,
+  type ParticipantInfo,
+} from '../src/index.js';
+
+const hex64 = 'ab'.repeat(32);
+const b64key = Buffer.alloc(32, 7).toString('base64');
+const b64sig = Buffer.alloc(64, 9).toString('base64');
+
+export const fingerprint: GameFingerprint = {
+  kind: 'vpx',
+  tableName: 'Medieval Madness (Williams 1997) VPW v1.0.1',
+  tableHash: hex64,
+  romName: 'mm_109c',
+  romHash: hex64,
+  physicsHash: null,
+  recipeVersion: '0.1.0',
+  sidecarHash: hex64,
+  emulatorVersion: '10.8.0',
+};
+
+export const participant: ParticipantInfo = {
+  playerId: 'p1',
+  displayName: 'Player One',
+  publicKey: b64key,
+  rig: 'pc',
+};
+
+describe('envelope', () => {
+  it('round-trips a HELLO', () => {
+    const msg = buildMessage(
+      'HELLO',
+      { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.1.0', throwdownCode: 'TD-1', participant, game: fingerprint },
+      { matchId: null, seq: 0, from: 'p1', ts: 1 },
+    );
+    const back = decodeFrame(encodeFrame(msg));
+    expect(back).toEqual(msg);
+  });
+
+  it('applies payload defaults', () => {
+    const msg = buildMessage('STATE', { ballNumber: 1, score: 10, ballInPlay: true, tilt: false }, { matchId: 'TD-1', seq: 3, from: 'p1' });
+    expect(msg.payload.extraBalls).toBe(0);
+    const refuse = buildMessage('REFUSE', { code: 'match_full', message: 'full' }, { matchId: null, seq: 1, from: 'host' });
+    expect(refuse.payload.mismatches).toEqual([]);
+  });
+
+  it('rejects a wrong protocol version, an unknown type and a bad payload', () => {
+    const good = buildMessage('RESUME', {}, { matchId: 'TD-1', seq: 1, from: 'p1', ts: 1 });
+    expect(() => parseMessage({ ...good, v: 99 })).toThrow(ProtocolError);
+    expect(() => parseMessage({ ...good, type: 'NOPE' })).toThrow(ProtocolError);
+    expect(() => parseMessage({ ...good, type: 'BALL_END' })).toThrow(ProtocolError);
+    expect(() => decodeFrame('{not json')).toThrow(ProtocolError);
+  });
+
+  it('validates a TURN_GRANT and a BALL_END', () => {
+    const grant = buildMessage(
+      'TURN_GRANT',
+      { grant: { matchId: 'TD-1', player: 'p2', ballNumber: 1, grantSeq: 1, issuedAt: 1, logHash: hex64 }, grantSig: b64sig },
+      { matchId: 'TD-1', seq: 1, from: 'host' },
+    );
+    expect(grant.payload.grant.player).toBe('p2');
+    expect(() =>
+      buildMessage(
+        'BALL_END',
+        { grantSeq: 1, ballNumber: 0, finalScore: 1, detectorReason: 'nvram', shootAgain: false },
+        { matchId: 'TD-1', seq: 2, from: 'p2' },
+      ),
+    ).toThrow(ProtocolError);
+    expect(() =>
+      buildMessage(
+        'BALL_END',
+        { grantSeq: 1, ballNumber: 1, finalScore: 1.5, detectorReason: 'nvram', shootAgain: false },
+        { matchId: 'TD-1', seq: 2, from: 'p2' },
+      ),
+    ).toThrow(ProtocolError);
+  });
+
+  it('validates both DMD_FRAME variants', () => {
+    const text = buildMessage('DMD_FRAME', { kind: 'text', lines: ['PLAYER 1', 'BALL 2'] }, { matchId: 'TD-1', seq: 1, from: 'p1' });
+    expect(text.payload.kind).toBe('text');
+    const bmp = buildMessage(
+      'DMD_FRAME',
+      { kind: 'bitmap', width: 128, height: 32, bitsPerPixel: 4, encoding: 'rle8-base64', data: 'AAEC' },
+      { matchId: 'TD-1', seq: 2, from: 'p1' },
+    );
+    expect(bmp.payload.kind).toBe('bitmap');
+  });
+
+  it('has a direction for every message type', () => {
+    for (const t of MESSAGE_TYPES) expect(MESSAGE_DIRECTION[t]).toBeTruthy();
+  });
+});
