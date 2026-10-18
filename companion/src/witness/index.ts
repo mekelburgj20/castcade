@@ -69,3 +69,4 @@ export {
   type TableSource,
 } from './process-watch.js';
 export { PostQueue, QUEUE_FILE, type QueuedPost, type PostInput, type PostResult } from './queue.js';
+export { catalogueTableName } from './table-name.js';

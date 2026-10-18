@@ -140,6 +140,8 @@ export class ArcaidClient {
       device: string;
       table: string;
       rom: string | null;
+      /** A second name key for the same table (ArcAid turns `-`/`_` into spaces and normalises it). */
+      slug?: string | null;
       score: number;
       started: number;
       ended: number;

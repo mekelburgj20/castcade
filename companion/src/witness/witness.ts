@@ -42,6 +42,7 @@ import {
   type VpxTitle,
 } from './process-watch.js';
 import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
+import { catalogueTableName } from './table-name.js';
 import type { CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
@@ -334,9 +335,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       before = decode(map, baseline?.get(name)?.bytes ?? null);
     }
 
-    const resolved = resolveTableName(session.launch, rom ? await corpus.romName(rom) : null, rom);
+    const romName = rom ? await corpus.romName(rom) : null;
+    const resolved = resolveTableName(session.launch, romName, rom);
     const table = resolved?.table ?? UNKNOWN_TABLE;
+    // What ArcAid sees: the catalogue-grade name, plus the ROM's own name as the `slug` fallback key.
+    const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
+    const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
     if (resolved) details.push(SOURCE_TEXT[resolved.source]);
+    if (wireTable !== table) details.push(`sent to ArcAid as "${wireTable}"${wireSlug ? ` (or "${wireSlug}")` : ''}`);
     details.push(trigger === 'player' ? 'captured when the player closed' : 'captured at VPX exit');
 
     const durationSec = Math.max(0, Math.round((ended - started) / 1000));
@@ -354,7 +360,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (token && resolved) {
       const reported = await queue.submit({
         kind: 'report',
-        params: { device: deviceId, table, launch: sec(started), exit: sec(ended), dur: durationSec },
+        params: { device: deviceId, table: wireTable, launch: sec(started), exit: sec(ended), dur: durationSec },
       });
       if (reported.state === 'rejected') fail(reported.error.message);
     }
@@ -370,8 +376,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         kind: 'score',
         params: {
           device: deviceId,
-          table,
+          table: wireTable,
           rom,
+          slug: wireSlug,
           score: decision.score,
           started: sec(started),
           ended: sec(ended),

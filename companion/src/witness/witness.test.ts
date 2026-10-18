@@ -14,6 +14,8 @@ const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.u
 const corpus = createMapCorpus(repo('fixtures/maps'));
 
 const MM_TABLE = 'Medieval Madness (Williams 1997) VPW v1.0.1';
+/** What ArcAid is sent: the name cut after the manufacturer/year parenthetical (catalogueTableName). */
+const MM_WIRE = 'Medieval Madness (Williams 1997)';
 const MM_CMD = `"C:\\VPX\\VPinballX64.exe" -Play "C:\\Tables\\${MM_TABLE}.vpx" -Minimized`;
 const EXE = 'C:\\VPX\\VPinballX64.exe';
 const GL_EXE = 'C:\\VPX\\VPinballX_GL64.exe';
@@ -21,6 +23,7 @@ const GL_EXE = 'C:\\VPX\\VPinballX_GL64.exe';
 const GL_CMD = `"${GL_EXE}" `;
 const MB_TITLE = 'Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]';
 const MB_TABLE = 'Monster Bash (Williams 1998) VPWmod v1.0';
+const MB_WIRE = 'Monster Bash (Williams 1998)';
 
 /** The MM fixture's final NVRAM (last game 1,089,510, one player, game over). */
 let mmAfter: Uint8Array;
@@ -217,15 +220,16 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     for (const p of posts) expect(p.token).toBe('tok');
     expect(posts[0]?.params).toEqual({
       device: 'dev-1',
-      table: MM_TABLE,
+      table: MM_WIRE,
       launch: String(Math.floor(launchedAt / 1000)),
       exit: String(Math.floor(ended / 1000)),
       dur: String(dur),
     });
     expect(posts[1]?.params).toEqual({
       device: 'dev-1',
-      table: MM_TABLE,
+      table: MM_WIRE,
       rom: 'mm_109c',
+      slug: 'Medieval Madness', // the ROM's catalogue name (romnames.json) as the fallback key
       score: '1089510',
       started: String(Math.floor(launchedAt / 1000)),
       ended: String(Math.floor(ended / 1000)),
@@ -434,9 +438,9 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     });
     expect(h.captures[0]?.detail).toMatch(/table from the editor window title/);
     expect(h.captures[0]?.detail).toMatch(/captured when the player closed/);
-    expect(h.paths('/report')[0]?.params).toMatchObject({ table: MB_TABLE, launch: String(Math.floor(procStart / 1000)), exit: String(Math.floor(ended1 / 1000)) });
+    expect(h.paths('/report')[0]?.params).toMatchObject({ table: MB_WIRE, launch: String(Math.floor(procStart / 1000)), exit: String(Math.floor(ended1 / 1000)) });
     expect(h.paths('/score')[0]?.params).toMatchObject({
-      table: MB_TABLE,
+      table: MB_WIRE,
       rom: 'mm_109c',
       score: '1089510',
       started: String(Math.floor(procStart / 1000)),

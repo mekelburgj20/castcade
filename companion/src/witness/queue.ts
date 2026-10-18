@@ -30,6 +30,7 @@ export type QueuedPost =
         device: string;
         table: string;
         rom: string | null;
+        slug?: string | null;
         score: number;
         started: number;
         ended: number;

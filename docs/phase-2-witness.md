@@ -70,6 +70,9 @@ heartbeat so ArcAid shows the device as online.
 - **Multi-player games are not posted** (that is Castcade's Phase 3 job).
 - **Modern Stern SAM/SPIKE ROMs** have no last-game maps, so nothing is posted for them.
 - **Original (non-ROM) tables** have no last-game score in basic mode. Nothing is posted.
+- The score is posted under the table's catalogue name (the file or window name cut after its
+  "(Manufacturer Year)" part, e.g. *Monster Bash (Williams 1998)*), plus the ROM's own name as a second key.
+  ArcAid matches that against the games open in the room you route this device to, then the Global catalogue.
 - Scores are **added**, never changed or filtered: ArcAid's doctrine is *badge, never gate*.
 - The app is unsigned (SmartScreen warning) and updates itself from GitHub Releases: when a new
   version has downloaded, the tray shows a notice and installs it the next time you quit.
