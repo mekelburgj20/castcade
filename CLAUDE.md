@@ -16,12 +16,14 @@ VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 
 Docs, skeleton, and the **Phase 0 spike kit** (`vpx-hook/castcade.vbs` + `vpx-hook/spike/`: Python and
 PowerShell only, no Node). **No companion code, no package manifest, no build or test tooling yet.**
-Phase 0 is staged on the owner's rig and waiting for play sessions; the runbook and the results table are
-`docs/phase-0-spike.md`. When the stack lands (Electron + TypeScript is the ruled direction), add
+Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e); results, the
+findings Phase 3 must absorb (journal volume, boot-garbage gate, bonus-after-ball_end) and what the owner still
+confirms by hand are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`. When the stack lands (Electron + TypeScript is the ruled direction), add
 build / lint / test / single-test commands here.
 
 Spike checks that exist today: `cscript` harness for the library (see `vpx-hook/README.md`), and
-`python vpx-hook/spike/tail-journal.py <journal>` replays a journal through the decoder and detector.
+`python vpx-hook/spike/tail-journal.py <journal|fixture.jsonl.gz>` replays a journal through the decoder and
+detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing spurious).
 
 ## Session start — read in this order
 

@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX64.exe, build 10802078 per ini)",
+  "recorded": "2026-10-17",
+  "rig": "owner's rig, Windows 11, desktop (non-VR) windowed 1920x1440",
+  "lib_sha256": "3829b58222465bedb17e201156ac53c583f70588c09bc57ccb73d4582c33303e",
+  "lib_version": "0.1.0",
+  "recipe_version": "0.1.0",
+  "played_by": "vpx-hook/spike/autoplay.py (synthesized keys: start, plunge, no flipping; lock exercise mid-session)",
+  "journal_sha256": "b82e8ac859e2ba84f71f6ff114ccc935296285af2e913da6ae62910fe8a52ac9",
+  "table_file": "Iron Maiden (Original 2022) VPW 1.0.12.vpx",
+  "table_id": "Iron Maiden (Original 2022) VPW 1.0.12",
+  "recipe": "B",
+  "rom": null,
+  "vpx_sha256": "0c9983fa2470620a3bd2f60f68e91092779bbff9d80e1306c5a46d159ffe87dc",
+  "script_sha256": "99986e273ee8d0f4cf76568a537d55b70a30cab7baa05281124a25ea4dc7e301",
+  "sidecar_sha256": "6b38f2138aa1c9855b104aef86ed66b0d9b86e1ae0db02c0d3ccb67dc2f19df6",
+  "games": 1,
+  "expected": "game_start, 206 current_scores, ball_end 1,2,3 (ball = the ball that just ended; extra_balls 0), game_end score 384260; end-of-ball bonus is added AFTER ball_end (score at ball_end 259760 -> 384260 at game_end); lock exercise during ball 1-2 (t=61-67)",
+  "notes": "recipe B anchors: ResetForNewGame / AddScore / EndOfBall / EndOfGame",
+  "journal_file": "2026-10-17-1.jsonl"
+}

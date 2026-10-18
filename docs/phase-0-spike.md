@@ -1,6 +1,7 @@
 # Phase 0 spike — runbook and results
 
-**Status:** kit staged 2026-10-17, awaiting the owner's play sessions. Results go in §8 of this file.
+**Status:** run on the owner's rig 2026-10-17 (desktop VPX, driven by `spike/autoplay.py`); **all five gates passed**, see §8.
+Still open for the owner: the hands-on feel of the lock (flippers visibly dead), VR controller / analog plunger inputs, and reading the F11 FPS overlay during a capture.
 **Decides:** the five open questions the plan's Phase 0 row names (`docs/design/arcaid-integration-gap-analysis.md` §6).
 Nothing in Phases 1–6 that touches VPX can start honestly until the gates below are read.
 
@@ -122,24 +123,57 @@ Note the FPS again during the capture. The script prints a paste line (`0d | att
 `-Monitor 1` if the VPX preview window is on a second display; `-WindowTitle "Visual Pinball"` forces the gdigrab window path for comparison.
 In VR the capture is of the desktop preview window, which is also what spectators would see.
 
-## 8. Results (fill in)
+## 8. Results (run 2026-10-17, 18:08–18:25)
 
-Copy the tailer summaries here verbatim. Then copy each session's journal into `fixtures/` as `fixtures/nvram/<rom>/<yyyy-mm-dd>-<n>.jsonl`
-(ROM tables) or `fixtures/script/<table-slug>/<yyyy-mm-dd>-<n>.jsonl` (Iron Maiden), with a sibling `.meta.json` naming the table file,
-VPX version and sidecar sha256 from `tmp\spike\tables\manifest.json`. They are the first detector fixtures.
+**How it was run.** All three staged tables were launched with `VPinballX64.exe -Ini <scratch copy> -Play <staged .vpx>` (the ini copy only
+remapped Start to `1`, turned on `EnableLog`/`LogScriptOutput`; the owner's ini was not touched; the exe in this install is the non-VR
+build, windowed 1920×1440). Keys came from `spike/autoplay.py`: one credit, Start, then plunge every 7 s and never flip, until the
+tailer reported `game_end`; the 0c exercise ran mid-game on TFTC and Iron Maiden and after game over on MM. Each table was quit with
+the exit key, so `table_exit` closed every journal. The three journals are in `fixtures/` (gzipped) with `.meta.json` sidecars.
 
 | Item | Table | Result | Evidence / notes |
 |---|---|---|---|
-| 0e | TFTC | | dialog wording, if any |
-| 0e | MM | | |
-| 0e | Iron Maiden | | |
-| 0a | TFTC (`tftc_400`) | | alignment line; balls seen; game_end |
-| 0a | MM (`mm_109c`) | | alignment line; balls seen; game_end; extra ball? |
-| 0b | Iron Maiden | | scores climb; ball numbering at ball_end; game_end |
-| 0c | keyboard | | |
-| 0c | VR controllers | | |
-| 0c | other inputs | | analog plunger / nudge if present |
-| 0d | | | paste line from capture-test |
+| 0e | TFTC | **PASS** | journal `table_loaded` 2 s after launch; no dialog (screenshot); no `%TEMP%` breadcrumb |
+| 0e | MM | **PASS** | same; `Castcade` folder, `scripts\castcade.vbs` found via `GetTextFile` |
+| 0e | Iron Maiden | **PASS** | same (23k-line class-B sidecar compiled and ran) |
+| 0a | TFTC (`tftc_400`) | **PASS** | live NVRAM **8238 = on-disk .nv 8238, offset +0 (97% agreement) → SAME INDEXING**; `game_start` t=61.6, `ball_end` 1/2/3 at 91.6/127.0/169.4, `game_end` score 2,318,430; 22,235 deltas in 185 s |
+| 0a | MM (`mm_109c`) | **PASS** | live NVRAM **12334 = .nv 12334, offset +0 (98%) → SAME INDEXING**; two games: `ball_end` 1/2/3 + `game_end` (277,500) then again (1,089,510); 77,547 deltas in 387 s; no extra ball lit (autoplay never flips) — extra-ball fixture still to record |
+| 0b | Iron Maiden | **PASS** | `game_start`, 206 `current_scores` climbing, `ball_end` 1/2/3 (the `ball` value is the ball that just ended, `extra_balls` 0), `game_end` 384,260. **End-of-ball bonus is added after `ball_end`** (259,760 at ball_end → 384,260 at game_end) |
+| 0c | keyboard (synthesized scancodes) | **PASS (journal)** | on all three tables: `lock locked=true` once, then `key_blocked` for LShift 42, RShift 54, Enter 28, Start 2 while locked; a flipper held down while locked had its key-up swallowed (no stuck flipper), a flipper held down across unlock→lock released normally; exit key still worked. TFTC also caught a real autoplay plunge (28) while locked. **Owner still confirms the table visibly did nothing** |
+| 0c | VR controllers | open | owner: VPX maps joystick buttons to keycodes before `_KeyDown`, expected to pass; `PlungerAxis = 5` is configured on this rig, so an **analog plunger exists → test it** |
+| 0c | other inputs | open | analog plunger / nudge if present (`PBWEnabled = 1` in the ini) |
+| 0d | MM, game in progress | **PASS (CPU/encoder), FPS unread** | `0d \| attempt=2 \| frames=898/900 \| ffmpeg cpu=1.7% \| enc=3.7% \| vpx fps before=__ during=__`; attempt 1 (GPU-resident `hwmap` to CUDA) fails on this ffmpeg build with `-40`, attempt 2 (ddagrab → hwdownload → h264_nvenc) works; VPX CPU 8.5% unchanged during capture; GPU already at ~80–85% because `MaxFramerate = 0` (uncapped). The F11 overlay did not appear on a synthesized F11, so FPS before/during is the owner's to read |
+
+Tailer summaries (verbatim gate lines):
+
+```
+MM   0e PASS · 0a PASS (nvram_full=16 deltas=77547 ball_end=6 game_end=2) · 0c ENGAGED 5 times (3 lock transitions)
+TFTC 0e PASS · 0a PASS (nvram_full=5  deltas=22235 ball_end=3 game_end=1) · 0c ENGAGED 6 times (3 lock transitions)
+IM   0e PASS · 0b PASS (game_start=1 current_scores=206 ball_end=3 game_end=1) · 0c ENGAGED 6 times (5 lock transitions)
+```
+
+### Findings Phase 3 must absorb
+
+1. **Journal volume and frame cost (hook 0.1.0).** WPC RAM changes every PinMAME tick: MM produced ~200 `nvram_delta` lines/s (≈95 KB/s,
+   37 MB for 6.5 min). VPX's own frame profiler logged ten long frames for the patched MM run, 10–13 ms each with the time inside
+   `PinMAMETimer` (our callback), plus **148 ms and 51 ms frames at the periodic `nvram_full` snapshot** (`Join` of 12,334 bytes). The
+   unpatched MM baseline run, and the patched TFTC and Iron Maiden runs, logged no long frame at all. Fix: journal only the bytes inside
+   the map's `game_state` region (≈100 bytes, known at render time from the map), throttle deltas to ≥50 ms, and take the full snapshot
+   only at hook time and on request. 0d's "<5 % frame cost" therefore holds for capture but **not yet for the 0.1.0 hook on WPC**.
+2. **ROM boot garbage.** MM fills NVRAM with 0x55 then 0xAA during its power-on RAM test (`current_player` decodes as 85/170). The first
+   tailer pass derived a fake `game_start`/`ball_end`/`game_end` from it. The detector now rejects implausible states (`plausible()`:
+   player 0–4, ball within range, integer scores) and only ends a game that had a ball in play; both fixtures replay clean.
+3. **Bonus after `ball_end` on originals.** Iron Maiden adds the end-of-ball bonus after `EndOfBall` fires, so the score at `ball_end`
+   is not the ball's final score. The match detector must take a player's score at the *next* `game_start`/`ball_end`/`game_end`, or
+   after a quiet period, never at the `ball_end` instant. (NVRAM tables: the same rule, since WPC counts bonus down after the drain.)
+4. **`ball` at `ball_end` is the ended ball** on Iron Maiden (`Balls` evaluated at the top of `EndOfBall`), matching the NVRAM path.
+5. **Alignment is a no-op on both platforms tested** (WPC, Data East): live `Controller.NVRAM` has the same length and indexing as the
+   `.nv` file. The maps apply unshifted; the Phase 3 decoder keeps the alignment check only as a sanity assertion.
+6. **Autoplay works through DirectInput.** SendInput with scancodes drives VPX (Start, plunger, flippers, exit); fixture recording needs
+   no human once the table is staged. Useful for the Phase 3 verification run ("import → launch → one automated ball → ready").
+7. **ffmpeg path.** On this build `ddagrab` → `hwmap(cuda)` is unavailable; `ddagrab` → `hwdownload` → `h264_nvenc` costs 1.7 % CPU
+   and 3.7 % of the encoder at 720p30. Phase 4 should also try `-filter_complex ddagrab=output_fmt=…,hwmap=derive_device=cuda` with
+   a newer ffmpeg, or capture via the companion's own D3D11 path, but the fallback is good enough.
 
 ### What the results decide
 
@@ -147,7 +181,8 @@ VPX version and sidecar sha256 from `tmp\spike\tables\manifest.json`. They are t
 - **0a SAME INDEXING** → the companion decodes the live array with the maps as-is. SHIFT → one constant per platform family, recorded in the maps adapter.
 - **0a/0b pass** → Phase 3's detector gets its first fixtures; Phase 2 (Witness basic mode) can proceed independently.
 - **0c passes on all the owner's inputs** → script-side lock is the v1 turn lock; the OS-level hook is dropped from Phase 3 scope.
-  Fails for analog devices only → OS-level hook becomes a Phase 3 item for those devices.
+  Fails for analog devices only → OS-level hook becomes a Phase 3 item for those devices. (Keyboard path passed 2026-10-17; the
+  analog plunger on this rig is the open case.)
 - **0d passes** → `media` module plan stands (ddagrab + NVENC via the host companion). Fails → test the alternative capture path before Phase 4.
 
 Any gate that fails is written up here first; the ADR it affects (0001 for 0a/0e, the match design for 0c) is amended only after the owner reads it.

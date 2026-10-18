@@ -9,8 +9,10 @@ Windows desktop producer for **Arcaid Witness**, reporting live VPX scores to Ar
 
 ## Status
 
-Design complete; Phase 0 spike kit staged on the owner's rig, play sessions pending (2026-10-17, see
-[`docs/phase-0-spike.md`](docs/phase-0-spike.md)). Start with
+Design complete; **Phase 0 spike run on the owner's rig 2026-10-17: all five gates passed** (sidecar auto-load,
+live NVRAM on WPC + Data East, script-side scoring on an original, script turn lock, 720p30 capture); the
+owner's hands-on confirmation of the lock feel and VR inputs is still open. Results, findings and the first
+fixtures: [`docs/phase-0-spike.md`](docs/phase-0-spike.md) §8. Start with
 [`docs/design/arcaid-integration-gap-analysis.md`](docs/design/arcaid-integration-gap-analysis.md),
 then the ADRs in [`docs/decisions/`](docs/decisions/). The phased roadmap with gates is in §6 of the gap analysis.
 

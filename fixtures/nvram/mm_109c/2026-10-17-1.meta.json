@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX64.exe, build 10802078 per ini)",
+  "recorded": "2026-10-17",
+  "rig": "owner's rig, Windows 11, desktop (non-VR) windowed 1920x1440",
+  "lib_sha256": "3829b58222465bedb17e201156ac53c583f70588c09bc57ccb73d4582c33303e",
+  "lib_version": "0.1.0",
+  "recipe_version": "0.1.0",
+  "played_by": "vpx-hook/spike/autoplay.py (synthesized keys: start, plunge, no flipping; lock exercise mid-session)",
+  "journal_sha256": "d3dfcd7ab007b30bb10bc3192c35e6f6908e2fee1a8cc196b392c9cdaa192f8d",
+  "table_file": "Medieval Madness (Williams 1997) VPW v1.0.1.vpx",
+  "table_id": "Medieval Madness (Williams 1997) VPW v1.0.1",
+  "recipe": "A",
+  "rom": "mm_109c",
+  "vpx_sha256": "2adb94677b5f3519170271f8cc31cac54716d68c62f8491d25ab789792b2a18e",
+  "script_sha256": "00f48e0209deea00e8e205dbeefc0c4d5345782062296779ee742e8ecd226474",
+  "sidecar_sha256": "2ba6b1d4ff7c2b3b12ff0388096cc2b1047d615e082b3ef4ca34fde338685f55",
+  "games": 2,
+  "expected": "game_start, ball_end 1,2,3, game_end x2 (scores 277500 then 1089510); plus boot-time garbage from the WPC RAM test (0x55/0xAA fill) at t<13s that a detector must ignore; lock exercise after game 1 (post game over)",
+  "notes": "live NVRAM 12334 bytes = on-disk .nv, offset +0; 77547 nvram_delta callbacks in 387 s",
+  "journal_file": "2026-10-17-1.jsonl.gz"
+}

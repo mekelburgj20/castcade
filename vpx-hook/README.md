@@ -1,7 +1,10 @@
 # vpx-hook/
 
-**Status: Phase 0 spike kit present (2026-10-17): `castcade.vbs` 0.1.0 and `spike/` (renderer, staging,
-tailer, lock, capture test). Runbook and results: `docs/phase-0-spike.md`. Production recipes = Phase 3.**
+**Status: Phase 0 run 2026-10-17, all gates passed with `castcade.vbs` 0.1.0 on VPX 10.8.0 (results and
+findings: `docs/phase-0-spike.md` §8). `spike/` = renderer, staging, tailer, lock, capture test, autoplay.
+Production recipes = Phase 3. Known 0.1.0 cost to fix in Phase 3: the hook journals every changed NVRAM byte
+(~200 deltas/s on WPC, ~95 KB/s) and the periodic full snapshot costs a 50–150 ms frame; filter to the mapped
+`game_state` region and take the snapshot off the hot path.**
 
 Everything that runs inside the Visual Pinball X process. Pure VBScript, no DLL, no COM registration
 (ADR 0001). The script does one job: append events to a journal file and read one lock flag. All
@@ -17,7 +20,10 @@ decoding, detection and networking happen in the companion.
   The event list is in the file header. Exercised outside VPX with a `cscript` harness (2026-10-17).
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
-  ball-end detector, the ancestor of the companion detector), `lock.ps1`, `capture-test.ps1`.
+  ball-end detector, the ancestor of the companion detector), `lock.ps1`, `capture-test.ps1`, `autoplay.py`
+  (SendInput scancodes: credits, Start, plunge-and-drain until the tailer reports `game_end`, plus the 0c lock
+  exercise — lets a fixture be recorded unattended; VPX reads the keyboard through DirectInput so the player
+  window is brought to the foreground first).
 - `recipes/<family>.md` → code later: one recipe per table family — `vpm-rom`, `original-jpsalas`,
   `original-vpw`, `scorbit-anchored`, `scoreserver-anchored`, plus `unsupported` reasons. A recipe
   states its anchors (what the analyzer must find), the lines it inserts, and how it verifies.

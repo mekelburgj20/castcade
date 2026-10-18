@@ -1,7 +1,10 @@
 # fixtures/
 
-**Status: empty — the Phase 0 sessions (`docs/phase-0-spike.md` §8) produce the first journals; used by CI from Phase 2–3.**
-Journals are written by the hook to `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below.
+**Status: first three fixtures recorded 2026-10-17 (Phase 0, `docs/phase-0-spike.md` §8): `nvram/mm_109c`, `nvram/tftc_400`,
+`script/iron-maiden-lotb`. Used by CI from Phase 2–3.** Journals are written by the hook to
+`%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below. NVRAM journals are large
+(the 0.1.0 hook writes every changed byte: 37 MB for two games of Medieval Madness) so they are stored **gzipped**
+(`.jsonl.gz`, `gzip -9 -n`); the tailer reads both. Replay: `python vpx-hook/spike/tail-journal.py fixtures/nvram/mm_109c/2026-10-17-1.jsonl.gz`.
 
 Recorded evidence the detector and the patcher are tested against: NVRAM journals written by the
 in-VPX hook, script-event logs from originals, and (later) RetroArch memory-read traces. The
@@ -13,8 +16,9 @@ Nothing here is authored by hand except the expected-outcome sidecar files.
 
 ```
 fixtures/
-  nvram/<rom>/<yyyy-mm-dd>-<n>.jsonl        journal lines from one VPX session on ROM <rom>
-  nvram/<rom>/<yyyy-mm-dd>-<n>.expected.json  ball ends, player-up changes, game over, final scores
+  nvram/<rom>/<yyyy-mm-dd>-<n>.jsonl[.gz]   journal lines from one VPX session on ROM <rom>
+  nvram/<rom>/<yyyy-mm-dd>-<n>.meta.json      table file + hashes, VPX version, how it was played, expected outcome (prose)
+  nvram/<rom>/<yyyy-mm-dd>-<n>.expected.json  ball ends, player-up changes, game over, final scores (machine-readable; Phase 3)
   script/<table-slug>/<yyyy-mm-dd>-<n>.jsonl  script-channel events from an original table
   arcade/<rom>/<yyyy-mm-dd>-<n>.jsonl         RetroArch memory-read traces (Phase 6)
   README.md

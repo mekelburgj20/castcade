@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX64.exe, build 10802078 per ini)",
+  "recorded": "2026-10-17",
+  "rig": "owner's rig, Windows 11, desktop (non-VR) windowed 1920x1440",
+  "lib_sha256": "3829b58222465bedb17e201156ac53c583f70588c09bc57ccb73d4582c33303e",
+  "lib_version": "0.1.0",
+  "recipe_version": "0.1.0",
+  "played_by": "vpx-hook/spike/autoplay.py (synthesized keys: start, plunge, no flipping; lock exercise mid-session)",
+  "journal_sha256": "cd816b8f0564b9042dd6611eafec4c5b811936814b0a1554fba257588c297ffc",
+  "table_file": "Tales from the Crypt (Data East 1993) VPW v1.22.vpx",
+  "table_id": "Tales from the Crypt (Data East 1993) VPW v1.22",
+  "recipe": "A",
+  "rom": "tftc_400",
+  "vpx_sha256": "2111323305e95373b0128050a8dfd084996c2aa32d0a5f1bd008cf2d1de5e8d1",
+  "script_sha256": "3b922d69bc9e6c7c3cd5dead7a35b538b526b97c99f62f95bbb6fda2bc2107c2",
+  "sidecar_sha256": "15b774f87b117a5f7668cff16ee95261b316069707afd326f81d7087733cfd5c",
+  "games": 1,
+  "expected": "game_start, ball_end 1,2,3, game_end (score 2318430); no boot garbage; lock exercise during ball 2 (t=93-97)",
+  "notes": "live NVRAM 8238 bytes = on-disk .nv, offset +0; 22235 nvram_delta callbacks in 185 s",
+  "journal_file": "2026-10-17-1.jsonl.gz"
+}

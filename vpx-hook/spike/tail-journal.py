@@ -19,6 +19,7 @@ This is spike tooling.  The detector logic is the seed of the Phase 3 companion 
 fixtures/ replay tests; nothing here is production code.
 """
 import argparse
+import gzip
 import json
 import os
 import sys
@@ -91,16 +92,37 @@ class MapDecoder:
 
 # ----------------------------------------------------------------------------- detector ---
 
+def plausible(st):
+    """Reject decoded states that cannot be a real game: player/ball out of range, scores not ints.
+    Seen on the owner's rig 2026-10-17: Medieval Madness boots with NVRAM filled 0x55 then 0xAA for
+    ~10 s (current_player=85/170), which produced a fake game_start/ball_end/game_end."""
+    if st is None:
+        return False
+    p, b = st.get("current_player"), st.get("current_ball")
+    if p is not None and not (0 <= p <= 4):
+        return False
+    bc = st.get("ball_count") or 5
+    if b is not None and not (0 <= b <= max(bc, 5) + 4):
+        return False
+    if st.get("player_count") is not None and not (0 <= st["player_count"] <= 4):
+        return False
+    for sc in st.get("scores") or []:
+        if sc is not None and (not isinstance(sc, int) or sc < 0 or sc > 10**12):
+            return False
+    return True
+
+
 def detect(prev, cur):
     """Pure function: events implied by going from game_state `prev` to `cur`.
     Returns a list of (name, dict).  Rules:
       game_over True->False                      -> game_start
       active and (ball up or player changed)    -> ball_end for the previous (player, ball)
-      game_over False->True                      -> ball_end for the last ball, then game_end
+      game_over False->True (with a ball in play) -> ball_end for the last ball, then game_end
       scores changed                             -> current_scores
-    An extra ball (extra_balls decrements, ball and player unchanged) fires nothing: the turn goes on."""
+    An extra ball (extra_balls decrements, ball and player unchanged) fires nothing: the turn goes on.
+    A state that is not plausible() (ROM boot RAM test, 0x55/0xAA fills) fires nothing and is not kept as prev."""
     ev = []
-    if prev is None:
+    if prev is None or not plausible(cur):
         return ev
     pgo, cgo = prev.get("game_over"), cur.get("game_over")
     if pgo is True and cgo is False:
@@ -111,9 +133,8 @@ def detect(prev, cur):
         had_ball = pb is not None and pb >= 1          # ball 0 (DE/WPC between games) never "ends"
         if cgo is False and had_ball and ((cb is not None and cb > pb) or (cp is not None and pp is not None and cp != pp)):
             ev.append(("ball_end", {"player": pp, "ball": pb, "extra_balls": prev.get("extra_balls")}))
-        if cgo is True:
-            if had_ball:
-                ev.append(("ball_end", {"player": pp, "ball": pb, "extra_balls": prev.get("extra_balls")}))
+        if cgo is True and had_ball:     # a game that never had a ball in play (ROM boot settling) did not end
+            ev.append(("ball_end", {"player": pp, "ball": pb, "extra_balls": prev.get("extra_balls")}))
             ev.append(("game_end", {"scores": cur.get("scores"), "players": prev.get("player_count")}))
     if prev.get("scores") != cur.get("scores"):
         ev.append(("current_scores", {"scores": cur.get("scores"), "player": cur.get("current_player"), "ball": cur.get("current_ball")}))
@@ -194,7 +215,9 @@ class Session:
             if self.decoder and self.decoder.ok:
                 self.check_alignment()
                 self.state = self.decode()
-                print("   initial game_state: %s" % json.dumps(self.state))
+                print("   initial game_state: %s%s" % (json.dumps(self.state), "" if plausible(self.state) else "  (implausible: ROM boot pattern, ignored)"))
+                if not plausible(self.state):
+                    self.state = None
         elif ev == "nvram_delta":
             if self.shadow is None:
                 return
@@ -209,6 +232,8 @@ class Session:
                         self.balls_seen.add(d["ball"])
                         self.max_ball = max(self.max_ball, d["ball"] or 0)
                     self.show(t, name, d)
+                if not plausible(cur):
+                    return
                 if cur.get("current_ball"):
                     self.max_ball = max(self.max_ball, cur["current_ball"])
                 self.state = cur
@@ -305,7 +330,8 @@ def resolve(arg):
 def read_lines(path, follow):
     """Yield complete lines; in follow mode keep polling and tolerate a torn last line."""
     buf = b""
-    with open(path, "rb") as fh:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rb") as fh:
         while True:
             chunk = fh.read(1 << 20)
             if chunk:
@@ -341,7 +367,7 @@ def main():
     print("reading %s%s" % (path, " (follow)" if args.follow else ""))
 
     if args.last:
-        raw = open(path, "rb").read().split(b"\n")
+        raw = (gzip.open if path.endswith(".gz") else open)(path, "rb").read().split(b"\n")
         starts = [i for i, l in enumerate(raw) if b'"event":"table_loaded"' in l]
         if starts:
             raw = raw[starts[-1]:]
