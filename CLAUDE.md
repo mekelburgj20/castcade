@@ -38,8 +38,12 @@ Monster Bash (VR build, opened from the editor without `-Play`) played to the en
 room's tournament board with the Witness badge. Two field fixes got there: capture on `.nv` change while VPX
 stays open with the table from the window title (0.2.1), and the catalogue-grade wire name
 `catalogueTableName` + ROM name as `slug` (0.2.2). Half 2 (clean-machine install by a tester) is pending.
-Code signing is deferred until GA (owner ruling 2026-10-18). Proposed next (not started, owner to confirm):
-VPS game/table ids on the companion and ArcAid side so matching stops depending on names.
+Code signing is deferred until GA (owner ruling 2026-10-18). Tester kit for the friends wave:
+`docs/tester-kit.md` (v0.2.3). **Next, confirmed by the owner 2026-10-18 (ADR 0005, design in
+`docs/design/fairness-and-table-identity.md`):** tournaments get an integrity mode, Open play (any table of
+the game, matched on VPS game id) or Sanctioned play (named table, stock physics, factory NVRAM adjustments,
+known build, script diff with no restricted change; preflight before ball one). Build order F1–F6 in the
+design doc §7: companion identity + attestation first (F1/F2, not started), then ArcAid items 11/12.
 
 ## Commands
 
@@ -66,11 +70,12 @@ detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing
 ## Session start — read in this order
 
 1. `docs/design/arcaid-integration-gap-analysis.md` — what ArcAid already has, the owner's rulings, the revised architecture and phases. **Source of truth.**
-2. `docs/decisions/` — ADRs 0001–0004 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in).
-3. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
-4. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
-5. `docs/design/remote-two-player-design-handoff.md` — the original handoff; historical; wrong where the gap analysis says so.
-6. In ArcAid: `docs/vpx-desktop-witness-plan.md`, ADRs 0017/0018/0020–0022, and `CLAUDE.md` sections "Live Event format", "Throwdowns", "Arcaid Witness".
+2. `docs/decisions/` — ADRs 0001–0005 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play).
+3. `docs/design/fairness-and-table-identity.md` — table identity, playfield fingerprint, script inspection, the honest ceiling, build order F1–F6.
+4. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
+5. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
+6. `docs/design/remote-two-player-design-handoff.md` — the original handoff; historical; wrong where the gap analysis says so.
+7. In ArcAid: `docs/vpx-desktop-witness-plan.md`, ADRs 0017/0018/0020–0022, and `CLAUDE.md` sections "Live Event format", "Throwdowns", "Arcaid Witness".
 
 ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, cloned `pinmame-nvram-maps`,
 `vpxtool`) is **gitignored** at `C:\code\repos\ArcAid\tmp\vpx-desktop-witness\`. Do not re-run that research.
@@ -85,6 +90,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | **Import a table** (per-table script patch) is the primary path; the shared `core.vbs` patch is a forced-choice setup opt-in for bulk Witness scoring. "Patched" never reads as "Castcade-ready". | 2026-10-17 | 0004 |
 | Peer-hosted (host player's companion arbitrates and forwards media); ArcAid does signaling + results only. Architecture B (parallel 1-player games). 2–4 players, protocol N-player from day one. | handoff doc | — |
 | Names in code: product *Castcade*; lobby *Throwdown*; roles *host* / *client*; turn token *grant*. | handoff + 0002 | — |
+| Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
 
 ## Repo layout
 

@@ -26,6 +26,8 @@ before Castcade's first shippable release (Phase 2).
 | 6 | `RESULT` ingest with N signatures | 5 | medium |
 | 7 | ArcAid ADR 0025 | 5 | docs |
 | 10 | Room admin's live device view (who is reporting in, where scores route) | 2–3 | small–medium |
+| 11 | Integrity mode (Open / Sanctioned), VPS-id matching, per-game required table, evidence per score, runner review | F3 (after Phase 2) | medium |
+| 12 | Script baseline + diff reports + preflight endpoint | F5 | medium |
 
 ## 1. Desktop device type on `witness_devices`
 
@@ -207,6 +209,65 @@ room's admin page and a "Lobby" panel on `EventDetail.tsx` for admins.
 **Size.** Small–medium. **Needed by:** Castcade Phase 2 testing (the first event run with desktop
 devices) and every event after it. Privacy note: only room admins see it, only for members of their room,
 and it shows what the device already reports (table names and timestamps), nothing from the player's PC.
+
+## 11. Integrity mode: Open play / Sanctioned play (owner ruling 2026-10-18, Castcade ADR 0005)
+
+**What.** `tournaments.integrity_mode TEXT NOT NULL DEFAULT 'open'` (`'open'` | `'sanctioned'`; names
+are working names, the owner may rename before this ships). Per tournament game, in Sanctioned mode:
+`required_vps_table_id`, `required_rom`, `required_fingerprint` (blessed by the runner from their own
+copy: the companion shows it in Status, the runner pastes or the device posts it), `require_stock_physics`,
+`require_factory_adjustments`, `require_known_build`. The full rationale and field meanings are in
+`castcade/docs/design/fairness-and-table-identity.md`.
+
+**Ingest.** `GET /api/witness/score` accepts new optional params and ignores them when absent:
+`vps_game`, `vps_table`, `table_sha256`, `table_save_rev`, `fingerprint`, `script_sha256`, `script_diff`
+(a short JSON summary: counts per class plus the restricted hunks' identifiers), `adjustments` (JSON:
+balls per game, ball save, extra ball %, free play, tilt warnings, each with `factory: bool`), `build`
+(JSON: exe + VPinMAME DLL hashes, `known: bool`), `ini` (JSON: physics override set, difficulty override,
+nudge, table options). `VpxScoreIngestService`: match candidates by `vps_game` against
+`global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
+working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
+score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to
+`rejected` with the reasons in the detail). A refused score still falls through to the Global record when
+the device's `globalFallback` allows it. **Store the evidence** on every score, both modes: a
+`witness_evidence` table keyed by `score_history.id` (and the global row id) holding the JSON above,
+so the runner can review and so Open-mode runners see what Sanctioned would have flagged.
+
+**Runner review.** On the tournament's admin side: per score, the evidence with pass/flag per rule;
+per game, the required table and the blessed fingerprint with a "bless the one I just played" button
+(reads the runner's own device's latest evidence). Badges on the board: *sanctioned* when every rule
+passed, *flagged* when a rule failed but the score landed (Open mode). Room boards never filter or
+re-rank (ADR 0020/0021).
+
+**Catalogue.** `global_games.vps_id` already holds the VPS game id. Add a `global_game_tables`
+table (`global_game_id`, `vps_table_id`, `name`, `authors`, `version`, `table_format`) filled by
+`VpsImportService` from `tableFiles[]` (it already reads the array for authors and download URLs),
+so the runner's "required table" picker lists the game's tables by name, and so the companion's
+TableInfo → table id resolution can be served from ArcAid (`GET /api/witness/tables?vps_game=`)
+rather than shipped. Also serve the ROM → VPS game map (`GET /api/witness/roms`) seeded from VPS
+`romFiles` and the maps corpus' `romnames.json`, corrected by consensus from device reports.
+
+**Where.** Migration (claim the next free number after 183), `src/services/VpxScoreIngestService.ts`,
+`src/services/VpsImportService.ts`, `src/api/routes/global.ts` (witness routes), tournament admin pages
+in `admin-ui`, `EventDetail.tsx` / rotation game settings for the per-game rules.
+
+**Size.** Medium. **Needed by:** Castcade F3 (companion F1/F2 ship first and work against today's server).
+
+## 12. Script baseline, diff reports and preflight (Castcade F5)
+
+**What.** Per Sanctioned tournament game, the runner uploads the baseline script from their own copy
+(stored privately per tournament game, never published, deleted with the tournament; the owner to confirm
+the licensing stance in `fairness-and-table-identity.md` §8). `GET /api/witness/preflight?device&vps_table&
+script_sha256&fingerprint&...` answers, for the device's routed tournament, the rules that apply, the
+baseline's download URL (device-token gated) and the verdict ArcAid would give for the evidence sent, so the
+companion can show "will count / will not count, because …" before ball one. `GET /api/witness/score`
+carries `script_diff`; the runner review shows the classified hunks; a per-tournament setting
+`diff_reports_visible_to: 'runner' | 'participants'` (default runner) controls who else sees them.
+Unknown hunks the runner approves are stored against the baseline so the next player is not asked.
+
+**Where.** Same files as item 11 plus a small upload route and storage for baselines (text, ~100–500 KB).
+
+**Size.** Medium. **Needed by:** Castcade F5.
 
 ## Not asked of ArcAid
 

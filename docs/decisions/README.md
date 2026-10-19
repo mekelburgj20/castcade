@@ -11,8 +11,9 @@ never deleted: a superseded ADR gets a `**Superseded by:**` line and stays in th
 | 0002 | [A Castcade match is a Throwdown play mode](0002-castcade-match-is-a-throwdown-play-mode.md) | Accepted | 2026-10-17 |
 | 0003 | [One desktop app: Castcade uses Arcaid Witness](0003-one-desktop-app-castcade-uses-arcaid-witness.md) | Accepted | 2026-10-17 |
 | 0004 | [Per-table import is primary; the shared core.vbs patch is a setup-time opt-in](0004-per-table-import-is-primary-shared-core-patch-is-opt-in.md) | Accepted | 2026-10-17 |
+| 0005 | [Two integrity modes on a tournament: Open play and Sanctioned play](0005-open-and-sanctioned-play.md) | Accepted (names provisional) | 2026-10-18 |
 
-**Next free number: 0005.**
+**Next free number: 0006.**
 
 ## Convention
 

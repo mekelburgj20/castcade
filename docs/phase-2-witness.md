@@ -1,5 +1,7 @@
 # Castcade Witness — tester guide (Phase 2, basic mode)
 
+> Short version to send with an invite: [`tester-kit.md`](tester-kit.md).
+
 Thanks for testing. Castcade is a small tray app: install it, pair it with your ArcAid account once, play
 pinball as usual, and the score of each finished one-player game on a ROM table shows up on your ArcAid
 board with the **Witness** badge. It changes nothing in your Visual Pinball setup.
