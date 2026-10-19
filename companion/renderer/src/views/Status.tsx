@@ -61,6 +61,12 @@ export function Status({ state }: { state: CastcadeState }) {
         <dd>{status.queued}</dd>
         <dt>Last heartbeat</dt>
         <dd>{formatTime(status.lastHeartbeatAt)}</dd>
+        <dt>Last check-in</dt>
+        <dd>{formatTime(status.lastCheckinAt)}</dd>
+        <dt>Sending to</dt>
+        <dd title="Where ArcAid routes this device's scores (Account Settings → Arcaid Witness → this device)">
+          {status.sendingTo ?? (status.paired ? 'not yet reported by ArcAid' : '—')}
+        </dd>
       </dl>
 
       <h3>Last capture</h3>

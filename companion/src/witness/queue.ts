@@ -19,7 +19,8 @@ export type QueuedPost =
       kind: 'report';
       createdAt: number;
       attempts: number;
-      params: { device: string; table: string; launch: number; exit: number; dur: number };
+      /** `exit`/`dur` absent = a launch report (opens the session; the exit report closes it). */
+      params: { device: string; table: string; launch: number; exit?: number | null; dur?: number | null };
     }
   | {
       id: string;

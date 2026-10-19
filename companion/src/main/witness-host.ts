@@ -35,10 +35,16 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   let unsubscribe: Array<() => void> = [];
   let witness: Witness = attach(createWitness(store));
 
+  let lastCheckin: string | null = null;
+
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
     unsubscribe = [
       w.on('status', (s) => {
+        if (s.lastCheckinAt && s.lastCheckinAt !== lastCheckin) {
+          lastCheckin = s.lastCheckinAt;
+          log.info(`witness: checked in${s.sendingTo ? ` → ${s.sendingTo}` : ' (no routing line from ArcAid)'}`);
+        }
         for (const l of statusListeners) l(s);
       }),
       w.on('launch', (i) => log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`)),

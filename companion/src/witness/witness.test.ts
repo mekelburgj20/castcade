@@ -24,6 +24,8 @@ const GL_CMD = `"${GL_EXE}" `;
 const MB_TITLE = 'Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]';
 const MB_TABLE = 'Monster Bash (Williams 1998) VPWmod v1.0';
 const MB_WIRE = 'Monster Bash (Williams 1998)';
+/** ArcAid's P9b routing line as the check-in reply carries it. */
+const SENDING_TO = 'Flippin Fear Fest / Flippin Fear Fest 26 · CHECKED IN · READY';
 
 /** The MM fixture's final NVRAM (last game 1,089,510, one player, game over). */
 let mmAfter: Uint8Array;
@@ -78,7 +80,11 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
   let procs: ProcessInfo[] = [];
   const calls: Call[] = [];
   let respond: (path: string, params: Record<string, string>) => { status: number; body?: unknown } | Error = (path) =>
-    path.endsWith('/score') ? { status: 200, body: { ok: true, status: 'ingested', game: 'Medieval Madness' } } : { status: 200, body: { ok: true } };
+    path.endsWith('/score')
+      ? { status: 200, body: { ok: true, status: 'ingested', game: 'Medieval Madness' } }
+      : path.endsWith('/checkin')
+        ? { status: 200, body: { ok: true, ts: '2026-10-18 12:00:00', sendingTo: SENDING_TO } }
+        : { status: 200, body: { ok: true } };
   const fetch: FetchLike = async (input, init) => {
     const url = new URL(input);
     const params = Object.fromEntries(url.searchParams);
@@ -174,7 +180,7 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
 }
 
 describe('createWitness: -Play sessions (capture at exit)', () => {
-  it('heartbeats on start, snapshots at launch, posts report + score on exit for a one-player game', async () => {
+  it('heartbeats and checks in on start, opens the session at launch, closes it with the score on exit', async () => {
     const h = harness();
     await h.fs.mkdir('/nv');
     h.fs.put('/nv/mm_109c.nv', mmBefore);
@@ -183,9 +189,12 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await h.witness.start();
     await h.flush();
     expect(h.witness.status()).toMatchObject({ running: true, paired: true, nvramDir: '/nv', mapsVersion: 'f16a0cc6c347370706bf1a3f2c7a77568b3f69e7', lastError: null });
-    expect(h.calls.map((c) => c.path)).toEqual(['/api/witness/heartbeat']);
+    // Idle at start: a heartbeat, then a check-in ("no table open here"), whose reply says where scores go.
+    expect(h.calls.map((c) => c.path)).toEqual(['/api/witness/heartbeat', '/api/witness/checkin']);
     expect(h.calls[0]?.token).toBe('tok');
+    expect(h.calls[1]).toMatchObject({ token: 'tok', params: { device: 'dev-1' } });
     expect(h.witness.status().lastHeartbeatAt).toBe(new Date(h.clock.now()).toISOString());
+    expect(h.witness.status()).toMatchObject({ lastCheckinAt: new Date(h.clock.now()).toISOString(), sendingTo: SENDING_TO });
 
     await h.launch();
     const launchedAt = h.clock.now();
@@ -193,6 +202,9 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, vpxExe: EXE, note: null });
 
     await h.playFor(300_000);
+    // A heartbeat went out during the game (120 s in); it did not check in (a table is open).
+    expect(h.paths('/heartbeat')).toHaveLength(2);
+    expect(h.paths('/checkin')).toHaveLength(1);
     // VPinMAME rewrites the .nv as the table closes, then the process disappears
     h.fs.put('/nv/mm_109c.nv', mmAfter);
     const ended = h.clock.now(); // the .nv mtime is the game's end
@@ -215,17 +227,19 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.captures[0]?.detail).toMatch(/captured at VPX exit/);
     expect(h.witness.status()).toMatchObject({ currentTable: null, lastCapture: h.captures[0], queued: 0, lastError: null, note: null });
 
-    const posts = h.calls.filter((c) => !c.path.endsWith('/heartbeat'));
-    expect(posts.map((c) => c.path)).toEqual(['/api/witness/report', '/api/witness/score']);
+    const posts = h.calls.filter((c) => !c.path.endsWith('/heartbeat') && !c.path.endsWith('/checkin'));
+    expect(posts.map((c) => c.path)).toEqual(['/api/witness/report', '/api/witness/report', '/api/witness/score']);
     for (const p of posts) expect(p.token).toBe('tok');
-    expect(posts[0]?.params).toEqual({
+    // The launch report opens the session (no exit); the exit report closes it on the same key.
+    expect(posts[0]?.params).toEqual({ device: 'dev-1', table: MM_WIRE, launch: String(Math.floor(launchedAt / 1000)) });
+    expect(posts[1]?.params).toEqual({
       device: 'dev-1',
       table: MM_WIRE,
       launch: String(Math.floor(launchedAt / 1000)),
       exit: String(Math.floor(ended / 1000)),
       dur: String(dur),
     });
-    expect(posts[1]?.params).toEqual({
+    expect(posts[2]?.params).toEqual({
       device: 'dev-1',
       table: MM_WIRE,
       rom: 'mm_109c',
@@ -238,18 +252,46 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     });
     expect(h.errors).toEqual([]);
 
-    // heartbeats keep going on their interval (one at start, one 120 s into the 300 s session, ...)
+    // VPX gone: checked in again right after the capture, and on every heartbeat tick while idle.
     const beats = () => h.paths('/heartbeat').length;
-    expect(beats()).toBe(2);
+    const checkins = () => h.paths('/checkin').length;
+    expect(checkins()).toBe(2);
+    expect(h.calls.at(-1)?.path).toBe('/api/witness/checkin');
+    expect(h.calls.at(-2)?.path).toBe('/api/witness/score'); // after the posts, not before
     h.clock.advance(120_000);
     await h.flush();
     expect(beats()).toBe(3);
+    expect(checkins()).toBe(3);
 
     await h.witness.stop();
     expect(h.witness.status().running).toBe(false);
     h.clock.advance(1_000_000);
     await h.flush();
     expect(beats()).toBe(3);
+    expect(checkins()).toBe(3);
+  });
+
+  it('a check-in that fails is an error, not a crash; a 401 reads "unpaired by ArcAid"; VPX open suppresses it', async () => {
+    const h = harness({}, { nvSettleMs: 0 });
+    await h.fs.mkdir('/nv');
+    h.setRespond((path) => (path.endsWith('/checkin') ? { status: 401, body: { ok: false } } : { status: 200, body: { ok: true } }));
+    await h.witness.start();
+    await h.flush();
+    expect(h.paths('/checkin')).toHaveLength(1);
+    expect(h.witness.status()).toMatchObject({ lastCheckinAt: null, sendingTo: null, lastError: 'unpaired by ArcAid' });
+
+    // ArcAid recovers while a table is open: the next heartbeat clears the error but does not check in.
+    h.setRespond((path) => (path.endsWith('/checkin') ? { status: 200, body: { ok: true, ts: 't', sendingTo: 'Room / T' } } : { status: 200, body: { ok: true } }));
+    await h.launch();
+    h.clock.advance(120_000);
+    await h.flush();
+    expect(h.paths('/checkin')).toHaveLength(1);
+    expect(h.witness.status().lastError).toBeNull();
+
+    // ... and checks in once the table is gone, with the routing line.
+    await h.exit();
+    expect(h.paths('/checkin')).toHaveLength(2);
+    expect(h.witness.status()).toMatchObject({ sendingTo: 'Room / T', lastCheckinAt: new Date(h.clock.now()).toISOString() });
   });
 
   it('skips a two-player game whole (report still posted), and an unchanged .nv as no new game', async () => {
@@ -263,7 +305,7 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await h.exit();
     expect(h.captures[0]).toMatchObject({ outcome: 'skipped', players: 2, score: 1089510, rom: 'mm_109c', detail: expect.stringMatching(/multi-player/) });
     expect(h.paths('/score')).toHaveLength(0);
-    expect(h.paths('/report')).toHaveLength(1);
+    expect(h.paths('/report')).toHaveLength(2); // launch + exit
 
     // next session: VPinMAME rewrites the file (new mtime) but nobody played
     await h.launch(MM_CMD, 11);
@@ -271,7 +313,7 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     h.fs.put('/nv/mm_109c.nv', mmTwoPlayers);
     await h.exit();
     expect(h.captures[1]).toMatchObject({ outcome: 'skipped', detail: expect.stringMatching(/no new game/) });
-    expect(h.paths('/report')).toHaveLength(2);
+    expect(h.paths('/report')).toHaveLength(4);
   });
 
   it('skips when no .nv changed (original table) and when the ROM has no map', async () => {
@@ -319,11 +361,12 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     h.fs.put('/nv/mm_109c.nv', mmAfter);
     await h.exit();
     expect(h.captures[0]).toMatchObject({ outcome: 'queued', score: 1089510 });
-    expect(h.witness.status().queued).toBe(2); // report + score
+    expect(h.witness.status().queued).toBe(3); // launch report + exit report + score
     expect(h.fs.has('/data/witness-queue.jsonl')).toBe(true);
 
     h.setRespond((path) => (path.endsWith('/score') ? { status: 200, body: { ok: true, status: 'global' } } : { status: 200, body: { ok: true } }));
-    h.clock.advance(5000);
+    // The launch report has been retrying since launch (backoff grown past 5 s); the cap is 10 min.
+    h.clock.advance(10 * 60_000);
     await h.flush();
     expect(h.witness.status().queued).toBe(0);
     expect(h.captures).toHaveLength(2);
@@ -347,6 +390,9 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.witness.status().paired).toBe(true);
     expect(h.calls[0]).toMatchObject({ path: '/api/witness/pair', params: { code: 'ABC234', device: 'dev-1', username: 'OWNER-PC', type: 'desktop' }, token: undefined });
     expect(h.calls[1]).toMatchObject({ path: '/api/witness/heartbeat', token: 'tok_new' });
+    expect(h.calls[2]).toMatchObject({ path: '/api/witness/checkin', token: 'tok_new' });
+    // This server answered the check-in without a routing line: checked in, nothing to show.
+    expect(h.witness.status()).toMatchObject({ sendingTo: null, lastCheckinAt: expect.any(String) });
 
     await h.witness.unpair();
     expect(h.settings.token).toBeNull();
@@ -438,7 +484,10 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     });
     expect(h.captures[0]?.detail).toMatch(/table from the editor window title/);
     expect(h.captures[0]?.detail).toMatch(/captured when the player closed/);
-    expect(h.paths('/report')[0]?.params).toMatchObject({ table: MB_WIRE, launch: String(Math.floor(procStart / 1000)), exit: String(Math.floor(ended1 / 1000)) });
+    // The session opened in ArcAid when the editor title named the table, and closed with the capture.
+    expect(h.paths('/report')[0]?.params).toEqual({ device: 'dev-1', table: MB_WIRE, launch: String(Math.floor(procStart / 1000)) });
+    expect(h.paths('/report')[1]?.params).toMatchObject({ table: MB_WIRE, launch: String(Math.floor(procStart / 1000)), exit: String(Math.floor(ended1 / 1000)) });
+    expect(h.paths('/report')).toHaveLength(2);
     expect(h.paths('/score')[0]?.params).toMatchObject({
       table: MB_WIRE,
       rom: 'mm_109c',
@@ -469,15 +518,21 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
       outcome: 'ingested',
     });
     expect(h.paths('/score')[1]?.params).toMatchObject({ started: String(Math.floor(ended1 / 1000)), ended: String(Math.floor(ended2 / 1000)) });
+    // The second player session was opened (player up again) on the key its capture then closed.
+    expect(h.paths('/report')[2]?.params).toEqual({ device: 'dev-1', table: MB_WIRE, launch: String(Math.floor(ended1 / 1000)) });
+    expect(h.paths('/report')[3]?.params).toMatchObject({ table: MB_WIRE, launch: String(Math.floor(ended1 / 1000)), exit: String(Math.floor(ended2 / 1000)) });
+    // No check-in while VPX has been open (only the one at start).
+    expect(h.paths('/checkin')).toHaveLength(1);
 
-    // Quit VPX from the editor: exit event, no third capture, nothing more posted.
+    // Quit VPX from the editor: exit event, no third capture, nothing more posted but the check-in.
     await h.exit();
     await h.settle(10_000);
     expect(h.exits).toEqual([{ table: MB_TABLE, durationSec: expect.any(Number) }]);
     expect(h.captures).toHaveLength(2);
     expect(h.paths('/score')).toHaveLength(2);
-    expect(h.paths('/report')).toHaveLength(2);
-    expect(h.witness.status()).toMatchObject({ currentTable: null, note: null });
+    expect(h.paths('/report')).toHaveLength(4);
+    expect(h.paths('/checkin')).toHaveLength(2);
+    expect(h.witness.status()).toMatchObject({ currentTable: null, note: null, sendingTo: SENDING_TO });
     expect(h.errors).toEqual([]);
   });
 

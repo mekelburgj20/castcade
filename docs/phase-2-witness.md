@@ -53,7 +53,12 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
    - *VPX exe seen*: the path of your VPinballX executable,
    - *NVRAM dir*: your VPinMAME `nvram` folder (if it says *not found*, set it in Settings),
    - *Maps version*: a short git hash,
+   - *Sending to*: the room and tournament ArcAid routes this device to (change it in ArcAid under
+     Account Settings → Arcaid Witness → your device); *not yet reported* until the first check-in lands,
    - *Last capture*: the table, the ROM, the score, and *posted to ArcAid*.
+5. If the tournament is a **live event** with a check-in lobby: leave Castcade running and VPX closed
+   when the check-in window opens. Castcade checks in by itself whenever VPX is not running, so your
+   row in the lobby turns *ready* without touching anything; while a table is open it shows *table open*.
 
 Repeat with a second table if you can. Leave the app running in the tray for a while: it sends a
 heartbeat so ArcAid shows the device as online.
@@ -73,6 +78,9 @@ heartbeat so ArcAid shows the device as online.
 - The score is posted under the table's catalogue name (the file or window name cut after its
   "(Manufacturer Year)" part, e.g. *Monster Bash (Williams 1998)*), plus the ROM's own name as a second key.
   ArcAid matches that against the games open in the room you route this device to, then the Global catalogue.
+- On the board the score shows as **PC / VPX** once ArcAid v2.163.0 is live (it treats a paired desktop as
+  a PC even in VR, since a headset is a display on a Windows PC). Until that deploys, ArcAid stamps every
+  Witness score the cabinet way (*AtGames Cabinet* on the *VPXS* platform); that is a label, not a lost score.
 - Scores are **added**, never changed or filtered: ArcAid's doctrine is *badge, never gate*.
 - The app is unsigned (SmartScreen warning) and updates itself from GitHub Releases: when a new
   version has downloaded, the tray shows a notice and installs it the next time you quit.

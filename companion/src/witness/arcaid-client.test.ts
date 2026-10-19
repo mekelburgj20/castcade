@@ -54,6 +54,25 @@ describe('ArcaidClient', () => {
     await expect(revoked.heartbeat('t', 'd')).rejects.toMatchObject({ kind: 'auth', status: 401, message: 'unpaired by ArcAid', retryable: false });
   });
 
+  it('checkin carries the token and returns the server time and routing line; absent fields are null', async () => {
+    const { fetch, calls } = fakeFetch(() => ({ status: 200, body: { ok: true, ts: '2026-10-18 20:00:00', sendingTo: 'Room / Event · CHECKED IN · READY' } }));
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });
+    expect(await client.checkin('tok', 'd')).toEqual({ ts: '2026-10-18 20:00:00', sendingTo: 'Room / Event · CHECKED IN · READY' });
+    expect(calls[0]?.url.pathname).toBe('/api/witness/checkin');
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd' });
+    expect(calls[0]?.headers['x-witness-token']).toBe('tok');
+
+    const bare = new ArcaidClient({ baseUrl: 'https://a', fetch: fakeFetch(() => ({ status: 200, body: { ok: true, ts: 't', sendingTo: '' } })).fetch });
+    expect(await bare.checkin('tok', 'd')).toEqual({ ts: 't', sendingTo: null });
+  });
+
+  it('a launch-only report omits exit and dur', async () => {
+    const { fetch, calls } = fakeFetch(() => ({ status: 200, body: { ok: true } }));
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });
+    await client.report('tok', { device: 'd', table: 'MM', launch: 1_700_000_000 });
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd', table: 'MM', launch: '1700000000' });
+  });
+
   it('report, score and heartbeat carry the token header and the documented params', async () => {
     const { fetch, calls } = fakeFetch((url) => (url.pathname.endsWith('/score') ? { status: 200, body: { ok: true, status: 'ingested', game: 'Medieval Madness' } } : { status: 200, body: { ok: true } }));
     const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });

@@ -62,6 +62,10 @@ export interface WitnessStatus {
   /** Posts waiting in the offline queue. */
   queued: number;
   lastHeartbeatAt: string | null;
+  /** Last successful check-in ("no table open here right now"); sent only while VPX is not running. */
+  lastCheckinAt: string | null;
+  /** ArcAid's routing line from the last check-in, e.g. `Room / Tournament · CHECKED IN · READY`. */
+  sendingTo: string | null;
   lastError: string | null;
   /** Informational, not an error: e.g. "VPX is open; no table known yet". */
   note?: string | null;

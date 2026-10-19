@@ -43,6 +43,13 @@ export interface ArcaidResponse {
   body: Record<string, unknown>;
 }
 
+export interface CheckinResult {
+  /** The server's own timestamp of the check-in (the device sends none). */
+  ts: string | null;
+  /** Where this device's scores go, as ArcAid words it (P9b), e.g. `Room / Tournament · CHECKED IN · READY`. */
+  sendingTo: string | null;
+}
+
 export interface ScoreWireStatus {
   /** `ingested` | `duplicate` | `global` | `global_duplicate` | `no_match` | `invalid` (suppressed arrives as `duplicate`). */
   status: string | null;
@@ -125,9 +132,26 @@ export class ArcaidClient {
     return token;
   }
 
-  /** `GET /api/witness/report` — one table session (epoch seconds). Idempotent on (device, table, launch). */
-  async report(token: string, params: { device: string; table: string; launch: number; exit: number; dur: number }): Promise<void> {
+  /**
+   * `GET /api/witness/report` — one table session (epoch seconds), upserted on (device, table,
+   * launch): a launch-only report (no `exit`) opens the session in ArcAid's event lobby, the
+   * later report with `exit` closes it.
+   */
+  async report(token: string, params: { device: string; table: string; launch: number; exit?: number | null; dur?: number | null }): Promise<void> {
     await this.get('api/witness/report', params, token);
+  }
+
+  /**
+   * `GET /api/witness/checkin` — "no table is open on this machine right now" (ADR 0021 tier 2).
+   * The server stamps the time; the reply carries the routing line and, when the device's
+   * tournament is an event whose check-in window is open, the player's green light.
+   */
+  async checkin(token: string, device: string): Promise<CheckinResult> {
+    const { body } = await this.get('api/witness/checkin', { device }, token);
+    return {
+      ts: typeof body['ts'] === 'string' ? body['ts'] : null,
+      sendingTo: typeof body['sendingTo'] === 'string' && body['sendingTo'] ? body['sendingTo'] : null,
+    };
   }
 
   /**

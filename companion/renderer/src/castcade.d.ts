@@ -27,6 +27,8 @@ interface WitnessStatus {
   lastCapture: LastCapture | null;
   queued: number;
   lastHeartbeatAt: string | null;
+  lastCheckinAt: string | null;
+  sendingTo: string | null;
   lastError: string | null;
 }
 

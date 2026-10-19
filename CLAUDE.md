@@ -27,8 +27,13 @@ reconnect to the new host), client reconnect after a drop, simultaneous mode unt
 producer in basic mode (process watch, `.nv` decode with the pinmame-nvram-maps corpus, GET posts to the
 existing witness endpoints, offline queue, heartbeat) behind a tray shell (pairing / status / settings),
 packaged by electron-builder (NSIS per-user) from `.github/workflows/release.yml` on `v*` tags. Tester guide:
-`docs/phase-2-witness.md`. ArcAid PRs #363 (`witness_devices.device_type`, migration 183) and #364 (docs)
-are open. **Phase 2 gate, half 1 passed 2026-10-18 with v0.2.2 on the owner's rig:** paired against arcaid.app,
+`docs/phase-2-witness.md`. ArcAid PRs #363 (`witness_devices.device_type`, migration 183; revised in review
+2026-10-18: rebased to v2.163.0 and provenance now follows the type, desktop → engine `vpx` / device `pc` /
+platform `vpx`) and #364 (docs, unchanged) are open. **v0.2.3 (2026-10-18)** added what ArcAid's event lobby
+needs from a desktop: `GET /api/witness/checkin` whenever no VPX process is running (start, after every exit,
+each heartbeat tick while idle; the reply's `sendingTo` line is shown in Status and the tray) and a launch-only
+`report` as soon as a session has a table name (the capture's report closes it on the same key).
+**Phase 2 gate, half 1 passed 2026-10-18 with v0.2.2 on the owner's rig:** paired against arcaid.app,
 Monster Bash (VR build, opened from the editor without `-Play`) played to the end, the score landed on the
 room's tournament board with the Witness badge. Two field fixes got there: capture on `.nv` change while VPX
 stays open with the table from the window title (0.2.1), and the catalogue-grade wire name

@@ -6,6 +6,16 @@
  * Everything Windows-specific or networked arrives through `WitnessDeps`, with production
  * defaults, so the whole thing runs under vitest on Linux with fakes.
  *
+ * ## What ArcAid's event lobby sees
+ *
+ * A **launch report** (no `exit`) goes out as soon as a session has a table name, so the lobby
+ * shows `table_open` during the game; the capture's report (same device/table/launch key, with
+ * `exit`) closes it. A **check-in** ("no table is open on this machine right now") goes out
+ * only while no VPX process is running: at start, after every exit, and on each heartbeat tick
+ * while idle. That is what turns a desktop player `ready` once an event's check-in window
+ * opens, and the reply's `sendingTo` line is shown in Status so a stale routing gets noticed
+ * before the round, not after it.
+ *
  * ## One capture per player session
  *
  * VPX is a long-lived process on the desktop: a table opened from the editor, a recent-files entry
@@ -84,6 +94,8 @@ interface OpenSession {
   captures: number;
   playerUp: boolean;
   lastActivityAt: number;
+  /** The (table, launch) key of the launch report sent for the current player session, if any. */
+  reported: { table: string; launch: number } | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -166,6 +178,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     lastCapture: null,
     queued: 0,
     lastHeartbeatAt: null,
+    lastCheckinAt: null,
+    sendingTo: null,
     lastError: null,
     note: null,
   };
@@ -224,7 +238,29 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     onError: fail,
   });
 
-  // ---------------------------------------------------------------------------- heartbeat --
+  // ------------------------------------------------------------------ heartbeat + check-in --
+
+  const clearArcaidError = () => {
+    if (status.lastError?.startsWith('ArcAid') || status.lastError === 'unpaired by ArcAid') status.lastError = null;
+  };
+
+  /**
+   * Check in with ArcAid: an attestation that no table is open on this machine at this instant,
+   * so it is never sent while a VPX process is running. Repeats are expected server-side.
+   */
+  const checkin = async (): Promise<void> => {
+    const { token, deviceId } = store.get();
+    if (!token || sessions.size > 0) return;
+    try {
+      const result = await arcaid().checkin(token, deviceId);
+      status.lastCheckinAt = iso(clock.now());
+      status.sendingTo = result.sendingTo;
+      clearArcaidError();
+    } catch (err) {
+      fail(err instanceof Error ? err.message : String(err));
+    }
+    emitStatus();
+  };
 
   const beat = async (): Promise<void> => {
     const { token, deviceId } = store.get();
@@ -232,11 +268,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     try {
       await arcaid().heartbeat(token, deviceId);
       status.lastHeartbeatAt = iso(clock.now());
-      if (status.lastError?.startsWith('ArcAid') || status.lastError === 'unpaired by ArcAid') status.lastError = null;
+      clearArcaidError();
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
     }
     emitStatus();
+    await checkin();
   };
 
   const scheduleHeartbeat = () => {
@@ -300,6 +337,26 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const active = activeSession();
     status.currentTable = active?.launch.table ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
+  };
+
+  /** The report key the capture for this player session will use (same table name, same launch second). */
+  const sessionKey = (session: OpenSession): { table: string; launch: number } | null => {
+    if (!session.launch.table) return null;
+    return { table: catalogueTableName(session.launch.table), launch: sec(Math.max(session.startedAt, session.lastCaptureAt ?? 0)) };
+  };
+
+  /**
+   * Open the session in ArcAid (launch-only report) once the table is known; idempotent per
+   * (table, launch) so title churn and the player going up and down do not repeat it.
+   */
+  const reportLaunch = async (session: OpenSession): Promise<void> => {
+    const { deviceId, token } = store.get();
+    const key = sessionKey(session);
+    if (!token || !key) return;
+    if (session.reported && session.reported.table === key.table && session.reported.launch === key.launch) return;
+    session.reported = key;
+    const reported = await queue.submit({ kind: 'report', params: { device: deviceId, table: key.table, launch: key.launch } });
+    if (reported.state === 'rejected') fail(reported.error.message);
   };
 
   // ------------------------------------------------------------------------------ capture --
@@ -454,6 +511,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       captures: 0,
       playerUp: false,
       lastActivityAt: launch.seenAt,
+      reported: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();
@@ -461,6 +519,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt) });
     emitStatus();
     scheduleNvPoll();
+    await reportLaunch(session);
   };
 
   const onTitle = async (t: VpxTitle): Promise<void> => {
@@ -470,6 +529,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     session.lastActivityAt = t.at;
     refreshTableStatus();
     emitStatus();
+    // The editor named a table, or the player went up for another game on it: open that session.
+    await reportLaunch(session);
   };
 
   const onExit = async (exit: VpxExit): Promise<void> => {
@@ -500,6 +561,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
     refreshTableStatus();
     emitStatus();
+    // No table is open on this machine any more: say so (this is what makes the lobby `ready`).
+    if (sessions.size === 0) await checkin();
   };
 
   const watch = new ProcessWatch({ lister, clock, intervalMs: deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS });

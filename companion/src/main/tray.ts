@@ -33,6 +33,7 @@ export function proofOfLife(status: WitnessStatus, paused: boolean): string {
     parts.push(`last: ${c.table}${c.score !== null ? ` ${c.score.toLocaleString()}` : ''} (${c.outcome})`);
   }
   if (status.queued > 0) parts.push(`${status.queued} queued`);
+  if (status.sendingTo && !status.currentTable) parts.push(`→ ${status.sendingTo}`);
   return parts.join(' · ');
 }
 

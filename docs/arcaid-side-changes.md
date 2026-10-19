@@ -43,6 +43,20 @@ next free number), `src/services/EventLobbyService.ts` (`no_cabinet` copy become
 **Size.** Small: one column, one id-shape relaxation, one label. **Needed by:** Castcade Phase 2
 (the companion pairs as a witness device before any netplay exists).
 
+**Status (2026-10-18).** Done as PR #363 (`castcade/witness-device-type`, v2.163.0, in review), with one
+addition the review settled: **provenance follows `device_type`**. `VpxScoreIngestService.provenanceFor`
+is the one mapping for the room write, the Global fan-out, the Global-fallback write and the tournament
+device-exclusion check: cabinet → engine `vpx` / device `atgames` / legacy platform `vpxs` (unchanged);
+desktop → engine `vpx` / device `pc` / legacy platform `vpx` (`pc` even in VR: the companion cannot tell a
+headset from a monitor, and the headset is a display on a Windows PC). Nothing changed on the wire; the
+`type=desktop` the companion already sends is honoured once this deploys. **The companion's half** (v0.2.3):
+call `GET /api/witness/checkin?device=` with the token whenever no VPX process is running (start, after every
+exit, each heartbeat tick while idle), never while a table is open, and show the reply's `sendingTo`; and
+send `report` at table launch (no `exit`) so the lobby shows `table_open` during a game and tier-1 verify has
+a live session row, then the exit report on the same `(device, table, launch)` key. Without the check-in a
+desktop sits at `no_checkin` in every event lobby, because `ready` requires a check-in since the window opened
+and the lobby never reads `device_type` (owner ruling: strict on purpose).
+
 ## 2. `tournaments.play_mode`
 
 **What.** `play_mode TEXT NOT NULL DEFAULT 'score'` (`'score'` | `'castcade'`). `POST /api/throwdowns`
