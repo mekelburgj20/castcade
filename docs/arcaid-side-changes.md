@@ -25,6 +25,7 @@ before Castcade's first shippable release (Phase 2).
 | 5 | `source='castcade'` + `castcade_matches` + public keys | 5 | medium |
 | 6 | `RESULT` ingest with N signatures | 5 | medium |
 | 7 | ArcAid ADR 0025 | 5 | docs |
+| 10 | Room admin's live device view (who is reporting in, where scores route) | 2–3 | small–medium |
 
 ## 1. Desktop device type on `witness_devices`
 
@@ -43,7 +44,8 @@ next free number), `src/services/EventLobbyService.ts` (`no_cabinet` copy become
 **Size.** Small: one column, one id-shape relaxation, one label. **Needed by:** Castcade Phase 2
 (the companion pairs as a witness device before any netplay exists).
 
-**Status (2026-10-18).** Done as PR #363 (`castcade/witness-device-type`, v2.163.0, in review), with one
+**Status (2026-10-18).** Done as PR #363 (`castcade/witness-device-type`, v2.163.0; approved and merging
+2026-10-18), with one
 addition the review settled: **provenance follows `device_type`**. `VpxScoreIngestService.provenanceFor`
 is the one mapping for the room write, the Global fan-out, the Global-fallback write and the tournament
 device-exclusion check: cabinet → engine `vpx` / device `atgames` / legacy platform `vpxs` (unchanged);
@@ -182,6 +184,29 @@ the desktop agent now lives.
 **Where.** `docs/vpx-desktop-witness-plan.md`, `ROADMAP.md` L56–62, `LAUNCH.md` L63.
 
 **Size.** Docs. **Needed by:** Castcade Phase 2 (before anyone builds a second desktop agent).
+
+## 10. Room admin's live device view (owner ask, 2026-10-18)
+
+**What.** A view for the people who run a room's tournaments (ArcAid's `game_room_admins`, roles
+`owner`/`admin`; there is no "tournament director" role, the room admin is the runner) that shows, near
+real time, every paired Witness device belonging to a room member that is reporting in: player, device
+label and type (cabinet / desktop), online (heartbeat within `HEARTBEAT_STALE_SEC`), last check-in, the
+table open right now (an open `witness_observations` session row), and **where that device's scores are
+routed** (the P9b designation: this room + tournament, this room any matching game, undesignated → event
+rounds only, Global fallback on/off). For an **event** tournament this is the lobby seen from the runner's
+side: how many players are checked in and `ready` right now, who is `table_open`, who is `no_checkin` or
+`offline`, so the runner knows when to start. The data already exists (`EventLobbyService.roster` computes
+the per-player status for the player-facing lobby; `WitnessService.describeTarget` words the routing), so
+this is mostly a new aggregation endpoint scoped to the room plus a page/tab, polled every ~20 s like
+`EventDetail` or pushed on the existing `room:<roomId>` socket channel.
+
+**Where.** `src/services/EventLobbyService.ts` (reuse `roster`), `src/services/WitnessService.ts`
+(`describeTarget`), a new admin route under `src/api/routes/rooms.ts` gated on room admin, a tab on the
+room's admin page and a "Lobby" panel on `EventDetail.tsx` for admins.
+
+**Size.** Small–medium. **Needed by:** Castcade Phase 2 testing (the first event run with desktop
+devices) and every event after it. Privacy note: only room admins see it, only for members of their room,
+and it shows what the device already reports (table names and timestamps), nothing from the player's PC.
 
 ## Not asked of ArcAid
 
