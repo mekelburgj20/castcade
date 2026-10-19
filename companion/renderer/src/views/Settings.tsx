@@ -12,6 +12,7 @@ export function Settings({ state }: { state: CastcadeState }) {
   const { bridge, settings, versions, loginItem, status, logPath } = state;
   const [url, setUrl] = useState('');
   const [nvram, setNvram] = useState('');
+  const [tables, setTables] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
 
@@ -19,6 +20,7 @@ export function Settings({ state }: { state: CastcadeState }) {
     if (settings) {
       setUrl(settings.arcaidBaseUrl);
       setNvram(settings.nvramDir ?? '');
+      setTables(settings.tablesDir ?? '');
     }
   }, [settings]);
 
@@ -35,6 +37,7 @@ export function Settings({ state }: { state: CastcadeState }) {
 
   const urlDirty = settings !== null && url.trim().replace(/\/+$/, '') !== settings.arcaidBaseUrl;
   const nvramDirty = settings !== null && nvram.trim() !== (settings.nvramDir ?? '');
+  const tablesDirty = settings !== null && tables.trim() !== (settings.tablesDir ?? '');
 
   const open = (href: string) => (e: MouseEvent) => {
     e.preventDefault();
@@ -87,6 +90,31 @@ export function Settings({ state }: { state: CastcadeState }) {
       </div>
 
       <div className="card">
+        <label className="field">
+          <span>Tables folder (extra)</span>
+          <input
+            type="text"
+            value={tables}
+            placeholder="only <VPX folder>\tables is searched"
+            onChange={(e) => setTables(e.target.value)}
+            disabled={!bridge}
+            spellCheck={false}
+          />
+          <small>
+            Where Castcade looks for a table's .vpx when you opened it from the editor (to read its VPS identity). The
+            folder beside your VPX exe is always searched; add one more here if your tables live elsewhere.
+          </small>
+        </label>
+        <button
+          type="button"
+          disabled={!bridge || !tablesDirty}
+          onClick={() => void save({ tablesDir: tables.trim() === '' ? null : tables.trim() }, 'Tables folder')}
+        >
+          Save folder
+        </button>
+      </div>
+
+      <div className="card">
         <label className="check">
           <input
             type="checkbox"
@@ -132,7 +160,8 @@ export function Settings({ state }: { state: CastcadeState }) {
       </dl>
       <p className="attribution">
         ROM memory maps © tomlogic/pinmame-nvram-maps contributors, Open Database License (ODbL) v1.0. Maps
-        version: {status?.mapsVersion ?? 'unknown'}.
+        version: {status?.mapsVersion ?? 'unknown'}. Table and game identities from the Virtual Pinball Spreadsheet
+        (vps-db) community database, version: {status?.vpsVersion ?? 'not bundled'}.
       </p>
     </section>
   );

@@ -14,6 +14,7 @@ export interface WitnessHost {
   status(): WitnessStatus;
   pair(code: string): Promise<WitnessStatus>;
   unpair(): Promise<WitnessStatus>;
+  confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
   /** Pause = stop watching (status.running false) without forgetting anything. */
   setPaused(paused: boolean): Promise<WitnessStatus>;
   isPaused(): boolean;
@@ -76,6 +77,12 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
     async unpair() {
       await witness.unpair();
       log.info('witness: unpaired');
+      broadcast();
+      return witness.status();
+    },
+    async confirmTable(filePath, vpsTableId) {
+      await witness.confirmTable(filePath, vpsTableId);
+      log.info(`witness: table confirmed ${vpsTableId ?? '(forgotten)'} for ${filePath}`);
       broadcast();
       return witness.status();
     },

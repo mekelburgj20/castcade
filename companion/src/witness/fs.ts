@@ -10,6 +10,17 @@ export interface FileStat {
   mtimeMs: number;
 }
 
+/**
+ * Random access into one open file, for readers that must not load the file whole (a `.vpx` is
+ * 100 MB to 1 GB and the companion is an always-on tray app). `size` is the length at open time.
+ */
+export interface RandomAccessFile {
+  readonly size: number;
+  /** Bytes `[offset, offset + length)`; exactly the bytes available, so shorter at end of file. */
+  read(offset: number, length: number): Promise<Uint8Array>;
+  close(): Promise<void>;
+}
+
 export interface WitnessFs {
   readFile(path: string): Promise<Uint8Array>;
   writeFile(path: string, data: Uint8Array | string): Promise<void>;
@@ -20,6 +31,8 @@ export interface WitnessFs {
   mkdir(dir: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   unlink(path: string): Promise<void>;
+  /** Open for random-access reads; the caller must `close()` it. */
+  open(path: string): Promise<RandomAccessFile>;
 }
 
 /** True for the "no such file or directory" error of either implementation. */
@@ -46,6 +59,26 @@ export const nodeFs: WitnessFs = {
   },
   rename: (a, b) => fsp.rename(a, b),
   unlink: (p) => fsp.unlink(p),
+  open: async (p) => {
+    const handle = await fsp.open(p, 'r');
+    const size = (await handle.stat()).size;
+    return {
+      size,
+      async read(offset, length) {
+        // One positioned read can return fewer bytes than asked for (not only at EOF), so loop
+        // until the buffer is full or the file ends; callers rely on "short only at EOF".
+        const buf = new Uint8Array(length);
+        let got = 0;
+        while (got < length) {
+          const { bytesRead } = await handle.read(buf, got, length - got, offset + got);
+          if (bytesRead === 0) break;
+          got += bytesRead;
+        }
+        return got === length ? buf : buf.subarray(0, got);
+      },
+      close: () => handle.close(),
+    };
+  },
 };
 
 /** Normalise separators so Windows-style and POSIX-style paths address the same entry. */
@@ -134,5 +167,18 @@ export class MemoryFs implements WitnessFs {
 
   async unlink(path: string): Promise<void> {
     if (!this.files.delete(normalizePath(path))) throw notFound(path);
+  }
+
+  async open(path: string): Promise<RandomAccessFile> {
+    const f = this.files.get(normalizePath(path));
+    if (!f) throw notFound(path);
+    const data = f.data;
+    return {
+      size: data.length,
+      async read(offset, length) {
+        return data.slice(offset, Math.min(data.length, offset + length));
+      },
+      async close() {},
+    };
   }
 }

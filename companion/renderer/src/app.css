@@ -209,6 +209,31 @@ button.link {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.facts.identity {
+  margin: 0;
+  padding: 0;
+  font-size: 0.95em;
+}
+.facts.identity dd,
+.facts dd:has(.identity) {
+  white-space: normal;
+  overflow: visible;
+}
+.facts.identity.compact dt {
+  min-width: 6rem;
+}
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.3rem;
+}
+.picker select {
+  max-width: 100%;
+  font: inherit;
+  padding: 0.2rem 0.3rem;
+}
 .facts dd.score {
   font-size: 1.2rem;
   font-weight: 700;

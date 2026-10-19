@@ -173,6 +173,11 @@ export class ArcaidClient {
       reason: string;
       restarts?: number;
       partial?: boolean;
+      /** Table identity (F1): ignored by today's server, read by ArcAid item 11. */
+      vps_game?: string | null;
+      vps_table?: string | null;
+      table_sha256?: string | null;
+      table_save_rev?: number | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

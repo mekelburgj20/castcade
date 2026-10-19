@@ -174,7 +174,7 @@ shipped with the companion and extensible from ArcAid. Unknown → `build: { kno
 
 | Step | Where | What ships | Needs from ArcAid |
 |---|---|---|---|
-| F1 | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
+| F1 **(shipped v0.2.4, 2026-10-18)** | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
 | F2 | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag | nothing |
 | F3 | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
@@ -183,7 +183,21 @@ shipped with the companion and extensible from ArcAid. Unknown → `build: { kno
 
 Gate for F1–F2: the owner's Monster Bash capture arrives with `vps_game` = Monster Bash's id,
 `vps_table` = the VPW mod's id, a stable fingerprint across two launches, and an ini object that
-changes when the owner flips a physics override on and back off.
+changes when the owner flips a physics override on and back off. F1's half of the gate is covered by
+the unit tests on the owner's exact sequence (`witness.test.ts`, synthetic table files with the real
+TableInfo values) and by a read-only run of the reader against the owner's three VPW tables (all
+values matched; 350 KB read of a 184 MB file; hash 0.2–0.4 s warm). The live half (the ids visible on
+arcaid.app once item 11 lands) is pending.
+
+**Implementation notes (F1).** The `.vpx` reader walks the compound file's FAT and directory on
+demand and reads only TableInfo and `GameStg/GameData`; a 1 GB table costs a few hundred KB of reads.
+TableInfo strings are UTF-16LE without terminator; `Manufacturer`/`Year` exist only when the author
+filled the custom tags (Monster Bash yes, Medieval Madness and Tales from the Crypt no), so the file
+name's `(Manufacturer Year)` and the ROM stay the primary game signals. Physics floats are the exact
+float32 values widened to double (0.20000000298023224, not 0.2); ArcAid-side comparison must round or
+compare as float32. Table matching scores authors (+4 lead author, +2 other), version equality (+3,
+near +1.5), feature words in the file name (+1 each) and VPS comment words (+0.5); `exact` needs a
+lead of 3 with author or version evidence, `likely` a lead of 1, else `ambiguous` and the picker.
 
 ## 8. Open questions
 

@@ -33,12 +33,14 @@ export interface SettingsFile {
   deviceId?: string;
   deviceLabel?: string;
   nvramDir?: string | null;
+  tablesDir?: string | null;
   token?: { scheme: string; value: string } | null;
 }
 
 /** Everything the shell must supply; the store fills the rest from the file or generates it. */
 export interface SettingsDefaults {
   mapsDir: string;
+  vpsDir: string;
   dataDir: string;
   deviceLabel: string;
   newDeviceId: () => string;
@@ -116,6 +118,7 @@ export function resolveSettings(
   }
   const deviceLabel = file?.deviceLabel ?? defaults.deviceLabel;
   const nvramDir = file?.nvramDir ?? null;
+  const tablesDir = file?.tablesDir ?? null;
 
   let token: string | null = null;
   if (file?.token) {
@@ -145,6 +148,8 @@ export function resolveSettings(
       mapsDir: defaults.mapsDir,
       nvramDir,
       dataDir: defaults.dataDir,
+      vpsDir: defaults.vpsDir,
+      tablesDir,
     },
     dirty,
   };
@@ -157,6 +162,7 @@ export function serializeSettings(settings: WitnessSettings, codec: TokenCodec):
     deviceId: settings.deviceId,
     deviceLabel: settings.deviceLabel,
     nvramDir: settings.nvramDir,
+    tablesDir: settings.tablesDir,
     token: settings.token === null ? null : { scheme: codec.scheme, value: codec.encrypt(settings.token) },
   };
   return JSON.stringify(file, null, 2) + '\n';
@@ -176,6 +182,7 @@ export function redactSettings(settings: WitnessSettings): RedactedSettings {
 export interface SettingsPatch {
   arcaidBaseUrl?: string;
   nvramDir?: string | null;
+  tablesDir?: string | null;
   deviceLabel?: string;
 }
 
@@ -192,6 +199,11 @@ export function sanitizePatch(patch: unknown): Partial<WitnessSettings> {
     if (p.nvramDir === null || (typeof p.nvramDir === 'string' && p.nvramDir.trim() === '')) out.nvramDir = null;
     else if (typeof p.nvramDir === 'string') out.nvramDir = p.nvramDir.trim();
     else throw new Error('nvramDir must be a string or null');
+  }
+  if ('tablesDir' in p) {
+    if (p.tablesDir === null || (typeof p.tablesDir === 'string' && p.tablesDir.trim() === '')) out.tablesDir = null;
+    else if (typeof p.tablesDir === 'string') out.tablesDir = p.tablesDir.trim();
+    else throw new Error('tablesDir must be a string or null');
   }
   if ('deviceLabel' in p) {
     if (typeof p.deviceLabel !== 'string') throw new Error('deviceLabel must be a string');

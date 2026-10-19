@@ -24,6 +24,9 @@ extraResources:
   # The pinmame-nvram-maps corpus (ODbL), fetched by `npm run fetch-maps -w companion` before packaging.
   - from: resources/maps
     to: maps
+  # The compact VPS index (ids, names, authors, versions, features only), built by `npm run fetch-vps -w companion`.
+  - from: resources/vps
+    to: vps
 win:
   target:
     - target: nsis

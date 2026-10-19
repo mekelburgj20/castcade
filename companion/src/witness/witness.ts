@@ -32,6 +32,12 @@
  * `-Play <path>.vpx` → a positional `<path>.vpx` (file association) → the editor's window title
  * `Visual Pinball - [<table>]` → the ROM's name from `romnames.json` → the ROM id. A capture is
  * never refused for want of a name; how the name was derived rides in `LastCapture.detail`.
+ *
+ * On top of the name, F1 of `docs/design/fairness-and-table-identity.md`: once a session has a
+ * table file (named on the command line, or found under the tables folder from the editor title)
+ * the identity resolver reads its TableInfo and physics, matches the VPS game and table, and hashes
+ * the file in the background; at capture the ROM pins the game. The ids ride on the score as
+ * `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` and in `LastCapture.identity`.
  */
 import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import { Emitter } from '../match/events.js';
@@ -51,8 +57,13 @@ import {
   type VpxLaunch,
   type VpxTitle,
 } from './process-watch.js';
+import { createIdentityResolver } from './identity-resolver.js';
+import { createIdentityStore } from './identity-store.js';
+import type { TableIdentity, VpsIndex } from './identity-types.js';
 import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
+import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
+import { createVpsIndex } from './vps-index.js';
 import type { CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
@@ -63,6 +74,10 @@ export interface WitnessDeps {
   fetch?: FetchLike;
   /** Overrides `settings.mapsDir`. */
   corpus?: MapCorpus;
+  /** Overrides `settings.vpsDir`. */
+  vpsIndex?: VpsIndex;
+  /** How long a capture waits for a still-running file hash before posting without it. */
+  hashWaitMs?: number;
   pollIntervalMs?: number;
   /** How long a changed `.nv` must stay unchanged before it is read (VPinMAME's write is done). */
   nvSettleMs?: number;
@@ -80,6 +95,7 @@ export interface WitnessDeps {
 /** ArcAid's `HEARTBEAT_STALE_SEC` is 300; two beats per window keeps a desktop "online" through one miss. */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 120_000;
 export const DEFAULT_NV_ALIVE_POLL_MS = 3_000;
+export const DEFAULT_HASH_WAIT_MS = 3_000;
 export const UNKNOWN_TABLE = '(unknown table)';
 
 type EventPayloads = {
@@ -96,6 +112,12 @@ interface OpenSession {
   lastActivityAt: number;
   /** The (table, launch) key of the launch report sent for the current player session, if any. */
   reported: { table: string; launch: number } | null;
+  /** Identity of the session's table file as far as it is resolved; null until a table is known. */
+  identity: TableIdentity | null;
+  /** What `identity` was resolved for (file path, or the bare name when no file was found). */
+  identityFor: string | null;
+  /** The background hash of the table file, when one is running. */
+  hashing: Promise<void> | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -175,6 +197,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     nvramDir: null,
     mapsVersion: null,
     currentTable: null,
+    currentIdentity: null,
+    vpsVersion: null,
     lastCapture: null,
     queued: 0,
     lastHeartbeatAt: null,
@@ -185,6 +209,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   };
 
   const sessions = new Map<number, OpenSession>();
+  const identityStore = createIdentityStore(fs, store.get().dataDir, () => clock.now());
+  const vpsIndex = deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs);
+  const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
+  const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
   /** The nvram directory as of the last capture (or the first launch), with bytes for `sameGame`. */
   let baseline: NvSnapshot | null = null;
   /** A `.nv` change seen while VPX is open, waiting to settle. */
@@ -336,7 +364,60 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const refreshTableStatus = () => {
     const active = activeSession();
     status.currentTable = active?.launch.table ?? null;
+    status.currentIdentity = active?.identity ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
+  };
+
+  // ------------------------------------------------------------------------------ identity --
+
+  /**
+   * Resolve the session's table identity from its file: the `-Play` path when there is one, else
+   * `<name>.vpx` under the VPX `tables` folder (and the `tablesDir` setting). Idempotent per target;
+   * the hash runs in the background and updates the status when it lands.
+   */
+  const resolveIdentity = async (session: OpenSession): Promise<void> => {
+    const { launch } = session;
+    let path = launch.tablePath;
+    if (!path && launch.table) {
+      const roots = await tableRootsFor(fs, launch.exe, [store.get().tablesDir]).catch(() => [] as string[]);
+      path = await findTableFile(fs, launch.table, roots).catch(() => null);
+    }
+    const target = path ?? launch.table;
+    if (!target || session.identityFor === target) return;
+    session.identityFor = target;
+    const identity = await resolver.fromFile(path, path ? tableBaseName(path) : launch.table);
+    session.identity = identity;
+    if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
+    else log(`witness: identity unresolved for ${target}: ${identity.notes.join('; ')}`);
+    refreshTableStatus();
+    emitStatus();
+    if (path && !identity.sha256) {
+      session.hashing = resolver
+        .hash(identity)
+        .then((hashed) => {
+          if (session.identity && session.identity.filePath === hashed.filePath) {
+            session.identity = { ...session.identity, sha256: hashed.sha256, notes: hashed.sha256 ? session.identity.notes : hashed.notes };
+            refreshTableStatus();
+            emitStatus();
+          }
+        })
+        .finally(() => {
+          session.hashing = null;
+        });
+    }
+  };
+
+  /** The identity a capture posts: the session's, upgraded by the ROM, with the hash if it is in time. */
+  const identityForCapture = async (session: OpenSession, rom: string | null, romName: string | null): Promise<TableIdentity | null> => {
+    if (session.hashing) {
+      let timer: TimerHandle | null = null;
+      await Promise.race([session.hashing, new Promise<void>((r) => { timer = clock.setTimeout(r, hashWaitMs); })]);
+      if (timer !== null) clock.clearTimeout(timer);
+    }
+    let identity = session.identity;
+    if (!identity && !rom) return null;
+    if (!identity) identity = await resolver.fromFile(null, session.launch.table);
+    return resolver.withRom(identity, rom, romName);
   };
 
   /** The report key the capture for this player session will use (same table name, same launch second). */
@@ -393,6 +474,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
 
     const romName = rom ? await corpus.romName(rom) : null;
+    const identity = await identityForCapture(session, rom, romName).catch((err: unknown) => {
+      details.push(`identity failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+    if (identity) {
+      session.identity = identity;
+      if (identity.vpsGame) details.push(`VPS game ${identity.vpsGame.name} (${identity.vpsGame.id})${identity.vpsTable ? `, table ${identity.vpsTable.label} (${identity.vpsTable.id}${identity.confirmed ? ', confirmed' : identity.tableConfidence === 'exact' ? '' : `, ${identity.tableConfidence}`})` : ', table undecided'}`);
+    }
     const resolved = resolveTableName(session.launch, romName, rom);
     const table = resolved?.table ?? UNKNOWN_TABLE;
     // What ArcAid sees: the catalogue-grade name, plus the ROM's own name as the `slug` fallback key.
@@ -412,6 +501,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       launchedAt: iso(started),
       exitedAt: iso(ended),
       outcome: 'skipped',
+      identity,
     };
 
     if (token && resolved) {
@@ -441,6 +531,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           ended: sec(ended),
           dur: durationSec,
           reason: decision.reason,
+          vps_game: identity?.vpsGame?.id ?? null,
+          vps_table: identity?.vpsTable?.id ?? null,
+          table_sha256: identity?.sha256 ?? null,
+          table_save_rev: identity?.saveRev ?? null,
         },
       });
       const mapped = outcomeForPost(posted);
@@ -512,6 +606,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       playerUp: false,
       lastActivityAt: launch.seenAt,
       reported: null,
+      identity: null,
+      identityFor: null,
+      hashing: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();
@@ -520,6 +617,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitStatus();
     scheduleNvPoll();
     await reportLaunch(session);
+    await resolveIdentity(session);
   };
 
   const onTitle = async (t: VpxTitle): Promise<void> => {
@@ -531,6 +629,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitStatus();
     // The editor named a table, or the player went up for another game on it: open that session.
     await reportLaunch(session);
+    await resolveIdentity(session);
   };
 
   const onExit = async (exit: VpxExit): Promise<void> => {
@@ -578,8 +677,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       if (status.running) return;
       status.running = true;
       status.mapsVersion = await corpus.version().catch(() => null);
+      status.vpsVersion = await vpsIndex.version().catch(() => null);
       status.nvramDir = await resolveDir(null);
       await queue.load();
+      await identityStore.load().catch((err: unknown) => fail(`identity store: ${err instanceof Error ? err.message : String(err)}`));
       queue.resume();
       startHeartbeat();
       watch.start();
@@ -617,6 +718,18 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     async unpair() {
       await store.set({ token: null });
       stopHeartbeat();
+      emitStatus();
+    },
+
+    async confirmTable(filePath, vpsTableId) {
+      const same = (i: TableIdentity | null | undefined): i is TableIdentity => !!i && i.filePath !== null && i.filePath.toLowerCase() === filePath.toLowerCase();
+      const current = [...sessions.values()].map((s) => s.identity).find(same) ?? (same(status.lastCapture?.identity) ? status.lastCapture!.identity! : null);
+      await identityStore.confirm(filePath, vpsTableId === null ? null : { vpsGameId: current?.vpsGame?.id ?? null, vpsTableId });
+      for (const s of sessions.values()) if (same(s.identity)) s.identity = resolver.applyConfirmation(s.identity);
+      if (status.lastCapture && same(status.lastCapture.identity)) {
+        status.lastCapture = { ...status.lastCapture, identity: resolver.applyConfirmation(status.lastCapture.identity) };
+      }
+      refreshTableStatus();
       emitStatus();
     },
 

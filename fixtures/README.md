@@ -87,3 +87,17 @@ pinned commits) on 2026-10-18: MM `[1089510, 0, 0, 0]`, player_count 1, ball 3, 
 `[2318430, 0, 0, 0]`, player_count/player/ball 0 (Data East clears them at game over), game over.
 Journal deltas are `[index, new, old]`; the first delta of each fixture precedes the first `nvram_full`
 and is skipped, exactly as the tailer does.
+
+## `vps/` — vendored VPS index subset for the table-identity tests
+
+`fixtures/vps/index.json` is a 13-game cut of the compact index that `companion/scripts/fetch-vps.mjs` builds from
+the Virtual Pinball Spreadsheet database (`VirtualPinballSpreadsheet/vps-db`, `db/vpsdb.json`, community-maintained
+metadata about games and table files; pinned commit in `VERSION`). The companion fetches the full index at build time
+(`npm run fetch-vps -w companion`, ~1.4 MB, gitignored under `companion/resources/vps`); only this subset is committed,
+for `vps-index.test.ts` and `table-match.test.ts`. The vps-db repo declares no licence, so both the fixture and the
+built index keep nothing but identifiers and attribution: game id/name/manufacturer/year/type, ROM ids, and per table
+file id/authors/version/features/format/comment/updatedAt (no download URLs, images or descriptions). The subset holds
+the owner's three acceptance games (Monster Bash, Medieval Madness, Tales from the Crypt), the five games that share the
+`rollstob` ROM, two same-name pairs (Deadpool 2014/2018, Black Belt Zaccaria/Bally 1986), and one game without ROMs
+(Sittin' Pretty). Regenerate with
+`node companion/scripts/fetch-vps.mjs --from <vpsdb.json> --out fixtures/vps --subset <the ids in the file>`.

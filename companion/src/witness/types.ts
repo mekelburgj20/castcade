@@ -5,6 +5,9 @@
  * everything else in this folder is implementation. Keep this file additive: the shell and the
  * module are built by different agents against it.
  */
+import type { TableIdentity } from './identity-types.js';
+
+export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
 
 /** Persisted settings. The shell owns persistence; the module reads and patches through the store. */
 export interface WitnessSettings {
@@ -22,6 +25,10 @@ export interface WitnessSettings {
   nvramDir: string | null;
   /** Directory for the module's own files (offline queue, shadow state). */
   dataDir: string;
+  /** Root of the bundled compact VPS index (`index.json`, `VERSION`), built by `scripts/fetch-vps.mjs`. */
+  vpsDir: string;
+  /** Extra folder to search for `<table>.vpx` when a table was opened from the editor; null = only `<exe dir>\tables`. */
+  tablesDir: string | null;
 }
 
 export interface WitnessSettingsStore {
@@ -45,6 +52,8 @@ export interface LastCapture {
   exitedAt: string; // ISO
   outcome: CaptureOutcome;
   detail?: string; // human-readable reason for skipped/rejected
+  /** What the companion established about the table file (VPS ids, hash, save revision); null when unknown. */
+  identity?: TableIdentity | null;
 }
 
 export interface WitnessStatus {
@@ -58,6 +67,10 @@ export interface WitnessStatus {
   mapsVersion: string | null;
   /** Table currently running (from `-Play "<path>.vpx"`), or null. */
   currentTable: string | null;
+  /** Identity of the current table as far as it is resolved (file facts at launch, game by ROM at capture). */
+  currentIdentity: TableIdentity | null;
+  /** The compact VPS index's version (vps-db commit), or null when the index is missing. */
+  vpsVersion: string | null;
   lastCapture: LastCapture | null;
   /** Posts waiting in the offline queue. */
   queued: number;
@@ -87,6 +100,11 @@ export interface Witness {
   pair(code: string): Promise<void>;
   /** Forget the token locally (ArcAid-side revoke happens in Account Settings). */
   unpair(): Promise<void>;
+  /**
+   * The player's answer to "which VPS table is this file?" (or a correction): remembered for the
+   * file path, applied to the current session and the last capture's display at once. `null` forgets.
+   */
+  confirmTable(filePath: string, vpsTableId: string | null): Promise<void>;
   status(): WitnessStatus;
   on<K extends keyof WitnessEvents>(event: K, listener: WitnessEvents[K]): () => void;
 }

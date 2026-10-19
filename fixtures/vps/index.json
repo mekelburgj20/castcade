@@ -1,0 +1,1305 @@
+{
+  "version": "cce9160b30110ee174786239fdfb30a6e4caaab7",
+  "generatedAt": "2026-10-19T06:20:39.599Z",
+  "games": [
+    {
+      "id": "-5vpyFdfos",
+      "name": "Sittin' Pretty",
+      "manufacturer": "Gottlieb",
+      "year": 1958,
+      "type": "EM",
+      "roms": [],
+      "tables": [
+        {
+          "id": "OqImqNXjYO",
+          "authors": [
+            "Hmueck",
+            "MaX",
+            "Furio",
+            "Dinocostas",
+            "Robair"
+          ],
+          "version": "1.0",
+          "features": [
+            "no ROM",
+            "incl. B2S",
+            "VR",
+            "Hybrid"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1708447250765
+        }
+      ]
+    },
+    {
+      "id": "-5yMpqSy",
+      "name": "Medieval Madness",
+      "manufacturer": "Williams",
+      "year": 1997,
+      "type": "SS",
+      "roms": [
+        "mm_109c",
+        "mm_109b",
+        "mm_10"
+      ],
+      "tables": [
+        {
+          "id": "zbyQ01wi3L",
+          "authors": [
+            "VPW",
+            "Sixtoe",
+            "Tomate",
+            "Apophis",
+            "DaRdog",
+            "Mcarter78",
+            "ClarkKent",
+            "Bord",
+            "CainArg",
+            "Freezy",
+            "HauntFreaks",
+            "MajorDrain",
+            "Tyson171",
+            "Niwak",
+            "Gedankekojote97",
+            "PinstratsDan",
+            "Tom Tower",
+            "Ninuzzu"
+          ],
+          "version": "1.0.1",
+          "features": [
+            "Hybrid",
+            "VR",
+            "nFozzy",
+            "Fleep",
+            "VLM"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1760358298469
+        },
+        {
+          "id": "DE6Aqn9aPu",
+          "authors": [
+            "LoadedWeapon",
+            "Gedankekojote97",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "VPU Patch",
+            "FastFlips",
+            "nFozzy",
+            "Fleep"
+          ],
+          "format": "VPX",
+          "comment": "Cabinet MOD. Requires VPU Patcher System and original table!",
+          "updatedAt": 1757374344142
+        },
+        {
+          "id": "y5VTSPKN",
+          "authors": [
+            "Bigus1",
+            "Dozer",
+            "JPSalas"
+          ],
+          "version": "3.0",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Bigus MOD",
+          "updatedAt": 1753717162185
+        },
+        {
+          "id": "4x3B8eMlPH",
+          "authors": [
+            "GeorgeH",
+            "Flug",
+            "SLAMT1LT",
+            "Francisco666"
+          ],
+          "version": "1.03",
+          "features": [
+            "MOD",
+            "BAM",
+            "FizX"
+          ],
+          "format": "FP",
+          "comment": "FizX 3.3",
+          "updatedAt": 1783954059732
+        },
+        {
+          "id": "cy0ERa-b9Z",
+          "authors": [
+            "DarthVito",
+            "Solters",
+            "Gedankekojote97",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "VR"
+          ],
+          "format": "VPX",
+          "comment": "VR Room",
+          "updatedAt": 1783954564887
+        },
+        {
+          "id": "6Nt-YxlOAv",
+          "authors": [
+            "Solters",
+            "Gedankekojote97",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0",
+          "features": [
+            "MOD",
+            "VR",
+            "nFozzy",
+            "Fleep",
+            "SSF",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": "VR MOD",
+          "updatedAt": 1660177699992
+        },
+        {
+          "id": "oa2VDRAKIc",
+          "authors": [
+            "Gedankekojote97",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.2-final",
+          "features": [
+            "MOD",
+            "FastFlips",
+            "nFozzy",
+            "Fleep",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1783954470921
+        },
+        {
+          "id": "XrclrfhrUg",
+          "authors": [
+            "Zen Studios"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX",
+          "comment": "Williams Pinball Volume 1 - Table 109",
+          "updatedAt": 1648855601304
+        },
+        {
+          "id": "VJI7krHx",
+          "authors": [
+            "SG1bsoN",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "MOD",
+            "incl. Art",
+            "incl. B2S"
+          ],
+          "format": "VPX",
+          "comment": "SG1bsoN BW MOD",
+          "updatedAt": 1760501513220
+        },
+        {
+          "id": "69tI2M-F",
+          "authors": [
+            "Morttis",
+            "Arconovum",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0.6",
+          "features": [
+            "MOD",
+            "FSS"
+          ],
+          "format": "VPX",
+          "comment": "FSS (Full Single Screen) MOD",
+          "updatedAt": 1774016775770
+        },
+        {
+          "id": "87v8bdZ0UQ",
+          "authors": [
+            "Sixtoe",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "MOD",
+            "VR"
+          ],
+          "format": "VPX",
+          "comment": "Minimal VR Room",
+          "updatedAt": 1783954346507
+        },
+        {
+          "id": "ARTFE-Z8mX",
+          "authors": [
+            "Gear323",
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.1",
+          "features": [
+            "MOD",
+            "VR"
+          ],
+          "format": "VPX",
+          "comment": "VR Room",
+          "updatedAt": 1783954262662
+        },
+        {
+          "id": "I4i6bxrx",
+          "authors": [
+            "Skitso",
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.1",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Skitso MOD",
+          "updatedAt": 1783954145302
+        },
+        {
+          "id": "oTxfNdYf",
+          "authors": [
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.1",
+          "features": [
+            "FastFlips"
+          ],
+          "format": "VPX",
+          "comment": "(Orphaned on Monster Bash Pincab)",
+          "updatedAt": 1715924289225
+        },
+        {
+          "id": "rHKfNiuk",
+          "authors": [
+            "Zen Studios"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX3",
+          "comment": null,
+          "updatedAt": 946681200000
+        },
+        {
+          "id": "PMMGWZLV4c",
+          "authors": [
+            "TheGhost787"
+          ],
+          "version": "1.0",
+          "features": [
+            "no ROM",
+            "DT only"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1752355676559
+        },
+        {
+          "id": "kSOd6icC3G",
+          "authors": [
+            "Tom Tower",
+            "Dozer"
+          ],
+          "version": "3.0b",
+          "features": [],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1760501845921
+        },
+        {
+          "id": "DSxP_0x6Oa",
+          "authors": [
+            "Tom Tower",
+            "Ninuzzu",
+            "Dozer"
+          ],
+          "version": "2.3",
+          "features": [],
+          "format": "VPX",
+          "comment": "Remake",
+          "updatedAt": 1760501860209
+        },
+        {
+          "id": "tukTr13P",
+          "authors": [
+            "Hanibal",
+            "Dozer",
+            "JPSalas"
+          ],
+          "version": "1.5",
+          "features": [
+            "FastFlips",
+            "MOD",
+            "4k"
+          ],
+          "format": "VPX",
+          "comment": "Hanibals 4k MOD",
+          "updatedAt": 1715924198654
+        },
+        {
+          "id": "-uVoBnOY8U",
+          "authors": [
+            "Dozer",
+            "Zany",
+            "Ninuzzu",
+            "JPSalas"
+          ],
+          "version": "2.3",
+          "features": [],
+          "format": "VPX",
+          "comment": "Redux",
+          "updatedAt": 1760530187153
+        }
+      ]
+    },
+    {
+      "id": "-bG4P570",
+      "name": "Rolling Stones",
+      "manufacturer": "Bally",
+      "year": 1980,
+      "type": "SS",
+      "roms": [
+        "rollst21",
+        "rollstob"
+      ],
+      "tables": [
+        {
+          "id": "4C2p4x_l",
+          "authors": [
+            "JPSalas",
+            "HauntFreaks",
+            "RipleYYY",
+            "Xenonph",
+            "Mustang1961"
+          ],
+          "version": "6.0.0",
+          "features": [
+            "SSF",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1757691375352
+        },
+        {
+          "id": "tZr2jk-Sb0",
+          "authors": [
+            "Larouillas",
+            "HauntFreaks",
+            "JPSalas"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "MOD",
+            "incl. PuP",
+            "incl. B2S"
+          ],
+          "format": "VPX",
+          "comment": "Table + PuP-Pack. Black and White MOD",
+          "updatedAt": 1760503035948
+        },
+        {
+          "id": "RaW22XHj",
+          "authors": [
+            "HiRez00",
+            "JPSalas",
+            "Goldchicco"
+          ],
+          "version": "1.1",
+          "features": [
+            "Music",
+            "incl. Art"
+          ],
+          "format": "VPX",
+          "comment": "See Description on download page for Music files",
+          "updatedAt": 1640278942755
+        },
+        {
+          "id": "8ODDlgBrPg",
+          "authors": [
+            "Bigus1",
+            "JPSalas"
+          ],
+          "version": "1.0",
+          "features": [
+            "FSS",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Bigus MOD",
+          "updatedAt": 1748190737681
+        },
+        {
+          "id": "CqL5ibkl",
+          "authors": [
+            "iDigStuff",
+            "JPSalas"
+          ],
+          "version": "1.2",
+          "features": [
+            "Music",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "iDig rEMix Vol. 2 - Music MOD",
+          "updatedAt": 1616886000000
+        }
+      ]
+    },
+    {
+      "id": "-bv6-HSX",
+      "name": "Deadpool",
+      "manufacturer": "Zen Studios",
+      "year": 2014,
+      "type": "SS",
+      "roms": [],
+      "tables": [
+        {
+          "id": "3v8yi2wi1e",
+          "authors": [
+            "Zen Studios",
+            "Tamas Pokrocz"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX",
+          "comment": "Marvel Pinball - Heavy Hitters Pack - Table 22",
+          "updatedAt": 1689755403251
+        },
+        {
+          "id": "564hUGaz",
+          "authors": [
+            "Zen Studios"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX3",
+          "comment": null,
+          "updatedAt": 946681200000
+        }
+      ]
+    },
+    {
+      "id": "1ZFzSEzm3C",
+      "name": "Black Belt",
+      "manufacturer": "Zaccaria",
+      "year": 1986,
+      "type": "SS",
+      "roms": [
+        "bbeltzac"
+      ],
+      "tables": [
+        {
+          "id": "6i7e1vlnug",
+          "authors": [
+            "Dboyrecords",
+            "Destruk",
+            "LuvThatApex"
+          ],
+          "version": "1.0",
+          "features": [],
+          "format": "VP9",
+          "comment": null,
+          "updatedAt": 1725202670622
+        }
+      ]
+    },
+    {
+      "id": "8N0tjM2fDI",
+      "name": "Conan the Barbarian",
+      "manufacturer": "Original",
+      "year": 2026,
+      "type": "SS",
+      "roms": [
+        "rollstob"
+      ],
+      "tables": [
+        {
+          "id": "qLyykOIBNX",
+          "authors": [
+            "Arminio",
+            "Supergibson",
+            "Curse",
+            "Xenonph",
+            "Batch",
+            "JPSalas",
+            "Taito"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "MOD",
+            "incl. Art",
+            "Music",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": "Retheme of Conan (Rowamet 1983) by Xenonph",
+          "updatedAt": 1777714503103
+        }
+      ]
+    },
+    {
+      "id": "atmZ8zPG",
+      "name": "Black Belt",
+      "manufacturer": "Bally",
+      "year": 1986,
+      "type": "SS",
+      "roms": [
+        "blackblt"
+      ],
+      "tables": [
+        {
+          "id": "srrepEVb",
+          "authors": [
+            "JPSalas",
+            "Fredobiwan",
+            "STAT",
+            "Destruk"
+          ],
+          "version": "6.0.0",
+          "features": [
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1758106979382
+        },
+        {
+          "id": "LhiVlqiCWA",
+          "authors": [
+            "Ext2k",
+            "JPSalas",
+            "Fredobiwan",
+            "STAT"
+          ],
+          "version": "2.0",
+          "features": [
+            "Hybrid",
+            "VR",
+            "MOD",
+            "Mixed Reality",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": "b2s required for VR",
+          "updatedAt": 1739547523164
+        },
+        {
+          "id": "O9eFJLi_rV",
+          "authors": [
+            "MerlinRTP",
+            "Destruk",
+            "Fredobiwan",
+            "STAT",
+            "AStirling21",
+            "Pegula",
+            "Jason Schaeffer",
+            "TeamTuga",
+            "Bigus1",
+            "JPSalas"
+          ],
+          "version": "7.0",
+          "features": [
+            "incl. PuP",
+            "MOD",
+            "LUT"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1720267804813
+        },
+        {
+          "id": "hKF32vi5",
+          "authors": [
+            "Morttis",
+            "Arconovum",
+            "JPSalas"
+          ],
+          "version": "1.0-1.0",
+          "features": [
+            "FSS",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "FSS (Full Single Screen) MOD",
+          "updatedAt": 1686515219195
+        },
+        {
+          "id": "RgQCiZvA",
+          "authors": [
+            "SliderPoint",
+            "DJRobX",
+            "Destruk",
+            "JPSalas"
+          ],
+          "version": "1.0",
+          "features": [],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1588284000000
+        },
+        {
+          "id": "VRlABfjk4w",
+          "authors": [
+            "Capnclaw",
+            "JPSalas",
+            "Fredobiwan",
+            "STAT",
+            "Destruk"
+          ],
+          "version": "1",
+          "features": [
+            "LUT",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Sideblade Mod",
+          "updatedAt": 1792299793774
+        }
+      ]
+    },
+    {
+      "id": "F1Skyh5h",
+      "name": "Monster Bash",
+      "manufacturer": "Williams",
+      "year": 1998,
+      "type": "SS",
+      "roms": [
+        "mb_106b"
+      ],
+      "tables": [
+        {
+          "id": "7mXn5lzX",
+          "authors": [
+            "Arconovum",
+            "UncleWilly",
+            "Randr",
+            "Tom Tower",
+            "Ninuzzu",
+            "Arngrim",
+            "ClarkKent",
+            "ICPjuggla"
+          ],
+          "version": "2.61",
+          "features": [
+            "FSS",
+            "MOD",
+            "nFozzy"
+          ],
+          "format": "VPX",
+          "comment": "FSS (Full Single Screen) MOD",
+          "updatedAt": 1708521741055
+        },
+        {
+          "id": "DGDfrGS8",
+          "authors": [
+            "Bigus1",
+            "Tom Tower",
+            "UncleWilly",
+            "Randr",
+            "Ninuzzu"
+          ],
+          "version": "2.0",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Bigus MOD",
+          "updatedAt": 1700436623545
+        },
+        {
+          "id": "mgCZxNdkN2",
+          "authors": [
+            "Zen Studios",
+            "Peter Grafl"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX",
+          "comment": "Williams Pinball - Universal Monsters Pack - Table 130",
+          "updatedAt": 1648855655134
+        },
+        {
+          "id": "ek56A_p7jJ",
+          "authors": [
+            "Balutito",
+            "Bigus1",
+            "Tom Tower",
+            "UncleWilly",
+            "Randr",
+            "Ninuzzu"
+          ],
+          "version": "1.2",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Baluito Graphics MOD",
+          "updatedAt": 1708532679922
+        },
+        {
+          "id": "rxmbAdBi",
+          "authors": [
+            "VPW",
+            "Skitso",
+            "Fluffhead35",
+            "Flupper",
+            "Tomate",
+            "Tom Tower",
+            "UncleWilly",
+            "Randr",
+            "Zany",
+            "Leojreimroc",
+            "Iaakki",
+            "Sixtoe",
+            "Apophis",
+            "Ninuzzu",
+            "Bord",
+            "Rothbauerw"
+          ],
+          "version": "1.0",
+          "features": [
+            "MOD",
+            "VR",
+            "SSF",
+            "Hybrid",
+            "FSS",
+            "nFozzy",
+            "Fleep"
+          ],
+          "format": "VPX",
+          "comment": "VPW MOD",
+          "updatedAt": 1720791299298
+        },
+        {
+          "id": "G7Df7_IH",
+          "authors": [
+            "Arvid",
+            "Tom Tower",
+            "Ninuzzu"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "VR"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1638722774283
+        },
+        {
+          "id": "82XXV-Tc",
+          "authors": [
+            "Skitso",
+            "Tomate",
+            "Cyberpez",
+            "Flupper",
+            "Benji",
+            "Tom Tower",
+            "UncleWilly",
+            "Randr",
+            "Iaakki",
+            "Sixtoe",
+            "Ninuzzu",
+            "Bord",
+            "Rothbauerw"
+          ],
+          "version": "1.02",
+          "features": [
+            "VR",
+            "FSS",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Skitso MOD - FSS and VR Support",
+          "updatedAt": 1687162459030
+        },
+        {
+          "id": "KCOAM4aM",
+          "authors": [
+            "Hanibal"
+          ],
+          "version": "2.3",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Frank Eye and Flasher MODs",
+          "updatedAt": 1747349098496
+        },
+        {
+          "id": "kPI0x2wH",
+          "authors": [
+            "Ninuzzu",
+            "Tom Tower"
+          ],
+          "version": "1.3",
+          "features": [
+            "FastFlips"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1637971295809
+        },
+        {
+          "id": "6zLoti25",
+          "authors": [
+            "Hanibal"
+          ],
+          "version": "2.0",
+          "features": [
+            "FastFlips",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Hanibal's Style MOD",
+          "updatedAt": 1637971318730
+        },
+        {
+          "id": "e5IXcFEEIK",
+          "authors": [
+            "TheGhost787",
+            "Randr"
+          ],
+          "version": "1.0",
+          "features": [
+            "no ROM"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1760481130632
+        },
+        {
+          "id": "p05pPypw",
+          "authors": [
+            "Randr",
+            "UncleWilly",
+            "Hanibal",
+            "Tom Tower",
+            "Ninuzzu",
+            "Arngrim",
+            "ClarkKent",
+            "ICPjuggla"
+          ],
+          "version": "1.3",
+          "features": [
+            "FastFlips"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1462917600000
+        },
+        {
+          "id": "IoWHnBvo",
+          "authors": [
+            "Zen Studios"
+          ],
+          "version": null,
+          "features": [],
+          "format": "FX3",
+          "comment": null,
+          "updatedAt": 946681200000
+        }
+      ]
+    },
+    {
+      "id": "fXaQ33KC",
+      "name": "Tales from the Crypt",
+      "manufacturer": "Data East",
+      "year": 1993,
+      "type": "SS",
+      "roms": [
+        "tftc_400",
+        "tftc_303"
+      ],
+      "tables": [
+        {
+          "id": "TJMo9ycfSP",
+          "authors": [
+            "Jmcgohon81",
+            "VPW",
+            "Tomate",
+            "Iaakki",
+            "Sixtoe",
+            "DJRobX",
+            "Skitso",
+            "G5k",
+            "Wylte",
+            "Benji",
+            "Cyberpez",
+            "Apophis",
+            "Kingdids",
+            "Baldgeek",
+            "Fluffhead35",
+            "HauntFreaks",
+            "RiK",
+            "GTXJoe",
+            "Rawd",
+            "Leojreimroc"
+          ],
+          "version": "2.0",
+          "features": [
+            "VPU Patch"
+          ],
+          "format": "VPX",
+          "comment": "Requires the original VPW table and VPU Patching System",
+          "updatedAt": 1778077788561
+        },
+        {
+          "id": "xkDq6Aub",
+          "authors": [
+            "Bigus1",
+            "32assassin",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "3.0",
+          "features": [
+            "MOD",
+            "SSF"
+          ],
+          "format": "VPX",
+          "comment": "Bigus MOD",
+          "updatedAt": 1759832716732
+        },
+        {
+          "id": "94lYrL29",
+          "authors": [
+            "Morttis",
+            "Arconovum",
+            "32assassin",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "1.21-2.6",
+          "features": [
+            "MOD",
+            "FSS",
+            "nFozzy"
+          ],
+          "format": "VPX",
+          "comment": "FSS (Full Single Screen) MOD",
+          "updatedAt": 1776334936294
+        },
+        {
+          "id": "uVgZUZdK",
+          "authors": [
+            "VPW",
+            "Tomate",
+            "Iaakki",
+            "Sixtoe",
+            "DJRobX",
+            "Skitso",
+            "G5k",
+            "Wylte",
+            "Benji",
+            "Cyberpez",
+            "Apophis",
+            "Kingdids",
+            "Baldgeek",
+            "Fluffhead35",
+            "HauntFreaks",
+            "RiK",
+            "GTXJoe",
+            "Rawd",
+            "Leojreimroc"
+          ],
+          "version": "1.22",
+          "features": [
+            "Hybrid",
+            "VR",
+            "FSS",
+            "nFozzy",
+            "Fleep",
+            "LUT",
+            "SSF",
+            "DOF"
+          ],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1774434327813
+        },
+        {
+          "id": "UGNMK8KP4x",
+          "authors": [
+            "Starlion",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "1.1",
+          "features": [
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Starlion MOD",
+          "updatedAt": 1776334809422
+        },
+        {
+          "id": "bSRET74YgV",
+          "authors": [
+            "Paulhenri62",
+            "32assassin",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "1.0",
+          "features": [
+            "MOD",
+            "SSF",
+            "incl. Art",
+            "incl. Video"
+          ],
+          "format": "VPX",
+          "comment": "Graphical MOD",
+          "updatedAt": 1749303493600
+        },
+        {
+          "id": "Dd_EJ2BZE5",
+          "authors": [
+            "Sixtoe",
+            "32assassin",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "VR",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "VR Room - Minimal",
+          "updatedAt": 1708355265882
+        },
+        {
+          "id": "bCFO1HQ3",
+          "authors": [
+            "32assassin",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "0.9",
+          "features": [
+            "SSF",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Orphaned on vpinball.com",
+          "updatedAt": 1716351871639
+        },
+        {
+          "id": "lXhrNU53py",
+          "authors": [
+            "TheGhost787",
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "1.0",
+          "features": [
+            "MOD",
+            "no ROM"
+          ],
+          "format": "VPX",
+          "comment": "GhostMod",
+          "updatedAt": 1776334472332
+        },
+        {
+          "id": "9zTrafQ4",
+          "authors": [
+            "Freneticamnesic",
+            "Francisco666"
+          ],
+          "version": "072515a",
+          "features": [],
+          "format": "VPX",
+          "comment": null,
+          "updatedAt": 1749303224353
+        }
+      ]
+    },
+    {
+      "id": "jaxFOgue1X",
+      "name": "Stray Cats",
+      "manufacturer": "Original",
+      "year": 2025,
+      "type": "SS",
+      "roms": [
+        "rollstob"
+      ],
+      "tables": [
+        {
+          "id": "Fr4QTth9yE",
+          "authors": [
+            "Larouillas"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "incl. PuP",
+            "Music"
+          ],
+          "format": "VPX",
+          "comment": "PuP-Pack version",
+          "updatedAt": 1760476531227
+        },
+        {
+          "id": "7EELUHfEUv",
+          "authors": [
+            "Larouillas"
+          ],
+          "version": "1.0.0",
+          "features": [
+            "Music",
+            "incl. B2S"
+          ],
+          "format": "VPX",
+          "comment": "Regular version",
+          "updatedAt": 1740396491259
+        }
+      ]
+    },
+    {
+      "id": "K3qwGUCAYu",
+      "name": "Deadpool",
+      "manufacturer": "Stern",
+      "year": 2018,
+      "type": "SS",
+      "roms": [],
+      "tables": [
+        {
+          "id": "dr_WogaS6Q",
+          "authors": [
+            "Wbshrk"
+          ],
+          "version": "2.0",
+          "features": [],
+          "format": "FP",
+          "comment": "BAM",
+          "updatedAt": 1751319808136
+        }
+      ]
+    },
+    {
+      "id": "oImbzGjd",
+      "name": "Conan",
+      "manufacturer": "Rowamet",
+      "year": 1983,
+      "type": "SS",
+      "roms": [
+        "rollstob"
+      ],
+      "tables": [
+        {
+          "id": "4oC4Z-Stap",
+          "authors": [
+            "Bigus1",
+            "Xenonph",
+            "Batch",
+            "JPSalas"
+          ],
+          "version": "3",
+          "features": [
+            "MOD",
+            "Music"
+          ],
+          "format": "VPX",
+          "comment": "Bigus MOD",
+          "updatedAt": 1792132900060
+        },
+        {
+          "id": "aTZnjiDR",
+          "authors": [
+            "Xenonph",
+            "Batch",
+            "JPSalas"
+          ],
+          "version": "2.1",
+          "features": [
+            "Music",
+            "MOD"
+          ],
+          "format": "VPX",
+          "comment": "Sound + Reg MOD (download both files, see instructions on page)",
+          "updatedAt": 1675881548644
+        },
+        {
+          "id": "1VZgo8ZZrG",
+          "authors": [
+            "ludo242",
+            "Bigus1",
+            "Xenonph",
+            "Batch",
+            "JPSalas"
+          ],
+          "version": "1.0",
+          "features": [
+            "MOD",
+            "Music",
+            "incl. B2S"
+          ],
+          "format": "VPX",
+          "comment": "Mod of Conan (Rowamet 1983) by Bigus1",
+          "updatedAt": 1791860498934
+        }
+      ]
+    },
+    {
+      "id": "PUEPHDxC",
+      "name": "Tiger King",
+      "manufacturer": "Original",
+      "year": 2020,
+      "type": "SS",
+      "roms": [
+        "rollstob"
+      ],
+      "tables": [
+        {
+          "id": "xeMEwnyh",
+          "authors": [
+            "iDigStuff",
+            "JiCarlin",
+            "JPSalas"
+          ],
+          "version": "1.2",
+          "features": [
+            "Music",
+            "MOD",
+            "incl. B2S"
+          ],
+          "format": "VPX",
+          "comment": "Reskin of IDigStuff's Rolling Stones (Bally 1980) - Reupload",
+          "updatedAt": 1680522333363
+        }
+      ]
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { describe, formatTime, type CastcadeState } from '../useCastcade.js';
+import { Identity } from './Identity.js';
 
 const OUTCOME_LABEL: Record<CaptureOutcome, string> = {
   ingested: 'posted to ArcAid',
@@ -57,6 +58,14 @@ export function Status({ state }: { state: CastcadeState }) {
         <dd>{status.mapsVersion ?? 'unknown'}</dd>
         <dt>Current table</dt>
         <dd>{status.currentTable ?? '—'}</dd>
+        {status.currentIdentity && (
+          <>
+            <dt />
+            <dd>
+              <Identity state={state} identity={status.currentIdentity} />
+            </dd>
+          </>
+        )}
         <dt>Queued posts</dt>
         <dd>{status.queued}</dd>
         <dt>Last heartbeat</dt>
@@ -94,6 +103,14 @@ export function Status({ state }: { state: CastcadeState }) {
           <dd>
             {formatTime(c.launchedAt)} → {formatTime(c.exitedAt)}
           </dd>
+          {c.identity && (
+            <>
+              <dt>Identity</dt>
+              <dd>
+                <Identity state={state} identity={c.identity} compact />
+              </dd>
+            </>
+          )}
         </dl>
       ) : (
         <p className="muted card">No game captured yet. Play one one-player game on a ROM table and quit VPX normally.</p>

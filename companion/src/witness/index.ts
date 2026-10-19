@@ -16,7 +16,7 @@ export {
 } from './witness.js';
 export { ArcaidClient, ArcaidError, buildUrl, type FetchLike, type FetchResponseLike, type ArcaidFailureKind, type ScoreWireStatus } from './arcaid-client.js';
 export { decideCapture, countPlayers, MIN_SESSION_SEC, EXIT_SAMPLE_REASON, type CaptureDecision, type CaptureInput } from './capture.js';
-export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat } from './fs.js';
+export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat, type RandomAccessFile } from './fs.js';
 export { replayJournal, readJournalLines, type JournalReplay } from './journal-replay.js';
 export {
   compileMap,
@@ -70,3 +70,10 @@ export {
 } from './process-watch.js';
 export { PostQueue, QUEUE_FILE, type QueuedPost, type PostInput, type PostResult } from './queue.js';
 export { catalogueTableName } from './table-name.js';
+export * from './identity-types.js';
+export { createIdentityResolver, type IdentityResolver, type IdentityResolverDeps } from './identity-resolver.js';
+export { createIdentityStore, IDENTITY_FILE, type IdentityStore, type CachedFacts, type Confirmation } from './identity-store.js';
+export { findTableFile, tableRootsFor, tableBaseName } from './table-locator.js';
+export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer } from './vps-index.js';
+export { matchGame, matchTable, parseTableFileName, namePrefixes, versionFromName, versionForms, TABLE_SCORES, TABLE_MARGIN, type ParsedTableFileName } from './table-match.js';
+export { readVpxFacts, sha256File, parseTableInfo, parseGameDataPhysics, EMPTY_TABLE_INFO, DEFAULT_SHA256_CHUNK_BYTES, type Sha256Options } from './vpx-file.js';

@@ -13,6 +13,7 @@ export const IPC = {
   witnessPair: 'witness:pair',
   witnessUnpair: 'witness:unpair',
   witnessSetPaused: 'witness:setPaused',
+  witnessConfirmTable: 'witness:confirmTable',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   appOpenExternal: 'app:openExternal',
@@ -49,6 +50,8 @@ export interface CastcadeApi {
     pair(code: string): Promise<WitnessStatus>;
     unpair(): Promise<WitnessStatus>;
     setPaused(paused: boolean): Promise<WitnessStatus>;
+    /** Remember the player's answer to "which VPS table is this file?"; null forgets it. */
+    confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
     onStatus(cb: (status: WitnessStatus) => void): () => void;
   };
   settings: {

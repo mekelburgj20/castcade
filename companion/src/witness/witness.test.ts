@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
@@ -7,13 +8,21 @@ import { readJournalLines, replayJournal } from './journal-replay.js';
 import { createMapCorpus } from './maps.js';
 import { createStaticRegistry, NVRAM_DIRECTORY_VALUE, VPM_GLOBALS_KEY } from './nvram-dir.js';
 import type { ProcessInfo } from './process-watch.js';
+import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, WitnessSettings, WitnessStatus } from './types.js';
+import { createVpsIndex } from './vps-index.js';
 import { createWitness, outcomeForWire, resolveTableName, type WitnessDeps } from './witness.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
+const vpsIndex = createVpsIndex(repo('fixtures/vps'));
 
 const MM_TABLE = 'Medieval Madness (Williams 1997) VPW v1.0.1';
+const MM_PATH = `C:\\Tables\\${MM_TABLE}.vpx`;
+/** A synthetic table file with the owner's MM TableInfo (VPW 1.1 in the file, v1.0.1 in the name, like the real one). */
+const MM_VPX = buildOwnerStyleVpx({ tableName: 'Medieval Madness (Williams 1997)', author: 'VPW', version: '1.0.1', saveRev: '946' }, 6.5);
+const MB_VPX = buildOwnerStyleVpx({ tableName: 'Monster Bash VPW Mod', author: 'VPW', version: '1.0', manufacturer: 'Williams', year: '1998' });
+const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 /** What ArcAid is sent: the name cut after the manufacturer/year parenthetical (catalogueTableName). */
 const MM_WIRE = 'Medieval Madness (Williams 1997)';
 const MM_CMD = `"C:\\VPX\\VPinballX64.exe" -Play "C:\\Tables\\${MM_TABLE}.vpx" -Minimized`;
@@ -69,6 +78,8 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     mapsDir: repo('fixtures/maps'),
     nvramDir: '/nv',
     dataDir: '/data',
+    vpsDir: repo('fixtures/vps'),
+    tablesDir: null,
     ...settingsPatch,
   };
   const store = {
@@ -103,6 +114,7 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     fs,
     fetch,
     corpus,
+    vpsIndex,
     lister: { list: async () => procs.map((p) => ({ ...p })) },
     registry: createStaticRegistry({}),
     pollIntervalMs: 2000,
@@ -185,10 +197,12 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await h.fs.mkdir('/nv');
     h.fs.put('/nv/mm_109c.nv', mmBefore);
     h.fs.put('/nv/tftc_400.nv', Uint8Array.from([0]));
+    h.fs.put(MM_PATH, MM_VPX);
 
     await h.witness.start();
     await h.flush();
     expect(h.witness.status()).toMatchObject({ running: true, paired: true, nvramDir: '/nv', mapsVersion: 'f16a0cc6c347370706bf1a3f2c7a77568b3f69e7', lastError: null });
+    expect(h.witness.status().vpsVersion).toMatch(/^[0-9a-f]{7,40}$/);
     // Idle at start: a heartbeat, then a check-in ("no table open here"), whose reply says where scores go.
     expect(h.calls.map((c) => c.path)).toEqual(['/api/witness/heartbeat', '/api/witness/checkin']);
     expect(h.calls[0]?.token).toBe('tok');
@@ -200,6 +214,17 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     const launchedAt = h.clock.now();
     expect(h.launches).toEqual([{ table: MM_TABLE, pid: 10 }]);
     expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, vpxExe: EXE, note: null });
+    // Identity from the -Play file: VPS game by name, the VPW table by TableInfo author + version, hash in the background.
+    await h.flush();
+    expect(h.witness.status().currentIdentity).toMatchObject({
+      filePath: MM_PATH,
+      vpsGame: { id: '-5yMpqSy', name: 'Medieval Madness' },
+      vpsTable: { id: 'zbyQ01wi3L' },
+      tableConfidence: 'exact',
+      saveRev: 946,
+      sha256: sha(MM_VPX),
+      physics: { slopeMin: 6.5, slopeMax: 7.5 },
+    });
 
     await h.playFor(300_000);
     // A heartbeat went out during the game (120 s in); it did not check in (a table is open).
@@ -249,7 +274,13 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       ended: String(Math.floor(ended / 1000)),
       dur: String(dur),
       reason: 'exit_sample',
+      vps_game: '-5yMpqSy',
+      vps_table: 'zbyQ01wi3L',
+      table_sha256: sha(MM_VPX),
+      table_save_rev: '946',
     });
+    expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: '-5yMpqSy' }, vpsTable: { id: 'zbyQ01wi3L' }, gameSource: 'rom' });
+    expect(h.captures[0]?.detail).toMatch(/VPS game Medieval Madness \(-5yMpqSy\), table VPW 1\.0\.1/);
     expect(h.errors).toEqual([]);
 
     // VPX gone: checked in again right after the capture, and on every heartbeat tick while idle.
@@ -451,6 +482,7 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     const h = harness();
     await h.fs.mkdir('/nv');
     h.fs.put('/nv/mm_109c.nv', mmBefore);
+    h.fs.put(`C:\\VPX\\tables\\${MB_TABLE}.vpx`, MB_VPX);
     await h.witness.start();
 
     // VPX has been open for an hour when the companion first sees it (process creation from CIM).
@@ -462,6 +494,15 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     h.setTitle(MB_TITLE);
     await h.poll();
     expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: null });
+    // The editor title named the table; its file was found beside the exe and identified.
+    expect(h.witness.status().currentIdentity).toMatchObject({
+      filePath: `C:\\VPX\\tables\\${MB_TABLE}.vpx`,
+      vpsGame: { id: 'F1Skyh5h', name: 'Monster Bash' },
+      vpsTable: { id: 'rxmbAdBi', label: 'VPW 1.0 · MOD, VR, FSS' },
+      tableConfidence: 'exact',
+      saveRev: 7,
+      sha256: sha(MB_VPX),
+    });
 
     // Player up (in-process), a game is played, the player closes: VPinMAME rewrites the .nv.
     h.setTitle('Visual Pinball Player');
@@ -495,7 +536,13 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
       started: String(Math.floor(procStart / 1000)),
       ended: String(Math.floor(ended1 / 1000)),
       reason: 'exit_sample',
+      // The fixture .nv is Medieval Madness's, so the ROM re-pins the game to MM while the file said Monster Bash:
+      // the ROM wins (it is what actually ran), and the table is re-matched against MM's tables.
+      vps_game: '-5yMpqSy',
+      table_sha256: sha(MB_VPX),
+      table_save_rev: '7',
     });
+    expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: '-5yMpqSy' }, gameSource: 'rom' });
     expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: null }); // still open in the editor
 
     // Nothing more happens while the editor idles.

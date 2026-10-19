@@ -7,6 +7,6 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.cts"],
-  "exclude": ["src/**/*.test.ts", "renderer/**", "dist/**"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-support.ts", "renderer/**", "dist/**"],
   "references": [{ "path": "../protocol" }]
 }

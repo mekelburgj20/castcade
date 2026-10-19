@@ -1,6 +1,6 @@
 {
   "name": "@castcade/companion",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "productName": "Castcade",
   "private": true,
   "description": "Castcade companion: Electron desktop app (host/client match engine, Witness producer, media, launch).",
@@ -20,6 +20,7 @@
     "smoke": "electron . --smoke",
     "typecheck:renderer": "tsc -p renderer --noEmit",
     "fetch-maps": "node scripts/fetch-maps.mjs",
+    "fetch-vps": "node scripts/fetch-vps.mjs",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "release:win": "npm run build && electron-builder --win --publish always",
     "pack:dir": "npm run build && electron-builder --win --dir"
@@ -34,6 +35,7 @@
     "@types/react-dom": "^19.1.0",
     "@types/ws": "^8.18.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "cfb": "1.2.2",
     "electron": "38.8.6",
     "electron-builder": "^26.15.3",
     "react": "^19.1.0",

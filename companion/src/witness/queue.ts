@@ -39,6 +39,10 @@ export type QueuedPost =
         reason: string;
         restarts?: number;
         partial?: boolean;
+        vps_game?: string | null;
+        vps_table?: string | null;
+        table_sha256?: string | null;
+        table_save_rev?: number | null;
       };
     };
 

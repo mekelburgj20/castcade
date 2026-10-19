@@ -43,7 +43,12 @@ Code signing is deferred until GA (owner ruling 2026-10-18). Tester kit for the 
 `docs/design/fairness-and-table-identity.md`):** tournaments get an integrity mode, Open play (any table of
 the game, matched on VPS game id) or Sanctioned play (names confirmed by the owner) (named table, stock physics, factory NVRAM adjustments,
 known build, script diff with no restricted change; preflight before ball one). Build order F1–F6 in the
-design doc §7: companion identity + attestation first (F1 started 2026-10-18), then ArcAid items 11/12.
+design doc §7. **F1 shipped in v0.2.4 (2026-10-18):** `companion/src/witness/{identity-resolver,vpx-file,vps-index,
+table-match,table-locator,identity-store}.ts`; the compact VPS index is fetched at build time by
+`npm run fetch-vps -w companion` (vps-db commit pinned in the script; `fixtures/vps/` holds a 13-game subset for
+tests); scores carry `vps_game`, `vps_table`, `table_sha256`, `table_save_rev`; Status shows the identity with a
+one-time picker; a `tablesDir` setting widens the search for editor-opened tables. Next: F2 (ini attestation, NVRAM
+adjustments, build hashes), then ArcAid items 11/12.
 
 ## Commands
 
@@ -59,6 +64,7 @@ npm run protocol:generate      # regenerate protocol/schemas/*.json and protocol
 npm run generate -w protocol -- --check   # what CI runs: fails if the generated files are stale
 python fixtures/check.py       # replay the recorded journals through the Phase 0 detector (needs the maps corpus, see fixtures/README.md)
 npm run fetch-maps -w companion   # fetch the pinned pinmame-nvram-maps corpus into companion/resources/maps (gitignored; needed to package)
+npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run pack:dir -w companion     # unpacked app in companion/release/win-unpacked (then run Castcade.exe --smoke)
 npm run dist:win -w companion     # NSIS installer in companion/release (unsigned)
 ```

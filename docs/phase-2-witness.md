@@ -57,6 +57,11 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
    - *Maps version*: a short git hash,
    - *Sending to*: the room and tournament ArcAid routes this device to (change it in ArcAid under
      Account Settings → Arcaid Witness → your device); *not yet reported* until the first check-in lands,
+   - under *Current table*, the **identity** block: the VPS game and the VPS table Castcade matched the
+     file to (from the table's own info: author, version), its save revision and SHA-256. If it says
+     *unsure, please confirm*, pick the right table from the list once; Castcade remembers it for that file.
+     If it says *not found*, set the **Tables folder** in Settings (only `<VPX folder>\tables` is searched
+     by default),
    - *Last capture*: the table, the ROM, the score, and *posted to ArcAid*.
 5. If the tournament is a **live event** with a check-in lobby: leave Castcade running and VPX closed
    when the check-in window opens. Castcade checks in by itself whenever VPX is not running, so your
@@ -80,6 +85,10 @@ heartbeat so ArcAid shows the device as online.
 - The score is posted under the table's catalogue name (the file or window name cut after its
   "(Manufacturer Year)" part, e.g. *Monster Bash (Williams 1998)*), plus the ROM's own name as a second key.
   ArcAid matches that against the games open in the room you route this device to, then the Global catalogue.
+- From 0.2.4 every score also carries the table's **VPS game id, VPS table id, file hash and save revision**
+  (Castcade reads the `.vpx` header, never loads the whole file, and hashes it in the background). ArcAid
+  ignores these until its next release; nothing is enforced in Open play. They are the groundwork for
+  Sanctioned play (`docs/design/fairness-and-table-identity.md`).
 - On the board the score shows as **PC / VPX** once ArcAid v2.163.0 is live (it treats a paired desktop as
   a PC even in VR, since a headset is a display on a Windows PC). Until that deploys, ArcAid stamps every
   Witness score the cabinet way (*AtGames Cabinet* on the *VPXS* platform); that is a label, not a lost score.

@@ -155,6 +155,11 @@ function registerIpc(store: SettingsStore, host: WitnessHost, logger: Logger): v
   });
   ipcMain.handle(IPC.witnessUnpair, () => host.unpair());
   ipcMain.handle(IPC.witnessSetPaused, (_e, paused: unknown) => host.setPaused(paused === true));
+  ipcMain.handle(IPC.witnessConfirmTable, (_e, filePath: unknown, vpsTableId: unknown) => {
+    if (typeof filePath !== 'string' || !filePath) throw new Error('filePath must be a string');
+    if (vpsTableId !== null && typeof vpsTableId !== 'string') throw new Error('vpsTableId must be a string or null');
+    return host.confirmTable(filePath, vpsTableId);
+  });
   ipcMain.handle(IPC.settingsGet, () => redactSettings(store.get()));
   ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
     const clean = sanitizePatch(patch);
@@ -197,6 +202,7 @@ async function main(): Promise<void> {
     file: join(userData, 'settings.json'),
     defaults: {
       mapsDir: app.isPackaged ? join(process.resourcesPath, 'maps') : resolve(companionDir, 'resources', 'maps'),
+      vpsDir: app.isPackaged ? join(process.resourcesPath, 'vps') : resolve(companionDir, 'resources', 'vps'),
       dataDir: join(userData, 'witness'),
       deviceLabel: hostname(),
       newDeviceId: () => randomUUID(),
