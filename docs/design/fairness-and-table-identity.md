@@ -1,7 +1,7 @@
 # Fairness and table identity — Open play and Sanctioned play
 
-> **Status:** design accepted by the owner 2026-10-18 ("work all this in as you see fit"); naming of the two
-> modes is a working proposal (see §1). Nothing here is built yet. The companion half comes first
+> **Status:** design accepted by the owner 2026-10-18 ("work all this in as you see fit"); the mode names
+> Open play / Sanctioned play and the runner-uploaded script baseline (§8) were confirmed the same day. Nothing here is built yet. The companion half comes first
 > (§7), then the ArcAid half (`docs/arcaid-side-changes.md` items 11 and 12). ADR 0005 records the ruling.
 
 ## 0. The need, stated plainly
@@ -190,8 +190,9 @@ changes when the owner flips a physics override on and back off.
 - Script-readable table / flipper properties on 10.8.0 (engine attestation field list).
 - Exact record tags for every fingerprint field (take them from VPX's source and `vpxtool`'s parser,
   pin the list in a fixture so a VPX update that renames a tag fails a test, not a tournament).
-- Baseline licensing: the runner uploads a script they own a copy of, for the private use of the
-  tournament; ArcAid stores it per tournament game, never publishes it, and deletes it with the
-  tournament. Confirm the owner is comfortable with that.
+- Baseline licensing: **settled 2026-10-18.** The runner uploads a script they own a copy of, for the
+  private use of the tournament; ArcAid stores it per tournament game, never publishes it, and deletes it
+  with the tournament. The owner is comfortable with this for Sanctioned play ("it would contain nothing
+  personal").
 - Whether the ROM→VPS game map lives in the companion (shipped, like the maps corpus) or is served by
   ArcAid (correctable without a release). Recommendation: served by ArcAid with a shipped seed.

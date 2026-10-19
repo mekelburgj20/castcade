@@ -16,8 +16,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
   (`mm_109c`), **Tales from the Crypt** (`tftc_400`). Classic Williams/Bally WPC, Data East and
   Sega/Whitestar tables are safe bets. Modern Stern (SAM/SPIKE) and original (non-ROM) tables post nothing
   in this build.
-- An **ArcAid account** at <https://arcaid.app> that is a **member of the game room** running the test
-  tournament (ask the runner for the room if you are not in it yet).
+- An **ArcAid account** at <https://arcaid.app> that is a **member of the test game room, Flippin Fear Fest**
+  (<https://arcaid.app/arcaid_flippin_fear_fest_26/>); join it there first if you are not in it yet.
 
 ## Steps
 
@@ -28,8 +28,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
    Castcade starts in the tray (the **C** icon; click the arrow by the clock if Windows hides it).
 3. **Pair.** In ArcAid: **Account Settings → Arcaid Witness → create a pairing code**. In Castcade (click the
    tray icon): type the code, **Pair**.
-4. **Route it.** Back in ArcAid's Account Settings, your new device is listed: set **Send scores to** the
-   test game room and its tournament. Without this step the score goes to your Global record instead of
+4. **Route it.** Back in ArcAid's Account Settings, your new device is listed: set **Send scores to**
+   **Flippin Fear Fest** and its tournament **Flippin Fear Fest 26**. Without this step the score goes to your Global record instead of
    the tournament board.
 5. **Play one game, one player, to the end** on a ROM table. Let the last ball drain, wait for game over,
    then **quit the player** (Escape → Quit, or your frontend's exit). Do not kill VPX from Task Manager.

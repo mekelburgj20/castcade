@@ -1,7 +1,7 @@
 # ADR 0005 — Two integrity modes on a tournament: Open play and Sanctioned play
 
-**Status:** Accepted (2026-10-18); mode names are a working proposal pending the owner's choice
-**Owner rulings:** 2026-10-18 ("I want to do whatever it takes to make the playing field completely level in certain arenas like a strict competition"; "we need to have a strict mode and a non-strict mode for tournament settings"; "work all this in as you see fit")
+**Status:** Accepted (2026-10-18); mode names **Open play** / **Sanctioned play** confirmed by the owner the same day
+**Owner rulings:** 2026-10-18 ("I want to do whatever it takes to make the playing field completely level in certain arenas like a strict competition"; "we need to have a strict mode and a non-strict mode for tournament settings"; "work all this in as you see fit"); names confirmed and the runner-uploaded script baseline accepted ("it would contain nothing personal") later the same day
 **Builds on:** ADR 0002 (matches are Throwdowns), ADR 0003 (Castcade is the desktop Witness), ADR 0004 (per-table import; the importer's file parser is reused here); ArcAid ADR 0020/0021 (badge, never gate; three-tier verification)
 **Design:** `docs/design/fairness-and-table-identity.md`
 
@@ -26,7 +26,7 @@ something a runner turns on per tournament, not the default.
    the runner names the table (VPS table id) and the ROM per game; a blessed playfield fingerprint,
    no ini physics override, factory NVRAM adjustments, a known engine build and a script whose diff
    from the baseline contains no *restricted* change are required for the auto-score to land in that
-   tournament. The names are working names; the owner may rename them before ArcAid's PR.
+   tournament. The names are confirmed (owner, 2026-10-18).
 2. **Evidence is measured on the companion and sent with every score in both modes.** VPS ids, whole-file
    hash and save revision (informational), playfield fingerprint, ini attestation, NVRAM adjustments,
    build hashes, script hash and a classified script diff. Only diffs and hashes leave the machine, never

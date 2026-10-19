@@ -39,11 +39,11 @@ room's tournament board with the Witness badge. Two field fixes got there: captu
 stays open with the table from the window title (0.2.1), and the catalogue-grade wire name
 `catalogueTableName` + ROM name as `slug` (0.2.2). Half 2 (clean-machine install by a tester) is pending.
 Code signing is deferred until GA (owner ruling 2026-10-18). Tester kit for the friends wave:
-`docs/tester-kit.md` (v0.2.3). **Next, confirmed by the owner 2026-10-18 (ADR 0005, design in
+`docs/tester-kit.md` (v0.2.3; sent 2026-10-18; test room Flippin Fear Fest, https://arcaid.app/arcaid_flippin_fear_fest_26/). **Next, confirmed by the owner 2026-10-18 (ADR 0005, design in
 `docs/design/fairness-and-table-identity.md`):** tournaments get an integrity mode, Open play (any table of
-the game, matched on VPS game id) or Sanctioned play (named table, stock physics, factory NVRAM adjustments,
+the game, matched on VPS game id) or Sanctioned play (names confirmed by the owner) (named table, stock physics, factory NVRAM adjustments,
 known build, script diff with no restricted change; preflight before ball one). Build order F1–F6 in the
-design doc §7: companion identity + attestation first (F1/F2, not started), then ArcAid items 11/12.
+design doc §7: companion identity + attestation first (F1 started 2026-10-18), then ArcAid items 11/12.
 
 ## Commands
 
