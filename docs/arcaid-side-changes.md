@@ -28,6 +28,7 @@ before Castcade's first shippable release (Phase 2).
 | 10 | Room admin's live device view (who is reporting in, where scores route) | 2–3 | small–medium |
 | 11 | Integrity mode (Open / Sanctioned), VPS-id matching, per-game required table, evidence per score, runner review | F3 (after Phase 2) | medium |
 | 12 | Script baseline + diff reports + preflight endpoint | F5 | medium |
+| 13 | Runner stage: who is live, *Feature this player*, one stage URL for the runner's OBS | 4 | small–medium |
 
 ## 1. Desktop device type on `witness_devices`
 
@@ -268,6 +269,28 @@ Unknown hunks the runner approves are stored against the baseline so the next pl
 **Where.** Same files as item 11 plus a small upload route and storage for baselines (text, ~100–500 KB).
 
 **Size.** Medium. **Needed by:** Castcade F5.
+
+## 13. Runner stage: feature a live player on the runner's stream (owner ask, 2026-10-19)
+
+**What.** The event lobby (item 10's runner side) also shows which checked-in devices are **live**: the
+companion's heartbeat gains `live: 'off' | 'recording' | 'streaming' | 'watchable'` and, when watchable, a
+feed id. The runner clicks **Feature** on one player; ArcAid stores `tournaments.featured_device_id` (or a
+small `event_stage` row with history) and pushes the change on the existing `room:<roomId>` socket channel
+and to the companions through `GET /api/witness/checkin` (`featured: bool` in the reply, so the featured
+player's companion knows to start or keep pushing its feed). A fixed **stage page** per tournament,
+`/stage/:tournamentId` (admin-token gated, meant to be added once to the runner's OBS as a browser
+source), renders whichever feed is featured plus the Castcade overlay (player, table, score, ball, Witness
+badge, tournament standing). The runner's YouTube or Twitch stream never changes keys; switching players is
+a click in ArcAid. Nothing about the video itself touches the ArcAid server: the stage page plays the feed
+from the relay Castcade's Phase 4 provides (peer-hosted ruling), ArcAid only says *which* feed.
+
+**Where.** `witness_devices` or the heartbeat handler for the `live` state, `EventLobbyService.roster`,
+a tournament admin route, the stage page in `admin-ui` (public-ish route, token in the URL), the checkin
+reply shape in `src/api/routes/global.ts`.
+
+**Size.** Small–medium on ArcAid's side; the feed relay and the overlay are Castcade Phase 4 / 4a work.
+**Needed by:** Castcade Phase 4. Design context: `docs/design/arcaid-integration-gap-analysis.md` §6
+(phases 4a and 4).
 
 ## Not asked of ArcAid
 
