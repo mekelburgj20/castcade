@@ -209,6 +209,29 @@ itself. And the number only means something for the VPX plumb bob: `vpmNudge.Sen
 VPM table's script (1 in the owner's Monster Bash) and the ROM's own tilt-warning adjustment are
 separate knobs that govern keyboard nudges and the machine's tilt count, not the analog plumb.
 
+**In-game menus are the hole in ini reading (found 2026-10-20).** VPX's own tweak menu (`LiveUI.cpp`)
+changes *Difficulty* live in memory (`m_globalDifficulty`, which sets the slope between the table's
+min and max) and writes it to the table ini only when the player presses the Start key on the tweak
+page; an unsaved change is in force for the game and on no disk anywhere. The Keys dialog is the
+opposite: it saves the whole settings file on OK. The Panasony VR build adds its own in-game page
+(labels in the exe: *AnalogNudge X/Y-Gain*, *AnalogNudge X/Y-Max*, *DigitalNudge*, *Difficulty*,
+*Slope*, *VisualNudgeStrength*, *VisualAnalogNudgeGain*) with keys stock 10.8.0 does not know
+(`AnalogNudgeGainX/Y`, `DigitalNudge`, `TiltInertia` in `[Player]`; `nudgestrength` in `[PlayerVR]`),
+so on that build the nudge the player actually gets may be governed by a key the 0.2.8 `ini` object
+does not carry, and `max_accel_gain` reads `PBWAccelGain`, which may not be the live knob there. The
+owner's rig (2026-10-20) had `AnalogNudgeGainX/Y = 1965/1996` beside `PBWAccelGain = 115`, and VPX
+had been open since 2026-10-18 with the owner reporting a tilt sensitivity of 10 in force while every
+file on disk said 500: unresolved until that VPX exits and rewrites its ini.
+
+Consequences. (1) Ini reading is a *settings at launch* statement, never a *settings during the game*
+one; Status should say so. (2) The live hook (Phase 3) closes the hole from inside: at game start and
+at each ball start the script calls `NudgeGetCalibration` (the in-memory global settings: gains, maxima,
+dead zone, tilt sensitivity), reads `GlobalDifficulty`, `SlopeMin`, `SlopeMax` and `Difficulty` from the
+table object, and journals them, so an in-game change shows up at the ball it was made on. That is the
+F6 "engine attestation" row. (3) Build-specific knobs: for a declared `panasony` family the hook also
+journals the Panasony keys by name once their meaning is confirmed with the author or by experiment on
+the owner's rig; until then the `ini` object carries them raw for the runner's eyes (0.2.9 candidate).
+
 **Nudge telemetry (Phase 3).** The companion opens the same HID joystick read-only beside VPX (these
 devices allow non-exclusive reads) and samples the nudge axes at 100 Hz or better for the session. A
 real nudge is a brief bipolar impulse (push, rebound, zero within ~300 ms); a lift is a one-sided step
