@@ -8,11 +8,20 @@ function physicsLine(ini: IniAttestation): { text: string; warn: boolean } {
   return { text: `override: global set ${ini.physicsSet}${name}${ini.physicsFlippersOverridden ? ', flippers too' : ''}`, warn: true };
 }
 
-function buildLine(b: BinaryAttestation | null, what: string, missing: string): { text: string; warn: boolean } {
-  if (!b) return { text: missing, warn: false };
+/** Builds are described, never flagged: which family ran is evidence for the runner, not a verdict. */
+function buildLine(b: BinaryAttestation | null, what: string, missing: string): string {
+  if (!b) return missing;
   const ver = b.version?.fileVersionText ?? b.version?.fileVersion ?? `${b.sha256.slice(0, 12)}…`;
-  if (b.known) return { text: `${ver} · ${b.known.label}`, warn: false };
-  return { text: `${ver} · not an official ${what} release build`, warn: true };
+  switch (b.family) {
+    case 'official':
+      return `${ver} · ${b.known?.label ?? `official ${what} release`}`;
+    case 'panasony':
+      return `${ver} · Panasony VR community build`;
+    case 'nightly':
+      return `${ver} · ${what.split(' ')[0]} nightly build`;
+    case 'unknown':
+      return `${ver} · unrecognised build (not the official ${what} release)`;
+  }
 }
 
 /**
@@ -67,12 +76,12 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
             : `${adj.checked.length} checked, all factory${adj.unjudged > 0 ? ` (${adj.unjudged} without a known default)` : ''}`}
       </dd>
       <dt>VPX build</dt>
-      <dd className={vpx.warn ? 'warn' : ''} title={a.build?.vpx?.sha256 ?? ''}>
-        {vpx.text}
+      <dd title={a.build?.vpx?.sha256 ?? ''}>
+        {vpx}
       </dd>
       <dt>VPinMAME</dt>
-      <dd className={vpm.warn || a.vpmCheat === true ? 'warn' : ''} title={a.build?.vpinmame?.sha256 ?? ''}>
-        {vpm.text}
+      <dd className={a.vpmCheat === true ? 'warn' : ''} title={a.build?.vpinmame?.sha256 ?? ''}>
+        {vpm}
         {a.vpmCheat !== null && <span className={a.vpmCheat ? 'warn' : 'muted'}> · cheat {a.vpmCheat ? 'ON' : 'off'}</span>}
       </dd>
       {a.iniChanged && (

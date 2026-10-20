@@ -91,12 +91,15 @@ interface KnownBuild {
   kind: 'official';
 }
 
+type BuildFamily = 'official' | 'panasony' | 'nightly' | 'unknown';
+
 interface BinaryAttestation {
   path: string;
   size: number;
   sha256: string;
   version: PeVersion | null;
   known: KnownBuild | null;
+  family: BuildFamily;
 }
 
 interface BuildAttestation {

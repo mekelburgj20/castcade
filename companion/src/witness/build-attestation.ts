@@ -4,11 +4,12 @@
  * release builds; plus VPinMAME's per-ROM `cheat` option from the registry.
  *
  * An unknown hash is reported, never refused (people compile their own and run community VR builds);
- * ArcAid item 11 can extend the known list from consensus across devices.
+ * the version resource sorts it into a build family (Panasony VR, nightly, unknown) and ArcAid item 11
+ * decides per tournament which families and hashes Sanctioned play accepts.
  */
 import { createHash } from 'node:crypto';
 import { win32 as winPath } from 'node:path';
-import type { BinaryAttestation, BuildAttestation, KnownBuild, PeVersion } from './attestation-types.js';
+import type { BinaryAttestation, BuildAttestation, BuildFamily, KnownBuild, PeVersion } from './attestation-types.js';
 import { isNotFound, type WitnessFs } from './fs.js';
 import type { RegistryReader } from './nvram-dir.js';
 
@@ -29,6 +30,44 @@ export const KNOWN_BUILDS: Readonly<Record<string, KnownBuild>> = Object.freeze(
 
 export function knownBuildFor(sha256: string): KnownBuild | null {
   return KNOWN_BUILDS[sha256.toLowerCase()] ?? null;
+}
+
+export type BinaryKind = 'vpx' | 'vpinmame';
+
+/** Which family a binary belongs to: proven by hash when official, otherwise read from its version strings. */
+export function buildFamilyFor(known: KnownBuild | null, version: PeVersion | null, kind: BinaryKind): BuildFamily {
+  if (known) return 'official';
+  if (!version) return 'unknown';
+  const texts = [version.fileVersionText, version.productVersionText].filter((t): t is string => t !== null);
+  if (texts.some((t) => /panasony/i.test(t))) return 'panasony';
+  const fv = version.fileVersion;
+  if (!fv) return 'unknown';
+  const [major, minor, patch, build] = fv.split('.').map((n) => Number(n));
+  if (kind === 'vpx') {
+    // Upstream-style tag with a build number past the 10.8.0 release (2051) and no builder suffix.
+    const plain = texts.every((t) => /^\d+(\.\d+)*$/.test(t));
+    return plain && major === 10 && minor === 8 && patch === 0 && (build ?? 0) > 2051 ? 'nightly' : 'unknown';
+  }
+  // VPinMAME: anything past the 3.6.0 release line is a nightly (3.7.x today).
+  return major === 3 && ((minor ?? 0) > 6 || ((minor ?? 0) === 6 && (patch ?? 0) > 0)) ? 'nightly' : 'unknown';
+}
+
+/** Short wording for a family, used in notes, Status and capture details. */
+export function describeFamily(b: BinaryAttestation): string {
+  switch (b.family) {
+    case 'official':
+      return b.known?.label ?? 'official release';
+    case 'panasony':
+      return 'Panasony VR community build';
+    case 'nightly':
+      return 'nightly build';
+    case 'unknown':
+      return 'unrecognised build';
+  }
+}
+
+function kindOf(path: string): BinaryKind {
+  return /vpinmame/i.test(winPath.basename(path)) ? 'vpinmame' : 'vpx';
 }
 
 // ------------------------------------------------------------------------------- PE version --
@@ -110,7 +149,7 @@ export function parsePeVersion(bytes: Uint8Array): PeVersion | null {
 // ------------------------------------------------------------------------------------ files --
 
 /** Hash and version a binary. Null when the file is missing; other errors propagate. */
-export async function attestBinary(fs: WitnessFs, path: string): Promise<BinaryAttestation | null> {
+export async function attestBinary(fs: WitnessFs, path: string, kind: BinaryKind = kindOf(path)): Promise<BinaryAttestation | null> {
   let bytes: Uint8Array;
   try {
     bytes = await fs.readFile(path);
@@ -119,7 +158,9 @@ export async function attestBinary(fs: WitnessFs, path: string): Promise<BinaryA
     throw err;
   }
   const sha256 = createHash('sha256').update(bytes).digest('hex');
-  return { path, size: bytes.length, sha256, version: parsePeVersion(bytes), known: knownBuildFor(sha256) };
+  const known = knownBuildFor(sha256);
+  const version = parsePeVersion(bytes);
+  return { path, size: bytes.length, sha256, version, known, family: buildFamilyFor(known, version, kind) };
 }
 
 export const VPM_CONTROLLER_CLSID_KEY = 'HKCR\\VPinMAME.Controller\\CLSID';
@@ -220,8 +261,8 @@ export function createBuildAttester(deps: BuildAttesterDeps): BuildAttester {
       } catch (err) {
         notes.push(`VPinMAME DLL: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (vpx && !vpx.known) notes.push('VPX build is not an official 10.8.0 release build');
-      if (vpinmame && !vpinmame.known) notes.push('VPinMAME build is not the official 3.6.0 release');
+      if (vpx && vpx.family !== 'official') notes.push(`VPX is a ${describeFamily(vpx)}, not the official 10.8.0 release`);
+      if (vpinmame && vpinmame.family !== 'official') notes.push(`VPinMAME is a ${describeFamily(vpinmame)}, not the official 3.6.0 release`);
       log(`witness: build ${vpx?.version?.fileVersionText ?? vpx?.sha256.slice(0, 12) ?? '?'} / VPinMAME ${vpinmame?.version?.fileVersionText ?? vpinmame?.sha256.slice(0, 12) ?? '?'}`);
       return { vpx, vpinmame, notes };
     },
@@ -230,8 +271,8 @@ export function createBuildAttester(deps: BuildAttesterDeps): BuildAttester {
 
 export function describeBuild(b: BuildAttestation | null, cheat: boolean | null): string {
   if (!b) return 'build unknown';
-  const v = b.vpx ? `VPX ${b.vpx.version?.fileVersionText ?? b.vpx.version?.fileVersion ?? b.vpx.sha256.slice(0, 12)}${b.vpx.known ? ' (official)' : ' (not an official release build)'}` : 'VPX exe unread';
-  const m = b.vpinmame ? `VPinMAME ${b.vpinmame.version?.fileVersion ?? b.vpinmame.sha256.slice(0, 12)}${b.vpinmame.known ? ' (official)' : ' (not the official release)'}` : 'VPinMAME DLL not found';
+  const v = b.vpx ? `VPX ${b.vpx.version?.fileVersionText ?? b.vpx.version?.fileVersion ?? b.vpx.sha256.slice(0, 12)} (${b.vpx.family === 'official' ? 'official' : describeFamily(b.vpx)})` : 'VPX exe unread';
+  const m = b.vpinmame ? `VPinMAME ${b.vpinmame.version?.fileVersion ?? b.vpinmame.sha256.slice(0, 12)} (${b.vpinmame.family === 'official' ? 'official' : describeFamily(b.vpinmame)})` : 'VPinMAME DLL not found';
   const c = cheat === null ? '' : cheat ? ', cheat ON' : ', cheat off';
   return `${v}; ${m}${c}`;
 }

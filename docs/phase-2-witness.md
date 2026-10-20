@@ -66,9 +66,9 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
      for), *Difficulty* (the table's own, or the tweak-menu override, with the slope that results), *Nudge*,
      *Table options* (the 10.8 options you set for this table), *Adjustments* (the ROM's operator settings
      against factory, filled in after the game; many ROMs have no adjustments map yet), *VPX build* and
-     *VPinMAME* (version, whether it is the official release build, VPinMAME's cheat flag). Nothing here is
-     enforced; it is what Sanctioned play will read. Expect *not an official release build* if you run a
-     community VR build or a VPinMAME nightly, which is normal and only informational,
+     *VPinMAME* (version and build family: official release, Panasony VR community build, nightly build or
+     unrecognised; VPinMAME's cheat flag). Nothing here is enforced; it is what Sanctioned play will read. A
+     Panasony VR build or a VPinMAME nightly is named as such, which is normal and only informational,
    - *Last capture*: the table, the ROM, the score, and *posted to ArcAid*.
 5. If the tournament is a **live event** with a check-in lobby: leave Castcade running and VPX closed
    when the check-in window opens. Castcade checks in by itself whenever VPX is not running, so your
@@ -98,8 +98,8 @@ heartbeat so ArcAid shows the device as online.
   Sanctioned play (`docs/design/fairness-and-table-identity.md`).
 - From 0.2.5 a score also carries three compact JSON params: `ini` (physics set, difficulty, slope, nudge,
   table options), `adjustments` (the ROM's fairness-relevant operator adjustments against factory, when the
-  maps corpus describes them) and `build` (SHA-256 and version of the VPX exe and the VPinMAME DLL, whether
-  each is a known official release build, and VPinMAME's cheat flag). Castcade reads `VPinballX.ini` the way
+  maps corpus describes them) and `build` (SHA-256 and version of the VPX exe and the VPinMAME DLL, the build
+  family of each (official by hash, Panasony VR community build, nightly, unrecognised), and VPinMAME's cheat flag). Castcade reads `VPinballX.ini` the way
   VPX does (`-Ini`, else beside the exe, else `%APPDATA%\VPinballX`), the table's `<table>.ini` beside the
   `.vpx`, the VPinMAME registry settings, and hashes the two binaries once per launch. Still nothing enforced.
 - On the board the score shows as **PC / VPX** once ArcAid v2.163.0 is live (it treats a paired desktop as

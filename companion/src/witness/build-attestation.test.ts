@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { buildWire } from './attestation-types.js';
-import { attestBinary, createBuildAttester, describeBuild, KNOWN_BUILDS, knownBuildFor, locateVpinmameDll, parsePeVersion, vpmCheatFlag } from './build-attestation.js';
+import { attestBinary, buildFamilyFor, createBuildAttester, describeBuild, KNOWN_BUILDS, knownBuildFor, locateVpinmameDll, parsePeVersion, vpmCheatFlag } from './build-attestation.js';
 import { MemoryFs } from './fs.js';
 import { createStaticRegistry } from './nvram-dir.js';
 
@@ -71,13 +71,29 @@ describe('known builds', () => {
     expect(knownBuildFor('00'.repeat(32))).toBeNull();
   });
 
-  it("the owner's community build hashes clean, versions, and is reported as not an official build", async () => {
+  it("the owner's Panasony build hashes clean, versions, and lands in the panasony family", async () => {
     const fs = new MemoryFs();
     fs.put(EXE, OWNER_VPX);
     const a = await attestBinary(fs, EXE);
-    expect(a).toMatchObject({ path: EXE, size: OWNER_VPX.length, sha256: createHash('sha256').update(OWNER_VPX).digest('hex'), known: null });
+    expect(a).toMatchObject({ path: EXE, size: OWNER_VPX.length, sha256: createHash('sha256').update(OWNER_VPX).digest('hex'), known: null, family: 'panasony' });
     expect(a?.version?.fileVersionText).toBe('10.8.0.2079.Panasony');
     expect(await attestBinary(fs, 'C:\\nowhere.exe')).toBeNull();
+  });
+
+  it('sorts builds into families: official by hash, Panasony by tag, nightlies by build number, else unknown', () => {
+    const official = KNOWN_BUILDS['b8c47fe7bcf83c2b417636e16dafd6699a46061442796746215f246a2f26e845'] ?? null;
+    const ver = (fileVersion: string | null, text: string | null, product: string | null = text) => ({ fileVersion, fileVersionText: text, productVersionText: product, description: null });
+    expect(buildFamilyFor(official, ver('10.8.0.2051', '10.8.0.2051'), 'vpx')).toBe('official');
+    expect(buildFamilyFor(null, ver('10.8.0.2079', '10.8.0.2079.Panasony'), 'vpx')).toBe('panasony');
+    expect(buildFamilyFor(null, ver('10.8.0.2078', '10.8.0.2078', '10.8.0.2078.panasony'), 'vpx')).toBe('panasony');
+    expect(buildFamilyFor(null, ver('10.8.0.2100', '10.8.0.2100'), 'vpx')).toBe('nightly');
+    expect(buildFamilyFor(null, ver('10.8.0.2051', '10.8.0.2051'), 'vpx')).toBe('unknown'); // release version string, wrong hash
+    expect(buildFamilyFor(null, ver('10.8.0.2100', '10.8.0.2100.Somebody'), 'vpx')).toBe('unknown');
+    expect(buildFamilyFor(null, ver('10.8.1.100', '10.8.1.100'), 'vpx')).toBe('unknown');
+    expect(buildFamilyFor(null, null, 'vpx')).toBe('unknown');
+    expect(buildFamilyFor(null, ver('3.7.0.222', '3, 7, 0, 222', '3.7.0.222.8133307'), 'vpinmame')).toBe('nightly');
+    expect(buildFamilyFor(null, ver('3.6.0.1227', '3, 6, 0, 1227'), 'vpinmame')).toBe('unknown');
+    expect(buildFamilyFor(null, ver('2.9.0.0', null), 'vpinmame')).toBe('unknown');
   });
 });
 
@@ -115,13 +131,16 @@ describe('VPinMAME DLL and cheat flag', () => {
     const b = await attester.forExe(EXE);
     expect(b.vpx?.version?.fileVersion).toBe('10.8.0.2079');
     expect(b.vpinmame?.version?.fileVersion).toBe('3.7.0.222');
-    expect(b.notes).toEqual(['VPX build is not an official 10.8.0 release build', 'VPinMAME build is not the official 3.6.0 release']);
-    expect(describeBuild(b, false)).toBe('VPX 10.8.0.2079.Panasony (not an official release build); VPinMAME 3.7.0.222 (not the official release), cheat off');
+    expect(b.vpx?.family).toBe('panasony');
+    expect(b.vpinmame?.family).toBe('nightly');
+    expect(b.notes).toEqual(['VPX is a Panasony VR community build, not the official 10.8.0 release', 'VPinMAME is a nightly build, not the official 3.6.0 release']);
+    expect(describeBuild(b, false)).toBe('VPX 10.8.0.2079.Panasony (Panasony VR community build); VPinMAME 3.7.0.222 (nightly build), cheat off');
     expect(lines).toEqual(['witness: build 10.8.0.2079.Panasony / VPinMAME 3, 7, 0, 222']);
     const again = await attester.forExe(EXE);
     expect(again.vpx).toBe(b.vpx); // cached promise result, same object
-    const wire = JSON.parse(buildWire(b, true) ?? 'null') as { vpx: { version: string; known: null }; vpinmame: { version: string }; cheat: boolean };
-    expect(wire.vpx).toMatchObject({ version: '10.8.0.2079.Panasony', known: null });
+    const wire = JSON.parse(buildWire(b, true) ?? 'null') as { vpx: { version: string; known: null; family: string }; vpinmame: { version: string; family: string }; cheat: boolean };
+    expect(wire.vpx).toEqual({ sha256: b.vpx?.sha256, version: '10.8.0.2079.Panasony', known: null, family: 'panasony' });
+    expect(wire.vpinmame).toMatchObject({ family: 'nightly' });
     expect(wire.cheat).toBe(true);
     expect(describeBuild(null, null)).toBe('build unknown');
     expect(buildWire(null, null)).toBeNull();

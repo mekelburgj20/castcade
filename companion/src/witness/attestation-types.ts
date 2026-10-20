@@ -113,6 +113,15 @@ export interface KnownBuild {
   kind: KnownBuildKind;
 }
 
+/**
+ * Who built the binary, as far as the companion can tell. `official` is proven by hash; the other
+ * three are read from the version resource (a declaration anyone could edit, which Sanctioned play
+ * accepts under the honest ceiling): `panasony` = the Panasony VR community builds (tag `.Panasony`
+ * in `FileVersion`; allowed in Sanctioned play by default, owner ruling 2026-10-19), `nightly` = an
+ * upstream-style build number that is not a release, `unknown` = none of the above.
+ */
+export type BuildFamily = 'official' | 'panasony' | 'nightly' | 'unknown';
+
 export interface BinaryAttestation {
   path: string;
   size: number;
@@ -120,6 +129,7 @@ export interface BinaryAttestation {
   version: PeVersion | null;
   /** The release build this hash belongs to, or null when the companion does not know it. */
   known: KnownBuild | null;
+  family: BuildFamily;
 }
 
 export interface BuildAttestation {
@@ -174,7 +184,7 @@ export function adjustmentsWire(a: AdjustmentsReport | null): string | null {
   });
 }
 
-/** The compact `build` JSON: exe and DLL hashes with version strings and the known-build id, plus the cheat flag. */
+/** The compact `build` JSON: exe and DLL hashes with version strings, the known-build id and the build family, plus the cheat flag. */
 export function buildWire(b: BuildAttestation | null, cheat: boolean | null): string | null {
   if (!b && cheat === null) return null;
   const bin = (x: BinaryAttestation | null) =>
@@ -183,6 +193,7 @@ export function buildWire(b: BuildAttestation | null, cheat: boolean | null): st
           sha256: x.sha256,
           version: x.version?.fileVersionText ?? x.version?.fileVersion ?? null,
           known: x.known?.id ?? null,
+          family: x.family,
         }
       : null;
   return JSON.stringify({ vpx: bin(b?.vpx ?? null), vpinmame: bin(b?.vpinmame ?? null), cheat });

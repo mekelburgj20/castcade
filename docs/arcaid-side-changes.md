@@ -239,13 +239,19 @@ As shipped by companion 0.2.5 (JSON strings, URL-encoded as query params; each a
   the enum/special text. Absent for the many ROMs whose map has no adjustments block (never treat absence as
   factory). `require_factory_adjustments` reads `non_factory.length === 0` and should let the runner
   whitelist labels (free play is routinely non-factory and harmless).
-- `build`: `{"vpx":{"sha256":"…","version":"10.8.0.2079.Panasony","known":null},"vpinmame":{"sha256":"…",
-  "version":"3, 7, 0, 222","known":null},"cheat":false}` — `known` is the companion's id for an official release
-  build (`vpx-10.8.0-2051-gl-x64`, `vpinmame-3.6.0-1227-x64`, …) or null. **Expect null often:** VR players run
-  community builds (the owner's rig does) and many run VPinMAME nightlies. `require_known_build` should
-  therefore mean "a build on the tournament's allow-list", seeded from the official ids and extended by the
-  runner blessing a hash (their own, or one several devices report), never "official only". `cheat` is
-  VPinMAME's per-ROM cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
+- `build`: `{"vpx":{"sha256":"…","version":"10.8.0.2079.Panasony","known":null,"family":"panasony"},
+  "vpinmame":{"sha256":"…","version":"3, 7, 0, 222","known":null,"family":"nightly"},"cheat":false}` — `known` is
+  the companion's id for an official release build (`vpx-10.8.0-2051-gl-x64`, `vpinmame-3.6.0-1227-x64`, …) or
+  null. `family` (0.2.7) is `official` (proven by hash), `panasony` (the Panasony VR community builds: tag
+  `.Panasony` in the exe's version resource), `nightly` (an upstream-style build number past the release with no
+  builder tag; VPinMAME 3.7.x) or `unknown`. The three non-official families are read from the version resource,
+  so they are declared rather than proven; Sanctioned play accepts that under the honest ceiling (§5 of the
+  fairness design). **Expect `known: null` often:** VR players run community builds (the owner's rig does) and
+  many run VPinMAME nightlies. `require_known_build` therefore means: `official` and `panasony` pass by default
+  (**owner ruling 2026-10-19: the Panasony VR mod of VPX is allowed even in Sanctioned play**), `nightly` passes
+  by default behind a runner toggle, and `unknown` passes only when the runner has blessed that hash for the
+  tournament (their own, or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
+  cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
 `global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
 working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
 score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to

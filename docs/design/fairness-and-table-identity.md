@@ -168,7 +168,11 @@ turns an honest mistake into a public event.
 
 The companion already knows the VPX exe path; it adds SHA-256 of the exe and of `VPinMAME64.dll` /
 `VPinMAME.dll`, compared against a small table of known 10.8.0 release builds (official, GL, VR)
-shipped with the companion and extensible from ArcAid. Unknown → `build: { known: false }`.
+shipped with the companion and extensible from ArcAid. A hash that is not on the list is sorted into
+a *family* from the binary's version resource: `panasony` (the Panasony VR community builds, which the
+owner runs and ruled allowed in Sanctioned play on 2026-10-19), `nightly` (upstream build number past
+the release), else `unknown`. Families other than `official` are declared by the binary, not proven;
+that sits under the honest ceiling in §5.
 
 ## 7. Build order (companion first, every step shippable on its own)
 
@@ -211,10 +215,12 @@ both. The companion checks a fairness subset by label (balls per game, tilt warn
 ball save, replay, pricing/free play, special award, match, difficulty, timed plunger, buy-in), at
 most 24 entries. **Builds:** the known list is seeded from the official release assets, hashed on
 2026-10-19 (VPX v10.8.0-2051 DX/GL × x64/x86, VPinMAME v3.6.0-1227 x64/x86/-sc). The owner's own
-rig runs Panasony community builds 10.8.0.2078/2079 and a VPinMAME 3.7.0.222 nightly, so **the
-owner's own scores read "not an official release build"**: evidence that this is a flag for the
-runner, never a refusal, and that ArcAid item 11 should grow the known list from consensus across
-devices (and let a runner bless a build for their tournament). Version strings come from the PE
+rig runs Panasony community builds 10.8.0.2078/2079 and a VPinMAME 3.7.0.222 nightly, so in 0.2.5
+**the owner's own scores read "not an official release build"**. 0.2.7 replaced that flag with a
+build *family* read from the version resource (`official` / `panasony` / `nightly` / `unknown`), shown
+without a warning colour, and the owner ruled (2026-10-19) that the Panasony VR mod is allowed in
+Sanctioned play; ArcAid item 11 treats `official` and `panasony` as passing by default, nightlies as a
+runner toggle, and `unknown` as needing a blessed hash (a runner's own, or one several devices report). Version strings come from the PE
 `VS_VERSIONINFO` block (`FileVersion` carries the builder tag, e.g. `10.8.0.2079.Panasony`). The
 cheat flag is `HKCU\Software\Freeware\Visual PinMame\<rom>\cheat`, falling back to `default`.
 
