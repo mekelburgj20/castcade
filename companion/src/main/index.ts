@@ -38,6 +38,7 @@ let quitting = false;
 let win: BrowserWindow | null = null;
 let log: Logger | null = null;
 let tray: TrayHandle | null = null;
+let updater: UpdaterHandle | null = null;
 
 if (argv.includes('--smoke')) {
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION}\n`);
@@ -52,6 +53,7 @@ if (argv.includes('--smoke')) {
   });
   app.on('before-quit', () => {
     quitting = true;
+    updater?.stop();
   });
   void app.whenReady().then(main);
 }
@@ -224,7 +226,6 @@ async function main(): Promise<void> {
   if (!argv.includes('--hidden')) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());
 
-  let updater: UpdaterHandle | null = null;
   tray = createTray(join(app.getAppPath(), 'build', 'tray.ico'), {
     open: showWindow,
     setPaused: (p) => void host.setPaused(p),

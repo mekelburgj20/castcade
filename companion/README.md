@@ -14,7 +14,7 @@ mode, `src/witness/`, see below).** No patcher, media or launch code yet (Phase 
   `%APPDATA%\Castcade\settings.json`, token encrypted with `safeStorage`, deviceId generated once),
   `witness-host.ts` (owns the witness instance, restarts it when the ArcAid URL or nvram dir changes),
   `log.ts` (rotating `%APPDATA%\Castcade\logs\companion.log`), `updater.ts` (electron-updater, packaged
-  builds only, log + one tray balloon), `allowlist.ts` (`openExternal` limited to the ArcAid origin and
+  builds only: check at launch, then every 4 h, retry 30 min after a failure; log + one tray balloon), `allowlist.ts` (`openExternal` limited to the ArcAid origin and
   the project page). `--smoke` prints `castcade <version> protocol <n>` and exits before any of this.
 - `src/preload/index.cts` — sandboxed CommonJS preload exposing the typed `window.castcade` bridge
   (`ipc-types.ts` is the single description; `renderer/src/castcade.d.ts` mirrors it by hand).
@@ -34,7 +34,9 @@ mode, `src/witness/`, see below).** No patcher, media or launch code yet (Phase 
 install (the corpus is fetched by `npm run fetch-maps -w companion` before packaging; `release.yml` does
 this). `npmRebuild: false` and an **exact** `electron` version in `package.json` are required because the
 companion is an npm workspace (hoisted `node_modules`). Publish target: GitHub Releases
-(`mekelburgj20/castcade`), which is also where electron-updater looks.
+(`mekelburgj20/castcade`), which is also where electron-updater looks. The repo must stay **public**: the
+updater reads the releases feed anonymously and GitHub answers 404 for a private repo (that is how 0.2.2
+installs sat on 0.2.2 until 2026-10-19).
 
 **The PoC is unsigned.** SmartScreen shows *"Windows protected your PC"*; testers click *More info →
 Run anyway*. No signing configuration exists in the repo yet; a certificate remains the launch blocker
