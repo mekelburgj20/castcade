@@ -122,7 +122,7 @@ describe('settings attestation', () => {
     expect(JSON.parse(iniWire(a) ?? 'null')).toMatchObject({ accel: true, accel_gain_x: 115, accel_gain_y: 200, accel_max_x: 100, accel_max_y: 100, accel_velocity: false, nudge_filter: true, tilt_sens: 250, tilt_sens_set: true });
     expect(describeIni(a)).toBe('stock physics, slope 6.2°, tilt sensitivity 250');
 
-    // The owner's rig: dialog box ticked and 500 remembered, but no TiltSensitivity key, so VPX runs its default of 400.
+    // Dialog box ticked and 500 remembered, but no TiltSensitivity key: VPX runs its default of 400 (the owner's rig does have the key, at 500).
     fs.put('C:\\VPX\\VPinballX.ini', ini(''));
     const b = await readIniAttestation({ fs, exe: EXE, tablePath: TABLE, physics: physics() });
     expect(b.nudge).toMatchObject({ tiltSensitivity: null, tiltSensitivityEffective: 400 });

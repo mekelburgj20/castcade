@@ -232,8 +232,8 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
 
 - `ini`: `{"set":0,"set_name":null,"flippers":false,"stock":true,"difficulty":0.56,"difficulty_override":null,
   "slope":6.56,"nudge":0.0008,"legacy_nudge":false,"nudge_filter":false,"nudge_sensitivity":null,"accel":true,
-  "accel_gain_x":115,"accel_gain_y":115,"accel_max_x":100,"accel_max_y":100,"accel_velocity":false,"tilt_sens":400,
-  "tilt_sens_set":false,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
+  "accel_gain_x":115,"accel_gain_y":115,"accel_max_x":100,"accel_max_y":100,"accel_velocity":false,"tilt_sens":500,
+  "tilt_sens_set":true,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
   — `set` is the table's physics-set override (0 = stock), `stock` = no set and no flipper override,
   `difficulty` the table's own (0–1), `difficulty_override` the tweak-menu value when set, `slope` the
   effective degrees, `options` the 10.8 table options by the author's names, `overrides` the other
