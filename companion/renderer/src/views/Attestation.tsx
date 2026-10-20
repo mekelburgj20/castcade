@@ -55,6 +55,15 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
               <dd>
                 {ini.nudge.strength === null ? 'VPX default' : `strength ${ini.nudge.strength}`}
                 {ini.nudge.legacy && <span className="muted"> · legacy nudge{ini.nudge.legacyStrength !== null ? ` ${ini.nudge.legacyStrength}` : ''}</span>}
+                {ini.nudge.accelEnabled !== false && (ini.nudge.accelGainX !== null || ini.nudge.accelGainY !== null) && (
+                  <span className="muted"> · accelerometer gain {ini.nudge.accelGainX ?? '—'}/{ini.nudge.accelGainY ?? '—'}%</span>
+                )}
+                {ini.nudge.accelEnabled !== false && (
+                  <span className={ini.nudge.tiltSensitivityEffective === 0 ? 'warn' : 'muted'}>
+                    {' · '}
+                    {ini.nudge.tiltSensitivityEffective === 0 ? 'analog tilt off' : `tilt sensitivity ${ini.nudge.tiltSensitivityEffective}${ini.nudge.tiltSensitivity === null ? ' (VPX default)' : ''}`}
+                  </span>
+                )}
               </dd>
               <dt>Table options</dt>
               <dd title={options.map(([k, v]) => `${k} = ${v}`).join('\n')}>

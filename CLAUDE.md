@@ -54,7 +54,10 @@ block. Findings that shape item 11: the physics-set override is a table-file pro
 92/383 maps have adjustments (not MM/MB/TFTC); the owner's rig runs Panasony community builds + a VPinMAME nightly,
 so "known build" must be an allow-list, not "official only"; **0.2.7** adds a build `family` (`official` by hash /
 `panasony` / `nightly` / `unknown` from the version resource) and the owner ruled 2026-10-19 that the Panasony VR mod
-is allowed in Sanctioned play. **v0.2.6 (2026-10-19):** the repo was private until
+is allowed in Sanctioned play. **0.2.8 (2026-10-20):** the `ini` object carries the accelerometer keys (`PBWEnabled`,
+`PBWAccelGain/Max`, `AccelVelocityInput`, `EnableNudgeFilter`, `TiltSensitivity` with VPX's default 400 when absent);
+Sanctioned rules `min_tilt_sensitivity` (default 300, provisional), `max_accel_gain`, `require_nudge_filter` are
+runner-set (fairness design §5a); nudge telemetry (HID trace + lift detector) is a Phase 3 item. **v0.2.6 (2026-10-19):** the repo was private until
 2026-10-19, so no installed app could see a release (anonymous 404 on the releases feed); the owner made it public, and
 the updater now re-checks every 4 h (30 min after a failure) instead of once per launch. Keep the repo public. Next: F3 = ArcAid items 11/12 (PRs for the owner's
 ArcAid agent), then F4 (playfield fingerprint). Streaming: Phase 4a (solo streaming + recording) is recorded in the

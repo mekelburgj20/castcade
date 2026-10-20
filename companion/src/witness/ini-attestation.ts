@@ -259,6 +259,14 @@ export async function readIniAttestation(input: IniAttestationInput): Promise<In
     analogGainX: layeredNumber(table, main, 'Player', 'AnalogNudgeGainX'),
     analogGainY: layeredNumber(table, main, 'Player', 'AnalogNudgeGainY'),
     filter: layeredBool(table, main, 'Player', 'EnableNudgeFilter'),
+    accelEnabled: layeredBool(table, main, 'Player', 'PBWEnabled'),
+    accelGainX: layeredNumber(table, main, 'Player', 'PBWAccelGainX'),
+    accelGainY: layeredNumber(table, main, 'Player', 'PBWAccelGainY'),
+    accelMaxX: layeredNumber(table, main, 'Player', 'PBWAccelMaxX'),
+    accelMaxY: layeredNumber(table, main, 'Player', 'PBWAccelMaxY'),
+    accelVelocityInput: layeredBool(table, main, 'Player', 'AccelVelocityInput'),
+    tiltSensitivity: layeredNumber(table, main, 'Player', 'TiltSensitivity'),
+    tiltSensitivityEffective: layeredNumber(table, main, 'Player', 'TiltSensitivity') ?? VPX_DEFAULT_TILT_SENSITIVITY,
   };
 
   const tableOptions: Record<string, number> = {};
@@ -292,6 +300,9 @@ export async function readIniAttestation(input: IniAttestationInput): Promise<In
 }
 
 /** A one-line human summary for Status and the capture detail. */
+/** `PinTable::ReadAccelerometerCalibration` loads `TiltSensitivity` with this default (10.8.0 source). */
+export const VPX_DEFAULT_TILT_SENSITIVITY = 400;
+
 export function describeIni(ini: IniAttestation): string {
   const parts: string[] = [];
   if (ini.physicsSet === null) parts.push('physics unknown');
@@ -301,5 +312,6 @@ export function describeIni(ini: IniAttestation): string {
   if (ini.slope?.effective !== null && ini.slope?.effective !== undefined) parts.push(`slope ${Math.round(ini.slope.effective * 100) / 100}°`);
   const opts = Object.keys(ini.tableOptions).length;
   if (opts > 0) parts.push(`${opts} table option${opts === 1 ? '' : 's'}`);
+  if (ini.nudge.tiltSensitivity !== null) parts.push(ini.nudge.tiltSensitivity === 0 ? 'analog tilt off' : `tilt sensitivity ${ini.nudge.tiltSensitivity}`);
   return parts.join(', ');
 }

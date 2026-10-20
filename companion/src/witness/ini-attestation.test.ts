@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryFs } from './fs.js';
 import type { VpxTablePhysics } from './identity-types.js';
-import { defaultTableIni, describeIni, iniGet, locateMainIni, parseIni, readIniAttestation } from './ini-attestation.js';
+import { iniWire } from './attestation-types.js';
+import { defaultTableIni, describeIni, iniGet, locateMainIni, parseIni, readIniAttestation, VPX_DEFAULT_TILT_SENSITIVITY } from './ini-attestation.js';
 import { parseSwitchPath } from './process-watch.js';
 
 const EXE = 'C:\\VPX\\VPinballX_GL64.exe';
@@ -107,7 +108,32 @@ describe('settings attestation', () => {
       notes: [],
     });
     expect(a.nudge).toMatchObject({ strength: 0.0008, legacy: false, legacyStrength: 0.65, analogGainX: 1965, filter: false, sensitivity: null });
+    expect(a.nudge).toMatchObject({ accelEnabled: null, accelGainX: null, tiltSensitivity: null, tiltSensitivityEffective: VPX_DEFAULT_TILT_SENSITIVITY });
     expect(describeIni(a)).toBe('stock physics, slope 6.2°');
+  });
+
+  it('reads the accelerometer and analog-tilt keys; TiltSensitivity falls back to the VPX default when the key is absent', async () => {
+    const fs = new MemoryFs();
+    const ini = (tilt: string) =>
+      new TextEncoder().encode(`[Player]\nPBWEnabled = 1\nPBWAccelGainX = 115\nPBWAccelGainY = 200\nPBWAccelMaxX = 100\nPBWAccelMaxY = 100\nAccelVelocityInput = 0\nEnableNudgeFilter = 1\nTiltSensCB = 1\nTiltSensValue = 500\n${tilt}`);
+    fs.put('C:\\VPX\\VPinballX.ini', ini('TiltSensitivity = 250\n'));
+    const a = await readIniAttestation({ fs, exe: EXE, tablePath: TABLE, physics: physics() });
+    expect(a.nudge).toMatchObject({ accelEnabled: true, accelGainX: 115, accelGainY: 200, accelMaxX: 100, accelMaxY: 100, accelVelocityInput: false, filter: true, tiltSensitivity: 250, tiltSensitivityEffective: 250 });
+    expect(JSON.parse(iniWire(a) ?? 'null')).toMatchObject({ accel: true, accel_gain_x: 115, accel_gain_y: 200, accel_max_x: 100, accel_max_y: 100, accel_velocity: false, nudge_filter: true, tilt_sens: 250, tilt_sens_set: true });
+    expect(describeIni(a)).toBe('stock physics, slope 6.2°, tilt sensitivity 250');
+
+    // The owner's rig: dialog box ticked and 500 remembered, but no TiltSensitivity key, so VPX runs its default of 400.
+    fs.put('C:\\VPX\\VPinballX.ini', ini(''));
+    const b = await readIniAttestation({ fs, exe: EXE, tablePath: TABLE, physics: physics() });
+    expect(b.nudge).toMatchObject({ tiltSensitivity: null, tiltSensitivityEffective: 400 });
+    expect(JSON.parse(iniWire(b) ?? 'null')).toMatchObject({ tilt_sens: 400, tilt_sens_set: false });
+    expect(describeIni(b)).toBe('stock physics, slope 6.2°');
+
+    // 0 = analog tilt off, which Sanctioned play's minimum catches.
+    fs.put('C:\\VPX\\VPinballX.ini', ini('TiltSensitivity = 0\n'));
+    const c = await readIniAttestation({ fs, exe: EXE, tablePath: TABLE, physics: physics() });
+    expect(c.nudge.tiltSensitivityEffective).toBe(0);
+    expect(describeIni(c)).toBe('stock physics, slope 6.2°, analog tilt off');
   });
 
   it('a table that asks for physics set 1 takes its slope and values from the ini; a tweak-menu difficulty override wins over the table', async () => {

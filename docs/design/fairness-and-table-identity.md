@@ -164,6 +164,57 @@ turns an honest mistake into a public event.
 - **A modified Castcade.** The ceiling. Signed official builds at GA raise the bar; they do not
   close it. Sanctioned arenas pair the data checks with live video.
 
+## 5a. Accelerometer lifts (owner ask, 2026-10-20)
+
+A player with an accelerometer nudge device (Pinscape, KL25Z, Mot-Ion, a desktop controller) can lift
+or hold the device tilted so the ball is pushed up the playfield: away from a drain, or against a
+target bank. What VPX 10.8.0 does with that input, from the source (`player.cpp`, `plumb.cpp`,
+`pintable.cpp`, `dialogs/KeysConfigDialog.cpp` at v10.8.0-2051):
+
+- The axis is read as an **acceleration** every physics frame, scaled by `PBWAccelGainX/Y` (default
+  150%) and capped by `PBWAccelMaxX/Y`, and added to the table's motion. A held tilt is a constant push
+  for as long as it is held; it does not change the slope, it adds to gravity's in-plane component.
+- The **nudge filter** was written to reject exactly this, but its sustained-tilt branch ("more than
+  500 ms of one-sign motion is gravity, ignore it") is commented out in 10.8.0 because Mot-Ion and
+  Pinball Wizard controllers drift. What is left only damps the running sum. `EnableNudgeFilter` helps
+  a little and blocks nothing.
+- The **virtual plumb bob** (`TiltSensitivity`, 0–1000, default 400) trips a tilt once the bob's
+  displacement passes `1 − value/1000` of its range, so **a higher value tilts sooner**; 0 disables
+  analog tilt. The bob reads the raw axis, **before** `PBWAccelGain`, so a cheater who raises the gain
+  gets a bigger push for a physical tilt that stays under the bob's threshold: the two settings must
+  be ruled together. The key is loaded with its default even when the dialog box is unticked (a bug
+  the source itself notes), so "absent" means 400, not off.
+
+**Rules (Sanctioned play, runner-configurable per tournament with these defaults):**
+
+| Rule | Reads | Default | Fails when |
+|---|---|---|---|
+| `min_tilt_sensitivity` | `ini.tilt_sens` (effective) | **300** (owner's provisional number; VPX default 400) | `tilt_sens < min` (0 = analog tilt off always fails while `accel` is on) |
+| `max_accel_gain` | `ini.accel_gain_x/y` (percent) | **150** (VPX default) | either axis above the max while `accel` is on |
+| `require_nudge_filter` | `ini.nudge_filter` | off | `nudge_filter !== true` |
+
+The runner sets them on the tournament in Sanctioned play (item 11); a player with no accelerometer
+(`accel === false`, or no PBW keys at all) passes all three. **Shipped in companion 0.2.8:** the keys
+ride in the `ini` object (`accel`, `accel_gain_x/y`, `accel_max_x/y`, `accel_velocity`, `nudge_filter`,
+`nudge_sensitivity`, `tilt_sens`, `tilt_sens_set`) and Status shows the gain and the tilt sensitivity on
+the Nudge row (warning colour only for "analog tilt off"). Settings bound the payoff; they cannot see
+the lift itself.
+
+**Nudge telemetry (Phase 3).** The companion opens the same HID joystick read-only beside VPX (these
+devices allow non-exclusive reads) and samples the nudge axes at 100 Hz or better for the session. A
+real nudge is a brief bipolar impulse (push, rebound, zero within ~300 ms); a lift is a one-sided step
+held for seconds. A windowed mean against the peak separates them and the integral of the held value is
+the free push the player gave themselves. Correlated with the ball timeline from the live journal
+(drain and ball-in-play times; NVRAM ball boundaries in basic mode), the signature is a held tilt in
+the seconds before a drain or a long hold with the ball on a target bank. Output: a compact `nudge`
+param on the score (nudge count, longest held tilt and its magnitude, share of ball time under tilt),
+the raw trace kept locally for a ruling, badge never gate, Sanctioned thresholds set by the runner.
+Keyboard nudges are key events the script hook already sees, so their count comes for free. Limits:
+Pinscape firmware auto-centres slow drifts, so a very gradual tilt is invisible to the device, to VPX
+and to us (smaller payoff, not zero); a synthetic joystick (vJoy) is the same ceiling as a modified
+Castcade; live video stays the backstop. The owner's rig has an accelerometer configured and is the
+calibration bed for the impulse-versus-hold classifier.
+
 ## 6. Build hashes
 
 The companion already knows the VPX exe path; it adds SHA-256 of the exe and of `VPinMAME64.dll` /
@@ -179,11 +230,11 @@ that sits under the honest ceiling in §5.
 | Step | Where | What ships | Needs from ArcAid |
 |---|---|---|---|
 | F1 **(shipped v0.2.4, 2026-10-18)** | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
-| F2 **(shipped v0.2.5, 2026-10-19)** | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag | nothing |
+| F2 **(shipped v0.2.5, 2026-10-19; 0.2.7 build families; 0.2.8 accelerometer + analog-tilt keys)** | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag; build `family`; accelerometer gain, tilt sensitivity (§5a) | nothing |
 | F3 | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
-| F6 | companion (Phase 3) | engine attestation from the live hook; score-jump plausibility | F3 |
+| F6 | companion (Phase 3) | engine attestation from the live hook; score-jump plausibility; nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
 
 Gate for F1–F2: the owner's Monster Bash capture arrives with `vps_game` = Monster Bash's id,
 `vps_table` = the VPW mod's id, a stable fingerprint across two launches, and an ini object that

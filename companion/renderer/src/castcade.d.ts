@@ -38,6 +38,14 @@ interface NudgeSettings {
   analogGainX: number | null;
   analogGainY: number | null;
   filter: boolean | null;
+  accelEnabled: boolean | null;
+  accelGainX: number | null;
+  accelGainY: number | null;
+  accelMaxX: number | null;
+  accelMaxY: number | null;
+  accelVelocityInput: boolean | null;
+  tiltSensitivity: number | null;
+  tiltSensitivityEffective: number;
 }
 
 interface IniAttestation {

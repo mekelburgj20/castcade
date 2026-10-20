@@ -217,23 +217,33 @@ and it shows what the device already reports (table names and timestamps), nothi
 are working names, the owner may rename before this ships). Per tournament game, in Sanctioned mode:
 `required_vps_table_id`, `required_rom`, `required_fingerprint` (blessed by the runner from their own
 copy: the companion shows it in Status, the runner pastes or the device posts it), `require_stock_physics`,
-`require_factory_adjustments`, `require_known_build`. The full rationale and field meanings are in
-`castcade/docs/design/fairness-and-table-identity.md`.
+`require_factory_adjustments`, `require_known_build`, and the accelerometer rules the runner can tune per
+tournament: `min_tilt_sensitivity` (default 300, provisional; VPX's own default is 400, higher tilts sooner,
+0 = analog tilt off), `max_accel_gain` (percent, default 150 = VPX default) and `require_nudge_filter`
+(default off). The full rationale and field meanings are in
+`castcade/docs/design/fairness-and-table-identity.md` (accelerometer rules in §5a).
 
 **Ingest.** `GET /api/witness/score` accepts new optional params and ignores them when absent:
 `vps_game`, `vps_table`, `table_sha256`, `table_save_rev` (shipped in companion 0.2.4), `ini`, `adjustments`,
 `build` (shipped in 0.2.5, exact shapes below), and later `fingerprint`, `script_sha256`, `script_diff`
 (a short JSON summary: counts per class plus the restricted hunks' identifiers).
 
-As shipped by companion 0.2.5 (JSON strings, URL-encoded as query params; each absent when not measured):
+As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params; each absent when not measured):
 
 - `ini`: `{"set":0,"set_name":null,"flippers":false,"stock":true,"difficulty":0.56,"difficulty_override":null,
-  "slope":6.56,"nudge":0.0008,"legacy_nudge":false,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
+  "slope":6.56,"nudge":0.0008,"legacy_nudge":false,"nudge_filter":false,"nudge_sensitivity":null,"accel":true,
+  "accel_gain_x":115,"accel_gain_y":115,"accel_max_x":100,"accel_max_y":100,"accel_velocity":false,"tilt_sens":400,
+  "tilt_sens_set":false,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
   — `set` is the table's physics-set override (0 = stock), `stock` = no set and no flipper override,
   `difficulty` the table's own (0–1), `difficulty_override` the tweak-menu value when set, `slope` the
   effective degrees, `options` the 10.8 table options by the author's names, `overrides` the other
   `[TableOverride]` keys present. Sanctioned's `require_stock_physics` reads `stock === true` and
-  `difficulty_override === null`; the rest is for the runner's eyes.
+  `difficulty_override === null`. The accelerometer keys (0.2.8): `accel` = `PBWEnabled` (null = key absent =
+  VPX default on), `accel_gain_x/y` = `PBWAccelGainX/Y` in percent (VPX default 150), `accel_max_x/y`,
+  `accel_velocity` = `AccelVelocityInput`, `nudge_filter` = `EnableNudgeFilter`, `tilt_sens` = the
+  `TiltSensitivity` VPX actually uses (stored value, else VPX's default 400; **higher tilts sooner**, 0 =
+  analog tilt off), `tilt_sens_set` = whether the key was present. `min_tilt_sensitivity` reads `tilt_sens`,
+  `max_accel_gain` reads both gains; both apply only while `accel !== false`. The rest is for the runner's eyes.
 - `adjustments`: `{"total":52,"items":[{"l":"Balls Per Game","v":3,"d":3},{"l":"Replay System","v":1,"t":"Fixed","d":0}],
   "non_factory":["Replay System"]}` — `v` and `d` are the stored values the map's `default` describes, `t`
   the enum/special text. Absent for the many ROMs whose map has no adjustments block (never treat absence as

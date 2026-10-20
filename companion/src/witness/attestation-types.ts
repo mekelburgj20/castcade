@@ -28,7 +28,26 @@ export interface NudgeSettings {
   legacyStrength: number | null;
   analogGainX: number | null;
   analogGainY: number | null;
+  /** `[Player] EnableNudgeFilter`. In 10.8.0 the filter's sustained-tilt rejection is compiled out; what is left only damps. */
   filter: boolean | null;
+  /** `[Player] PBWEnabled` (VPX default true): the analog accelerometer input is in use. */
+  accelEnabled: boolean | null;
+  /** `[Player] PBWAccelGainX/Y` in percent (VPX default 150): scales the push the ball receives from the accelerometer. */
+  accelGainX: number | null;
+  accelGainY: number | null;
+  /** `[Player] PBWAccelMaxX/Y` in percent of the axis range (VPX default 100). */
+  accelMaxX: number | null;
+  accelMaxY: number | null;
+  /** `[Player] AccelVelocityInput`: the axis is read as a velocity instead of an acceleration. */
+  accelVelocityInput: boolean | null;
+  /**
+   * `[Player] TiltSensitivity` as stored (0–1000), or null when the key is absent. The virtual plumb bob
+   * trips a tilt once its displacement passes `1 - value/1000` of its range, so **higher tilts sooner**;
+   * 0 disables analog tilt. The bob reads the raw axis, before `accelGain`.
+   */
+  tiltSensitivity: number | null;
+  /** What VPX 10.8.0 actually uses: the stored value, else its default of 400 (the key is absent even with the dialog box unticked). */
+  tiltSensitivityEffective: number;
 }
 
 export interface IniAttestation {
@@ -168,6 +187,16 @@ export function iniWire(ini: IniAttestation | null): string | null {
     slope: ini.slope ? r4(ini.slope.effective) : null,
     nudge: r4(ini.nudge.strength),
     legacy_nudge: ini.nudge.legacy,
+    nudge_filter: ini.nudge.filter,
+    nudge_sensitivity: ini.nudge.sensitivity,
+    accel: ini.nudge.accelEnabled,
+    accel_gain_x: ini.nudge.accelGainX,
+    accel_gain_y: ini.nudge.accelGainY,
+    accel_max_x: ini.nudge.accelMaxX,
+    accel_max_y: ini.nudge.accelMaxY,
+    accel_velocity: ini.nudge.accelVelocityInput,
+    tilt_sens: ini.nudge.tiltSensitivityEffective,
+    tilt_sens_set: ini.nudge.tiltSensitivity !== null,
     options: ini.tableOptions,
     overrides: Object.keys(ini.tableOverrides),
     table_ini: ini.tableIni !== null,
