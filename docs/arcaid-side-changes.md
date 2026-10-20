@@ -220,7 +220,10 @@ and it shows what the device already reports (table names and timestamps), nothi
 > board badges) and the ROM → VPS endpoint are the next PR. Decisions taken there that refine the text below:
 > no adjustments map = *unverifiable* (skipped, never failed); the default allow-list is `['Free Play']`; a
 > tournament update that omits the integrity fields keeps them; the Global fallback still applies to a refused
-> score; evidence rows are written for every outcome in both modes.
+> score; evidence rows are written for every outcome in both modes. The same PR carries a fix found on the
+> owner's rig 2026-10-20: the witness ingest never cleared the room `leaderboard_cache` (no expiry), so a Witness
+> score reached the tournament's scores page but not the room board until somebody's manual submission to the
+> same game flushed it; migration `185_flush_leaderboard_cache` recomputes the stale boards on deploy.
 
 **What.** `tournaments.integrity_mode TEXT NOT NULL DEFAULT 'open'` (`'open'` | `'sanctioned'`; names
 are working names, the owner may rename before this ships). Per tournament game, in Sanctioned mode:

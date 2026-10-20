@@ -62,7 +62,9 @@ runner-set (fairness design §5a); nudge telemetry (HID trace + lift detector) i
 the updater now re-checks every 4 h (30 min after a failure) instead of once per launch. Keep the repo public. **F3 backend delivered
 2026-10-20 as ArcAid PR #370** (v2.165.0, ArcAid ADR 0027: `tournaments.integrity_mode` + `sanctioned_rules`, per-game required
 table, `witness_evidence` trail, `evaluateSanctioned` pure function, `not_sanctioned` wire status for desktops / `no_match` for
-cabinets, VPS-id-first matching, `global_game_tables`; worktree `ArcAid/.claude/worktrees/castcade-integrity-mode`), awaiting
+cabinets, VPS-id-first matching, `global_game_tables`; plus the fix found 2026-10-20: the witness ingest never cleared the room
+`leaderboard_cache`, so Witness scores sat off room boards until a manual submission to the same game; migration 185 flushes it;
+worktree `ArcAid/.claude/worktrees/castcade-integrity-mode`), awaiting
 the owner's ArcAid agent's review; **0.2.9 (2026-10-20)** maps `not_sanctioned` + `reasons` to a rejected capture with the
 reasons on Status and sends the Panasony `analog_gain_x/y` keys. Next: F3 part 2 = the ArcAid admin UI PR (tournament integrity
 settings, required-table picker, per-score evidence review, board badges), then F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
