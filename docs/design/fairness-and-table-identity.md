@@ -200,6 +200,15 @@ ride in the `ini` object (`accel`, `accel_gain_x/y`, `accel_max_x/y`, `accel_vel
 the Nudge row (warning colour only for "analog tilt off"). Settings bound the payoff; they cannot see
 the lift itself.
 
+Two things the keys do not settle on their own. A table script can rewrite these settings at run
+time: the script global `NudgeSetCalibration(XMax, YMax, XGain, YGain, DeadZone, TiltSensitivity)`
+saves the gains, maxima and tilt sensitivity into the player's settings and re-reads them at once
+(`pintable.cpp`). The companion measures the ini when the table becomes known and again at capture,
+so a value a script sets for the game is seen at capture, and the script diff (F5) sees the call
+itself. And the number only means something for the VPX plumb bob: `vpmNudge.Sensitivity` in a
+VPM table's script (1 in the owner's Monster Bash) and the ROM's own tilt-warning adjustment are
+separate knobs that govern keyboard nudges and the machine's tilt count, not the analog plumb.
+
 **Nudge telemetry (Phase 3).** The companion opens the same HID joystick read-only beside VPX (these
 devices allow non-exclusive reads) and samples the nudge axes at 100 Hz or better for the session. A
 real nudge is a brief bipolar impulse (push, rebound, zero within ~300 ms); a lift is a one-sided step
