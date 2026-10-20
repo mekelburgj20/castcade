@@ -47,8 +47,14 @@ design doc §7. **F1 shipped in v0.2.4 (2026-10-18):** `companion/src/witness/{i
 table-match,table-locator,identity-store}.ts`; the compact VPS index is fetched at build time by
 `npm run fetch-vps -w companion` (vps-db commit pinned in the script; `fixtures/vps/` holds a 13-game subset for
 tests); scores carry `vps_game`, `vps_table`, `table_sha256`, `table_save_rev`; Status shows the identity with a
-one-time picker; a `tablesDir` setting widens the search for editor-opened tables. Next: F2 (ini attestation, NVRAM
-adjustments, build hashes), then ArcAid items 11/12.
+one-time picker; a `tablesDir` setting widens the search for editor-opened tables. **F2 shipped in v0.2.5 (2026-10-19):**
+`companion/src/witness/{ini-attestation,adjustments,build-attestation,attestation-types}.ts`; scores carry `ini`,
+`adjustments`, `build` (compact JSON; shapes in `docs/arcaid-side-changes.md` item 11); Status shows a *conditions*
+block. Findings that shape item 11: the physics-set override is a table-file property (`ORRP`), not an ini key; only
+92/383 maps have adjustments (not MM/MB/TFTC); the owner's rig runs Panasony community builds + a VPinMAME nightly,
+so "known build" must be an allow-list, not "official only". Next: F3 = ArcAid items 11/12 (PRs for the owner's
+ArcAid agent), then F4 (playfield fingerprint). Streaming: Phase 4a (solo streaming + recording) is recorded in the
+gap analysis §6 and ArcAid item 13 (runner stage).
 
 ## Commands
 

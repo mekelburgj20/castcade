@@ -178,6 +178,10 @@ export class ArcaidClient {
       vps_table?: string | null;
       table_sha256?: string | null;
       table_save_rev?: number | null;
+      /** Attestation (F2), compact JSON strings: settings, machine adjustments, builds + cheat flag. */
+      ini?: string | null;
+      adjustments?: string | null;
+      build?: string | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

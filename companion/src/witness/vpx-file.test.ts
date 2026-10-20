@@ -61,6 +61,9 @@ describe('parseGameDataPhysics', () => {
       nudgeTime: 5,
       slopeMin: 6,
       slopeMax: 7,
+      difficulty: null,
+      overridePhysicsSet: null,
+      overridePhysicsFlippers: null,
     });
   });
 
@@ -76,6 +79,9 @@ describe('parseGameDataPhysics', () => {
         nudgeTime: null,
         slopeMin: null,
         slopeMax: null,
+        difficulty: null,
+        overridePhysicsSet: null,
+        overridePhysicsFlippers: null,
       },
       scriptBytes: null,
     });
@@ -173,6 +179,9 @@ describe('readVpxFacts', () => {
       nudgeTime: 5,
       slopeMin: 6,
       slopeMax: 7,
+      difficulty: null,
+      overridePhysicsSet: null,
+      overridePhysicsFlippers: null,
     });
     expect(facts.scriptBytes).toBe(Buffer.byteLength("Sub Table1_Init\r\n ' ENDB inside the script must not end parsing\r\nEnd Sub\r\n"));
     // Header + a few FAT/DIFAT/directory sectors + the tiny streams: nowhere near the 8 MB filler.

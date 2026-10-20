@@ -87,7 +87,11 @@ export function buildVpx(opts: SynthOptions = {}): Uint8Array {
 }
 
 /** A table that looks like the owner's Monster Bash VPW mod to the identity code (TableInfo + physics). */
-export function buildOwnerStyleVpx(info: { tableName: string; author: string; version: string; saveRev?: string; manufacturer?: string; year?: string }, slope = 6): Uint8Array {
+export function buildOwnerStyleVpx(
+  info: { tableName: string; author: string; version: string; saveRev?: string; manufacturer?: string; year?: string },
+  slope = 6,
+  opts: { difficulty?: number; overridePhysics?: number; overrideFlippers?: boolean } = {},
+): Uint8Array {
   const tableInfo: Record<string, Uint8Array> = {
     TableName: utf16(info.tableName),
     AuthorName: utf16(info.author),
@@ -106,6 +110,9 @@ export function buildOwnerStyleVpx(info: { tableName: string; author: string; ve
       codeRecord(ascii("Option Explicit\r\nConst cGameName = \"mb_106b\"\r\n")),
       floatRecord('SLOP', slope),
       floatRecord('SLPX', slope + 1),
+      ...(opts.difficulty !== undefined ? [floatRecord('TDFT', opts.difficulty)] : []),
+      ...(opts.overridePhysics !== undefined ? [record('ORRP', u32le(opts.overridePhysics))] : []),
+      ...(opts.overrideFlippers !== undefined ? [record('ORPF', u32le(opts.overrideFlippers ? 1 : 0))] : []),
       record('ENDB', new Uint8Array(0)),
     ),
   });

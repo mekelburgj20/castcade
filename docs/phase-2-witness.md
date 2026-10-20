@@ -62,6 +62,13 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
      *unsure, please confirm*, pick the right table from the list once; Castcade remembers it for that file.
      If it says *not found*, set the **Tables folder** in Settings (only `<VPX folder>\tables` is searched
      by default),
+   - below it, the **conditions** block (0.2.5): *Physics* (stock, or the global physics set the table asks
+     for), *Difficulty* (the table's own, or the tweak-menu override, with the slope that results), *Nudge*,
+     *Table options* (the 10.8 options you set for this table), *Adjustments* (the ROM's operator settings
+     against factory, filled in after the game; many ROMs have no adjustments map yet), *VPX build* and
+     *VPinMAME* (version, whether it is the official release build, VPinMAME's cheat flag). Nothing here is
+     enforced; it is what Sanctioned play will read. Expect *not an official release build* if you run a
+     community VR build or a VPinMAME nightly, which is normal and only informational,
    - *Last capture*: the table, the ROM, the score, and *posted to ArcAid*.
 5. If the tournament is a **live event** with a check-in lobby: leave Castcade running and VPX closed
    when the check-in window opens. Castcade checks in by itself whenever VPX is not running, so your
@@ -89,6 +96,12 @@ heartbeat so ArcAid shows the device as online.
   (Castcade reads the `.vpx` header, never loads the whole file, and hashes it in the background). ArcAid
   ignores these until its next release; nothing is enforced in Open play. They are the groundwork for
   Sanctioned play (`docs/design/fairness-and-table-identity.md`).
+- From 0.2.5 a score also carries three compact JSON params: `ini` (physics set, difficulty, slope, nudge,
+  table options), `adjustments` (the ROM's fairness-relevant operator adjustments against factory, when the
+  maps corpus describes them) and `build` (SHA-256 and version of the VPX exe and the VPinMAME DLL, whether
+  each is a known official release build, and VPinMAME's cheat flag). Castcade reads `VPinballX.ini` the way
+  VPX does (`-Ini`, else beside the exe, else `%APPDATA%\VPinballX`), the table's `<table>.ini` beside the
+  `.vpx`, the VPinMAME registry settings, and hashes the two binaries once per launch. Still nothing enforced.
 - On the board the score shows as **PC / VPX** once ArcAid v2.163.0 is live (it treats a paired desktop as
   a PC even in VR, since a headset is a display on a Windows PC). Until that deploys, ArcAid stamps every
   Witness score the cabinet way (*AtGames Cabinet* on the *VPXS* platform); that is a label, not a lost score.

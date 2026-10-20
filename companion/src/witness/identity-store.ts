@@ -25,7 +25,8 @@ export interface Confirmation {
 }
 
 interface IdentityFile {
-  version: 1;
+  /** 2 since 0.2.5: cached physics gained difficulty / override fields, so v1 facts are dropped (confirmations kept). */
+  version: 2;
   facts: Record<string, CachedFacts>;
   confirmations: Record<string, Confirmation>;
 }
@@ -51,7 +52,7 @@ const MAX_FACTS = 500;
 
 export function createIdentityStore(fs: WitnessFs, dataDir: string, now: () => number = () => Date.now()): IdentityStore {
   const file = joinPath(dataDir, IDENTITY_FILE);
-  let data: IdentityFile = { version: 1, facts: {}, confirmations: {} };
+  let data: IdentityFile = { version: 2, facts: {}, confirmations: {} };
 
   const persist = async (): Promise<void> => {
     // Keep the facts cache bounded: drop the oldest entries past the cap.
@@ -77,9 +78,10 @@ export function createIdentityStore(fs: WitnessFs, dataDir: string, now: () => n
       }
       try {
         const parsed: unknown = JSON.parse(text);
-        if (typeof parsed === 'object' && parsed !== null && (parsed as { version?: unknown }).version === 1) {
-          const p = parsed as Partial<IdentityFile>;
-          data = { version: 1, facts: p.facts ?? {}, confirmations: p.confirmations ?? {} };
+        if (typeof parsed === 'object' && parsed !== null) {
+          const p = parsed as Partial<IdentityFile> & { version?: unknown };
+          // Confirmations are the player's answers and survive a format bump; cached facts are recomputed.
+          data = { version: 2, facts: p.version === 2 ? (p.facts ?? {}) : {}, confirmations: p.confirmations ?? {} };
         }
       } catch {
         // A torn file: start clean; everything in it can be recomputed or re-confirmed.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MemoryFs } from './fs.js';
-import { createRegQueryReader, createStaticRegistry, expandEnvVars, NVRAM_DIRECTORY_VALUE, parseRegQuery, resolveNvramDir, VPM_GLOBALS_KEY, vpxRootFromExe } from './nvram-dir.js';
+import { createRegQueryReader, createStaticRegistry, expandEnvVars, NVRAM_DIRECTORY_VALUE, parseRegQuery, resolveNvramDir, VPM_GLOBALS_KEY, vpxRootFromExe, parseRegValues, parseRegNumber, regNumber, REG_DEFAULT_NAME } from './nvram-dir.js';
 
 const REG_OUT = `
 HKEY_CURRENT_USER\\Software\\Freeware\\Visual PinMame\\globals
@@ -33,6 +33,35 @@ describe('registry parsing', () => {
       throw new Error('ENOENT reg');
     });
     expect(await throwing.queryValue(VPM_GLOBALS_KEY, NVRAM_DIRECTORY_VALUE)).toBeNull();
+  });
+
+  it('reads numbers (REG_DWORD hex) and a key\'s (Default) value; the static reader does the same', async () => {
+    const out = '\r\nHKEY_CURRENT_USER\\Software\\Freeware\\Visual PinMame\\mm_109c\r\n    cheat    REG_DWORD    0x1\r\n    inipath    REG_SZ    .;ini\r\n\r\n';
+    expect(parseRegValues(out)).toEqual([
+      { name: 'cheat', type: 'REG_DWORD', data: '0x1' },
+      { name: 'inipath', type: 'REG_SZ', data: '.;ini' },
+    ]);
+    expect(parseRegNumber(out, 'cheat')).toBe(1);
+    expect(parseRegNumber(out, 'inipath')).toBeNull();
+    expect(regNumber('0x1f')).toBe(31);
+    expect(regNumber('7')).toBe(7);
+    expect(regNumber('seven')).toBeNull();
+    const dflt = '\r\nHKEY_CLASSES_ROOT\\VPinMAME.Controller\\CLSID\r\n    (Default)    REG_SZ    {F389C8B7-144F-4C63-A2E3-246D168F9D39}\r\n';
+    expect(parseRegQuery(dflt, REG_DEFAULT_NAME)).toBe('{F389C8B7-144F-4C63-A2E3-246D168F9D39}');
+
+    const calls: string[][] = [];
+    const reader = createRegQueryReader((_f, args, cb) => {
+      calls.push(args);
+      cb(null, args.includes('/ve') ? dflt : out, '');
+    });
+    expect(await reader.queryNumber('HKCU\\x', 'cheat')).toBe(1);
+    expect(await reader.queryDefault('HKCR\\VPinMAME.Controller\\CLSID')).toBe('{F389C8B7-144F-4C63-A2E3-246D168F9D39}');
+    expect(calls).toEqual([['query', 'HKCU\\x', '/v', 'cheat'], ['query', 'HKCR\\VPinMAME.Controller\\CLSID', '/ve']]);
+
+    const fake = createStaticRegistry({ 'HKCU\\x\\cheat': '0x0', 'HKCR\\k\\(Default)': 'C:\\dll' });
+    expect(await fake.queryNumber('hkcu\\X', 'CHEAT')).toBe(0);
+    expect(await fake.queryDefault('HKCR\\k')).toBe('C:\\dll');
+    expect(await fake.queryDefault('HKCR\\none')).toBeNull();
   });
 
   it('expands %VAR% references', () => {

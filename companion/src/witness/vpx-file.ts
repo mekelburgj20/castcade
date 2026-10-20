@@ -449,7 +449,9 @@ export const EMPTY_TABLE_INFO: Readonly<VpxTableInfo> = Object.freeze({
   raw: {},
 });
 
-const PHYSICS_TAGS: Record<string, keyof VpxTablePhysics> = {
+type PhysicsFloatField = Exclude<keyof VpxTablePhysics, 'overridePhysicsFlippers'>;
+
+const PHYSICS_TAGS: Record<string, PhysicsFloatField> = {
   GAVT: 'gravity',
   FRCT: 'friction',
   ELAS: 'elasticity',
@@ -459,6 +461,7 @@ const PHYSICS_TAGS: Record<string, keyof VpxTablePhysics> = {
   NDGT: 'nudgeTime',
   SLOP: 'slopeMin',
   SLPX: 'slopeMax',
+  TDFT: 'difficulty',
 };
 
 /**
@@ -478,6 +481,9 @@ export function parseGameDataPhysics(bytes: Uint8Array): { physics: VpxTablePhys
     nudgeTime: null,
     slopeMin: null,
     slopeMax: null,
+    difficulty: null,
+    overridePhysicsSet: null,
+    overridePhysicsFlippers: null,
   };
   let scriptBytes: number | null = null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -499,6 +505,9 @@ export function parseGameDataPhysics(bytes: Uint8Array): { physics: VpxTablePhys
     if (dataStart + dataLen > bytes.length) break;
     const field = PHYSICS_TAGS[tag];
     if (field && dataLen === 4) physics[field] = view.getFloat32(dataStart, true);
+    // Two int records beside the floats: the physics-set override (int) and its flipper flag (bool as int32).
+    else if (tag === 'ORRP' && dataLen === 4) physics.overridePhysicsSet = view.getInt32(dataStart, true);
+    else if (tag === 'ORPF' && dataLen === 4) physics.overridePhysicsFlippers = view.getInt32(dataStart, true) !== 0;
     pos = dataStart + dataLen;
   }
   return { physics, scriptBytes };

@@ -5,9 +5,23 @@
  * everything else in this folder is implementation. Keep this file additive: the shell and the
  * module are built by different agents against it.
  */
+import type { Attestation } from './attestation-types.js';
 import type { TableIdentity } from './identity-types.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
+export type {
+  Attestation,
+  IniAttestation,
+  PhysicsSetValues,
+  NudgeSettings,
+  AdjustmentReading,
+  AdjustmentsReport,
+  BuildAttestation,
+  BinaryAttestation,
+  PeVersion,
+  KnownBuild,
+  KnownBuildKind,
+} from './attestation-types.js';
 
 /** Persisted settings. The shell owns persistence; the module reads and patches through the store. */
 export interface WitnessSettings {
@@ -54,6 +68,8 @@ export interface LastCapture {
   detail?: string; // human-readable reason for skipped/rejected
   /** What the companion established about the table file (VPS ids, hash, save revision); null when unknown. */
   identity?: TableIdentity | null;
+  /** The conditions the game was played under (settings, machine adjustments, builds); null when not measured. */
+  attestation?: Attestation | null;
 }
 
 export interface WitnessStatus {
@@ -69,6 +85,8 @@ export interface WitnessStatus {
   currentTable: string | null;
   /** Identity of the current table as far as it is resolved (file facts at launch, game by ROM at capture). */
   currentIdentity: TableIdentity | null;
+  /** Settings and builds in force for the current table (adjustments and the cheat flag fill in at capture). */
+  currentAttestation: Attestation | null;
   /** The compact VPS index's version (vps-db commit), or null when the index is missing. */
   vpsVersion: string | null;
   lastCapture: LastCapture | null;

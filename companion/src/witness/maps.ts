@@ -40,6 +40,13 @@ export interface HighScoreDescriptor {
   initials: JsonObject | null;
 }
 
+/** One operator adjustment from a map's `adjustments` block: its group, label and raw descriptor. */
+export interface AdjustmentDescriptor {
+  group: string;
+  label: string;
+  entry: JsonObject;
+}
+
 export interface CompiledMap {
   /** ROMs this map claims to cover (`_metadata.roms`). */
   roms: string[];
@@ -55,6 +62,8 @@ export interface CompiledMap {
   lastGame: JsonObject[];
   highScores: HighScoreDescriptor[];
   lastPlayed: JsonObject | null;
+  /** Operator adjustments (F2), empty for the many maps without an `adjustments` block. */
+  adjustments: AdjustmentDescriptor[];
 }
 
 export interface GameState {
@@ -159,6 +168,32 @@ function asList(v: Json | undefined): JsonObject[] {
 }
 
 /**
+ * Flatten a map's `adjustments` block: `{ "A.1 Standard Adjustments": { "01": {label, …}, … }, … }`
+ * (groups and entries may also be lists). Entries without a label are skipped; `_`-keys are notes.
+ */
+export function flattenAdjustments(adjustments: Json | undefined): AdjustmentDescriptor[] {
+  if (!isObject(adjustments)) return [];
+  const out: AdjustmentDescriptor[] = [];
+  for (const [group, entries] of Object.entries(adjustments)) {
+    if (group.startsWith('_')) continue;
+    const list: JsonObject[] = Array.isArray(entries)
+      ? entries.filter(isObject)
+      : isObject(entries)
+        ? Object.entries(entries)
+            .filter(([k]) => !k.startsWith('_'))
+            .map(([, v]) => v)
+            .filter(isObject)
+        : [];
+    for (const entry of list) {
+      const label = entry['label'];
+      if (typeof label !== 'string' || !label) continue;
+      out.push({ group, label, entry });
+    }
+  }
+  return out;
+}
+
+/**
  * Compile a map file. `loadPlatform` resolves `_metadata.platform` to the platform JSON (null
  * when the corpus does not have it, in which case the synthetic single-region platform is used).
  */
@@ -212,6 +247,7 @@ export function compileMap(mapJson: Json, loadPlatform: (name: string) => Json |
     lastGame: asList(mapJson['last_game']),
     highScores,
     lastPlayed: isObject(mapJson['last_played']) ? mapJson['last_played'] : null,
+    adjustments: flattenAdjustments(mapJson['adjustments']),
   };
 }
 
@@ -325,11 +361,11 @@ function bcdByte(b: number): number {
 }
 
 /**
- * Numeric value of a descriptor (`bcd`, `int`, `bits`, `bool`, `enum`), with `scale`, `offset`,
- * bool normalisation/inversion and numeric `special_values` applied. Null for other encodings or
- * when the bytes are not in memory. `bool` yields 0 or 1.
+ * The value as stored (`bcd`, `int`, `bits`, `bool`, `enum`), before `scale`, `offset` and
+ * `special_values`: the domain the map's `min`, `max` and `default` describe (corpus README,
+ * "Encodings can include properties …"). Null for other encodings or bytes outside the memory.
  */
-export function descriptorValue(mem: NvMemory, entry: JsonObject, platform: Platform): number | null {
+export function descriptorStoredValue(mem: NvMemory, entry: JsonObject, platform: Platform): number | null {
   const encoding = str(entry['encoding']);
   if (encoding === null || !INTEGER_ENCODINGS.has(encoding)) return null;
   const ba = descriptorBytes(mem, entry, platform);
@@ -340,6 +376,19 @@ export function descriptorValue(mem: NvMemory, entry: JsonObject, platform: Plat
   } else {
     for (const b of ba) value = value * 256 + b;
   }
+  return value;
+}
+
+/**
+ * Numeric value of a descriptor (`bcd`, `int`, `bits`, `bool`, `enum`), with `scale`, `offset`,
+ * bool normalisation/inversion and numeric `special_values` applied. Null for other encodings or
+ * when the bytes are not in memory. `bool` yields 0 or 1.
+ */
+export function descriptorValue(mem: NvMemory, entry: JsonObject, platform: Platform): number | null {
+  const encoding = str(entry['encoding']);
+  if (encoding === null || !INTEGER_ENCODINGS.has(encoding)) return null;
+  let value = descriptorStoredValue(mem, entry, platform);
+  if (value === null) return null;
   const scale = entry['scale'];
   if (typeof scale === 'number') value *= scale;
   else if (typeof scale === 'string') value *= toInt(scale);

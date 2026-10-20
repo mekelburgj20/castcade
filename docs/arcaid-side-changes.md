@@ -221,11 +221,31 @@ copy: the companion shows it in Status, the runner pastes or the device posts it
 `castcade/docs/design/fairness-and-table-identity.md`.
 
 **Ingest.** `GET /api/witness/score` accepts new optional params and ignores them when absent:
-`vps_game`, `vps_table`, `table_sha256`, `table_save_rev`, `fingerprint`, `script_sha256`, `script_diff`
-(a short JSON summary: counts per class plus the restricted hunks' identifiers), `adjustments` (JSON:
-balls per game, ball save, extra ball %, free play, tilt warnings, each with `factory: bool`), `build`
-(JSON: exe + VPinMAME DLL hashes, `known: bool`), `ini` (JSON: physics override set, difficulty override,
-nudge, table options). `VpxScoreIngestService`: match candidates by `vps_game` against
+`vps_game`, `vps_table`, `table_sha256`, `table_save_rev` (shipped in companion 0.2.4), `ini`, `adjustments`,
+`build` (shipped in 0.2.5, exact shapes below), and later `fingerprint`, `script_sha256`, `script_diff`
+(a short JSON summary: counts per class plus the restricted hunks' identifiers).
+
+As shipped by companion 0.2.5 (JSON strings, URL-encoded as query params; each absent when not measured):
+
+- `ini`: `{"set":0,"set_name":null,"flippers":false,"stock":true,"difficulty":0.56,"difficulty_override":null,
+  "slope":6.56,"nudge":0.0008,"legacy_nudge":false,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
+  — `set` is the table's physics-set override (0 = stock), `stock` = no set and no flipper override,
+  `difficulty` the table's own (0–1), `difficulty_override` the tweak-menu value when set, `slope` the
+  effective degrees, `options` the 10.8 table options by the author's names, `overrides` the other
+  `[TableOverride]` keys present. Sanctioned's `require_stock_physics` reads `stock === true` and
+  `difficulty_override === null`; the rest is for the runner's eyes.
+- `adjustments`: `{"total":52,"items":[{"l":"Balls Per Game","v":3,"d":3},{"l":"Replay System","v":1,"t":"Fixed","d":0}],
+  "non_factory":["Replay System"]}` — `v` and `d` are the stored values the map's `default` describes, `t`
+  the enum/special text. Absent for the many ROMs whose map has no adjustments block (never treat absence as
+  factory). `require_factory_adjustments` reads `non_factory.length === 0` and should let the runner
+  whitelist labels (free play is routinely non-factory and harmless).
+- `build`: `{"vpx":{"sha256":"…","version":"10.8.0.2079.Panasony","known":null},"vpinmame":{"sha256":"…",
+  "version":"3, 7, 0, 222","known":null},"cheat":false}` — `known` is the companion's id for an official release
+  build (`vpx-10.8.0-2051-gl-x64`, `vpinmame-3.6.0-1227-x64`, …) or null. **Expect null often:** VR players run
+  community builds (the owner's rig does) and many run VPinMAME nightlies. `require_known_build` should
+  therefore mean "a build on the tournament's allow-list", seeded from the official ids and extended by the
+  runner blessing a hash (their own, or one several devices report), never "official only". `cheat` is
+  VPinMAME's per-ROM cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
 `global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
 working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
 score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to

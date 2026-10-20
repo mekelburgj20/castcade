@@ -194,7 +194,7 @@ describe('ProcessWatch', () => {
     watch.on('error', (e) => errors.push(e));
     await watch.pollOnce();
     expect(launches).toEqual([
-      { pid: 5, exe: 'C:\\VPX\\VPinballX_GL64.exe', tablePath: null, table: null, tableSource: null, seenAt: clock.now(), startedAt: null, title: null },
+      { pid: 5, exe: 'C:\\VPX\\VPinballX_GL64.exe', tablePath: null, iniPath: null, tableIniPath: null, table: null, tableSource: null, seenAt: clock.now(), startedAt: null, title: null },
     ]);
     expect(titles).toEqual([]);
 

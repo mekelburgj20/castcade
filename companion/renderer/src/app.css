@@ -209,18 +209,25 @@ button.link {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.facts.identity {
+.facts.identity,
+.facts.attestation {
   margin: 0;
   padding: 0;
   font-size: 0.95em;
 }
 .facts.identity dd,
-.facts dd:has(.identity) {
+.facts.attestation dd,
+.facts dd:has(.identity),
+.facts dd:has(.attestation) {
   white-space: normal;
   overflow: visible;
 }
-.facts.identity.compact dt {
+.facts.identity.compact dt,
+.facts.attestation.compact dt {
   min-width: 6rem;
+}
+.facts.attestation .warn {
+  color: var(--warn, #c77700);
 }
 .picker {
   display: flex;

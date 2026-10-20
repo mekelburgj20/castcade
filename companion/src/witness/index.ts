@@ -35,13 +35,20 @@ export {
   type HighScore,
   type MapCorpus,
   type Platform,
+  type AdjustmentDescriptor,
+  flattenAdjustments,
 } from './maps.js';
 export {
   resolveNvramDir,
   vpxRootFromExe,
   parseRegQuery,
+  parseRegValues,
+  parseRegNumber,
+  regNumber,
   createRegQueryReader,
   createStaticRegistry,
+  REG_DEFAULT_NAME,
+  type RegValue,
   VPM_GLOBALS_KEY,
   NVRAM_DIRECTORY_VALUE,
   type RegistryReader,
@@ -53,6 +60,7 @@ export {
   createPowershellLister,
   parsePlayArg,
   parsePositionalVpx,
+  parseSwitchPath,
   parseTableArg,
   parseWindowTitle,
   parseCimProcesses,
@@ -77,3 +85,7 @@ export { findTableFile, tableRootsFor, tableBaseName } from './table-locator.js'
 export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer } from './vps-index.js';
 export { matchGame, matchTable, parseTableFileName, namePrefixes, versionFromName, versionForms, TABLE_SCORES, TABLE_MARGIN, type ParsedTableFileName } from './table-match.js';
 export { readVpxFacts, sha256File, parseTableInfo, parseGameDataPhysics, EMPTY_TABLE_INFO, DEFAULT_SHA256_CHUNK_BYTES, type Sha256Options } from './vpx-file.js';
+export * from './attestation-types.js';
+export { parseIni, iniGet, iniEntries, iniNumber, iniBool, locateMainIni, defaultTableIni, readIniAttestation, describeIni, physicsSetFrom, flipperSetFrom, MAIN_INI_NAME, type IniData, type IniAttestationInput } from './ini-attestation.js';
+export { decodeAdjustments, adjustmentsReport, describeAdjustments, isFairnessLabel, FAIRNESS_LABELS, MAX_CHECKED } from './adjustments.js';
+export { parsePeVersion, attestBinary, knownBuildFor, locateVpinmameDll, vpmCheatFlag, createBuildAttester, describeBuild, KNOWN_BUILDS, VPM_CONTROLLER_CLSID_KEY, VPM_SETTINGS_KEY, type BuildAttester, type BuildAttesterDeps } from './build-attestation.js';

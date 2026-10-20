@@ -74,6 +74,15 @@ the next game is compared against the state this one left. Process exit is the f
 `started` is the later of the process start (CIM `CreationDate`) and the previous capture for that
 process, `ended` is the `.nv` mtime. You may stay in the editor between games.
 
+**Conditions (F2, 0.2.5):** once the table is known, `ini-attestation.ts` reads the settings VPX will apply
+(the global ini resolved like VPX does: `-Ini`, else beside the exe, else `%APPDATA%`; the table's `<table>.ini`
+layered on top), combining them with the table file's own `ORRP`/`ORPF`/`TDFT` properties into physics set,
+difficulty, slope, nudge and table options; `build-attestation.ts` hashes and versions the exe and the VPinMAME
+DLL (found through the COM registration, else beside the exe) against `KNOWN_BUILDS`; at capture
+`adjustments.ts` decodes the ROM's operator adjustments from the same `.nv` bytes the score came from and
+`vpmCheatFlag` reads VPinMAME's cheat option. All of it rides on the score as `ini` / `adjustments` / `build`
+and shows in Status. Measured, never enforced.
+
 **Table identity, strongest first:** `-Play <path>.vpx` → a positional `<path>.vpx` (file association,
 `-Edit`) → the editor's window title `Visual Pinball - [<table>]` (polled with the process list) →
 the ROM's name from the corpus's `romnames.json` with its version parenthetical stripped → the ROM id.

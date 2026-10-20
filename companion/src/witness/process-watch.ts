@@ -66,6 +66,29 @@ export function splitCommandLine(commandLine: string): string[] {
 export type TableSource = 'play' | 'arg' | 'title' | 'romname' | 'rom';
 
 /**
+ * The path argument of a switch such as `-Ini` / `-TableIni` (case-insensitive): a quoted path is
+ * taken whole; an unquoted one runs to the next switch or to the first `.ini`. Null when absent.
+ */
+export function parseSwitchPath(commandLine: string, switchName: string): string | null {
+  const args = splitCommandLine(commandLine);
+  const re = new RegExp(`^[-/]${switchName}$`, 'i');
+  for (let i = 1; i < args.length; i++) {
+    if (!re.test(args[i] ?? '')) continue;
+    const parts: string[] = [];
+    for (let j = i + 1; j < args.length; j++) {
+      const next = args[j];
+      if (next === undefined) break;
+      if (parts.length > 0 && /^[-/][A-Za-z]/.test(next)) break;
+      parts.push(next);
+      if (/\.ini$/i.test(next)) break;
+    }
+    const path = parts.join(' ').trim();
+    return path.length > 0 ? path : null;
+  }
+  return null;
+}
+
+/**
  * The table file given to `-Play` / `/Play` (case-insensitive). A quoted path is taken whole; an
  * unquoted one runs to the next switch (`-Minimized`, `/Primary` ...). Null when VPX was started
  * without `-Play`.
@@ -233,6 +256,10 @@ export interface VpxLaunch {
   exe: string;
   /** Table file from the command line (`-Play` or positional), or null. */
   tablePath: string | null;
+  /** `-Ini <path>` from the command line (a settings file other than the default), or null. */
+  iniPath: string | null;
+  /** `-TableIni <path>` from the command line, or null. */
+  tableIniPath: string | null;
   /** Table name: from the command line at launch, later from the editor title; null until known. */
   table: string | null;
   tableSource: TableSource | null;
@@ -351,6 +378,8 @@ export class ProcessWatch {
         pid: p.pid,
         exe: p.exe,
         tablePath: arg?.path ?? null,
+        iniPath: parseSwitchPath(p.commandLine, 'ini'),
+        tableIniPath: parseSwitchPath(p.commandLine, 'tableini'),
         table: arg ? tableNameFromPath(arg.path) : null,
         tableSource: arg?.source ?? null,
         seenAt: now,

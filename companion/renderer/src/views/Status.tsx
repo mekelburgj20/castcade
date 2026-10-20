@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { describe, formatTime, type CastcadeState } from '../useCastcade.js';
+import { AttestationView } from './Attestation.js';
 import { Identity } from './Identity.js';
 
 const OUTCOME_LABEL: Record<CaptureOutcome, string> = {
@@ -66,6 +67,14 @@ export function Status({ state }: { state: CastcadeState }) {
             </dd>
           </>
         )}
+        {status.currentAttestation && (
+          <>
+            <dt />
+            <dd>
+              <AttestationView a={status.currentAttestation} />
+            </dd>
+          </>
+        )}
         <dt>Queued posts</dt>
         <dd>{status.queued}</dd>
         <dt>Last heartbeat</dt>
@@ -108,6 +117,14 @@ export function Status({ state }: { state: CastcadeState }) {
               <dt>Identity</dt>
               <dd>
                 <Identity state={state} identity={c.identity} compact />
+              </dd>
+            </>
+          )}
+          {c.attestation && (
+            <>
+              <dt>Conditions</dt>
+              <dd>
+                <AttestationView a={c.attestation} compact />
               </dd>
             </>
           )}

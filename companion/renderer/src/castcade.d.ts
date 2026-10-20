@@ -16,6 +16,103 @@ interface LastCapture {
   outcome: CaptureOutcome;
   detail?: string;
   identity?: TableIdentity | null;
+  attestation?: Attestation | null;
+}
+
+interface PhysicsSetValues {
+  gravity: number | null;
+  contactFriction: number | null;
+  elasticity: number | null;
+  elasticityFalloff: number | null;
+  scatterAngle: number | null;
+  contactScatterAngle: number | null;
+  minSlope: number | null;
+  maxSlope: number | null;
+}
+
+interface NudgeSettings {
+  strength: number | null;
+  sensitivity: number | null;
+  legacy: boolean | null;
+  legacyStrength: number | null;
+  analogGainX: number | null;
+  analogGainY: number | null;
+  filter: boolean | null;
+}
+
+interface IniAttestation {
+  mainIni: string | null;
+  tableIni: string | null;
+  physicsSet: number | null;
+  physicsSetName: string | null;
+  physicsSetValues: PhysicsSetValues | null;
+  physicsFlippersOverridden: boolean | null;
+  flipperSetValues: Record<string, number> | null;
+  stockPhysics: boolean | null;
+  tableDifficulty: number | null;
+  difficultyOverride: number | null;
+  effectiveDifficulty: number | null;
+  slope: { min: number; max: number; effective: number | null } | null;
+  nudge: NudgeSettings;
+  tableOptions: Record<string, number>;
+  tableOverrides: Record<string, string>;
+  playerOverrides: string[];
+  notes: string[];
+}
+
+interface AdjustmentReading {
+  group: string;
+  label: string;
+  value: number | null;
+  shown: number | null;
+  text: string | null;
+  factory: number | null;
+  isFactory: boolean | null;
+}
+
+interface AdjustmentsReport {
+  rom: string;
+  total: number;
+  checked: AdjustmentReading[];
+  nonFactory: string[];
+  unjudged: number;
+}
+
+interface PeVersion {
+  fileVersion: string | null;
+  fileVersionText: string | null;
+  productVersionText: string | null;
+  description: string | null;
+}
+
+interface KnownBuild {
+  id: string;
+  label: string;
+  kind: 'official';
+}
+
+interface BinaryAttestation {
+  path: string;
+  size: number;
+  sha256: string;
+  version: PeVersion | null;
+  known: KnownBuild | null;
+}
+
+interface BuildAttestation {
+  vpx: BinaryAttestation | null;
+  vpinmame: BinaryAttestation | null;
+  notes: string[];
+}
+
+interface Attestation {
+  measuredAt: string;
+  ini: IniAttestation | null;
+  build: BuildAttestation | null;
+  adjustments: AdjustmentsReport | null;
+  vpmCheat: boolean | null;
+  iniChanged: boolean;
+  notes: string[];
 }
 
 type MatchConfidence = 'exact' | 'likely' | 'ambiguous' | 'none';
@@ -42,6 +139,9 @@ interface VpxTablePhysics {
   nudgeTime: number | null;
   slopeMin: number | null;
   slopeMax: number | null;
+  difficulty: number | null;
+  overridePhysicsSet: number | null;
+  overridePhysicsFlippers: boolean | null;
 }
 
 interface TableIdentity {
@@ -68,6 +168,7 @@ interface WitnessStatus {
   mapsVersion: string | null;
   currentTable: string | null;
   currentIdentity: TableIdentity | null;
+  currentAttestation: Attestation | null;
   vpsVersion: string | null;
   lastCapture: LastCapture | null;
   queued: number;

@@ -42,6 +42,12 @@ export interface VpxTablePhysics {
   nudgeTime: number | null; // NDGT
   slopeMin: number | null; // SLOP (degrees)
   slopeMax: number | null; // SLPX (degrees)
+  /** `TDFT`: the table's own difficulty, 0–1 (the editor's default is 0.2). */
+  difficulty: number | null;
+  /** `ORRP`: physics-set override asked for by the table, 0 = none, 1–8 = that global set from the ini. */
+  overridePhysicsSet: number | null;
+  /** `ORPF`: the flippers take their physics from the set as well. */
+  overridePhysicsFlippers: boolean | null;
 }
 
 export interface VpxFileFacts {

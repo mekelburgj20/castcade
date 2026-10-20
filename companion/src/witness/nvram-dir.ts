@@ -14,7 +14,40 @@ export const NVRAM_DIRECTORY_VALUE = 'nvram_directory';
 export interface RegistryReader {
   /** The string data of `value` under `key`, or null when the key/value is absent or unreadable. */
   queryValue(key: string, value: string): Promise<string | null>;
+  /** Numeric data (`REG_DWORD` / `REG_QWORD`, or a string holding a number), or null. */
+  queryNumber(key: string, value: string): Promise<number | null>;
+  /** The key's `(Default)` string value (`reg query <key> /ve`), or null. */
+  queryDefault(key: string): Promise<string | null>;
 }
+
+export interface RegValue {
+  name: string;
+  type: string;
+  data: string;
+}
+
+/** Every `    <name>    REG_TYPE    <data>` line of `reg query` output. */
+export function parseRegValues(stdout: string): RegValue[] {
+  const out: RegValue[] = [];
+  for (const raw of stdout.split(/\r?\n/)) {
+    const line = raw.trim();
+    const m = /^(\S.*?)\s{2,}(REG_[A-Z_]+)\s{2,}(.*)$/.exec(line) ?? /^(\S.*?)\s{2,}(REG_[A-Z_]+)\s*$/.exec(line) ?? /^(\S+)\s+(REG_[A-Z_]+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    out.push({ name: m[1] ?? '', type: m[2] ?? '', data: (m[3] ?? '').trim() });
+  }
+  return out;
+}
+
+/** `0x1f` or `31` → 31; anything else null. */
+export function regNumber(data: string | null | undefined): number | null {
+  if (data === null || data === undefined) return null;
+  const s = data.trim();
+  if (!s) return null;
+  const n = /^0x[0-9a-f]+$/i.test(s) ? Number.parseInt(s, 16) : /^-?\d+$/.test(s) ? Number.parseInt(s, 10) : Number.NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+export const REG_DEFAULT_NAME = '(Default)';
 
 export type ExecFileLike = (
   file: string,
@@ -28,41 +61,65 @@ export type ExecFileLike = (
  */
 export function parseRegQuery(stdout: string, value: string): string | null {
   const wanted = value.toLowerCase();
-  for (const raw of stdout.split(/\r?\n/)) {
-    const line = raw.trim();
-    const m = /^(\S.*?)\s{2,}(REG_[A-Z_]+)\s{2,}(.*)$/.exec(line) ?? /^(\S+)\s+(REG_[A-Z_]+)\s+(.*)$/.exec(line);
-    if (!m) continue;
-    const [, name, type, data] = m;
-    if (!name || name.toLowerCase() !== wanted) continue;
-    if (type !== 'REG_SZ' && type !== 'REG_EXPAND_SZ') continue;
-    const text = (data ?? '').trim();
-    return text.length > 0 ? text : null;
+  for (const v of parseRegValues(stdout)) {
+    if (v.name.toLowerCase() !== wanted) continue;
+    if (v.type !== 'REG_SZ' && v.type !== 'REG_EXPAND_SZ') continue;
+    return v.data.length > 0 ? v.data : null;
+  }
+  return null;
+}
+
+/** The numeric data of `value` in `reg query` output (`REG_DWORD`, `REG_QWORD`, or a numeric string). */
+export function parseRegNumber(stdout: string, value: string): number | null {
+  const wanted = value.toLowerCase();
+  for (const v of parseRegValues(stdout)) {
+    if (v.name.toLowerCase() !== wanted) continue;
+    if (v.type === 'REG_DWORD' || v.type === 'REG_QWORD' || v.type === 'REG_SZ') return regNumber(v.data);
   }
   return null;
 }
 
 /** Real reader: `reg.exe query`. Never throws; any failure reads as "not found". */
 export function createRegQueryReader(exec: ExecFileLike = execFile as unknown as ExecFileLike): RegistryReader {
+  const run = (args: string[]): Promise<string | null> =>
+    new Promise((resolve) => {
+      try {
+        exec('reg', ['query', ...args], (error, stdout) => resolve(error ? null : (stdout ?? '')));
+      } catch {
+        resolve(null);
+      }
+    });
   return {
-    queryValue(key, value) {
-      return new Promise((resolve) => {
-        try {
-          exec('reg', ['query', key, '/v', value], (error, stdout) => {
-            resolve(error ? null : parseRegQuery(stdout ?? '', value));
-          });
-        } catch {
-          resolve(null);
-        }
-      });
+    async queryValue(key, value) {
+      const out = await run([key, '/v', value]);
+      return out === null ? null : parseRegQuery(out, value);
+    },
+    async queryNumber(key, value) {
+      const out = await run([key, '/v', value]);
+      return out === null ? null : parseRegNumber(out, value);
+    },
+    async queryDefault(key) {
+      const out = await run([key, '/ve']);
+      return out === null ? null : parseRegQuery(out, REG_DEFAULT_NAME);
     },
   };
 }
 
 /** A reader for tests and for platforms without a registry. */
 export function createStaticRegistry(values: Record<string, string>): RegistryReader {
+  const lookup = (key: string, value: string): string | null => {
+    for (const [k, v] of Object.entries(values)) if (k.toLowerCase() === `${key}\\${value}`.toLowerCase()) return v;
+    return null;
+  };
   return {
     async queryValue(key, value) {
-      return values[`${key}\\${value}`.toLowerCase()] ?? null;
+      return lookup(key, value);
+    },
+    async queryNumber(key, value) {
+      return regNumber(lookup(key, value));
+    },
+    async queryDefault(key) {
+      return lookup(key, REG_DEFAULT_NAME);
     },
   };
 }

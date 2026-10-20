@@ -57,8 +57,12 @@ import {
   type VpxLaunch,
   type VpxTitle,
 } from './process-watch.js';
+import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adjustments.js';
+import { adjustmentsWire, buildWire, iniWire, type Attestation } from './attestation-types.js';
+import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
 import { createIdentityResolver } from './identity-resolver.js';
 import { createIdentityStore } from './identity-store.js';
+import { describeIni, readIniAttestation } from './ini-attestation.js';
 import type { TableIdentity, VpsIndex } from './identity-types.js';
 import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
@@ -78,6 +82,8 @@ export interface WitnessDeps {
   vpsIndex?: VpsIndex;
   /** How long a capture waits for a still-running file hash before posting without it. */
   hashWaitMs?: number;
+  /** Environment for `%APPDATA%` (the per-user `VPinballX.ini` location); default `process.env`. */
+  env?: NodeJS.ProcessEnv;
   pollIntervalMs?: number;
   /** How long a changed `.nv` must stay unchanged before it is read (VPinMAME's write is done). */
   nvSettleMs?: number;
@@ -118,6 +124,8 @@ interface OpenSession {
   identityFor: string | null;
   /** The background hash of the table file, when one is running. */
   hashing: Promise<void> | null;
+  /** Settings and builds measured when the table became known; completed (adjustments, cheat flag) at capture. */
+  attestation: Attestation | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -198,6 +206,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     mapsVersion: null,
     currentTable: null,
     currentIdentity: null,
+    currentAttestation: null,
     vpsVersion: null,
     lastCapture: null,
     queued: 0,
@@ -213,6 +222,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const vpsIndex = deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs);
   const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
   const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
+  const builds = createBuildAttester({ fs, registry, log });
+  const env = deps.env ?? process.env;
   /** The nvram directory as of the last capture (or the first launch), with bytes for `sameGame`. */
   let baseline: NvSnapshot | null = null;
   /** A `.nv` change seen while VPX is open, waiting to settle. */
@@ -365,7 +376,40 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const active = activeSession();
     status.currentTable = active?.launch.table ?? null;
     status.currentIdentity = active?.identity ?? null;
+    status.currentAttestation = active?.attestation ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
+  };
+
+  // --------------------------------------------------------------------------- attestation --
+
+  const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+  /**
+   * The settings (ini) and builds (exe, DLL) in force for a session, measured when the table is
+   * known and again at capture. Adjustments and the cheat flag need the ROM and are kept from the
+   * session's previous attestation until the capture fills them in.
+   */
+  const measureAttestation = async (session: OpenSession): Promise<Attestation> => {
+    const { launch } = session;
+    const notes: string[] = [];
+    const tablePath = session.identity?.filePath ?? launch.tablePath;
+    const ini = await readIniAttestation({ fs, exe: launch.exe, iniPath: launch.iniPath, tablePath, tableIniPath: launch.tableIniPath, physics: session.identity?.physics ?? null, env }).catch((err: unknown) => {
+      notes.push(`settings: ${errText(err)}`);
+      return null;
+    });
+    const build = await builds.forExe(launch.exe).catch((err: unknown) => {
+      notes.push(`build: ${errText(err)}`);
+      return null;
+    });
+    return {
+      measuredAt: iso(clock.now()),
+      ini,
+      build,
+      adjustments: session.attestation?.adjustments ?? null,
+      vpmCheat: session.attestation?.vpmCheat ?? null,
+      iniChanged: false,
+      notes,
+    };
   };
 
   // ------------------------------------------------------------------------------ identity --
@@ -389,6 +433,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     session.identity = identity;
     if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
     else log(`witness: identity unresolved for ${target}: ${identity.notes.join('; ')}`);
+    session.attestation = await measureAttestation(session);
+    if (session.attestation.ini) log(`witness: settings ${describeIni(session.attestation.ini)}`);
     refreshTableStatus();
     emitStatus();
     if (path && !identity.sha256) {
@@ -463,10 +509,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     let map: CompiledMap | null = null;
     let before: GameState | null = null;
     let afterState: GameState | null = null;
+    let nvBytes: Uint8Array | null = null;
     if (rom && name && nvramDir) {
       map = await corpus.mapFor(rom);
       try {
-        afterState = decode(map, await fs.readFile(joinPath(nvramDir, name)));
+        nvBytes = await fs.readFile(joinPath(nvramDir, name));
+        afterState = decode(map, nvBytes);
       } catch (err) {
         details.push(`could not read ${name}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -482,6 +530,20 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       session.identity = identity;
       if (identity.vpsGame) details.push(`VPS game ${identity.vpsGame.name} (${identity.vpsGame.id})${identity.vpsTable ? `, table ${identity.vpsTable.label} (${identity.vpsTable.id}${identity.confirmed ? ', confirmed' : identity.tableConfidence === 'exact' ? '' : `, ${identity.tableConfidence}`})` : ', table undecided'}`);
     }
+    // Attestation: settings re-read now (the tweak menu writes the table ini at exit), adjustments
+    // from the very bytes the score came from, the cheat flag for this ROM.
+    const launchIni = session.attestation?.ini ?? null;
+    const measured = await measureAttestation(session);
+    const adjustments = map && nvBytes && rom ? adjustmentsReport(rom, decodeAdjustments(map, nvBytes)) : null;
+    const vpmCheat = rom ? await vpmCheatFlag(registry, rom).catch(() => null) : null;
+    const iniChanged = launchIni !== null && measured.ini !== null && iniWire(launchIni) !== iniWire(measured.ini);
+    const attestation: Attestation = { ...measured, adjustments, vpmCheat, iniChanged };
+    session.attestation = attestation;
+    if (attestation.ini) details.push(describeIni(attestation.ini));
+    if (iniChanged) details.push('settings changed during the session');
+    if (rom) details.push(describeAdjustments(adjustments));
+    details.push(describeBuild(attestation.build, vpmCheat));
+
     const resolved = resolveTableName(session.launch, romName, rom);
     const table = resolved?.table ?? UNKNOWN_TABLE;
     // What ArcAid sees: the catalogue-grade name, plus the ROM's own name as the `slug` fallback key.
@@ -502,6 +564,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       exitedAt: iso(ended),
       outcome: 'skipped',
       identity,
+      attestation,
     };
 
     if (token && resolved) {
@@ -535,6 +598,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           vps_table: identity?.vpsTable?.id ?? null,
           table_sha256: identity?.sha256 ?? null,
           table_save_rev: identity?.saveRev ?? null,
+          ini: iniWire(attestation.ini),
+          adjustments: adjustmentsWire(adjustments),
+          build: buildWire(attestation.build, vpmCheat),
         },
       });
       const mapped = outcomeForPost(posted);
@@ -609,6 +675,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       identity: null,
       identityFor: null,
       hashing: null,
+      attestation: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();

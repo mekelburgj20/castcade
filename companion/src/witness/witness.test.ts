@@ -20,7 +20,21 @@ const vpsIndex = createVpsIndex(repo('fixtures/vps'));
 const MM_TABLE = 'Medieval Madness (Williams 1997) VPW v1.0.1';
 const MM_PATH = `C:\\Tables\\${MM_TABLE}.vpx`;
 /** A synthetic table file with the owner's MM TableInfo (VPW 1.1 in the file, v1.0.1 in the name, like the real one). */
-const MM_VPX = buildOwnerStyleVpx({ tableName: 'Medieval Madness (Williams 1997)', author: 'VPW', version: '1.0.1', saveRev: '946' }, 6.5);
+const MM_VPX = buildOwnerStyleVpx({ tableName: 'Medieval Madness (Williams 1997)', author: 'VPW', version: '1.0.1', saveRev: '946' }, 6.5, { difficulty: 0.5, overridePhysics: 0, overrideFlippers: false });
+/** Stand-ins for the binaries: no version resource, so only the hash and "not a known build" are attested. */
+const EXE_BYTES = Uint8Array.from({ length: 4096 }, (_, i) => (i * 7) & 0xff);
+const DLL_BYTES = Uint8Array.from({ length: 2048 }, (_, i) => (i * 13 + 1) & 0xff);
+const DLL_PATH = 'C:\\VPX\\VPinMAME\\VPinMAME64.dll';
+/** The owner's portable ini, cut to the keys that matter: no override in use, nudge strength set. */
+const MAIN_INI = '[Player]\nNudgeStrength = 0.000800\nEnableLegacyNudge = 0\nPhysicsSetName0 = Mousing Around\nTablePhysicsMinSlope0 = 5.5\nTablePhysicsMaxSlope0 = 6\n';
+/** The player raised the difficulty in the tweak menu, and set one table option. */
+const MM_TABLE_INI = '[TableOverride]\nDifficulty = 0.750000\n[TableOption]\nOutlane Difficulty = 1.000000\n';
+const RIG_REGISTRY = {
+  'HKCR\\VPinMAME.Controller\\CLSID\\(Default)': '{F389C8B7-144F-4C63-A2E3-246D168F9D39}',
+  'HKCR\\CLSID\\{F389C8B7-144F-4C63-A2E3-246D168F9D39}\\InprocServer32\\(Default)': DLL_PATH,
+  'HKCU\\Software\\Freeware\\Visual PinMame\\mm_109c\\cheat': '0x1',
+  'HKCU\\Software\\Freeware\\Visual PinMame\\default\\cheat': '0x0',
+};
 const MB_VPX = buildOwnerStyleVpx({ tableName: 'Monster Bash VPW Mod', author: 'VPW', version: '1.0', manufacturer: 'Williams', year: '1998' });
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 /** What ArcAid is sent: the name cut after the manufacturer/year parenthetical (catalogueTableName). */
@@ -193,11 +207,15 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
 
 describe('createWitness: -Play sessions (capture at exit)', () => {
   it('heartbeats and checks in on start, opens the session at launch, closes it with the score on exit', async () => {
-    const h = harness();
+    const h = harness({}, { registry: createStaticRegistry(RIG_REGISTRY), env: {} });
     await h.fs.mkdir('/nv');
     h.fs.put('/nv/mm_109c.nv', mmBefore);
     h.fs.put('/nv/tftc_400.nv', Uint8Array.from([0]));
     h.fs.put(MM_PATH, MM_VPX);
+    h.fs.put(EXE, EXE_BYTES);
+    h.fs.put(DLL_PATH, DLL_BYTES);
+    h.fs.put('C:\\VPX\\VPinballX.ini', new TextEncoder().encode(MAIN_INI));
+    h.fs.put(`C:\\Tables\\${MM_TABLE}.ini`, new TextEncoder().encode(MM_TABLE_INI));
 
     await h.witness.start();
     await h.flush();
@@ -223,7 +241,24 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       tableConfidence: 'exact',
       saveRev: 946,
       sha256: sha(MM_VPX),
-      physics: { slopeMin: 6.5, slopeMax: 7.5 },
+      physics: { slopeMin: 6.5, slopeMax: 7.5, difficulty: 0.5, overridePhysicsSet: 0, overridePhysicsFlippers: false },
+    });
+    // Conditions measured with the identity: stock physics, the tweak-menu difficulty, the builds; the ROM-bound parts wait for capture.
+    expect(h.witness.status().currentAttestation).toMatchObject({
+      ini: {
+        mainIni: 'C:\\VPX\\VPinballX.ini',
+        tableIni: `C:\\Tables\\${MM_TABLE}.ini`,
+        physicsSet: 0,
+        stockPhysics: true,
+        tableDifficulty: 0.5,
+        difficultyOverride: 0.75,
+        slope: { min: 6.5, max: 7.5, effective: 7.25 },
+        tableOptions: { 'Outlane Difficulty': 1 },
+      },
+      build: { vpx: { path: EXE, sha256: sha(EXE_BYTES), known: null, version: null }, vpinmame: { path: DLL_PATH, sha256: sha(DLL_BYTES), known: null } },
+      adjustments: null,
+      vpmCheat: null,
+      iniChanged: false,
     });
 
     await h.playFor(300_000);
@@ -264,7 +299,9 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       exit: String(Math.floor(ended / 1000)),
       dur: String(dur),
     });
-    expect(posts[2]?.params).toEqual({
+    const score = posts[2]?.params ?? {};
+    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'ini', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    expect(score).toMatchObject({
       device: 'dev-1',
       table: MM_WIRE,
       rom: 'mm_109c',
@@ -279,8 +316,30 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       table_sha256: sha(MM_VPX),
       table_save_rev: '946',
     });
+    // Attestation (F2) rides along as compact JSON; no `adjustments` because the MM map has no adjustments block.
+    expect(JSON.parse(score['ini'] ?? 'null')).toEqual({
+      set: 0,
+      set_name: null,
+      flippers: false,
+      stock: true,
+      difficulty: 0.5,
+      difficulty_override: 0.75,
+      slope: 7.25,
+      nudge: 0.0008,
+      legacy_nudge: false,
+      options: { 'Outlane Difficulty': 1 },
+      overrides: [],
+      table_ini: true,
+    });
+    expect(JSON.parse(score['build'] ?? 'null')).toEqual({
+      vpx: { sha256: sha(EXE_BYTES), version: null, known: null },
+      vpinmame: { sha256: sha(DLL_BYTES), version: null, known: null },
+      cheat: true,
+    });
     expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: '-5yMpqSy' }, vpsTable: { id: 'zbyQ01wi3L' }, gameSource: 'rom' });
+    expect(h.captures[0]?.attestation).toMatchObject({ vpmCheat: true, adjustments: null, iniChanged: false, ini: { stockPhysics: true } });
     expect(h.captures[0]?.detail).toMatch(/VPS game Medieval Madness \(-5yMpqSy\), table VPW 1\.0\.1/);
+    expect(h.captures[0]?.detail).toMatch(/stock physics, difficulty override 75%, slope 7\.25°, 1 table option; no adjustments map for this ROM; VPX [0-9a-f]{12} \(not an official release build\); VPinMAME [0-9a-f]{12} \(not the official release\), cheat ON/);
     expect(h.errors).toEqual([]);
 
     // VPX gone: checked in again right after the capture, and on every heartbeat tick while idle.

@@ -175,7 +175,7 @@ shipped with the companion and extensible from ArcAid. Unknown → `build: { kno
 | Step | Where | What ships | Needs from ArcAid |
 |---|---|---|---|
 | F1 **(shipped v0.2.4, 2026-10-18)** | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
-| F2 | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag | nothing |
+| F2 **(shipped v0.2.5, 2026-10-19)** | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag | nothing |
 | F3 | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
@@ -186,8 +186,37 @@ Gate for F1–F2: the owner's Monster Bash capture arrives with `vps_game` = Mon
 changes when the owner flips a physics override on and back off. F1's half of the gate is covered by
 the unit tests on the owner's exact sequence (`witness.test.ts`, synthetic table files with the real
 TableInfo values) and by a read-only run of the reader against the owner's three VPW tables (all
-values matched; 350 KB read of a 184 MB file; hash 0.2–0.4 s warm). The live half (the ids visible on
-arcaid.app once item 11 lands) is pending.
+values matched; 350 KB read of a 184 MB file; hash 0.2–0.4 s warm). F2's offline half passed the
+same way on 2026-10-19 (read-only run against the rig): Monster Bash reads stock physics, table
+difficulty 0.56, slope 6.56°, no table options; Medieval Madness slope 6.5° fixed; both exes and the
+DLL hash and version in under 0.4 s; the DLL is found through the COM registration; the cheat flag
+reads `off` for both ROMs; a real Attack from Mars `.nv` reports one non-factory adjustment (Max E.B.
+Per B.I.P). The "flip an override on and back off" half and the live half (the values visible on
+arcaid.app once item 11 lands) are pending.
+
+**Implementation notes (F2).** Verified against the VPX 10.8.0 source (v10.8.0-2051): the
+physics-set override is a **property of the table file** (`ORRP` int, 0 = none, 1–8 = set; `ORPF`
+flipper flag), not an ini key; the ini only holds the eight sets' values (`[Player]
+TablePhysics*N`, `FlipperPhysics*N`, `PhysicsSetNameN`, 0-based). The table's own difficulty is
+`TDFT` (0–1); the tweak menu writes the override to `[TableOverride] Difficulty` in the table's
+`<table>.ini` (beside the `.vpx`; `-TableIni` overrides), whose values sit on top of the global ini
+(`-Ini`, else `<exe dir>\VPinballX.ini` when it exists, else `%APPDATA%\VPinballX\VPinballX.ini`).
+Table options live in `[TableOption]` under the author's own names ("Outlane Difficulty" = 1.0), so
+they are reported by name and value, not interpreted. **Adjustments:** at the pinned corpus commit
+92 of 383 maps carry an `adjustments` block (Attack from Mars, Demolition Man, Dracula yes; Medieval
+Madness, Monster Bash, Tales from the Crypt no), so "no adjustments map" is the common case and must
+never read as "factory". `default`, `min` and `max` describe the **stored** value, before `scale`
+and `offset` (corpus README), so the factory comparison uses the stored value and the report carries
+both. The companion checks a fairness subset by label (balls per game, tilt warnings, extra ball,
+ball save, replay, pricing/free play, special award, match, difficulty, timed plunger, buy-in), at
+most 24 entries. **Builds:** the known list is seeded from the official release assets, hashed on
+2026-10-19 (VPX v10.8.0-2051 DX/GL × x64/x86, VPinMAME v3.6.0-1227 x64/x86/-sc). The owner's own
+rig runs Panasony community builds 10.8.0.2078/2079 and a VPinMAME 3.7.0.222 nightly, so **the
+owner's own scores read "not an official release build"**: evidence that this is a flag for the
+runner, never a refusal, and that ArcAid item 11 should grow the known list from consensus across
+devices (and let a runner bless a build for their tournament). Version strings come from the PE
+`VS_VERSIONINFO` block (`FileVersion` carries the builder tag, e.g. `10.8.0.2079.Panasony`). The
+cheat flag is `HKCU\Software\Freeware\Visual PinMame\<rom>\cheat`, falling back to `default`.
 
 **Implementation notes (F1).** The `.vpx` reader walks the compound file's FAT and directory on
 demand and reads only TableInfo and `GameStg/GameData`; a 1 GB table costs a few hundred KB of reads.
