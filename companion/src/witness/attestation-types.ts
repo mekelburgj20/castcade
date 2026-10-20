@@ -195,6 +195,11 @@ export function iniWire(ini: IniAttestation | null): string | null {
     accel_max_x: ini.nudge.accelMaxX,
     accel_max_y: ini.nudge.accelMaxY,
     accel_velocity: ini.nudge.accelVelocityInput,
+    // `AnalogNudgeGainX/Y`: not a stock 10.8.0 key; the Panasony VR build's in-game nudge page
+    // writes it (the owner's rig: 1965/1996 beside PBWAccelGain 115). Sent raw for the runner's eyes
+    // until its scale is confirmed (fairness design §5a).
+    analog_gain_x: ini.nudge.analogGainX,
+    analog_gain_y: ini.nudge.analogGainY,
     tilt_sens: ini.nudge.tiltSensitivityEffective,
     tilt_sens_set: ini.nudge.tiltSensitivity !== null,
     options: ini.tableOptions,

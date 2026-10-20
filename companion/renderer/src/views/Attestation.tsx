@@ -58,6 +58,9 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
                 {ini.nudge.accelEnabled !== false && (ini.nudge.accelGainX !== null || ini.nudge.accelGainY !== null) && (
                   <span className="muted"> · accelerometer gain {ini.nudge.accelGainX ?? '—'}/{ini.nudge.accelGainY ?? '—'}%</span>
                 )}
+                {ini.nudge.accelEnabled !== false && (ini.nudge.analogGainX !== null || ini.nudge.analogGainY !== null) && (
+                  <span className="muted"> · analog nudge gain {ini.nudge.analogGainX ?? '—'}/{ini.nudge.analogGainY ?? '—'} (community build key)</span>
+                )}
                 {ini.nudge.accelEnabled !== false && (
                   <span className={ini.nudge.tiltSensitivityEffective === 0 ? 'warn' : 'muted'}>
                     {' · '}

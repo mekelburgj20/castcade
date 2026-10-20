@@ -335,6 +335,8 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       accel_max_x: null,
       accel_max_y: null,
       accel_velocity: null,
+      analog_gain_x: null,
+      analog_gain_y: null,
       tilt_sens: 400,
       tilt_sens_set: false,
       options: { 'Outlane Difficulty': 1 },
@@ -543,6 +545,13 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(outcomeForWire('no_match').outcome).toBe('skipped');
     expect(outcomeForWire('invalid').outcome).toBe('rejected');
     expect(outcomeForWire(null).outcome).toBe('ingested');
+  });
+
+  it('a Sanctioned refusal (ArcAid 2.165.0) is rejected with the reasons and says where the play went instead', () => {
+    const held = outcomeForWire('not_sanctioned', { reasons: ['tilt sensitivity 10 is below the minimum 300'], fallback: 'global' });
+    expect(held.outcome).toBe('rejected');
+    expect(held.detail).toBe('ArcAid: not counted for the tournament (Sanctioned play): tilt sensitivity 10 is below the minimum 300; recorded on the Global Scoreboard instead');
+    expect(outcomeForWire('not_sanctioned', { reasons: [], fallback: null }).detail).toBe('ArcAid: not counted for the tournament (Sanctioned play)');
   });
 });
 

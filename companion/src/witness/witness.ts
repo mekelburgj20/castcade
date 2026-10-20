@@ -139,7 +139,10 @@ function joinPath(dir: string, name: string): string {
 }
 
 /** Map ArcAid's wire `status` for a score to the module's outcome vocabulary. */
-export function outcomeForWire(status: string | null): { outcome: CaptureOutcome; detail?: string } {
+export function outcomeForWire(
+  status: string | null,
+  wire: { reasons?: string[]; fallback?: string | null } = {},
+): { outcome: CaptureOutcome; detail?: string } {
   switch (status) {
     case null:
     case 'ingested':
@@ -152,13 +155,23 @@ export function outcomeForWire(status: string | null): { outcome: CaptureOutcome
       return { outcome: 'skipped', detail: 'ArcAid: no open game or catalogue entry matched this table' };
     case 'invalid':
       return { outcome: 'rejected', detail: 'ArcAid: invalid score' };
+    case 'not_sanctioned': {
+      // ArcAid 2.165.0 (item 11): the tournament is in Sanctioned play and a rule failed. The
+      // reasons are the server's own words; the play still reached the Global Scoreboard when
+      // `fallback` says so. Shown on the Status page so the player knows what to change.
+      const reasons = (wire.reasons ?? []).filter((r) => r.trim().length > 0);
+      const why = reasons.length > 0 ? `: ${reasons.join('; ')}` : '';
+      const went = wire.fallback === 'global' ? '; recorded on the Global Scoreboard instead'
+        : wire.fallback === 'global_duplicate' ? '; already on the Global Scoreboard' : '';
+      return { outcome: 'rejected', detail: `ArcAid: not counted for the tournament (Sanctioned play)${why}${went}` };
+    }
     default:
       return { outcome: 'rejected', detail: `ArcAid: ${status}` };
   }
 }
 
 export function outcomeForPost(result: PostResult): { outcome: CaptureOutcome; detail?: string } {
-  if (result.state === 'done') return outcomeForWire(result.wire?.status ?? null);
+  if (result.state === 'done') return outcomeForWire(result.wire?.status ?? null, result.wire ?? {});
   if (result.state === 'queued') return { outcome: 'queued', detail: result.error.message };
   return { outcome: 'rejected', detail: result.error.message };
 }

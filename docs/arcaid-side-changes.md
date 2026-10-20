@@ -213,6 +213,15 @@ and it shows what the device already reports (table names and timestamps), nothi
 
 ## 11. Integrity mode: Open play / Sanctioned play (owner ruling 2026-10-18, Castcade ADR 0005)
 
+> **Status 2026-10-20:** the backend half is **ArcAid PR #370** (v2.165.0, ArcAid ADR 0027) — migration 184, the
+> rules as a pure function (`src/utils/sanctionedRules.ts`), the evidence trail, the VPS-id-first match, the
+> `not_sanctioned` wire status (desktops only; cabinets get `no_match`), the integrity router and the catalogue's
+> per-game table list. The admin UI (tournament integrity settings, required-table picker, per-score review,
+> board badges) and the ROM → VPS endpoint are the next PR. Decisions taken there that refine the text below:
+> no adjustments map = *unverifiable* (skipped, never failed); the default allow-list is `['Free Play']`; a
+> tournament update that omits the integrity fields keeps them; the Global fallback still applies to a refused
+> score; evidence rows are written for every outcome in both modes.
+
 **What.** `tournaments.integrity_mode TEXT NOT NULL DEFAULT 'open'` (`'open'` | `'sanctioned'`; names
 are working names, the owner may rename before this ships). Per tournament game, in Sanctioned mode:
 `required_vps_table_id`, `required_rom`, `required_fingerprint` (blessed by the runner from their own
@@ -232,7 +241,8 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
 
 - `ini`: `{"set":0,"set_name":null,"flippers":false,"stock":true,"difficulty":0.56,"difficulty_override":null,
   "slope":6.56,"nudge":0.0008,"legacy_nudge":false,"nudge_filter":false,"nudge_sensitivity":null,"accel":true,
-  "accel_gain_x":115,"accel_gain_y":115,"accel_max_x":100,"accel_max_y":100,"accel_velocity":false,"tilt_sens":500,
+  "accel_gain_x":115,"accel_gain_y":115,"accel_max_x":100,"accel_max_y":100,"accel_velocity":false,
+  "analog_gain_x":1965,"analog_gain_y":1996,"tilt_sens":500,
   "tilt_sens_set":true,"options":{"Outlane Difficulty":1},"overrides":[],"table_ini":true}`
   — `set` is the table's physics-set override (0 = stock), `stock` = no set and no flipper override,
   `difficulty` the table's own (0–1), `difficulty_override` the tweak-menu value when set, `slope` the
@@ -243,7 +253,10 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
   `accel_velocity` = `AccelVelocityInput`, `nudge_filter` = `EnableNudgeFilter`, `tilt_sens` = the
   `TiltSensitivity` VPX actually uses (stored value, else VPX's default 400; **higher tilts sooner**, 0 =
   analog tilt off), `tilt_sens_set` = whether the key was present. `min_tilt_sensitivity` reads `tilt_sens`,
-  `max_accel_gain` reads both gains; both apply only while `accel !== false`. The rest is for the runner's eyes.
+  `max_accel_gain` reads both gains; both apply only while `accel !== false`. `analog_gain_x/y` (0.2.9) is
+  `AnalogNudgeGainX/Y`, a key stock 10.8.0 does not have: the Panasony VR build's in-game nudge page writes it
+  (the owner's rig: 1965/1996), scale unconfirmed, sent raw for the runner's eyes and read by no rule yet.
+  The rest is for the runner's eyes.
 - `adjustments`: `{"total":52,"items":[{"l":"Balls Per Game","v":3,"d":3},{"l":"Replay System","v":1,"t":"Fixed","d":0}],
   "non_factory":["Replay System"]}` — `v` and `d` are the stored values the map's `default` describes, `t`
   the enum/special text. Absent for the many ROMs whose map has no adjustments block (never treat absence as

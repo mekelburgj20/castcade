@@ -59,8 +59,13 @@ is allowed in Sanctioned play. **0.2.8 (2026-10-20):** the `ini` object carries 
 Sanctioned rules `min_tilt_sensitivity` (default 300, provisional), `max_accel_gain`, `require_nudge_filter` are
 runner-set (fairness design §5a); nudge telemetry (HID trace + lift detector) is a Phase 3 item. **v0.2.6 (2026-10-19):** the repo was private until
 2026-10-19, so no installed app could see a release (anonymous 404 on the releases feed); the owner made it public, and
-the updater now re-checks every 4 h (30 min after a failure) instead of once per launch. Keep the repo public. Next: F3 = ArcAid items 11/12 (PRs for the owner's
-ArcAid agent), then F4 (playfield fingerprint). Streaming: Phase 4a (solo streaming + recording) is recorded in the
+the updater now re-checks every 4 h (30 min after a failure) instead of once per launch. Keep the repo public. **F3 backend delivered
+2026-10-20 as ArcAid PR #370** (v2.165.0, ArcAid ADR 0027: `tournaments.integrity_mode` + `sanctioned_rules`, per-game required
+table, `witness_evidence` trail, `evaluateSanctioned` pure function, `not_sanctioned` wire status for desktops / `no_match` for
+cabinets, VPS-id-first matching, `global_game_tables`; worktree `ArcAid/.claude/worktrees/castcade-integrity-mode`), awaiting
+the owner's ArcAid agent's review; **0.2.9 (2026-10-20)** maps `not_sanctioned` + `reasons` to a rejected capture with the
+reasons on Status and sends the Panasony `analog_gain_x/y` keys. Next: F3 part 2 = the ArcAid admin UI PR (tournament integrity
+settings, required-table picker, per-score evidence review, board badges), then F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
 gap analysis §6 and ArcAid item 13 (runner stage).
 
 ## Commands

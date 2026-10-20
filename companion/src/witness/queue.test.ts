@@ -56,7 +56,7 @@ describe('PostQueue', () => {
     h.setRespond((url) => (url.pathname.endsWith('/score') ? { status: 200, body: { ok: true, status: 'duplicate', game: 'T' } } : { status: 200, body: { ok: true } }));
     const q = h.make();
     expect(await q.submit(report)).toEqual({ state: 'done', wire: null });
-    expect(await q.submit(score)).toEqual({ state: 'done', wire: { status: 'duplicate', game: 'T' } });
+    expect(await q.submit(score)).toEqual({ state: 'done', wire: { status: 'duplicate', game: 'T', reasons: [], fallback: null } });
     expect(q.size()).toBe(0);
     expect(h.fs.has(`/data/${QUEUE_FILE}`)).toBe(false);
   });
@@ -87,7 +87,7 @@ describe('PostQueue', () => {
     expect(h.calls).toHaveLength(3);
     expect(q.size()).toBe(0);
     expect(h.settled).toHaveLength(1);
-    expect(h.settled[0]?.result).toEqual({ state: 'done', wire: { status: 'ingested', game: null } });
+    expect(h.settled[0]?.result).toEqual({ state: 'done', wire: { status: 'ingested', game: null, reasons: [], fallback: null } });
     expect(h.fs.has(`/data/${QUEUE_FILE}`)).toBe(false);
     expect(h.clock.pending()).toBe(0);
   });

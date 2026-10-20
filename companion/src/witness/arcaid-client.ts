@@ -51,9 +51,15 @@ export interface CheckinResult {
 }
 
 export interface ScoreWireStatus {
-  /** `ingested` | `duplicate` | `global` | `global_duplicate` | `no_match` | `invalid` (suppressed arrives as `duplicate`). */
+  /**
+   * `ingested` | `duplicate` | `global` | `global_duplicate` | `no_match` | `invalid` (suppressed arrives as
+   * `duplicate`) | `not_sanctioned` (ArcAid 2.165.0: a Sanctioned tournament held the score out; `reasons`
+   * says why and `fallback` where the play went instead, normally `global`).
+   */
   status: string | null;
   game: string | null;
+  reasons: string[];
+  fallback: string | null;
 }
 
 export interface ArcaidClientOptions {
@@ -185,9 +191,12 @@ export class ArcaidClient {
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);
+    const reasons = Array.isArray(body['reasons']) ? body['reasons'].filter((r): r is string => typeof r === 'string') : [];
     return {
       status: typeof body['status'] === 'string' ? body['status'] : null,
       game: typeof body['game'] === 'string' ? body['game'] : null,
+      reasons,
+      fallback: typeof body['fallback'] === 'string' ? body['fallback'] : null,
     };
   }
 

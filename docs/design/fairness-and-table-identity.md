@@ -263,7 +263,7 @@ that sits under the honest ceiling in §5.
 |---|---|---|---|
 | F1 **(shipped v0.2.4, 2026-10-18)** | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
 | F2 **(shipped v0.2.5, 2026-10-19; 0.2.7 build families; 0.2.8 accelerometer + analog-tilt keys)** | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag; build `family`; accelerometer gain, tilt sensitivity (§5a) | nothing |
-| F3 | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
+| F3 **(backend PR'd 2026-10-20: ArcAid #370, v2.165.0, ADR 0027; admin UI next)** | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
 | F6 | companion (Phase 3) | engine attestation from the live hook; score-jump plausibility; nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
