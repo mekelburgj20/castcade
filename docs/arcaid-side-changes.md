@@ -223,7 +223,11 @@ and it shows what the device already reports (table names and timestamps), nothi
 > score; evidence rows are written for every outcome in both modes. The same PR carries a fix found on the
 > owner's rig 2026-10-20: the witness ingest never cleared the room `leaderboard_cache` (no expiry), so a Witness
 > score reached the tournament's scores page but not the room board until somebody's manual submission to the
-> same game flushed it; migration `185_flush_leaderboard_cache` recomputes the stale boards on deploy.
+> same game flushed it; migration `185_flush_leaderboard_cache` recomputes the stale boards on deploy. **#370 merged and
+> deployed 2026-10-20 (2.165.0). Part 2 = ArcAid PR #371 (2.166.0, 2026-10-21):** the admin UI (tournament form Integrity
+> section, Integrity panel with the required-table picker and the evidence review, board badges on the game page), `play_device`
+> (`pc` | `vr_headset`) on the device axis for desktop witnesses, `globalGameId` on the integrity read, `tournamentId` on the
+> per-game leaderboard read, "Pair a device" copy.
 
 **What.** `tournaments.integrity_mode TEXT NOT NULL DEFAULT 'open'` (`'open'` | `'sanctioned'`; names
 are working names, the owner may rename before this ships). Per tournament game, in Sanctioned mode:

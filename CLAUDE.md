@@ -69,7 +69,7 @@ the owner's ArcAid agent's review; **0.2.9 (2026-10-20)** maps `not_sanctioned` 
 reasons on Status and sends the Panasony `analog_gain_x/y` keys. **#370 merged and deployed 2026-10-20 (ArcAid 2.165.0).**
 **0.2.10 (2026-10-21):** `companion/src/witness/vr-detect.ts` samples headset-vs-monitor per session (SteamVR runtime client
 loaded in the VPX process + compositor running; VPX 10.8.0's VR builds turn VR on at player start whenever OpenVR reports a
-headset, so no ini key says it) and sends `play_device=vr_headset|pc`; ArcAid 2.166.0 (F3 part 2 PR: admin UI — tournament
+headset, so no ini key says it) and sends `play_device=vr_headset|pc`; ArcAid 2.166.0 (F3 part 2 = ArcAid PR #371, opened 2026-10-21: admin UI — tournament
 integrity settings, required-table picker, evidence review, board badges — plus `play_device` on the device axis and the
 "Pair a device" copy) puts the VR headset badge on the score. The owner's rig device row predates #363 (paired as a cabinet):
 one re-pair from Settings fixes its type. Next: F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
