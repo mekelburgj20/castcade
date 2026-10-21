@@ -801,7 +801,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         const message = err instanceof ArcaidError ? err.message : err instanceof Error ? err.message : String(err);
         fail(`pairing failed: ${message}`);
         emitStatus();
-        throw new Error(message);
+        throw new Error(message, { cause: err });
       }
       status.lastError = null;
       startHeartbeat();

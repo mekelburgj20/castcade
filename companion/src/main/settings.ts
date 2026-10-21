@@ -230,7 +230,7 @@ export interface SettingsStoreOptions {
 /** Loads (or creates) the settings file synchronously; writes are atomic (tmp + rename). */
 export function openSettingsStore(opts: SettingsStoreOptions): SettingsStore {
   const { file, defaults, codec, log } = opts;
-  let text: string | null = null;
+  let text: string | null;
   try {
     text = readFileSync(file, 'utf8');
   } catch {

@@ -28,7 +28,7 @@ export function createLogger(opts: LoggerOptions): Logger {
   mkdirSync(dirname(file), { recursive: true });
 
   const rotateIfNeeded = (): void => {
-    let size = 0;
+    let size: number;
     try {
       size = statSync(file).size;
     } catch {
