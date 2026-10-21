@@ -12,74 +12,32 @@ The companion is also the Windows desktop producer for **Arcaid Witness** (ADR 0
 Remote: https://github.com/mekelburgj20/castcade · License: GPLv3 (owner ruling; nothing from VPX,
 VPinMAME, RetroArch, FBNeo, ROMs or tables is ever bundled).
 
-## Current state (2026-10-18)
+## Current state
 
-Phase 0 was **run on the owner's rig 2026-10-17 and all five gates passed** (0a/0b/0c/0d/0e; 0c also
-confirmed by the owner by hand); results, the findings Phase 3 must absorb (journal volume, boot-garbage
-gate, bonus-after-ball_end, exit mid-game) are in `docs/phase-0-spike.md` §8. First fixtures are in `fixtures/`.
-**Phase 1 gate passed 2026-10-18** (first CI run green): npm workspaces with `protocol/` (v1 schemas +
-generated `SPEC.md`, the normative behaviour text is `protocol/docs/prose.md`), `companion/src/match/` (host
-arbiter, client, hash-chained log, Ed25519 keys, in-memory + WebSocket transports) behind a minimal Electron
-shell, and `fakeclient/` (scenarios, CLI, the gate test). CI: `.github/workflows/ci.yml` (ubuntu check, windows
-build + smoke, fixture replay). Known gaps carried to later phases: host transfer over WebSocket (clients must
-reconnect to the new host), client reconnect after a drop, simultaneous mode untested, no ArcAid posting yet.
-**Phase 2 built 2026-10-18 (v0.2.0, unsigned PoC):** `companion/src/witness/` is the Arcaid Witness desktop
-producer in basic mode (process watch, `.nv` decode with the pinmame-nvram-maps corpus, GET posts to the
-existing witness endpoints, offline queue, heartbeat) behind a tray shell (pairing / status / settings),
-packaged by electron-builder (NSIS per-user) from `.github/workflows/release.yml` on `v*` tags. Tester guide:
-`docs/phase-2-witness.md`. ArcAid PRs #363 (`witness_devices.device_type`, migration 183; revised in review
-2026-10-18: rebased to v2.163.0 and provenance now follows the type, desktop → engine `vpx` / device `pc` /
-platform `vpx`) and #364 (docs, unchanged) were approved and are merging/deploying as of 2026-10-18. **v0.2.3 (2026-10-18)** added what ArcAid's event lobby
-needs from a desktop: `GET /api/witness/checkin` whenever no VPX process is running (start, after every exit,
-each heartbeat tick while idle; the reply's `sendingTo` line is shown in Status and the tray) and a launch-only
-`report` as soon as a session has a table name (the capture's report closes it on the same key).
-**Phase 2 gate, half 1 passed 2026-10-18 with v0.2.2 on the owner's rig:** paired against arcaid.app,
-Monster Bash (VR build, opened from the editor without `-Play`) played to the end, the score landed on the
-room's tournament board with the Witness badge. Two field fixes got there: capture on `.nv` change while VPX
-stays open with the table from the window title (0.2.1), and the catalogue-grade wire name
-`catalogueTableName` + ROM name as `slug` (0.2.2). Half 2 (clean-machine install by a tester) is pending.
-Code signing is deferred until GA (owner ruling 2026-10-18). Tester kit for the friends wave:
-`docs/tester-kit.md` (v0.2.3; sent 2026-10-18; test room Flippin Fear Fest, https://arcaid.app/arcaid_flippin_fear_fest_26/). **Next, confirmed by the owner 2026-10-18 (ADR 0005, design in
-`docs/design/fairness-and-table-identity.md`):** tournaments get an integrity mode, Open play (any table of
-the game, matched on VPS game id) or Sanctioned play (names confirmed by the owner) (named table, stock physics, factory NVRAM adjustments,
-known build, script diff with no restricted change; preflight before ball one). Build order F1–F6 in the
-design doc §7. **F1 shipped in v0.2.4 (2026-10-18):** `companion/src/witness/{identity-resolver,vpx-file,vps-index,
-table-match,table-locator,identity-store}.ts`; the compact VPS index is fetched at build time by
-`npm run fetch-vps -w companion` (vps-db commit pinned in the script; `fixtures/vps/` holds a 13-game subset for
-tests); scores carry `vps_game`, `vps_table`, `table_sha256`, `table_save_rev`; Status shows the identity with a
-one-time picker; a `tablesDir` setting widens the search for editor-opened tables. **F2 shipped in v0.2.5 (2026-10-19):**
-`companion/src/witness/{ini-attestation,adjustments,build-attestation,attestation-types}.ts`; scores carry `ini`,
-`adjustments`, `build` (compact JSON; shapes in `docs/arcaid-side-changes.md` item 11); Status shows a *conditions*
-block. Findings that shape item 11: the physics-set override is a table-file property (`ORRP`), not an ini key; only
-92/383 maps have adjustments (not MM/MB/TFTC); the owner's rig runs Panasony community builds + a VPinMAME nightly,
-so "known build" must be an allow-list, not "official only"; **0.2.7** adds a build `family` (`official` by hash /
-`panasony` / `nightly` / `unknown` from the version resource) and the owner ruled 2026-10-19 that the Panasony VR mod
-is allowed in Sanctioned play. **0.2.8 (2026-10-20):** the `ini` object carries the accelerometer keys (`PBWEnabled`,
-`PBWAccelGain/Max`, `AccelVelocityInput`, `EnableNudgeFilter`, `TiltSensitivity` with VPX's default 400 when absent);
-Sanctioned rules `min_tilt_sensitivity` (default 300, provisional), `max_accel_gain`, `require_nudge_filter` are
-runner-set (fairness design §5a); nudge telemetry (HID trace + lift detector) is a Phase 3 item. **v0.2.6 (2026-10-19):** the repo was private until
-2026-10-19, so no installed app could see a release (anonymous 404 on the releases feed); the owner made it public, and
-the updater now re-checks every 4 h (30 min after a failure) instead of once per launch. Keep the repo public. **F3 backend delivered
-2026-10-20 as ArcAid PR #370** (v2.165.0, ArcAid ADR 0027: `tournaments.integrity_mode` + `sanctioned_rules`, per-game required
-table, `witness_evidence` trail, `evaluateSanctioned` pure function, `not_sanctioned` wire status for desktops / `no_match` for
-cabinets, VPS-id-first matching, `global_game_tables`; plus the fix found 2026-10-20: the witness ingest never cleared the room
-`leaderboard_cache`, so Witness scores sat off room boards until a manual submission to the same game; migration 185 flushes it;
-worktree `ArcAid/.claude/worktrees/castcade-integrity-mode`), awaiting
-the owner's ArcAid agent's review; **0.2.9 (2026-10-20)** maps `not_sanctioned` + `reasons` to a rejected capture with the
-reasons on Status and sends the Panasony `analog_gain_x/y` keys. **#370 merged and deployed 2026-10-20 (ArcAid 2.165.0).**
-**0.2.10 (2026-10-21):** `companion/src/witness/vr-detect.ts` samples headset-vs-monitor per session (SteamVR runtime client
-loaded in the VPX process + compositor running; VPX 10.8.0's VR builds turn VR on at player start whenever OpenVR reports a
-headset, so no ini key says it) and sends `play_device=vr_headset|pc`; ArcAid 2.166.0 (F3 part 2 = ArcAid PR #371, opened 2026-10-21: admin UI — tournament
-integrity settings, required-table picker, evidence review, board badges — plus `play_device` on the device axis and the
-"Pair a device" copy) puts the VR headset badge on the score. The owner's rig device row predates #363 (paired as a cabinet):
-one re-pair from Settings fixes its type. Next: F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
-gap analysis §6 and ArcAid item 13 (runner stage).
+Open work, claims and blockers live in **`WORK.md`** (one line per item, IDs like `B4.1`; grammar and
+the claiming rule in `.claude/commands/work.md`; the board link is on its first line). Release history is
+`CHANGELOG.md`. Start a session with `/work`, end it with `/wrap`. **Do not write a session narrative
+here**: this section holds standing facts only (ADR 0006).
+
+- Companion 0.2.10 is an unsigned PoC. Code signing waits for GA (owner ruling 2026-10-18). The repo is
+  public and must stay so: installed apps read the releases feed anonymously (0.2.6).
+- Gates passed: Phase 0 spike (owner's rig, 2026-10-17; findings in `docs/phase-0-spike.md` §8), Phase 1
+  protocol + host mode (CI, 2026-10-18), Phase 2 half 1 (Monster Bash to a tournament board with the
+  Witness badge, 2026-10-18). Phase 2 half 2 (a tester's clean install) is WORK item E1.
+- Fairness build order F1–F6 is `docs/design/fairness-and-table-identity.md` §7; F1–F3 shipped (0.2.4 →
+  0.2.10 here, ArcAid 2.163 → 2.166). Integrity mode is ADR 0005 here and ArcAid ADR 0027.
+- ArcAid is the server (arcaid.app). Its side of the work is `docs/arcaid-side-changes.md`; it is tracked
+  in the ArcAid repo's own `WORK.md`, section W, and mirrored here as section F.
+- The owner's rig runs Panasony VR builds and a VPinMAME nightly, both allowed in Sanctioned play
+  (ruling 2026-10-19). Its device row predates ArcAid #363; one re-pair from Settings fixes its type.
+- Test room for testers' scores: Flippin Fear Fest (`arcaid_flippin_fear_fest_26`); tester kit `docs/tester-kit.md`.
 
 ## Commands
 
 ```bash
 npm ci                         # install all workspaces (Node 22+)
-npm run check                  # lint + typecheck (tsc -b) + all tests; run before committing
+npm run check                  # lint + typecheck (tsc -b) + all tests + work:check; run before committing
+npm run work:summary           # the terminal view of WORK.md (what /work shows); work:check validates it, work:board renders tmp/work-board.html
 npm run lint                   # eslint (flat config at the root)
 npm run typecheck              # tsc -b over protocol, companion, fakeclient
 npm test                       # vitest, all packages (tests import workspace packages from sources)
@@ -100,8 +58,9 @@ detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing
 
 ## Session start — read in this order
 
+0. `WORK.md` (`/work`): what is open, claimed, blocked, and what the owner wants next. Then, for the design behind an item:
 1. `docs/design/arcaid-integration-gap-analysis.md` — what ArcAid already has, the owner's rulings, the revised architecture and phases. **Source of truth.**
-2. `docs/decisions/` — ADRs 0001–0005 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play).
+2. `docs/decisions/` — ADRs 0001–0006 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker).
 3. `docs/design/fairness-and-table-identity.md` — table identity, playfield fingerprint, script inspection, the honest ceiling, build order F1–F6.
 4. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
 5. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
@@ -145,6 +104,7 @@ Not present on purpose: `plugin-vpx/` (deferred), `rommaps/` (use the `pinmame-n
 - **Badge, never gate** (ArcAid doctrine): no verdict Castcade produces may filter a board or change a rank on the ArcAid side.
 - **No real work in VBScript.** The script appends journal lines and reads one lock flag (checked at each key press, not polled; a key-up is swallowed only when its key-down was); decoding, detection and networking live in the companion.
 - **Never commit** a ROM, a table file, a NVRAM file from someone else's machine, or a pairing token. Fixtures are journals we recorded.
+- **One live tracker.** Open work goes in `WORK.md` as items; claim an item before editing another lane's files; `/wrap` before the session ends. Never start a second list (a `tmp/` bug list, a status paragraph in this file).
 - Line endings: this repo is LF. The Write tool emits LF; prefer Edit for existing files.
 - Build before committing once a build exists; subagent worktree conventions from `C:\code\repos\CLAUDE.md` apply.
 

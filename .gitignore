@@ -31,5 +31,6 @@ companion/release/
 companion/resources/
 # companion/build holds committed icon assets; the generic build/ rule above would hide it
 !companion/build/
-# Claude Code agent worktrees
-.claude/
+# Claude Code agent worktrees and local settings (.claude/commands is tracked: /work, /wrap, /release-docs)
+.claude/worktrees/
+.claude/settings.local.json

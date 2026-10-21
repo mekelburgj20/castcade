@@ -28,6 +28,8 @@ jobs:
       - run: npm run test
       - name: Generated protocol files are current
         run: npm run generate -w protocol -- --check
+      - name: WORK.md is well-formed (the live tracker; grammar in .claude/commands/work.md)
+        run: npm run work:check
 
   windows:
     name: build, test, electron smoke (windows)

@@ -20,7 +20,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "protocol:generate": "npm run generate -w protocol",
-    "check": "npm run lint && npm run typecheck && npm run test"
+    "work:check": "node tools/work-board.mjs --check",
+    "work:summary": "node tools/work-board.mjs --summary",
+    "work:board": "node tools/work-board.mjs",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run work:check"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
