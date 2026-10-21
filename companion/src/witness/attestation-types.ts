@@ -6,6 +6,7 @@
  * Everything here is measured and reported, never enforced on the companion: Open play ignores it,
  * Sanctioned play (ArcAid item 11) reads it. Nulls mean "could not measure", not "fine".
  */
+import type { VrObservation } from './vr-detect.js';
 
 /** One of the eight global physics sets from `VPinballX.ini` (`TablePhysics*N`, 0-based in the file). */
 export interface PhysicsSetValues {
@@ -161,6 +162,8 @@ export interface Attestation {
   measuredAt: string; // ISO
   ini: IniAttestation | null;
   build: BuildAttestation | null;
+  /** How the game was displayed (0.2.10): headset or monitor; null when the probe could not run or was off. */
+  vr: VrObservation | null;
   /** From the `.nv` read at capture; null before capture or when the map has no adjustments. */
   adjustments: AdjustmentsReport | null;
   /** VPinMAME's per-ROM `cheat` option (registry), null when unreadable or before the ROM is known. */

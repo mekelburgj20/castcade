@@ -90,6 +90,7 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
       <dt>VPX build</dt>
       <dd title={a.build?.vpx?.sha256 ?? ''}>
         {vpx}
+        {a.vr && <span className="muted"> · {a.vr.inVr ? 'played in a VR headset' : 'played on the monitor'}</span>}
       </dd>
       <dt>VPinMAME</dt>
       <dd className={a.vpmCheat === true ? 'warn' : ''} title={a.build?.vpinmame?.sha256 ?? ''}>

@@ -188,6 +188,8 @@ export class ArcaidClient {
       ini?: string | null;
       adjustments?: string | null;
       build?: string | null;
+      /** 0.2.10: how the game was displayed; ArcAid 2.166.0 reads it for desktop devices (`vr_headset` badge). */
+      play_device?: 'pc' | 'vr_headset';
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

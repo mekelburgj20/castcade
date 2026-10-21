@@ -46,6 +46,7 @@ export type QueuedPost =
         ini?: string | null;
         adjustments?: string | null;
         build?: string | null;
+        play_device?: 'pc' | 'vr_headset';
       };
     };
 

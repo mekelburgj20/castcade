@@ -120,6 +120,7 @@ interface Attestation {
   measuredAt: string;
   ini: IniAttestation | null;
   build: BuildAttestation | null;
+  vr: { inVr: boolean; runtimeLoaded: boolean; compositorRunning: boolean; vrCapableBuild: boolean; sampledAt: string } | null;
   adjustments: AdjustmentsReport | null;
   vpmCheat: boolean | null;
   iniChanged: boolean;

@@ -66,8 +66,13 @@ cabinets, VPS-id-first matching, `global_game_tables`; plus the fix found 2026-1
 `leaderboard_cache`, so Witness scores sat off room boards until a manual submission to the same game; migration 185 flushes it;
 worktree `ArcAid/.claude/worktrees/castcade-integrity-mode`), awaiting
 the owner's ArcAid agent's review; **0.2.9 (2026-10-20)** maps `not_sanctioned` + `reasons` to a rejected capture with the
-reasons on Status and sends the Panasony `analog_gain_x/y` keys. Next: F3 part 2 = the ArcAid admin UI PR (tournament integrity
-settings, required-table picker, per-score evidence review, board badges), then F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
+reasons on Status and sends the Panasony `analog_gain_x/y` keys. **#370 merged and deployed 2026-10-20 (ArcAid 2.165.0).**
+**0.2.10 (2026-10-21):** `companion/src/witness/vr-detect.ts` samples headset-vs-monitor per session (SteamVR runtime client
+loaded in the VPX process + compositor running; VPX 10.8.0's VR builds turn VR on at player start whenever OpenVR reports a
+headset, so no ini key says it) and sends `play_device=vr_headset|pc`; ArcAid 2.166.0 (F3 part 2 PR: admin UI — tournament
+integrity settings, required-table picker, evidence review, board badges — plus `play_device` on the device axis and the
+"Pair a device" copy) puts the VR headset badge on the score. The owner's rig device row predates #363 (paired as a cabinet):
+one re-pair from Settings fixes its type. Next: F4 (playfield fingerprint); item 12 is F5. Streaming: Phase 4a (solo streaming + recording) is recorded in the
 gap analysis §6 and ArcAid item 13 (runner stage).
 
 ## Commands

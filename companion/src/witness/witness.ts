@@ -60,6 +60,7 @@ import {
 import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adjustments.js';
 import { adjustmentsWire, buildWire, iniWire, type Attestation } from './attestation-types.js';
 import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
+import { NO_VR_PROBE, createPowershellVrProbe, describeVr, playDeviceFor, type VrProbe } from './vr-detect.js';
 import { createIdentityResolver } from './identity-resolver.js';
 import { createIdentityStore } from './identity-store.js';
 import { describeIni, readIniAttestation } from './ini-attestation.js';
@@ -73,6 +74,8 @@ import type { CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettin
 export interface WitnessDeps {
   clock?: Clock;
   lister?: ProcessLister;
+  /** Headset-or-monitor probe (0.2.10). Omitted = the PowerShell probe; `null` = never sample (tests). */
+  vrProbe?: VrProbe | null;
   registry?: RegistryReader;
   fs?: WitnessFs;
   fetch?: FetchLike;
@@ -205,6 +208,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const fs = deps.fs ?? nodeFs;
   const registry = deps.registry ?? createRegQueryReader();
   const lister = deps.lister ?? createPowershellLister();
+  const vrProbe: VrProbe = deps.vrProbe === undefined ? createPowershellVrProbe() : (deps.vrProbe ?? NO_VR_PROBE);
   const log = deps.log ?? (() => {});
   const corpus = deps.corpus ?? createMapCorpus(store.get().mapsDir, fs);
   const emitter = new Emitter<EventPayloads>();
@@ -414,10 +418,17 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       notes.push(`build: ${errText(err)}`);
       return null;
     });
+    // Headset or monitor: VR is initialised before the table loads, so the first sample (table
+    // known) already says; the capture-time sample refreshes it while the process is still there.
+    const vr = await vrProbe.sample(launch.pid).catch((err: unknown) => {
+      notes.push(`vr: ${errText(err)}`);
+      return null;
+    });
     return {
       measuredAt: iso(clock.now()),
       ini,
       build,
+      vr: vr ?? session.attestation?.vr ?? null,
       adjustments: session.attestation?.adjustments ?? null,
       vpmCheat: session.attestation?.vpmCheat ?? null,
       iniChanged: false,
@@ -556,6 +567,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (iniChanged) details.push('settings changed during the session');
     if (rom) details.push(describeAdjustments(adjustments));
     details.push(describeBuild(attestation.build, vpmCheat));
+    if (attestation.vr) details.push(describeVr(attestation.vr));
 
     const resolved = resolveTableName(session.launch, romName, rom);
     const table = resolved?.table ?? UNKNOWN_TABLE;
@@ -614,6 +626,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           ini: iniWire(attestation.ini),
           adjustments: adjustmentsWire(adjustments),
           build: buildWire(attestation.build, vpmCheat),
+          // 0.2.10: headset or monitor, when sampled. ArcAid 2.166.0 puts it on the device axis.
+          ...(playDeviceFor(attestation.vr) ? { play_device: playDeviceFor(attestation.vr)! } : {}),
         },
       });
       const mapped = outcomeForPost(posted);

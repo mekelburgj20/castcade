@@ -130,6 +130,7 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     corpus,
     vpsIndex,
     lister: { list: async () => procs.map((p) => ({ ...p })) },
+    vrProbe: null,
     registry: createStaticRegistry({}),
     pollIntervalMs: 2000,
     heartbeatIntervalMs: 120_000,
@@ -371,6 +372,59 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await h.flush();
     expect(beats()).toBe(3);
     expect(checkins()).toBe(3);
+  });
+
+  it('VR (0.2.10): the probe sees OpenVR in the process and SteamVR running → play_device=vr_headset on the wire, in the conditions and the capture detail', async () => {
+    const sampled: number[] = [];
+    const h = harness({}, {
+      vrProbe: {
+        sample: async (pid) => {
+          sampled.push(pid);
+          return { inVr: true, runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-21T00:00:00.000Z' };
+        },
+      },
+    });
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    h.fs.put(MM_PATH, MM_VPX);
+    h.fs.put(EXE, EXE_BYTES);
+    h.fs.put(DLL_PATH, DLL_BYTES);
+    h.fs.put('C:\\VPX\\VPinballX.ini', new TextEncoder().encode(MAIN_INI));
+
+    await h.witness.start();
+    await h.flush();
+    await h.launch();
+    await h.flush();
+    // Sampled once the table was known, against the VPX pid.
+    expect(sampled).toContain(10);
+    expect(h.witness.status().currentAttestation).toMatchObject({ vr: { inVr: true, runtimeLoaded: true, compositorRunning: true } });
+
+    await h.playFor(300_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested', score: 1089510 });
+    expect(h.captures[0]?.detail).toMatch(/played in a VR headset/);
+    const score = h.paths('/score')[0]?.params ?? {};
+    expect(score['play_device']).toBe('vr_headset');
+  });
+
+  it('VR (0.2.10): no sample → no play_device on the wire (ArcAid reads the monitor)', async () => {
+    const h = harness({}, { vrProbe: { sample: async () => null } });
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    h.fs.put(MM_PATH, MM_VPX);
+    h.fs.put(EXE, EXE_BYTES);
+    h.fs.put(DLL_PATH, DLL_BYTES);
+    await h.witness.start();
+    await h.flush();
+    await h.launch();
+    await h.flush();
+    expect(h.witness.status().currentAttestation).toMatchObject({ vr: null });
+    await h.playFor(300_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested' });
+    expect(h.paths('/score')[0]?.params ?? {}).not.toHaveProperty('play_device');
+    expect(h.captures[0]?.detail).not.toMatch(/played/);
   });
 
   it('a check-in that fails is an error, not a crash; a 401 reads "unpaired by ArcAid"; VPX open suppresses it', async () => {
