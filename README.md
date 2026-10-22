@@ -17,7 +17,10 @@ capture). Results, findings and the first fixtures: [`docs/phase-0-spike.md`](do
 (four players, three balls, one host transfer, identical signed logs) runs green in GitHub Actions.
 **Phase 2 (Arcaid Witness basic mode, v0.2.0) built 2026-10-18:** a tray app that pairs with ArcAid and posts the
 last game's score when VPX exits, shipped as an unsigned per-user installer for the test group
-([tester guide](docs/phase-2-witness.md), [tester kit](docs/tester-kit.md)). **End-to-end verified 2026-10-18 (v0.2.2):** a Monster Bash game played
+([tester guide](docs/phase-2-witness.md), [tester kit](docs/tester-kit.md)). **Phase 3 first half (live mode,
+unreleased on `main` 2026-10-21):** Settings → Import tables patches every ROM table in the folder with a sidecar
+script (the `.vpx` is never changed), after which every game posts its own score the moment it ends, not one
+score when the table closes. **End-to-end verified 2026-10-18 (v0.2.2):** a Monster Bash game played
 in VR landed on an arcaid.app tournament board with the Witness badge. The clean-machine install check is pending. Start with
 [`docs/design/arcaid-integration-gap-analysis.md`](docs/design/arcaid-integration-gap-analysis.md),
 then the ADRs in [`docs/decisions/`](docs/decisions/). The phased roadmap with gates is in §6 of the gap analysis.

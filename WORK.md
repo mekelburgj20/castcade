@@ -8,9 +8,9 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.10 (unsigned PoC; repo public, keep it so). The Electron 44 / Vite 8 / vitest 5 bumps are unreleased: 0.2.11 will be the first packaged build on them (E4). ArcAid is at 2.166.1 with integrity mode live (F3 complete except item 11's ROM→VPS map endpoint, F8).
-- In flight: C7 live mode (fable@main): witness half on main, patcher being built in a worktree, UI next. C2 done. New: B11 Limited attempts (companion half of ArcAid A16, ADR 0029) queued behind C7.
+- In flight: C7 live mode (fable@main) — all code on main; waiting on the packaged build (E4 → 0.2.11) and the owner's three-game gate. C1 recipe A, C2 done. B11 Limited attempts (companion half of ArcAid A16, ADR 0029) is next after C7.
 - Order by owner ruling 2026-10-21: live mode first (C7: C2 detector → C1/C1.1 recipe A import → per-game capture → C2.1 hook volume), because basic mode posts only the last game of a session; then B4 → B5 (ArcAid half W6) → D1 solo streaming.
-- Owner actions: re-pair the rig from Settings (its device row predates ArcAid #363, so it still reads as a cabinet) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
+- Owner actions: install 0.2.11 when it is tagged, open Settings → Import tables, patch the folder, play three Monster Bash games in one session (the C7 gate) · re-pair the rig from Settings (its device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
 - Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
 - Last wrap: 2026-10-21 — audit of every item against code, ADRs and the ArcAid tracker: B4, B8, C2, C3, C4, E4, F6, H3 corrected; C6 closed; F8 added.
 
@@ -45,8 +45,8 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 
 Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script hook) and ADR 0004 (per-table import primary, `core.vbs` opt-in). Design: `docs/design/table-import-and-patching.md`.
 
-- **C1** `ready` Import-a-table pipeline: `.vpx` reader (shares B4's record walker), script extract, recipe match, sidecar write, readiness record · spec: docs/design/table-import-and-patching.md
-  - **C1.1** `ready` Recipes: VPM, JPSalas original, Scorbit-anchored
+- **C1** `done main` Import-a-table pipeline (`companion/src/patcher/`): `.vpx` script extract (the CODE record), §4 classifier, sidecar render, manifest, library install, folder plan/apply/remove-all, stale guard; recipe A only — originals wait on C1.1 · spec: docs/design/table-import-and-patching.md
+  - **C1.1** `ready` Recipes B (JPSalas original), C (Scorbit-anchored), D (ScoreServer), E (generic) — recipe A (VPM) shipped with C1; the classifier already tells the classes apart and the folder import skips them with the reason · spec: docs/design/table-import-and-patching.md §5
   - **C1.2** `idea` Classification coverage check over the owner's 134 tables and a VPW/JPSalas-heavy collection
 - **C2** `done main` Journal tailer + detector in the companion (`journal-detector.ts`, `journal-tail.ts`); the three Phase 0 fixtures replay in vitest to what `fixtures/check.py` asserts; lands in 0.2.11
   - **C2.1** `ready` Absorb the Phase 0 findings: journal volume, boot-garbage gate, bonus after ball_end, exit mid-game · spec: docs/phase-0-spike.md §8 · touches: vpx-hook/castcade.vbs (journal format bump + fixture)
@@ -55,7 +55,7 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C4** `ready` Fill `HELLO`'s `GameFingerprint` from the import manifest — hash(original `.vpx`) + recipe version + sidecar hash; the fields exist since 0.1.0; readiness shared to ArcAid (item 8 = ArcAid W8.1, Phase 3) · needs: C1 · touches: F6
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
 - **C7** `claimed` Live mode: every game of a session posts its own score — when a table has a Castcade sidecar, the companion tails the journal, `game_end` (and `table_exit` mid-game → abandoned, spike §8 finding 8) triggers a capture decoded from the live NVRAM state, `exit_sample` stays the fallback for unpatched tables; import from Settings = the whole tables folder (ruling 2026-10-21; one table is the same flow on one file): dry-run summary first (N ROM tables to patch, M originals skipped until recipes B/C, K with an existing external `.vbs` left alone), then apply; no verification launches in bulk, a table verifies on first play; the stale-sidecar guard in three layers (ruling 2026-10-21): the manifest pins sha256(original .vpx) (§6); the companion watches the tables folder and disables or re-renders a sidecar the moment its `.vpx` changes; the companion re-hashes at launch (§6, may be late for that launch); and the sidecar itself carries the original's size + mtime, checks them at load, and on a mismatch renames itself `.stale`, journals `stale_sidecar` and tells the player "this Castcade patch is for an older version of this table — relaunch, then re-import" (VBScript cannot hash, so size + mtime is the in-script proxy) and a "remove all Castcade sidecars" button ship WITH folder import, not after; recipe A only, installs `scripts\castcade.vbs` · needs: C2, C1.1 · gate: the owner plays three Monster Bash games in one VPX session and three scores land on arcaid.app (ruling 2026-10-21: basic mode's last-game-only capture is unacceptable) · owner: fable@main · since: 2026-10-21
-  Resume: the witness half is on main (e21711f: tail + detector per session, per-game posts, close-time .nv suppressed, Status shows the mode); left = the patcher (recipe A, folder import, manifests, stale guard, library install — a worktree agent is building `companion/src/patcher/`), hook 0.2.0 with `Castcade_Guard`, the Settings import UI + IPC + folder watch, then the owner's three-game gate.
+  Resume: all code is on main (witness live mode e21711f, patcher + hook 0.2.0 bab61ba, Settings import card + sidecar watch f58adee). Left: `pack:dir` proof that `resources/hook/castcade.vbs` ships (E4 packages 0.2.11), then the owner's gate — import the tables folder from Settings, play three Monster Bash games in one session, three scores on arcaid.app.
 - **C6** `done 2026-10-17` Same-basename sidecar auto-loads on 10.8.0 Windows without a prompt — Phase 0e PASS on TFTC, MM, Iron Maiden; sidecar is the default install path, `importvbs` copy stays C1's fallback
 
 ## D. Media: streaming, recording, voice
@@ -74,7 +74,7 @@ Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/*
 - **E1** `claimed` Phase 2 gate, half 2: a tester installs on a clean machine from the tester kit and a score lands with the badge · spec: docs/tester-kit.md · owner: owner · since: 2026-10-18
 - **E2** `parked` Code signing — deferred until GA by owner ruling 2026-10-18
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
-- **E4** `ready` Electron 44 / Vite 8 / vitest 5 follow-through — the bumps (every commit after `v0.2.10`, CHANGELOG [Unreleased]) have never been packaged; `pack:dir` + `Castcade.exe --smoke` + a real install of the 0.2.11 build before testers hear about it
+- **E4** `ready` Electron 44 / Vite 8 / vitest 5 follow-through — `pack:dir` + `Castcade.exe --smoke` passed 2026-10-21 on main (f58adee; `resources/hook/castcade.vbs` ships); left: tag 0.2.11 (`/release-docs 0.2.11`) and a real install on the owner's rig before testers hear about it
 
 ## F. ArcAid side
 

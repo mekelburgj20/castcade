@@ -20,6 +20,21 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   Phase 0 tailer. Recipe-A journals are decoded live from the shadow NVRAM and `game_start` / `ball_end` / `game_end`
   are derived; script recipes pass through; `table_exit` mid-game becomes `game_abandoned`. The three Phase 0
   fixtures replay in vitest to the same balls and games `fixtures/check.py` asserts (WORK C2).
+- Live mode (WORK C7): a table with a Castcade sidecar beside it posts EVERY game as its own score, from the
+  journal, with the hook's timing (`reason=game_over`; a game abandoned at exit as `shutdown`); the `.nv` read at
+  close is no longer re-posted after a live capture. Status shows "Capture: live" or "basic".
+
+### Table import (Phase 3, recipe A)
+- Settings → "Import tables for live scores": dry run over the whole tables folder (what will be patched,
+  re-patched, skipped, left alone, unsupported), patch, remove all. Every ROM table gets a same-basename
+  sidecar `.vbs` (recipe A: `UseVPMNVRAM`, `Castcade_RegisterNVRAM`, the key wrappers) and a manifest under
+  `<userData>/witness/tables`; the shared library `castcade.vbs` is installed into the VPX `scripts\` folder
+  and ships as a resource. Originals (recipes B/C) are skipped until their recipes exist; a foreign external
+  `.vbs` is never touched; the `.vpx` is never modified.
+- Hook 0.2.0: `Castcade_Guard` — the sidecar carries the original's size and mtime, and on a mismatch journals
+  `stale_sidecar`, renames itself `.stale` and tells the player to relaunch and re-import. The companion adds two
+  more layers: the tables folder is watched (a changed `.vpx` is re-patched or its patch disabled, with a
+  notification) and the launch-time identity hash is compared with the manifest.
 
 ### Dependencies
 - Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:
