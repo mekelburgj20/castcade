@@ -1,0 +1,347 @@
+/**
+ * Import a tables folder (WORK C7, owner ruling 2026-10-21): plan (dry run) → apply. For every `.vpx`
+ * the script is extracted and classified; recipe A (VPM / ROM tables) gets a same-basename sidecar
+ * and a manifest; originals are skipped with the reason until recipes B/C exist; a `.vbs` that is
+ * not ours is never touched. The shared library `castcade.vbs` is installed into the VPX `scripts\`
+ * folder once per apply. Nothing here ever writes to a `.vpx`.
+ *
+ * Also the companion-side half of the stale-sidecar guard (§6): `checkSidecar` compares a table
+ * with its manifest, `disableSidecar` renames the sidecar `.stale`, `removeAllSidecars` reverts.
+ */
+import { createHash } from 'node:crypto';
+import { isNotFound, type WitnessFs } from '../witness/fs.js';
+import { readVpxScript, sha256File } from '../witness/vpx-file.js';
+import { classifyScript, describeClass, type ClassifyResult, type ScriptClass } from './classify.js';
+import { readManifest, writeManifest, type Manifest } from './manifest.js';
+import { basenameOf, isVpxName, joinPath, manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor, vpxPathForSidecar } from './paths.js';
+import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, RECIPE_VERSION, isOurSidecar, renderRecipeA } from './render.js';
+import { decodeScript } from './script-text.js';
+
+export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+
+export interface PlanItem {
+  vpxPath: string;
+  tableId: string;
+  action: PlanAction;
+  /** `null` when the script was not read (foreign sidecar, unreadable file). */
+  cls: ScriptClass | null;
+  rom: string | null;
+  reason: string;
+}
+
+export interface ImportPlan {
+  items: PlanItem[];
+  counts: Record<PlanAction, number>;
+}
+
+export interface PlanOptions {
+  tablesDir?: string;
+  /** Explicit `.vpx` paths (the one-table flow); may be combined with `tablesDir`. */
+  paths?: string[];
+  manifestDir: string;
+  recursive?: boolean;
+}
+
+export type SidecarCheck =
+  | { state: 'none' }
+  | { state: 'foreign' }
+  | { state: 'ok'; manifest: Manifest }
+  | { state: 'stale'; manifest: Manifest | null; why: string }
+  | { state: 'disabled'; stalePath: string };
+
+export interface ApplyOptions {
+  manifestDir: string;
+  /** The VPX `scripts\` folder (beside `core.vbs`) where `castcade.vbs` is installed. */
+  vpxScriptsDir: string;
+  /** Path of the `castcade.vbs` to install (bundled with the companion). */
+  libSource: string;
+  /** Default true: sha256 each patched `.vpx` (streamed; the slow part on a 1 GB table). */
+  hashOriginals?: boolean;
+  onProgress?: (done: number, total: number, item: PlanItem) => void;
+  /** Wall clock for `renderedAt`; tests pass a fixed one. */
+  now?: () => number;
+}
+
+export interface ApplyResult {
+  /** `.vpx` paths that now have a current sidecar + manifest. */
+  patched: string[];
+  /** Plan items the apply did not act on (everything but `patch` / `repatch`). */
+  skipped: PlanItem[];
+  failed: { item: PlanItem; error: string }[];
+  libInstalled: 'installed' | 'updated' | 'unchanged';
+}
+
+const ACTIONS: readonly PlanAction[] = ['patch', 'repatch', 'already', 'skip', 'foreign', 'unsupported'];
+
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+async function exists(fs: WitnessFs, path: string): Promise<boolean> {
+  try {
+    await fs.stat(path);
+    return true;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw err;
+  }
+}
+
+async function readTextIfExists(fs: WitnessFs, path: string): Promise<string | null> {
+  try {
+    return decodeScript(await fs.readFile(path));
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+async function tryReaddir(fs: WitnessFs, dir: string): Promise<string[] | null> {
+  try {
+    return await fs.readdir(dir);
+  } catch {
+    // ENOENT on MemoryFs, ENOTDIR on a real file: either way not a directory we can list.
+    return null;
+  }
+}
+
+/** Every `.vpx` under `dir` (sorted; subfolders only when `recursive`). Non-`.vpx` names are ignored. */
+export async function listVpxFiles(fs: WitnessFs, dir: string, recursive = false): Promise<string[]> {
+  const out: string[] = [];
+  const names = await fs.readdir(dir);
+  for (const name of names) {
+    const p = joinPath(dir, name);
+    if (isVpxName(name)) out.push(p);
+    else if (recursive && (await tryReaddir(fs, p)) !== null) out.push(...(await listVpxFiles(fs, p, true)));
+  }
+  return out.sort();
+}
+
+/**
+ * The state of a table's sidecar against its manifest. Cheap first (size + mtime), the sha256 of
+ * the `.vpx` only when the sizes match, the mtime moved and the manifest has a hash to confirm
+ * against. Version drift (an older recipe or library than this build) is `stale` too.
+ */
+export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: string): Promise<SidecarCheck> {
+  const sidecarPath = sidecarPathFor(vpxPath);
+  const text = await readTextIfExists(fs, sidecarPath);
+  if (text === null) {
+    const stalePath = stalePathFor(vpxPath);
+    return (await exists(fs, stalePath)) ? { state: 'disabled', stalePath } : { state: 'none' };
+  }
+  if (!isOurSidecar(text)) return { state: 'foreign' };
+
+  const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableIdFor(vpxPath)));
+  if (!manifest) return { state: 'stale', manifest: null, why: 'no manifest for this sidecar' };
+  if (manifest.recipeVersion !== RECIPE_VERSION || manifest.libVersion !== LIB_VERSION) {
+    return { state: 'stale', manifest, why: `rendered with recipe ${manifest.recipeVersion} / lib ${manifest.libVersion}; this build is ${RECIPE_VERSION} / ${LIB_VERSION}` };
+  }
+  const sidecarSha = createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex');
+  if (sidecarSha !== manifest.sidecarSha256) return { state: 'stale', manifest, why: 'sidecar bytes differ from the manifest (edited by hand?)' };
+
+  let st: { size: number; mtimeMs: number };
+  try {
+    st = await fs.stat(vpxPath);
+  } catch (err) {
+    if (isNotFound(err)) return { state: 'stale', manifest, why: 'original .vpx is missing' };
+    throw err;
+  }
+  if (st.size !== manifest.vpxSize) return { state: 'stale', manifest, why: `size ${st.size} vs ${manifest.vpxSize} in the manifest` };
+  if (st.mtimeMs !== manifest.vpxMtimeMs) {
+    if (manifest.vpxSha256 === null) return { state: 'stale', manifest, why: 'mtime changed and the manifest has no hash to confirm against' };
+    const sha = await sha256File(fs, vpxPath);
+    if (sha !== manifest.vpxSha256) return { state: 'stale', manifest, why: 'sha256 of the .vpx differs from the manifest' };
+  }
+  return { state: 'ok', manifest };
+}
+
+async function planOne(fs: WitnessFs, vpxPath: string, manifestDir: string): Promise<PlanItem> {
+  const tableId = tableIdFor(vpxPath);
+  const item = (action: PlanAction, cls: ScriptClass | null, rom: string | null, reason: string): PlanItem => ({ vpxPath, tableId, action, cls, rom, reason });
+
+  const check = await checkSidecar(fs, vpxPath, manifestDir);
+  if (check.state === 'foreign') return item('foreign', null, null, `an external ${basenameOf(sidecarPathFor(vpxPath))} beside the table is not Castcade's; left alone`);
+
+  let script;
+  try {
+    script = await readVpxScript(fs, vpxPath);
+  } catch (err) {
+    return item('unsupported', null, null, `cannot read the table: ${errorMessage(err)}`);
+  }
+  if (!script) return item('unsupported', null, null, 'no script in the table (no GameStg/GameData/CODE record)');
+
+  const result = classifyScript(decodeScript(script.bytes));
+  const { cls, facts } = result;
+  const rom = facts.rom ?? null;
+  const sidecarNote = check.state === 'none' || check.state === 'disabled' ? '' : '; an existing Castcade sidecar remains (remove-all deletes it)';
+  if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'}${sidecarNote}`);
+  if (cls !== 'A') return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe B/C not built yet${sidecarNote}`);
+  if (facts.alreadyPatched) return item('already', cls, rom, 'the embedded script already contains Castcade_Init');
+
+  switch (check.state) {
+    case 'none':
+      return item('patch', cls, rom, `${describeClass(cls)}${rom ? `, ROM ${rom}` : ', no cGameName'}`);
+    case 'disabled':
+      return item('patch', cls, rom, `previous sidecar was disabled as stale (${basenameOf(check.stalePath)}); re-render`);
+    case 'stale':
+      return item('repatch', cls, rom, check.why);
+    case 'ok': {
+      // The hash matched but the stamp the sidecar checks at load is size + mtime; re-render when the
+      // mtime moved further than Castcade_Guard tolerates or the guard would disable it at launch.
+      const drift = Math.abs(script.mtimeMs - check.manifest.vpxMtimeMs) / 1000;
+      if (drift > GUARD_MTIME_TOLERANCE_SEC) return item('repatch', cls, rom, `the .vpx timestamp moved ${Math.round(drift)} s; the in-script stamp must be re-rendered`);
+      return item('already', cls, rom, `sidecar current (recipe ${check.manifest.recipeVersion}, lib ${check.manifest.libVersion})`);
+    }
+  }
+}
+
+/** Dry run: what an apply would do, per table. Writes nothing. */
+export async function planImport(fs: WitnessFs, opts: PlanOptions): Promise<ImportPlan> {
+  if (!opts.tablesDir && !opts.paths) throw new Error('planImport: give tablesDir and/or paths');
+  const paths = new Set<string>();
+  if (opts.tablesDir) for (const p of await listVpxFiles(fs, opts.tablesDir, opts.recursive ?? false)) paths.add(p);
+  for (const p of opts.paths ?? []) if (isVpxName(basenameOf(p))) paths.add(p);
+
+  const items: PlanItem[] = [];
+  for (const p of [...paths].sort()) items.push(await planOne(fs, p, opts.manifestDir));
+  return { items, counts: countActions(items) };
+}
+
+export function countActions(items: readonly PlanItem[]): Record<PlanAction, number> {
+  const counts = Object.fromEntries(ACTIONS.map((a) => [a, 0])) as Record<PlanAction, number>;
+  for (const it of items) counts[it.action]++;
+  return counts;
+}
+
+const LIB_VERSION_RX = /^\s*Dim\s+Castcade_LibVersion\s*:\s*Castcade_LibVersion\s*=\s*"([^"]+)"/m;
+
+/** The `Castcade_LibVersion` a `castcade.vbs` text declares, or `null`. */
+export function libraryVersionOf(text: string): string | null {
+  return LIB_VERSION_RX.exec(text)?.[1] ?? null;
+}
+
+/**
+ * Install `castcade.vbs` into the VPX `scripts\` folder: a new file beside `core.vbs`, written only
+ * when the bytes differ. Throws when the source does not declare this build's `LIB_VERSION` (a
+ * bundle/code drift the sidecars would then run against).
+ */
+export async function installLibrary(fs: WitnessFs, libSource: string, vpxScriptsDir: string): Promise<'installed' | 'updated' | 'unchanged'> {
+  const src = await fs.readFile(libSource);
+  const declared = libraryVersionOf(decodeScript(src));
+  if (declared !== LIB_VERSION) throw new Error(`installLibrary: ${libSource} declares Castcade_LibVersion ${declared ?? '(none)'}, this build needs ${LIB_VERSION}`);
+  const dest = joinPath(vpxScriptsDir, 'castcade.vbs');
+  let current: Uint8Array | null = null;
+  try {
+    current = await fs.readFile(dest);
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  if (current && Buffer.compare(Buffer.from(current), Buffer.from(src)) === 0) return 'unchanged';
+  await fs.writeFile(dest, src);
+  return current ? 'updated' : 'installed';
+}
+
+/** Apply a plan: install the library once, then render sidecar + manifest for every `patch` / `repatch` item. */
+export async function applyImport(fs: WitnessFs, plan: ImportPlan, opts: ApplyOptions): Promise<ApplyResult> {
+  const todo = plan.items.filter((it) => it.action === 'patch' || it.action === 'repatch');
+  const result: ApplyResult = { patched: [], skipped: plan.items.filter((it) => !todo.includes(it)), failed: [], libInstalled: 'unchanged' };
+  if (todo.length === 0) return result;
+
+  result.libInstalled = await installLibrary(fs, opts.libSource, opts.vpxScriptsDir);
+  await fs.mkdir(opts.manifestDir);
+  const now = opts.now ?? Date.now;
+  let done = 0;
+  for (const item of todo) {
+    try {
+      await patchOne(fs, item, opts, now);
+      result.patched.push(item.vpxPath);
+    } catch (err) {
+      result.failed.push({ item, error: errorMessage(err) });
+    }
+    done++;
+    opts.onProgress?.(done, todo.length, item);
+  }
+  return result;
+}
+
+async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: () => number): Promise<void> {
+  const script = await readVpxScript(fs, item.vpxPath);
+  if (!script) throw new Error('no script in the table');
+  const text = decodeScript(script.bytes);
+  const cls: ClassifyResult = classifyScript(text);
+  const sidecarPath = sidecarPathFor(item.vpxPath);
+  const rendered = renderRecipeA(text, cls, {
+    tableId: item.tableId,
+    rom: cls.facts.rom ?? null,
+    originalPath: item.vpxPath,
+    originalSize: script.size,
+    originalMtimeMs: script.mtimeMs,
+    sidecarPath,
+  });
+  const vpxSha256 = (opts.hashOriginals ?? true) ? await sha256File(fs, item.vpxPath) : null;
+  const manifest: Manifest = {
+    tableId: item.tableId,
+    vpxPath: item.vpxPath,
+    vpxSha256,
+    vpxSize: script.size,
+    vpxMtimeMs: script.mtimeMs,
+    scriptSha256: script.sha256,
+    class: cls.cls,
+    recipe: 'A',
+    recipeVersion: RECIPE_VERSION,
+    libVersion: LIB_VERSION,
+    rom: cls.facts.rom ?? null,
+    sidecarPath,
+    sidecarSha256: rendered.sha256,
+    anchors: rendered.anchors,
+    warnings: rendered.warnings,
+    renderedAt: new Date(now()).toISOString(),
+    verified: null,
+  };
+  await fs.writeFile(sidecarPath, rendered.bytes);
+  await writeManifest(fs, manifestPathFor(opts.manifestDir, item.tableId), manifest);
+  const stalePath = stalePathFor(item.vpxPath);
+  if (await exists(fs, stalePath)) await fs.unlink(stalePath);
+}
+
+/**
+ * Rename `<Table>.vbs` to `<Table>.vbs.stale` (replacing an older `.stale`) so VPX loads the embedded
+ * script again. Refuses a `.vbs` that is not ours. Returns the new path.
+ */
+export async function disableSidecar(fs: WitnessFs, vpxPath: string): Promise<string> {
+  const sidecarPath = sidecarPathFor(vpxPath);
+  const text = decodeScript(await fs.readFile(sidecarPath));
+  if (!isOurSidecar(text)) throw new Error(`disableSidecar: ${sidecarPath} is not a Castcade sidecar; left alone`);
+  const stalePath = stalePathFor(vpxPath);
+  if (await exists(fs, stalePath)) await fs.unlink(stalePath);
+  await fs.rename(sidecarPath, stalePath);
+  return stalePath;
+}
+
+/** Revert: delete every Castcade sidecar (`.vbs` and `.vbs.stale`) under `tablesDir` and its manifest; foreign `.vbs` files stay. */
+export async function removeAllSidecars(fs: WitnessFs, opts: { tablesDir: string; manifestDir: string; recursive?: boolean }): Promise<{ removed: string[]; keptForeign: string[] }> {
+  const removed: string[] = [];
+  const keptForeign: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const name of await fs.readdir(dir)) {
+      const p = joinPath(dir, name);
+      if (/\.vbs(\.stale)?$/i.test(name)) {
+        const text = await readTextIfExists(fs, p);
+        if (text === null) continue;
+        if (!isOurSidecar(text)) {
+          keptForeign.push(p);
+          continue;
+        }
+        await fs.unlink(p);
+        removed.push(p);
+        const manifestPath = manifestPathFor(opts.manifestDir, tableIdFor(vpxPathForSidecar(p)));
+        if (await exists(fs, manifestPath)) {
+          await fs.unlink(manifestPath);
+          removed.push(manifestPath);
+        }
+      } else if (opts.recursive && !isVpxName(name) && (await tryReaddir(fs, p)) !== null) {
+        await walk(p);
+      }
+    }
+  };
+  await walk(opts.tablesDir);
+  return { removed, keptForeign };
+}

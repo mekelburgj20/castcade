@@ -27,6 +27,10 @@ extraResources:
   # The compact VPS index (ids, names, authors, versions, features only), built by `npm run fetch-vps -w companion`.
   - from: resources/vps
     to: vps
+  # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo
+  # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
+  - from: ../vpx-hook/castcade.vbs
+    to: hook/castcade.vbs
 win:
   target:
     - target: nsis

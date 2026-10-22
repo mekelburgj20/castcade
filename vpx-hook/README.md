@@ -1,7 +1,8 @@
 # vpx-hook/
 
 **Status: Phase 0 run 2026-10-17, all gates passed with `castcade.vbs` 0.1.0 on VPX 10.8.0 (results and
-findings: `docs/phase-0-spike.md` §8). `spike/` = renderer, staging, tailer, lock, capture test, autoplay.
+findings: `docs/phase-0-spike.md` §8). 0.2.0 (2026-10-21) adds `Castcade_Guard`, the in-script stale-sidecar
+check; nothing else changed. `spike/` = renderer, staging, tailer, lock, capture test, autoplay.
 Production recipes = Phase 3. Known 0.1.0 cost to fix in Phase 3: the hook journals every changed NVRAM byte
 (~200 deltas/s on WPC, ~95 KB/s) and the periodic full snapshot costs a 50–150 ms frame; filter to the mapped
 `game_state` region and take the snapshot off the hot path.**
@@ -16,8 +17,31 @@ decoding, detection and networking happen in the companion.
   (buffered; events flush at once, `nvram_delta` / `current_scores` every 50 lines), the
   `NVRAMCallback` **chaining guard** (`Castcade_RegisterNVRAM`), the lock check the sidecar's
   `_KeyDown` / `_KeyUp` wrappers call (`Castcade_KeyDownBlocked` / `Castcade_KeyUpBlocked`), helper
-  subs for originals (`Castcade_GameStart`, `Castcade_Scores`, `Castcade_BallEnd`, `Castcade_GameEnd`).
+  subs for originals (`Castcade_GameStart`, `Castcade_Scores`, `Castcade_BallEnd`, `Castcade_GameEnd`),
+  and since **0.2.0** the in-script half of the stale-sidecar guard, `Castcade_Guard` (below).
   The event list is in the file header. Exercised outside VPX with a `cscript` harness (2026-10-17).
+  Installed by the companion's `patcher` module (`companion/src/patcher/`), which ships this file as
+  `resources/hook/castcade.vbs` and writes it to `<VPX>\scripts\castcade.vbs` only when the bytes differ;
+  `LIB_VERSION` in `companion/src/patcher/render.ts` must equal `Castcade_LibVersion` here (a test checks).
+
+### 0.2.0 — `Castcade_Guard` and the `stale_sidecar` event
+
+A recipe-A sidecar rendered by the companion calls, right after `Castcade_Init`,
+
+```vbs
+Castcade_Guard "<original .vpx path>", <size in bytes>, "<yyyy-mm-dd hh:nn:ss local mtime>", "<this .vbs path>"
+```
+
+with the original's size and mtime as they were at render time. At table load the library compares them
+with `GetFile(original).Size` / `.DateLastModified` (mtime within ±3601 s, because DST and FILETIME
+conversions shift it by a whole hour; size is the strong signal; VBScript cannot hash). On a mismatch it
+journals `stale_sidecar` (`detail`: `size <a> vs <b>; mtime <a> vs <b> (<diff> s)`, plus `original`),
+renames the sidecar to `<Table>.vbs.stale` (replacing an older `.stale`) and shows a `MsgBox`: *"This
+Castcade patch was made for an older version of this table. It has been disabled - close the table,
+relaunch it, then re-import it from Castcade."* The table keeps running on the old script for that one
+session; the next launch loads the embedded script. A missing original is not a mismatch. 0.1.0 sidecars
+do not call the sub and keep working; a 0.2.0 sidecar on a 0.1.0 library skips the call silently
+(block 0 runs under `On Error Resume Next`). The companion's `journal-detector.ts` parses the event.
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)

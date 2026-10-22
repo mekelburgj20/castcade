@@ -1,10 +1,12 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.1.0 (Phase 0 spike)
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.2.0
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
 '      ExecuteGlobal GetTextFile("castcade.vbs")
 '      Castcade_Init "<table-id>", "<recipe>", "<recipe-version>", "<rom or empty>"
+'      Castcade_Guard "<original .vpx path>", <size>, "<yyyy-mm-dd hh:nn:ss local mtime>", "<this .vbs path>"
+'  (Castcade_Guard is new in 0.2.0; 0.1.0 sidecars do not call it and keep working.)
 '
 '  Working agreement (castcade/CLAUDE.md):
 '   * No real work in VBScript.  This file appends lines to a journal and reads one lock flag.
@@ -28,11 +30,13 @@
 '    lock           locked                        (lock state seen at a key press changed)
 '    key_blocked    key                           (a play key was swallowed while locked)
 '    warn           msg, err
+'    stale_sidecar  detail, original             (0.2.0: the .vpx no longer matches the sidecar's stamp;
+'                                                 the sidecar renamed itself .stale, see Castcade_Guard)
 '    table_exit     lines, nvram_callbacks, blocked_keys
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.1.0"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.2.0"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -86,6 +90,50 @@ Sub Castcade_Exit()
     If Castcade_LogOpen Then Castcade_Log.Close
     Castcade_LogOpen = False
 End Sub
+
+' ---------------------------------------------------------------- stale-sidecar guard --
+
+' Called by a 0.2.0+ sidecar right after Castcade_Init with the original .vpx's path, byte size and
+' local mtime ("yyyy-mm-dd hh:nn:ss") as they were when the sidecar was rendered, plus the sidecar's
+' own path.  A sidecar REPLACES the embedded script, so a table update would run the old script on
+' new geometry (design doc section 6).  On a mismatch the sidecar journals stale_sidecar, renames
+' itself <Table>.vbs.stale and tells the player to relaunch and re-import; the table keeps running on
+' the old script for this one session.  VBScript cannot hash, so the size is the strong signal; the
+' mtime tolerance is +/-3601 s because DST transitions and FILETIME conversions shift it by an hour.
+' A missing original (moved table) is not a mismatch: nothing happens.
+Sub Castcade_Guard(originalPath, originalSize, originalMtime, sidecarPath)
+    On Error Resume Next
+    Dim f, size, modified, want, diff, detail
+    If Not IsObject(Castcade_fso) Then Exit Sub
+    If Not Castcade_fso.FileExists(originalPath) Then Exit Sub
+    Set f = Castcade_fso.GetFile(originalPath)
+    size = f.Size
+    modified = f.DateLastModified
+    detail = ""
+    If CDbl(size) <> CDbl(originalSize) Then detail = "size " & size & " vs " & originalSize
+    want = Castcade_ParseStamp(originalMtime)
+    If IsDate(want) And IsDate(modified) Then
+        diff = DateDiff("s", want, modified)
+        If Abs(diff) > 3601 Then
+            If detail <> "" Then detail = detail & "; "
+            detail = detail & "mtime " & Castcade_StampOf(modified) & " vs " & originalMtime & " (" & diff & " s)"
+        End If
+    End If
+    If detail = "" Then Exit Sub
+    Castcade_Emit "stale_sidecar", """detail"":" & Castcade_Q(detail) & ",""original"":" & Castcade_Q(originalPath)
+    If Castcade_fso.FileExists(sidecarPath & ".stale") Then Castcade_fso.DeleteFile sidecarPath & ".stale", True
+    If Castcade_fso.FileExists(sidecarPath) Then Castcade_fso.MoveFile sidecarPath, sidecarPath & ".stale"
+    MsgBox "This Castcade patch was made for an older version of this table. It has been disabled - close the table, relaunch it, then re-import it from Castcade.", vbExclamation, "Castcade"
+End Sub
+
+' "yyyy-mm-dd hh:nn:ss" -> Date, locale-independent (CDate would parse by the user's locale).  Empty on a bad stamp.
+Function Castcade_ParseStamp(s)
+    On Error Resume Next
+    Castcade_ParseStamp = Empty
+    If Len(s) < 19 Then Exit Function
+    Castcade_ParseStamp = DateSerial(CInt(Mid(s, 1, 4)), CInt(Mid(s, 6, 2)), CInt(Mid(s, 9, 2))) + _
+                          TimeSerial(CInt(Mid(s, 12, 2)), CInt(Mid(s, 15, 2)), CInt(Mid(s, 18, 2)))
+End Function
 
 ' ---------------------------------------------------------------- turn lock ------------
 
@@ -323,10 +371,13 @@ End Function
 
 Function Castcade_Stamp()
     On Error Resume Next
-    Dim n
-    n = Now
-    Castcade_Stamp = Year(n) & "-" & Right("0" & Month(n), 2) & "-" & Right("0" & Day(n), 2) & "T" & _
-                     Right("0" & Hour(n), 2) & ":" & Right("0" & Minute(n), 2) & ":" & Right("0" & Second(n), 2)
+    Castcade_Stamp = Castcade_StampOf(Now)
+End Function
+
+Function Castcade_StampOf(n)
+    On Error Resume Next
+    Castcade_StampOf = Year(n) & "-" & Right("0" & Month(n), 2) & "-" & Right("0" & Day(n), 2) & "T" & _
+                       Right("0" & Hour(n), 2) & ":" & Right("0" & Minute(n), 2) & ":" & Right("0" & Second(n), 2)
 End Function
 
 Function Castcade_Q(s)
