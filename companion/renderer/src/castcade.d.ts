@@ -295,6 +295,7 @@ interface CastcadeBridge {
       set(openAtLogin: boolean): Promise<LoginItemState>;
     };
     logPath(): Promise<string>;
+    pickFolder(defaultPath: string | null): Promise<string | null>;
   };
 }
 

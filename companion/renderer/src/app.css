@@ -297,3 +297,6 @@ a {
 .import-list li.act-repatch .mono {
   font-weight: 600;
 }
+.field button.small {
+  margin-top: 0.35rem;
+}

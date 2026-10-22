@@ -23,6 +23,7 @@ const CH = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  appPickFolder: 'app:pickFolder',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -68,6 +69,7 @@ const castcade: CastcadeApi = {
       set: (on) => ipcRenderer.invoke(CH.appLoginItemSet, on),
     },
     logPath: () => ipcRenderer.invoke(CH.appLogPath),
+    pickFolder: (defaultPath) => ipcRenderer.invoke(CH.appPickFolder, defaultPath),
   },
   tables: {
     defaults: () => ipcRenderer.invoke(CH.tablesDefaults),

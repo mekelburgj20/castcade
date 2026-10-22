@@ -7,7 +7,7 @@
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -214,6 +214,12 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   ipcMain.handle(IPC.appLoginItemGet, () => loginItemState());
   ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
   ipcMain.handle(IPC.appLogPath, () => logger.file);
+  ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
+    const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
+    if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
+    const r = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!;
+  });
 }
 
 async function main(): Promise<void> {

@@ -79,6 +79,9 @@ export function Settings({ state }: { state: CastcadeState }) {
             disabled={!bridge}
             spellCheck={false}
           />
+          <button type="button" className="small" disabled={!bridge} onClick={() => void bridge?.app.pickFolder(nvram || status?.nvramDir || null).then((p) => p && setNvram(p))}>
+            Browse…
+          </button>
           <small>Leave empty to auto-detect. Set it only if Status shows "NVRAM dir: not found".</small>
         </label>
         <button
@@ -101,6 +104,9 @@ export function Settings({ state }: { state: CastcadeState }) {
             disabled={!bridge}
             spellCheck={false}
           />
+          <button type="button" className="small" disabled={!bridge} onClick={() => void bridge?.app.pickFolder(tables || null).then((p) => p && setTables(p))}>
+            Browse…
+          </button>
           <small>
             Where Castcade looks for a table's .vpx when you opened it from the editor (to read its VPS identity). The
             folder beside your VPX exe is always searched; add one more here if your tables live elsewhere.

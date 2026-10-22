@@ -79,6 +79,23 @@ export function ImportTables({ state }: { state: CastcadeState }) {
           disabled={!bridge || busy !== null}
           spellCheck={false}
         />
+        <button
+          type="button"
+          className="small"
+          disabled={!bridge || busy !== null}
+          onClick={() =>
+            void bridge?.app.pickFolder(folder ?? defaults?.tablesDir ?? null).then((picked) => {
+              if (picked) {
+                setDir(picked);
+                setPlan(null);
+                setApplied(null);
+                setRemoved(null);
+              }
+            })
+          }
+        >
+          Browse…
+        </button>
         <small>
           Every ROM table in this folder gets a Castcade script beside it (the .vpx is never changed; delete the .vbs to
           revert) so every game posts its own score instead of one score when the table closes. The shared library

@@ -21,6 +21,7 @@ export const IPC = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  appPickFolder: 'app:pickFolder',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -118,6 +119,8 @@ export interface CastcadeApi {
       set(openAtLogin: boolean): Promise<LoginItemState>;
     };
     logPath(): Promise<string>;
+    /** Native folder picker; resolves to the chosen folder, or null when the player cancelled. */
+    pickFolder(defaultPath: string | null): Promise<string | null>;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;
