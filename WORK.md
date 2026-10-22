@@ -8,8 +8,8 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.10 (unsigned PoC; repo public, keep it so). The Electron 44 / Vite 8 / vitest 5 bumps are unreleased: 0.2.11 will be the first packaged build on them (E4). ArcAid is at 2.166.1 with integrity mode live (F3 complete except item 11's ROM→VPS map endpoint, F8).
-- In flight: B4 playfield fingerprint (fable@main, claimed 2026-10-21).
-- Order by owner ruling 2026-10-21: B4 playfield fingerprint (F4), then B5 script diff (F5, ArcAid half = W6), then straight into D1 solo streaming (Phase 4a).
+- In flight: C2 journal tailer + detector (fable@main, claimed 2026-10-21) — first step of live mode (C7).
+- Order by owner ruling 2026-10-21: live mode first (C7: C2 detector → C1/C1.1 recipe A import → per-game capture → C2.1 hook volume), because basic mode posts only the last game of a session; then B4 → B5 (ArcAid half W6) → D1 solo streaming.
 - Owner actions: re-pair the rig from Settings (its device row predates ArcAid #363, so it still reads as a cabinet) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
 - Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
 - Last wrap: 2026-10-21 — audit of every item against code, ADRs and the ArcAid tracker: B4, B8, C2, C3, C4, E4, F6, H3 corrected; C6 closed; F8 added.
@@ -31,7 +31,7 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B1** `done 0.2.4` F1 table identity: VPS game/table ids, file hash, save revision on every score; one-time picker; `tablesDir` setting
 - **B2** `done 0.2.8` F2 attestation: ini, NVRAM adjustments, build hashes + family, VPinMAME cheat flag, accelerometer and tilt keys (0.2.5 → 0.2.8)
 - **B3** `done 0.2.10` F3 companion half: `not_sanctioned` → rejected capture with reasons on Status; `play_device` (VR headset vs monitor) per session
-- **B4** `claimed` F4 playfield fingerprint — extend `vpx-file.ts` (compound-file reader + GameData BIFF walker, 0.2.4) to the `GameItem*` streams (flippers, slings, bumpers, kickers, collidable walls/ramps/primitives), canonical JSON, SHA-256; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved · owner: fable@main · since: 2026-10-21
+- **B4** `ready` F4 playfield fingerprint — extend `vpx-file.ts` (compound-file reader + GameData BIFF walker, 0.2.4) to the `GameItem*` streams (flippers, slings, bumpers, kickers, collidable walls/ramps/primitives), canonical JSON, SHA-256; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved 
   - **B4.1** `ready` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament · spec: docs/design/fairness-and-table-identity.md §8
 - **B5** `ready` F5 script diff, companion half — baseline download, normalise, classify, preflight verdict, diff report · needs: B4 · spec: docs/design/fairness-and-table-identity.md §4 · touches: ArcAid item 12 (F5)
 - **B6** `blocked C2` F6 engine attestation from the live hook; score-jump plausibility · spec: docs/design/fairness-and-table-identity.md §5
@@ -47,12 +47,13 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C1** `ready` Import-a-table pipeline: `.vpx` reader (shares B4's record walker), script extract, recipe match, sidecar write, readiness record · spec: docs/design/table-import-and-patching.md
   - **C1.1** `ready` Recipes: VPM, JPSalas original, Scorbit-anchored
   - **C1.2** `idea` Classification coverage check over the owner's 134 tables and a VPW/JPSalas-heavy collection
-- **C2** `ready` Journal tailer + ball-end detector in the companion as a pure function over `fixtures/` — the Python spike detector already passes `fixtures/check.py` in CI; port it and keep check.py as the oracle · touches: companion/src/witness/** (journal-replay.ts, maps.ts) · gate: vitest replays the three Phase 0 fixtures and yields balls 1,2,3 + game_end and nothing spurious, matching check.py
+- **C2** `claimed` Journal tailer + ball-end detector in the companion as a pure function over `fixtures/` — the Python spike detector already passes `fixtures/check.py` in CI; port it and keep check.py as the oracle · owner: fable@main · since: 2026-10-21 · touches: companion/src/witness/** (journal-replay.ts, maps.ts) · gate: vitest replays the three Phase 0 fixtures and yields balls 1,2,3 + game_end and nothing spurious, matching check.py
   - **C2.1** `ready` Absorb the Phase 0 findings: journal volume, boot-garbage gate, bonus after ball_end, exit mid-game · spec: docs/phase-0-spike.md §8 · touches: vpx-hook/castcade.vbs (journal format bump + fixture)
   - **C2.2** `ready` Extra-ball fixture: ball-in-play and player unchanged, detector must not fire
 - **C3** `ready` Turn lock + overlay, companion half — write the lock flag from the match engine's grant, the overlay, analog-plunger fallback (open case, spike §8 0c); the `_KeyDown` wrap itself shipped in hook 0.1.0 (Phase 0c pass 2026-10-17) · needs: C2
 - **C4** `ready` Fill `HELLO`'s `GameFingerprint` from the import manifest — hash(original `.vpx`) + recipe version + sidecar hash; the fields exist since 0.1.0; readiness shared to ArcAid (item 8 = ArcAid W8.1, Phase 3) · needs: C1 · touches: F6
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
+- **C7** `ready` Live mode: every game of a session posts its own score — when a table has a Castcade sidecar, the companion tails the journal, `game_end` (and `table_exit` mid-game → abandoned, spike §8 finding 8) triggers a capture decoded from the live NVRAM state, `exit_sample` stays the fallback for unpatched tables; one-table import of a VPM/ROM table from Settings (recipe A, installs `scripts\castcade.vbs`) is the only patcher surface needed · needs: C2, C1.1 · gate: the owner plays three Monster Bash games in one VPX session and three scores land on arcaid.app (ruling 2026-10-21: basic mode's last-game-only capture is unacceptable)
 - **C6** `done 2026-10-17` Same-basename sidecar auto-loads on 10.8.0 Windows without a prompt — Phase 0e PASS on TFTC, MM, Iron Maiden; sidecar is the default install path, `importvbs` copy stays C1's fallback
 
 ## D. Media: streaming, recording, voice
