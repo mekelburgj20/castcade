@@ -13,13 +13,16 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   and `/release-docs` commands, ADR 0006. `.claude/commands` is tracked; `.claude/worktrees` is not.
   CI checks the tracker's grammar. The "Current state" narrative left `CLAUDE.md`.
 
+### Dependencies
+- Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:
+  the 0.2.10 installer runs Electron 38 (WORK item E4).
+
 ## [0.2.10] — 2026-10-21
 
 ### Witness
 - Headset-or-monitor probe per session (`companion/src/witness/vr-detect.ts`): SteamVR runtime client
   loaded in the VPX process plus a running compositor means VR; sent as `play_device=vr_headset|pc`.
   ArcAid 2.166.0 shows the VR headset badge on the score. Status and the detail view say which.
-- Dependencies: Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green.
 
 ## [0.2.9] — 2026-10-20
 

@@ -150,8 +150,8 @@ badge renderer shows it.
 
 ## 7. ArcAid ADR 0025 — "Castcade matches are Throwdowns"
 
-**What.** Record the decision on the ArcAid side in ArcAid's own ADR series (next free number 0025
-as of 2026-10-17; recent style: `# ADR NNNN — Title`, `**Status:**`, Context / Decision /
+**What.** Record the decision on the ArcAid side in ArcAid's own ADR series (next free number 0029
+as of 2026-10-21, 0025–0028 went to Seasons, Pick by poll, integrity mode and the work tracker; recent style: `# ADR NNNN — Title`, `**Status:**`, Context / Decision /
 Consequences), cross-linking Castcade ADR 0002 and ArcAid ADR 0018. Add the row to
 `docs/decisions/README.md`.
 

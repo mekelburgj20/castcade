@@ -29,7 +29,7 @@ The owner accepts Scorbit-style per-table script edits; the automation is the pr
 | `ChangedNVRAM` is a destructive delta read. | VPM docs / `FINDINGS-D2` | Exactly one consumer per process; any second hook must chain. |
 | An external process cannot read a running game (`VPinMAME.Controller`, `B2S.Server` are InprocServer32). | `FINDINGS-D1` §2 | Live data must come from injected script. |
 | The VBScript host is unsandboxed: `Scripting.FileSystemObject`, `MSXML2.XMLHTTP`, `WScript.Shell` work. | `FINDINGS-D1` §2; T7 probe writes a jsonl file | A journal file is the cheapest, firewall-free IPC. |
-| A same-basename `.vbs` beside the `.vpx` overrides the embedded script. | 10.8.0 exe strings `MODIFYING EXTERNAL SCRIPT:`; community-corroborated; **auto-load without prompt on Windows not yet exercised** | Non-destructive patching; revert = delete the file. Phase 0e verifies. |
+| A same-basename `.vbs` beside the `.vpx` overrides the embedded script. | 10.8.0 exe strings `MODIFYING EXTERNAL SCRIPT:`; community-corroborated; **Phase 0e PASS 2026-10-17 (TFTC, MM, Iron Maiden): auto-loads on Windows with no prompt** | Non-destructive patching; revert = delete the file. |
 | `vpxtool` (francisdb) does `extractvbs` / `importvbs` round-trips; VPX has `-ExtractVBS`. | `tmp/vpx-desktop-witness/vpxtool-windows-x86_64-v0.33.9.zip` | Scriptable extraction and the fallback write path. |
 | `tomlogic/pinmame-nvram-maps` `game_state` gives per-player score, ball in play, player up, game over. ODbL. SAM/SPIKE entries lack `game_state`. | `FINDINGS-D1` §3; coverage 100/138 of the owner's `.nv` files | VPM decode is a lookup, not research; modern Sterns are a known gap. |
 | 0 of the owner's 134 tables embed their own `core.vbs`; 0 use `NVRAMCallback`; 131 use VPinMAME; 3 are originals. | `FINDINGS-D2` §15 table | Recipe A covers ~98% of a typical ROM collection with no conflicts. |
@@ -138,8 +138,8 @@ press is journaled as `key_blocked`, which is how the verification run proves th
 
 ## 6. Sidecar vs copy, hashing, and the stale-sidecar guard
 
-- **Default: sidecar.** `<Table>.vbs` beside `<Table>.vpx`. Original untouched; revert = delete. Requires Phase 0e
-  to confirm auto-load without a prompt on 10.8.0 Windows.
+- **Default: sidecar.** `<Table>.vbs` beside `<Table>.vpx`. Original untouched; revert = delete. Phase 0e confirmed
+  auto-load without a prompt on 10.8.0 Windows (2026-10-17).
 - **Fallback: copy.** If auto-load fails, `vpxtool importvbs` into `<Table> [Castcade].vpx`. The original is still
   untouched; the player launches the copy.
 - **Manifest** (`%LOCALAPPDATA%\Castcade\tables\<table-id>.json`): sha256 of the original `.vpx`, sha256 of the

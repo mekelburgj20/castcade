@@ -30,8 +30,9 @@ trackers are frozen as archives with a note at the top, never appended to again.
 ### 2. A grammar, checked in CI
 
 `- **ID** \`status qualifier\` Title — detail · key: value`. IDs are section letters plus a number, dotted
-for sub-items, never reused and never renumbered. Seven statuses: `idea`, `ready`, `claimed`, `blocked`,
-`review`, `done`, `parked`. `tools/work-board.mjs --check` fails the build on duplicate IDs, unknown
+for sub-items, never reused and never renumbered. Eight statuses: `idea`, `ready`, `claimed`, `blocked`,
+`review`, `done`, `parked`, and `dropped` (added 2026-10-21 after the first audit: will not be done, with the
+ruling or reason as qualifier; the line and number stay). `tools/work-board.mjs --check` fails the build on duplicate IDs, unknown
 statuses, dangling `needs:` and claims without `owner`/`since`. The full grammar is
 `.claude/commands/work.md`.
 

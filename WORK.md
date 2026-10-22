@@ -7,12 +7,12 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 ## Now
 
-- Companion 0.2.10 (unsigned PoC; repo public, keep it so). ArcAid is at 2.166.1 with integrity mode live (F3 complete).
+- Companion 0.2.10 (unsigned PoC; repo public, keep it so). The Electron 44 / Vite 8 / vitest 5 bumps are unreleased: 0.2.11 will be the first packaged build on them (E4). ArcAid is at 2.166.1 with integrity mode live (F3 complete except item 11's ROM→VPS map endpoint, F8).
 - In flight: nothing claimed.
 - Next by the owner's ruling (2026-10-18): B4 playfield fingerprint (F4), then B5 script diff (F5) with its ArcAid half (F5 here = ArcAid item 12).
-- Owner actions: re-pair the rig from Settings (its device row predates ArcAid #363, so it still reads as a cabinet) · a tester's clean-machine install (E1).
-- Streaming for stream nights (D1, Phase 4a) is scheduled right after F4–F5 and needs nothing from Phase 3.
-- Last wrap: 2026-10-21 (this tracker introduced; replaces the "Current state" blob in CLAUDE.md).
+- Owner actions: re-pair the rig from Settings (its device row predates ArcAid #363, so it still reads as a cabinet) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
+- Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3. The gap analysis §6 schedules it right after F2–F3, i.e. now, alongside B4; the owner's 2026-10-18 ruling put F4–F5 first. Owner to confirm the order.
+- Last wrap: 2026-10-21 — audit of every item against code, ADRs and the ArcAid tracker: B4, B8, C2, C3, C4, E4, F6, H3 corrected; C6 closed; F8 added.
 
 ## A. Protocol and match engine
 
@@ -31,13 +31,13 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B1** `done 0.2.4` F1 table identity: VPS game/table ids, file hash, save revision on every score; one-time picker; `tablesDir` setting
 - **B2** `done 0.2.8` F2 attestation: ini, NVRAM adjustments, build hashes + family, VPinMAME cheat flag, accelerometer and tilt keys (0.2.5 → 0.2.8)
 - **B3** `done 0.2.10` F3 companion half: `not_sanctioned` → rejected capture with reasons on Status; `play_device` (VR headset vs monitor) per session
-- **B4** `ready` F4 playfield fingerprint — compound-file reader + record walker over the playfield fields; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved
+- **B4** `ready` F4 playfield fingerprint — extend `vpx-file.ts` (compound-file reader + GameData BIFF walker, 0.2.4) to the `GameItem*` streams (flippers, slings, bumpers, kickers, collidable walls/ramps/primitives), canonical JSON, SHA-256; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved
   - **B4.1** `ready` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament · spec: docs/design/fairness-and-table-identity.md §8
 - **B5** `ready` F5 script diff, companion half — baseline download, normalise, classify, preflight verdict, diff report · needs: B4 · spec: docs/design/fairness-and-table-identity.md §4 · touches: ArcAid item 12 (F5)
 - **B6** `blocked C2` F6 engine attestation from the live hook; score-jump plausibility · spec: docs/design/fairness-and-table-identity.md §5
 - **B7** `ready` Nudge telemetry: HID trace + lift detector, `nudge` param on the score · spec: docs/design/fairness-and-table-identity.md §5a
-- **B8** `idea` ROM→VPS game map served by ArcAid with a shipped seed (today: shipped only) · spec: docs/design/fairness-and-table-identity.md §8
-- **B9** `ready` Field gate for F1–F2's live half: the owner flips a physics override on and off and the values show on arcaid.app · gate: docs/design/fairness-and-table-identity.md §7 "Gate for F1–F2"
+- **B8** `idea` ROM→VPS game map served by ArcAid with a shipped seed — today shipped only, from the vps-db index built at package time (`fetch-vps.mjs`); the server half is F8 · spec: docs/design/fairness-and-table-identity.md §8 · needs: F8
+- **B9** `ready` Field gate for F1–F2's live half: the owner flips a physics override on and off and the ini values show in the Integrity panel on arcaid.app (2.166.0) · owner: owner · gate: docs/design/fairness-and-table-identity.md §7 "Gate for F1–F2"
 - **B10** `idea` SAM/SPIKE `game_state` maps: contribute upstream or declare unsupported in v1
 
 ## C. Table import, hook, detector, turn lock (Phase 3)
@@ -47,13 +47,13 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C1** `ready` Import-a-table pipeline: `.vpx` reader (shares B4's record walker), script extract, recipe match, sidecar write, readiness record · spec: docs/design/table-import-and-patching.md
   - **C1.1** `ready` Recipes: VPM, JPSalas original, Scorbit-anchored
   - **C1.2** `idea` Classification coverage check over the owner's 134 tables and a VPW/JPSalas-heavy collection
-- **C2** `ready` Journal tailer + ball-end detector as a pure function over `fixtures/` · gate: the three Phase 0 fixtures yield balls 1,2,3 + game_end and nothing spurious (`python fixtures/check.py`)
-  - **C2.1** `ready` Absorb the Phase 0 findings: journal volume, boot-garbage gate, bonus after ball_end, exit mid-game · spec: docs/phase-0-spike.md §8
+- **C2** `ready` Journal tailer + ball-end detector in the companion as a pure function over `fixtures/` — the Python spike detector already passes `fixtures/check.py` in CI; port it and keep check.py as the oracle · touches: companion/src/witness/** (journal-replay.ts, maps.ts) · gate: vitest replays the three Phase 0 fixtures and yields balls 1,2,3 + game_end and nothing spurious, matching check.py
+  - **C2.1** `ready` Absorb the Phase 0 findings: journal volume, boot-garbage gate, bonus after ball_end, exit mid-game · spec: docs/phase-0-spike.md §8 · touches: vpx-hook/castcade.vbs (journal format bump + fixture)
   - **C2.2** `ready` Extra-ball fixture: ball-in-play and player unchanged, detector must not fire
-- **C3** `ready` Turn lock + overlay: `_KeyDown` wrap reads one lock flag per key press; key-up swallowed only when its key-down was · needs: C2
-- **C4** `ready` `HELLO` = hash(original `.vpx`) + recipe version + sidecar hash; readiness shared to ArcAid (item 8) · needs: C1
+- **C3** `ready` Turn lock + overlay, companion half — write the lock flag from the match engine's grant, the overlay, analog-plunger fallback (open case, spike §8 0c); the `_KeyDown` wrap itself shipped in hook 0.1.0 (Phase 0c pass 2026-10-17) · needs: C2
+- **C4** `ready` Fill `HELLO`'s `GameFingerprint` from the import manifest — hash(original `.vpx`) + recipe version + sidecar hash; the fields exist since 0.1.0; readiness shared to ArcAid (item 8 = ArcAid W8.1, Phase 3) · needs: C1 · touches: F6
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
-- **C6** `idea` Same-basename sidecar auto-load on 10.8.0 Windows without a prompt; else `importvbs` copy (Phase 0e finding)
+- **C6** `done 2026-10-17` Same-basename sidecar auto-loads on 10.8.0 Windows without a prompt — Phase 0e PASS on TFTC, MM, Iron Maiden; sidecar is the default install path, `importvbs` copy stays C1's fallback
 
 ## D. Media: streaming, recording, voice
 
@@ -71,7 +71,7 @@ Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/*
 - **E1** `claimed` Phase 2 gate, half 2: a tester installs on a clean machine from the tester kit and a score lands with the badge · spec: docs/tester-kit.md · owner: owner · since: 2026-10-18
 - **E2** `parked` Code signing — deferred until GA by owner ruling 2026-10-18
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
-- **E4** `idea` Electron 44 / Vite 8 / vitest 5 follow-through: run the packaged app once after the 2026-10-21 dependency bumps (CI smoke passed; a real install has not)
+- **E4** `ready` Electron 44 / Vite 8 / vitest 5 follow-through — the bumps (every commit after `v0.2.10`, CHANGELOG [Unreleased]) have never been packaged; `pack:dir` + `Castcade.exe --smoke` + a real install of the 0.2.11 build before testers hear about it
 
 ## F. ArcAid side
 
@@ -82,8 +82,9 @@ Lane: none here. The work lands in `C:\code\repos\ArcAid` and is tracked in that
 - **F3** `done 2.166.0` Item 11: integrity mode, VPS-id matching, required table, evidence, admin UI, VR badge (ArcAid #370, #371; ArcAid ADR 0027)
 - **F4** `ready` Item 10: room admin's live device view
 - **F5** `ready` Item 12: script baseline, diff reports, preflight endpoint · needs: B5
-- **F6** `ready` Items 2–8: `play_mode`, roster, `match:<id>` relay, `castcade_matches` + public keys, RESULT ingest with N signatures, ADR, table-readiness registry (Phase 5)
+- **F6** `ready` Items 2–7: `play_mode`, roster, `match:<id>` relay, `castcade_matches` + public keys, RESULT ingest with N signatures, ADR (Phase 5); item 8 table-readiness registry is Phase 3 and needed by C4 (ArcAid W8.1, which needs ArcAid C1)
 - **F7** `ready` Item 13: runner stage · needs: D3
+- **F8** `idea` Item 11, the part left out of 2.166.0: ROM→VPS game map `GET /api/witness/roms` seeded from VPS, so B8 can stop shipping the seed (ArcAid W12) · spec: docs/arcaid-side-changes.md §11
 
 ## G. Arcade (Phase 6)
 
@@ -99,4 +100,4 @@ Lane: `docs/**`, `.claude/**`, `WORK.md`, `CHANGELOG.md`, `tools/**`, `.github/w
 
 - **H1** `done` Single work tracker + board + `/work` and `/wrap` (ADR 0006), 2026-10-21
 - **H2** `ready` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub (the seed entry lists them in one line each)
-- **H3** `idea` `protocol/SPEC.md` prose: write the host-transfer and reconnect sections before A2/A3 ship so the spec leads the code
+- **H3** `idea` Protocol prose for A2/A3 before the code — a WebSocket paragraph under the existing "Host transfer" section and a new "Reconnect" section (resume from the log head, not a fresh HELLO) in `protocol/docs/prose.md`, then `npm run protocol:generate` (SPEC.md is generated)
