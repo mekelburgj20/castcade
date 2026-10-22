@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { MemoryFs, type RandomAccessFile } from './fs.js';
 import { ascii, buildVpx, codeRecord, concat, f32le, floatRecord, record, u32le, utf16 } from './synth-vpx.test-support.js';
-import { parseGameDataPhysics, parseTableInfo, readVpxFacts, sha256File } from './vpx-file.js';
+import { extractScript, parseGameDataPhysics, parseTableInfo, readVpxFacts, readVpxScript, sha256File } from './vpx-file.js';
 
 /** MemoryFs that counts what the reader actually touches. */
 class CountingFs extends MemoryFs {
@@ -277,5 +277,29 @@ describe('MemoryFs.open', () => {
     expect(await f.read(9, 10)).toEqual(new Uint8Array(0));
     await f.close();
     await expect(fs.open('/nope')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('extractScript / readVpxScript', () => {
+  it('returns the CODE record bytes as stored, and null without one or when cut short', () => {
+    const script = ascii('Option Explicit\r\nSub Table1_Init\r\nEnd Sub\r\n');
+    const bytes = concat(floatRecord('GAVT', 0.9), codeRecord(script), record('ENDB', new Uint8Array(0)));
+    expect(Buffer.from(extractScript(bytes)!).toString('latin1')).toBe(Buffer.from(script).toString('latin1'));
+    expect(extractScript(concat(floatRecord('GAVT', 0.9), record('ENDB', new Uint8Array(0))))).toBeNull();
+    expect(extractScript(concat(u32le(4), ascii('CODE'), u32le(1000), ascii('short')))).toBeNull();
+    expect(extractScript(new Uint8Array(0))).toBeNull();
+  });
+
+  it('reads the script out of a synthetic .vpx with its hash and the file stamp', async () => {
+    const fs = new MemoryFs(() => 1_700_000_000_000);
+    fs.put('C:/tables/synth.vpx', buildVpx());
+    const got = await readVpxScript(fs, 'C:/tables/synth.vpx');
+    expect(got).not.toBeNull();
+    const text = Buffer.from(got!.bytes).toString('latin1');
+    expect(text).toContain('Sub Table1_Init');
+    expect(got!.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(got!.size).toBe(buildVpx().length);
+    expect(got!.mtimeMs).toBe(1_700_000_000_000);
+    await expect(readVpxScript(fs, 'C:/tables/missing.vpx')).rejects.toThrow();
   });
 });

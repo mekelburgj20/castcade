@@ -17,6 +17,31 @@ import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 
 export const DEFAULT_TAIL_POLL_MS = 250;
 
+/**
+ * The hook's journal file name for a table id (`Castcade_SafeName` in `vpx-hook/castcade.vbs`): ASCII letters,
+ * digits, `.`, `_`, `-` kept, a space becomes `_`, anything else is dropped, an empty result is `table`.
+ */
+export function journalFileName(tableId: string): string {
+  let r = '';
+  for (const c of tableId) {
+    if (/[A-Za-z0-9._-]/.test(c)) r += c;
+    else if (c === ' ') r += '_';
+  }
+  return (r === '' ? 'table' : r) + '.jsonl';
+}
+
+/** `%LOCALAPPDATA%\Castcade\journal`, where the hook writes; `localAppData` comes from the environment. */
+export function journalDir(localAppData: string): string {
+  const sep = localAppData.includes('\\') && !localAppData.includes('/') ? '\\' : '/';
+  return localAppData.replace(/[\\/]+$/, '') + sep + 'Castcade' + sep + 'journal';
+}
+
+export function journalPathFor(localAppData: string, tableId: string): string {
+  const dir = journalDir(localAppData);
+  const sep = dir.includes('\\') ? '\\' : '/';
+  return dir + sep + journalFileName(tableId);
+}
+
 export interface JournalTailEvents extends Record<string, unknown> {
   /** One complete line, newline (and a preceding CR) stripped. Blank lines are delivered too. */
   line: string;

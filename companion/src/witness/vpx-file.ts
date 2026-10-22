@@ -516,6 +516,63 @@ export function parseGameDataPhysics(bytes: Uint8Array): { physics: VpxTablePhys
 // ----------------------------------------------------------------------------------- reading --
 
 /**
+ * The table script: the bytes of the `CODE` record of `GameStg/GameData` (`[len:u32=4][CODE][scriptLen:u32][bytes]`),
+ * as VPX stores them, which is the script's own code page (cp1252 in practice; never re-encode it). Null when the
+ * stream has no `CODE` record or it is cut short.
+ */
+export function extractScript(gameData: Uint8Array): Uint8Array | null {
+  const view = new DataView(gameData.buffer, gameData.byteOffset, gameData.byteLength);
+  let pos = 0;
+  while (pos + 8 <= gameData.length) {
+    const len = view.getUint32(pos, true);
+    if (len < 4) return null;
+    const tag = String.fromCharCode(gameData[pos + 4]!, gameData[pos + 5]!, gameData[pos + 6]!, gameData[pos + 7]!);
+    const dataStart = pos + 8;
+    if (tag === 'ENDB') return null;
+    if (tag === 'CODE') {
+      if (dataStart + 4 > gameData.length) return null;
+      const scriptLen = view.getUint32(dataStart, true);
+      if (dataStart + 4 + scriptLen > gameData.length) return null;
+      return gameData.slice(dataStart + 4, dataStart + 4 + scriptLen);
+    }
+    pos = dataStart + (len - 4);
+  }
+  return null;
+}
+
+export interface VpxScript {
+  /** The script bytes exactly as stored (the table's code page, usually cp1252). */
+  bytes: Uint8Array;
+  /** Lower-case hex SHA-256 of `bytes`. */
+  sha256: string;
+  /** The `.vpx` file's size and mtime at read time (the cheap stamp a sidecar can re-check in VBScript). */
+  size: number;
+  mtimeMs: number;
+}
+
+/**
+ * Read a table's script out of its `.vpx` without loading the file whole (the Phase 3 patcher's
+ * first step: `vpxtool extractvbs` without vpxtool). Throws `not a .vpx: ...` for a non-compound
+ * file; returns null for a compound file with no `GameStg/GameData` or no `CODE` record.
+ */
+export async function readVpxScript(fs: WitnessFs, path: string): Promise<VpxScript | null> {
+  const st = await fs.stat(path);
+  const file = await fs.open(path);
+  try {
+    const cfb = await CompoundFile.open(file);
+    const gameStg = await cfb.find(await cfb.root(), 'GameStg');
+    if (!gameStg || gameStg.type !== STORAGE) return null;
+    const gameData = await cfb.find(gameStg, 'GameData');
+    if (!gameData || gameData.type !== STREAM || gameData.size > MAX_GAME_DATA_BYTES) return null;
+    const bytes = extractScript(await cfb.readStream(gameData));
+    if (!bytes) return null;
+    return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), size: st.size, mtimeMs: st.mtimeMs };
+  } finally {
+    await file.close();
+  }
+}
+
+/**
  * Read what a `.vpx` says about itself without loading it whole. Throws `not a .vpx: ...` for a file
  * that is not a compound file; a table without a `TableInfo` storage (or without `GameStg`) yields
  * nulls for those parts rather than an error, because identity never blocks a post.

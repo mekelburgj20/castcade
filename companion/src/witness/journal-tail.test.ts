@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
 import { MemoryFs } from './fs.js';
-import { JournalTail } from './journal-tail.js';
+import { JournalTail, journalFileName, journalPathFor } from './journal-tail.js';
 
 const PATH = 'C:/Users/me/AppData/Local/Castcade/journal/Table.jsonl';
 
@@ -88,5 +88,17 @@ describe('JournalTail', () => {
     expect(h.lines).toEqual(['late']);
     h.tail.stop();
     expect(h.clock.pending()).toBe(0);
+  });
+});
+
+describe("journal paths (the hook's Castcade_SafeName rule)", () => {
+  it('keeps letters, digits, . _ -, turns spaces into _, drops the rest', () => {
+    expect(journalFileName('Medieval Madness (Williams 1997) VPW v1.0.1')).toBe('Medieval_Madness_Williams_1997_VPW_v1.0.1.jsonl');
+    expect(journalFileName('Tales from the Crypt (Data East 1993) VPW v1.22')).toBe('Tales_from_the_Crypt_Data_East_1993_VPW_v1.22.jsonl');
+    expect(journalFileName('***')).toBe('table.jsonl');
+  });
+  it('builds the %LOCALAPPDATA% path with the separators of the input', () => {
+    expect(journalPathFor('C:\\Users\\me\\AppData\\Local', 'A B')).toBe('C:\\Users\\me\\AppData\\Local\\Castcade\\journal\\A_B.jsonl');
+    expect(journalPathFor('/home/me/.local/', 'A B')).toBe('/home/me/.local/Castcade/journal/A_B.jsonl');
   });
 });
