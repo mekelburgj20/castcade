@@ -8,10 +8,10 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.10 (unsigned PoC; repo public, keep it so). The Electron 44 / Vite 8 / vitest 5 bumps are unreleased: 0.2.11 will be the first packaged build on them (E4). ArcAid is at 2.166.1 with integrity mode live (F3 complete except item 11's ROM→VPS map endpoint, F8).
-- In flight: nothing claimed.
-- Next by the owner's ruling (2026-10-18): B4 playfield fingerprint (F4), then B5 script diff (F5) with its ArcAid half (F5 here = ArcAid item 12).
+- In flight: B4 playfield fingerprint (fable@main, claimed 2026-10-21).
+- Order by owner ruling 2026-10-21: B4 playfield fingerprint (F4), then B5 script diff (F5, ArcAid half = W6), then straight into D1 solo streaming (Phase 4a).
 - Owner actions: re-pair the rig from Settings (its device row predates ArcAid #363, so it still reads as a cabinet) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
-- Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3. The gap analysis §6 schedules it right after F2–F3, i.e. now, alongside B4; the owner's 2026-10-18 ruling put F4–F5 first. Owner to confirm the order.
+- Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
 - Last wrap: 2026-10-21 — audit of every item against code, ADRs and the ArcAid tracker: B4, B8, C2, C3, C4, E4, F6, H3 corrected; C6 closed; F8 added.
 
 ## A. Protocol and match engine
@@ -31,7 +31,7 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B1** `done 0.2.4` F1 table identity: VPS game/table ids, file hash, save revision on every score; one-time picker; `tablesDir` setting
 - **B2** `done 0.2.8` F2 attestation: ini, NVRAM adjustments, build hashes + family, VPinMAME cheat flag, accelerometer and tilt keys (0.2.5 → 0.2.8)
 - **B3** `done 0.2.10` F3 companion half: `not_sanctioned` → rejected capture with reasons on Status; `play_device` (VR headset vs monitor) per session
-- **B4** `ready` F4 playfield fingerprint — extend `vpx-file.ts` (compound-file reader + GameData BIFF walker, 0.2.4) to the `GameItem*` streams (flippers, slings, bumpers, kickers, collidable walls/ramps/primitives), canonical JSON, SHA-256; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved
+- **B4** `claimed` F4 playfield fingerprint — extend `vpx-file.ts` (compound-file reader + GameData BIFF walker, 0.2.4) to the `GameItem*` streams (flippers, slings, bumpers, kickers, collidable walls/ramps/primitives), canonical JSON, SHA-256; shared with the Phase 3 importer (C1) · spec: docs/design/fairness-and-table-identity.md §3 · gate: stable fingerprint across two launches of the owner's Monster Bash, changes when a flipper is moved · owner: fable@main · since: 2026-10-21
   - **B4.1** `ready` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament · spec: docs/design/fairness-and-table-identity.md §8
 - **B5** `ready` F5 script diff, companion half — baseline download, normalise, classify, preflight verdict, diff report · needs: B4 · spec: docs/design/fairness-and-table-identity.md §4 · touches: ArcAid item 12 (F5)
 - **B6** `blocked C2` F6 engine attestation from the live hook; score-jump plausibility · spec: docs/design/fairness-and-table-identity.md §5
