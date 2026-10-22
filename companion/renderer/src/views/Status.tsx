@@ -59,6 +59,16 @@ export function Status({ state }: { state: CastcadeState }) {
         <dd>{status.mapsVersion ?? 'unknown'}</dd>
         <dt>Current table</dt>
         <dd>{status.currentTable ?? '—'}</dd>
+        {status.captureMode && (
+          <>
+            <dt>Capture</dt>
+            <dd>
+              {status.captureMode === 'live'
+                ? 'live — every game, from the Castcade patch inside the table'
+                : 'basic — one score when the table closes (import the table for every game)'}
+            </dd>
+          </>
+        )}
         {status.currentIdentity && (
           <>
             <dt />
@@ -98,6 +108,12 @@ export function Status({ state }: { state: CastcadeState }) {
           <dd>{c.players}</dd>
           <dt>Score</dt>
           <dd className="score">{c.score === null ? '—' : c.score.toLocaleString()}</dd>
+          {c.mode && (
+            <>
+              <dt>Captured</dt>
+              <dd>{c.mode === 'live' ? 'live, from the game itself' : 'when the table closed'}</dd>
+            </>
+          )}
           <dt>Outcome</dt>
           <dd className={c.outcome === 'ingested' ? 'ok' : c.outcome === 'rejected' ? 'error' : ''}>
             {OUTCOME_LABEL[c.outcome]}

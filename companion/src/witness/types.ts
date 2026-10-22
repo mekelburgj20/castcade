@@ -70,6 +70,8 @@ export interface LastCapture {
   identity?: TableIdentity | null;
   /** The conditions the game was played under (settings, machine adjustments, builds); null when not measured. */
   attestation?: Attestation | null;
+  /** `live`: one game, from the hook's journal (0.2.11); `basic`: the `.nv` read when the player closed. */
+  mode?: 'live' | 'basic';
 }
 
 export interface WitnessStatus {
@@ -100,6 +102,8 @@ export interface WitnessStatus {
   lastError: string | null;
   /** Informational, not an error: e.g. "VPX is open; no table known yet". */
   note?: string | null;
+  /** How the open table's games are captured: `live` (hook journal, every game) or `basic` (`.nv` at close); null with no table. */
+  captureMode: 'live' | 'basic' | null;
 }
 
 export interface WitnessEvents {

@@ -202,6 +202,11 @@ export class JournalDetector {
     return s && s.recipeA && !s.map && s.summary.rom ? s.summary.rom : null;
   }
 
+  /** The live NVRAM as the journal describes it right now (recipe A), or null. The bytes a live score came from. */
+  get shadow(): Uint8Array | null {
+    return this.session?.shadow ?? null;
+  }
+
   /** Attach (or clear) the compiled map for the current session's ROM. Decoding starts at once. */
   setMap(map: CompiledMap | null): void {
     const s = this.session;

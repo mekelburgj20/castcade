@@ -10,6 +10,8 @@ export default tseslint.config(
       '**/out/**',
       '**/build/**',
       'tmp/**',
+      // Agent worktrees are whole checkouts of this repo: a second tsconfig root and duplicate tests.
+      '.claude/**',
       'vpx-hook/**',
       'protocol/schemas/**',
     ],

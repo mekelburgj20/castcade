@@ -13,7 +13,7 @@ export default defineConfig({
   },
   test: {
     include: ['protocol/**/*.test.ts', 'companion/**/*.test.ts', 'fakeclient/**/*.test.ts'],
-    exclude: ['**/node_modules/**', '**/dist/**', '**/out/**'],
+    exclude: ['**/node_modules/**', '**/dist/**', '**/out/**', '.claude/**'],
     testTimeout: 20_000,
   },
 });

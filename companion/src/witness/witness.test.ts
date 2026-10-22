@@ -11,7 +11,9 @@ import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, WitnessSettings, WitnessStatus } from './types.js';
 import { createVpsIndex } from './vps-index.js';
-import { createWitness, outcomeForWire, resolveTableName, type WitnessDeps } from './witness.js';
+import { createWitness, outcomeForWire, parseSessionStamp, resolveTableName, type WitnessDeps } from './witness.js';
+import { JournalDetector } from './journal-detector.js';
+import type { CompiledMap } from './maps.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
@@ -774,5 +776,153 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     expect(resolveTableName({ table: null, tableSource: null }, 'Monster Bash', 'mb_106b')).toEqual({ table: 'Monster Bash', source: 'romname' });
     expect(resolveTableName({ table: null, tableSource: null }, null, 'mb_106b')).toEqual({ table: 'mb_106b', source: 'rom' });
     expect(resolveTableName({ table: null, tableSource: null }, null, null)).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------------------------ live mode --
+
+const TFTC_TABLE = 'Tales from the Crypt (Data East 1993) VPW v1.22';
+const TFTC_PATH = `C:\\Tables\\${TFTC_TABLE}.vpx`;
+const TFTC_SIDECAR = `C:\\Tables\\${TFTC_TABLE}.vbs`;
+const TFTC_CMD = `"C:\\VPX\\VPinballX64.exe" -Play "${TFTC_PATH}"`;
+const TFTC_JOURNAL = '/journal/Tales_from_the_Crypt_Data_East_1993_VPW_v1.22.jsonl';
+const TFTC_FIXTURE_STAMP = '"session":"2026-10-17T18:16:03"';
+/** What a rendered sidecar's first lines look like: the marker the witness looks for is the `Castcade_Init` call. */
+const SIDECAR_HEAD = `' --- Castcade (recipe A v0.2.0, lib 0.2.0) --- do not edit; delete this .vbs to revert to the embedded script\r\nOn Error Resume Next\r\nExecuteGlobal GetTextFile("castcade.vbs")\r\nCastcade_Init "${TFTC_TABLE}", "A", "0.2.0", "tftc_400"\r\n`;
+
+/** The hook's local-time stamp for a clock instant (`Castcade_Stamp`). */
+function hookStamp(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+/** The TFTC fixture's journal with its session stamp moved to `atMs`, so it reads as this process's session. */
+function tftcJournalAt(atMs: number): { text: string; gameStartT: number; gameEndT: number } {
+  const lines = readJournalLines(repo('fixtures/nvram/tftc_400/2026-10-17-1.jsonl.gz'));
+  const first = lines.findIndex((l) => l.includes('"event":"table_loaded"'));
+  if (first < 0 || !lines[first]!.includes(TFTC_FIXTURE_STAMP)) throw new Error('fixture changed: table_loaded stamp not found');
+  lines[first] = lines[first]!.replace(TFTC_FIXTURE_STAMP, `"session":"${hookStamp(atMs)}"`);
+  // Ground truth for the timings comes from the detector itself (what check.py asserts in CI).
+  const d = new JournalDetector({ mapFor: (rom) => (rom === 'tftc_400' ? tftcMap : null) });
+  let gameStartT = -1;
+  let gameEndT = -1;
+  for (const l of lines) {
+    for (const ev of d.feed(l)) {
+      if (ev.kind === 'game_start') gameStartT = ev.t;
+      if (ev.kind === 'game_end') gameEndT = ev.t;
+    }
+  }
+  if (gameStartT < 0 || gameEndT < 0) throw new Error('fixture replay produced no game');
+  return { text: lines.join('\n') + '\n', gameStartT, gameEndT };
+}
+
+let tftcMap: CompiledMap;
+beforeAll(async () => {
+  const m = await corpus.mapFor('tftc_400');
+  if (!m) throw new Error('no tftc_400 map in fixtures/maps');
+  tftcMap = m;
+});
+
+describe('createWitness: live mode (a table with a Castcade sidecar posts every game from the journal)', () => {
+  function liveHarness() {
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    return h;
+  }
+
+  it('arms on a sidecar, posts the game at game_end with the hook\'s own timing, and does not re-post the .nv at close', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    const launchedAt = h.clock.now(); // the watch saw the process on this poll; no creation time from the lister
+
+    // The hook initialised a few seconds after the process appeared and wrote the whole session; the tail picks it up.
+    const loadedAt = launchedAt + 4000;
+    const journal = tftcJournalAt(loadedAt);
+    h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/score')).toHaveLength(1);
+    const started = Math.floor((loadedAt + journal.gameStartT * 1000) / 1000);
+    const ended = Math.floor((loadedAt + journal.gameEndT * 1000) / 1000);
+    expect(h.paths('/score')[0]?.params).toMatchObject({
+      device: 'dev-1',
+      table: 'Tales from the Crypt (Data East 1993)',
+      rom: 'tftc_400',
+      score: '2318430',
+      reason: 'game_over',
+      started: String(started),
+      ended: String(ended),
+      dur: String(ended - started),
+    });
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]).toMatchObject({ table: TFTC_TABLE, rom: 'tftc_400', players: 1, score: 2318430, outcome: 'ingested', mode: 'live' });
+    expect(h.captures[0]?.detail).toMatch(/live: game 1 of this session/);
+    // Attestation ran at capture (the Data East map has no adjustments block, so that part is null by design).
+    expect(h.captures[0]?.attestation).not.toBeNull();
+    expect(h.captures[0]?.attestation?.adjustments).toBeNull();
+    // The VPX session was opened once (launch report) and no score closed it yet.
+    expect(h.paths('/report')).toHaveLength(1);
+    expect(h.paths('/report')[0]?.params).not.toHaveProperty('exit');
+
+    // The player closes the table: VPinMAME rewrites the .nv (the same last game). Live mode posted it already.
+    h.fs.put('/nv/tftc_400.nv', mmAfter);
+    await h.exit();
+    await h.settle(8000);
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/report')).toHaveLength(2);
+    expect(h.paths('/report')[1]?.params).toMatchObject({ table: 'Tales from the Crypt (Data East 1993)', launch: String(Math.floor(launchedAt / 1000)) });
+    expect(h.paths('/report')[1]?.params).toHaveProperty('exit');
+    expect(h.witness.status()).toMatchObject({ currentTable: null, captureMode: null });
+    expect(h.errors).toEqual([]);
+  });
+
+  it('ignores an earlier session left in the same journal file, and falls back to basic mode when no game follows', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    // Residue from yesterday's session (a whole game) is already in the file when the table launches.
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(h.clock.now() - 24 * 3_600_000).text);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32);
+    await h.poll();
+    await h.flush();
+    expect(h.witness.status().captureMode).toBe('live');
+    expect(h.paths('/score')).toHaveLength(0);
+
+    // Nothing live was captured, so the .nv at close is still the one capture (basic mode as before).
+    await h.playFor(60_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    await h.settle(8000);
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({ reason: 'exit_sample', score: '1089510' });
+    expect(h.captures[0]?.mode).toBe('basic');
+  });
+
+  it('a table without a sidecar stays in basic mode', async () => {
+    const h = harness({}, { journalDir: '/journal' });
+    h.fs.put(MM_PATH, MM_VPX);
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    await h.witness.start();
+    await h.launch();
+    expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, captureMode: 'basic' });
+  });
+});
+
+describe('parseSessionStamp', () => {
+  it('reads the hook\'s local-time stamp and rejects anything else', () => {
+    const ms = parseSessionStamp('2026-10-17T18:16:03');
+    expect(ms).toBe(new Date(2026, 9, 17, 18, 16, 3).getTime());
+    expect(parseSessionStamp('2026-10-17 18:16:03')).toBeNull();
+    expect(parseSessionStamp(null)).toBeNull();
   });
 });

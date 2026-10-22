@@ -17,6 +17,7 @@ interface LastCapture {
   detail?: string;
   identity?: TableIdentity | null;
   attestation?: Attestation | null;
+  mode?: 'live' | 'basic';
 }
 
 interface PhysicsSetValues {
@@ -188,6 +189,8 @@ interface WitnessStatus {
   lastCheckinAt: string | null;
   sendingTo: string | null;
   lastError: string | null;
+  note?: string | null;
+  captureMode: 'live' | 'basic' | null;
 }
 
 interface RedactedSettings {

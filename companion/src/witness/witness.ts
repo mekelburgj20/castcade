@@ -43,7 +43,9 @@ import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import { Emitter } from '../match/events.js';
 import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
-import { nodeFs, type WitnessFs } from './fs.js';
+import { JournalDetector, type JournalEvent } from './journal-detector.js';
+import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
+import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
@@ -88,6 +90,13 @@ export interface WitnessDeps {
   /** Environment for `%APPDATA%` (the per-user `VPinballX.ini` location); default `process.env`. */
   env?: NodeJS.ProcessEnv;
   pollIntervalMs?: number;
+  /**
+   * Where the in-VPX hook writes its journals (`%LOCALAPPDATA%\\Castcade\\journal`). Omitted = from the
+   * environment; `null` = live mode off (basic mode only).
+   */
+  journalDir?: string | null;
+  /** Poll step of the journal tail while a table with a sidecar is open. */
+  journalPollMs?: number;
   /** How long a changed `.nv` must stay unchanged before it is read (VPinMAME's write is done). */
   nvSettleMs?: number;
   /** Poll step while waiting for the rewrite after a process exit. */
@@ -129,9 +138,50 @@ interface OpenSession {
   hashing: Promise<void> | null;
   /** Settings and builds measured when the table became known; completed (adjustments, cheat flag) at capture. */
   attestation: Attestation | null;
+  /** Live mode (journal tail + detector) when the table has a Castcade sidecar; null in basic mode. */
+  live: LiveSession | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
+
+type PublishDecision =
+  | { kind: 'skip'; players: number; score: number | null; detail: string }
+  | { kind: 'score'; players: number; score: number; reason: string; gameOver: boolean | null; detail?: string };
+
+/** The sidecar's block 0 calls this; its presence in the first bytes of `<Table>.vbs` marks the file as ours. */
+const SIDECAR_MARKER = 'Castcade_Init';
+const SIDECAR_HEAD_BYTES = 8192;
+/** A `table_loaded` whose session stamp predates the VPX process by more than this is an earlier session's residue. */
+const SESSION_STAMP_SLACK_MS = 15 * 60_000;
+
+/** The hook's `session` stamp (`Castcade_Stamp`, local time `yyyy-mm-ddThh:mm:ss`) as epoch ms, or null when unparseable. */
+export function parseSessionStamp(stamp: string | null): number | null {
+  if (!stamp) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(stamp);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
+}
+
+/** Live mode for one session: the hook's journal followed and decoded while the table is open. */
+interface LiveSession {
+  tail: JournalTail;
+  detector: JournalDetector;
+  tableId: string;
+  path: string;
+  /** Lines waiting for the pump (fed to the detector inside the serial chain). */
+  lines: string[];
+  pumpScheduled: boolean;
+  /** The current `table_loaded` belongs to this VPX process (not an earlier session in the same file). */
+  accepted: boolean;
+  recipe: string | null;
+  rom: string | null;
+  /** When the hook initialised, from its session stamp; journal `t` values are seconds after this. */
+  loadedAtMs: number | null;
+  lastGameStartMs: number | null;
+  games: number;
+  /** Games posted from the journal; when > 0 the `.nv` capture at close is suppressed (it would repeat the last one). */
+  captures: number;
+}
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const sec = (ms: number) => Math.floor(ms / 1000);
@@ -232,6 +282,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     sendingTo: null,
     lastError: null,
     note: null,
+    captureMode: null,
   };
 
   const sessions = new Map<number, OpenSession>();
@@ -394,6 +445,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.currentTable = active?.launch.table ?? null;
     status.currentIdentity = active?.identity ?? null;
     status.currentAttestation = active?.attestation ?? null;
+    status.captureMode = active ? (active.live ? 'live' : 'basic') : null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
   };
 
@@ -453,6 +505,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const target = path ?? launch.table;
     if (!target || session.identityFor === target) return;
     session.identityFor = target;
+    if (path) await startLive(session, path);
     const identity = await resolver.fromFile(path, path ? tableBaseName(path) : launch.table);
     session.identity = identity;
     if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
@@ -510,41 +563,40 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (reported.state === 'rejected') fail(reported.error.message);
   };
 
+  /** Close the session in ArcAid (report with `exit`) without a score: live mode's end of session. */
+  const closeReport = async (session: OpenSession, ended: number): Promise<void> => {
+    const { deviceId, token } = store.get();
+    const key = sessionKey(session);
+    if (!token || !key) return;
+    const reported = await queue.submit({
+      kind: 'report',
+      params: { device: deviceId, table: key.table, launch: key.launch, exit: sec(ended), dur: Math.max(0, Math.round((ended - key.launch * 1000) / 1000)) },
+    });
+    if (reported.state === 'rejected') fail(reported.error.message);
+  };
+
   // ------------------------------------------------------------------------------ capture --
 
   /**
-   * The one capture path: `changed` are the `.nv` names that differ from the baseline (newest
-   * first), `after` the snapshot they were seen in. Posts the player session's report and score,
-   * then refreshes the baseline so the next player session starts clean.
+   * The one posting path for both modes: resolve identity and attestation, name the table for
+   * ArcAid, send the player-session report (basic mode) and the score, record the outcome. A
+   * `live` game leaves the player-session bookkeeping alone (`lastCaptureAt`, the nvram baseline,
+   * the report): live mode reports the VPX session once when it opens and once at exit.
    */
-  const capture = async (session: OpenSession, changed: string[], after: NvSnapshot, trigger: CaptureTrigger, endedFallback: number): Promise<void> => {
-    const nvramDir = status.nvramDir;
+  const publish = async (p: {
+    session: OpenSession;
+    rom: string | null;
+    map: CompiledMap | null;
+    /** The bytes the score came from: the `.nv` (basic) or the journal's shadow NVRAM (live). */
+    nvBytes: Uint8Array | null;
+    started: number;
+    ended: number;
+    decision: PublishDecision;
+    details: string[];
+    live: boolean;
+  }): Promise<void> => {
+    const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
-    const started = Math.max(session.startedAt, session.lastCaptureAt ?? 0);
-    const name = changed[0] ?? null;
-    const rom = name ? romFromNvName(name) : null;
-    const details: string[] = [];
-
-    const mtime = name ? after.get(name)?.mtimeMs : undefined;
-    const ended = mtime !== undefined && mtime >= started && mtime <= clock.now() + 60_000 ? mtime : endedFallback;
-    if (changed.length > 1) details.push(`${changed.length} .nv files changed; using the newest (${name})`);
-    if (!nvramDir) details.push('VPinMAME nvram directory not found (set it in settings)');
-
-    let map: CompiledMap | null = null;
-    let before: GameState | null = null;
-    let afterState: GameState | null = null;
-    let nvBytes: Uint8Array | null = null;
-    if (rom && name && nvramDir) {
-      map = await corpus.mapFor(rom);
-      try {
-        nvBytes = await fs.readFile(joinPath(nvramDir, name));
-        afterState = decode(map, nvBytes);
-      } catch (err) {
-        details.push(`could not read ${name}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      before = decode(map, baseline?.get(name)?.bytes ?? null);
-    }
-
     const romName = rom ? await corpus.romName(rom) : null;
     const identity = await identityForCapture(session, rom, romName).catch((err: unknown) => {
       details.push(`identity failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -576,10 +628,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
     if (resolved) details.push(SOURCE_TEXT[resolved.source]);
     if (wireTable !== table) details.push(`sent to ArcAid as "${wireTable}"${wireSlug ? ` (or "${wireSlug}")` : ''}`);
-    details.push(trigger === 'player' ? 'captured when the player closed' : 'captured at VPX exit');
 
     const durationSec = Math.max(0, Math.round((ended - started) / 1000));
-    const decision = decideCapture({ table, rom, map, before, after: afterState, launchedAtMs: started, exitedAtMs: ended });
     const result: LastCapture = {
       table,
       rom,
@@ -590,9 +640,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       outcome: 'skipped',
       identity,
       attestation,
+      mode: live ? 'live' : 'basic',
     };
 
-    if (token && resolved) {
+    if (!live && token && resolved) {
       const reported = await queue.submit({
         kind: 'report',
         params: { device: deviceId, table: wireTable, launch: sec(started), exit: sec(ended), dur: durationSec },
@@ -641,13 +692,206 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
 
     result.detail = details.join('; ');
-    session.lastCaptureAt = ended;
+    if (!live) {
+      session.lastCaptureAt = ended;
+      await refreshBaseline();
+    }
     session.captures++;
-    await refreshBaseline();
     status.lastCapture = result;
     log(`witness: ${table} → ${result.outcome} (${result.detail})`);
     emitter.emit('capture', result);
     emitStatus();
+  };
+
+  /**
+   * Basic mode's capture: `changed` are the `.nv` names that differ from the baseline (newest
+   * first), `after` the snapshot they were seen in. Decides from the file, then publishes.
+   */
+  const capture = async (session: OpenSession, changed: string[], after: NvSnapshot, trigger: CaptureTrigger, endedFallback: number): Promise<void> => {
+    const nvramDir = status.nvramDir;
+    const started = Math.max(session.startedAt, session.lastCaptureAt ?? 0);
+    const name = changed[0] ?? null;
+    const rom = name ? romFromNvName(name) : null;
+    const details: string[] = [];
+
+    const mtime = name ? after.get(name)?.mtimeMs : undefined;
+    const ended = mtime !== undefined && mtime >= started && mtime <= clock.now() + 60_000 ? mtime : endedFallback;
+    if (changed.length > 1) details.push(`${changed.length} .nv files changed; using the newest (${name})`);
+    if (!nvramDir) details.push('VPinMAME nvram directory not found (set it in settings)');
+
+    let map: CompiledMap | null = null;
+    let before: GameState | null = null;
+    let afterState: GameState | null = null;
+    let nvBytes: Uint8Array | null = null;
+    if (rom && name && nvramDir) {
+      map = await corpus.mapFor(rom);
+      try {
+        nvBytes = await fs.readFile(joinPath(nvramDir, name));
+        afterState = decode(map, nvBytes);
+      } catch (err) {
+        details.push(`could not read ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      before = decode(map, baseline?.get(name)?.bytes ?? null);
+    }
+    details.push(trigger === 'player' ? 'captured when the player closed' : 'captured at VPX exit');
+    const decision = decideCapture({ table: session.launch.table ?? UNKNOWN_TABLE, rom, map, before, after: afterState, launchedAtMs: started, exitedAtMs: ended });
+    await publish({ session, rom, map, nvBytes, started, ended, decision, details, live: false });
+  };
+
+  // ---------------------------------------------------------------------------- live mode --
+
+  /** Where the hook writes journals; null disables live mode (no `%LOCALAPPDATA%`, or a test that says so). */
+  const journalRoot: string | null = deps.journalDir === undefined ? (env.LOCALAPPDATA ? journalDir(env.LOCALAPPDATA) : null) : deps.journalDir;
+
+  /** A table runs the hook when `<Table>.vbs` sits beside its `.vpx` and carries the sidecar's marker. */
+  const hasSidecar = async (vpxPath: string): Promise<boolean> => {
+    const sidecar = vpxPath.replace(/\.vpx$/i, '.vbs');
+    if (sidecar === vpxPath) return false;
+    try {
+      const file = await fs.open(sidecar);
+      try {
+        const head = Buffer.from(await file.read(0, Math.min(file.size, SIDECAR_HEAD_BYTES))).toString('latin1');
+        return head.includes(SIDECAR_MARKER);
+      } finally {
+        await file.close();
+      }
+    } catch (err) {
+      if (isNotFound(err)) return false;
+      throw err;
+    }
+  };
+
+  /**
+   * Arm live mode for a session whose table file has a sidecar: tail the hook's journal for that
+   * table id from its first byte (the hook may have written `table_loaded` before the process watch
+   * saw the launch) and feed the detector. Lines are pumped through the serial chain so a ROM's map
+   * is attached before the deltas that follow its `table_loaded` are decoded.
+   */
+  const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {
+    if (session.live || !journalRoot) return;
+    if (!(await hasSidecar(vpxPath).catch(() => false))) return;
+    const tableId = tableBaseName(vpxPath);
+    const path = joinPath(journalRoot, journalFileName(tableId));
+    const live: LiveSession = {
+      tail: new JournalTail(path, { fs, clock, pollMs: deps.journalPollMs, from: 'start' }),
+      detector: new JournalDetector(),
+      tableId,
+      path,
+      lines: [],
+      pumpScheduled: false,
+      accepted: false,
+      recipe: null,
+      rom: null,
+      loadedAtMs: null,
+      lastGameStartMs: null,
+      games: 0,
+      captures: 0,
+    };
+    session.live = live;
+    live.tail.on('line', (line) => {
+      live.lines.push(line);
+      if (!live.pumpScheduled) {
+        live.pumpScheduled = true;
+        serial(() => pumpLive(session, live));
+      }
+    });
+    live.tail.on('truncated', () => log(`witness: journal ${live.tableId} restarted from the top`));
+    live.tail.on('error', (err) => fail(`journal ${live.tableId}: ${err.message}`));
+    live.tail.start();
+    log(`witness: live mode armed for ${tableId} (${path})`);
+    refreshTableStatus();
+    emitStatus();
+  };
+
+  const pumpLive = async (session: OpenSession, live: LiveSession): Promise<void> => {
+    live.pumpScheduled = false;
+    while (live.lines.length > 0) {
+      const line = live.lines.shift()!;
+      for (const ev of live.detector.feed(line)) await onJournalEvent(session, live, ev);
+    }
+  };
+
+  const onJournalEvent = async (session: OpenSession, live: LiveSession, ev: JournalEvent): Promise<void> => {
+    if (ev.kind === 'table_loaded') {
+      // The file holds every session of this table; only the one that belongs to this VPX process counts.
+      const stampMs = parseSessionStamp(ev.session);
+      live.accepted = stampMs === null || stampMs >= session.startedAt - SESSION_STAMP_SLACK_MS;
+      if (!live.accepted) {
+        log(`witness: journal ${live.tableId}: skipping an earlier session (${ev.session ?? '?'})`);
+        return;
+      }
+      live.loadedAtMs = stampMs ?? clock.now() - ev.t * 1000;
+      live.lastGameStartMs = null;
+      live.recipe = ev.recipe;
+      live.rom = ev.rom;
+      log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
+      if (ev.recipe === 'A' && ev.rom) {
+        const map = await corpus.mapFor(ev.rom);
+        live.detector.setMap(map);
+        if (!map) fail(`live mode: no map for ROM ${ev.rom}; games on ${live.tableId} will be captured at close only`);
+      }
+      refreshTableStatus();
+      emitStatus();
+      return;
+    }
+    if (!live.accepted) return;
+    const at = (live.loadedAtMs ?? clock.now()) + ev.t * 1000;
+    switch (ev.kind) {
+      case 'game_start':
+        live.lastGameStartMs = at;
+        live.games++;
+        session.lastActivityAt = clock.now();
+        break;
+      case 'game_end':
+        await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
+        break;
+      case 'game_abandoned':
+        await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned on ball ${ev.ball ?? '?'}; score as of the exit`);
+        break;
+      case 'stale_sidecar':
+        fail(`Castcade patch for ${live.tableId} is for an older version of the table (${ev.detail ?? 'size or date changed'}); re-import it`);
+        break;
+      case 'warn':
+        log(`witness: hook warning on ${live.tableId}: ${ev.msg ?? ''} ${ev.err ?? ''}`.trimEnd());
+        break;
+      default:
+        break;
+    }
+  };
+
+  /** One game from the journal: player 1 only, a positive score, posted with the hook's own timing. */
+  const captureLive = async (
+    session: OpenSession,
+    live: LiveSession,
+    scores: (number | null)[],
+    players: number | null,
+    endedAt: number,
+    reason: 'game_over' | 'shutdown',
+    note: string | null,
+  ): Promise<void> => {
+    const rom = live.rom;
+    const map = rom ? await corpus.mapFor(rom) : null;
+    const score = scores[0] ?? null;
+    const nonzero = scores.filter((s) => s !== null && s > 0).length;
+    const n = Math.max(nonzero, players !== null && players >= 1 && players <= 4 ? players : 0);
+    const started = live.lastGameStartMs ?? live.loadedAtMs ?? session.startedAt;
+    const details: string[] = [`live: game ${Math.max(live.games, live.captures + 1)} of this session, from the hook's journal`];
+    if (note) details.push(note);
+    let decision: PublishDecision;
+    if (n > 1) decision = { kind: 'skip', players: n, score, detail: `multi-player game (${n} players): not attributable to one account` };
+    else if (score === null || score <= 0) decision = { kind: 'skip', players: n, score, detail: 'no score (player 1 score is 0)' };
+    else decision = { kind: 'score', players: 1, score, reason, gameOver: reason === 'game_over' };
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true });
+    if (decision.kind === 'score') live.captures++;
+  };
+
+  /** Drain what the hook wrote last (`table_exit`), then stop following. */
+  const stopLive = async (session: OpenSession): Promise<void> => {
+    const live = session.live;
+    if (!live) return;
+    await live.tail.poll().catch(() => {});
+    live.tail.stop();
+    await pumpLive(session, live);
   };
 
   // ----------------------------------------------------------------------- alive nv poll --
@@ -678,7 +922,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         const changed = changedNvFiles(baseline, snap);
         pending = null;
         const session = activeSession();
-        if (changed.length > 0 && session) await capture(session, changed, snap, 'player', now);
+        if (changed.length > 0 && session) {
+          if (session.live && session.live.captures > 0) {
+            // Live mode already posted every game; the `.nv` rewrite at close is the last one again.
+            log(`witness: ${session.live.tableId}: .nv rewritten after ${session.live.captures} live capture(s); not re-posting`);
+            await refreshBaseline();
+          } else {
+            await capture(session, changed, snap, 'player', now);
+          }
+        }
       }
     } else if (changedNvFiles(baseline, snap).length > 0) {
       pending = { snapshot: snap, lastChangeAt: now };
@@ -703,6 +955,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       identityFor: null,
       hashing: null,
       attestation: null,
+      live: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();
@@ -733,7 +986,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const durationSec = Math.max(0, Math.round((exitedAt - launch.seenAt) / 1000));
     emitter.emit('exit', { table: launch.table, at: iso(exitedAt), durationSec });
 
-    if (session && status.nvramDir && baseline) {
+    if (session) await stopLive(session);
+    if (session?.live && session.live.captures > 0) {
+      // Every game went out from the journal. Let VPinMAME's close-time write land so the baseline
+      // is current, close the session in ArcAid, and post nothing more.
+      if (status.nvramDir && baseline) await waitForNvChange(fs, status.nvramDir, baseline, { clock, timeoutMs: settleMs, pollMs: deps.nvPollMs ?? DEFAULT_NV_POLL_MS });
+      pending = null;
+      await refreshBaseline();
+      await closeReport(session, exitedAt);
+    } else if (session && status.nvramDir && baseline) {
       // Final chance: a `.nv` rewritten as the table closed, not yet captured by the alive poll.
       const change = await waitForNvChange(fs, status.nvramDir, baseline, { clock, timeoutMs: settleMs, pollMs: deps.nvPollMs ?? DEFAULT_NV_POLL_MS });
       pending = null;
