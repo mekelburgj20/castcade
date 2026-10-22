@@ -20,7 +20,7 @@ decoding, detection and networking happen in the companion.
   The event list is in the file header. Exercised outside VPX with a `cscript` harness (2026-10-17).
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
-  ball-end detector, the ancestor of the companion detector), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)
+  ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)
   (SendInput scancodes: credits, Start, plunge-and-drain until the tailer reports `game_end`, plus the 0c lock
   exercise — lets a fixture be recorded unattended; VPX reads the keyboard through DirectInput so the player
   window is brought to the foreground first).

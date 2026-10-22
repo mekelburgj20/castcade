@@ -47,6 +47,8 @@ present.
 
 ## CI check
 
+Two replays run on every push. `companion/src/witness/journal-detector.test.ts` (vitest, `npm test`) feeds each fixture
+through the companion's own detector and asserts the same counts as below plus the final scores. The Python oracle stays:
 `python fixtures/check.py` replays every `*.jsonl[.gz]` that has a sibling `.meta.json` through
 `vpx-hook/spike/tail-journal.py --quiet-scores` and asserts, from `meta.games` (and
 `meta.balls_per_game`, default 3): `game_start == games`, `game_end == games`,

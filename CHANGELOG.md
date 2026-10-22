@@ -15,6 +15,12 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 - Eighth item status `dropped <reason>` for work that will not be done (hidden on the board by default); first
   full audit of the tracker against code, ADRs and the ArcAid tracker (commit 3cc645c).
 
+### Witness
+- Journal detector and tailer in the companion (`journal-detector.ts`, `journal-tail.ts`): the TypeScript port of the
+  Phase 0 tailer. Recipe-A journals are decoded live from the shadow NVRAM and `game_start` / `ball_end` / `game_end`
+  are derived; script recipes pass through; `table_exit` mid-game becomes `game_abandoned`. The three Phase 0
+  fixtures replay in vitest to the same balls and games `fixtures/check.py` asserts (WORK C2).
+
 ### Dependencies
 - Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:
   the 0.2.10 installer runs Electron 38 (WORK item E4).

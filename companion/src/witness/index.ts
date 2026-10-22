@@ -18,6 +18,8 @@ export { ArcaidClient, ArcaidError, buildUrl, type FetchLike, type FetchResponse
 export { decideCapture, countPlayers, MIN_SESSION_SEC, EXIT_SAMPLE_REASON, type CaptureDecision, type CaptureInput } from './capture.js';
 export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat, type RandomAccessFile } from './fs.js';
 export { replayJournal, readJournalLines, type JournalReplay } from './journal-replay.js';
+export { JournalDetector, detectTransition, plausible, replayDetector, GAME_EVENT_KINDS, type GameEvent, type GameEventKind, type HookEvent, type JournalEvent, type SessionSummary, type JournalDetectorOptions } from './journal-detector.js';
+export { JournalTail, DEFAULT_TAIL_POLL_MS, type JournalTailEvents, type JournalTailOptions } from './journal-tail.js';
 export {
   compileMap,
   compilePlatform,
