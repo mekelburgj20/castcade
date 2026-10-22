@@ -10,8 +10,8 @@ import type { ClassifyResult } from './classify.js';
 import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } from './script-text.js';
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
-export const LIB_VERSION = '0.2.0';
-export const RECIPE_VERSION = '0.2.0';
+export const LIB_VERSION = '0.3.0';
+export const RECIPE_VERSION = '0.3.0';
 
 /** `Castcade_Guard`'s mtime tolerance in seconds: DST and FILETIME conversions shift it by a whole hour. */
 export const GUARD_MTIME_TOLERANCE_SEC = 3601;
@@ -28,6 +28,12 @@ export interface RenderOptions {
   sidecarPath: string;
   /** Extra key constant names to lock (e.g. staged flippers): `Castcade_AddPlayKeys Array(...)`. */
   extraKeys?: string[];
+  /**
+   * NVRAM offsets the hook should journal (the map's `game_state` bytes, lib 0.3.0). `undefined` =
+   * no watch list (the hook journals every changed byte, the 0.1.0 behaviour); `[]` = a ROM with no
+   * map, so the hook journals no deltas at all (nothing could decode them).
+   */
+  watchOffsets?: number[] | null;
 }
 
 export interface Rendered {
@@ -70,7 +76,7 @@ export function formatLocalStamp(ms: number): string {
  * is missing so the table still runs. One statement per sub, colon-separated, no double quotes.
  */
 export const STUB =
-  'Sub Castcade_Init(a,b,c,d):End Sub:Sub Castcade_Guard(a,b,c,d):End Sub:Sub Castcade_RegisterNVRAM():End Sub:' +
+  'Sub Castcade_Init(a,b,c,d):End Sub:Sub Castcade_Guard(a,b,c,d):End Sub:Sub Castcade_WatchBytes(a):End Sub:Sub Castcade_RegisterNVRAM():End Sub:' +
   'Function Castcade_KeyDownBlocked(k):Castcade_KeyDownBlocked=False:End Function:' +
   'Function Castcade_KeyUpBlocked(k):Castcade_KeyUpBlocked=False:End Function:' +
   'Sub Castcade_GameStart(p):End Sub:Sub Castcade_Scores(s,p,b):End Sub:' +
@@ -95,6 +101,12 @@ export function block0(recipe: string, opts: RenderOptions): string[] {
     // the sub and this line is a silent no-op under On Error Resume Next).
     `Castcade_Guard ${vbStringLiteral(opts.originalPath)}, ${Math.floor(opts.originalSize)}, "${formatLocalStamp(opts.originalMtimeMs)}", ${vbStringLiteral(opts.sidecarPath)}`,
   ];
+  // The watch list (lib 0.3.0): only these NVRAM offsets are journaled, coalesced. Without it a WPC
+  // table writes ~100 lines a second and stutters; a 0.2.0 lib ignores the line (Resume Next).
+  if (opts.watchOffsets !== undefined && opts.watchOffsets !== null) {
+    const offs = [...new Set(opts.watchOffsets.filter((o) => Number.isInteger(o) && o >= 0))].sort((a, b) => a - b);
+    b.push(`Castcade_WatchBytes Array(${offs.join(', ')})`);
+  }
   const keys = (opts.extraKeys ?? []).filter((k) => k.trim() !== '');
   if (keys.length > 0) b.push(`Castcade_AddPlayKeys Array(${keys.map((k) => vbStringLiteral(k.trim())).join(', ')})`);
   b.push('On Error Goto 0');

@@ -261,6 +261,7 @@ async function main(): Promise<void> {
     scriptsDir: () => tables.scriptsDir(),
     manifestDir,
     libSource,
+    watchOffsetsFor: (rom) => tables.watchOffsetsFor(rom),
     log: (line) => logger.info(line),
     notify: (title, body) => tray?.notify(title, body),
   });

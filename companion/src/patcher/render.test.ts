@@ -35,7 +35,7 @@ describe('versions', () => {
     expect(libraryVersionOf(lib)).toBe(LIB_VERSION);
     expect(lib).toContain('Sub Castcade_Guard(originalPath, originalSize, originalMtime, sidecarPath)');
     expect(STUB).toContain('Sub Castcade_Guard(a,b,c,d):End Sub');
-    expect(RECIPE_VERSION).toBe('0.2.0');
+    expect(RECIPE_VERSION).toBe('0.3.0');
   });
 });
 
@@ -154,5 +154,21 @@ describe('renderRecipeA', () => {
     expect(isOurSidecar(lf(PATCHED_VPM_SCRIPT))).toBe(true);
     expect(isOurSidecar(lf(VPM_SCRIPT))).toBe(false);
     expect(isOurSidecar("' Castcade mentioned but no marker\nCastcade_Init")).toBe(false);
+  });
+});
+
+describe('watch list (lib 0.3.0)', () => {
+  it('renders Castcade_WatchBytes with the sorted, unique offsets inside block 0, after Castcade_Guard', () => {
+    const { out } = renderLines(crlf(VPM_SCRIPT), { ...OPTS, watchOffsets: [30, 10, 20, 10, -1, 2.5] });
+    const i = out.lines.findIndex((l) => l.startsWith('Castcade_WatchBytes'));
+    expect(out.lines[i]).toBe('Castcade_WatchBytes Array(10, 20, 30)');
+    expect(out.lines[i - 1]).toMatch(/^Castcade_Guard /);
+    expect(out.lines[i + 1]).toBe('On Error Goto 0');
+  });
+
+  it('an empty watch list renders an empty Array (no deltas); no option renders no line', () => {
+    expect(renderLines(crlf(VPM_SCRIPT), { ...OPTS, watchOffsets: [] }).out.lines).toContain('Castcade_WatchBytes Array()');
+    expect(renderLines(crlf(VPM_SCRIPT)).out.lines.some((l) => l.startsWith('Castcade_WatchBytes'))).toBe(false);
+    expect(STUB).toContain('Castcade_WatchBytes');
   });
 });

@@ -42,6 +42,25 @@ relaunch it, then re-import it from Castcade."* The table keeps running on the o
 session; the next launch loads the embedded script. A missing original is not a mismatch. 0.1.0 sidecars
 do not call the sub and keep working; a 0.2.0 sidecar on a 0.1.0 library skips the call silently
 (block 0 runs under `On Error Resume Next`). The companion's `journal-detector.ts` parses the event.
+
+### 0.3.0 — `Castcade_WatchBytes` and the journal volume
+
+The owner's first live-mode session (2026-10-22, Monster Bash on the VR build) measured the 0.1.0 cost for real:
+a median of 89 `nvram_delta` lines a second, peaks of 180, 22.6 MB in seven minutes, visible stutter and one VPX
+crash. 0.3.0 journals only what the companion decodes. The sidecar (recipe 0.3.0) calls, in block 0,
+
+```vbs
+Castcade_WatchBytes Array(<every NVRAM offset the ROM's map reads for game_state>)
+```
+
+and `Castcade_NVRAM` then keeps only those offsets of each `ChangedNVRAM` batch, coalesces them (latest value
+per offset, the first old value), writes at most one `nvram_delta` line per 50 ms and flushes it at once, so
+the companion sees a game end within a frame or two. The full snapshot is taken once, at hook time (it is what
+the adjustments are read from), never periodically. An empty watch list (a ROM the maps corpus does not know)
+journals no deltas at all: nothing could decode them, and basic mode still reads the `.nv` at close.
+`table_exit` gains `filtered_bytes`. Without a watch list (0.1.0 / 0.2.0 sidecars) the old behaviour stands.
+The companion computes the list with `gameStateOffsets(map)` (`companion/src/witness/maps.ts`) when it renders
+a sidecar; re-importing the folder re-renders every table with it (an older recipe version plans as `repatch`).
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)

@@ -842,7 +842,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (ev.kind === 'table_loaded') {
       // The file holds every session of this table; only the one that belongs to this VPX process counts.
       const stampMs = parseSessionStamp(ev.session);
-      live.accepted = stampMs === null || stampMs >= session.startedAt - SESSION_STAMP_SLACK_MS;
+      // With the real process creation time (CIM) a session stamp more than 90 s older than the
+      // process is an earlier session's; without it, allow for a long poll gap.
+      const slack = session.launch.startedAt !== null ? 90_000 : SESSION_STAMP_SLACK_MS;
+      live.accepted = stampMs === null || stampMs >= session.startedAt - slack;
       if (!live.accepted) {
         log(`witness: journal ${live.tableId}: skipping an earlier session (${ev.session ?? '?'})`);
         return;

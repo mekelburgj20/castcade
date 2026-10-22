@@ -6,6 +6,7 @@
  */
 import { applyImport, planImport, removeAllSidecars, type ImportPlan, type PlanItem } from '../patcher/index.js';
 import { nodeFs, type WitnessFs } from '../witness/fs.js';
+import { createMapCorpus, gameStateOffsets } from '../witness/maps.js';
 import type { WitnessStatus } from '../witness/types.js';
 import type { TablesApplyResult, TablesDefaults, TablesPlan, TablesRemoveResult } from './ipc-types.js';
 import type { Logger } from './log.js';
@@ -31,6 +32,8 @@ export interface TablesHost {
   /** The folder a null `dir` means right now, or null when nothing is known yet. */
   resolveTablesDir(dir: string | null): string | null;
   scriptsDir(): string | null;
+  /** The NVRAM offsets the hook journals for a ROM: its map's `game_state` bytes, `[]` without a map. */
+  watchOffsetsFor(rom: string): Promise<number[]>;
   readonly manifestDir: string;
 }
 
@@ -62,6 +65,11 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
   const fs = opts.fs ?? nodeFs;
   const { store, log, libSource, manifestDir } = opts;
   let hookVersion: string | null = null;
+  const corpus = createMapCorpus(store.get().mapsDir, fs);
+  const watchOffsetsFor = async (rom: string): Promise<number[]> => {
+    const map = await corpus.mapFor(rom).catch(() => null);
+    return map ? gameStateOffsets(map) : [];
+  };
 
   const vpxExe = (): string | null => opts.witnessStatus().vpxExe;
   const scriptsDir = (): string | null => {
@@ -85,6 +93,7 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     manifestDir,
     resolveTablesDir,
     scriptsDir,
+    watchOffsetsFor,
 
     async defaults() {
       if (hookVersion === null) {
@@ -112,6 +121,7 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
         manifestDir,
         vpxScriptsDir,
         libSource,
+        watchOffsetsFor,
         onProgress: (done, total, item) => log.info(`tables: ${done}/${total} ${item.tableId} (${item.action})`),
       });
       for (const f of result.failed) log.warn(`tables: ${f.item.tableId} failed: ${f.error}`);

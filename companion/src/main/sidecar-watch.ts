@@ -25,6 +25,8 @@ export interface SidecarWatchOptions {
   scriptsDir: () => string | null;
   manifestDir: string;
   libSource: string;
+  /** The hook's watch list for a ROM (see `TablesHost.watchOffsetsFor`); omitted = no watch list rendered. */
+  watchOffsetsFor?: (rom: string) => Promise<number[]>;
   log: (line: string) => void;
   /** Tell the player (a desktop notification in the shell). */
   notify?: (title: string, body: string) => void;
@@ -151,7 +153,12 @@ export class SidecarWatch {
         const plan = await planImport(this.fs, { paths: [vpxPath], manifestDir: this.opts.manifestDir });
         const item = plan.items[0];
         if (item && (item.action === 'repatch' || item.action === 'patch')) {
-          const applied = await applyImport(this.fs, plan, { manifestDir: this.opts.manifestDir, vpxScriptsDir: scriptsDir, libSource: this.opts.libSource });
+          const applied = await applyImport(this.fs, plan, {
+            manifestDir: this.opts.manifestDir,
+            vpxScriptsDir: scriptsDir,
+            libSource: this.opts.libSource,
+            ...(this.opts.watchOffsetsFor ? { watchOffsetsFor: this.opts.watchOffsetsFor } : {}),
+          });
           const failure = applied.failed[0];
           if (!failure) {
             const detail = `${tableId} changed on disk; its Castcade patch was re-made for the new version`;

@@ -8,6 +8,7 @@ import {
   decodeGameState,
   decodeHighScores,
   decodeLastPlayed,
+  gameStateOffsets,
   descriptorEnum,
   descriptorString,
   NvMemory,
@@ -246,5 +247,27 @@ describe('descriptor encodings', () => {
     const c = decodeGameState(mapWith({ scores: [{ encoding: 'bcd', start: 0 }] }), Uint8Array.from([0x11]));
     expect(sameGame(a, b)).toBe(true);
     expect(sameGame(a, c)).toBe(false);
+  });
+});
+
+describe('gameStateOffsets', () => {
+  it('lists every byte decodeGameState reads for mm_109c, sorted and unique, and covers the score bytes', async () => {
+    const map = await corpus.mapFor('mm_109c');
+    if (!map) throw new Error('no map');
+    const offs = gameStateOffsets(map);
+    expect(offs.length).toBeGreaterThan(10);
+    expect(offs.length).toBeLessThan(200); // a WPC .nv is 12,334 bytes; the game state is a sliver of it
+    expect([...offs].sort((a, b) => a - b)).toEqual(offs);
+    expect(new Set(offs).size).toBe(offs.length);
+    // Player 1's score lives at 5792..5796 (the fixtures poke those bytes), player_count at 5901.
+    for (const b of [5792, 5793, 5794, 5795, 5796, 5901]) expect(offs).toContain(b);
+  });
+
+  it('tftc_400 (offsets lists) is covered too', async () => {
+    const map = await corpus.mapFor('tftc_400');
+    if (!map) throw new Error('no map');
+    const offs = gameStateOffsets(map);
+    expect(offs.length).toBeGreaterThan(5);
+    expect(offs.every((o) => Number.isInteger(o) && o >= 0 && o < 8238)).toBe(true);
   });
 });

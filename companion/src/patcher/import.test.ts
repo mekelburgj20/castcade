@@ -166,7 +166,7 @@ describe('applyImport', () => {
     fs.put(`${SCRIPTS}/castcade.vbs`, 'older');
     expect(await installLibrary(fs, LIB_SRC, SCRIPTS)).toBe('updated');
     fs.put('C:/old.vbs', 'Dim Castcade_LibVersion : Castcade_LibVersion = "0.1.0"\n');
-    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(/0\.1\.0.*0\.2\.0/);
+    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(/0\.1\.0.*0\.3\.0/);
     fs.put('C:/none.vbs', "' nothing");
     await expect(installLibrary(fs, 'C:/none.vbs', SCRIPTS)).rejects.toThrow(/\(none\)/);
   });
@@ -264,5 +264,27 @@ describe('stale-sidecar guard (companion side)', () => {
     expect(fs.has(manifestPathFor(MANIFESTS, tableIdFor(MB)))).toBe(false);
     for (const p of [MB, AFM, IRON, FOREIGN, NOKEYS, BROKEN, PATCHED]) expect(fs.has(p)).toBe(true);
     expect(fs.has(`${SCRIPTS}/castcade.vbs`)).toBe(true); // the library stays; the owner can delete it
+  });
+});
+
+describe('watch list through applyImport', () => {
+  it('asks watchOffsetsFor per ROM and bakes the answer into the sidecar', async () => {
+    const asked: string[] = [];
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    await applyImport(fs, plan, {
+      ...applyOpts,
+      watchOffsetsFor: async (rom) => {
+        asked.push(rom);
+        return [5792, 5793, 5901];
+      },
+    });
+    expect(asked).toEqual(['mb_106b']);
+    expect(fs.text(sidecarPathFor(MB))).toContain('Castcade_WatchBytes Array(5792, 5793, 5901)');
+  });
+
+  it('without watchOffsetsFor the sidecar carries no watch list', async () => {
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    await applyImport(fs, plan, applyOpts);
+    expect(fs.text(sidecarPathFor(MB))).not.toMatch(/^Castcade_WatchBytes Array/m); // the STUB names the sub; no call line
   });
 });

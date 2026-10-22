@@ -1,12 +1,20 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.2.0
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.3.0
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
 '      ExecuteGlobal GetTextFile("castcade.vbs")
 '      Castcade_Init "<table-id>", "<recipe>", "<recipe-version>", "<rom or empty>"
 '      Castcade_Guard "<original .vpx path>", <size>, "<yyyy-mm-dd hh:nn:ss local mtime>", "<this .vbs path>"
-'  (Castcade_Guard is new in 0.2.0; 0.1.0 sidecars do not call it and keep working.)
+'      Castcade_WatchBytes Array(<nvram offsets the map's game_state reads>)
+'  (Castcade_Guard is new in 0.2.0, Castcade_WatchBytes in 0.3.0; older sidecars do not call them and
+'   keep working — without a watch list every changed byte is journaled, the 0.1.0 behaviour.)
+'
+'  0.3.0 journal volume: with a watch list, Castcade_NVRAM keeps only the watched offsets of each
+'  ChangedNVRAM batch, coalesces them (latest value per offset, the first old value) and writes at
+'  most one nvram_delta line per 50 ms, flushed at once; the full snapshot is taken once, at hook
+'  time.  A WPC table went from ~100 lines/s (22 MB per 7 minutes, long frames at every snapshot)
+'  to a few lines per score change.  An EMPTY watch list (ROM without a map) journals no deltas.
 '
 '  Working agreement (castcade/CLAUDE.md):
 '   * No real work in VBScript.  This file appends lines to a journal and reads one lock flag.
@@ -36,11 +44,12 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.2.0"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.3.0"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
 Dim Castcade_PrevNVRAM, Castcade_NVRAMRegistered, Castcade_NVn
+Dim Castcade_Watch, Castcade_WatchOn, Castcade_Pending, Castcade_LastDeltaT, Castcade_Filtered
 Dim Castcade_PlayKeys, Castcade_PlayKeysReady, Castcade_ExtraKeyNames, Castcade_Swallowed, Castcade_LastLocked
 Dim Castcade_LastScores, Castcade_Blocked
 
@@ -52,6 +61,9 @@ Castcade_LastScores = ""
 Castcade_Blocked = 0
 Castcade_NVn = 0
 Castcade_Lines = 0
+Castcade_WatchOn = False
+Castcade_LastDeltaT = -1
+Castcade_Filtered = 0
 
 ' ---------------------------------------------------------------- init / exit ----------
 
@@ -86,7 +98,10 @@ End Sub
 
 Sub Castcade_Exit()
     On Error Resume Next
-    Castcade_Emit "table_exit", """lines"":" & Castcade_Lines & ",""nvram_callbacks"":" & Castcade_NVn & ",""blocked_keys"":" & Castcade_Blocked
+    If Castcade_WatchOn Then
+        If Castcade_Pending.Count > 0 Then Castcade_FlushPending
+    End If
+    Castcade_Emit "table_exit", """lines"":" & Castcade_Lines & ",""nvram_callbacks"":" & Castcade_NVn & ",""blocked_keys"":" & Castcade_Blocked & ",""filtered_bytes"":" & Castcade_Filtered
     If Castcade_LogOpen Then Castcade_Log.Close
     Castcade_LogOpen = False
 End Sub
@@ -253,21 +268,82 @@ Sub Castcade_RegisterNVRAM()
 End Sub
 
 ' Receives Controller.ChangedNVRAM batches from core.vbs PinMAMETimer_Timer: chg(i,0)=offset, (i,1)=new, (i,2)=old
+' The watch list (0.3.0): the NVRAM offsets worth journaling, from the ROM's map.  Call from block 0,
+' before LoadVPM.  An empty array means "journal no deltas" (a ROM the companion cannot decode).
+Sub Castcade_WatchBytes(offsets)
+    On Error Resume Next
+    Dim i
+    Set Castcade_Watch = CreateObject("Scripting.Dictionary")
+    Set Castcade_Pending = CreateObject("Scripting.Dictionary")
+    If IsArray(offsets) Then
+        For i = 0 To UBound(offsets)
+            Castcade_Watch(CStr(CLng(offsets(i)))) = True
+        Next
+    End If
+    Castcade_WatchOn = True
+End Sub
+
+' Receives Controller.ChangedNVRAM batches from core.vbs PinMAMETimer_Timer: chg(i,0)=offset, (i,1)=new, (i,2)=old.
+' With a watch list: keep the watched offsets, coalesce them, write at most every 50 ms (flushed at once).
+' Without one (0.1.0 / 0.2.0 sidecars): every byte, buffered, plus a full snapshot every 5000 batches.
 Sub Castcade_NVRAM(chg)
     On Error Resume Next
-    Dim i, n, parts, t
+    Dim i, n, parts, t, k, key
     Castcade_NVn = Castcade_NVn + 1
     If Castcade_NVn <= 300000 Then                      ' runaway guard
         t = Castcade_T()
+        If Castcade_NVn = 1 Then Castcade_NVRAMFull t
         n = UBound(chg, 1)
-        ReDim parts(n)
-        For i = 0 To n
-            parts(i) = "[" & chg(i, 0) & "," & chg(i, 1) & "," & chg(i, 2) & "]"
-        Next
-        Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & (n + 1) & ",""d"":[" & Join(parts, ",") & "]}", False
-        If Castcade_NVn = 1 Or (Castcade_NVn Mod 5000) = 0 Then Castcade_NVRAMFull t
+        If Castcade_WatchOn Then
+            For i = 0 To n
+                key = CStr(chg(i, 0))
+                If Castcade_Watch.Exists(key) Then
+                    If Castcade_Pending.Exists(key) Then
+                        Castcade_Pending(key) = Array(chg(i, 1), Castcade_Pending(key)(1))   ' latest new, first old
+                    Else
+                        Castcade_Pending(key) = Array(chg(i, 1), chg(i, 2))
+                    End If
+                Else
+                    Castcade_Filtered = Castcade_Filtered + 1
+                End If
+            Next
+            If Castcade_Pending.Count > 0 And (Castcade_LastDeltaT < 0 Or t - Castcade_LastDeltaT >= 0.05) Then
+                ReDim parts(Castcade_Pending.Count - 1)
+                i = 0
+                For Each k In Castcade_Pending.Keys
+                    parts(i) = "[" & k & "," & Castcade_Pending(k)(0) & "," & Castcade_Pending(k)(1) & "]"
+                    i = i + 1
+                Next
+                Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}", True
+                Castcade_Pending.RemoveAll
+                Castcade_LastDeltaT = t
+            End If
+        Else
+            ReDim parts(n)
+            For i = 0 To n
+                parts(i) = "[" & chg(i, 0) & "," & chg(i, 1) & "," & chg(i, 2) & "]"
+            Next
+            Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & (n + 1) & ",""d"":[" & Join(parts, ",") & "]}", False
+            If (Castcade_NVn Mod 5000) = 0 Then Castcade_NVRAMFull t
+        End If
     End If
     If IsObject(Castcade_PrevNVRAM) Then Castcade_PrevNVRAM chg
+End Sub
+
+' Write whatever is coalesced right now (table exit: the last change must not stay in the buffer).
+Sub Castcade_FlushPending()
+    On Error Resume Next
+    Dim parts, i, k
+    If Castcade_Pending.Count = 0 Then Exit Sub
+    ReDim parts(Castcade_Pending.Count - 1)
+    i = 0
+    For Each k In Castcade_Pending.Keys
+        parts(i) = "[" & k & "," & Castcade_Pending(k)(0) & "," & Castcade_Pending(k)(1) & "]"
+        i = i + 1
+    Next
+    Castcade_Write "{""event"":""nvram_delta"",""t"":" & Castcade_T() & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}", True
+    Castcade_Pending.RemoveAll
+    Castcade_LastDeltaT = Castcade_T()
 End Sub
 
 Sub Castcade_NVRAMFull(t)

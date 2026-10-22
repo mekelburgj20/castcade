@@ -60,6 +60,11 @@ export interface ApplyOptions {
   onProgress?: (done: number, total: number, item: PlanItem) => void;
   /** Wall clock for `renderedAt`; tests pass a fixed one. */
   now?: () => number;
+  /**
+   * The NVRAM offsets the hook should journal for a ROM (the map's `game_state` bytes; `[]` when
+   * the corpus has no map for it). Omitted = no watch list is rendered (every changed byte is journaled).
+   */
+  watchOffsetsFor?: (rom: string) => Promise<number[]>;
 }
 
 export interface ApplyResult {
@@ -268,13 +273,16 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
   const text = decodeScript(script.bytes);
   const cls: ClassifyResult = classifyScript(text);
   const sidecarPath = sidecarPathFor(item.vpxPath);
+  const rom = cls.facts.rom ?? null;
+  const watchOffsets = opts.watchOffsetsFor && rom ? await opts.watchOffsetsFor(rom) : undefined;
   const rendered = renderRecipeA(text, cls, {
     tableId: item.tableId,
-    rom: cls.facts.rom ?? null,
+    rom,
     originalPath: item.vpxPath,
     originalSize: script.size,
     originalMtimeMs: script.mtimeMs,
     sidecarPath,
+    ...(watchOffsets !== undefined ? { watchOffsets } : {}),
   });
   const vpxSha256 = (opts.hashOriginals ?? true) ? await sha256File(fs, item.vpxPath) : null;
   const manifest: Manifest = {

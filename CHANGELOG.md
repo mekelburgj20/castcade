@@ -35,6 +35,10 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   `stale_sidecar`, renames itself `.stale` and tells the player to relaunch and re-import. The companion adds two
   more layers: the tables folder is watched (a changed `.vpx` is re-patched or its patch disabled, with a
   notification) and the launch-time identity hash is compared with the manifest.
+- Hook 0.3.0 / recipe 0.3.0: `Castcade_WatchBytes` — the sidecar carries the NVRAM offsets the ROM's map reads
+  for `game_state`; the hook journals only those, coalesced to one line per 50 ms, flushed at once, with a single
+  snapshot at hook time. Measured on the owner's rig before the change: 89 lines/s median, 22.6 MB in seven
+  minutes, stutter and a VPX crash (WORK C2.1). Re-import the folder to re-render every sidecar.
 
 ### Dependencies
 - Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:

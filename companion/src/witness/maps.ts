@@ -503,6 +503,19 @@ export function hasScores(map: CompiledMap): boolean {
   return (map.gameState['scores']?.length ?? 0) > 0 || map.lastGame.length > 0;
 }
 
+/**
+ * Every NVRAM offset `decodeGameState` reads: the `game_state` descriptors (and `last_game` when it
+ * stands in for the scores), sorted, unique. What the in-VPX hook (0.3.0) is told to journal, so a
+ * WPC table's ~200 changed bytes per second shrink to the handful that describe the game.
+ */
+export function gameStateOffsets(map: CompiledMap): number[] {
+  const out = new Set<number>();
+  const entries = Object.values(map.gameState).flat();
+  if (!(map.gameState['scores'] && map.gameState['scores'].length > 0)) entries.push(...map.lastGame);
+  for (const entry of entries) for (const off of descriptorOffsets(entry)) if (Number.isInteger(off) && off >= 0) out.add(off);
+  return [...out].sort((a, b) => a - b);
+}
+
 export function decodeHighScores(map: CompiledMap, nv: Uint8Array): HighScore[] {
   const mem = new NvMemory(map.platform, nv);
   return map.highScores.map((h) => ({
