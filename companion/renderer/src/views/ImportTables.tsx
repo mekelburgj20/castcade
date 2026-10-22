@@ -150,7 +150,8 @@ export function ImportTables({ state }: { state: CastcadeState }) {
         <div className="import-result">
           <p className={applied.failed.length === 0 ? 'ok' : ''}>
             Patched {applied.patched.length} table{applied.patched.length === 1 ? '' : 's'}
-            {applied.skipped > 0 ? `, ${applied.skipped} left as they were` : ''}; library {applied.libInstalled} in{' '}
+            {applied.already > 0 ? `, ${applied.already} already current` : ''}
+            {applied.skipped > 0 ? `, ${applied.skipped} left as they were (originals, unsupported)` : ''}; library {applied.libInstalled} in{' '}
             <span className="mono">{applied.scriptsDir}</span>. Launch a table and play: Status shows "Capture: live".
           </p>
           {applied.failed.length > 0 && (

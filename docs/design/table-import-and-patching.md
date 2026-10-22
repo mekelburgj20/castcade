@@ -167,6 +167,11 @@ press is journaled as `key_blocked`, which is how the verification run proves th
      That one session still runs the old script (the embedded script is out of reach once VPX chose the sidecar).
   This is the maintenance cost of the per-table path, stated plainly; the folder watch makes the other two rare.
 
+  Two rules the folder watch follows (companion `main/sidecar-watch.ts`): it runs every look under the same lock as
+  the card's plan / patch / remove-all, so a re-patch never runs twice over one table at once; and a stale sidecar
+  whose only fault is version drift (a newer companion with a newer recipe or library) is re-made quietly, all such
+  tables in one import run with one notification, because that is maintenance the player did not cause.
+
 ## 7. Verification run
 
 After rendering: launch `VPinballX64.exe -Play "<path>"` (or the copy), wait for `table_loaded` in the journal

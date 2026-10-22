@@ -35,6 +35,11 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   `stale_sidecar`, renames itself `.stale` and tells the player to relaunch and re-import. The companion adds two
   more layers: the tables folder is watched (a changed `.vpx` is re-patched or its patch disabled, with a
   notification) and the launch-time identity hash is compared with the manifest.
+- The folder watch and the Settings card share one lock over the tables folder, and a new companion build (every
+  manifest older than its recipe / library) is re-made as one batch with one notification on the first look, not
+  a hundred. (2026-10-22 on the owner's rig the first look and a manual Patch re-patched the same 102 tables at the
+  same time; the card then reported "Patched 67".) The card's result now separates "already current" from "left
+  as they were".
 - Hook 0.3.0 / recipe 0.3.0: `Castcade_WatchBytes` — the sidecar carries the NVRAM offsets the ROM's map reads
   for `game_state`; the hook journals only those, coalesced to one line per 50 ms, flushed at once, with a single
   snapshot at hook time. Measured on the owner's rig before the change: 89 lines/s median, 22.6 MB in seven

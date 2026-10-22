@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
-import { applyImport, planImport, sidecarPathFor, stalePathFor, readManifest, manifestPathFor, tableIdFor } from '../patcher/index.js';
+import { LIB_VERSION, applyImport, planImport, sidecarPathFor, stalePathFor, readManifest, writeManifest, manifestPathFor, tableIdFor } from '../patcher/index.js';
 import { ORIGINAL_B_SCRIPT, VPM_SCRIPT, crlf } from '../patcher/test-scripts.test-support.js';
 import { MemoryFs } from '../witness/fs.js';
 import { ascii, buildVpx, codeRecord, concat, floatRecord, record, u32le } from '../witness/synth-vpx.test-support.js';
@@ -86,6 +86,60 @@ describe('SidecarWatch', () => {
     h.fs.put(MB, vpx(crlf([...VPM_SCRIPT, "' changed offline"]), 1024));
     const out = await h.watch.tick();
     expect(out.map((o) => o.result)).toEqual(['repatched']);
+  });
+
+  it('a new companion build (older lib in every manifest) re-makes all patches as one batch with one notice', async () => {
+    const h = await harness();
+    const TZ = `${TABLES}/Tales from the Crypt (Data East 1993).vpx`;
+    h.fs.put(TZ, vpx(crlf(VPM_SCRIPT)), h.clock.now() - 86_400_000);
+    await applyImport(h.fs, await planImport(h.fs, { paths: [TZ], manifestDir: MANIFESTS }), { manifestDir: MANIFESTS, vpxScriptsDir: SCRIPTS, libSource: LIB_SRC, now: () => h.clock.now() });
+    for (const p of [MB, TZ]) {
+      const m = await readManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(p)));
+      if (!m) throw new Error('no manifest');
+      await writeManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(p)), { ...m, libVersion: '0.2.0', recipeVersion: '0.2.0' });
+    }
+    const out = await h.watch.tick();
+    expect(out.map((o) => o.result)).toEqual(['repatched', 'repatched']);
+    expect(out[0]?.detail).toContain(`re-made for hook ${LIB_VERSION}`);
+    expect(h.notices).toEqual([{ title: 'Castcade updated its table patches', body: `2 table patches re-made for hook ${LIB_VERSION}; nothing to do.` }]);
+    for (const p of [MB, TZ]) expect((await readManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(p))))?.libVersion).toBe(LIB_VERSION);
+    expect(h.log.filter((l) => l.includes('is stale'))).toHaveLength(2);
+    h.clock.advance(30_000);
+    expect(await h.watch.tick()).toEqual([]);
+    expect(h.notices).toHaveLength(1);
+  });
+
+  it('every look runs under the shared lock, so it waits for an import in progress', async () => {
+    const h = await harness();
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered = 0;
+    const watch = new SidecarWatch({
+      fs: h.fs,
+      clock: h.clock,
+      tablesDir: () => TABLES,
+      scriptsDir: () => SCRIPTS,
+      manifestDir: MANIFESTS,
+      libSource: LIB_SRC,
+      exclusive: async (fn) => {
+        entered++;
+        await held;
+        return fn();
+      },
+      log: () => {},
+    });
+    let settled = false;
+    const tick = watch.tick().then((o) => {
+      settled = true;
+      return o;
+    });
+    await Promise.resolve();
+    expect(entered).toBe(1);
+    expect(settled).toBe(false);
+    release?.();
+    expect(await tick).toEqual([]);
   });
 
   it('runs on the clock, and a missing folder is not an error', async () => {

@@ -46,7 +46,8 @@ export type SidecarCheck =
   | { state: 'none' }
   | { state: 'foreign' }
   | { state: 'ok'; manifest: Manifest }
-  | { state: 'stale'; manifest: Manifest | null; why: string }
+  /** `kind`: `version` = this build renders differently (re-make quietly); `changed` = the table or the sidecar moved under us. */
+  | { state: 'stale'; manifest: Manifest | null; why: string; kind: 'version' | 'changed' }
   | { state: 'disabled'; stalePath: string };
 
 export interface ApplyOptions {
@@ -135,25 +136,25 @@ export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: 
   if (!isOurSidecar(text)) return { state: 'foreign' };
 
   const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableIdFor(vpxPath)));
-  if (!manifest) return { state: 'stale', manifest: null, why: 'no manifest for this sidecar' };
+  if (!manifest) return { state: 'stale', manifest: null, why: 'no manifest for this sidecar', kind: 'changed' };
   if (manifest.recipeVersion !== RECIPE_VERSION || manifest.libVersion !== LIB_VERSION) {
-    return { state: 'stale', manifest, why: `rendered with recipe ${manifest.recipeVersion} / lib ${manifest.libVersion}; this build is ${RECIPE_VERSION} / ${LIB_VERSION}` };
+    return { state: 'stale', manifest, why: `rendered with recipe ${manifest.recipeVersion} / lib ${manifest.libVersion}; this build is ${RECIPE_VERSION} / ${LIB_VERSION}`, kind: 'version' };
   }
   const sidecarSha = createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex');
-  if (sidecarSha !== manifest.sidecarSha256) return { state: 'stale', manifest, why: 'sidecar bytes differ from the manifest (edited by hand?)' };
+  if (sidecarSha !== manifest.sidecarSha256) return { state: 'stale', manifest, why: 'sidecar bytes differ from the manifest (edited by hand?)', kind: 'changed' };
 
   let st: { size: number; mtimeMs: number };
   try {
     st = await fs.stat(vpxPath);
   } catch (err) {
-    if (isNotFound(err)) return { state: 'stale', manifest, why: 'original .vpx is missing' };
+    if (isNotFound(err)) return { state: 'stale', manifest, why: 'original .vpx is missing', kind: 'changed' };
     throw err;
   }
-  if (st.size !== manifest.vpxSize) return { state: 'stale', manifest, why: `size ${st.size} vs ${manifest.vpxSize} in the manifest` };
+  if (st.size !== manifest.vpxSize) return { state: 'stale', manifest, why: `size ${st.size} vs ${manifest.vpxSize} in the manifest`, kind: 'changed' };
   if (st.mtimeMs !== manifest.vpxMtimeMs) {
-    if (manifest.vpxSha256 === null) return { state: 'stale', manifest, why: 'mtime changed and the manifest has no hash to confirm against' };
+    if (manifest.vpxSha256 === null) return { state: 'stale', manifest, why: 'mtime changed and the manifest has no hash to confirm against', kind: 'changed' };
     const sha = await sha256File(fs, vpxPath);
-    if (sha !== manifest.vpxSha256) return { state: 'stale', manifest, why: 'sha256 of the .vpx differs from the manifest' };
+    if (sha !== manifest.vpxSha256) return { state: 'stale', manifest, why: 'sha256 of the .vpx differs from the manifest', kind: 'changed' };
   }
   return { state: 'ok', manifest };
 }

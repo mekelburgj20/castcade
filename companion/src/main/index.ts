@@ -262,6 +262,7 @@ async function main(): Promise<void> {
     manifestDir,
     libSource,
     watchOffsetsFor: (rom) => tables.watchOffsetsFor(rom),
+    exclusive: (fn) => tables.exclusive(fn),
     log: (line) => logger.info(line),
     notify: (title, body) => tray?.notify(title, body),
   });

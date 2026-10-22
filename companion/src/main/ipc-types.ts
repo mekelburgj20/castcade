@@ -55,7 +55,9 @@ export interface TablesApplyResult {
   dir: string;
   patched: string[];
   failed: { tableId: string; error: string }[];
-  /** Items the plan did not act on (skip / foreign / unsupported / already). */
+  /** Tables whose sidecar was already current (nothing to do). */
+  already: number;
+  /** Items the plan did not act on for another reason (skip / foreign / unsupported). */
   skipped: number;
   libInstalled: 'installed' | 'updated' | 'unchanged';
   scriptsDir: string;

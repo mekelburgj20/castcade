@@ -233,6 +233,7 @@ interface TablesApplyResult {
   dir: string;
   patched: string[];
   failed: { tableId: string; error: string }[];
+  already: number;
   skipped: number;
   libInstalled: 'installed' | 'updated' | 'unchanged';
   scriptsDir: string;

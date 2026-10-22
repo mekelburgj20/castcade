@@ -34,6 +34,11 @@ export interface TablesHost {
   scriptsDir(): string | null;
   /** The NVRAM offsets the hook journals for a ROM: its map's `game_state` bytes, `[]` without a map. */
   watchOffsetsFor(rom: string): Promise<number[]>;
+  /**
+   * The one lock over the tables folder: plan / apply / remove-all run under it, and so does every
+   * look of the sidecar watch, so a re-patch never runs twice over the same table at once.
+   */
+  exclusive<T>(fn: () => Promise<T>): Promise<T>;
   readonly manifestDir: string;
 }
 
@@ -89,11 +94,20 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     return resolved;
   };
 
+  // A promise chain is enough for one process: each caller waits for the previous one, failures included.
+  let chain: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = chain.then(fn, fn);
+    chain = run.catch(() => undefined);
+    return run;
+  };
+
   return {
     manifestDir,
     resolveTablesDir,
     scriptsDir,
     watchOffsetsFor,
+    exclusive,
 
     async defaults() {
       if (hookVersion === null) {
@@ -105,42 +119,50 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
       return { tablesDir: resolveTablesDir(null), scriptsDir: scriptsDir(), vpxExe: vpxExe(), hookVersion };
     },
 
-    async plan(dir) {
+    plan(dir) {
       const tablesDir = need(dir);
-      const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
-      log.info(`tables: plan ${tablesDir}: ${Object.entries(plan.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`);
-      return toPlanDto(tablesDir, plan);
+      return exclusive(async () => {
+        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
+        log.info(`tables: plan ${tablesDir}: ${Object.entries(plan.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`);
+        return toPlanDto(tablesDir, plan);
+      });
     },
 
-    async apply(dir) {
+    apply(dir) {
       const tablesDir = need(dir);
       const vpxScriptsDir = scriptsDir();
       if (!vpxScriptsDir) throw new Error('Launch a table once so Castcade knows where VPX (and its scripts folder) lives');
-      const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
-      const result = await applyImport(fs, plan, {
-        manifestDir,
-        vpxScriptsDir,
-        libSource,
-        watchOffsetsFor,
-        onProgress: (done, total, item) => log.info(`tables: ${done}/${total} ${item.tableId} (${item.action})`),
+      return exclusive(async () => {
+        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
+        const result = await applyImport(fs, plan, {
+          manifestDir,
+          vpxScriptsDir,
+          libSource,
+          watchOffsetsFor,
+          onProgress: (done, total, item) => log.info(`tables: ${done}/${total} ${item.tableId} (${item.action})`),
+        });
+        for (const f of result.failed) log.warn(`tables: ${f.item.tableId} failed: ${f.error}`);
+        const already = result.skipped.filter((it) => it.action === 'already').length;
+        log.info(`tables: patched ${result.patched.length}, already current ${already}, failed ${result.failed.length}, library ${result.libInstalled} in ${vpxScriptsDir}`);
+        return {
+          dir: tablesDir,
+          patched: result.patched,
+          failed: result.failed.map((f) => ({ tableId: f.item.tableId, error: f.error })),
+          already,
+          skipped: result.skipped.length - already,
+          libInstalled: result.libInstalled,
+          scriptsDir: vpxScriptsDir,
+        };
       });
-      for (const f of result.failed) log.warn(`tables: ${f.item.tableId} failed: ${f.error}`);
-      log.info(`tables: patched ${result.patched.length}, failed ${result.failed.length}, library ${result.libInstalled} in ${vpxScriptsDir}`);
-      return {
-        dir: tablesDir,
-        patched: result.patched,
-        failed: result.failed.map((f) => ({ tableId: f.item.tableId, error: f.error })),
-        skipped: result.skipped.length,
-        libInstalled: result.libInstalled,
-        scriptsDir: vpxScriptsDir,
-      };
     },
 
-    async removeAll(dir) {
+    removeAll(dir) {
       const tablesDir = need(dir);
-      const r = await removeAllSidecars(fs, { tablesDir, manifestDir, recursive: true });
-      log.info(`tables: removed ${r.removed.length} sidecar(s) under ${tablesDir}; kept ${r.keptForeign.length} foreign`);
-      return { dir: tablesDir, removed: r.removed, keptForeign: r.keptForeign };
+      return exclusive(async () => {
+        const r = await removeAllSidecars(fs, { tablesDir, manifestDir, recursive: true });
+        log.info(`tables: removed ${r.removed.length} sidecar(s) under ${tablesDir}; kept ${r.keptForeign.length} foreign`);
+        return { dir: tablesDir, removed: r.removed, keptForeign: r.keptForeign };
+      });
     },
   };
 }
