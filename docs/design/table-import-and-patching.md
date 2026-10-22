@@ -54,7 +54,11 @@ The owner accepts Scorbit-style per-table script edits; the automation is the pr
                               optional: report readiness to ArcAid (global_games.id + recipe version)
 ```
 
-Every step is idempotent and re-runnable. Import of a folder runs the pipeline per file with a summary.
+Every step is idempotent and re-runnable. **The default import is the whole tables folder** (owner ruling
+2026-10-21; one table is the same flow on one file): a dry run first (classify every `.vpx`, write nothing, show
+"N ROM tables will be patched, M originals skipped until recipes B/C exist, K have a foreign external `.vbs` and are
+left alone, J already patched"), then apply. A `.vbs` beside a `.vpx` that does not carry the Castcade marker is never
+touched. A "remove all Castcade sidecars" action deletes ours (and their manifests) and nothing else.
 
 ## 4. Analyzer — classification rules
 
@@ -147,10 +151,21 @@ press is journaled as `key_blocked`, which is how the verification run proves th
 - **Match handshake (`HELLO`)** carries `sha256(original .vpx)`, `recipe`, `recipe_version`, `sha256(sidecar)`.
   Two players with the same original and the same recipe version produce byte-identical sidecars, so the host
   can refuse a mismatch and name the differing side (the handoff's table-hash control, preserved).
-- **Stale-sidecar guard.** A sidecar REPLACES the embedded script. When a table author ships a new `.vpx`, the old
-  sidecar would run the old script against new geometry and break the table. The process watch hashes the
-  `.vpx` on every launch; a hash that differs from the manifest **disables the sidecar** (rename to
-  `<Table>.vbs.stale`) and offers re-import. This is the maintenance cost of the per-table path, stated plainly.
+- **Stale-sidecar guard, three layers (owner ruling 2026-10-21).** A sidecar REPLACES the embedded script. When a
+  table author ships a new `.vpx`, the old sidecar would run the old script against new geometry and break the
+  table. The manifest's `sha256(original .vpx)` is the truth; three checks act on it, in the order they usually fire:
+  1. **Folder watch.** The companion is a tray app, so it watches the tables folder; a `.vpx` whose size or mtime
+     changed is re-hashed within seconds of the download and its sidecar is re-rendered (recipe anchors still match)
+     or disabled (renamed to `<Table>.vbs.stale`) with a notification offering one-click re-import.
+  2. **Launch re-hash.** The process watch hashes the `.vpx` at launch and disables a mismatch. It is usually late
+     for that launch (VPX reads the sidecar at table load, the watch polls every 2 s), so it protects the next one.
+  3. **In-script stamp.** Block 0 calls `Castcade_Guard originalPath, size, mtime, sidecarPath` (hook 0.2.0).
+     VBScript cannot hash a 300 MB file, so the sidecar carries the original's size and local-time mtime
+     (±1 h tolerance for DST / FileTime quirks; size is the strong signal). On a mismatch it journals
+     `stale_sidecar`, renames itself `.stale`, and tells the player: "This Castcade patch was made for an older
+     version of this table. It has been disabled — close the table, relaunch it, then re-import it from Castcade."
+     That one session still runs the old script (the embedded script is out of reach once VPX chose the sidecar).
+  This is the maintenance cost of the per-table path, stated plainly; the folder watch makes the other two rare.
 
 ## 7. Verification run
 
@@ -168,6 +183,11 @@ observed `game_start` → `ball_end` → `game_end` sequence. Outcomes:
 | `unsupported` | class X, or verification failed | grey with reason |
 
 "Patched" must never read as "Castcade-ready". The two states are separate columns in the table list.
+
+**Folder import runs no verification launch.** Opening VPX once per table across a 100-table folder is hours of
+windows popping up, so bulk-imported tables are `provisional` ("patched, unverified") until the first real game
+on them produces `game_start` → `ball_end` → `game_end` in live mode, which upgrades them to `witnessed` in the
+manifest. The single-table verification launch stays available as an explicit action.
 
 ## 8. Bulk mode — the shared `core.vbs` patch (setup-time opt-in)
 
