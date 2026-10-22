@@ -12,6 +12,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   renderer `tools/work-board.mjs` (`npm run work:check | work:summary | work:board`), `/work`, `/wrap`
   and `/release-docs` commands, ADR 0006. `.claude/commands` is tracked; `.claude/worktrees` is not.
   CI checks the tracker's grammar. The "Current state" narrative left `CLAUDE.md`.
+- Eighth item status `dropped <reason>` for work that will not be done (hidden on the board by default); first
+  full audit of the tracker against code, ADRs and the ArcAid tracker (commit 3cc645c).
 
 ### Dependencies
 - Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:
