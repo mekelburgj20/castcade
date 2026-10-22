@@ -34,7 +34,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   const statusListeners = new Set<(status: WitnessStatus) => void>();
   let paused = false;
   let unsubscribe: Array<() => void> = [];
-  let witness: Witness = attach(createWitness(store));
+  const deps = { log: (line: string) => log.info(line) };
+  let witness: Witness = attach(createWitness(store, deps));
 
   let lastCheckin: string | null = null;
 
@@ -124,7 +125,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       } catch (e) {
         log.error(`witness: stop before restart failed: ${describeError(e)}`);
       }
-      witness = attach(createWitness(store));
+      witness = attach(createWitness(store, deps));
       if (!paused) {
         try {
           await witness.start();
