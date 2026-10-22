@@ -1,5 +1,6 @@
 import { useEffect, useState, type MouseEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { ImportTables } from './ImportTables.js';
 
 const PRESETS = [
   { label: 'Production', url: 'https://arcaid.app' },
@@ -113,6 +114,8 @@ export function Settings({ state }: { state: CastcadeState }) {
           Save folder
         </button>
       </div>
+
+      <ImportTables state={state} />
 
       <div className="card">
         <label className="check">

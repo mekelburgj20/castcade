@@ -45,6 +45,7 @@ import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
+import { disableSidecar, manifestPathFor, readManifest, type Manifest } from '../patcher/index.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
@@ -181,6 +182,13 @@ interface LiveSession {
   games: number;
   /** Games posted from the journal; when > 0 the `.nv` capture at close is suppressed (it would repeat the last one). */
   captures: number;
+  /** The import manifest for this table (pins the `.vpx` hash the sidecar was rendered for), when found. */
+  manifest: Manifest | null;
+}
+
+/** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
+export function manifestDirFor(dataDir: string): string {
+  return joinPath(dataDir, 'tables');
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -522,6 +530,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
             session.identity = { ...session.identity, sha256: hashed.sha256, notes: hashed.sha256 ? session.identity.notes : hashed.notes };
             refreshTableStatus();
             emitStatus();
+            void checkLiveHash(session, hashed.filePath, hashed.sha256);
           }
         })
         .finally(() => {
@@ -742,6 +751,22 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
   /** Where the hook writes journals; null disables live mode (no `%LOCALAPPDATA%`, or a test that says so). */
   const journalRoot: string | null = deps.journalDir === undefined ? (env.LOCALAPPDATA ? journalDir(env.LOCALAPPDATA) : null) : deps.journalDir;
+  const manifestDir = manifestDirFor(store.get().dataDir);
+
+  /**
+   * Layer 2 of the stale-sidecar guard: the table file's hash landed (identity resolution); when
+   * the manifest pinned a different file, the sidecar is for another version — disable it and say so.
+   */
+  const checkLiveHash = async (session: OpenSession, vpxPath: string | null, sha256: string | null): Promise<void> => {
+    const live = session.live;
+    if (!live || !vpxPath || !sha256 || !live.manifest?.vpxSha256 || live.manifest.vpxSha256 === sha256) return;
+    try {
+      const stale = await disableSidecar(fs, vpxPath);
+      fail(`Castcade patch for ${live.tableId} was made for another version of this table; disabled (${stale}) — re-import it from Castcade`);
+    } catch (err) {
+      log(`witness: could not disable the stale sidecar of ${live.tableId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   /** A table runs the hook when `<Table>.vbs` sits beside its `.vpx` and carries the sidecar's marker. */
   const hasSidecar = async (vpxPath: string): Promise<boolean> => {
@@ -772,6 +797,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (!(await hasSidecar(vpxPath).catch(() => false))) return;
     const tableId = tableBaseName(vpxPath);
     const path = joinPath(journalRoot, journalFileName(tableId));
+    const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableId)).catch(() => null);
     const live: LiveSession = {
       tail: new JournalTail(path, { fs, clock, pollMs: deps.journalPollMs, from: 'start' }),
       detector: new JournalDetector(),
@@ -786,6 +812,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       lastGameStartMs: null,
       games: 0,
       captures: 0,
+      manifest,
     };
     session.live = live;
     live.tail.on('line', (line) => {

@@ -21,9 +21,61 @@ export const IPC = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  tablesDefaults: 'tables:defaults',
+  tablesPlan: 'tables:plan',
+  tablesApply: 'tables:apply',
+  tablesRemoveAll: 'tables:removeAll',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
 } as const;
+
+// ------------------------------------------------------------------------- table import (C7) --
+
+/** What `planImport` decided for one `.vpx` (see `companion/src/patcher`). */
+export type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+
+export interface TablesPlanItem {
+  vpxPath: string;
+  tableId: string;
+  action: TablesPlanAction;
+  /** Script class A–E or X, null when the file could not be read. */
+  cls: string | null;
+  rom: string | null;
+  reason: string;
+}
+
+export interface TablesPlan {
+  dir: string;
+  items: TablesPlanItem[];
+  counts: Record<TablesPlanAction, number>;
+}
+
+export interface TablesApplyResult {
+  dir: string;
+  patched: string[];
+  failed: { tableId: string; error: string }[];
+  /** Items the plan did not act on (skip / foreign / unsupported / already). */
+  skipped: number;
+  libInstalled: 'installed' | 'updated' | 'unchanged';
+  scriptsDir: string;
+}
+
+export interface TablesRemoveResult {
+  dir: string;
+  removed: string[];
+  keptForeign: string[];
+}
+
+/** What the import card is prefilled with. */
+export interface TablesDefaults {
+  /** The tables folder to offer: the `tablesDir` setting, else `<VPX exe folder>\tables` once a VPX exe was seen. */
+  tablesDir: string | null;
+  /** Where `castcade.vbs` is installed: `<VPX exe folder>\scripts`, null until a VPX exe was seen. */
+  scriptsDir: string | null;
+  vpxExe: string | null;
+  /** The bundled hook library's version. */
+  hookVersion: string;
+}
 
 export interface AppVersions {
   app: string;
@@ -66,5 +118,14 @@ export interface CastcadeApi {
       set(openAtLogin: boolean): Promise<LoginItemState>;
     };
     logPath(): Promise<string>;
+  };
+  tables: {
+    defaults(): Promise<TablesDefaults>;
+    /** Dry run over a folder (null = the default folder): classifies every `.vpx`, writes nothing. */
+    plan(dir: string | null): Promise<TablesPlan>;
+    /** Re-plans the folder and patches the `patch` / `repatch` items; installs the hook library. */
+    apply(dir: string | null): Promise<TablesApplyResult>;
+    /** Deletes every Castcade sidecar (and manifest) under the folder; foreign `.vbs` files stay. */
+    removeAll(dir: string | null): Promise<TablesRemoveResult>;
   };
 }

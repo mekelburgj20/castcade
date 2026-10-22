@@ -28,6 +28,9 @@ import {
 import { createTray, type TrayHandle } from './tray.js';
 import { startUpdater, type UpdaterHandle } from './updater.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
+import { createTablesHost, type TablesHost } from './tables-host.js';
+import { SidecarWatch } from './sidecar-watch.js';
+import { manifestDirFor } from '../witness/witness.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -38,6 +41,7 @@ let quitting = false;
 let win: BrowserWindow | null = null;
 let log: Logger | null = null;
 let tray: TrayHandle | null = null;
+let sidecarWatch: SidecarWatch | null = null;
 let updater: UpdaterHandle | null = null;
 
 if (argv.includes('--smoke')) {
@@ -136,12 +140,13 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
 
 async function quit(host: WitnessHost): Promise<void> {
   quitting = true;
+  sidecarWatch?.stop();
   await host.stop();
   log?.info('quit');
   app.quit();
 }
 
-function registerIpc(store: SettingsStore, host: WitnessHost, logger: Logger): void {
+function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger): void {
   const str = (v: unknown, what: string): string => {
     if (typeof v !== 'string') throw new Error(`${what} must be a string`);
     return v;
@@ -168,6 +173,26 @@ function registerIpc(store: SettingsStore, host: WitnessHost, logger: Logger): v
     await store.set(clean);
     logger.info(`settings: updated ${Object.keys(clean).join(', ')}`);
     return redactSettings(store.get());
+  });
+  const dirArg = (v: unknown): string | null => {
+    if (v === null || v === undefined) return null;
+    return str(v, 'folder');
+  };
+  ipcMain.handle(IPC.tablesDefaults, () => tables.defaults());
+  ipcMain.handle(IPC.tablesPlan, (_e, dir: unknown) => tables.plan(dirArg(dir)));
+  ipcMain.handle(IPC.tablesApply, async (_e, dir: unknown) => {
+    try {
+      return await tables.apply(dirArg(dir));
+    } finally {
+      watch.reset();
+    }
+  });
+  ipcMain.handle(IPC.tablesRemoveAll, async (_e, dir: unknown) => {
+    try {
+      return await tables.removeAll(dirArg(dir));
+    } finally {
+      watch.reset();
+    }
   });
   ipcMain.handle(IPC.appOpenExternal, async (_e, url: unknown) => {
     const target = str(url, 'url');
@@ -221,7 +246,21 @@ async function main(): Promise<void> {
     if (needsWitnessRestart(prev, next)) void host.restart('settings changed');
   });
 
-  registerIpc(store, host, logger);
+  // Table import (C7): the hook library ships as a resource; manifests live beside the witness data.
+  const libSource = app.isPackaged ? join(process.resourcesPath, 'hook', 'castcade.vbs') : resolve(companionDir, '..', 'vpx-hook', 'castcade.vbs');
+  const manifestDir = manifestDirFor(s.dataDir);
+  const tables = createTablesHost({ store, witnessStatus: () => host.status(), libSource, manifestDir, log: logger });
+  const watch = new SidecarWatch({
+    tablesDir: () => tables.resolveTablesDir(null),
+    scriptsDir: () => tables.scriptsDir(),
+    manifestDir,
+    libSource,
+    log: (line) => logger.info(line),
+    notify: (title, body) => tray?.notify(title, body),
+  });
+  sidecarWatch = watch;
+
+  registerIpc(store, host, tables, watch, logger);
 
   if (!argv.includes('--hidden')) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());
@@ -250,6 +289,7 @@ async function main(): Promise<void> {
   });
 
   await host.start();
+  watch.start();
 
   if (app.isPackaged) {
     updater = await startUpdater(logger, {

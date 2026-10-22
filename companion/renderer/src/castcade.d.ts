@@ -212,6 +212,45 @@ interface SettingsPatch {
   deviceLabel?: string;
 }
 
+type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+
+interface TablesPlanItem {
+  vpxPath: string;
+  tableId: string;
+  action: TablesPlanAction;
+  cls: string | null;
+  rom: string | null;
+  reason: string;
+}
+
+interface TablesPlan {
+  dir: string;
+  items: TablesPlanItem[];
+  counts: Record<TablesPlanAction, number>;
+}
+
+interface TablesApplyResult {
+  dir: string;
+  patched: string[];
+  failed: { tableId: string; error: string }[];
+  skipped: number;
+  libInstalled: 'installed' | 'updated' | 'unchanged';
+  scriptsDir: string;
+}
+
+interface TablesRemoveResult {
+  dir: string;
+  removed: string[];
+  keptForeign: string[];
+}
+
+interface TablesDefaults {
+  tablesDir: string | null;
+  scriptsDir: string | null;
+  vpxExe: string | null;
+  hookVersion: string;
+}
+
 interface AppVersions {
   app: string;
   protocol: number;
@@ -241,6 +280,12 @@ interface CastcadeBridge {
   readonly settings: {
     get(): Promise<RedactedSettings>;
     set(patch: SettingsPatch): Promise<RedactedSettings>;
+  };
+  readonly tables: {
+    defaults(): Promise<TablesDefaults>;
+    plan(dir: string | null): Promise<TablesPlan>;
+    apply(dir: string | null): Promise<TablesApplyResult>;
+    removeAll(dir: string | null): Promise<TablesRemoveResult>;
   };
   readonly app: {
     openExternal(url: string): Promise<boolean>;

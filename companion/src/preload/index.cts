@@ -23,6 +23,10 @@ const CH = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  tablesDefaults: 'tables:defaults',
+  tablesPlan: 'tables:plan',
+  tablesApply: 'tables:apply',
+  tablesRemoveAll: 'tables:removeAll',
   witnessStatusEvent: 'witness:status',
 } as const;
 
@@ -64,6 +68,12 @@ const castcade: CastcadeApi = {
       set: (on) => ipcRenderer.invoke(CH.appLoginItemSet, on),
     },
     logPath: () => ipcRenderer.invoke(CH.appLogPath),
+  },
+  tables: {
+    defaults: () => ipcRenderer.invoke(CH.tablesDefaults),
+    plan: (dir) => ipcRenderer.invoke(CH.tablesPlan, dir),
+    apply: (dir) => ipcRenderer.invoke(CH.tablesApply, dir),
+    removeAll: (dir) => ipcRenderer.invoke(CH.tablesRemoveAll, dir),
   },
 };
 
