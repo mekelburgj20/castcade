@@ -66,6 +66,8 @@ export interface ArcaidClientOptions {
   baseUrl: string;
   fetch?: FetchLike;
   timeoutMs?: number;
+  /** One line per request sent and per answer received (diagnostics: how many sends a score took). */
+  log?: (line: string) => void;
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -91,15 +93,19 @@ function parseBody(text: string): Record<string, unknown> {
 
 const defaultFetch: FetchLike = (input, init) => globalThis.fetch(input, init);
 
+let requestSeq = 0;
+
 export class ArcaidClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
+  private readonly log: ((line: string) => void) | null;
 
   constructor(opts: ArcaidClientOptions) {
     this.baseUrl = opts.baseUrl;
     this.fetchImpl = opts.fetch ?? defaultFetch;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.log = opts.log ?? null;
   }
 
   /** One GET. Resolves on 2xx; throws `ArcaidError` for everything else. */
@@ -109,16 +115,22 @@ export class ArcaidClient {
     if (token) headers['x-witness-token'] = token;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const seq = ++requestSeq;
+    const startedAt = Date.now();
+    // Never the token; the score and table are enough to tie a send to a capture.
+    this.log?.(`arcaid: #${seq} GET ${path}${params['score'] !== undefined ? ` score=${String(params['score'])}` : ''}${params['table'] !== undefined ? ` table="${String(params['table'])}"` : ''}`);
     let res: FetchResponseLike;
     try {
       res = await this.fetchImpl(url, { method: 'GET', headers, signal: controller.signal });
     } catch (err) {
       clearTimeout(timer);
       const msg = err instanceof Error && err.name === 'AbortError' ? `ArcAid did not answer within ${this.timeoutMs} ms` : `ArcAid unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      this.log?.(`arcaid: #${seq} failed after ${Date.now() - startedAt} ms: ${msg}`);
       throw new ArcaidError('network', msg);
     }
     clearTimeout(timer);
     const body = parseBody(await res.text().catch(() => ''));
+    this.log?.(`arcaid: #${seq} ${res.status} in ${Date.now() - startedAt} ms${typeof body['status'] === 'string' ? ` status=${body['status']}` : ''}`);
     if (res.status >= 200 && res.status < 300) return { status: res.status, body };
     const detail = typeof body['error'] === 'string' ? body['error'] : `HTTP ${res.status}`;
     if (res.status === 401) throw new ArcaidError('auth', 'unpaired by ArcAid', 401, body);

@@ -326,7 +326,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const arcaid = (): ArcaidClient => {
     const base = store.get().arcaidBaseUrl;
     if (!client || clientBase !== base) {
-      client = new ArcaidClient({ baseUrl: base, fetch: deps.fetch, timeoutMs: deps.requestTimeoutMs });
+      client = new ArcaidClient({ baseUrl: base, fetch: deps.fetch, timeoutMs: deps.requestTimeoutMs, log });
       clientBase = base;
     }
     return client;
