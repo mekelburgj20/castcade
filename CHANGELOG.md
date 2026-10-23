@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.12] — 2026-10-22
+
 ### Table import, second pass (what a tester hit on 0.2.11 — C8)
 - "Patch my tables" is one button: it plans and patches the folder in one click with a "37 of 102" progress line,
   the outcome is a banner at the top of the card (errors too — the old card printed them in small red text at the
