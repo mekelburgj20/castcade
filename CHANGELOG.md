@@ -24,6 +24,15 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   journal, with the hook's timing (`reason=game_over`; a game abandoned at exit as `shutdown`); the `.nv` read at
   close is no longer re-posted after a live capture. Status shows "Capture: live" or "basic".
 
+### Limited attempts (ArcAid ADR 0029, companion half — B11)
+- In live mode every game START is reported at once on `GET /api/witness/attempt` with a key (the hook's
+  session stamp + the start's journal time) that the game's score call repeats as `attempt=<key>`. Status shows
+  the answer while the game runs: "Attempt 3 of 5", "No attempts left: this score will not count", "offline:
+  this attempt will not count" (the call is queued and replayed, idempotent on the key, but a late start uses
+  the slot and its score is refused), nothing when the board has no limit. The last capture shows which
+  attempt the score used. Basic mode sends no attempt call: a limited board refuses those scores as
+  `unreported`, which ArcAid words as "import this table in Castcade".
+
 ### Table import (Phase 3, recipe A)
 - Settings → "Import tables for live scores": dry run over the whole tables folder (what will be patched,
   re-patched, skipped, left alone, unsupported), patch, remove all. Every ROM table gets a same-basename

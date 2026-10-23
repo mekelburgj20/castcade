@@ -72,7 +72,7 @@ import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
-import type { CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
+import type { AttemptStatus, CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
   clock?: Clock;
@@ -184,6 +184,10 @@ interface LiveSession {
   captures: number;
   /** The import manifest for this table (pins the `.vpx` hash the sidecar was rendered for), when found. */
   manifest: Manifest | null;
+  /** The hook's session stamp from `table_loaded` (half of every attempt key). */
+  sessionStamp: string | null;
+  /** The game in progress on a limited-attempts board (ADR 0029): set at game start, cleared at capture. */
+  attempt: AttemptStatus | null;
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -228,6 +232,28 @@ export function outcomeForWire(
     }
     default:
       return { outcome: 'rejected', detail: `ArcAid: ${status}` };
+  }
+}
+
+/** What the player is told about a game start on a limited-attempts board (ADR 0029, "Castcade's half", item 2). */
+export function attemptStatusFor(key: string, posted: PostResult): AttemptStatus {
+  const base = { key, n: null, of: null, remaining: null, late: false, game: null };
+  if (posted.state === 'queued') return { ...base, state: 'queued', text: 'offline: this attempt will not count' };
+  if (posted.state === 'rejected') return { ...base, state: 'rejected', text: `ArcAid refused the attempt: ${posted.error.message}` };
+  const a = posted.attempt ?? null;
+  const late = a?.late ?? false;
+  const lateText = late ? ' (reported late: this score will not count)' : '';
+  switch (a?.status) {
+    case 'counted':
+      return { ...base, state: 'counted', n: a.attempt, of: a.of, remaining: a.remaining, late, game: a.game, text: `Attempt ${a.attempt ?? '?'} of ${a.of ?? '?'}${lateText}` };
+    case 'over_limit':
+      return { ...base, state: 'over_limit', n: a.attempt, of: a.of, remaining: 0, late, game: a.game, text: 'No attempts left: this score will not count' };
+    case 'unlimited':
+      return { ...base, state: 'unlimited', game: a.game, text: '' };
+    case 'no_match':
+      return { ...base, state: 'no_match', text: '' };
+    default:
+      return { ...base, state: 'rejected', text: `ArcAid answered "${a?.status ?? 'nothing'}" to the attempt` };
   }
 }
 
@@ -291,6 +317,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     lastError: null,
     note: null,
     captureMode: null,
+    attempt: null,
   };
 
   const sessions = new Map<number, OpenSession>();
@@ -454,6 +481,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.currentIdentity = active?.identity ?? null;
     status.currentAttestation = active?.attestation ?? null;
     status.captureMode = active ? (active.live ? 'live' : 'basic') : null;
+    status.attempt = active?.live?.attempt ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
   };
 
@@ -603,6 +631,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     decision: PublishDecision;
     details: string[];
     live: boolean;
+    /** The key of this game's attempt call (live mode on a limited board); the score repeats it. */
+    attemptKey?: string | null;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -688,10 +718,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           build: buildWire(attestation.build, vpmCheat),
           // 0.2.10: headset or monitor, when sampled. ArcAid 2.166.0 puts it on the device axis.
           ...(playDeviceFor(attestation.vr) ? { play_device: playDeviceFor(attestation.vr)! } : {}),
+          ...(p.attemptKey ? { attempt: p.attemptKey } : {}),
         },
       });
       const mapped = outcomeForPost(posted);
       result.outcome = mapped.outcome;
+      if (posted.state === 'done' && posted.wire?.attempt) {
+        result.attempt = posted.wire.attempt;
+        details.push(`attempt ${posted.wire.attempt.n} of ${posted.wire.attempt.of}`);
+      }
       for (const d of [decision.detail, mapped.detail]) if (d) details.unshift(d);
       if (posted.state === 'queued') {
         const last = queue.pending()[queue.size() - 1];
@@ -813,6 +848,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       games: 0,
       captures: 0,
       manifest,
+      sessionStamp: null,
+      attempt: null,
     };
     session.live = live;
     live.tail.on('line', (line) => {
@@ -852,6 +889,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       live.loadedAtMs = stampMs ?? clock.now() - ev.t * 1000;
       live.lastGameStartMs = null;
+      live.sessionStamp = ev.session ?? null;
+      live.attempt = null;
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
@@ -871,6 +910,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         live.lastGameStartMs = at;
         live.games++;
         session.lastActivityAt = clock.now();
+        await reportAttempt(session, live, ev.players ?? null, at, ev.t);
         break;
       case 'game_end':
         await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
@@ -911,8 +951,48 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (n > 1) decision = { kind: 'skip', players: n, score, detail: `multi-player game (${n} players): not attributable to one account` };
     else if (score === null || score <= 0) decision = { kind: 'skip', players: n, score, detail: 'no score (player 1 score is 0)' };
     else decision = { kind: 'score', players: 1, score, reason, gameOver: reason === 'game_over' };
-    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true });
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null });
     if (decision.kind === 'score') live.captures++;
+    live.attempt = null;
+    refreshTableStatus();
+    emitStatus();
+  };
+
+  /**
+   * A game START on a limited-attempts board (ADR 0029, 0.2.11): tell ArcAid at once with a key the
+   * score call will repeat. The call goes through the queue so an outage replays it (idempotent on
+   * the key), but a late report uses the slot and its score is refused, so the player is told.
+   */
+  const reportAttempt = async (session: OpenSession, live: LiveSession, players: number | null, startedMs: number, t: number): Promise<void> => {
+    const { deviceId, token } = store.get();
+    if (!token) return;
+    const rom = live.rom;
+    const romName = rom ? await corpus.romName(rom) : null;
+    const resolved = resolveTableName(session.launch, romName, rom);
+    const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
+    const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
+    const key = `${live.sessionStamp ?? String(live.loadedAtMs ?? 0)}#${Math.round(t * 1000)}`;
+    const identity = session.identity;
+    const playDevice = session.attestation ? playDeviceFor(session.attestation.vr) : null;
+    const posted = await queue.submit({
+      kind: 'attempt',
+      params: {
+        device: deviceId,
+        table: wireTable,
+        rom,
+        slug: wireSlug,
+        vps_game: identity?.vpsGame?.id ?? null,
+        vps_table: identity?.vpsTable?.id ?? null,
+        started: sec(startedMs),
+        key,
+        players,
+        ...(playDevice ? { play_device: playDevice } : {}),
+      },
+    });
+    live.attempt = attemptStatusFor(key, posted);
+    log(`witness: attempt ${key} on ${wireTable}: ${live.attempt.state}${live.attempt.text ? ` (${live.attempt.text})` : ''}`);
+    refreshTableStatus();
+    emitStatus();
   };
 
   /** Drain what the hook wrote last (`table_exit`), then stop following. */

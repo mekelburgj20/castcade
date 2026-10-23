@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
-import type { FetchLike } from './arcaid-client.js';
+import { ArcaidError, type FetchLike } from './arcaid-client.js';
 import { MemoryFs } from './fs.js';
 import { readJournalLines, replayJournal } from './journal-replay.js';
 import { createMapCorpus } from './maps.js';
@@ -11,7 +11,7 @@ import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, WitnessSettings, WitnessStatus } from './types.js';
 import { createVpsIndex } from './vps-index.js';
-import { createWitness, outcomeForWire, parseSessionStamp, resolveTableName, type WitnessDeps } from './witness.js';
+import { attemptStatusFor, createWitness, outcomeForWire, parseSessionStamp, resolveTableName, type WitnessDeps } from './witness.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
 
@@ -884,6 +884,50 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it('on a limited-attempts board the game start is reported at once with a key the score repeats, and the capture carries the attempt', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    h.setRespond((path) =>
+      path.endsWith('/attempt')
+        ? { status: 200, body: { ok: true, status: 'counted', game: 'Tales from the Crypt', attempt: 2, of: 5, remaining: 3, late: false } }
+        : path.endsWith('/score')
+          ? { status: 200, body: { ok: true, status: 'ingested', game: 'Tales from the Crypt', attempt: { n: 2, of: 5, remaining: 3 } } }
+          : { status: 200, body: { ok: true } },
+    );
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 33);
+    const loadedAt = h.clock.now() + 4000;
+    const journal = tftcJournalAt(loadedAt);
+    h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/attempt')).toHaveLength(1);
+    const a = h.paths('/attempt')[0]!;
+    expect(a.params).toMatchObject({
+      device: 'dev-1',
+      table: 'Tales from the Crypt (Data East 1993)',
+      rom: 'tftc_400',
+      started: String(Math.floor((loadedAt + journal.gameStartT * 1000) / 1000)),
+      players: '1',
+    });
+    expect(a.params['key']).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}#\d+$/);
+    expect(a.token).toBe('tok');
+    // The attempt call went out BEFORE the score (the start, not the end, is what counts).
+    const order = h.calls.map((c) => c.path).filter((p) => p.endsWith('/attempt') || p.endsWith('/score'));
+    expect(order).toEqual(['/api/witness/attempt', '/api/witness/score']);
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params['attempt']).toBe(a.params['key']);
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested', mode: 'live', attempt: { n: 2, of: 5, remaining: 3 } });
+    expect(h.captures[0]?.detail).toMatch(/attempt 2 of 5/);
+    // The Status page saw "Attempt 2 of 5" while the game ran, and nothing once it was captured.
+    expect(h.statuses.some((s) => s.attempt?.state === 'counted' && s.attempt.text === 'Attempt 2 of 5')).toBe(true);
+    expect(h.witness.status().attempt).toBeNull();
+    expect(h.errors).toEqual([]);
+  });
+
   it('ignores an earlier session left in the same journal file, and falls back to basic mode when no game follows', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');
@@ -915,6 +959,19 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.witness.start();
     await h.launch();
     expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, captureMode: 'basic' });
+  });
+});
+
+describe('attemptStatusFor (what the player is told about a game start)', () => {
+  const done = (attempt: Record<string, unknown>) => ({ state: 'done' as const, wire: null, attempt: { status: null, game: null, attempt: null, of: null, remaining: null, late: false, ...attempt } });
+  it('counts, refuses, stays silent when unlimited or unmatched, and names an outage', () => {
+    expect(attemptStatusFor('k', done({ status: 'counted', attempt: 3, of: 5, remaining: 2, game: 'MB' }))).toMatchObject({ state: 'counted', n: 3, of: 5, remaining: 2, text: 'Attempt 3 of 5', game: 'MB' });
+    expect(attemptStatusFor('k', done({ status: 'counted', attempt: 5, of: 5, remaining: 0, late: true }))).toMatchObject({ state: 'counted', late: true, text: 'Attempt 5 of 5 (reported late: this score will not count)' });
+    expect(attemptStatusFor('k', done({ status: 'over_limit', attempt: 6, of: 5, remaining: 0 }))).toMatchObject({ state: 'over_limit', text: 'No attempts left: this score will not count' });
+    expect(attemptStatusFor('k', done({ status: 'unlimited' }))).toMatchObject({ state: 'unlimited', text: '' });
+    expect(attemptStatusFor('k', done({ status: 'no_match' }))).toMatchObject({ state: 'no_match', text: '' });
+    expect(attemptStatusFor('k', { state: 'queued', error: new ArcaidError('network', 'ArcAid unreachable') })).toMatchObject({ state: 'queued', text: 'offline: this attempt will not count' });
+    expect(attemptStatusFor('k', { state: 'rejected', error: new ArcaidError('auth', 'unpaired by ArcAid') })).toMatchObject({ state: 'rejected', text: 'ArcAid refused the attempt: unpaired by ArcAid' });
   });
 });
 

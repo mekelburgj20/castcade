@@ -72,6 +72,32 @@ export interface LastCapture {
   attestation?: Attestation | null;
   /** `live`: one game, from the hook's journal (0.2.11); `basic`: the `.nv` read when the player closed. */
   mode?: 'live' | 'basic';
+  /** On a limited-attempts board (ArcAid 2.167.0): which attempt this score used; null when the board has no limit. */
+  attempt?: { n: number; of: number; remaining: number } | null;
+}
+
+/**
+ * The game in progress on a limited-attempts board (ADR 0029; 0.2.11). Set when the detector sees a
+ * game start in live mode and ArcAid answers the attempt call; cleared when that game is captured.
+ */
+export interface AttemptStatus {
+  /** The opaque key sent on the attempt call; the score call repeats it. */
+  key: string;
+  /**
+   * `counted` (attempt n of N) · `over_limit` (no slot left; the score will not count) · `unlimited`
+   * (the board has no limit) · `no_match` (nothing matched) · `queued` (offline: the start will be
+   * reported late and the score will not count) · `rejected` (ArcAid refused the call).
+   */
+  state: 'counted' | 'over_limit' | 'unlimited' | 'no_match' | 'queued' | 'rejected';
+  n: number | null;
+  of: number | null;
+  remaining: number | null;
+  /** The server received the start more than 120 s after it happened: the slot is used, the score will be refused. */
+  late: boolean;
+  /** ArcAid's name for the matched game, when any. */
+  game: string | null;
+  /** One line for the player, e.g. "Attempt 3 of 5" or "No attempts left: this score will not count". */
+  text: string;
 }
 
 export interface WitnessStatus {
@@ -104,6 +130,8 @@ export interface WitnessStatus {
   note?: string | null;
   /** How the open table's games are captured: `live` (hook journal, every game) or `basic` (`.nv` at close); null with no table. */
   captureMode: 'live' | 'basic' | null;
+  /** The game in progress on a limited-attempts board (live mode only); null otherwise. */
+  attempt: AttemptStatus | null;
 }
 
 export interface WitnessEvents {

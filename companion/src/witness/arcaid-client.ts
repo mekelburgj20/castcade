@@ -60,7 +60,40 @@ export interface ScoreWireStatus {
   game: string | null;
   reasons: string[];
   fallback: string | null;
+  /** ArcAid 2.167.0 (ADR 0029): on a limited-attempts board, which attempt this score used. */
+  attempt?: { n: number; of: number; remaining: number } | null;
 }
+
+/**
+ * The answer to `GET /api/witness/attempt` (ArcAid 2.167.0, ADR 0029). `counted` = a slot was used
+ * (`attempt` is 1-based, `remaining = of − attempt`); `over_limit` = no slot left, the start is
+ * recorded anyway; `unlimited` = the matched tournament has no limit; `no_match` = nothing matched.
+ * `late` = the start reached the server more than 120 s after it happened: the slot is used and the
+ * score of that game will be refused.
+ */
+export interface AttemptWireAnswer {
+  status: 'counted' | 'over_limit' | 'unlimited' | 'no_match' | string | null;
+  game: string | null;
+  attempt: number | null;
+  of: number | null;
+  remaining: number | null;
+  late: boolean;
+}
+
+export type AttemptParams = {
+  device: string;
+  table: string;
+  rom: string | null;
+  slug?: string | null;
+  vps_game?: string | null;
+  vps_table?: string | null;
+  /** Epoch seconds, device clock, the moment the game started. */
+  started: number;
+  /** Opaque, unique per device per game start; the score call repeats it as `attempt=<key>`. */
+  key: string;
+  players?: number | null;
+  play_device?: 'pc' | 'vr_headset';
+};
 
 export interface ArcaidClientOptions {
   baseUrl: string;
@@ -92,6 +125,13 @@ function parseBody(text: string): Record<string, unknown> {
 }
 
 const defaultFetch: FetchLike = (input, init) => globalThis.fetch(input, init);
+
+/** A finite number from the wire (number or numeric string), else null. */
+function num(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
 
 let requestSeq = 0;
 
@@ -202,15 +242,39 @@ export class ArcaidClient {
       build?: string | null;
       /** 0.2.10: how the game was displayed; ArcAid 2.166.0 reads it for desktop devices (`vr_headset` badge). */
       play_device?: 'pc' | 'vr_headset';
+      /** 0.2.11 (ADR 0029): the `key` sent on this game's `/witness/attempt` call; absent in basic mode. */
+      attempt?: string | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);
     const reasons = Array.isArray(body['reasons']) ? body['reasons'].filter((r): r is string => typeof r === 'string') : [];
+    const a = body['attempt'];
+    const attempt = typeof a === 'object' && a !== null && typeof (a as Record<string, unknown>)['n'] === 'number'
+      ? { n: num((a as Record<string, unknown>)['n']) ?? 0, of: num((a as Record<string, unknown>)['of']) ?? 0, remaining: num((a as Record<string, unknown>)['remaining']) ?? 0 }
+      : null;
     return {
       status: typeof body['status'] === 'string' ? body['status'] : null,
       game: typeof body['game'] === 'string' ? body['game'] : null,
       reasons,
       fallback: typeof body['fallback'] === 'string' ? body['fallback'] : null,
+      ...(attempt ? { attempt } : {}),
+    };
+  }
+
+  /**
+   * `GET /api/witness/attempt` — one game START (ArcAid 2.167.0, ADR 0029), sent the moment the
+   * detector sees it. Idempotent on `(device, key)`: a resend returns the stored answer, so the
+   * offline queue may replay it. A 200 is final whatever `status` says.
+   */
+  async attempt(token: string, params: AttemptParams): Promise<AttemptWireAnswer> {
+    const { body } = await this.get('api/witness/attempt', params, token);
+    return {
+      status: typeof body['status'] === 'string' ? body['status'] : null,
+      game: typeof body['game'] === 'string' ? body['game'] : null,
+      attempt: num(body['attempt']),
+      of: num(body['of']),
+      remaining: num(body['remaining']),
+      late: body['late'] === true || body['late'] === 1,
     };
   }
 

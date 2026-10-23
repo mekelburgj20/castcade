@@ -61,6 +61,28 @@ describe('PostQueue', () => {
     expect(h.fs.has(`/data/${QUEUE_FILE}`)).toBe(false);
   });
 
+  it('an attempt post delivers its answer at once, and is kept and replayed when ArcAid is unreachable', async () => {
+    const h = harness();
+    const attempt = { kind: 'attempt' as const, params: { device: 'd', table: 'T', rom: 'mm_109c', started: 100, key: 's#1', players: 1 } };
+    h.setRespond((url) => (url.pathname.endsWith('/attempt') ? { status: 200, body: { ok: true, status: 'over_limit', game: 'T', attempt: 6, of: 5, remaining: 0, late: false } } : { status: 200, body: { ok: true } }));
+    const q = h.make();
+    expect(await q.submit(attempt)).toEqual({ state: 'done', wire: null, attempt: { status: 'over_limit', game: 'T', attempt: 6, of: 5, remaining: 0, late: false } });
+    expect(q.size()).toBe(0);
+
+    h.setRespond(() => new Error('ECONNREFUSED'));
+    const queued = await q.submit({ ...attempt, params: { ...attempt.params, key: 's#2' } });
+    expect(queued.state).toBe('queued');
+    expect(q.size()).toBe(1);
+    expect(h.fs.has(`/data/${QUEUE_FILE}`)).toBe(true);
+    h.setRespond((url) => (url.pathname.endsWith('/attempt') ? { status: 200, body: { ok: true, status: 'counted', game: 'T', attempt: 1, of: 5, remaining: 4, late: true } } : { status: 200, body: { ok: true } }));
+    h.clock.advance(5000);
+    await flush();
+    expect(q.size()).toBe(0);
+    expect(h.settled.map((s) => s.post.kind)).toEqual(['attempt']);
+    expect(h.settled[0]?.result).toMatchObject({ state: 'done', attempt: { status: 'counted', late: true } });
+    q.stop();
+  });
+
   it('keeps a post on network failure, persists it, retries with backoff and settles it later', async () => {
     const h = harness({ baseDelayMs: 1000 });
     h.setRespond(() => new TypeError('fetch failed'));

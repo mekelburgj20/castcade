@@ -9,7 +9,7 @@
  * set here; that tag is for sessions reconstructed from disk that the device never watched, which
  * basic mode never produces (ADR 0021).
  */
-import { ArcaidError, type ArcaidClient, type ScoreWireStatus } from './arcaid-client.js';
+import { ArcaidError, type ArcaidClient, type AttemptParams, type AttemptWireAnswer, type ScoreWireStatus } from './arcaid-client.js';
 import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 
@@ -47,15 +47,25 @@ export type QueuedPost =
         adjustments?: string | null;
         build?: string | null;
         play_device?: 'pc' | 'vr_headset';
+        attempt?: string | null;
       };
+    }
+  | {
+      id: string;
+      kind: 'attempt';
+      createdAt: number;
+      attempts: number;
+      /** A game start (ADR 0029); idempotent on `(device, key)` so a replay after an outage is safe. */
+      params: AttemptParams;
     };
 
 export type PostInput =
   | { kind: 'report'; params: Extract<QueuedPost, { kind: 'report' }>['params'] }
-  | { kind: 'score'; params: Extract<QueuedPost, { kind: 'score' }>['params'] };
+  | { kind: 'score'; params: Extract<QueuedPost, { kind: 'score' }>['params'] }
+  | { kind: 'attempt'; params: AttemptParams };
 
 export type PostResult =
-  | { state: 'done'; wire: ScoreWireStatus | null }
+  | { state: 'done'; wire: ScoreWireStatus | null; attempt?: AttemptWireAnswer | null }
   | { state: 'queued'; error: ArcaidError }
   | { state: 'rejected'; error: ArcaidError };
 
@@ -86,7 +96,7 @@ function joinPath(dir: string, name: string): string {
 function isQueuedPost(v: unknown): v is QueuedPost {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  return typeof o['id'] === 'string' && (o['kind'] === 'report' || o['kind'] === 'score') && typeof o['params'] === 'object' && o['params'] !== null;
+  return typeof o['id'] === 'string' && (o['kind'] === 'report' || o['kind'] === 'score' || o['kind'] === 'attempt') && typeof o['params'] === 'object' && o['params'] !== null;
 }
 
 export class PostQueue {
@@ -211,6 +221,10 @@ export class PostQueue {
       if (post.kind === 'report') {
         await client.report(token, post.params);
         return { state: 'done', wire: null };
+      }
+      if (post.kind === 'attempt') {
+        const attempt = await client.attempt(token, post.params);
+        return { state: 'done', wire: null, attempt };
       }
       const wire = await client.score(token, post.params);
       return { state: 'done', wire };

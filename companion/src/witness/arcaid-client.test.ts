@@ -96,6 +96,30 @@ describe('ArcaidClient', () => {
     expect(Object.fromEntries(calls[2]?.url.searchParams ?? [])).toEqual({ device: 'd' });
   });
 
+  it('attempt sends the documented params and parses the answer; the score repeats the key and reads its attempt', async () => {
+    const { fetch, calls } = fakeFetch((url) =>
+      url.pathname.endsWith('/attempt')
+        ? { status: 200, body: { ok: true, status: 'counted', game: 'Monster Bash', attempt: 2, of: 5, remaining: 3, late: 0 } }
+        : { status: 200, body: { ok: true, status: 'ingested', game: 'Monster Bash', attempt: { n: 2, of: 5, remaining: 3 } } },
+    );
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });
+    const a = await client.attempt('tok', { device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', slug: null, vps_game: 'F1Skyh5h', vps_table: null, started: 1_700_000_000, key: '2026-10-22T16:07:18#89430', players: 1 });
+    expect(a).toEqual({ status: 'counted', game: 'Monster Bash', attempt: 2, of: 5, remaining: 3, late: false });
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({
+      device: 'd',
+      table: 'Monster Bash (Williams 1998)',
+      rom: 'mb_106b',
+      vps_game: 'F1Skyh5h',
+      started: '1700000000',
+      key: '2026-10-22T16:07:18#89430',
+      players: '1',
+    });
+    expect(calls[0]?.headers['x-witness-token']).toBe('tok');
+    const wire = await client.score('tok', { device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', score: 228982910, started: 1_700_000_000, ended: 1_700_000_900, dur: 900, reason: 'game_over', attempt: '2026-10-22T16:07:18#89430' });
+    expect(Object.fromEntries(calls[1]?.url.searchParams ?? [])).toMatchObject({ attempt: '2026-10-22T16:07:18#89430' });
+    expect(wire).toEqual({ status: 'ingested', game: 'Monster Bash', reasons: [], fallback: null, attempt: { n: 2, of: 5, remaining: 3 } });
+  });
+
   it('times out a hanging request as a network failure', async () => {
     const hanging: FetchLike = (_input, init) =>
       new Promise((_resolve, reject) => {

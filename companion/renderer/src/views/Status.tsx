@@ -69,6 +69,15 @@ export function Status({ state }: { state: CastcadeState }) {
             </dd>
           </>
         )}
+        {status.attempt && status.attempt.text && (
+          <>
+            <dt>Attempt</dt>
+            <dd className={status.attempt.state === 'counted' && !status.attempt.late ? 'ok' : 'error'} title="This tournament limits attempts per table; every game start counts (ArcAid ADR 0029)">
+              {status.attempt.text}
+              {status.attempt.game ? ` · ${status.attempt.game}` : ''}
+            </dd>
+          </>
+        )}
         {status.currentIdentity && (
           <>
             <dt />
@@ -112,6 +121,15 @@ export function Status({ state }: { state: CastcadeState }) {
             <>
               <dt>Captured</dt>
               <dd>{c.mode === 'live' ? 'live, from the game itself' : 'when the table closed'}</dd>
+            </>
+          )}
+          {c.attempt && (
+            <>
+              <dt>Attempt</dt>
+              <dd>
+                {c.attempt.n} of {c.attempt.of}
+                {c.attempt.remaining > 0 ? ` (${c.attempt.remaining} left)` : ' (none left)'}
+              </dd>
             </>
           )}
           <dt>Outcome</dt>

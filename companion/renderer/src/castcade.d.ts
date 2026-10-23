@@ -18,6 +18,18 @@ interface LastCapture {
   identity?: TableIdentity | null;
   attestation?: Attestation | null;
   mode?: 'live' | 'basic';
+  attempt?: { n: number; of: number; remaining: number } | null;
+}
+
+interface AttemptStatus {
+  key: string;
+  state: 'counted' | 'over_limit' | 'unlimited' | 'no_match' | 'queued' | 'rejected';
+  n: number | null;
+  of: number | null;
+  remaining: number | null;
+  late: boolean;
+  game: string | null;
+  text: string;
 }
 
 interface PhysicsSetValues {
@@ -191,6 +203,7 @@ interface WitnessStatus {
   lastError: string | null;
   note?: string | null;
   captureMode: 'live' | 'basic' | null;
+  attempt: AttemptStatus | null;
 }
 
 interface RedactedSettings {
