@@ -92,7 +92,7 @@ Lane: none here. The work lands in `C:\code\repos\ArcAid` and is tracked in that
 - **F6** `ready` Items 2–7: `play_mode`, roster, `match:<id>` relay, `castcade_matches` + public keys, RESULT ingest with N signatures, ADR (Phase 5); item 8 table-readiness registry is Phase 3 and needed by C4 (ArcAid W8.1, which needs ArcAid C1)
 - **F7** `ready` Item 13: runner stage · needs: D3
 - **F8** `idea` Item 11, the part left out of 2.166.0: ROM→VPS game map `GET /api/witness/roms` seeded from VPS, so B8 can stop shipping the seed (ArcAid W12) · spec: docs/arcaid-side-changes.md §11
-- **F9** `ready` Item 14: ArcAid reads `engine` on the score (live-mode evidence from hook 0.4.0), Sanctioned rule `engine_changed` + live difficulty / physics set / tilt against the table file and the rules, trail + Integrity panel "In the game" line · needs: B6 · spec: docs/arcaid-side-changes.md §14
+- **F9** `ready` Item 14: ArcAid reads `engine` on the score (live-mode evidence from hook 0.4.0), Sanctioned rule `engine_changed` + live difficulty / physics set / tilt against the table file and the rules, trail + Integrity panel "In the game" line · needs: B6 · owner picks it on the ArcAid side (arcaid-23, 2026-10-23: a `witness_evidence` column + migration, so an ArcAid MINOR version; shape fits `evaluateSanctioned` as is) · spec: docs/arcaid-side-changes.md §14
 
 ## G. Arcade (Phase 6)
 
