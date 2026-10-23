@@ -7,12 +7,12 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 ## Now
 
-- Companion 0.2.12 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 (engine attestation), limited attempts. ArcAid is at 2.168.0 (engine evidence rule; ADR 0029 limited attempts; repeats inside 120 s answer `ingested`; item 11's ROM→VPS map endpoint F8 still open).
-- In flight: nothing claimed. 0.2.12 tagged 2026-10-23 (B6 + C8 + B11). ArcAid 2.168.0 (PR #377) reads the engine evidence. Next by priority: C7.1 (0.4.0 fixture), then B4 → B5 → D1.
-- Order by owner ruling 2026-10-21: live mode first (C7: C2 detector → C1/C1.1 recipe A import → per-game capture → C2.1 hook volume), because basic mode posts only the last game of a session; then B4 → B5 (ArcAid half W6) → D1 solo streaming.
-- Owner actions: let the updater install 0.2.11 on the rig and confirm the Status page (E4.1); tell Krobs (on 0.2.10) to update, then Settings → Import tables → Browse → Check folder → Patch, then play; say whether the stutter is gone on 0.3.0 · re-pair the rig from Settings (its device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
-- Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
-- Last wrap: 2026-10-21 — audit of every item against code, ADRs and the ArcAid tracker: B4, B8, C2, C3, C4, E4, F6, H3 corrected; C6 closed; F8 added.
+- Companion 0.2.12 (unsigned PoC; repo public, keep it so): live mode, one-click table import with the unpatched-table notice, hook 0.4.0 engine attestation, limited attempts. ArcAid 2.168.0 reads the engine evidence (rule `engine`, Integrity panel "In the game"); F8 (ROM→VPS map endpoint) still open there.
+- In flight: nothing claimed in either repo.
+- Next by priority: C7.1 (recorded hook-0.4.0 journal fixture) → B6.1 (score-jump plausibility) → B4 → B5 (ArcAid half W6) → D1 solo streaming (owner ruling 2026-10-21; D1 needs nothing from Phase 3).
+- Owner actions: update the rig to 0.2.12; have Krobs update and click Settings → Import tables → Patch my tables once · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
+- Watching: C9 (four arrivals per score, 2026-10-22) — no recurrence in three sessions since request logging. ArcAid's admin-ui scoreboard scroll-arrow test is flaky and once skipped a deploy; handed to the ArcAid session (its lane).
+- Last wrap: 2026-10-23 — B6, C8, E4.1, F9 done; 0.2.11 and 0.2.12 released; C7 gate passed; C9 added.
 
 ## A. Protocol and match engine
 

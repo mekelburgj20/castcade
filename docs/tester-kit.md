@@ -1,4 +1,4 @@
-# Castcade tester kit (v0.2.10, October 2026)
+# Castcade tester kit (v0.2.12, October 2026)
 
 Everything a tester needs on one page. The full guide with details and troubleshooting is
 [`phase-2-witness.md`](phase-2-witness.md); this page is the short version to send with the invite.
@@ -21,8 +21,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 
 ## Steps
 
-1. **Download** `Castcade-Setup-0.2.11.exe` from
-   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.11> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
+1. **Download** `Castcade-Setup-0.2.12.exe` from
+   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.12> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
 2. **Install.** It is not code-signed yet, so SmartScreen says *Windows protected your PC*: click
    **More info → Run anyway** (the browser may also ask you to *Keep* the file). No admin prompt.
    Castcade starts in the tray (the **C** icon; click the arrow by the clock if Windows hides it).
@@ -65,4 +65,4 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 > pair with your ArcAid account, play one game to the end, quit the player, send me a screenshot and a
 > log. It changes nothing in your VPX setup and uninstalls cleanly. Steps:
 > https://github.com/mekelburgj20/castcade/blob/main/docs/tester-kit.md
-> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.11
+> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.12
