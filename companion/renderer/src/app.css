@@ -300,3 +300,9 @@ a {
 .field button.small {
   margin-top: 0.35rem;
 }
+
+/* 0.2.12 import card: the outcome and errors are banners at the top, the one-click button is primary */
+.banner { padding: 0.6rem 0.8rem; border-radius: 6px; border: 1px solid currentColor; margin: 0.4rem 0; }
+.banner.ok { color: var(--ok, #2f9e44); }
+p.error.banner { color: var(--error, #d9480f); }
+button.primary { font-weight: 600; }

@@ -40,13 +40,14 @@
  * `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` and in `LastCapture.identity`.
  */
 import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
+import { readVpxScript } from './vpx-file.js';
 import type { EngineAttestation } from './attestation-types.js';
 import { Emitter } from '../match/events.js';
 import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
-import { disableSidecar, manifestPathFor, readManifest, type Manifest } from '../patcher/index.js';
+import { disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript } from '../patcher/index.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
@@ -142,6 +143,8 @@ interface OpenSession {
   attestation: Attestation | null;
   /** Live mode (journal tail + detector) when the table has a Castcade sidecar; null in basic mode. */
   live: LiveSession | null;
+  /** Basic mode on a table the import could patch (or not): the sentence Status shows under "Capture". */
+  unpatchedNote: string | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -487,7 +490,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.currentAttestation = active?.attestation ?? null;
     status.captureMode = active ? (active.live ? 'live' : 'basic') : null;
     status.attempt = active?.live?.attempt ?? null;
-    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : null;
+    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : (active && !active.live ? active.unpatchedNote : null);
   };
 
   // --------------------------------------------------------------------------- attestation --
@@ -548,6 +551,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (!target || session.identityFor === target) return;
     session.identityFor = target;
     if (path) await startLive(session, path);
+    if (path && !session.live) await noticeUnpatched(session, path);
     const identity = await resolver.fromFile(path, path ? tableBaseName(path) : launch.table);
     session.identity = identity;
     if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
@@ -838,6 +842,26 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * saw the launch) and feed the detector. Lines are pumped through the serial chain so a ROM's map
    * is attached before the deltas that follow its `table_loaded` are decoded.
    */
+  /**
+   * A table opened in basic mode (0.2.12): tell the player once per table per run that only the last
+   * game will post, and whether the import would fix it (the script classifies as recipe A).
+   */
+  const noticedUnpatched = new Set<string>();
+  const noticeUnpatched = async (session: OpenSession, vpxPath: string): Promise<void> => {
+    const table = tableBaseName(vpxPath);
+    const patchable = await readVpxScript(fs, vpxPath)
+      .then((script) => script !== null && classifyScript(decodeScript(script.bytes)).cls === 'A')
+      .catch(() => false);
+    const message = patchable
+      ? `${table} is not patched: only the last game of this session will post. Settings → Import tables → Patch my tables, then relaunch the table.`
+      : `${table} has no Castcade patch and its script type has no recipe yet: only the last game of this session will post.`;
+    session.unpatchedNote = message;
+    refreshTableStatus();
+    if (noticedUnpatched.has(vpxPath)) return;
+    noticedUnpatched.add(vpxPath);
+    emitter.emit('notice', { kind: 'unpatched', table, patchable, title: patchable ? 'Castcade: table not patched' : 'Castcade: basic mode', message });
+  };
+
   const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {
     if (session.live || !journalRoot) return;
     if (!(await hasSidecar(vpxPath).catch(() => false))) return;
@@ -1091,6 +1115,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       hashing: null,
       attestation: null,
       live: null,
+      unpatchedNote: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();

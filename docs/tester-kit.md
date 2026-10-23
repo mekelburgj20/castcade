@@ -21,8 +21,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 
 ## Steps
 
-1. **Download** `Castcade-Setup-0.2.10.exe` from
-   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.10> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
+1. **Download** `Castcade-Setup-0.2.11.exe` from
+   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.11> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
 2. **Install.** It is not code-signed yet, so SmartScreen says *Windows protected your PC*: click
    **More info → Run anyway** (the browser may also ask you to *Keep* the file). No admin prompt.
    Castcade starts in the tray (the **C** icon; click the arrow by the clock if Windows hides it).
@@ -31,9 +31,13 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 4. **Route it.** Back in ArcAid's Account Settings, your new device is listed: set **Send scores to**
    **Flippin Fear Fest** and its tournament **Flippin Fear Fest 26**. Without this step the score goes to your Global record instead of
    the tournament board.
-5. **Play one game, one player, to the end** on a ROM table. Let the last ball drain, wait for game over,
+5. **Patch your tables** (0.2.11 and later). Castcade → **Settings → Import tables for live scores**: **Browse…** to
+   your Visual Pinball `tables` folder, then **Patch my tables**. It writes a small Castcade script beside each ROM
+   table (the `.vpx` files are never changed; **Remove all Castcade patches** reverts). Without this step only the
+   last game of a session posts, and Castcade tells you so when you open a table.
+6. **Play one game, one player, to the end** on a ROM table. Let the last ball drain, wait for game over,
    then **quit the player** (Escape → Quit, or your frontend's exit). Do not kill VPX from Task Manager.
-6. **Check.** Open Castcade → **Status**: *Watching*, *Paired*, your VPX exe, the NVRAM folder, **Sending
+7. **Check.** Open Castcade → **Status**: **Capture: live** while a patched table is open, *Watching*, *Paired*, your VPX exe, the NVRAM folder, **Sending
    to** showing the room and tournament, and **Last capture** with the table, ROM, score and
    *posted to ArcAid*. Within a minute the score is on the tournament board with the Witness badge.
 
@@ -61,4 +65,4 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 > pair with your ArcAid account, play one game to the end, quit the player, send me a screenshot and a
 > log. It changes nothing in your VPX setup and uninstalls cleanly. Steps:
 > https://github.com/mekelburgj20/castcade/blob/main/docs/tester-kit.md
-> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.10
+> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.11

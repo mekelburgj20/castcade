@@ -5,7 +5,7 @@
  * module directly, so recreation never leaks a stale instance into IPC handlers.
  */
 import { createWitness } from '../witness/index.js';
-import type { Witness, WitnessSettings, WitnessStatus } from '../witness/types.js';
+import type { Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
 import { describeError } from './log.js';
@@ -23,6 +23,8 @@ export interface WitnessHost {
   start(): Promise<void>;
   stop(): Promise<void>;
   onStatus(listener: (status: WitnessStatus) => void): () => void;
+  /** Player-facing notices (the shell shows a desktop notification). */
+  onNotice(listener: (notice: WitnessNotice) => void): () => void;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -38,6 +40,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   let witness: Witness = attach(createWitness(store, deps));
 
   let lastCheckin: string | null = null;
+  const noticeListeners = new Set<(n: WitnessNotice) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -49,7 +52,15 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
         }
         for (const l of statusListeners) l(s);
       }),
-      w.on('launch', (i) => log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`)),
+      w.on('launch', (i) => {
+        log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`);
+        // Remember where VPX lives so the import can find scripts\ on the next run without a launch.
+        if (i.exe && store.get().vpxExe !== i.exe) void store.set({ vpxExe: i.exe }).catch((err: unknown) => log.warn(`settings: could not remember the VPX exe: ${err instanceof Error ? err.message : String(err)}`));
+      }),
+      w.on('notice', (n) => {
+        log.info(`witness: notice ${n.kind}: ${n.message}`);
+        for (const l of noticeListeners) l(n);
+      }),
       w.on('exit', (i) => log.info(`witness: exit ${i.table} after ${i.durationSec}s`)),
       w.on('capture', (c) =>
         log.info(
@@ -139,6 +150,12 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       statusListeners.add(listener);
       return () => {
         statusListeners.delete(listener);
+      };
+    },
+    onNotice(listener) {
+      noticeListeners.add(listener);
+      return () => {
+        noticeListeners.delete(listener);
       };
     },
   };

@@ -27,7 +27,7 @@ export interface TablesHostOptions {
 export interface TablesHost {
   defaults(): Promise<TablesDefaults>;
   plan(dir: string | null): Promise<TablesPlan>;
-  apply(dir: string | null): Promise<TablesApplyResult>;
+  apply(dir: string | null, onProgress?: (done: number, total: number, tableId: string) => void): Promise<TablesApplyResult>;
   removeAll(dir: string | null): Promise<TablesRemoveResult>;
   /** The folder a null `dir` means right now, or null when nothing is known yet. */
   resolveTablesDir(dir: string | null): string | null;
@@ -76,7 +76,8 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     return map ? gameStateOffsets(map) : [];
   };
 
-  const vpxExe = (): string | null => opts.witnessStatus().vpxExe;
+  // The exe seen this run, else the one remembered from an earlier run (0.2.12): the import then works before any launch.
+  const vpxExe = (): string | null => opts.witnessStatus().vpxExe ?? store.get().vpxExe ?? null;
   const scriptsDir = (): string | null => {
     const exe = vpxExe();
     return exe ? joinPath(dirnameOf(exe), 'scripts') : null;
@@ -88,6 +89,22 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     const exe = vpxExe();
     return exe ? joinPath(dirnameOf(exe), 'tables') : null;
   };
+  /**
+   * The VPX `scripts\` folder: beside the exe when one is known, else beside the tables folder when the
+   * standard layout holds (`<VPX>\tables` + `<VPX>\scripts`), else null.
+   */
+  const resolveScriptsDir = async (tablesDir: string): Promise<string | null> => {
+    const fromExe = scriptsDir();
+    if (fromExe) return fromExe;
+    const sibling = joinPath(dirnameOf(tablesDir.replace(/[\\/]+$/, '')), 'scripts');
+    try {
+      await fs.stat(sibling);
+      return sibling;
+    } catch {
+      return null;
+    }
+  };
+
   const need = (dir: string | null): string => {
     const resolved = resolveTablesDir(dir);
     if (!resolved) throw new Error('No tables folder known yet: launch a table once, or type the folder');
@@ -116,7 +133,8 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
           .then((b) => hookVersionOf(Buffer.from(b).toString('latin1')))
           .catch(() => 'missing');
       }
-      return { tablesDir: resolveTablesDir(null), scriptsDir: scriptsDir(), vpxExe: vpxExe(), hookVersion };
+      const tablesDir = resolveTablesDir(null);
+      return { tablesDir, scriptsDir: tablesDir ? await resolveScriptsDir(tablesDir) : scriptsDir(), vpxExe: vpxExe(), hookVersion };
     },
 
     plan(dir) {
@@ -128,18 +146,25 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
       });
     },
 
-    apply(dir) {
+    apply(dir, onProgress) {
       const tablesDir = need(dir);
-      const vpxScriptsDir = scriptsDir();
-      if (!vpxScriptsDir) throw new Error('Launch a table once so Castcade knows where VPX (and its scripts folder) lives');
       return exclusive(async () => {
+        const vpxScriptsDir = await resolveScriptsDir(tablesDir);
+        if (!vpxScriptsDir) {
+          throw new Error(
+            `Castcade cannot find the VPX scripts folder: there is no "scripts" folder beside ${tablesDir} and no VPX has run yet. Pick the "tables" folder inside your Visual Pinball folder, or launch any table once and try again.`,
+          );
+        }
         const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
         const result = await applyImport(fs, plan, {
           manifestDir,
           vpxScriptsDir,
           libSource,
           watchOffsetsFor,
-          onProgress: (done, total, item) => log.info(`tables: ${done}/${total} ${item.tableId} (${item.action})`),
+          onProgress: (done, total, item) => {
+            log.info(`tables: ${done}/${total} ${item.tableId} (${item.action})`);
+            onProgress?.(done, total, item.tableId);
+          },
         });
         for (const f of result.failed) log.warn(`tables: ${f.item.tableId} failed: ${f.error}`);
         const already = result.skipped.filter((it) => it.action === 'already').length;

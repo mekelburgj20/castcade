@@ -34,6 +34,8 @@ export interface SettingsFile {
   deviceLabel?: string;
   nvramDir?: string | null;
   tablesDir?: string | null;
+  /** The VPX exe last seen running (0.2.12). */
+  vpxExe?: string | null;
   token?: { scheme: string; value: string } | null;
 }
 
@@ -84,6 +86,8 @@ export function parseSettingsFile(text: string): SettingsFile | null {
   if (typeof o.deviceId === 'string' && o.deviceId.length > 0) out.deviceId = o.deviceId;
   if (typeof o.deviceLabel === 'string' && o.deviceLabel.length > 0) out.deviceLabel = o.deviceLabel;
   if (typeof o.nvramDir === 'string' || o.nvramDir === null) out.nvramDir = o.nvramDir;
+  if (typeof o.tablesDir === 'string' || o.tablesDir === null) out.tablesDir = o.tablesDir;
+  if (typeof o.vpxExe === 'string' || o.vpxExe === null) out.vpxExe = o.vpxExe;
   if (o.token === null) out.token = null;
   else if (typeof o.token === 'object' && o.token !== null) {
     const t = o.token as Record<string, unknown>;
@@ -119,6 +123,7 @@ export function resolveSettings(
   const deviceLabel = file?.deviceLabel ?? defaults.deviceLabel;
   const nvramDir = file?.nvramDir ?? null;
   const tablesDir = file?.tablesDir ?? null;
+  const vpxExe = file?.vpxExe ?? null;
 
   let token: string | null = null;
   if (file?.token) {
@@ -150,6 +155,7 @@ export function resolveSettings(
       dataDir: defaults.dataDir,
       vpsDir: defaults.vpsDir,
       tablesDir,
+      vpxExe,
     },
     dirty,
   };
@@ -163,6 +169,7 @@ export function serializeSettings(settings: WitnessSettings, codec: TokenCodec):
     deviceLabel: settings.deviceLabel,
     nvramDir: settings.nvramDir,
     tablesDir: settings.tablesDir,
+    vpxExe: settings.vpxExe ?? null,
     token: settings.token === null ? null : { scheme: codec.scheme, value: codec.encrypt(settings.token) },
   };
   return JSON.stringify(file, null, 2) + '\n';

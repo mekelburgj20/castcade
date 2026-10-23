@@ -26,6 +26,7 @@ export const IPC = {
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
+  tablesProgressEvent: 'tables:progress',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
 } as const;
@@ -61,6 +62,12 @@ export interface TablesApplyResult {
   skipped: number;
   libInstalled: 'installed' | 'updated' | 'unchanged';
   scriptsDir: string;
+}
+
+export interface TablesProgress {
+  done: number;
+  total: number;
+  tableId: string;
 }
 
 export interface TablesRemoveResult {
@@ -130,6 +137,8 @@ export interface CastcadeApi {
     plan(dir: string | null): Promise<TablesPlan>;
     /** Re-plans the folder and patches the `patch` / `repatch` items; installs the hook library. */
     apply(dir: string | null): Promise<TablesApplyResult>;
+    /** Progress of a running apply: one call per table. */
+    onProgress(cb: (p: TablesProgress) => void): () => void;
     /** Deletes every Castcade sidecar (and manifest) under the folder; foreign `.vbs` files stay. */
     removeAll(dir: string | null): Promise<TablesRemoveResult>;
   };

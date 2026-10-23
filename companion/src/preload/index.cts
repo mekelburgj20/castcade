@@ -6,7 +6,7 @@
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, WitnessStatus } from '../main/ipc-types.js';
+import type { CastcadeApi, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -28,6 +28,7 @@ const CH = {
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
+  tablesProgressEvent: 'tables:progress',
   witnessStatusEvent: 'witness:status',
 } as const;
 
@@ -76,6 +77,13 @@ const castcade: CastcadeApi = {
     plan: (dir) => ipcRenderer.invoke(CH.tablesPlan, dir),
     apply: (dir) => ipcRenderer.invoke(CH.tablesApply, dir),
     removeAll: (dir) => ipcRenderer.invoke(CH.tablesRemoveAll, dir),
+    onProgress(cb) {
+      const listener = (_e: Electron.IpcRendererEvent, p: TablesProgress): void => cb(p);
+      ipcRenderer.on(CH.tablesProgressEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(CH.tablesProgressEvent, listener);
+      };
+    },
   },
 };
 

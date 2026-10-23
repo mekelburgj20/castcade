@@ -58,6 +58,16 @@ describe('resolveSettings', () => {
     expect(again.dirty).toBe(false);
     expect(again.settings.deviceId).toBe('id-1');
   });
+
+  it('remembers the VPX exe and the tables folder across runs (0.2.12: the import needs scripts\\ before any launch)', () => {
+    const d = defaults();
+    const { settings } = resolveSettings(null, d, plainTokenCodec, silent);
+    expect(settings.vpxExe).toBeNull();
+    const text = serializeSettings({ ...settings, vpxExe: 'C:\\VPX\\VPinballX64.exe', tablesDir: 'C:\\VPX\\tables' }, plainTokenCodec);
+    const back = resolveSettings(parseSettingsFile(text), d, plainTokenCodec, silent).settings;
+    expect(back.vpxExe).toBe('C:\\VPX\\VPinballX64.exe');
+    expect(back.tablesDir).toBe('C:\\VPX\\tables');
+  });
   it('round-trips the token through the codec', () => {
     const d = defaults();
     const { settings } = resolveSettings(null, d, rot13, silent);

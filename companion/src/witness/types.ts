@@ -43,6 +43,8 @@ export interface WitnessSettings {
   vpsDir: string;
   /** Extra folder to search for `<table>.vpx` when a table was opened from the editor; null = only `<exe dir>\tables`. */
   tablesDir: string | null;
+  /** The VPX exe most recently seen running, remembered across restarts (0.2.12) so the import can find `scripts\` before any table is launched. */
+  vpxExe?: string | null;
 }
 
 export interface WitnessSettingsStore {
@@ -141,6 +143,17 @@ export interface WitnessEvents {
   exit: (info: { table: string | null; at: string; durationSec: number }) => void;
   capture: (capture: LastCapture) => void;
   error: (message: string) => void;
+  /** Something the player should hear once (a desktop notification in the shell), e.g. a table opened without a Castcade patch. */
+  notice: (notice: WitnessNotice) => void;
+}
+
+export interface WitnessNotice {
+  kind: 'unpatched';
+  table: string;
+  /** True when the import would patch this table (recipe A); false when its script type has no recipe yet. */
+  patchable: boolean;
+  title: string;
+  message: string;
 }
 
 export interface Witness {

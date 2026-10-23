@@ -180,9 +180,11 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   };
   ipcMain.handle(IPC.tablesDefaults, () => tables.defaults());
   ipcMain.handle(IPC.tablesPlan, (_e, dir: unknown) => tables.plan(dirArg(dir)));
-  ipcMain.handle(IPC.tablesApply, async (_e, dir: unknown) => {
+  ipcMain.handle(IPC.tablesApply, async (e, dir: unknown) => {
     try {
-      return await tables.apply(dirArg(dir));
+      return await tables.apply(dirArg(dir), (done, total, tableId) => {
+        if (!e.sender.isDestroyed()) e.sender.send(IPC.tablesProgressEvent, { done, total, tableId });
+      });
     } finally {
       watch.reset();
     }
@@ -269,6 +271,7 @@ async function main(): Promise<void> {
   sidecarWatch = watch;
 
   registerIpc(store, host, tables, watch, logger);
+  host.onNotice((n) => tray?.notify(n.title, n.message));
 
   if (!argv.includes('--hidden')) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());

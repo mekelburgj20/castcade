@@ -236,6 +236,7 @@ interface RedactedSettings {
   vpsDir: string;
   tablesDir: string | null;
   hasToken: boolean;
+  vpxExe?: string | null;
 }
 
 interface SettingsPatch {
@@ -270,6 +271,12 @@ interface TablesApplyResult {
   skipped: number;
   libInstalled: 'installed' | 'updated' | 'unchanged';
   scriptsDir: string;
+}
+
+interface TablesProgress {
+  done: number;
+  total: number;
+  tableId: string;
 }
 
 interface TablesRemoveResult {
@@ -319,6 +326,7 @@ interface CastcadeBridge {
     defaults(): Promise<TablesDefaults>;
     plan(dir: string | null): Promise<TablesPlan>;
     apply(dir: string | null): Promise<TablesApplyResult>;
+    onProgress(cb: (p: TablesProgress) => void): () => void;
     removeAll(dir: string | null): Promise<TablesRemoveResult>;
   };
   readonly app: {

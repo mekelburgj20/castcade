@@ -7,6 +7,18 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Table import, second pass (what a tester hit on 0.2.11 — C8)
+- "Patch my tables" is one button: it plans and patches the folder in one click with a "37 of 102" progress line,
+  the outcome is a banner at the top of the card (errors too — the old card printed them in small red text at the
+  bottom, which is why a tester saw "nothing happen"), and "Preview what will change" is the dry run.
+- The import no longer needs a table to have been launched: the VPX exe is remembered across runs
+  (`settings.vpxExe`), and when none is known the hook library goes into the `scripts` folder beside the tables
+  folder (the standard layout). A folder with neither gets a sentence that says what to pick.
+- A table opened WITHOUT a Castcade patch raises a desktop notification once per table per run — "<table> is not
+  patched: only the last game of this session will post. Settings → Import tables → Patch my tables" — and the
+  Status page's Capture row says the same in orange; a table whose script type has no recipe yet is told so
+  instead. `witness.ts` (`notice` event), `witness-host.ts`, `tables-host.ts`, `renderer/views/ImportTables.tsx`.
+
 ### Fairness
 - Engine attestation (F6, WORK B6): hook 0.4.0 `Castcade_EngineSample` reads what VPX has in force — difficulty,
   slope, physics set, table physics, nudge calibration and tilt sensitivity — through the script API at hook time

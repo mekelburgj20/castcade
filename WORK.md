@@ -8,7 +8,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.11 (unsigned PoC; repo public, keep it so): live mode, table import, hook 0.3.0, limited attempts; first packaged build on Electron 44 / Vite 8 / vitest 5. ArcAid is at 2.167.0 (ADR 0029 limited attempts; integrity mode live, item 11's ROM→VPS map endpoint F8 still open).
-- In flight: nothing claimed. B6 engine attestation is `done main` (hook 0.4.0; ArcAid half is F9, mirrored in ArcAid W). Next by priority: C7.1 (0.4.0 fixture + the gate as written), E4.1 (updater install), F9 on the ArcAid side, then B4 → B5 → D1.
+- In flight: nothing claimed. On main since 0.2.11: B6 engine attestation (hook 0.4.0; ArcAid half is F9 / ArcAid W18) and C8 import UX (one-click patch, unpatched-table notice) — both ride in 0.2.12. Next by priority: tag 0.2.12 after one rig game shows "In the game"; C7.1 (0.4.0 fixture); F9 on the ArcAid side; then B4 → B5 → D1.
 - Order by owner ruling 2026-10-21: live mode first (C7: C2 detector → C1/C1.1 recipe A import → per-game capture → C2.1 hook volume), because basic mode posts only the last game of a session; then B4 → B5 (ArcAid half W6) → D1 solo streaming.
 - Owner actions: let the updater install 0.2.11 on the rig and confirm the Status page (E4.1); tell Krobs (on 0.2.10) to update, then Settings → Import tables → Browse → Check folder → Patch, then play; say whether the stutter is gone on 0.3.0 · re-pair the rig from Settings (its device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
 - Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
@@ -57,6 +57,7 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
 - **C7** `done 0.2.11` Live mode: every game of a session posts its own score (sidecar journal + detector, folder import with dry run and remove-all, three-layer stale-sidecar guard, hook 0.3.0) · spec: docs/design/table-import-and-patching.md
   - **C7.1** `ready` A recorded hook-0.4.0 journal fixture (`fixtures/`, replayed in CI beside the three Phase 0 ones) · needs: C7 · touches: fixtures/README.md · note: the three-games-in-one-session gate PASSED 2026-10-23 on the INSTALLED 0.2.11 (updater) — four Monster Bash games, four `ingested`, one request each, attempt calls `unlimited`
+- **C8** `done main` Import UX, second pass (tester on 0.2.11 2026-10-23: patched nothing because the VPX exe was unknown after the updater restart and the error sat at the bottom of the card): one-click "Patch my tables" with progress and banners, VPX exe remembered across runs + `scripts` beside the tables folder as the fallback, a desktop notification + Status line when a table opens unpatched · spec: CHANGELOG [Unreleased]
 - **C6** `done 2026-10-17` Same-basename sidecar auto-loads on 10.8.0 Windows without a prompt — Phase 0e PASS on TFTC, MM, Iron Maiden; sidecar is the default install path, `importvbs` copy stays C1's fallback
 
 ## D. Media: streaming, recording, voice

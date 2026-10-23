@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { VPM_SCRIPT, crlf } from '../patcher/test-scripts.test-support.js';
+import { ascii, buildVpx, codeRecord, concat, floatRecord, record, u32le } from './synth-vpx.test-support.js';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
@@ -9,7 +11,7 @@ import { createMapCorpus } from './maps.js';
 import { createStaticRegistry, NVRAM_DIRECTORY_VALUE, VPM_GLOBALS_KEY } from './nvram-dir.js';
 import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
-import type { LastCapture, WitnessSettings, WitnessStatus } from './types.js';
+import type { LastCapture, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
 import { attemptStatusFor, createWitness, outcomeForWire, parseSessionStamp, resolveTableName, type WitnessDeps } from './witness.js';
 import { JournalDetector } from './journal-detector.js';
@@ -143,6 +145,8 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
   witness.on('launch', (l) => launches.push({ table: l.table, pid: l.pid }));
   witness.on('exit', (e) => exits.push({ table: e.table, durationSec: e.durationSec }));
   witness.on('error', (m) => errors.push(m));
+  const notices: WitnessNotice[] = [];
+  witness.on('notice', (n) => notices.push(n));
 
   /** Let every pending promise chain run (microtasks and one macrotask turn per round). */
   const flush = async () => {
@@ -163,6 +167,7 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     launches,
     exits,
     errors,
+    notices,
     flush,
     paths,
     setRespond(fn: typeof respond) {
@@ -234,7 +239,8 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await h.launch();
     const launchedAt = h.clock.now();
     expect(h.launches).toEqual([{ table: MM_TABLE, pid: 10 }]);
-    expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, vpxExe: EXE, note: null });
+    // 0.2.12: a table without a Castcade patch gets the "not patched" sentence as the status note (basic mode).
+    expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, vpxExe: EXE, note: expect.stringMatching(/not patched|no Castcade patch/) });
     // Identity from the -Play file: VPS game by name, the VPW table by TableInfo author + version, hash in the background.
     await h.flush();
     expect(h.witness.status().currentIdentity).toMatchObject({
@@ -627,7 +633,7 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
 
     h.setTitle(MB_TITLE);
     await h.poll();
-    expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: null });
+    expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: expect.stringMatching(/not patched|no Castcade patch/) });
     // The editor title named the table; its file was found beside the exe and identified.
     expect(h.witness.status().currentIdentity).toMatchObject({
       filePath: `C:\\VPX\\tables\\${MB_TABLE}.vpx`,
@@ -677,7 +683,7 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
       table_save_rev: '7',
     });
     expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: '-5yMpqSy' }, gameSource: 'rom' });
-    expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: null }); // still open in the editor
+    expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, note: expect.stringMatching(/no Castcade patch|not patched/) }); // still open in the editor (basic mode: the note says so)
 
     // Nothing more happens while the editor idles.
     await h.settle(30_000);
@@ -995,14 +1001,24 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.captures[0]?.mode).toBe('basic');
   });
 
-  it('a table without a sidecar stays in basic mode', async () => {
+  it('a table without a sidecar stays in basic mode, and the player is told once that the import would fix it', async () => {
     const h = harness({}, { journalDir: '/journal' });
-    h.fs.put(MM_PATH, MM_VPX);
+    // A real VPinMAME-shaped script (recipe A) with no sidecar beside it: the import WOULD patch this one.
+    h.fs.put(MM_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(crlf(VPM_SCRIPT))), record('ENDB', new Uint8Array(0))) }));
     await h.fs.mkdir('/nv');
     h.fs.put('/nv/mm_109c.nv', mmBefore);
     await h.witness.start();
     await h.launch();
     expect(h.witness.status()).toMatchObject({ currentTable: MM_TABLE, captureMode: 'basic' });
+    expect(h.notices).toHaveLength(1);
+    expect(h.notices[0]).toMatchObject({ kind: 'unpatched', table: MM_TABLE, patchable: true, title: 'Castcade: table not patched' });
+    expect(h.notices[0]?.message).toMatch(/only the last game of this session will post.*Patch my tables/);
+    expect(h.witness.status().note).toBe(h.notices[0]?.message);
+    // The same table again this run: no second balloon, the Status line still says so.
+    await h.exit();
+    await h.launch();
+    expect(h.notices).toHaveLength(1);
+    expect(h.witness.status().note).toMatch(/not patched/);
   });
 });
 
