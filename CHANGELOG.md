@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.11] — 2026-10-22
+
 ### Process
 - One live work tracker per repo: `WORK.md` (item grammar in `.claude/commands/work.md`), the board
   renderer `tools/work-board.mjs` (`npm run work:check | work:summary | work:board`), `/work`, `/wrap`
@@ -55,8 +57,17 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   minutes, stutter and a VPX crash (WORK C2.1). Re-import the folder to re-render every sidecar.
 
 ### Dependencies
-- Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12); CI smoke green. Not yet packaged:
-  the 0.2.10 installer runs Electron 38 (WORK item E4).
+- Electron 44, Vite 8, vitest 5, eslint 10 (Dependabot #1/#5/#9/#11/#12): this is the first packaged build on
+  them (WORK E4; the 0.2.10 installer ran Electron 38). `pack:dir` + `--smoke` green on the owner's rig.
+
+### Wire / journal
+- Score call: new optional `attempt=<key>`; new device call `GET /api/witness/attempt` (ArcAid 2.167.0). The
+  score answer may carry `attempt {n, of, remaining}`.
+- Journal format: hook 0.3.0 adds `Castcade_WatchBytes` (deltas limited to the watched offsets, coalesced per
+  50 ms), `table_exit.filtered_bytes`, and hook 0.2.0's `stale_sidecar` event; `table_loaded` carries
+  `recipe_version` and `lib`. Unwatched (0.1.0) journals decode as before: the three Phase 0 fixtures still replay
+  in vitest. A recorded 0.3.0 fixture is WORK C7.1.
+- Companion log: one line per ArcAid request and answer (`arcaid: #seq …`), never the token.
 
 ## [0.2.10] — 2026-10-21
 
