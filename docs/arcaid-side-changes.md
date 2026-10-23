@@ -354,6 +354,8 @@ reply shape in `src/api/routes/global.ts`.
 
 ## 14. Engine evidence: `engine` on the score call (Castcade F6 / B6, hook 0.4.0)
 
+**Shipped: ArcAid 2.168.0 (PR #377, 2026-10-23).**
+
 **What arrives.** Live-mode scores from companion ≥ 0.2.12 carry one more evidence param, `engine`, compact
 JSON: `{ start: <sample> | null, changes: [<sample>…] }`, each sample `{ t, difficulty, slope_min, slope_max,
 physics_set, gravity, friction, elasticity, elasticity_falloff, scatter, nudge_time, nudge: { xmax, ymax, xgain,

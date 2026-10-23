@@ -7,8 +7,8 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 ## Now
 
-- Companion 0.2.12 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 (engine attestation), limited attempts. ArcAid is at 2.167.1 (ADR 0029 limited attempts; repeats inside 120 s answer `ingested`; integrity mode live, item 11's ROM→VPS map endpoint F8 still open).
-- In flight: nothing claimed. 0.2.12 tagged 2026-10-23 (B6 + C8 + B11). Next by priority: F9 (ArcAid W18, the engine-evidence rule — owner picked it 2026-10-23), C7.1 (0.4.0 fixture), then B4 → B5 → D1.
+- Companion 0.2.12 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 (engine attestation), limited attempts. ArcAid is at 2.168.0 (engine evidence rule; ADR 0029 limited attempts; repeats inside 120 s answer `ingested`; item 11's ROM→VPS map endpoint F8 still open).
+- In flight: nothing claimed. 0.2.12 tagged 2026-10-23 (B6 + C8 + B11). ArcAid 2.168.0 (PR #377) reads the engine evidence. Next by priority: C7.1 (0.4.0 fixture), then B4 → B5 → D1.
 - Order by owner ruling 2026-10-21: live mode first (C7: C2 detector → C1/C1.1 recipe A import → per-game capture → C2.1 hook volume), because basic mode posts only the last game of a session; then B4 → B5 (ArcAid half W6) → D1 solo streaming.
 - Owner actions: let the updater install 0.2.11 on the rig and confirm the Status page (E4.1); tell Krobs (on 0.2.10) to update, then Settings → Import tables → Browse → Check folder → Patch, then play; say whether the stutter is gone on 0.3.0 · re-pair the rig from Settings (its device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate: flip a physics override on and off and check the Integrity panel (B9).
 - Streaming for stream nights (D1, Phase 4a) needs nothing from Phase 3; it follows B5 (ruling 2026-10-21, supersedes the gap analysis §6 "right after F2–F3").
@@ -92,7 +92,7 @@ Lane: none here. The work lands in `C:\code\repos\ArcAid` and is tracked in that
 - **F6** `ready` Items 2–7: `play_mode`, roster, `match:<id>` relay, `castcade_matches` + public keys, RESULT ingest with N signatures, ADR (Phase 5); item 8 table-readiness registry is Phase 3 and needed by C4 (ArcAid W8.1, which needs ArcAid C1)
 - **F7** `ready` Item 13: runner stage · needs: D3
 - **F8** `idea` Item 11, the part left out of 2.166.0: ROM→VPS game map `GET /api/witness/roms` seeded from VPS, so B8 can stop shipping the seed (ArcAid W12) · spec: docs/arcaid-side-changes.md §11
-- **F9** `ready` Item 14: ArcAid reads `engine` on the score (live-mode evidence from hook 0.4.0), Sanctioned rule `engine_changed` + live difficulty / physics set / tilt against the table file and the rules, trail + Integrity panel "In the game" line · needs: B6 · note: owner picks it on the ArcAid side (arcaid-23, 2026-10-23: a `witness_evidence` column + migration, so an ArcAid MINOR version; shape fits `evaluateSanctioned` as is) · spec: docs/arcaid-side-changes.md §14
+- **F9** `done 2026-10-23` Item 14: ArcAid reads `engine` on the score, Sanctioned rule `engine`, live tilt preferred, Integrity panel "In the game" (ArcAid 2.168.0, PR #377, merged by the owner)
 
 ## G. Arcade (Phase 6)
 
