@@ -56,7 +56,7 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C4** `ready` Fill `HELLO`'s `GameFingerprint` from the import manifest — hash(original `.vpx`) + recipe version + sidecar hash; the fields exist since 0.1.0; readiness shared to ArcAid (item 8 = ArcAid W8.1, Phase 3) · needs: C1 · touches: F6
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
 - **C7** `done 0.2.11` Live mode: every game of a session posts its own score (sidecar journal + detector, folder import with dry run and remove-all, three-layer stale-sidecar guard, hook 0.3.0) · spec: docs/design/table-import-and-patching.md
-  - **C7.1** `ready` Live mode follow-through on 0.2.11 installed: a recorded hook-0.3.0 journal fixture (`fixtures/`, replayed in CI beside the three Phase 0 ones), the three-games-in-one-session run as the gate was written (two of three on the rig 2026-10-22, both ingested), the owner's word on stutter · needs: C7 · touches: fixtures/README.md
+  - **C7.1** `ready` A recorded hook-0.4.0 journal fixture (`fixtures/`, replayed in CI beside the three Phase 0 ones) · needs: C7 · touches: fixtures/README.md · note: the three-games-in-one-session gate PASSED 2026-10-23 on the INSTALLED 0.2.11 (updater) — four Monster Bash games, four `ingested`, one request each, attempt calls `unlimited`
 - **C6** `done 2026-10-17` Same-basename sidecar auto-loads on 10.8.0 Windows without a prompt — Phase 0e PASS on TFTC, MM, Iron Maiden; sidecar is the default install path, `importvbs` copy stays C1's fallback
 
 ## D. Media: streaming, recording, voice
@@ -76,7 +76,7 @@ Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/*
 - **E2** `parked` Code signing — deferred until GA by owner ruling 2026-10-18
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
 - **E4** `done 0.2.11` Electron 44 / Vite 8 / vitest 5 follow-through: 0.2.11 is the first packaged build on them (`pack:dir` + `--smoke` green on the owner's rig)
-  - **E4.1** `ready` A real install of 0.2.11 through the updater on the owner's rig (then E1, a tester's clean install) · needs: E4
+  - **E4.1** `done 0.2.11` The updater installed 0.2.11 on the owner's rig (log 2026-10-23T05:32Z: downloaded, installed on quit) and the next session posted four games live
 
 ## F. ArcAid side
 
