@@ -61,6 +61,30 @@ journals no deltas at all: nothing could decode them, and basic mode still reads
 `table_exit` gains `filtered_bytes`. Without a watch list (0.1.0 / 0.2.0 sidecars) the old behaviour stands.
 The companion computes the list with `gameStateOffsets(map)` (`companion/src/witness/maps.ts`) when it renders
 a sidecar; re-importing the folder re-renders every table with it (an older recipe version plans as `repatch`).
+### 0.4.0 — `Castcade_EngineSample`: what VPX has in force, from inside the table (F6)
+
+Ini reading is a *settings at launch* statement (`docs/design/fairness-and-table-identity.md` §5): VPX's tweak
+menu changes difficulty in memory and writes it to disk only when the player presses Start on that page, so an
+unsaved change is in force for the game and on no file anywhere. 0.4.0 reads the live values through the script
+API — `ActiveTable.GlobalDifficulty / SlopeMin / SlopeMax / OverridePhysics / Gravity / Friction / Elasticity /
+ElasticityFalloff / Scatter / NudgeTime` and the global `NudgeGetCalibration` (nudge gains, maxima, dead zone,
+tilt sensitivity) — once at hook time (`reason=init`) and at every key-down (`reason=key`), and writes an
+`engine` line only when something changed:
+
+```
+{"event":"engine","t":412.3,"reason":"key","difficulty":0.8000,"slope_min":6.5000,"slope_max":6.5000,
+ "physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,
+ "scatter":0.0000,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":400}}
+```
+
+A dozen property reads per key press, no line when nothing changed, floats with four decimals and a `.` whatever
+the user's locale. A read that fails (an older VPX, a property a build lacks) leaves its field `null`; without
+`ActiveTable` nothing is written. The companion keeps the sample in force at each game start and every change
+until the game ends, sends them on the score as `engine` (compact JSON), and names an in-game change in the
+capture detail ("CHANGED DURING THE GAME: difficulty 20% → 80%"). No recipe change: a 0.3.0 sidecar loads
+the 0.4.0 library as is; the folder watch re-makes the manifests on the first look. Harness:
+`cscript engine-harness.vbs` with a fake `ActiveTable` (three lines: init, a difficulty change, a tilt change).
+
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)

@@ -49,7 +49,31 @@ export type HookEvent =
   | { kind: 'key_blocked'; t: number; key: number | null }
   | { kind: 'warn'; t: number; msg: string | null; err: string | null }
   | { kind: 'stale_sidecar'; t: number; detail: string | null }
+  | { kind: 'engine'; t: number; sample: EngineSample }
   | { kind: 'table_exit'; t: number; lines: number | null; nvramCallbacks: number | null; blockedKeys: number | null };
+
+/**
+ * What VPX had in force when the hook sampled it (hook 0.4.0 `engine` line: at hook time and at every
+ * key-down, written only on change). `reason` is `init` or `key`. Every field is null when that read failed.
+ */
+export interface EngineSample {
+  t: number;
+  reason: string | null;
+  /** `GlobalDifficulty` 0–1: the live slope sits at min + difficulty × (max − min). */
+  difficulty: number | null;
+  slopeMin: number | null;
+  slopeMax: number | null;
+  /** `OverridePhysics`: 0 = the table's own physics, 1–8 = a global physics set. */
+  physicsSet: number | null;
+  gravity: number | null;
+  friction: number | null;
+  elasticity: number | null;
+  elasticityFalloff: number | null;
+  scatter: number | null;
+  nudgeTime: number | null;
+  /** `NudgeGetCalibration`: the in-memory nudge gains, maxima, dead zone and tilt sensitivity. */
+  nudge: { xmax: number | null; ymax: number | null; xgain: number | null; ygain: number | null; deadZone: number | null; tilt: number | null } | null;
+}
 
 export type JournalEvent = GameEvent | HookEvent;
 
@@ -263,6 +287,28 @@ export class JournalDetector {
         return [{ kind: 'warn', t, msg: str(e.msg), err: str(e.err) }];
       case 'stale_sidecar':
         return [{ kind: 'stale_sidecar', t, detail: str(e.detail) ?? str(e.msg) }];
+      case 'engine': {
+        const n = typeof e.nudge === 'object' && e.nudge !== null ? (e.nudge as Record<string, unknown>) : null;
+        return [{
+          kind: 'engine',
+          t,
+          sample: {
+            t,
+            reason: str(e.reason),
+            difficulty: num(e.difficulty),
+            slopeMin: num(e.slope_min),
+            slopeMax: num(e.slope_max),
+            physicsSet: num(e.physics_set),
+            gravity: num(e.gravity),
+            friction: num(e.friction),
+            elasticity: num(e.elasticity),
+            elasticityFalloff: num(e.elasticity_falloff),
+            scatter: num(e.scatter),
+            nudgeTime: num(e.nudge_time),
+            nudge: n ? { xmax: num(n['xmax']), ymax: num(n['ymax']), xgain: num(n['xgain']), ygain: num(n['ygain']), deadZone: num(n['dead_zone']), tilt: num(n['tilt']) } : null,
+          },
+        }];
+      }
       case 'table_exit':
         return this.onExit(s, e, t);
       default:

@@ -244,6 +244,8 @@ export class ArcaidClient {
       play_device?: 'pc' | 'vr_headset';
       /** 0.2.11 (ADR 0029): the `key` sent on this game's `/witness/attempt` call; absent in basic mode. */
       attempt?: string | null;
+      /** F6 (hook 0.4.0): compact JSON of the engine values in force during the game (`engineWire`); live mode only. */
+      engine?: string | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

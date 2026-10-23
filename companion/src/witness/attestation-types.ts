@@ -7,6 +7,7 @@
  * Sanctioned play (ArcAid item 11) reads it. Nulls mean "could not measure", not "fine".
  */
 import type { VrObservation } from './vr-detect.js';
+import type { EngineSample } from './journal-detector.js';
 
 /** One of the eight global physics sets from `VPinballX.ini` (`TablePhysics*N`, 0-based in the file). */
 export interface PhysicsSetValues {
@@ -170,7 +171,20 @@ export interface Attestation {
   vpmCheat: boolean | null;
   /** The settings differed between launch and capture (the player used the tweak menu, or edited the ini). */
   iniChanged: boolean;
+  /** Live mode, hook 0.4.0: what VPX had in force during the game, read inside the table (F6). Null in basic mode. */
+  engine: EngineAttestation | null;
   notes: string[];
+}
+
+/**
+ * The engine values in force for ONE game (F6, hook 0.4.0): the sample at game start and every change the
+ * hook saw before the game ended. A non-empty `changes` means something was edited in-game (the tweak menu, a
+ * community build's own page); ArcAid's Sanctioned rule compares every sample with the table file and the
+ * launch ini.
+ */
+export interface EngineAttestation {
+  atStart: EngineSample | null;
+  changes: EngineSample[];
 }
 
 // ------------------------------------------------------------------------------------- wire --
@@ -222,6 +236,50 @@ export function adjustmentsWire(a: AdjustmentsReport | null): string | null {
 }
 
 /** The compact `build` JSON: exe and DLL hashes with version strings, the known-build id and the build family, plus the cheat flag. */
+/** The compact `engine` JSON (F6): the sample in force at game start and every in-game change, four decimals. */
+export function engineWire(e: EngineAttestation | null): string | null {
+  if (!e || (!e.atStart && e.changes.length === 0)) return null;
+  const one = (s: EngineSample) => ({
+    t: r4(s.t),
+    difficulty: r4(s.difficulty),
+    slope_min: r4(s.slopeMin),
+    slope_max: r4(s.slopeMax),
+    physics_set: s.physicsSet,
+    gravity: r4(s.gravity),
+    friction: r4(s.friction),
+    elasticity: r4(s.elasticity),
+    elasticity_falloff: r4(s.elasticityFalloff),
+    scatter: r4(s.scatter),
+    nudge_time: r4(s.nudgeTime),
+    nudge: s.nudge ? { xmax: s.nudge.xmax, ymax: s.nudge.ymax, xgain: s.nudge.xgain, ygain: s.nudge.ygain, dead_zone: s.nudge.deadZone, tilt: s.nudge.tilt } : null,
+  });
+  return JSON.stringify({ start: e.atStart ? one(e.atStart) : null, changes: e.changes.map(one) });
+}
+
+/** The live slope in degrees for a sample: min + difficulty × (max − min); null when any part is missing. */
+export function engineSlope(s: EngineSample): number | null {
+  if (s.slopeMin === null || s.slopeMax === null || s.difficulty === null) return null;
+  return s.slopeMin + s.difficulty * (s.slopeMax - s.slopeMin);
+}
+
+/** One line for the capture detail and the log. */
+export function describeEngine(e: EngineAttestation | null): string {
+  if (!e || !e.atStart) return 'engine: not sampled (hook < 0.4.0 or no key pressed)';
+  const s = e.atStart;
+  const pct = (v: number | null) => (v === null ? '?' : `${Math.round(v * 100)}%`);
+  const slope = engineSlope(s);
+  const head = `engine (live): difficulty ${pct(s.difficulty)}${slope !== null ? `, slope ${slope.toFixed(2)}°` : ''}, physics set ${s.physicsSet ?? '?'}${s.nudge?.tilt !== null && s.nudge?.tilt !== undefined ? `, tilt sensitivity ${s.nudge.tilt}` : ''}`;
+  if (e.changes.length === 0) return head;
+  const what: string[] = [];
+  const last = e.changes[e.changes.length - 1]!;
+  if (last.difficulty !== s.difficulty) what.push(`difficulty ${pct(s.difficulty)} → ${pct(last.difficulty)}`);
+  if (last.physicsSet !== s.physicsSet) what.push(`physics set ${s.physicsSet ?? '?'} → ${last.physicsSet ?? '?'}`);
+  if ((last.nudge?.tilt ?? null) !== (s.nudge?.tilt ?? null)) what.push(`tilt sensitivity ${s.nudge?.tilt ?? '?'} → ${last.nudge?.tilt ?? '?'}`);
+  if ((last.nudge?.xgain ?? null) !== (s.nudge?.xgain ?? null) || (last.nudge?.ygain ?? null) !== (s.nudge?.ygain ?? null)) what.push('nudge gain changed');
+  const secs = Math.round(last.t - s.t);
+  return `${head}; CHANGED DURING THE GAME (${e.changes.length} change${e.changes.length === 1 ? '' : 's'}, last at +${secs} s): ${what.length > 0 ? what.join(', ') : 'physics values'}`;
+}
+
 export function buildWire(b: BuildAttestation | null, cheat: boolean | null): string | null {
   if (!b && cheat === null) return null;
   const bin = (x: BinaryAttestation | null) =>

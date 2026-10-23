@@ -40,6 +40,17 @@ const ofKind = <K extends GameEvent['kind']>(events: JournalEvent[], kind: K) =>
  * The same gate `fixtures/check.py` applies to the Python oracle, per fixture:
  * game_start == games, ball_end == balls_per_game * games, game_end == games, balls ending == 1..n.
  */
+describe('engine line (hook 0.4.0)', () => {
+  it('decodes the sample, nulls a failed read, and keeps a missing nudge block null', () => {
+    const d = new JournalDetector();
+    d.feed('{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"mb_106b","lib":"0.4.0","session":"s","locked":false}');
+    const [ev] = d.feed('{"event":"engine","t":0.5,"reason":"init","difficulty":0.2000,"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":null,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":400}}');
+    expect(ev).toMatchObject({ kind: 'engine', t: 0.5, sample: { reason: 'init', difficulty: 0.2, slopeMin: 6.5, physicsSet: 0, scatter: null, nudge: { tilt: 400, xgain: 115, deadZone: 0 } } });
+    const [bare] = d.feed('{"event":"engine","t":9,"reason":"key","difficulty":0.8,"nudge":null}');
+    expect(bare).toMatchObject({ kind: 'engine', sample: { reason: 'key', difficulty: 0.8, slopeMin: null, nudge: null } });
+  });
+});
+
 describe('the three Phase 0 fixtures replay like the Python oracle', () => {
   for (const base of FIXTURES) {
     it(base, async () => {

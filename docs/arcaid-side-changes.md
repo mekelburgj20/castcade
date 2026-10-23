@@ -352,6 +352,35 @@ reply shape in `src/api/routes/global.ts`.
 **Needed by:** Castcade Phase 4. Design context: `docs/design/arcaid-integration-gap-analysis.md` §6
 (phases 4a and 4).
 
+## 14. Engine evidence: `engine` on the score call (Castcade F6 / B6, hook 0.4.0)
+
+**What arrives.** Live-mode scores from companion ≥ 0.2.12 carry one more evidence param, `engine`, compact
+JSON: `{ start: <sample> | null, changes: [<sample>…] }`, each sample `{ t, difficulty, slope_min, slope_max,
+physics_set, gravity, friction, elasticity, elasticity_falloff, scatter, nudge_time, nudge: { xmax, ymax, xgain,
+ygain, dead_zone, tilt } | null }` (four decimals; a field is `null` when that read failed inside VPX). `start`
+is what VPX had in force when the game started; `changes` are the samples the hook wrote during the game (it
+samples at every key-down and writes only on change). Read it the way the other evidence is read
+(`parseWitnessEvidence`: optional, malformed = dropped, never a 400); a cabinet never sends it.
+
+**What it is for.** The ini says what VPX *loaded*; the tweak menu and a community build's own pages change
+difficulty, slope and nudge in memory and write nothing to disk until the player saves. `engine` is the only
+evidence of the values the game was actually played under.
+
+**Sanctioned rule (`evaluateSanctioned`, same pure function).** When `engine` is present and the tournament
+is Sanctioned:
+- `changes` non-empty ⇒ fail, reason `engine_changed` ("physics or difficulty changed during the game").
+- `start.physics_set` ≠ 0 ⇒ the existing stock-physics rule applies to it (a global physics set in force).
+- `start.difficulty` must equal the table file's difficulty (`vps_table` row / `table_sha256` baseline when
+  known) unless the rules allow a difficulty override — the same `difficulty_override` rule the `ini` object
+  already feeds, now checked against the live value.
+- `start.nudge.tilt` is the live tilt sensitivity: apply `min_tilt_sensitivity` to it in preference to the ini's
+  `TiltSensitivity` when both are present (the ini may be stale by one session).
+- Absent `engine` on a live-mode score is "unverifiable, skipped", never a failure (hook < 0.4.0).
+
+**Trail and UI.** Store the raw `engine` with the other evidence on `witness_evidence`; the Integrity panel's
+evidence review shows "In the game: difficulty 20%, slope 6.50°, tilt 400" and, when `changes` is non-empty,
+"changed during the game" with the last values. Badge text unchanged.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

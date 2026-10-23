@@ -36,11 +36,34 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
   const vpx = buildLine(a.build?.vpx ?? null, 'VPX 10.8.0', 'VPX exe not read');
   const vpm = buildLine(a.build?.vpinmame ?? null, 'VPinMAME 3.6.0', 'VPinMAME DLL not found');
   const adj = a.adjustments;
+  const eng = a.engine;
+  const engStart = eng?.atStart ?? null;
+  const engSlope = engStart && engStart.slopeMin !== null && engStart.slopeMax !== null && engStart.difficulty !== null ? engStart.slopeMin + engStart.difficulty * (engStart.slopeMax - engStart.slopeMin) : null;
+  const engLast = eng && eng.changes.length > 0 ? eng.changes[eng.changes.length - 1]! : null;
 
   return (
     <dl className={compact ? 'facts attestation compact' : 'facts attestation'}>
       <dt>Physics</dt>
       <dd className={physics?.warn ? 'warn' : ''}>{physics ? physics.text : 'settings not read'}</dd>
+      {engStart && (
+        <>
+          <dt>In the game</dt>
+          <dd className={engLast ? 'warn' : ''} title="Read inside the table by the Castcade patch at game start and at every key press (hook 0.4.0)">
+            difficulty {engStart.difficulty === null ? '?' : `${Math.round(engStart.difficulty * 100)}%`}
+            {engSlope !== null ? ` · slope ${engSlope.toFixed(2)}°` : ''}
+            {engStart.physicsSet !== null ? ` · physics set ${engStart.physicsSet}` : ''}
+            {engStart.nudge?.tilt !== null && engStart.nudge?.tilt !== undefined ? ` · tilt sensitivity ${engStart.nudge.tilt}` : ''}
+            {engLast && (
+              <span>
+                {' · '}
+                <strong>changed during the game</strong>
+                {engLast.difficulty !== engStart.difficulty ? ` (difficulty → ${engLast.difficulty === null ? '?' : `${Math.round(engLast.difficulty * 100)}%`})` : ''}
+                {(engLast.nudge?.tilt ?? null) !== (engStart.nudge?.tilt ?? null) ? ` (tilt sensitivity → ${engLast.nudge?.tilt ?? '?'})` : ''}
+              </span>
+            )}
+          </dd>
+        </>
+      )}
       {ini && (
         <>
           <dt>Difficulty</dt>

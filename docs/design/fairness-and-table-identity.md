@@ -224,11 +224,13 @@ had been open since 2026-10-18 with the owner reporting a tilt sensitivity of 10
 file on disk said 500: unresolved until that VPX exits and rewrites its ini.
 
 Consequences. (1) Ini reading is a *settings at launch* statement, never a *settings during the game*
-one; Status should say so. (2) The live hook (Phase 3) closes the hole from inside: at game start and
-at each ball start the script calls `NudgeGetCalibration` (the in-memory global settings: gains, maxima,
-dead zone, tilt sensitivity), reads `GlobalDifficulty`, `SlopeMin`, `SlopeMax` and `Difficulty` from the
-table object, and journals them, so an in-game change shows up at the ball it was made on. That is the
-F6 "engine attestation" row. (3) Build-specific knobs: for a declared `panasony` family the hook also
+one; Status should say so. (2) **Shipped (hook 0.4.0, B6):** the live hook closes the hole from inside: at hook
+time and at every key-down the script calls `NudgeGetCalibration` (the in-memory global settings: gains, maxima,
+dead zone, tilt sensitivity) and reads `GlobalDifficulty`, `SlopeMin`, `SlopeMax`, `OverridePhysics` and the
+table physics from `ActiveTable`, and journals an `engine` line when anything changed, so an in-game change shows
+up at the next key press (finer than the ball it was made on). The companion sends the sample in force at game
+start and every change on the score as `engine`; ArcAid's Sanctioned rule for it is `docs/arcaid-side-changes.md`
+§14. That is the F6 "engine attestation" row. (3) Build-specific knobs: for a declared `panasony` family the hook also
 journals the Panasony keys by name once their meaning is confirmed with the author or by experiment on
 the owner's rig; until then the `ini` object carries them raw for the runner's eyes (0.2.9 candidate).
 
@@ -266,7 +268,7 @@ that sits under the honest ceiling in §5.
 | F3 **(shipped: ArcAid #370 v2.165.0 + #371 v2.166.0, ADR 0027; companion 0.2.9–0.2.10)** | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
-| F6 | companion (Phase 3) | engine attestation from the live hook; score-jump plausibility; nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
+| F6 **(engine attestation shipped: hook 0.4.0 + companion, WORK B6, 2026-10-22; the rest open)** | companion (Phase 3) | engine attestation from the live hook (`engine` line at hook time and every key-down, on the score as `engine`); score-jump plausibility; nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
 
 Gate for F1–F2: the owner's Monster Bash capture arrives with `vps_game` = Monster Bash's id,
 `vps_table` = the VPW mod's id, a stable fingerprint across two launches, and an ini object that

@@ -166,7 +166,7 @@ describe('applyImport', () => {
     fs.put(`${SCRIPTS}/castcade.vbs`, 'older');
     expect(await installLibrary(fs, LIB_SRC, SCRIPTS)).toBe('updated');
     fs.put('C:/old.vbs', 'Dim Castcade_LibVersion : Castcade_LibVersion = "0.1.0"\n');
-    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(/0\.1\.0.*0\.3\.0/);
+    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(/0\.1\.0.*0\.4\.0/);
     fs.put('C:/none.vbs', "' nothing");
     await expect(installLibrary(fs, 'C:/none.vbs', SCRIPTS)).rejects.toThrow(/\(none\)/);
   });

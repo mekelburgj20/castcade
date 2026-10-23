@@ -10,7 +10,7 @@ import type { ClassifyResult } from './classify.js';
 import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } from './script-text.js';
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
-export const LIB_VERSION = '0.3.0';
+export const LIB_VERSION = '0.4.0';
 export const RECIPE_VERSION = '0.3.0';
 
 /** `Castcade_Guard`'s mtime tolerance in seconds: DST and FILETIME conversions shift it by a whole hour. */

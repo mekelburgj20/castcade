@@ -44,7 +44,7 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.3.0"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.4.0"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -52,7 +52,10 @@ Dim Castcade_PrevNVRAM, Castcade_NVRAMRegistered, Castcade_NVn
 Dim Castcade_Watch, Castcade_WatchOn, Castcade_Pending, Castcade_LastDeltaT, Castcade_Filtered
 Dim Castcade_PlayKeys, Castcade_PlayKeysReady, Castcade_ExtraKeyNames, Castcade_Swallowed, Castcade_LastLocked
 Dim Castcade_LastScores, Castcade_Blocked
+Dim Castcade_EngineLast, Castcade_Dec
 
+Castcade_EngineLast = ""
+Castcade_Dec = "."
 Castcade_LogOpen = False
 Castcade_NVRAMRegistered = False
 Castcade_PlayKeysReady = False
@@ -71,6 +74,8 @@ Sub Castcade_Init(tableId, recipe, recipeVer, rom)
     On Error Resume Next
     Castcade_TableId = tableId : Castcade_Recipe = recipe : Castcade_RecipeVer = recipeVer : Castcade_Rom = rom
     Castcade_T0 = Timer
+    Castcade_Dec = Mid(FormatNumber(0.5, 1, -1, 0, 0), 2, 1)
+    If Castcade_Dec = "" Then Castcade_Dec = "."
     Castcade_LastLocked = Empty
     Set Castcade_Swallowed = CreateObject("Scripting.Dictionary")
     Set Castcade_fso = CreateObject("Scripting.FileSystemObject")
@@ -94,6 +99,7 @@ Sub Castcade_Init(tableId, recipe, recipeVer, rom)
         ",""recipe_version"":" & Castcade_Q(recipeVer) & ",""rom"":" & Castcade_Q(rom) & _
         ",""lib"":" & Castcade_Q(Castcade_LibVersion) & ",""session"":" & Castcade_Q(Castcade_Session) & _
         ",""locked"":" & Castcade_Bool(Castcade_Locked())
+    Castcade_EngineSample "init"
 End Sub
 
 Sub Castcade_Exit()
@@ -163,6 +169,7 @@ Function Castcade_KeyDownBlocked(keycode)
     On Error Resume Next
     Dim locked
     Castcade_KeyDownBlocked = False
+    Castcade_EngineSample "key"
     locked = Castcade_Locked()
     If IsEmpty(Castcade_LastLocked) Then
         Castcade_LastLocked = locked
@@ -392,6 +399,66 @@ Sub Castcade_Event(name, extraJson)
     On Error Resume Next
     Castcade_Emit name, extraJson
 End Sub
+
+' ---------------------------------------------------------------- engine attestation (0.4.0) --
+' What VPX has IN FORCE right now, read through the script API (`ActiveTable` and the global
+' `NudgeGetCalibration`): the values the tweak menu and a community build's own pages change in
+' memory without touching any file. Sampled once at hook time and at every key-down, written as an
+' `engine` line only when something changed, so an unsaved in-game edit shows up at the next key
+' press and the companion can tie it to the ball it was made on. A dozen property reads per key
+' press; nothing when nothing changed. Any read that fails leaves its field null.
+Sub Castcade_EngineSample(reason)
+    On Error Resume Next
+    Dim t, v, json, xmax, ymax, xgain, ygain, dead, tilt
+    Err.Clear
+    Set t = ActiveTable
+    If Err.Number <> 0 Then Err.Clear : Exit Sub
+    If t Is Nothing Then Exit Sub
+    v = Empty : v = t.GlobalDifficulty : json = """difficulty"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.SlopeMin : json = json & ",""slope_min"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.SlopeMax : json = json & ",""slope_max"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.OverridePhysics : json = json & ",""physics_set"":" & Castcade_IntOf(v)
+    v = Empty : v = t.Gravity : json = json & ",""gravity"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.Friction : json = json & ",""friction"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.Elasticity : json = json & ",""elasticity"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.ElasticityFalloff : json = json & ",""elasticity_falloff"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.Scatter : json = json & ",""scatter"":" & Castcade_FloatOf(v)
+    v = Empty : v = t.NudgeTime : json = json & ",""nudge_time"":" & Castcade_FloatOf(v)
+    Err.Clear
+    NudgeGetCalibration xmax, ymax, xgain, ygain, dead, tilt
+    If Err.Number = 0 Then
+        json = json & ",""nudge"":{""xmax"":" & Castcade_IntOf(xmax) & ",""ymax"":" & Castcade_IntOf(ymax) & _
+            ",""xgain"":" & Castcade_IntOf(xgain) & ",""ygain"":" & Castcade_IntOf(ygain) & _
+            ",""dead_zone"":" & Castcade_IntOf(dead) & ",""tilt"":" & Castcade_IntOf(tilt) & "}"
+    Else
+        Err.Clear
+        json = json & ",""nudge"":null"
+    End If
+    If reason <> "init" And json = Castcade_EngineLast Then Exit Sub
+    Castcade_EngineLast = json
+    Castcade_Emit "engine", """reason"":" & Castcade_Q(reason) & "," & json
+End Sub
+
+' A float as JSON with four decimals and a "." whatever the locale (FormatNumber uses the user's
+' decimal symbol); Empty or a non-number is null.
+Function Castcade_FloatOf(v)
+    On Error Resume Next
+    Dim s
+    Castcade_FloatOf = "null"
+    If IsEmpty(v) Or IsNull(v) Then Exit Function
+    If Not IsNumeric(v) Then Exit Function
+    s = FormatNumber(v, 4, -1, 0, 0)
+    If Castcade_Dec <> "." Then s = Replace(s, Castcade_Dec, ".")
+    Castcade_FloatOf = s
+End Function
+
+Function Castcade_IntOf(v)
+    On Error Resume Next
+    Castcade_IntOf = "null"
+    If IsEmpty(v) Or IsNull(v) Then Exit Function
+    If Not IsNumeric(v) Then Exit Function
+    Castcade_IntOf = Castcade_Num(v)
+End Function
 
 ' ---------------------------------------------------------------- journal plumbing -----
 

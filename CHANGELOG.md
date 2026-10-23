@@ -7,6 +7,21 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Fairness
+- Engine attestation (F6, WORK B6): hook 0.4.0 `Castcade_EngineSample` reads what VPX has in force — difficulty,
+  slope, physics set, table physics, nudge calibration and tilt sensitivity — through the script API at hook time
+  and at every key-down, and journals an `engine` line when anything changed. The companion keeps the sample in
+  force at game start and every in-game change, sends them on the score as `engine` (compact JSON), names a change
+  in the capture detail ("CHANGED DURING THE GAME: difficulty 20% → 80%") and shows "In the game" on the
+  conditions card. Closes the tweak-menu hole the fairness doc §5 names (an unsaved in-game change was on no disk).
+  ArcAid's rule is `docs/arcaid-side-changes.md` §14. No recipe change; the folder watch re-makes manifests for
+  lib 0.4.0 on the first look. `vpx-hook/castcade.vbs`, `journal-detector.ts`, `attestation-types.ts`, `witness.ts`,
+  `renderer/views/Attestation.tsx`.
+
+### Wire / journal
+- Score call: new optional `engine=<json>`. Journal: new `engine` event (hook 0.4.0); the three Phase 0 fixtures
+  are unaffected; a 0.4.0 fixture is part of WORK C7.1.
+
 ## [0.2.11] — 2026-10-22
 
 ### Process

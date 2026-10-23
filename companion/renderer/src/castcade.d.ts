@@ -129,6 +129,22 @@ interface BuildAttestation {
   notes: string[];
 }
 
+interface EngineSample {
+  t: number;
+  reason: string | null;
+  difficulty: number | null;
+  slopeMin: number | null;
+  slopeMax: number | null;
+  physicsSet: number | null;
+  gravity: number | null;
+  friction: number | null;
+  elasticity: number | null;
+  elasticityFalloff: number | null;
+  scatter: number | null;
+  nudgeTime: number | null;
+  nudge: { xmax: number | null; ymax: number | null; xgain: number | null; ygain: number | null; deadZone: number | null; tilt: number | null } | null;
+}
+
 interface Attestation {
   measuredAt: string;
   ini: IniAttestation | null;
@@ -138,6 +154,10 @@ interface Attestation {
   vpmCheat: boolean | null;
   iniChanged: boolean;
   notes: string[];
+  engine: {
+    atStart: EngineSample | null;
+    changes: EngineSample[];
+  } | null;
 }
 
 type MatchConfidence = 'exact' | 'likely' | 'ambiguous' | 'none';

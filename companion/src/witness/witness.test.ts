@@ -928,6 +928,50 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it('hook 0.4.0 engine lines ride on the score as `engine`, and an in-game change is named in the capture detail', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 34);
+    const loadedAt = h.clock.now() + 4000;
+    const journal = tftcJournalAt(loadedAt);
+    const eng = (t: number, reason: string, difficulty: number, tilt: number) =>
+      `{"event":"engine","t":${t},"reason":"${reason}","difficulty":${difficulty.toFixed(4)},"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":0.0000,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":${tilt}}}`;
+    const lines = journal.text.split('\n');
+    const tOf = (l: string) => Number(/"t":([\d.]+)/.exec(l)?.[1] ?? 'NaN');
+    const mid = (journal.gameStartT + journal.gameEndT) / 2;
+    const out: string[] = [];
+    let placedInit = false;
+    let placedChange = false;
+    for (const l of lines) {
+      if (!placedInit && l.includes('"event":"table_loaded"')) {
+        out.push(l, eng(0.5, 'init', 0.2, 400));
+        placedInit = true;
+        continue;
+      }
+      if (!placedChange && Number.isFinite(tOf(l)) && tOf(l) > mid) {
+        out.push(eng(mid, 'key', 0.8, 400));
+        placedChange = true;
+      }
+      out.push(l);
+    }
+    expect(placedInit && placedChange).toBe(true);
+    h.fs.put(TFTC_JOURNAL, out.join('\n'));
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/score')).toHaveLength(1);
+    const wire = JSON.parse(h.paths('/score')[0]?.params['engine'] ?? 'null') as { start: { difficulty: number; nudge: { tilt: number } } | null; changes: { t: number; difficulty: number }[] };
+    expect(wire.start).toMatchObject({ difficulty: 0.2, nudge: { tilt: 400 } });
+    expect(wire.changes).toHaveLength(1);
+    expect(wire.changes[0]).toMatchObject({ difficulty: 0.8 });
+    expect(h.captures[0]?.attestation?.engine?.changes).toHaveLength(1);
+    expect(h.captures[0]?.detail).toMatch(/CHANGED DURING THE GAME \(1 change, last at \+\d+ s\): difficulty 20% → 80%/);
+    expect(h.errors).toEqual([]);
+  });
+
   it('ignores an earlier session left in the same journal file, and falls back to basic mode when no game follows', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');

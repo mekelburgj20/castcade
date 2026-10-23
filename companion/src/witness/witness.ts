@@ -40,10 +40,11 @@
  * `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` and in `LastCapture.identity`.
  */
 import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
+import type { EngineAttestation } from './attestation-types.js';
 import { Emitter } from '../match/events.js';
 import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
-import { JournalDetector, type JournalEvent } from './journal-detector.js';
+import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { disableSidecar, manifestPathFor, readManifest, type Manifest } from '../patcher/index.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
@@ -61,7 +62,7 @@ import {
   type VpxTitle,
 } from './process-watch.js';
 import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adjustments.js';
-import { adjustmentsWire, buildWire, iniWire, type Attestation } from './attestation-types.js';
+import { adjustmentsWire, buildWire, iniWire, type Attestation, describeEngine, engineWire } from './attestation-types.js';
 import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
 import { NO_VR_PROBE, createPowershellVrProbe, describeVr, playDeviceFor, type VrProbe } from './vr-detect.js';
 import { createIdentityResolver } from './identity-resolver.js';
@@ -188,6 +189,10 @@ interface LiveSession {
   sessionStamp: string | null;
   /** The game in progress on a limited-attempts board (ADR 0029): set at game start, cleared at capture. */
   attempt: AttemptStatus | null;
+  /** The last `engine` sample the hook wrote (hook 0.4.0), whatever the game state. */
+  engineLast: EngineSample | null;
+  /** The samples that belong to the game in progress: the one in force at its start, then every change. */
+  engineGame: EngineSample[];
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -520,6 +525,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       adjustments: session.attestation?.adjustments ?? null,
       vpmCheat: session.attestation?.vpmCheat ?? null,
       iniChanged: false,
+      engine: null,
       notes,
     };
   };
@@ -633,6 +639,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     live: boolean;
     /** The key of this game's attempt call (live mode on a limited board); the score repeats it. */
     attemptKey?: string | null;
+    /** F6: the engine values in force during this game, from the hook (live mode, hook 0.4.0). */
+    engine?: EngineAttestation | null;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -652,10 +660,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const adjustments = map && nvBytes && rom ? adjustmentsReport(rom, decodeAdjustments(map, nvBytes)) : null;
     const vpmCheat = rom ? await vpmCheatFlag(registry, rom).catch(() => null) : null;
     const iniChanged = launchIni !== null && measured.ini !== null && iniWire(launchIni) !== iniWire(measured.ini);
-    const attestation: Attestation = { ...measured, adjustments, vpmCheat, iniChanged };
+    const engine = p.engine ?? null;
+    const attestation: Attestation = { ...measured, adjustments, vpmCheat, iniChanged, engine };
     session.attestation = attestation;
     if (attestation.ini) details.push(describeIni(attestation.ini));
     if (iniChanged) details.push('settings changed during the session');
+    if (live) details.push(describeEngine(engine));
     if (rom) details.push(describeAdjustments(adjustments));
     details.push(describeBuild(attestation.build, vpmCheat));
     if (attestation.vr) details.push(describeVr(attestation.vr));
@@ -719,6 +729,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           // 0.2.10: headset or monitor, when sampled. ArcAid 2.166.0 puts it on the device axis.
           ...(playDeviceFor(attestation.vr) ? { play_device: playDeviceFor(attestation.vr)! } : {}),
           ...(p.attemptKey ? { attempt: p.attemptKey } : {}),
+          ...(engineWire(engine) ? { engine: engineWire(engine) } : {}),
         },
       });
       const mapped = outcomeForPost(posted);
@@ -850,6 +861,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       manifest,
       sessionStamp: null,
       attempt: null,
+      engineLast: null,
+      engineGame: [],
     };
     session.live = live;
     live.tail.on('line', (line) => {
@@ -891,6 +904,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.lastGameStartMs = null;
       live.sessionStamp = ev.session ?? null;
       live.attempt = null;
+      live.engineLast = null;
+      live.engineGame = [];
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
@@ -910,7 +925,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         live.lastGameStartMs = at;
         live.games++;
         session.lastActivityAt = clock.now();
+        live.engineGame = live.engineLast ? [{ ...live.engineLast, t: ev.t }] : [];
         await reportAttempt(session, live, ev.players ?? null, at, ev.t);
+        break;
+      case 'engine':
+        live.engineLast = ev.sample;
+        if (live.lastGameStartMs !== null) live.engineGame.push(ev.sample);
+        if (ev.sample.reason === 'init') log(`witness: ${describeEngine({ atStart: ev.sample, changes: [] })} on ${live.tableId}`);
         break;
       case 'game_end':
         await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
@@ -951,9 +972,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (n > 1) decision = { kind: 'skip', players: n, score, detail: `multi-player game (${n} players): not attributable to one account` };
     else if (score === null || score <= 0) decision = { kind: 'skip', players: n, score, detail: 'no score (player 1 score is 0)' };
     else decision = { kind: 'score', players: 1, score, reason, gameOver: reason === 'game_over' };
-    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null });
+    const engine: EngineAttestation | null = live.engineGame.length > 0 || live.engineLast
+      ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
+      : null;
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine });
     if (decision.kind === 'score') live.captures++;
     live.attempt = null;
+    live.engineGame = [];
     refreshTableStatus();
     emitStatus();
   };
