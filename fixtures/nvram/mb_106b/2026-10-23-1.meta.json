@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX_GL64.exe, build 10.8.0.2078.Panasony per the companion log)",
+  "vpinmame_version": "3.7.0.222",
+  "recorded": "2026-10-23",
+  "rig": "owner's rig, Windows 11, desktop (non-VR) windowed",
+  "companion_version": "0.2.11 (installed by the updater)",
+  "lib_version": "0.3.0",
+  "lib_sha256": "281c9d0f6ffa98d20e320cd98709d0ba782a03e737d951991f6cd7d05e00ed67",
+  "recipe": "A",
+  "recipe_version": "0.3.0",
+  "rom": "mb_106b",
+  "table_file": "Monster Bash (Williams 1998) VPWmod v1.0.vpx",
+  "table_id": "Monster Bash (Williams 1998) VPWmod v1.0",
+  "vpx_sha256": "26d57ee535d24cc5f61f5d2a40927724cd3d84ed0f3807c175dab59d3b1706e7",
+  "journal_sha256": "54045b0114e3184bb676468d584c8a00cddf2d7907eb32a7cd6ed5fdcbf4ae00",
+  "journal_file": "2026-10-23-1.jsonl.gz",
+  "played_by": "the owner by hand, three table loads (sessions 16:26:10, 16:40:47, 16:47:59 local, UTC-7)",
+  "games": 5,
+  "expected": "session 1: three games 19548230, 14959390, 48488530; session 2: the boot race (no event) then one game 34055250; session 3: one game 144785330. Each game: game_start, ball_end 1,2,3, game_end.",
+  "notes": "The live-mode gate of C7 (three games in one session, each its own score) on hook 0.3.0: game_state bytes only (Castcade_WatchBytes), coalesced deltas, one nvram_full. Session 2's boot wrote player 1 / ball 1 at t=10.773 s and game over at t=10.832 s in separate callbacks, which the detector read as the last game (48488530) ending again; live mode posted it and ArcAid answered duplicate (companion log 2026-10-23T23:40:59Z). Since C7.1.1 a ball or game end needs a game_start seen in the session. The sidecar on disk was re-made since; its hash at recording time is not known."
+}

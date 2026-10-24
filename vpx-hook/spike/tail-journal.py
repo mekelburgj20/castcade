@@ -177,6 +177,9 @@ class Session:
         self.offset = args.offset
         self.decoder = None
         self.state = None
+        # A ball or game end needs a game_start seen this session: Monster Bash's boot (2026-10-23)
+        # wrote player 1 / ball 1 and game over in two callbacks, which "ended" the last game again.
+        self.in_game = False
         self.counts = {}
         self.balls_seen = set()
         self.max_ball = 0
@@ -227,6 +230,10 @@ class Session:
             if self.decoder and self.decoder.ok:
                 cur = self.decode()
                 for name, d in detect(self.state, cur):
+                    if name in ("ball_end", "game_end") and not self.in_game:
+                        continue
+                    if name in ("game_start", "game_end"):
+                        self.in_game = name == "game_start"
                     self.bump("derived:" + name)
                     if name == "ball_end" and d.get("ball") is not None:
                         self.balls_seen.add(d["ball"])

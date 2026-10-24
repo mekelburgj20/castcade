@@ -204,6 +204,12 @@ interface Session {
   lastPlayer: number | null;
   lastBall: number | null;
   balls: Set<number>;
+  /**
+   * Recipe A: a `game_start` was seen this session and its game has not ended. A ball or game end
+   * needs one. On the owner's rig 2026-10-23 Monster Bash's boot wrote player 1 / ball 1 and then,
+   * 59 ms later in a separate callback, game over; without this the stale last game "ended" again.
+   */
+  started: boolean;
 }
 
 export interface JournalDetectorOptions {
@@ -336,7 +342,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set() };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false };
     return [
       {
         kind: 'table_loaded',
@@ -361,12 +367,11 @@ export class JournalDetector {
     // attached has no observed start, and the boot pattern is simply ignored. A later periodic
     // snapshot is ground truth and goes through the same transition as a delta would, so a change
     // that a dropped delta hid is still seen.
-    const events = s.state ? detectTransition(s.state, cur, t) : [];
+    const events = this.observed(s, s.state ? detectTransition(s.state, cur, t) : []);
     for (const ev of events) this.record(s, ev);
     if (plausible(cur)) {
       s.state = cur;
       s.summary.scores = cur.scores;
-      if (cur.gameOver === false && (cur.currentBall ?? 0) >= 1) s.summary.inGame = true;
     }
     return events;
   }
@@ -385,14 +390,25 @@ export class JournalDetector {
     }
     if (!s.map) return [];
     const cur = decodeGameState(s.map, s.shadow);
-    const events = detectTransition(s.state, cur, t);
+    const events = this.observed(s, detectTransition(s.state, cur, t));
     for (const ev of events) this.record(s, ev);
     if (!plausible(cur)) return events;
     if (cur.currentBall !== null && cur.currentBall > s.summary.maxBall) s.summary.maxBall = cur.currentBall;
     s.state = cur;
     s.summary.scores = cur.scores;
-    if (cur.gameOver === false && (cur.currentBall ?? 0) >= 1) s.summary.inGame = true;
     return events;
+  }
+
+  /** Recipe A: drop a ball or game end from a game whose start this session never saw (see `Session.started`). */
+  private observed(s: Session, events: GameEvent[]): GameEvent[] {
+    const out: GameEvent[] = [];
+    for (const ev of events) {
+      if ((ev.kind === 'ball_end' || ev.kind === 'game_end') && !s.started) continue;
+      if (ev.kind === 'game_start') s.started = true;
+      if (ev.kind === 'game_end') s.started = false;
+      out.push(ev);
+    }
+    return out;
   }
 
   private onScriptEvent(s: Session, event: 'game_start' | 'current_scores' | 'ball_end' | 'game_end', e: RawLine, t: number): JournalEvent[] {

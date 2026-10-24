@@ -7,6 +7,14 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Witness
+- A ball or game end now needs a `game_start` seen in the same table load (recipe A). On 2026-10-23 Monster Bash's
+  boot wrote player 1 / ball 1 and, 59 ms later in a separate NVRAM callback, game over; the detector read that as
+  the previous game ending again and live mode re-posted its score 11 s after the table loaded (ArcAid answered
+  `duplicate`). `journal-detector.ts` and the Python tailer `vpx-hook/spike/tail-journal.py` (C7.1.1).
+- Fixture `fixtures/nvram/mb_106b/2026-10-23-1` (hook 0.3.0, five games over three loads, the boot race included)
+  replays in both CI checks; the `mb_106` map joins the vendored subset.
+
 ## [0.2.12] — 2026-10-22
 
 ### Table import, second pass (what a tester hit on 0.2.11 — C8)

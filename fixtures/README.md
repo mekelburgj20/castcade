@@ -1,7 +1,8 @@
 # fixtures/
 
 **Status: first three fixtures recorded 2026-10-17 (Phase 0, `docs/phase-0-spike.md` §8): `nvram/mm_109c`, `nvram/tftc_400`,
-`script/iron-maiden-lotb`. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
+`script/iron-maiden-lotb`; a fourth, `nvram/mb_106b/2026-10-23-1` (hook 0.3.0, three table loads, five games: the C7
+live-mode gate), recorded 2026-10-23. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
 exit) is archived locally only, 18.7 MB gzipped is too large for git; see `docs/phase-0-spike.md` §8 "Owner's hands-on pass". Journals are written by the hook to
 `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below. NVRAM journals are large
 (the 0.1.0 hook writes every changed byte: 37 MB for two games of Medieval Madness) so they are stored **gzipped**
@@ -79,9 +80,9 @@ phases table in `docs/design/arcaid-integration-gap-analysis.md`.
 
 ## `maps/` — vendored map subset for the companion tests
 
-`fixtures/maps/` holds the two `pinmame-nvram-maps` map files (plus their platform files, a cut-down
+`fixtures/maps/` holds the `pinmame-nvram-maps` map files (plus their platform files, a cut-down
 `index.json`, the ODbL/DbCL licences and a `VERSION` with the commit) that `companion/src/witness/maps.test.ts`
-needs to decode the `mm_109c` and `tftc_400` journals above with the companion's own TypeScript interpreter.
+needs to decode the `mm_109c`, `tftc_400` and `mb_106b` journals above with the companion's own TypeScript interpreter.
 The files are byte-identical to the pinned commit `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7`; see
 `fixtures/maps/README.md` for attribution. Ground truth for those tests (final scores, player count, ball,
 game-over, high scores) was taken from the Python reference (`tail-journal.py` → `py-pinmame-nvmaps` at the

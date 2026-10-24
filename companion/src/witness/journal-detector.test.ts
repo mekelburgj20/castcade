@@ -23,7 +23,7 @@ const FIXTURES = [
 
 async function mapLookup(): Promise<(rom: string) => CompiledMap | null> {
   const maps = new Map<string, CompiledMap | null>();
-  for (const rom of ['mm_109c', 'tftc_400']) maps.set(rom, await corpus.mapFor(rom));
+  for (const rom of ['mm_109c', 'tftc_400', 'mb_106b']) maps.set(rom, await corpus.mapFor(rom));
   return (rom) => maps.get(rom) ?? null;
 }
 
@@ -107,6 +107,34 @@ describe('the three Phase 0 fixtures replay like the Python oracle', () => {
     const atBallEnd = ofKind(events, 'current_scores').filter((e) => e.t < lastBallEnd.t).at(-1);
     expect(atBallEnd?.scores[0]).toBe(259760);
     expect(detector.wantsMapFor).toBeNull();
+  });
+});
+
+describe('mb_106b: the hook-0.3.0 live-mode gate (2026-10-23, three table loads, five games)', () => {
+  const BASE = 'fixtures/nvram/mb_106b/2026-10-23-1';
+
+  it('every game is start, three ball ends, end, with its own score', async () => {
+    const { lines, meta } = loadFixture(BASE);
+    const { events, detector } = replayDetector(lines, { mapFor: await mapLookup() });
+    expect(ofKind(events, 'game_end').map((e) => e.scores[0])).toEqual([19548230, 14959390, 48488530, 34055250, 144785330]);
+    expect(ofKind(events, 'game_end')).toHaveLength(meta.games);
+    const order = games(events).filter((e) => e.kind !== 'current_scores').map((e) => e.kind);
+    expect(order).toEqual(Array.from({ length: meta.games }, () => ['game_start', 'ball_end', 'ball_end', 'ball_end', 'game_end']).flat());
+    expect(ofKind(events, 'ball_end').map((e) => e.ball)).toEqual(Array.from({ length: meta.games }, () => [1, 2, 3]).flat());
+    expect(ofKind(events, 'game_abandoned')).toHaveLength(0);
+    // Hook 0.3.0 journals one snapshot per load and only the map's game_state bytes.
+    expect(events.filter((e) => e.kind === 'table_loaded')).toHaveLength(3);
+    expect(detector.summary()).toMatchObject({ exited: true, inGame: false, torn: 0, orphanDeltas: 0, lines: { nvram_full: 1 } });
+  });
+
+  it("the second load's boot race (player 1 / ball 1, then game over 59 ms later) does not end the last game again", async () => {
+    const { lines } = loadFixture(BASE);
+    const { events } = replayDetector(lines, { mapFor: await mapLookup() });
+    const loads = events.flatMap((e, i) => (e.kind === 'table_loaded' ? [i] : []));
+    const second = games(events.slice(loads[1], loads[2]));
+    expect(second[0].kind).toBe('game_start');
+    expect(second[0].t).toBeCloseTo(26.699, 3);
+    expect(second.filter((e) => e.kind === 'game_end' && e.scores[0] === 48488530)).toHaveLength(0);
   });
 });
 
