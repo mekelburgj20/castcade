@@ -8,9 +8,9 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.13 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 engine attestation (difficulty fixed to 0–1 in 0.2.13), score plausibility flag, limited attempts; a table load no longer re-posts the last score. ArcAid 2.168.0 reads the engine evidence; F10 (0.2.12's 0–100 difficulty) and F11 (`score_plausibility` on the Integrity panel) are one ArcAid PR awaiting the owner; F8 (ROM→VPS map endpoint) still open there.
-- In flight: the ArcAid PR for F10 + F11 (claimed in ArcAid WORK section W, opus on a branch; the owner approves).
+- In flight: ArcAid PR #379 (2.170.0: F10 + F11 as ArcAid W40/W41) awaits the owner's review; its body asks one decision (re-evaluate the two stored Medieval Madness verdicts or leave them).
 - Next by priority: B4 (playfield fingerprint) → B5 (ArcAid half W6) → D1 solo streaming (owner ruling 2026-10-21; D1 needs nothing from Phase 3). Small and unblocked: B4.1, C2.2.
-- Owner actions: review + merge the ArcAid PR for F10/F11 · update the rig to 0.2.13; have Krobs update and click Settings → Import tables → Patch my tables once · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
+- Owner actions: review + merge ArcAid PR #379 (F10/F11) · update the rig to 0.2.13; have Krobs update and click Settings → Import tables → Patch my tables once · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
 - Watching: C9 (four arrivals per score, 2026-10-22) — no recurrence in three sessions since request logging. ArcAid's admin-ui scoreboard scroll-arrow test is flaky and once skipped a deploy; handed to the ArcAid session (its lane).
 - Last wrap: 2026-10-23 — B6, C8, E4.1, F9 done; 0.2.11 and 0.2.12 released; C7 gate passed; C9 added.
 
@@ -96,8 +96,8 @@ Lane: none here. The work lands in `C:\code\repos\ArcAid` and is tracked in that
 - **F7** `ready` Item 13: runner stage · needs: D3
 - **F8** `idea` Item 11, the part left out of 2.166.0: ROM→VPS game map `GET /api/witness/roms` seeded from VPS, so B8 can stop shipping the seed (ArcAid W12) · spec: docs/arcaid-side-changes.md §11
 - **F9** `done 2026-10-23` Item 14: ArcAid reads `engine` on the score, Sanctioned rule `engine`, live tilt preferred, Integrity panel "In the game" (ArcAid 2.168.0, PR #377, merged by the owner)
-- **F10** `ready` [BUG] ArcAid reads `engine.difficulty` > 1 as a percentage (÷100): 0.2.12 sends VPX's 0–100 number (B6.2), so the Sanctioned `engine` rule fails every 0.2.12 score ("differs from the table's 50%") and the Integrity panel shows 5000%; installed 0.2.12 companions keep sending it until they update. Two stored rows already carry 50 (Medieval Madness 16814490 and 19643660, 2026-10-25). Not yet filed in ArcAid `WORK.md` section W · spec: docs/arcaid-side-changes.md §14 (Correction)
-- **F11** `ready` Item 15: ArcAid reads `score_plausibility` (B6.1), stores it with the evidence and shows it on the Integrity panel; flag only, never a gate · spec: docs/arcaid-side-changes.md §15
+- **F10** `review ArcAid #379` [BUG] ArcAid reads `engine.difficulty` > 1 as a percentage (÷100): 0.2.12 sends VPX's 0–100 number (B6.2), so the Sanctioned `engine` rule fails every 0.2.12 score ("differs from the table's 50%") and the Integrity panel shows 5000%; installed 0.2.12 companions keep sending it until they update. Two stored rows already carry 50 (Medieval Madness 16814490 and 19643660, 2026-10-25). · pr: https://github.com/mekelburgj20/ArcAid/pull/379 (ArcAid W40/W41, 2.170.0) · spec: docs/arcaid-side-changes.md §14 (Correction)
+- **F11** `review ArcAid #379` Item 15: ArcAid reads `score_plausibility` (B6.1), stores it with the evidence and shows it on the Integrity panel; flag only, never a gate · pr: https://github.com/mekelburgj20/ArcAid/pull/379 (ArcAid W40/W41, 2.170.0) · spec: docs/arcaid-side-changes.md §15
 
 ## G. Arcade (Phase 6)
 
