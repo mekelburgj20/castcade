@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.3.0
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.4.0
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with

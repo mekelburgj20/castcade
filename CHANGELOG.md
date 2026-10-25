@@ -14,6 +14,11 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   `duplicate`). `journal-detector.ts` and the Python tailer `vpx-hook/spike/tail-journal.py` (C7.1.1).
 - Fixture `fixtures/nvram/mb_106b/2026-10-23-1` (hook 0.3.0, five games over three loads, the boot race included)
   replays in both CI checks; the `mb_106` map joins the vendored subset.
+- Live difficulty is 0–1 again (B6.2): VPX's `GlobalDifficulty` reads 0–100 through the script API (Medieval
+  Madness: file 0.5, live 50), so 0.2.12 logged "difficulty 5000%", sent `difficulty: 50` on the score's `engine`
+  and would put a 6–7° table's slope at 62°. The detector divides by 100; the hook and the journal are unchanged.
+- Fixture `fixtures/nvram/mm_109c/2026-10-25-1`: the first hook-0.4.0 journal from real VPX (two games, one
+  `engine` line) (C7.1.2). `castcade.vbs`'s header comment says 0.4.0 (it said 0.3.0).
 
 ## [0.2.12] — 2026-10-22
 

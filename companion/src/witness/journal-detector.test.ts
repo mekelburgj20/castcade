@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { readJournalLines } from './journal-replay.js';
 import { detectTransition, JournalDetector, plausible, replayDetector, type GameEvent, type JournalEvent } from './journal-detector.js';
 import { createMapCorpus, type CompiledMap, type GameState } from './maps.js';
+import { engineSlope } from './attestation-types.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
@@ -41,12 +42,12 @@ const ofKind = <K extends GameEvent['kind']>(events: JournalEvent[], kind: K) =>
  * game_start == games, ball_end == balls_per_game * games, game_end == games, balls ending == 1..n.
  */
 describe('engine line (hook 0.4.0)', () => {
-  it('decodes the sample, nulls a failed read, and keeps a missing nudge block null', () => {
+  it('decodes the sample (GlobalDifficulty 0–100 → 0–1), nulls a failed read, and keeps a missing nudge block null', () => {
     const d = new JournalDetector();
     d.feed('{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"mb_106b","lib":"0.4.0","session":"s","locked":false}');
-    const [ev] = d.feed('{"event":"engine","t":0.5,"reason":"init","difficulty":0.2000,"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":null,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":400}}');
+    const [ev] = d.feed('{"event":"engine","t":0.5,"reason":"init","difficulty":20.0000,"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":null,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":400}}');
     expect(ev).toMatchObject({ kind: 'engine', t: 0.5, sample: { reason: 'init', difficulty: 0.2, slopeMin: 6.5, physicsSet: 0, scatter: null, nudge: { tilt: 400, xgain: 115, deadZone: 0 } } });
-    const [bare] = d.feed('{"event":"engine","t":9,"reason":"key","difficulty":0.8,"nudge":null}');
+    const [bare] = d.feed('{"event":"engine","t":9,"reason":"key","difficulty":80,"nudge":null}');
     expect(bare).toMatchObject({ kind: 'engine', sample: { reason: 'key', difficulty: 0.8, slopeMin: null, nudge: null } });
   });
 });
@@ -135,6 +136,30 @@ describe('mb_106b: the hook-0.3.0 live-mode gate (2026-10-23, three table loads,
     expect(second[0].kind).toBe('game_start');
     expect(second[0].t).toBeCloseTo(26.699, 3);
     expect(second.filter((e) => e.kind === 'game_end' && e.scores[0] === 48488530)).toHaveLength(0);
+  });
+});
+
+describe('mm_109c 2026-10-25: hook 0.4.0 on real VPX (two games, one engine line)', () => {
+  const BASE = 'fixtures/nvram/mm_109c/2026-10-25-1';
+
+  it('two games with their scores, and the engine sample in the 0–1 difficulty the table file uses', async () => {
+    const { lines, meta } = loadFixture(BASE);
+    const { events } = replayDetector(lines, { mapFor: await mapLookup() });
+    expect(ofKind(events, 'game_end').map((e) => e.scores[0])).toEqual([16814490, 19643660]);
+    const order = games(events).filter((e) => e.kind !== 'current_scores').map((e) => e.kind);
+    expect(order).toEqual(Array.from({ length: meta.games }, () => ['game_start', 'ball_end', 'ball_end', 'ball_end', 'game_end']).flat());
+    const engine = events.filter((e): e is Extract<JournalEvent, { kind: 'engine' }> => e.kind === 'engine');
+    expect(engine).toHaveLength(1);
+    // The table file says 0.5; VPX's GlobalDifficulty said 50 (0.2.12 showed "difficulty 5000%").
+    expect(engine[0].sample).toMatchObject({ reason: 'init', difficulty: 0.5, slopeMin: 6.5, slopeMax: 6.5, physicsSet: 0, nudge: { tilt: 300 } });
+    expect(engineSlope(engine[0].sample)).toBe(6.5);
+  });
+
+  it('a table with a slope range: Monster Bash live 56 on 6–7° is 6.56°, not 62°', () => {
+    const d = new JournalDetector();
+    d.feed('{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"mb_106b","lib":"0.4.0","session":"s","locked":false}');
+    const [eng] = d.feed('{"event":"engine","t":0.03,"reason":"init","difficulty":56.0000,"slope_min":6.0000,"slope_max":7.0000,"physics_set":0}');
+    expect(eng.kind === 'engine' && engineSlope(eng.sample)).toBeCloseTo(6.56, 6);
   });
 });
 

@@ -72,12 +72,15 @@ tilt sensitivity) — once at hook time (`reason=init`) and at every key-down (`
 `engine` line only when something changed:
 
 ```
-{"event":"engine","t":412.3,"reason":"key","difficulty":0.8000,"slope_min":6.5000,"slope_max":6.5000,
+{"event":"engine","t":412.3,"reason":"key","difficulty":80.0000,"slope_min":6.5000,"slope_max":6.5000,
  "physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,
  "scatter":0.0000,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":400}}
 ```
 
-A dozen property reads per key press, no line when nothing changed, floats with four decimals and a `.` whatever
+`difficulty` is VPX's `GlobalDifficulty` as the script API returns it, **0–100** (the table file and the ini store
+0–1: Medieval Madness file 0.5, live 50.0, 2026-10-25); the companion divides by 100 when it reads the line, and the
+harness's fake `ActiveTable` used 0–1, which hid it until the first real game. `gravity` is in the script API's unit
+too (Medieval Madness live 0.97, file 1.76); nothing compares it to the file. A dozen property reads per key press, no line when nothing changed, floats with four decimals and a `.` whatever
 the user's locale. A read that fails (an older VPX, a property a build lacks) leaves its field `null`; without
 `ActiveTable` nothing is written. The companion keeps the sample in force at each game start and every change
 until the game ends, sends them on the score as `engine` (compact JSON), and names an in-game change in the

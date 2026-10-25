@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX_GL64.exe, build 10.8.0.2078.Panasony per the companion log)",
+  "vpinmame_version": "3.7.0.222",
+  "recorded": "2026-10-25",
+  "rig": "owner's rig, Windows 11, desktop (non-VR) windowed",
+  "companion_version": "0.2.12 (installed by the updater)",
+  "lib_version": "0.4.0",
+  "lib_sha256": "9673f50aa53a2bc24b2a9e4860e91cef8c361d370130a00db0004472b39184b8",
+  "recipe": "A",
+  "recipe_version": "0.3.0",
+  "rom": "mm_109c",
+  "table_file": "Medieval Madness (Williams 1997) VPW v1.0.1.vpx",
+  "table_id": "Medieval Madness (Williams 1997) VPW v1.0.1",
+  "vpx_sha256": "2adb94677b5f3519170271f8cc31cac54716d68c62f8491d25ab789792b2a18e",
+  "journal_sha256": "d2a163cb851519aa1352346311f4bc761545f9eff5715c05ddc0574751d4a75",
+  "journal_file": "2026-10-25-1.jsonl.gz",
+  "played_by": "the owner by hand, one table load (session 2026-10-25T11:52:07 local, UTC-7)",
+  "games": 2,
+  "expected": "two games, 16814490 then 19643660, each game_start, ball_end 1,2,3, game_end; one engine line (init): GlobalDifficulty 50 (= the table file's 0.5), slope 6.5 fixed, physics set 0, tilt 300, no change during either game. Both scores ingested at ArcAid (companion log 2026-10-25T18:56:51Z, 19:02:07Z).",
+  "notes": "First journal from real VPX with hook 0.4.0's engine line. It showed that GlobalDifficulty reads 0-100 through the script API, not 0-1 as the engine harness's fake ActiveTable had it: 0.2.12 logged 'difficulty 5000%' and sent difficulty 50 to ArcAid. The detector divides by 100 since B6.2."
+}

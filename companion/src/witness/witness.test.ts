@@ -943,7 +943,7 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     const loadedAt = h.clock.now() + 4000;
     const journal = tftcJournalAt(loadedAt);
     const eng = (t: number, reason: string, difficulty: number, tilt: number) =>
-      `{"event":"engine","t":${t},"reason":"${reason}","difficulty":${difficulty.toFixed(4)},"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":0.0000,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":${tilt}}}`;
+      `{"event":"engine","t":${t},"reason":"${reason}","difficulty":${(difficulty * 100).toFixed(4)},"slope_min":6.5000,"slope_max":6.5000,"physics_set":0,"gravity":0.9700,"friction":0.0750,"elasticity":0.2500,"elasticity_falloff":0.0000,"scatter":0.0000,"nudge_time":5.0000,"nudge":{"xmax":700,"ymax":700,"xgain":115,"ygain":115,"dead_zone":0,"tilt":${tilt}}}`;
     const lines = journal.text.split('\n');
     const tOf = (l: string) => Number(/"t":([\d.]+)/.exec(l)?.[1] ?? 'NaN');
     const mid = (journal.gameStartT + journal.gameEndT) / 2;

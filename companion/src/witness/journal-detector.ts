@@ -59,7 +59,11 @@ export type HookEvent =
 export interface EngineSample {
   t: number;
   reason: string | null;
-  /** `GlobalDifficulty` 0–1: the live slope sits at min + difficulty × (max − min). */
+  /**
+   * Difficulty 0–1, like the table file's `TDFT` and the ini: the live slope sits at min + difficulty × (max − min).
+   * VPX's script property `GlobalDifficulty` is 0–100 (Medieval Madness: file 0.5, live 50, 2026-10-25); the
+   * journal keeps VPX's number and the detector divides by 100.
+   */
   difficulty: number | null;
   slopeMin: number | null;
   slopeMax: number | null;
@@ -185,6 +189,8 @@ interface RawLine {
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
+/** `GlobalDifficulty` (0–100) as the 0–1 fraction everything else uses; four decimals, as the hook writes. */
+const percentToFraction = (v: number | null): number | null => (v === null ? null : Math.round(v * 100) / 10000);
 const numArray = (v: unknown): (number | null)[] | null => (Array.isArray(v) ? v.map((x) => num(x)) : null);
 
 const GAME_EVENT_KINDS: GameEventKind[] = ['game_start', 'current_scores', 'ball_end', 'game_end', 'game_abandoned'];
@@ -301,7 +307,7 @@ export class JournalDetector {
           sample: {
             t,
             reason: str(e.reason),
-            difficulty: num(e.difficulty),
+            difficulty: percentToFraction(num(e.difficulty)),
             slopeMin: num(e.slope_min),
             slopeMax: num(e.slope_max),
             physicsSet: num(e.physics_set),
