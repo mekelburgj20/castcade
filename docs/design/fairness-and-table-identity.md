@@ -156,7 +156,9 @@ turns an honest mistake into a public event.
   builds. A custom build is flagged, not refused (people do compile their own).
 - **Memory trainers.** A tool editing the score in RAM shows as score jumps between live journal
   samples larger than the machine's largest single award, and as scores off the ROM's scoring
-  granularity. Flag for review (live mode).
+  granularity. Flag for review (live mode). **Shipped as facts plus one flag (B6.1, 2026-10-25):** the maps carry
+  no award values and a hand-written per-game maximum was ruled out, so the companion reports the largest jump
+  without a ceiling and flags only a jump off the ROM step of 10 (`score_plausibility`; flag only, never a gate).
 - **Restarts and mid-game quits.** Covered by the launch and exit reports (v0.2.3) and the ball-1
   restart counter in the Duels design.
 - **Macros and bots.** Not detectable from data with confidence. The answer is the opponent's live
@@ -268,7 +270,7 @@ that sits under the honest ceiling in §5.
 | F3 **(shipped: ArcAid #370 v2.165.0 + #371 v2.166.0, ADR 0027; companion 0.2.9–0.2.10)** | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
 | F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
-| F6 **(engine attestation shipped: hook 0.4.0 + companion, WORK B6, 2026-10-22; the rest open)** | companion (Phase 3) | engine attestation from the live hook (`engine` line at hook time and every key-down, on the score as `engine`); score-jump plausibility; nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
+| F6 **(engine attestation shipped: hook 0.4.0 + companion, WORK B6, 2026-10-22; the rest open)** | companion (Phase 3) | engine attestation from the live hook (`engine` line at hook time and every key-down, on the score as `engine`); score-jump plausibility (B6.1, `score_plausibility`, 2026-10-25); nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
 
 Gate for F1–F2: the owner's Monster Bash capture arrives with `vps_game` = Monster Bash's id,
 `vps_table` = the VPW mod's id, a stable fingerprint across two launches, and an ini object that

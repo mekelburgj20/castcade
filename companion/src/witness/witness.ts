@@ -64,6 +64,7 @@ import {
 } from './process-watch.js';
 import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adjustments.js';
 import { adjustmentsWire, buildWire, iniWire, type Attestation, describeEngine, engineWire } from './attestation-types.js';
+import { describeScorePlausibility, ROM_SCORE_STEP, ScoreTrack, scorePlausibilityWire, type ScorePlausibility } from './score-plausibility.js';
 import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
 import { NO_VR_PROBE, createPowershellVrProbe, describeVr, playDeviceFor, type VrProbe } from './vr-detect.js';
 import { createIdentityResolver } from './identity-resolver.js';
@@ -196,6 +197,8 @@ interface LiveSession {
   engineLast: EngineSample | null;
   /** The samples that belong to the game in progress: the one in force at its start, then every change. */
   engineGame: EngineSample[];
+  /** B6.1: player 1's score moves in the game in progress (flag only, never a gate). */
+  scoreTrack: ScoreTrack;
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -645,6 +648,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     attemptKey?: string | null;
     /** F6: the engine values in force during this game, from the hook (live mode, hook 0.4.0). */
     engine?: EngineAttestation | null;
+    /** B6.1: how the score moved during this game (live mode); a flag, never a gate. */
+    plausibility?: ScorePlausibility | null;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -670,6 +675,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (attestation.ini) details.push(describeIni(attestation.ini));
     if (iniChanged) details.push('settings changed during the session');
     if (live) details.push(describeEngine(engine));
+    if (live) details.push(describeScorePlausibility(p.plausibility ?? null));
     if (rom) details.push(describeAdjustments(adjustments));
     details.push(describeBuild(attestation.build, vpmCheat));
     if (attestation.vr) details.push(describeVr(attestation.vr));
@@ -734,6 +740,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           ...(playDeviceFor(attestation.vr) ? { play_device: playDeviceFor(attestation.vr)! } : {}),
           ...(p.attemptKey ? { attempt: p.attemptKey } : {}),
           ...(engineWire(engine) ? { engine: engineWire(engine) } : {}),
+          ...(scorePlausibilityWire(p.plausibility ?? null) ? { score_plausibility: scorePlausibilityWire(p.plausibility ?? null) } : {}),
         },
       });
       const mapped = outcomeForPost(posted);
@@ -887,6 +894,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       attempt: null,
       engineLast: null,
       engineGame: [],
+      scoreTrack: new ScoreTrack(),
     };
     session.live = live;
     live.tail.on('line', (line) => {
@@ -930,6 +938,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.attempt = null;
       live.engineLast = null;
       live.engineGame = [];
+      live.scoreTrack = new ScoreTrack(ev.recipe === 'A' ? ROM_SCORE_STEP : null);
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
@@ -950,7 +959,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         live.games++;
         session.lastActivityAt = clock.now();
         live.engineGame = live.engineLast ? [{ ...live.engineLast, t: ev.t }] : [];
+        live.scoreTrack.reset();
         await reportAttempt(session, live, ev.players ?? null, at, ev.t);
+        break;
+      case 'current_scores':
+        if (live.lastGameStartMs !== null) live.scoreTrack.add(ev.scores[0] ?? null, ev.t, ev.ball);
         break;
       case 'engine':
         live.engineLast = ev.sample;
@@ -999,7 +1012,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const engine: EngineAttestation | null = live.engineGame.length > 0 || live.engineLast
       ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
       : null;
-    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine });
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result() });
     if (decision.kind === 'score') live.captures++;
     live.attempt = null;
     live.engineGame = [];

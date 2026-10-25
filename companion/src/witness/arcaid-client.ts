@@ -246,6 +246,8 @@ export class ArcaidClient {
       attempt?: string | null;
       /** F6 (hook 0.4.0): compact JSON of the engine values in force during the game (`engineWire`); live mode only. */
       engine?: string | null;
+      /** B6.1: compact JSON of how player 1's score moved (`scorePlausibilityWire`); live mode only; a flag, never a gate. */
+      score_plausibility?: string | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

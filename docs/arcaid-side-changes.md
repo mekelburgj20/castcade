@@ -383,6 +383,30 @@ is Sanctioned:
 evidence review shows "In the game: difficulty 20%, slope 6.50°, tilt 400" and, when `changes` is non-empty,
 "changed during the game" with the last values. Badge text unchanged.
 
+**Correction (Castcade B6.2, 2026-10-25; ArcAid side is F10).** Companion 0.2.12 sends `difficulty` on VPX's
+script-API scale, **0–100** (Medieval Madness: table file 0.5, `engine` 50); from 0.2.13 it sends 0–1 like the
+`ini`. ArcAid reads a `difficulty` above 1 as a percentage (÷100), in both `start` and `changes`, so the rule and
+the panel are right for 0.2.12 companions still in the field and for the rows already stored.
+
+## 15. Score plausibility: `score_plausibility` on the score call (Castcade B6.1)
+
+**What arrives.** Live-mode scores from companion ≥ 0.2.13 carry `score_plausibility`, compact JSON:
+`{ samples, gcd, step, off_step, largest: { points, t, ball } | null, flag }`. `samples` is how many times player
+1's score changed during the game; `largest` the biggest single upward jump (`t` seconds since the table loaded);
+`gcd` the greatest common divisor of every upward jump; `step` the step the jumps were checked against (10 for ROM
+games, `null` for original tables); `off_step` how many jumps were not a multiple of it; `flag` a sentence when
+`off_step` > 0, else `null`. Read it like the other evidence (`parseWitnessEvidence`: optional, malformed =
+dropped, never a 400); a cabinet never sends it.
+
+**What it is for.** A memory editor that writes a score shows up as one jump. No ceiling is applied (the maps carry
+no award values; a hand-written per-game maximum was ruled out, owner 2026-10-25), so `largest` is a number for a
+runner to read, and the only thing flagged is a jump off the ROM's step of 10.
+
+**Flag only, never a gate (owner ruling 2026-10-25).** No Sanctioned rule reads it and no board, rank or ingest
+decision changes on it. Store it with the other evidence on `witness_evidence`; the Integrity panel's evidence
+review shows "Score: 414 changes, largest jump +11,450,000 on ball 2, all in steps of 10", and, when `flag` is set,
+the flag in the panel's warning style. Badge text unchanged.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

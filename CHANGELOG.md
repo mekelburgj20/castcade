@@ -8,6 +8,9 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 ## [Unreleased]
 
 ### Witness
+- Score plausibility (B6.1): every live score carries `score_plausibility` — how many times player 1's score
+  changed, the largest single jump and when, and a flag when a jump is not a multiple of 10 (ROM games; original
+  tables get the facts only). Shown in the capture detail. Flag only, never a gate. `score-plausibility.ts`.
 - A ball or game end now needs a `game_start` seen in the same table load (recipe A). On 2026-10-23 Monster Bash's
   boot wrote player 1 / ball 1 and, 59 ms later in a separate NVRAM callback, game over; the detector read that as
   the previous game ending again and live mode re-posted its score 11 s after the table loaded (ArcAid answered

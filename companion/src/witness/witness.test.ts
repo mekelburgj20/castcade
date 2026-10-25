@@ -978,6 +978,25 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it('B6.1: how the score moved rides on the score as `score_plausibility` (facts, no flag on a clean game)', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 34);
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(h.clock.now() + 4000).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/score')).toHaveLength(1);
+    const wire = JSON.parse(h.paths('/score')[0]?.params['score_plausibility'] ?? 'null') as { samples: number; step: number; off_step: number; largest: { points: number; ball: number }; flag: string | null };
+    expect(wire).toMatchObject({ step: 10, off_step: 0, flag: null, largest: { points: 600000, ball: 3 } });
+    expect(wire.samples).toBeGreaterThan(0);
+    expect(h.captures[0]?.detail).toMatch(/score plausibility: \d+ changes, largest jump \+600,000 on ball 3, all in steps of 10/);
+    expect(h.errors).toEqual([]);
+  });
+
   it('ignores an earlier session left in the same journal file, and falls back to basic mode when no game follows', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');
