@@ -2,6 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
+//   [--game-volume 50] [--mic-volume 300]  (percent)
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -31,6 +32,10 @@ const rtmp = process.env.CASTCADE_RTMP_URL || null;
 // `--mic` = the Windows default input; `--mic "Shure"` = the first input whose name contains that text.
 const micArg = opt('mic', '');
 const micName = micArg.startsWith('--') ? '' : micArg;
+// Mix levels in percent: --game-volume 50 --mic-volume 300 (defaults).
+const gameVolume = Number(opt('game-volume', '50'));
+const micVolume = Number(opt('mic-volume', '300'));
+if (!(gameVolume >= 0 && micVolume >= 0)) throw new Error('--game-volume / --mic-volume take a percentage');
 const outDir = resolve(here, '../../tmp/d1-spike');
 mkdirSync(outDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -78,7 +83,13 @@ registerProcessor('pcm', P);\`;
     await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' })));
     const node = new AudioWorkletNode(ctx, 'pcm', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 2, channelCountMode: 'explicit' });
     node.port.onmessage = (e) => ipcRenderer.send('pcm', new Uint8Array(e.data));
-    if (audio.length) ctx.createMediaStreamSource(new MediaStream(audio)).connect(node);
+    // Game (loopback) and voice levels: the game is mixed hot, a headset mic quiet (rig run 3), so the game is
+    // turned down and the voice compressed and turned up.
+    const limiter = new DynamicsCompressorNode(ctx, { threshold: -3, knee: 0, ratio: 20, attack: 0.002, release: 0.1 });
+    limiter.connect(node);
+    const gameGain = new GainNode(ctx, { gain: ${gameVolume} / 100 });
+    gameGain.connect(limiter);
+    if (audio.length) ctx.createMediaStreamSource(new MediaStream(audio)).connect(gameGain);
     if (${JSON.stringify(flag('mic'))}) {
       await navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => s.getTracks().forEach((t) => t.stop())); // unlocks device labels
       const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
@@ -87,8 +98,10 @@ registerProcessor('pcm', P);\`;
       const pick = want ? inputs.find((d) => d.label.toLowerCase().includes(want.toLowerCase())) : null;
       if (want && !pick) ipcRenderer.send('status', { error: 'no microphone matching ' + want + '; using the Windows default' });
       const mic = await navigator.mediaDevices.getUserMedia({ audio: { ...(pick ? { deviceId: { exact: pick.deviceId } } : {}), echoCancellation: false, noiseSuppression: true } });
-      ctx.createMediaStreamSource(mic).connect(node);
-      ipcRenderer.send('status', { mic: mic.getAudioTracks()[0].label });
+      const comp = new DynamicsCompressorNode(ctx, { threshold: -30, knee: 10, ratio: 4, attack: 0.005, release: 0.2 });
+      const micGain = new GainNode(ctx, { gain: ${micVolume} / 100 });
+      ctx.createMediaStreamSource(mic).connect(comp).connect(micGain).connect(limiter);
+      ipcRenderer.send('status', { mic: mic.getAudioTracks()[0].label, gameVolume: ${gameVolume}, micVolume: ${micVolume} });
     }
     await ctx.resume();
     ipcRenderer.send('status', { audioContext: ctx.state, sampleRate: ctx.sampleRate });

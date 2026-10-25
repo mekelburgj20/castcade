@@ -51,6 +51,11 @@ source.
   loses access (a fullscreen or display-mode change), keeping one recording across the gap. The Windows default microphone
   was a virtual device ("Steam Streaming Microphone", later "Virtual Desktop Audio" while the headset streamed) and
   recorded silence, so the Stream page needs a named microphone picker, not "the default".
+- **Rig run 3 (2026-10-25, VR, `VRPreview = 1`, headset mic):** 3600/3600 frames, table and voice both recorded, but the
+  picture was poor and the voice buried. The VR preview window is sized by `[PlayerVR] PreviewWidth / PreviewHeight`
+  (owner's ini: 640x480), and the capture can only be as sharp as that window; the Stream page should read those keys and
+  advise 1280x720 or more before a VR stream. The loopback game mix is hot and a headset mic quiet, so the audio graph now
+  turns the game down (50 %), compresses and raises the voice (300 %), and limits the sum; both levels are settings.
 - **Stream key** encrypted with Electron `safeStorage`, never sent to ArcAid, never logged.
 
 ## 4. Build order (each step ships alone)
@@ -85,6 +90,7 @@ frames at 720p30 NVENC, audio and video of equal length. What needs the rig:
    PowerShell: `$env:CASTCADE_RTMP_URL = 'rtmp://live.twitch.tv/app/<key>?bandwidthtest=true'`, run step 3 again, then
    `Remove-Item Env:CASTCADE_RTMP_URL`. The key is never printed.
 6. **VR (optional):** close VPX (it rewrites the ini on exit), set `VRPreview = 1` in the `VPinballX.ini` beside the exe,
-   play in the headset, run step 3. Without this, a VR game records black.
+   play in the headset, run step 3. Without this, a VR game records black. The recording is only as sharp as the preview
+   window: set `PreviewWidth = 1280` and `PreviewHeight = 720` (or 1920 / 1080 with `--preset 1080p30`) in the same section.
 7. **Commentary (optional):** add `--mic` to the command (`... -- --seconds 120 --mic`) and talk while it runs. The spike
    lists the microphones it sees; `--mic "Focusrite"` picks the first whose name contains that text.
