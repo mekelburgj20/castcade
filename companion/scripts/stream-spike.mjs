@@ -6,7 +6,7 @@
 //
 // Start VPX with a table first (windowed or fullscreen). --desktop captures 1280x720 of monitor 0 instead (no VPX needed).
 // Prints one `D1.0 | ...` line at the end to paste back. Output: tmp/d1-spike/<timestamp>.mp4 (gitignored).
-import { app, BrowserWindow, desktopCapturer, ipcMain, session } from 'electron';
+import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from 'electron';
 import { Buffer } from 'node:buffer';
 import { clearInterval, setInterval, setTimeout } from 'node:timers';
 import { spawn, spawnSync } from 'node:child_process';
@@ -179,6 +179,7 @@ app.whenReady().then(async () => {
           `overlay errors=${overlayErrors} | rtmp=${rtmp ? 'on' : 'off'} | mp4=${(size / 1e6).toFixed(1)} MB | vpx fps before=__ during=__\n`,
       );
       log('recording:', mp4);
+      if (size > 0) shell.showItemInFolder(mp4);
       app.exit(code === 0 ? 0 : 1);
     });
   };
