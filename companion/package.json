@@ -21,6 +21,7 @@
     "typecheck:renderer": "tsc -p renderer --noEmit",
     "fetch-maps": "node scripts/fetch-maps.mjs",
     "fetch-vps": "node scripts/fetch-vps.mjs",
+    "spike:stream": "tsc -b && electron scripts/stream-spike.mjs",
     "dist:win": "npm run build && electron-builder --win --publish never",
     "release:win": "npm run build && electron-builder --win --publish always",
     "pack:dir": "npm run build && electron-builder --win --dir"
