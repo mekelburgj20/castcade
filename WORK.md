@@ -8,7 +8,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.13 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 engine attestation (difficulty fixed to 0–1 in 0.2.13), score plausibility flag, limited attempts; a table load no longer re-posts the last score. ArcAid 2.168.0 reads the engine evidence; F10 (0.2.12's 0–100 difficulty) and F11 (`score_plausibility` on the Integrity panel) are one ArcAid PR awaiting the owner; F8 (ROM→VPS map endpoint) still open there.
-- In flight: nothing claimed. ArcAid 2.170.0 deployed (F10 + F11).
+- In flight: nothing claimed. ArcAid 2.170.0 (F10 + F11) deploy dispatched 2026-10-25 (run 40231237219), in progress.
 - Next by priority: D1 solo streaming (owner ruling 2026-10-21; needs nothing from Phase 3). The rest of B5 waits on ArcAid item 12 (F5: baseline upload, preflight, `script_diff` ingest); F12 (bless-fingerprint UI) makes B4 usable in a tournament. Small and unblocked: B4.1, C2.2.
 - Owner actions: dispatch the ArcAid deploy for 2.170.0 (`gh workflow run deploy.yml --ref main -R mekelburgj20/ArcAid`) · update the rig to 0.2.13; have Krobs update and click Settings → Import tables → Patch my tables once · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
 - Watching: C9 (four arrivals per score, 2026-10-22) — no recurrence in three sessions since request logging. ArcAid's admin-ui scoreboard scroll-arrow test is flaky and once skipped a deploy; handed to the ArcAid session (its lane).
