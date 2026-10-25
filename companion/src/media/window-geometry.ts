@@ -201,3 +201,15 @@ export function cropFor(win: VpxWindow, outputs: DxgiOutput[]): DdagrabCrop | nu
   if (width < 64 || height < 64) return null;
   return { outputIdx: out.index, offsetX: x0 - out.desktop.left, offsetY: y0 - out.desktop.top, width, height };
 }
+
+/**
+ * A 9:16 slice of a crop, for a vertical stream from a wider window. `shift` moves the slice sideways as a fraction of
+ * the window width (+0.1 = 10 % right), clamped to the window. In VR the preview is one eye's image, whose centre is
+ * not the table's (left eye: the table sits right of centre; rig run 4, 2026-10-25), so a centred slice needs a shift.
+ */
+export function portraitSlice(crop: DdagrabCrop, shift = 0): DdagrabCrop {
+  const width = Math.min(crop.width, Math.round((crop.height * 9) / 16)) & ~1;
+  const room = crop.width - width;
+  const x = Math.max(0, Math.min(room, Math.round(room / 2 + shift * crop.width)));
+  return { ...crop, offsetX: crop.offsetX + x, width };
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ffmpegArgs, filterValue, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
-import { cropFor, pickPlayfield, type DxgiOutput, type VpxWindow } from './window-geometry.js';
+import { cropFor, pickPlayfield, portraitSlice, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
 /** The owner's rig: two 2560x1440 monitors side by side (probe output, 2026-10-25). */
 const OUTPUTS: DxgiOutput[] = [
@@ -16,6 +16,14 @@ describe('window geometry', () => {
 
   it('two monitors of the same size are told apart by monitor handle, not size', () => {
     expect(cropFor(win({ monitor: '380248181', client: { left: 0, top: 0, width: 2560, height: 1440 } }), OUTPUTS)?.outputIdx).toBe(0);
+  });
+
+  it('a portrait slice is 9:16, centred, shifted and clamped inside the window', () => {
+    const wide = { outputIdx: 0, offsetX: 640, offsetY: 0, width: 1440, height: 1392 };
+    expect(portraitSlice(wide)).toEqual({ outputIdx: 0, offsetX: 640 + 329, offsetY: 0, width: 782, height: 1392 });
+    expect(portraitSlice(wide, 0.1).offsetX).toBe(640 + 329 + 144);
+    expect(portraitSlice(wide, 1).offsetX).toBe(640 + 1440 - 782);
+    expect(portraitSlice({ ...wide, width: 500 })).toMatchObject({ offsetX: 640, width: 500 });
   });
 
   it('falls back to position when the handle is unknown; null off every output', () => {
@@ -55,6 +63,10 @@ describe('ffmpeg args', () => {
     expect(a.slice(-4)).toEqual(['+global_header', '-f', 'tee', '[f=mp4:movflags=+frag_keyframe+empty_moov:onfail=ignore]C:/rec/s.mp4|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123_secret']);
     expect(a).toEqual(expect.arrayContaining(['-c:v', 'h264_amf', '-g', '120']));
     expect(a).not.toContain('pipe:0');
+  });
+
+  it('a vertical window scales its short side to the preset (720p = 720x1280)', () => {
+    expect(videoFilter({ crop: { ...crop, width: 810, height: 1440 }, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', outputs: { mp4: 'x' } })).toContain('scale=720:-2');
   });
 
   it('never upscales a small window', () => {

@@ -2,7 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
-//   [--game-volume 50] [--mic-volume 300]  (percent)
+//   [--game-volume 50] [--mic-volume 300]  (percent)   [--portrait [shift%]]  (a 9:16 slice, + = right)
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -16,7 +16,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENCODER_PREFERENCE, ffmpegArgs, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
-import { cropFor, pickPlayfield, probeWindows } from '../dist/media/window-geometry.js';
+import { cropFor, pickPlayfield, portraitSlice, probeWindows } from '../dist/media/window-geometry.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -142,6 +142,11 @@ app.whenReady().then(async () => {
       app.exit(2);
       return;
     }
+  }
+  // --portrait [shift%]: a 9:16 slice of the window, moved sideways by shift % of its width (+ = right).
+  if (flag('portrait')) {
+    const s = opt('portrait', '0');
+    crop = portraitSlice(crop, (s.startsWith('--') ? 0 : Number(s)) / 100);
   }
   log('crop', JSON.stringify(crop), 'target', target);
   const encoder = pickEncoder();

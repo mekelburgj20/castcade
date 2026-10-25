@@ -56,6 +56,11 @@ source.
   (owner's ini: 640x480), and the capture can only be as sharp as that window; the Stream page should read those keys and
   advise 1280x720 or more before a VR stream. The loopback game mix is hot and a headset mic quiet, so the audio graph now
   turns the game down (50 %), compresses and raises the voice (300 %), and limits the sum; both levels are settings.
+- **Rig runs 4–5 (2026-10-25):** a 1280x720 preview looked good. A tall 810x1440 preview showed VPX crops the eye image to
+  the window: one eye's image is not centred on the table (left eye: the table sits right of centre), and a window as tall
+  as the monitor runs under the taskbar, which then appears in the capture. A vertical stream is therefore a 9:16 slice
+  of a wider preview with a sideways shift (`portraitSlice`), the preset names the short side (720p vertical = 720x1280),
+  and the preview must clear the taskbar. Twitch's player pillarboxes a vertical stream.
 - **Stream key** encrypted with Electron `safeStorage`, never sent to ArcAid, never logged.
 
 ## 4. Build order (each step ships alone)

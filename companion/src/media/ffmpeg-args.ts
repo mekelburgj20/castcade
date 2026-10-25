@@ -72,7 +72,9 @@ function encoderArgs(e: VideoEncoder, p: QualityPreset): string[] {
 
 export function videoFilter(o: EncodeOptions): string {
   const c = o.crop;
-  const outH = Math.min(o.preset.height, c.height) & ~1;
+  // The preset names the short side (720p = 1280x720, or 720x1280 for a vertical window); never upscale.
+  const portrait = c.height > c.width;
+  const outH = Math.min(o.preset.height, portrait ? c.width : c.height) & ~1;
   const parts = [
     `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${c.offsetX}:offset_y=${c.offsetY}:video_size=${c.width}x${c.height}:draw_mouse=0`,
     'hwdownload',
@@ -80,7 +82,7 @@ export function videoFilter(o: EncodeOptions): string {
     // Desktop Duplication only delivers a frame when the screen changes (a still desktop gave 192 frames in 20 s
     // on the owner's rig); repeat the last one so the stream is constant-rate, as RTMP ingests expect.
     `fps=${o.preset.fps}`,
-    `scale=-2:${outH}`,
+    portrait ? `scale=${outH}:-2` : `scale=-2:${outH}`,
   ];
   if (o.overlay) {
     parts.push(
