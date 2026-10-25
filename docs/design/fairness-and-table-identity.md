@@ -155,6 +155,16 @@ unranked". The runner sees every diff report. Making reports visible to the whol
 per-tournament setting defaulting to runner-only: the deterrent is the preflight, and group visibility
 turns an honest mistake into a public event.
 
+**Shipped so far (B5.1–B5.2, 2026-10-25; `companion/src/witness/script-diff.ts`).** Normalisation also splits `:`
+statements and joins `_` continuations, and keeps string literals' case. The baseline today is the table's own
+embedded script: no sidecar = embedded ran (no report); Castcade's sidecar is undone exactly by its markers and
+templates (`unpatchRecipeA`), so only a person's edits remain; any other sidecar is diffed as it is. The classifier
+works on names, not on position: VPW's options block mixes `VRRoom` and `VolumeDial` with `OutLaneDifficulty`,
+`Rubberizer`, `FlipperCoilRampupMode` and `TargetBouncer*`, so "constants in the options block" is not safe as an
+allow-list. The score carries `script_diff` (compact JSON, capped at 3,000 characters: restricted hunks first, counts
+always whole). Flag only. The runner's baseline, the preflight verdict and remembered answers wait on ArcAid item 12
+(B5.3); shared includes against the 10.8.0 release copies are B5.4.
+
 ## 5. What script inspection misses, and what catches it
 
 - **Machine adjustments on ROM tables.** Balls per game, ball save time, extra ball percentage,

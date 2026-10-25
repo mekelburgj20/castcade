@@ -8,6 +8,14 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 ## [Unreleased]
 
 ### Fairness
+- Script inspection, first half (F5, B5.1–B5.2): at launch the companion works out which script ran — the table's
+  own, Castcade's untouched patch of it, Castcade's patch edited by hand, or someone else's sidecar `.vbs` — and diffs
+  it against the table's embedded script (Castcade's own patch is undone exactly first, so it never shows). Each change
+  is classified allowed (a cosmetic option: VR, DMD, sound, lights), restricted (a name that changes play —
+  difficulty, outlanes, ball size or mass, ball saver, tilt, physics, the ROM name — or an added ball, switch write or
+  `Execute` / `Eval`) or unknown, and the score carries the capped report as `script_diff`. Flag only. The runner's
+  own baseline and the preflight verdict wait on ArcAid item 12. `script-diff.ts`, `patcher/render.ts`
+  (`unpatchRecipeA`), `witness.ts`.
 - Playfield fingerprint (F4, B4): every score now carries `fingerprint=pf1:<sha256>`, a hash of the playfield as
   the ball sees it — collidable walls, ramps, rubbers, primitives (with their collision mesh), targets, flippers,
   bumpers, kickers, gates, spinners and the plunger, with physics, position and shape; the table's physics; the

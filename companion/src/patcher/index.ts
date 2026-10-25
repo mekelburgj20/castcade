@@ -7,6 +7,7 @@ export { decodeScript, encodeScript, splitScript, joinScript, stripComment, vbSt
 export { classifyScript, classifyLines, describeClass, type ScriptClass, type ClassifyResult, type ScriptFacts, type ScorbitAnchor, type OriginalSub } from './classify.js';
 export {
   renderRecipeA,
+  unpatchRecipeA,
   block0,
   wrappers,
   formatLocalStamp,

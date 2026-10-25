@@ -418,6 +418,46 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(score['play_device']).toBe('vr_headset');
   });
 
+  it('F5 (B5.2): a sidecar that is not Castcade\'s is diffed against the embedded script and the report rides on the score', async () => {
+    const h = harness({}, { registry: createStaticRegistry(RIG_REGISTRY), env: {} });
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    h.fs.put(MM_PATH, MM_VPX);
+    // MM_VPX's embedded script is `Option Explicit` + `Const cGameName = "mb_106b"`; this sidecar adds a ball saver.
+    h.fs.put(MM_PATH.replace(/\.vpx$/, '.vbs'), ascii('Option Explicit\r\nConst cGameName = "mb_106b"\r\nBallSaverTime = 999\r\n'));
+    h.fs.put(EXE, EXE_BYTES);
+    h.fs.put(DLL_PATH, DLL_BYTES);
+    await h.witness.start();
+    await h.flush();
+    await h.launch();
+    await h.flush();
+    await h.playFor(300_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]?.detail).toMatch(/script: a sidecar \.vbs that is not Castcade's; 1 restricted vs the embedded script \(first restricted: touches ballsavertime\)/);
+    const wire = JSON.parse(h.paths('/score')[0]?.params['script_diff'] ?? 'null');
+    expect(wire).toMatchObject({ v: 1, ran: 'foreign', baseline: 'embedded', counts: { restricted: 1, allowed: 0, unknown: 0 }, hunks: [{ cls: 'restricted', add: ['ballsavertime = 999'] }] });
+    // Flag only: the score still went in.
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested', score: 1089510 });
+  });
+
+  it('F5 (B5.2): no sidecar means the embedded script ran, and no `script_diff` is sent', async () => {
+    const h = harness({}, { registry: createStaticRegistry(RIG_REGISTRY), env: {} });
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    h.fs.put(MM_PATH, MM_VPX);
+    await h.witness.start();
+    await h.flush();
+    await h.launch();
+    await h.flush();
+    await h.playFor(300_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.paths('/score')[0]?.params['script_diff']).toBeUndefined();
+    expect(h.captures[0]?.detail).toMatch(/script: the table's own script, no change from the embedded script/);
+  });
+
   it('VR (0.2.10): no sample → no play_device on the wire (ArcAid reads the monitor)', async () => {
     const h = harness({}, { vrProbe: { sample: async () => null } });
     h.fs.put('/nv/mm_109c.nv', mmBefore);

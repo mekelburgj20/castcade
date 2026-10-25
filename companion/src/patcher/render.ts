@@ -203,3 +203,48 @@ export function renderRecipeA(scriptText: string, cls: ClassifyResult, opts: Ren
   const bytes = encodeScript(joinScript({ lines: out, newline: split.newline, trailingNewline: true }));
   return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), warnings, anchors };
 }
+
+/** The single lines recipe A inserts around `LoadVPM` (exact templates; see `renderRecipeA`). */
+const RECIPE_A_LINE_INSERTS = [
+  /^Dim UseVPMNVRAM : UseVPMNVRAM = True {3}' Castcade: /,
+  /^UseVPMNVRAM = True {3}' Castcade: /,
+  /^Castcade_RegisterNVRAM {3}' Castcade: /,
+];
+
+/**
+ * Undo a recipe-A sidecar exactly: drop block 0 and the wrapper tail by their markers, drop the two `LoadVPM`
+ * lines by their templates, rename `Castcade_Orig_<handler>` back to `<table>_<handler>`. What is left is the
+ * table's own script plus anything a person changed in the sidecar, so a diff against the embedded script shows
+ * only their edits (F5: Castcade's own patch is exempt by content, not by name). Null when `text` is not ours.
+ */
+export function unpatchRecipeA(text: string): string | null {
+  if (!isOurSidecar(text)) return null;
+  const split = splitScript(text);
+  const lines = split.lines;
+  const start0 = lines.findIndex((l) => SIDECAR_MARKER.test(l));
+  const end0 = lines.findIndex((l, i) => i > start0 && l === "' --- end Castcade block 0 ---");
+  if (start0 < 0 || end0 < 0) return null;
+  const wrapStart = lines.findIndex((l) => l.startsWith("' --- Castcade turn lock + exit hook"));
+  const wrapEnd = lines.findIndex((l, i) => i > wrapStart && l === "' --- end Castcade ---");
+  let tableObject: string | null = null;
+  if (wrapStart >= 0 && wrapEnd > wrapStart) {
+    for (const l of lines.slice(wrapStart, wrapEnd)) {
+      const m = /^Sub (\w+)_KeyDown\(ByVal KeyCode\)$/.exec(l);
+      if (m) tableObject = m[1]!;
+    }
+  }
+  const drop = new Set<number>();
+  for (let i = start0; i <= end0; i++) drop.add(i);
+  if (wrapStart >= 0 && wrapEnd > wrapStart) {
+    // `wrappers()` starts with one blank line.
+    const from = wrapStart > 0 && lines[wrapStart - 1] === '' ? wrapStart - 1 : wrapStart;
+    for (let i = from; i <= wrapEnd; i++) drop.add(i);
+  }
+  lines.forEach((l, i) => {
+    if (RECIPE_A_LINE_INSERTS.some((rx) => rx.test(l))) drop.add(i);
+  });
+  const kept = lines
+    .filter((_, i) => !drop.has(i))
+    .map((l) => (tableObject ? l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, `$1${tableObject}_$2`) : l));
+  return joinScript({ lines: kept, newline: split.newline, trailingNewline: split.trailingNewline });
+}

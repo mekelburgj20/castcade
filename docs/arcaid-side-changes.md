@@ -328,6 +328,14 @@ carries `script_diff`; the runner review shows the classified hunks; a per-tourn
 `diff_reports_visible_to: 'runner' | 'participants'` (default runner) controls who else sees them.
 Unknown hunks the runner approves are stored against the baseline so the next player is not asked.
 
+**Already sent (companion ≥ 0.2.14, B5.2).** `script_diff`, compact JSON: `{ v, ran: 'embedded' | 'castcade' |
+'castcade_edited' | 'foreign', baseline: 'embedded' | 'runner', baseline_sha256, ran_sha256, counts: { allowed,
+restricted, unknown }, hunks: [{ at, cls, why, del: [...], add: [...] }], truncated }` (statements normalised and
+lower-cased outside strings; at most 3,000 characters, restricted hunks first). It is absent when the script that ran
+matches the baseline. Today the baseline is the table's own embedded script; with item 12 it becomes the runner's.
+Read it like the other evidence (optional, malformed = dropped, never a 400); until item 12's rules exist it is a
+flag for the runner review, never a gate.
+
 **Where.** Same files as item 11 plus a small upload route and storage for baselines (text, ~100–500 KB).
 
 **Size.** Medium. **Needed by:** Castcade F5.

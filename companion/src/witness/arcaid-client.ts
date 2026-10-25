@@ -237,6 +237,8 @@ export class ArcaidClient {
       table_sha256?: string | null;
       /** F4: the playfield fingerprint `pf<v>:<sha256>` (ArcAid compares it to the runner's blessed one). */
       fingerprint?: string | null;
+      /** F5 (B5.2): compact JSON of the script that ran vs the baseline (`scriptDiffWire`); absent when nothing changed. Flag only. */
+      script_diff?: string | null;
       table_save_rev?: number | null;
       /** Attestation (F2), compact JSON strings: settings, machine adjustments, builds + cheat flag. */
       ini?: string | null;

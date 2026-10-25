@@ -47,7 +47,8 @@ import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
-import { disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript } from '../patcher/index.js';
+import { disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
+import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
@@ -146,6 +147,8 @@ interface OpenSession {
   live: LiveSession | null;
   /** Basic mode on a table the import could patch (or not): the sentence Status shows under "Capture". */
   unpatchedNote: string | null;
+  /** F5 (B5.2): the script that ran against the table's embedded one, read at launch; null when not inspected. */
+  scriptDiff: ScriptDiffReport | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -555,6 +558,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     session.identityFor = target;
     if (path) await startLive(session, path);
     if (path && !session.live) await noticeUnpatched(session, path);
+    if (path) await inspectScript(session, path);
     const identity = await resolver.fromFile(path, path ? tableBaseName(path) : launch.table);
     session.identity = identity;
     if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
@@ -685,6 +689,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (rom) details.push(describeAdjustments(adjustments));
     details.push(describeBuild(attestation.build, vpmCheat));
     if (attestation.vr) details.push(describeVr(attestation.vr));
+    if (session.scriptDiff) details.push(describeScriptDiff(session.scriptDiff));
 
     const resolved = resolveTableName(session.launch, romName, rom);
     const table = resolved?.table ?? UNKNOWN_TABLE;
@@ -739,6 +744,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           vps_table: identity?.vpsTable?.id ?? null,
           table_sha256: identity?.sha256 ?? null,
           ...(identity?.fingerprint ? { fingerprint: identity.fingerprint } : {}),
+          ...(scriptDiffWire(session.scriptDiff) ? { script_diff: scriptDiffWire(session.scriptDiff) } : {}),
           table_save_rev: identity?.saveRev ?? null,
           ini: iniWire(attestation.ini),
           adjustments: adjustmentsWire(adjustments),
@@ -861,6 +867,36 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * game will post, and whether the import would fix it (the script classifies as recipe A).
    */
   const noticedUnpatched = new Set<string>();
+  /**
+   * F5 (B5.2): which script ran and how it differs from the table's own. VPX 10.8 runs a same-basename sidecar
+   * instead of the embedded script; Castcade's own sidecar is undone exactly (`unpatchRecipeA`) so only a person's
+   * edits remain. Flag only: the report rides on the score, nothing here refuses a capture.
+   */
+  const inspectScript = async (session: OpenSession, vpxPath: string): Promise<void> => {
+    try {
+      const script = await readVpxScript(fs, vpxPath);
+      if (!script) return;
+      const embedded = decodeScript(script.bytes);
+      let sidecar: string | null = null;
+      try {
+        sidecar = decodeScript(await fs.readFile(sidecarPathFor(vpxPath)));
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+      let report: ScriptDiffReport;
+      if (sidecar === null) report = scriptDiffReport(embedded, embedded, { ran: 'embedded', baseline: 'embedded' });
+      else if (isOurSidecar(sidecar)) {
+        const own = unpatchRecipeA(sidecar);
+        const r = scriptDiffReport(embedded, own ?? sidecar, { ran: 'castcade', baseline: 'embedded' });
+        report = r.hunks.length > 0 || r.truncated || own === null ? { ...r, ran: 'castcade_edited' } : r;
+      } else report = scriptDiffReport(embedded, sidecar, { ran: 'foreign', baseline: 'embedded' });
+      session.scriptDiff = report;
+      if (report.ran !== 'embedded' && report.ran !== 'castcade') log(`witness: ${describeScriptDiff(report)} on ${tableBaseName(vpxPath)}`);
+    } catch (err) {
+      log(`witness: script inspection failed for ${tableBaseName(vpxPath)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const noticeUnpatched = async (session: OpenSession, vpxPath: string): Promise<void> => {
     const table = tableBaseName(vpxPath);
     const patchable = await readVpxScript(fs, vpxPath)
@@ -1136,6 +1172,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       attestation: null,
       live: null,
       unpatchedNote: null,
+      scriptDiff: null,
     };
     sessions.set(launch.pid, session);
     if (!baseline) await refreshBaseline();

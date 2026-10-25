@@ -43,6 +43,7 @@ export type QueuedPost =
         vps_table?: string | null;
         table_sha256?: string | null;
         fingerprint?: string | null;
+        script_diff?: string | null;
         table_save_rev?: number | null;
         ini?: string | null;
         adjustments?: string | null;

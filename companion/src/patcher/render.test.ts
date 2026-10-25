@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { classifyScript } from './classify.js';
 import { libraryVersionOf } from './import.js';
-import { LIB_VERSION, RECIPE_VERSION, STUB, formatLocalStamp, isOurSidecar, parseSidecarMarker, renderRecipeA, type RenderOptions } from './render.js';
+import { LIB_VERSION, RECIPE_VERSION, STUB, formatLocalStamp, isOurSidecar, parseSidecarMarker, renderRecipeA, unpatchRecipeA, type RenderOptions } from './render.js';
 import { decodeScript, encodeScript, splitScript } from './script-text.js';
 import { ORIGINAL_B_SCRIPT, PATCHED_VPM_SCRIPT, VPM_DECLARED_SCRIPT, VPM_NO_LOADVPM_SCRIPT, VPM_SCRIPT, crlf, lf } from './test-scripts.test-support.js';
 
@@ -170,5 +170,29 @@ describe('watch list (lib 0.3.0)', () => {
     expect(renderLines(crlf(VPM_SCRIPT), { ...OPTS, watchOffsets: [] }).out.lines).toContain('Castcade_WatchBytes Array()');
     expect(renderLines(crlf(VPM_SCRIPT)).out.lines.some((l) => l.startsWith('Castcade_WatchBytes'))).toBe(false);
     expect(STUB).toContain('Castcade_WatchBytes');
+  });
+});
+
+describe('unpatchRecipeA (F5: our own patch is exempt by content)', () => {
+  const trimEnd = (t: string) => t.replace(/(\r?\n)+$/, '');
+  const roundTrip = (text: string, opts: RenderOptions = OPTS) => unpatchRecipeA(decodeScript(renderRecipeA(text, classifyScript(text), opts).bytes));
+
+  it('render then unpatch gives back the original script, CRLF or LF, with or without the optional lines', () => {
+    for (const script of [crlf(VPM_SCRIPT), lf(VPM_SCRIPT), crlf(VPM_DECLARED_SCRIPT), crlf(VPM_NO_LOADVPM_SCRIPT)]) {
+      expect(trimEnd(roundTrip(script)!)).toBe(trimEnd(script));
+      expect(trimEnd(roundTrip(script, { ...OPTS, watchOffsets: [5792, 141], extraKeys: ['LeftMagnaSave'] })!)).toBe(trimEnd(script));
+    }
+  });
+
+  it('a hand edit in our sidecar survives the unpatch, and nothing else does', () => {
+    const script = crlf(VPM_SCRIPT);
+    const rendered = decodeScript(renderRecipeA(script, classifyScript(script), OPTS).bytes);
+    const firstOwn = splitScript(script).lines.find((l) => l.trim() !== '' && !l.trim().startsWith("'"))!;
+    const edited = rendered.replace(firstOwn, `${firstOwn}\r\nBallSaverTime = 999`);
+    expect(trimEnd(unpatchRecipeA(edited)!)).toBe(trimEnd(script.replace(firstOwn, `${firstOwn}\r\nBallSaverTime = 999`)));
+  });
+
+  it('a script that is not ours is null', () => {
+    expect(unpatchRecipeA(crlf(VPM_SCRIPT))).toBeNull();
   });
 });
