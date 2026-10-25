@@ -175,12 +175,13 @@ export function probeWindows(timeoutMs = 20_000): Promise<WindowProbe> {
   });
 }
 
-/** The VPX playfield window: the one titled like VPX's player, else the largest visible VPX window. */
+/**
+ * The VPX playfield window: the largest one titled like VPX's player. Null when no game is running: the editor
+ * ("Visual Pinball - [table]") and the DMD windows are never the playfield (rig run 2, 2026-10-25, filmed the editor).
+ */
 export function pickPlayfield(windows: VpxWindow[]): VpxWindow | null {
-  if (windows.length === 0) return null;
   const titled = windows.filter((w) => /visual pinball player/i.test(w.title));
-  const pool = titled.length > 0 ? titled : windows;
-  return [...pool].sort((a, b) => b.client.width * b.client.height - a.client.width * a.client.height)[0] ?? null;
+  return [...titled].sort((a, b) => b.client.width * b.client.height - a.client.width * a.client.height)[0] ?? null;
 }
 
 /**

@@ -1,7 +1,8 @@
 // D1.0 spike (docs/design/solo-streaming-and-recording.md §4): capture the VPX window with ffmpeg (ddagrab → NVENC/AMF/QSV),
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
-//   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic] [--desktop]
+//   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
+//   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
 // Start VPX with a table first (windowed or fullscreen). --desktop captures 1280x720 of monitor 0 instead (no VPX needed).
@@ -27,6 +28,9 @@ const seconds = Number(opt('seconds', '120'));
 const preset = PRESETS[opt('preset', '720p30')];
 if (!preset) throw new Error('unknown --preset');
 const rtmp = process.env.CASTCADE_RTMP_URL || null;
+// `--mic` = the Windows default input; `--mic "Shure"` = the first input whose name contains that text.
+const micArg = opt('mic', '');
+const micName = micArg.startsWith('--') ? '' : micArg;
 const outDir = resolve(here, '../../tmp/d1-spike');
 mkdirSync(outDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -76,7 +80,13 @@ registerProcessor('pcm', P);\`;
     node.port.onmessage = (e) => ipcRenderer.send('pcm', new Uint8Array(e.data));
     if (audio.length) ctx.createMediaStreamSource(new MediaStream(audio)).connect(node);
     if (${JSON.stringify(flag('mic'))}) {
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true } });
+      await navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => s.getTracks().forEach((t) => t.stop())); // unlocks device labels
+      const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+      ipcRenderer.send('status', { microphones: inputs.map((d) => d.label) });
+      const want = ${JSON.stringify(micName)};
+      const pick = want ? inputs.find((d) => d.label.toLowerCase().includes(want.toLowerCase())) : null;
+      if (want && !pick) ipcRenderer.send('status', { error: 'no microphone matching ' + want + '; using the Windows default' });
+      const mic = await navigator.mediaDevices.getUserMedia({ audio: { ...(pick ? { deviceId: { exact: pick.deviceId } } : {}), echoCancellation: false, noiseSuppression: true } });
       ctx.createMediaStreamSource(mic).connect(node);
       ipcRenderer.send('status', { mic: mic.getAudioTracks()[0].label });
     }
@@ -92,15 +102,26 @@ app.whenReady().then(async () => {
   let target = 'desktop';
   if (flag('desktop')) crop = { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1280, height: 720 };
   else {
-    const probe = await probeWindows();
+    // Wait for a game: the editor window alone is not the playfield.
+    let probe = await probeWindows();
+    let pf = pickPlayfield(probe.windows);
+    for (let waited = 0; !pf && waited < 180; waited += 3) {
+      if (waited === 0) log('waiting for a game: start the table in VPX (up to 3 minutes)...');
+      await new Promise((r) => setTimeout(r, 3000));
+      probe = await probeWindows();
+      pf = pickPlayfield(probe.windows);
+    }
     log('outputs', JSON.stringify(probe.outputs.map((o) => ({ idx: o.index, device: o.device, at: o.desktop }))));
     log('VPX windows', JSON.stringify(probe.windows.map((w) => ({ title: w.title, client: w.client }))));
-    const pf = pickPlayfield(probe.windows);
     if (!pf) {
-      log('no VPX window found: start a table first (or use --desktop)');
+      log('no game window ("Visual Pinball Player") found: start a table first (or use --desktop)');
       app.exit(2);
       return;
     }
+    // Let a fullscreen or VR player settle before Desktop Duplication starts (a mode change ends the capture).
+    await new Promise((r) => setTimeout(r, 5000));
+    probe = await probeWindows();
+    pf = pickPlayfield(probe.windows) ?? pf;
     crop = cropFor(pf, probe.outputs);
     target = `"${pf.title}"`;
     if (!crop) {

@@ -44,6 +44,13 @@ source.
   `VRPreview = 0`):** the player window was 640x480 and the capture all black, while the pipeline itself held (3600/3600
   frames, speed 0.997x, exit 0) and the loopback track carried the game sound (mean -27.9 dB). So the Stream page must
   detect a VR game with the preview off and say so before going live, not stream a black box.
+- **Rig run 2 (2026-10-25, `VRPreview = 1`, `--mic`):** started with only the editor open, so the old "largest VPX window"
+  fallback filmed the editor; about 9 s in (around when the game started) ffmpeg stopped with ddagrab's "Generic error in an
+  external library", Desktop Duplication's lost-access error. Changes: the playfield is only ever the "Visual Pinball Player"
+  window, the spike waits for it and lets the player settle 5 s, and the product must restart the capture when ddagrab
+  loses access (a fullscreen or display-mode change), keeping one recording across the gap. The Windows default microphone
+  was a virtual device ("Steam Streaming Microphone", later "Virtual Desktop Audio" while the headset streamed) and
+  recorded silence, so the Stream page needs a named microphone picker, not "the default".
 - **Stream key** encrypted with Electron `safeStorage`, never sent to ArcAid, never logged.
 
 ## 4. Build order (each step ships alone)
@@ -79,4 +86,5 @@ frames at 720p30 NVENC, audio and video of equal length. What needs the rig:
    `Remove-Item Env:CASTCADE_RTMP_URL`. The key is never printed.
 6. **VR (optional):** close VPX (it rewrites the ini on exit), set `VRPreview = 1` in the `VPinballX.ini` beside the exe,
    play in the headset, run step 3. Without this, a VR game records black.
-7. **Commentary (optional):** add `--mic` to the command (`... -- --seconds 120 --mic`) and talk while it runs.
+7. **Commentary (optional):** add `--mic` to the command (`... -- --seconds 120 --mic`) and talk while it runs. The spike
+   lists the microphones it sees; `--mic "Focusrite"` picks the first whose name contains that text.

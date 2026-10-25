@@ -23,11 +23,12 @@ describe('window geometry', () => {
     expect(cropFor(win({ monitor: '?', client: { left: 9000, top: 0, width: 800, height: 600 } }), OUTPUTS)).toBeNull();
   });
 
-  it('the playfield is the window titled like the VPX player, else the largest', () => {
-    const dmd = win({ title: 'DMD', client: { left: 0, top: 0, width: 3000, height: 900 } });
+  it('the playfield is the window titled like the VPX player; the editor and DMD never are', () => {
+    const dmd = win({ title: 'Virtual DMD', client: { left: 0, top: 0, width: 3000, height: 900 } });
+    const editor = win({ title: 'Visual Pinball - [Monster Bash (Williams 1998) VPWmod v1.0]', client: { left: 558, top: 175, width: 1599, height: 1156 } });
     const pf = win({ title: 'Visual Pinball Player', client: { left: 0, top: 0, width: 1920, height: 1080 } });
-    expect(pickPlayfield([dmd, pf])).toBe(pf);
-    expect(pickPlayfield([win({ title: 'a', client: { left: 0, top: 0, width: 100, height: 100 } }), dmd])).toBe(dmd);
+    expect(pickPlayfield([dmd, editor, pf])).toBe(pf);
+    expect(pickPlayfield([dmd, editor])).toBeNull();
     expect(pickPlayfield([])).toBeNull();
   });
 });
