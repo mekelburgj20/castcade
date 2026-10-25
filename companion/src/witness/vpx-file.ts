@@ -7,8 +7,9 @@
  * A `.vpx` is an OLE2 / Compound File Binary ([MS-CFB]) and tables run from 100 MB to 1 GB, so this
  * is a minimal CFB reader that never loads the file whole: header, DIFAT (including the chained
  * DIFAT sectors a large file needs), FAT sectors on demand, directory entries on demand, the mini
- * stream for streams under the cutoff. Of the `GameStg` storage only `Version` and `GameData` are
- * read; the `GameItem*` / `Image*` / `Sound*` streams that make up the bulk are never touched. The
+ * stream for streams under the cutoff. Identity reads only `Version` and `GameData` of the `GameStg`
+ * storage; the playfield fingerprint (`readVpxPlayfieldStreams`) adds the `GameItem*` streams; the
+ * `Image*` / `Sound*` streams that make up the bulk are never touched. The
  * parsing of what comes out (`parseTableInfo`, `parseGameDataPhysics`) is pure and testable without
  * a compound file.
  */
