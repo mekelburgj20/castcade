@@ -7,21 +7,32 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
-### Witness
-- Score plausibility (B6.1): every live score carries `score_plausibility` — how many times player 1's score
-  changed, the largest single jump and when, and a flag when a jump is not a multiple of 10 (ROM games; original
-  tables get the facts only). Shown in the capture detail. Flag only, never a gate. `score-plausibility.ts`.
-- A ball or game end now needs a `game_start` seen in the same table load (recipe A). On 2026-10-23 Monster Bash's
-  boot wrote player 1 / ball 1 and, 59 ms later in a separate NVRAM callback, game over; the detector read that as
-  the previous game ending again and live mode re-posted its score 11 s after the table loaded (ArcAid answered
-  `duplicate`). `journal-detector.ts` and the Python tailer `vpx-hook/spike/tail-journal.py` (C7.1.1).
-- Fixture `fixtures/nvram/mb_106b/2026-10-23-1` (hook 0.3.0, five games over three loads, the boot race included)
-  replays in both CI checks; the `mb_106` map joins the vendored subset.
-- Live difficulty is 0–1 again (B6.2): VPX's `GlobalDifficulty` reads 0–100 through the script API (Medieval
-  Madness: file 0.5, live 50), so 0.2.12 logged "difficulty 5000%", sent `difficulty: 50` on the score's `engine`
-  and would put a 6–7° table's slope at 62°. The detector divides by 100; the hook and the journal are unchanged.
-- Fixture `fixtures/nvram/mm_109c/2026-10-25-1`: the first hook-0.4.0 journal from real VPX (two games, one
-  `engine` line) (C7.1.2). `castcade.vbs`'s header comment says 0.4.0 (it said 0.3.0).
+## [0.2.13] — 2026-10-25
+
+### Fixes found by the first recorded live games (C7.1)
+- A table load no longer re-posts the previous game's score. On 2026-10-23 Monster Bash's boot wrote player 1 /
+  ball 1 and, 59 ms later in a separate NVRAM callback, game over; the detector read that as the previous game
+  ending again and live mode re-posted its score 11 s after the table loaded (ArcAid answered `duplicate`). A ball
+  or game end now needs a `game_start` seen in the same table load (recipe A). `journal-detector.ts`, and the
+  Python oracle `vpx-hook/spike/tail-journal.py` (C7.1.1).
+- Live difficulty is 0–1 again (B6.2). VPX's `GlobalDifficulty` reads 0–100 through the script API (Medieval
+  Madness: table file 0.5, live 50), so 0.2.12 logged "difficulty 5000%", sent `difficulty: 50` on the score's
+  `engine` (a Sanctioned `engine` rule fails it against the table's 0.5) and would put a 6–7° table's slope at 62°.
+  The detector divides by 100; the hook and the journal are unchanged. ArcAid reads 0.2.12's 0–100 value as a
+  percentage from its side (Castcade F10). `journal-detector.ts`.
+
+### Fairness
+- Score plausibility (B6.1): every live score carries how player 1's score moved — the number of changes, the
+  largest single jump with its time and ball, and a flag when a jump is not a multiple of 10 (ROM games; original
+  tables get the facts only). No ceiling: the maps carry no award values. Shown in the capture detail; flag only,
+  never a gate. `score-plausibility.ts`, `witness.ts`.
+
+### Wire / journal
+- New optional score param `score_plausibility` (compact JSON, `docs/arcaid-side-changes.md` §15); `engine.difficulty`
+  is now 0–1. Journal format unchanged (hook 0.4.0; `castcade.vbs`'s header comment now says 0.4.0). Covered by two new
+  fixtures replayed in vitest and `fixtures/check.py`: `fixtures/nvram/mb_106b/2026-10-23-1` (hook 0.3.0, five games
+  over three loads, the boot race included; `mb_106` map vendored) and `fixtures/nvram/mm_109c/2026-10-25-1` (the
+  first hook-0.4.0 journal from real VPX, two games, one `engine` line).
 
 ## [0.2.12] — 2026-10-22
 
