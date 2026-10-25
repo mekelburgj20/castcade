@@ -189,6 +189,8 @@ export interface TableIdentity {
   /** The picker's choices when `tableConfidence` is `ambiguous` (or the player wants to correct). */
   tableChoices: VpsTableRef[];
   sha256: string | null;
+  /** F4: the playfield fingerprint (`pf<v>:<sha256>`, `playfield-fingerprint.ts`), computed with `sha256`. */
+  fingerprint: string | null;
   saveRev: number | null;
   tableInfo: VpxTableInfo | null;
   physics: VpxTablePhysics | null;

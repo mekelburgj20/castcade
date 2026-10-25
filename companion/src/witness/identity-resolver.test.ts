@@ -45,9 +45,11 @@ describe('identity resolver', () => {
 
     const hashed = await resolver.hash(id);
     expect(hashed.sha256).toBe(MB_SHA);
+    expect(hashed.fingerprint).toMatch(/^pf1:[0-9a-f]{64}$/);
     // Second resolution comes from the cache, hash included.
     const again = await resolver.fromFile(MB_PATH, 'Monster Bash (Williams 1998) VPWmod v1.0');
     expect(again.sha256).toBe(MB_SHA);
+    expect(again.fingerprint).toBe(hashed.fingerprint);
     expect(again.notes.join(' ')).toMatch(/cached/);
   });
 

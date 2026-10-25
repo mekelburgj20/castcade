@@ -309,7 +309,9 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       dur: String(dur),
     });
     const score = posts[2]?.params ?? {};
-    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'ini', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'fingerprint', 'ini', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    // F4: the playfield fingerprint rides beside the file hash.
+    expect(score['fingerprint']).toMatch(/^pf1:[0-9a-f]{64}$/);
     expect(score).toMatchObject({
       device: 'dev-1',
       table: MM_WIRE,

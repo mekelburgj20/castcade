@@ -235,6 +235,8 @@ export class ArcaidClient {
       vps_game?: string | null;
       vps_table?: string | null;
       table_sha256?: string | null;
+      /** F4: the playfield fingerprint `pf<v>:<sha256>` (ArcAid compares it to the runner's blessed one). */
+      fingerprint?: string | null;
       table_save_rev?: number | null;
       /** Attestation (F2), compact JSON strings: settings, machine adjustments, builds + cheat flag. */
       ini?: string | null;

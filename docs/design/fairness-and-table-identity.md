@@ -88,6 +88,17 @@ settings, sounds, the script. So a VR or performance edit leaves the fingerprint
 flipper gap or a removed outlane post changes it. The fingerprint is a SHA-256 over a canonical JSON
 of those fields (sorted keys, floats rounded to 6 places).
 
+**Shipped (B4, 2026-10-25; `companion/src/witness/playfield-fingerprint.ts`).** Sent as `fingerprint=pf1:<sha256>`.
+What the code does beyond the list above: an item is included only when its own collidable flag is set (`CLDW` walls,
+`CLDR` ramps / rubbers / primitives / targets, `COLI` bumpers, `GCOL` gates, `EBLD` kickers; flippers, spinners and the
+plunger always), and a primitive marked toy (`ISTO`) never is; gates, spinners and hit targets are in because the
+ball hits them; a collidable 3D-mesh primitive contributes vertex positions and triangle indices only; an item whose
+overwrite-physics flag (`OVPH`) is off takes its physics from the named material (`MAPH`), whose four physics values
+come from `GameData`'s `PHMA` record (48 bytes each); items are sorted by content, so names and order are not hashed.
+Every tag was checked against vpxtool 0.33.9's JSON on Monster Bash (6,482 values, 0 mismatches; all 132 materials).
+Known limit: a VR mod that adds a *collidable* object (rare: VR cabinets are toys) changes the fingerprint; the
+runner blesses the fingerprint of the file the tournament uses.
+
 **Slope, precisely.** The file stores slope min and max in degrees as floats. Effective slope =
 min + difficulty × (max − min), where difficulty is the table's stored value unless the player
 overrides it in the tweak menu or the ini. Most tables set min = max, which makes it one number.
@@ -268,7 +279,7 @@ that sits under the honest ceiling in §5.
 | F1 **(shipped v0.2.4, 2026-10-18)** | companion | VPS game/table id resolver (ROM → game, TableInfo → table, confirm-once UI), `vps_game` / `vps_table` / `table_sha256` / `table_save_rev` on the wire, shown in Status | nothing (params ignored until item 11) |
 | F2 **(shipped v0.2.5, 2026-10-19; 0.2.7 build families; 0.2.8 accelerometer + analog-tilt keys)** | companion | ini attestation, NVRAM adjustments report, build hashes, VPinMAME cheat flag; build `family`; accelerometer gain, tilt sensitivity (§5a) | nothing |
 | F3 **(shipped: ArcAid #370 v2.165.0 + #371 v2.166.0, ADR 0027; companion 0.2.9–0.2.10)** | ArcAid | item 11: `tournaments.integrity_mode`, per-game required table + baseline, evidence stored per score, runner review view, match by `vps_game` first | F1 |
-| F4 | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
+| F4 **(shipped: B4, 2026-10-25; the bless UI is ArcAid F12)** | companion | playfield fingerprint (compound-file reader + record walker, shared with the Phase 3 importer) | F3 to enforce |
 | F5 | companion + ArcAid | script diff: baseline download, normalise, classify, preflight verdict, diff report (item 12) | F3 |
 | F6 **(engine attestation shipped: hook 0.4.0 + companion, WORK B6, 2026-10-22; the rest open)** | companion (Phase 3) | engine attestation from the live hook (`engine` line at hook time and every key-down, on the score as `engine`); score-jump plausibility (B6.1, `score_plausibility`, 2026-10-25); nudge telemetry (§5a: HID trace, lift detector, `nudge` param) | F3 |
 

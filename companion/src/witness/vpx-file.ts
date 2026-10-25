@@ -621,6 +621,57 @@ export async function readVpxFacts(fs: WitnessFs, path: string): Promise<VpxFile
   }
 }
 
+/** One `GameStg/GameItem<n>` stream: the item type (`u32` at the start) and the BIFF records after it. */
+export interface VpxGameItemStream {
+  /** The stream name, `GameItem<n>`. */
+  stream: string;
+  /** VPX `ItemTypeEnum` value (0 = wall, 1 = flipper, …). */
+  type: number;
+  /** The stream's bytes after the type. */
+  body: Uint8Array;
+}
+
+/** Game items stop being worth reading past this (a primitive's mesh is a few MB at most). */
+const MAX_GAME_ITEM_BYTES = 64 * 1024 * 1024;
+
+/** What the playfield fingerprint reads: `GameStg/GameData` and every `GameItem<n>` stream. */
+export interface VpxPlayfieldStreams {
+  /** `GameStg/GameData` (table physics, physics materials, the script), or null when missing. */
+  gameData: Uint8Array | null;
+  /** Every `GameItem<n>`, in index order. */
+  items: VpxGameItemStream[];
+}
+
+/**
+ * `GameData` and every `GameItem<n>` stream of a `.vpx`, read without touching the images or sounds.
+ * Throws `not a .vpx: ...` for a non-compound file; nothing (null, []) for a compound file without `GameStg`.
+ */
+export async function readVpxPlayfieldStreams(fs: WitnessFs, path: string): Promise<VpxPlayfieldStreams> {
+  const file = await fs.open(path);
+  try {
+    const cfb = await CompoundFile.open(file);
+    const gameStg = await cfb.find(await cfb.root(), 'GameStg');
+    if (!gameStg || gameStg.type !== STORAGE) return { gameData: null, items: [] };
+    let gameData: Uint8Array | null = null;
+    const items: { n: number; entry: CfbEntry }[] = [];
+    for (const e of await cfb.children(gameStg)) {
+      if (e.type !== STREAM) continue;
+      if (compareEntryNames(e.name, 'GameData') === 0 && e.size <= MAX_GAME_DATA_BYTES) gameData = await cfb.readStream(e);
+      const m = /^GameItem(\d+)$/i.exec(e.name);
+      if (m && e.size >= 4 && e.size <= MAX_GAME_ITEM_BYTES) items.push({ n: Number(m[1]), entry: e });
+    }
+    items.sort((a, b) => a.n - b.n);
+    const out: VpxGameItemStream[] = [];
+    for (const { entry } of items) {
+      const bytes = await cfb.readStream(entry);
+      out.push({ stream: entry.name, type: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true), body: bytes.subarray(4) });
+    }
+    return { gameData, items: out };
+  } finally {
+    await file.close();
+  }
+}
+
 export interface Sha256Options {
   /** Read size per step; 1 MiB by default. */
   chunkBytes?: number;

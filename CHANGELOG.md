@@ -7,6 +7,16 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Fairness
+- Playfield fingerprint (F4, B4): every score now carries `fingerprint=pf1:<sha256>`, a hash of the playfield as
+  the ball sees it — collidable walls, ramps, rubbers, primitives (with their collision mesh), targets, flippers,
+  bumpers, kickers, gates, spinners and the plunger, with physics, position and shape; the table's physics; the
+  physics materials those items use. Names, images, visual materials, lights, the script and editor state are left
+  out, so a VR or performance edit leaves it unchanged and a moved flipper changes it. Computed in the background
+  beside the file hash (~0.5 s on Monster Bash) and cached with it. Every record tag was checked against vpxtool
+  0.33.9 on Monster Bash (6,482 values, 0 mismatches). `playfield-fingerprint.ts`, `vpx-file.ts`
+  (`readVpxPlayfieldStreams`), `identity-resolver.ts`.
+
 ## [0.2.13] — 2026-10-25
 
 ### Fixes found by the first recorded live games (C7.1)

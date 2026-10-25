@@ -18,6 +18,7 @@ import type { GameMatch, MatchConfidence, TableIdentity, TableMatch, VpsGameEntr
 import { matchGame, matchTable } from './table-match.js';
 import { tableLabel } from './vps-index.js';
 import { readVpxFacts, sha256File } from './vpx-file.js';
+import { readPlayfieldFingerprint } from './playfield-fingerprint.js';
 
 export interface IdentityResolverDeps {
   fs: WitnessFs;
@@ -32,7 +33,7 @@ export interface IdentityResolver {
   fromFile(filePath: string | null, fileName: string | null): Promise<TableIdentity>;
   /** Phase 2: upgrade the game (and re-match the table) with the ROM seen at capture. Never throws. */
   withRom(identity: TableIdentity, rom: string | null, romName: string | null): Promise<TableIdentity>;
-  /** Compute the whole-file SHA-256 (cached by path/size/mtime). Resolves to the identity with `sha256` set. */
+  /** Compute the whole-file SHA-256 and the playfield fingerprint (cached by path/size/mtime). Resolves to the identity with both set. */
   hash(identity: TableIdentity): Promise<TableIdentity>;
   /** Re-apply the stored confirmation for the identity's file (after `confirmTable`). */
   applyConfirmation(identity: TableIdentity): TableIdentity;
@@ -47,6 +48,7 @@ const EMPTY: Omit<TableIdentity, 'filePath'> = {
   confirmed: false,
   tableChoices: [],
   sha256: null,
+  fingerprint: null,
   saveRev: null,
   tableInfo: null,
   physics: null,
@@ -118,6 +120,7 @@ export function createIdentityResolver(deps: IdentityResolverDeps): IdentityReso
           if (cached) {
             f = { path: filePath, size: st.size, mtimeMs: st.mtimeMs, fileVersion: cached.fileVersion, tableInfo: cached.tableInfo, physics: cached.physics, scriptBytes: cached.scriptBytes };
             identity.sha256 = cached.sha256;
+            identity.fingerprint = cached.fingerprint ?? null;
           } else {
             f = await readVpxFacts(fs, filePath);
             await store.setFacts(key, { fileVersion: f.fileVersion, tableInfo: f.tableInfo, physics: f.physics, scriptBytes: f.scriptBytes, sha256: null, computedAt: new Date(deps.now()).toISOString() });
@@ -160,15 +163,28 @@ export function createIdentityResolver(deps: IdentityResolverDeps): IdentityReso
     },
 
     async hash(identity) {
-      if (!identity.filePath || identity.sha256) return identity;
+      if (!identity.filePath || (identity.sha256 && identity.fingerprint)) return identity;
       const known = facts.get(identity.filePath);
-      try {
-        const sha256 = await sha256File(fs, identity.filePath);
-        if (known) await store.setSha256(known.key, sha256);
-        return { ...identity, sha256 };
-      } catch (err) {
-        return { ...identity, notes: [...identity.notes, `hash failed: ${err instanceof Error ? err.message : String(err)}`] };
+      let next = identity;
+      if (!next.sha256) {
+        try {
+          const sha256 = await sha256File(fs, identity.filePath);
+          if (known) await store.setSha256(known.key, sha256);
+          next = { ...next, sha256 };
+        } catch (err) {
+          next = { ...next, notes: [...next.notes, `hash failed: ${err instanceof Error ? err.message : String(err)}`] };
+        }
       }
+      if (!next.fingerprint) {
+        try {
+          const fp = await readPlayfieldFingerprint(fs, identity.filePath);
+          if (known) await store.setFingerprint(known.key, fp.id);
+          next = { ...next, fingerprint: fp.id, notes: [...next.notes, `playfield fingerprint ${fp.id.slice(0, 16)}… over ${Object.values(fp.counts).reduce((a, b) => a + b, 0)} collidable items`] };
+        } catch (err) {
+          next = { ...next, notes: [...next.notes, `playfield fingerprint failed: ${err instanceof Error ? err.message : String(err)}`] };
+        }
+      }
+      return next;
     },
 
     applyConfirmation,

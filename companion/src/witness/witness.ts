@@ -563,12 +563,18 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (session.attestation.ini) log(`witness: settings ${describeIni(session.attestation.ini)}`);
     refreshTableStatus();
     emitStatus();
-    if (path && !identity.sha256) {
+    if (path && !(identity.sha256 && identity.fingerprint)) {
       session.hashing = resolver
         .hash(identity)
         .then((hashed) => {
           if (session.identity && session.identity.filePath === hashed.filePath) {
-            session.identity = { ...session.identity, sha256: hashed.sha256, notes: hashed.sha256 ? session.identity.notes : hashed.notes };
+            if (hashed.fingerprint && hashed.fingerprint !== session.identity.fingerprint) log(`witness: playfield ${hashed.fingerprint} for ${hashed.filePath}`);
+            session.identity = {
+              ...session.identity,
+              sha256: hashed.sha256,
+              fingerprint: hashed.fingerprint,
+              notes: hashed.sha256 && hashed.fingerprint ? session.identity.notes : hashed.notes,
+            };
             refreshTableStatus();
             emitStatus();
             void checkLiveHash(session, hashed.filePath, hashed.sha256);
@@ -732,6 +738,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           vps_game: identity?.vpsGame?.id ?? null,
           vps_table: identity?.vpsTable?.id ?? null,
           table_sha256: identity?.sha256 ?? null,
+          ...(identity?.fingerprint ? { fingerprint: identity.fingerprint } : {}),
           table_save_rev: identity?.saveRev ?? null,
           ini: iniWire(attestation.ini),
           adjustments: adjustmentsWire(adjustments),

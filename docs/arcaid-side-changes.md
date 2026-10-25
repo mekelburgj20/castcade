@@ -296,6 +296,8 @@ so the runner can review and so Open-mode runners see what Sanctioned would have
 
 **Runner review.** On the tournament's admin side: per score, the evidence with pass/flag per rule;
 per game, the required table and the blessed fingerprint with a "bless the one I just played" button
+(**open as Castcade F12**: the column, the rule and the `PATCH` exist; the form field and the button do not; the
+companion sends `fingerprint=pf1:<sha256>` from 0.2.14)
 (reads the runner's own device's latest evidence). Badges on the board: *sanctioned* when every rule
 passed, *flagged* when a rule failed but the score landed (Open mode). Room boards never filter or
 re-rank (ADR 0020/0021).

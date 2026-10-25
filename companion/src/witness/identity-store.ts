@@ -15,6 +15,8 @@ export interface CachedFacts {
   physics: VpxTablePhysics | null;
   scriptBytes: number | null;
   sha256: string | null;
+  /** F4 playfield fingerprint (`pf<v>:<sha256>`), computed beside the hash; absent in caches written before 0.2.14. */
+  fingerprint?: string | null;
   computedAt: string;
 }
 
@@ -39,6 +41,8 @@ export interface IdentityStore {
   setFacts(key: string, facts: CachedFacts): Promise<void>;
   /** Fill in the hash of already-cached facts (computed later, in the background). */
   setSha256(key: string, sha256: string): Promise<void>;
+  /** Fill in the playfield fingerprint of already-cached facts (computed with the hash). */
+  setFingerprint(key: string, fingerprint: string): Promise<void>;
   confirmation(path: string): Confirmation | null;
   confirm(path: string, c: { vpsGameId: string | null; vpsTableId: string | null } | null): Promise<void>;
 }
@@ -97,6 +101,12 @@ export function createIdentityStore(fs: WitnessFs, dataDir: string, now: () => n
       const f = data.facts[key];
       if (!f) return;
       f.sha256 = sha256;
+      await persist();
+    },
+    async setFingerprint(key, fingerprint) {
+      const f = data.facts[key];
+      if (!f) return;
+      f.fingerprint = fingerprint;
       await persist();
     },
     confirmation: (path) => data.confirmations[normalizePath(path).toLowerCase()] ?? null,

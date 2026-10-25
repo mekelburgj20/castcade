@@ -43,7 +43,18 @@ export interface SynthOptions {
   version?: number;
   gameData?: Uint8Array;
   fillerBytes?: number;
+  /** `GameStg/GameItem<n>` streams, each `[type:u32]` + BIFF records (`gameItem()`). */
+  gameItems?: Uint8Array[];
 }
+
+/** One game item stream: the VPX item type, then its records, then `ENDB`. */
+export const gameItem = (type: number, ...records: Uint8Array[]): Uint8Array => concat(u32le(type), ...records, record('ENDB', new Uint8Array(0)));
+/** An ANSI string record (`[len][bytes]`), as SURF / MAPH / IMAG are stored. */
+export const stringRecord = (tag: string, s: string): Uint8Array => record(tag, concat(u32le(s.length), ascii(s)));
+export const intRecord = (tag: string, v: number): Uint8Array => record(tag, u32le(v));
+export const vec2Record = (tag: string, x: number, y: number): Uint8Array => record(tag, concat(f32le(x), f32le(y)));
+/** The item's wide NAME record. */
+export const nameRecord = (s: string): Uint8Array => record('NAME', concat(u32le(s.length), utf16(s)));
 
 export function buildVpx(opts: SynthOptions = {}): Uint8Array {
   const c = CFB.utils.cfb_new();
@@ -78,6 +89,7 @@ export function buildVpx(opts: SynthOptions = {}): Uint8Array {
         floatRecord('GAVT', 99), // after ENDB: must be ignored
       );
     CFB.utils.cfb_add(c, '/GameStg/GameData', Buffer.from(gameData));
+    (opts.gameItems ?? []).forEach((bytes, i) => CFB.utils.cfb_add(c, `/GameStg/GameItem${i}`, Buffer.from(bytes)));
     if (opts.fillerBytes) {
       // Stands in for the GameItem/Image/Sound bulk; the reader must never touch it.
       CFB.utils.cfb_add(c, '/GameStg/Image0', Buffer.alloc(opts.fillerBytes, 0xa5));
