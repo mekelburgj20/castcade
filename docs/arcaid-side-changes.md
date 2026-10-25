@@ -383,12 +383,14 @@ is Sanctioned:
 evidence review shows "In the game: difficulty 20%, slope 6.50°, tilt 400" and, when `changes` is non-empty,
 "changed during the game" with the last values. Badge text unchanged.
 
-**Correction (Castcade B6.2, 2026-10-25; ArcAid side is F10).** Companion 0.2.12 sends `difficulty` on VPX's
+**Correction (Castcade B6.2, 2026-10-25; ArcAid side is F10, shipped in ArcAid 2.170.0, PR #379).** Companion 0.2.12 sends `difficulty` on VPX's
 script-API scale, **0–100** (Medieval Madness: table file 0.5, `engine` 50); from 0.2.13 it sends 0–1 like the
 `ini`. ArcAid reads a `difficulty` above 1 as a percentage (÷100), in both `start` and `changes`, so the rule and
 the panel are right for 0.2.12 companions still in the field and for the rows already stored.
 
 ## 15. Score plausibility: `score_plausibility` on the score call (Castcade B6.1)
+
+**Shipped: ArcAid 2.170.0 (PR #379, 2026-10-25; ArcAid W41).**
 
 **What arrives.** Live-mode scores from companion ≥ 0.2.13 carry `score_plausibility`, compact JSON:
 `{ samples, gcd, step, off_step, largest: { points, t, ball } | null, flag }`. `samples` is how many times player
