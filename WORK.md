@@ -73,7 +73,14 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 
 Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phase 4 (match spectating, voice, runner stage) waits for real players in the match engine.
 
-- **D1** `ready` Phase 4a solo streaming + recording: VPX window capture, NVENC/AMF/QSV encode (Phase 0d path), score/ball/Witness overlay, direct RTMP to Twitch/YouTube with the player's own key (`safeStorage`, never sent to ArcAid), local MP4 · spec: docs/design/arcaid-integration-gap-analysis.md §6 "4a"
+- **D1** `ready` Phase 4a solo streaming + recording: VPX window capture, NVENC/AMF/QSV encode (Phase 0d path), score/ball/Witness overlay, direct RTMP to Twitch/YouTube with the player's own key (`safeStorage`, never sent to ArcAid), local MP4 · spec: docs/design/solo-streaming-and-recording.md (owner rulings 2026-10-25: architecture A, ffmpeg bundled, 720p30 default, keep 3 sessions + Sanctioned, mic off) · gate: docs/design/solo-streaming-and-recording.md §1
+  - **D1.0** `claimed` Spike on the owner's rig: Electron loopback audio piped into ffmpeg, `ddagrab` cropped to the VPX window (DPI, monitor index), live overlay text, a two-minute RTMP push to a Twitch test channel, frame cost desktop + VR (`VRPreview` on) · owner: opus@main · since: 2026-10-25 · spec: docs/design/solo-streaming-and-recording.md §4
+  - **D1.1** `ready` OBS overlay page on 127.0.0.1: live score, ball, player, badge (server-sent events); no capture
+  - **D1.2** `ready` Local recording: MP4 per session, game markers, hash-chained manifest tied to posted scores, retention (last N sessions, default 3; optional total cap, empty = unlimited; Sanctioned kept until the tournament closes) · needs: D1.0
+  - **D1.3** `ready` Streaming to Twitch / YouTube: key in `safeStorage`, presets (720p30 default, 1080p30/60), reconnect, health · needs: D1.0
+  - **D1.4** `ready` Overlay burned into stream and recording · needs: D1.1, D1.0
+  - **D1.5** `ready` Stream page: go live, record, preview, health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3
+  - **D1.6** `ready` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time (gitignored), extra resource in the installer · needs: D1.0
 - **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2
 - **D4** `idea` Runner stage, companion half (ArcAid item 13 is the other half) · needs: D3
