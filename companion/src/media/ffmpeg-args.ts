@@ -38,8 +38,12 @@ export interface EncodeOptions {
   encoder: VideoEncoder;
   /** Live overlay text: the file ffmpeg re-reads every frame, and a TrueType font. */
   overlay?: { textFile: string; fontFile: string } | null;
-  /** Raw PCM on stdin (`f32le`), from the companion's loopback capture; null = no audio. */
-  audio?: { sampleRate: number; channels: number; kbps: number } | null;
+  /**
+   * Raw PCM on stdin (`f32le`), from the companion's loopback capture; null = no audio. `lateMs`: how far the PCM trails
+   * the picture (the capture path's latency, ~390 ms measured on the owner's rig with `--sync-test`); that much is cut
+   * from the start of the audio so the two line up.
+   */
+  audio?: { sampleRate: number; channels: number; kbps: number; lateMs?: number } | null;
   /** Where the encode goes: an MP4 path and / or an RTMP URL (stream key included; never log it raw). */
   outputs: { mp4?: string; rtmp?: string };
   /** Stop after this many seconds (spike runs); omit to run until stopped. */
@@ -99,7 +103,11 @@ export function ffmpegArgs(o: EncodeOptions): string[] {
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-stats_period', '2'];
   if (o.audio) args.push('-thread_queue_size', '1024', '-f', 'f32le', '-ar', String(o.audio.sampleRate), '-ac', String(o.audio.channels), '-i', 'pipe:0');
   args.push('-filter_complex', videoFilter(o), '-map', '[v]');
-  if (o.audio) args.push('-map', '0:a', '-c:a', 'aac', '-b:a', `${o.audio.kbps}k`, '-ar', '48000');
+  if (o.audio) {
+    args.push('-map', '0:a');
+    if (o.audio.lateMs) args.push('-af', `atrim=start=${(o.audio.lateMs / 1000).toFixed(3)},asetpts=PTS-STARTPTS`);
+    args.push('-c:a', 'aac', '-b:a', `${o.audio.kbps}k`, '-ar', '48000');
+  }
   args.push(...encoderArgs(o.encoder, o.preset));
   if (o.seconds !== undefined) args.push('-t', String(o.seconds));
   if (mp4 && rtmp) {

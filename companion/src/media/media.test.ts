@@ -69,6 +69,11 @@ describe('ffmpeg args', () => {
     expect(videoFilter({ crop: { ...crop, width: 810, height: 1440 }, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', outputs: { mp4: 'x' } })).toContain('scale=720:-2');
   });
 
+  it('trims the capture latency off the start of the audio', () => {
+    const a = ffmpegArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: 390 }, outputs: { mp4: 'x.mp4' } });
+    expect(a[a.indexOf('-af') + 1]).toBe('atrim=start=0.390,asetpts=PTS-STARTPTS');
+  });
+
   it('never upscales a small window', () => {
     expect(videoFilter({ crop: { ...crop, height: 600, width: 800 }, preset: PRESETS['1080p30']!, encoder: 'libx264', outputs: { mp4: 'x' } })).toContain('scale=-2:600');
   });

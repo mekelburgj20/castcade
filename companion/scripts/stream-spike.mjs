@@ -2,7 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
-//   [--game-volume 50] [--mic-volume 300]  (percent)   [--portrait [shift%]]  (a 9:16 slice, + = right)
+//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late 390]  (ms; --desktop --sync-test measures it)   [--portrait [shift%]]  (a 9:16 slice, + = right)
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -33,6 +33,8 @@ const rtmp = process.env.CASTCADE_RTMP_URL || null;
 const micArg = opt('mic', '');
 const micName = micArg.startsWith('--') ? '' : micArg;
 // Mix levels in percent: --game-volume 50 --mic-volume 300 (defaults).
+// How far the loopback audio trails the picture, cut from the audio's start (measured 2026-10-25 with --sync-test).
+const avLateMs = Number(opt('av-late', '390'));
 const gameVolume = Number(opt('game-volume', '50'));
 const micVolume = Number(opt('mic-volume', '300'));
 if (!(gameVolume >= 0 && micVolume >= 0)) throw new Error('--game-volume / --mic-volume take a percentage');
@@ -185,7 +187,7 @@ app.whenReady().then(async () => {
       preset,
       encoder,
       overlay: { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' },
-      audio: { sampleRate: 48000, channels: 2, kbps: 160 },
+      audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: avLateMs },
       outputs: { mp4, ...(rtmp ? { rtmp } : {}) },
       seconds,
     });
@@ -228,6 +230,22 @@ app.whenReady().then(async () => {
     if (!ff) startFfmpeg(); // start once audio flows, so the two inputs begin together
     if (ff && ff.stdin.writable) ff.stdin.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
   });
+  // --sync-test (with --desktop): a window at the capture's top-left flashes white and beeps every 2 s, so the recording
+  // shows how far the audio trails the picture (analyse with scripts/av-sync.py).
+  if (flag('sync-test')) {
+    const flash = new BrowserWindow({ x: 0, y: 0, width: 640, height: 360, frame: false, alwaysOnTop: true, backgroundColor: '#000', webPreferences: { nodeIntegration: true, contextIsolation: false } });
+    const html = `<!doctype html><body style="margin:0;background:#000"><script>
+const ctx = new AudioContext();
+setInterval(() => {
+  document.body.style.background = '#fff';
+  const o = new OscillatorNode(ctx, { frequency: 1000 }); o.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.1);
+  setTimeout(() => { document.body.style.background = '#000'; }, 100);
+}, 2000);
+</script>`;
+    const p = join(outDir, 'sync-flash.html');
+    writeFileSync(p, html);
+    await flash.loadFile(p);
+  }
   const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: true, contextIsolation: false } });
   // A file:// page, not data:, so the page is a secure context and navigator.mediaDevices exists.
   const page = join(outDir, 'spike-renderer.html');
