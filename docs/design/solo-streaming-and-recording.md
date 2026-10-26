@@ -60,8 +60,8 @@ source.
   the window: one eye's image is not centred on the table (left eye: the table sits right of centre), and a window as tall
   as the monitor runs under the taskbar, which then appears in the capture. A vertical stream is therefore a 9:16 slice
   of a wider preview with a sideways shift (`portraitSlice`), the preset names the short side (720p vertical = 720x1280),
-  and the preview must clear the taskbar. Twitch's player pillarboxes a vertical stream. The owner's framing: a 1440x1392
-  preview with the slice at its right edge (shift ≥ 23 %, clamped).
+  and the preview must clear the taskbar. Twitch's player pillarboxes a vertical stream. The owner's framing (retested,
+  2026-10-25): a 1440x1392 preview, the vertical slice shifted 10 % right; the spike now defaults to it (`--landscape` off).
 - **A/V sync (2026-10-25):** the owner heard the audio trail the picture. Measured with `--desktop --sync-test` and
   `scripts/av-sync.py` (a flash and a beep every 2 s): audio 376–408 ms late, steady through a run. Trimming 390 ms off the
   audio's start (`lateMs`) gave medians of +19 and −3 ms on two further runs. The product keeps the trim as a setting

@@ -2,7 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
-//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late 390]  (ms; --desktop --sync-test measures it)   [--portrait [shift%]]  (a 9:16 slice, + = right)
+//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late 390]  (ms; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -145,10 +145,11 @@ app.whenReady().then(async () => {
       return;
     }
   }
-  // --portrait [shift%]: a 9:16 slice of the window, moved sideways by shift % of its width (+ = right).
-  if (flag('portrait')) {
-    const s = opt('portrait', '0');
-    crop = portraitSlice(crop, (s.startsWith('--') ? 0 : Number(s)) / 100);
+  // Vertical by default (owner's pick, 2026-10-25): a 9:16 slice of the game window, moved right by 10 % of its width.
+  // --portrait N changes the shift (+ = right, - = left); --landscape films the whole window. Not with --desktop.
+  if (!flag('landscape') && !flag('desktop')) {
+    const s = opt('portrait', '10');
+    crop = portraitSlice(crop, (s.startsWith('--') ? 10 : Number(s)) / 100);
   }
   log('crop', JSON.stringify(crop), 'target', target);
   const encoder = pickEncoder();
