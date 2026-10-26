@@ -11,7 +11,8 @@ import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } 
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
 export const LIB_VERSION = '0.4.0';
-export const RECIPE_VERSION = '0.3.0';
+/** 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes every sidecar at the next look. */
+export const RECIPE_VERSION = '0.3.1';
 
 /** `Castcade_Guard`'s mtime tolerance in seconds: DST and FILETIME conversions shift it by a whole hour. */
 export const GUARD_MTIME_TOLERANCE_SEC = 3601;

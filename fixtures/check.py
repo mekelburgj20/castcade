@@ -10,6 +10,8 @@ For each `fixtures/**/*.jsonl` or `*.jsonl.gz` with a sibling `<name>.meta.json`
     game_start == games        ball_end == balls_per_game * games (default 3)
     game_end   == games        balls seen ending == [1 .. balls_per_game]
 
+A meta with `"oracle": false` is skipped (a platform the tailer has no rules for, e.g. Stern SAM).
+
 Recipe A (VPM) fixtures report `derived:*` counts (detector output); script recipes report the raw
 script events. CASTCADE_NVRAM_DIR is pointed at an empty temp dir so the alignment step prints its
 "no on-disk .nv" line instead of reading the owner's live NVRAM. Prints one PASS/FAIL line per
@@ -64,6 +66,10 @@ def parse_summary(text):
 
 def check(path, meta, nvram_dir):
     rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+    if meta.get("oracle") is False:
+        # A family the Phase 0 tailer has no rules for (Stern SAM, B10): only the companion's detector judges it.
+        print("SKIP %s: no oracle rules for this platform (journal-detector.test.ts covers it)" % rel)
+        return True
     games = int(meta.get("games", 1))
     per_game = int(meta.get("balls_per_game", 3))
     prefix = "derived:" if meta.get("recipe") == "A" else ""

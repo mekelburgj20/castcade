@@ -505,15 +505,55 @@ export function hasScores(map: CompiledMap): boolean {
 
 /**
  * Every NVRAM offset `decodeGameState` reads: the `game_state` descriptors (and `last_game` when it
- * stands in for the scores), sorted, unique. What the in-VPX hook (0.3.0) is told to journal, so a
- * WPC table's ~200 changed bytes per second shrink to the handful that describe the game.
+ * stands in for the scores), plus Stern SAM's end-of-game counter (`samEndCounter`), sorted, unique.
+ * What the in-VPX hook (0.3.0) is told to journal, so a WPC table's ~200 changed bytes per second
+ * shrink to the handful that describe the game.
+ *
+ * Offsets count from the start of the platform's NVRAM region, as `ChangedNVRAM` and the journal do,
+ * not the map's machine addresses: Stern SAM's NVRAM sits at 0x02100000, Gottlieb System 80's at
+ * 0x1800, Bally's at 0x200. Before 0.2.14 the raw addresses went into the watch list, which matched
+ * nothing on those platforms. Addresses outside the region (SAM's ball and player live in CPU RAM)
+ * are dropped: the hook can never see them.
  */
 export function gameStateOffsets(map: CompiledMap): number[] {
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const base = region?.address ?? 0;
+  const size = region && region.size > 0 ? region.size : Number.POSITIVE_INFINITY;
   const out = new Set<number>();
   const entries = Object.values(map.gameState).flat();
   if (!(map.gameState['scores'] && map.gameState['scores'].length > 0)) entries.push(...map.lastGame);
-  for (const entry of entries) for (const off of descriptorOffsets(entry)) if (Number.isInteger(off) && off >= 0) out.add(off);
+  for (const entry of entries) {
+    for (const addr of descriptorOffsets(entry)) {
+      const off = addr - base;
+      if (Number.isInteger(off) && off >= 0 && off < size) out.add(off);
+    }
+  }
+  const counter = samEndCounter(map);
+  if (counter !== null) for (let i = 0; i < 4; i++) out.add(counter + i);
   return [...out].sort((a, b) => a - b);
+}
+
+/**
+ * Stern SAM's end-of-game counter, as an NVRAM offset (`ChangedNVRAM` / journal index), or null for
+ * any other platform or a map without scores.
+ *
+ * SAM keeps ball, player and game over in CPU RAM, out of the hook's reach, but writes a last-game
+ * record into NVRAM once per finished game, 16 bytes before player 1's score: a 4-byte stamp, 4
+ * zero bytes, a games-completed counter (u32 little-endian; it goes up by the game's player count),
+ * then a check word. The final scores sit at the score addresses at the same moment. Found on the
+ * owner's rig 2026-10-25/26 on two ROMs whose score addresses differ (acd_170h 0x02110A24,
+ * twd_160h 0x02110A9C); a quit game writes no record.
+ */
+export function samEndCounter(map: CompiledMap): number | null {
+  if (map.platform.name !== 'stern-sam') return null;
+  const first = map.gameState['scores']?.[0];
+  if (!first) return null;
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const base = region?.address ?? 0;
+  const addr = descriptorOffsets(first)[0];
+  if (addr === undefined) return null;
+  const off = addr - base - 8;
+  return off >= 0 && (!region || region.size <= 0 || off + 4 <= region.size) ? off : null;
 }
 
 export function decodeHighScores(map: CompiledMap, nv: Uint8Array): HighScore[] {

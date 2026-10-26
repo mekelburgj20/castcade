@@ -12,6 +12,20 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   (Whitestar, Gottlieb System 1, SAM). All 1,589 ROM entries compile; the five recorded fixtures replay unchanged. Pins:
   `fetch-maps.mjs`, `ci.yml`, `fixtures/maps` (its four vendored maps refreshed). Upstream's new SAM live fields do not
   make SAM work here: ball, player and game over sit in CPU RAM, which `ChangedNVRAM` does not report (B10).
+- **Stern SAM tables post scores** (B10.1; AC/DC, The Walking Dead and the other SAM ROMs the corpus maps with scores).
+  SAM keeps ball, player and game over in CPU RAM, out of the hook's reach, so the detector reads the game from NVRAM
+  alone: the scores resetting to 0 start a game (the Limited-attempts attempt), and the last-game record SAM writes 16
+  bytes before player 1's score ends it, its counter rising by the player count, with the final scores already in
+  place. No ball events on SAM; a game quit mid-way is `game_abandoned` at exit, and a restart from the start button
+  abandons the open game. `journal-detector.ts` (`samTransition`), `maps.ts` (`samEndCounter`).
+- **Watch lists count from the start of NVRAM** (recipe 0.3.1). The sidecar's `Castcade_WatchBytes` held the map's
+  machine addresses, which match `ChangedNVRAM`'s offsets only where NVRAM starts at 0 (WPC, Data East, Whitestar,
+  System 11, Gottlieb System 3). On Stern SAM, Gottlieb System 1/80/80B, Bally, Stern M100/200 and Williams System 4–7
+  nothing matched and no change was journaled. The recipe bump makes every sidecar stale, so the companion re-makes
+  them all on its first look after the update; no re-import by hand. `maps.ts` (`gameStateOffsets`), `patcher/render.ts`.
+- Wire / journal: format unchanged; `recipe_version` 0.3.1 in `table_loaded`. Fixtures `nvram/acd_170h/2026-10-25-1`
+  (three games and a quit, all bytes journaled) and `nvram/twd_160h/2026-10-26-1` (two games and a quit), recorded on the
+  owner's rig; `fixtures/check.py` skips them (`"oracle": false`: the Phase 0 tailer has no SAM rules).
 - A ROM name is looked up without regard to case: tables that write `cGameName = "SS_15"` or `"Hook_501"` found no map
   (`witness/maps.ts`).
 

@@ -35,7 +35,7 @@ describe('versions', () => {
     expect(libraryVersionOf(lib)).toBe(LIB_VERSION);
     expect(lib).toContain('Sub Castcade_Guard(originalPath, originalSize, originalMtime, sidecarPath)');
     expect(STUB).toContain('Sub Castcade_Guard(a,b,c,d):End Sub');
-    expect(RECIPE_VERSION).toBe('0.3.0');
+    expect(RECIPE_VERSION).toBe('0.3.1');
   });
 });
 

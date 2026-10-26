@@ -14,6 +14,11 @@
  * - **Recipes B/C/D/E (originals).** The sidecar emits those events itself; the detector passes
  *   them through in the same shape, so a consumer never cares which path produced a game.
  *
+ * - **Stern SAM (recipe A, no ball or game-over field in reach).** SAM keeps those in CPU RAM, which
+ *   `ChangedNVRAM` never reports. `samTransition` derives the game from what NVRAM does hold: the
+ *   scores resetting to 0 starts a game, the last-game record's counter (`samEndCounter`) ends it,
+ *   and there are no ball ends.
+ *
  * Either way `table_exit` while a game is open becomes `game_abandoned` (finding 8: a match or a
  * live capture must never wait on a player who quit the table).
  *
@@ -21,7 +26,7 @@
  * attached by the owner (`setMap`), because the corpus loads lazily and asynchronously; deltas
  * that arrive before the map still patch the shadow buffer, decoding starts when the map lands.
  */
-import { decodeGameState, type CompiledMap, type GameState } from './maps.js';
+import { decodeGameState, samEndCounter, type CompiledMap, type GameState } from './maps.js';
 
 /** Events every consumer understands, whichever recipe produced them. */
 export type GameEvent =
@@ -178,6 +183,40 @@ export function detectTransition(prev: GameState | null, cur: GameState, t: numb
   return ev;
 }
 
+const allZero = (scores: (number | null)[]): boolean => scores.length > 0 && scores.every((x) => x === 0);
+const anyAboveZero = (scores: (number | null)[]): boolean => scores.some((x) => x !== null && x > 0);
+
+/**
+ * Stern SAM events from `prev` to `cur` (pure; `docs/design` finding, B10, owner's rig 2026-10-25/26):
+ *
+ * - every score back to 0 from a game's scores: `game_start` (the attempt). A game still open then was
+ *   restarted from the start button: it is `game_abandoned` first.
+ * - every score was 0 and one rises with no game open (a fresh NVRAM with no last game): a late
+ *   `game_start` at the first points.
+ * - the end counter went up by 1–4 with a game open: `game_end` with the scores at that moment and
+ *   the rise as the player count (a 2-player game adds 2). The final scores are already written.
+ *
+ * `prevCount` / `curCount` are the counter before and after; null when its bytes are not in the shadow.
+ */
+export function samTransition(prev: GameState, cur: GameState, prevCount: number | null, curCount: number | null, open: boolean, t: number): GameEvent[] {
+  const ev: GameEvent[] = [];
+  if (!plausible(cur)) return ev;
+  if (open && prevCount !== null && curCount !== null && curCount !== prevCount) {
+    const rise = (curCount - prevCount) >>> 0;
+    if (rise >= 1 && rise <= 4) {
+      ev.push({ kind: 'game_end', t, scores: cur.scores, players: rise });
+      open = false;
+    }
+  }
+  if (allZero(cur.scores) && anyAboveZero(prev.scores)) {
+    if (open) ev.push({ kind: 'game_abandoned', t, scores: prev.scores, player: null, ball: null });
+    ev.push({ kind: 'game_start', t, players: cur.playerCount });
+  } else if (!open && allZero(prev.scores) && anyAboveZero(cur.scores)) {
+    ev.push({ kind: 'game_start', t, players: cur.playerCount });
+  }
+  return ev;
+}
+
 // ---------------------------------------------------------------------------------- detector --
 
 interface RawLine {
@@ -216,6 +255,10 @@ interface Session {
    * 59 ms later in a separate callback, game over; without this the stale last game "ended" again.
    */
   started: boolean;
+  /** Stern SAM: the end counter's NVRAM offset (`samEndCounter`), null on every other platform. */
+  samCounter: number | null;
+  /** Stern SAM: the counter's value in the last plausible state. */
+  samCount: number | null;
 }
 
 export interface JournalDetectorOptions {
@@ -248,7 +291,9 @@ export class JournalDetector {
     const s = this.session;
     if (!s) return;
     s.map = map;
+    s.samCounter = map ? samEndCounter(map) : null;
     if (map && s.shadow) {
+      s.samCount = this.counterValue(s);
       const st = decodeGameState(map, s.shadow);
       s.state = plausible(st) ? st : null;
       s.summary.scores = s.state ? s.state.scores : null;
@@ -348,7 +393,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null };
     return [
       {
         kind: 'table_loaded',
@@ -373,10 +418,11 @@ export class JournalDetector {
     // attached has no observed start, and the boot pattern is simply ignored. A later periodic
     // snapshot is ground truth and goes through the same transition as a delta would, so a change
     // that a dropped delta hid is still seen.
-    const events = this.observed(s, s.state ? detectTransition(s.state, cur, t) : []);
+    const events = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
     for (const ev of events) this.record(s, ev);
     if (plausible(cur)) {
       s.state = cur;
+      s.samCount = this.counterValue(s);
       s.summary.scores = cur.scores;
     }
     return events;
@@ -396,13 +442,29 @@ export class JournalDetector {
     }
     if (!s.map) return [];
     const cur = decodeGameState(s.map, s.shadow);
-    const events = this.observed(s, detectTransition(s.state, cur, t));
+    const events = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
     for (const ev of events) this.record(s, ev);
     if (!plausible(cur)) return events;
     if (cur.currentBall !== null && cur.currentBall > s.summary.maxBall) s.summary.maxBall = cur.currentBall;
     s.state = cur;
+    s.samCount = this.counterValue(s);
     s.summary.scores = cur.scores;
     return events;
+  }
+
+  /** Recipe A events from one state to the next: the shared rules, and on Stern SAM the NVRAM-only ones first. */
+  private transition(s: Session, prev: GameState, cur: GameState, t: number): GameEvent[] {
+    const generic = detectTransition(prev, cur, t);
+    if (s.samCounter === null) return generic;
+    return [...samTransition(prev, cur, s.samCount, this.counterValue(s), s.started, t), ...generic];
+  }
+
+  /** Stern SAM: the end counter as a u32 little-endian from the shadow, or null. */
+  private counterValue(s: Session): number | null {
+    const o = s.samCounter;
+    const b = s.shadow;
+    if (o === null || !b || o + 4 > b.length) return null;
+    return ((b[o] as number) | ((b[o + 1] as number) << 8) | ((b[o + 2] as number) << 16) | ((b[o + 3] as number) << 24)) >>> 0;
   }
 
   /** Recipe A: drop a ball or game end from a game whose start this session never saw (see `Session.started`). */
@@ -411,7 +473,7 @@ export class JournalDetector {
     for (const ev of events) {
       if ((ev.kind === 'ball_end' || ev.kind === 'game_end') && !s.started) continue;
       if (ev.kind === 'game_start') s.started = true;
-      if (ev.kind === 'game_end') s.started = false;
+      if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') s.started = false;
       out.push(ev);
     }
     return out;

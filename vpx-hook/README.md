@@ -58,6 +58,13 @@ per offset, the first old value), writes at most one `nvram_delta` line per 50 m
 the companion sees a game end within a frame or two. The full snapshot is taken once, at hook time (it is what
 the adjustments are read from), never periodically. An empty watch list (a ROM the maps corpus does not know)
 journals no deltas at all: nothing could decode them, and basic mode still reads the `.nv` at close.
+
+**Recipe 0.3.1 (companion 0.2.14, B10):** the offsets in the watch list count from the start of the platform's NVRAM
+region, as `ChangedNVRAM` does. Recipe 0.3.0 wrote the map's machine addresses, which are the same numbers only where
+NVRAM starts at 0 (WPC, Data East, Whitestar, System 11, Gottlieb System 3); on Stern SAM (0x02100000), Gottlieb
+System 1/80/80B (0x1800), Bally and Stern M100/200 (0x200) and Williams System 4–7 (0x100) nothing matched and no
+delta was journaled. The bump makes every sidecar stale, so the folder watch re-makes them all on its first look.
+For Stern SAM the list also carries the end-of-game counter (`samEndCounter` in `companion/src/witness/maps.ts`).
 `table_exit` gains `filtered_bytes`. Without a watch list (0.1.0 / 0.2.0 sidecars) the old behaviour stands.
 The companion computes the list with `gameStateOffsets(map)` (`companion/src/witness/maps.ts`) when it renders
 a sidecar; re-importing the folder re-renders every table with it (an older recipe version plans as `repatch`).

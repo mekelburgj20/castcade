@@ -15,6 +15,8 @@ nothing outside this repository: only the maps and platform files the recorded j
 | `mb_106`, `mb_106b` | `maps/williams/wpc/mb_106.map.json` | `platforms/williams-wpc-12K.json` |
 | `mm_109`, `mm_109b`, `mm_109c` | `maps/williams/wpc/mm_109.map.json` | `platforms/williams-wpc-12K.json` |
 | `tftc_104` … `tftc_400` | `maps/dataeast/version3/tftc_400.map.json` | `platforms/dataeast.json` |
+| `acd_170h` | `maps/stern/sam/acd_170h.map.json` | `platforms/stern-sam.json` |
+| `twd_160h` | `maps/stern/sam/twd_160h.map.json` | `platforms/stern-sam.json` |
 | `afm_113`, `afm_113b` | `maps/williams/wpc/afm_113.map.json` (has an `adjustments` block; used by `adjustments.test.ts` with synthetic bytes, no recording) | `platforms/williams-wpc-12K.json` |
 
 ## Licence and attribution

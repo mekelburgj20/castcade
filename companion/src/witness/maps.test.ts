@@ -14,6 +14,7 @@ import {
   NvMemory,
   romFromNvName,
   sameGame,
+  samEndCounter,
   stripRomVersion,
   toInt,
   type Json,
@@ -270,5 +271,17 @@ describe('gameStateOffsets', () => {
     const offs = gameStateOffsets(map);
     expect(offs.length).toBeGreaterThan(5);
     expect(offs.every((o) => Number.isInteger(o) && o >= 0 && o < 8238)).toBe(true);
+  });
+
+  it('Stern SAM: offsets count from NVRAM at 0x02100000, CPU-RAM fields are dropped, the end counter is added', async () => {
+    const map = await corpus.mapFor('twd_160h');
+    if (!map) throw new Error('no map');
+    const offs = gameStateOffsets(map);
+    expect(samEndCounter(map)).toBe(0x10a94);
+    // Player 1's score 0x02110A9C (8 bytes), player count 0x02110900, the end counter 16 bytes before the score + 8.
+    for (const b of [0x10a9c, 0x10aa3, 0x10900, 0x10a94, 0x10a97]) expect(offs).toContain(b);
+    // Ball 0x00036135 and game over 0x00036166 are CPU RAM: the hook never sees them, so never watched.
+    expect(offs.every((o) => o >= 0 && o < 0x20000)).toBe(true);
+    expect(samEndCounter((await corpus.mapFor('mm_109c'))!)).toBeNull();
   });
 });

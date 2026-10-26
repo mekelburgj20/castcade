@@ -1,0 +1,20 @@
+{
+  "vpx_version": "10.8.0 (Panasony VR build, the owner's rig)",
+  "vpinmame_version": "the rig's VPinMAME nightly",
+  "rig": "owner's rig, Windows 11, VR",
+  "companion_version": "0.2.13",
+  "lib_version": "0.4.0",
+  "recipe": "A",
+  "recipe_version": "0.3.0",
+  "recorded": "2026-10-26",
+  "rom": "twd_160h",
+  "table_file": "The Walking Dead LE Premium (Stern 2014) night 1.1.vpx",
+  "table_id": "The Walking Dead LE Premium (Stern 2014) night 1.1",
+  "journal_sha256": "45e5391fa749f95e82cd6d612e705849aa7cd42f2b7b03fe106bf8b35d8ba269",
+  "journal_file": "2026-10-26-1.jsonl.gz",
+  "played_by": "the owner by hand, one table load (session 2026-10-26T09:02:17 local): a 1-player game, a 2-player game, a 1-player game quit on ball 1",
+  "games": 2,
+  "oracle": false,
+  "expected": "Stern SAM, no ball events: three game_start; two game_end, 8853730, then 2275720 / 5470620 (players 2); the third game is game_abandoned at table_exit with 608660. No ball_end. Scores confirmed by the owner.",
+  "notes": "B10 research recording, every changed NVRAM byte journaled (watch list removed by hand). Confirms on a second ROM, with a different score address, that the last-game record sits 16 bytes before player 1's score."
+}

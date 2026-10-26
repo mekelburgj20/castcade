@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { readJournalLines } from './journal-replay.js';
-import { detectTransition, JournalDetector, plausible, replayDetector, type GameEvent, type JournalEvent } from './journal-detector.js';
-import { createMapCorpus, type CompiledMap, type GameState } from './maps.js';
+import { detectTransition, JournalDetector, plausible, replayDetector, samTransition, type GameEvent, type JournalEvent } from './journal-detector.js';
+import { createMapCorpus, gameStateOffsets, type CompiledMap, type GameState } from './maps.js';
 import { engineSlope } from './attestation-types.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
@@ -160,6 +160,69 @@ describe('mm_109c 2026-10-25: hook 0.4.0 on real VPX (two games, one engine line
     d.feed('{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"mb_106b","lib":"0.4.0","session":"s","locked":false}');
     const [eng] = d.feed('{"event":"engine","t":0.03,"reason":"init","difficulty":56.0000,"slope_min":6.0000,"slope_max":7.0000,"physics_set":0}');
     expect(eng.kind === 'engine' && engineSlope(eng.sample)).toBeCloseTo(6.56, 6);
+  });
+});
+
+describe('Stern SAM: games from NVRAM alone (B10, owner\'s rig 2026-10-25/26)', () => {
+  const samLookup = async () => {
+    const maps = new Map<string, CompiledMap | null>();
+    for (const rom of ['acd_170h', 'twd_160h']) maps.set(rom, await corpus.mapFor(rom));
+    return (rom: string) => maps.get(rom) ?? null;
+  };
+  const order = (events: JournalEvent[]) => games(events).filter((e) => e.kind !== 'current_scores').map((e) => e.kind);
+
+  it('acd_170h: three games end with their scores (the third a 2-player game), the fourth is abandoned at exit', async () => {
+    const { lines } = loadFixture('fixtures/nvram/acd_170h/2026-10-25-1');
+    const { events, detector } = replayDetector(lines, { mapFor: await samLookup() });
+    expect(order(events)).toEqual(['game_start', 'game_end', 'game_start', 'game_end', 'game_start', 'game_end', 'game_start', 'game_abandoned']);
+    const ends = ofKind(events, 'game_end');
+    expect(ends.map((e) => e.scores.slice(0, e.players ?? 1))).toEqual([[20030090], [4518000], [2675390, 10649390]]);
+    expect(ends.map((e) => e.players)).toEqual([1, 1, 2]);
+    expect(detector.summary()).toMatchObject({ exited: true, inGame: false, torn: 0, counts: { ball_end: 0 } });
+  });
+
+  it('twd_160h: a different score address, the same record; the quit game posts nothing', async () => {
+    const { lines } = loadFixture('fixtures/nvram/twd_160h/2026-10-26-1');
+    const { events } = replayDetector(lines, { mapFor: await samLookup() });
+    expect(order(events)).toEqual(['game_start', 'game_end', 'game_start', 'game_end', 'game_start', 'game_abandoned']);
+    const ends = ofKind(events, 'game_end');
+    expect(ends.map((e) => e.scores.slice(0, e.players ?? 1))).toEqual([[8853730], [2275720, 5470620]]);
+    expect(ofKind(events, 'game_start').map((e) => e.t)).toEqual([expect.closeTo(8.76, 1), expect.closeTo(146.12, 1), expect.closeTo(306.57, 1)]);
+    expect(ofKind(events, 'game_abandoned')[0].scores[0]).toBe(608660);
+  });
+
+  it('only the watched bytes (what an imported table journals) give the same games', async () => {
+    const lookup = await samLookup();
+    const map = lookup('twd_160h');
+    if (!map) throw new Error('no map');
+    const watch = new Set(gameStateOffsets(map));
+    const { lines } = loadFixture('fixtures/nvram/twd_160h/2026-10-26-1');
+    const filtered = lines.flatMap((l) => {
+      if (!l.includes('"nvram_delta"')) return [l];
+      const e = JSON.parse(l) as { t: number; d: [number, number, number][] };
+      const d = e.d.filter(([o]) => watch.has(o));
+      return d.length ? [JSON.stringify({ event: 'nvram_delta', t: e.t, n: d.length, d })] : [];
+    });
+    const { events } = replayDetector(filtered, { mapFor: lookup });
+    expect(ofKind(events, 'game_end').map((e) => e.scores[0])).toEqual([8853730, 2275720]);
+    expect(filtered.length).toBeLessThan(lines.length / 2);
+  });
+});
+
+describe('samTransition (pure)', () => {
+  const sam = (scores: number[], playerCount = 1) => state({ scores, playerCount, currentBall: null, currentPlayer: null, gameOver: null });
+
+  it('a restart from the start button mid-game abandons the open game, then starts', () => {
+    expect(samTransition(sam([5000, 0, 0, 0]), sam([0, 0, 0, 0]), 7, 7, true, 1).map((e) => e.kind)).toEqual(['game_abandoned', 'game_start']);
+  });
+
+  it('a fresh NVRAM (no last game) starts at the first points; a counter rise with no game open is ignored', () => {
+    expect(samTransition(sam([0, 0, 0, 0]), sam([10, 0, 0, 0]), 0, 0, false, 1).map((e) => e.kind)).toEqual(['game_start']);
+    expect(samTransition(sam([10, 0, 0, 0]), sam([10, 0, 0, 0]), 4, 5, false, 1)).toEqual([]);
+  });
+
+  it('a counter jump that cannot be one game (a reset NVRAM) ends nothing', () => {
+    expect(samTransition(sam([10, 0, 0, 0]), sam([10, 0, 0, 0]), 4, 900, true, 1)).toEqual([]);
   });
 });
 

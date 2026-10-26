@@ -1017,7 +1017,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
         break;
       case 'game_abandoned':
-        await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned on ball ${ev.ball ?? '?'}; score as of the exit`);
+        // Stern SAM has no ball in reach (B10): say so rather than "ball ?".
+        await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned${ev.ball !== null ? ` on ball ${ev.ball}` : ''}; score as of the exit`);
         break;
       case 'stale_sidecar':
         fail(`Castcade patch for ${live.tableId} is for an older version of the table (${ev.detail ?? 'size or date changed'}); re-import it`);
