@@ -7,10 +7,10 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 ## Now
 
-- Companion 0.2.13 (unsigned PoC; repo public, keep it so): live mode, one-click table import, hook 0.4.0 engine attestation (difficulty fixed to 0–1 in 0.2.13), score plausibility flag, limited attempts; a table load no longer re-posts the last score. ArcAid 2.168.0 reads the engine evidence; F10 (0.2.12's 0–100 difficulty) and F11 (`score_plausibility` on the Integrity panel) are one ArcAid PR awaiting the owner; F8 (ROM→VPS map endpoint) still open there.
-- In flight: nothing claimed. ArcAid 2.170.0 (F10 + F11) is live on arcaid.app (deployed 2026-10-25 20:44 UTC).
+- Companion 0.2.14 (unsigned PoC; repo public, keep it so): live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score; Stern SAM tables post scores (B10.1) and watch lists count from the NVRAM start, so every patched table is re-made once on first start.
+- In flight: B10.1 field gate (Krobs posts an AC/DC and a Walking Dead score on 0.2.14). D1.0 left: a Twitch `?bandwidthtest=true` push and one 1080p run.
 - Next by priority: D1 solo streaming (owner ruling 2026-10-21; needs nothing from Phase 3). The rest of B5 waits on ArcAid item 12 (F5: baseline upload, preflight, `script_diff` ingest); F12 (bless-fingerprint UI) makes B4 usable in a tournament. Small and unblocked: B4.1, C2.2.
-- Owner actions: dispatch the ArcAid deploy for 2.170.0 (`gh workflow run deploy.yml --ref main -R mekelburgj20/ArcAid`) · update the rig to 0.2.13; have Krobs update and click Settings → Import tables → Patch my tables once · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
+- Owner actions: update the rig and Krobs to 0.2.14 (tables re-patch themselves on first start; restart VPX after) and have Krobs retry AC/DC and Walking Dead · optional F6 field check: in a Sanctioned tournament, change difficulty in the tweak menu mid-game and look for "changed during the game" on the Integrity panel · re-pair the rig from Settings (device row predates ArcAid #363) · a tester's clean-machine install (E1) · the F1–F2 field gate (B9).
 - Watching: C9 (four arrivals per score, 2026-10-22) — no recurrence in three sessions since request logging. ArcAid's admin-ui scoreboard scroll-arrow test is flaky and once skipped a deploy; handed to the ArcAid session (its lane).
 - Last wrap: 2026-10-23 — B6, C8, E4.1, F9 done; 0.2.11 and 0.2.12 released; C7 gate passed; C9 added.
 
@@ -31,12 +31,12 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B1** `done 0.2.4` F1 table identity: VPS game/table ids, file hash, save revision on every score; one-time picker; `tablesDir` setting
 - **B2** `done 0.2.8` F2 attestation: ini, NVRAM adjustments, build hashes + family, VPinMAME cheat flag, accelerometer and tilt keys (0.2.5 → 0.2.8)
 - **B3** `done 0.2.10` F3 companion half: `not_sanctioned` → rejected capture with reasons on Status; `play_device` (VR headset vs monitor) per session
-- **B4** `done 2026-10-25` F4 playfield fingerprint `pf1:<sha256>` on every score as `fingerprint` (ArcAid already compares it to `required_fingerprint`): collidable items only with physics, position, shape points and collision mesh, table physics, the physics materials they use; names and visuals excluded; tags checked against vpxtool 0.33.9 on Monster Bash (6,482 values, 0 mismatches); ~0.5 s, in the background beside the file hash, cached · spec: docs/design/fairness-and-table-identity.md §3
+- **B4** `done 0.2.14` F4 playfield fingerprint `pf1:<sha256>` on every score · spec: docs/design/fairness-and-table-identity.md §3
   - **B4.1** `ready` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament · spec: docs/design/fairness-and-table-identity.md §8
   - **B4.2** `ready` Field gate for F4: the owner launches Monster Bash twice (the log line `witness: playfield pf1:…` is the same both times), then moves a flipper in the VPX editor, saves, launches again: the line changes. A byte-patched copy passed both halves on 2026-10-25 · owner: owner · gate: this line
 - **B5** `blocked F5` F5 script diff, companion half — baseline download, normalise, classify, preflight verdict, diff report · needs: B4 · spec: docs/design/fairness-and-table-identity.md §4 · touches: ArcAid item 12 (F5)
-  - **B5.1** `done 2026-10-25` Engine: normalise, Myers diff, classify allowed / restricted / unknown, capped `script_diff` report (`script-diff.ts`)
-  - **B5.2** `done 2026-10-25` Which script ran vs the embedded one: no sidecar = embedded; our sidecar undone exactly (`unpatchRecipeA`, render → unpatch round-trips); a foreign or hand-edited sidecar is diffed and sent as `script_diff` (flag only)
+  - **B5.1** `done 0.2.14` Engine: normalise, Myers diff, classify allowed / restricted / unknown, capped `script_diff` report (`script-diff.ts`)
+  - **B5.2** `done 0.2.14` Which script ran vs the embedded one, sent as `script_diff` (flag only)
   - **B5.3** `blocked F5` Runner baseline download + preflight verdict before ball one — waits on ArcAid item 12 (upload, `GET /api/witness/preflight`, `script_diff` ingest) · needs: B5.1
   - **B5.4** `idea` Shared includes (`core.vbs`, `VPMKeys.vbs`, controller files) hashed against the VPX 10.8.0 release copies — needs a trusted hash list first
 - **B6** `done 0.2.12` F6 engine attestation from the live hook (hook 0.4.0 `engine` line at hook time + every key-down; on the score as `engine`; in-game change named in the capture) · spec: docs/design/fairness-and-table-identity.md §5

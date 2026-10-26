@@ -1,6 +1,6 @@
 {
   "name": "@castcade/companion",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "productName": "Castcade",
   "private": true,
   "description": "Castcade companion: Electron desktop app (host/client match engine, Witness producer, media, launch).",

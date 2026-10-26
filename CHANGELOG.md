@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.14] — 2026-10-26
+
 ### Scoring coverage
 - Maps corpus moved from `f16a0cc` (2026-08-26) to `f0c4220` (2026-10-24): 91 upstream commits, new maps and fixes
   (Whitestar, Gottlieb System 1, SAM). All 1,589 ROM entries compile; the five recorded fixtures replay unchanged. Pins:
@@ -46,6 +48,14 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   beside the file hash (~0.5 s on Monster Bash) and cached with it. Every record tag was checked against vpxtool
   0.33.9 on Monster Bash (6,482 values, 0 mismatches). `playfield-fingerprint.ts`, `vpx-file.ts`
   (`readVpxPlayfieldStreams`), `identity-resolver.ts`.
+
+### Tooling
+- Solo-streaming spike (D1.0, not in the app yet): `npm run spike:stream -w companion` films the VPX player window with
+  `ddagrab` (DXGI monitor match, DPI-aware), mixes loopback game sound with a named microphone (compressor, limiter,
+  levels), trims the measured 390 ms audio lag, and defaults to a vertical 9:16 slice shifted 10 % right (the owner's VR
+  framing); `--sync-test` with `scripts/av-sync.py` measures A/V offset. Rig findings in
+  `docs/design/solo-streaming-and-recording.md` §3. `media/window-geometry.ts`, `media/ffmpeg-args.ts`,
+  `scripts/stream-spike.mjs`.
 
 ## [0.2.13] — 2026-10-25
 
