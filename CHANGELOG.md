@@ -7,6 +7,12 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Live mode
+- A patched table whose script opens with a long comment banner now runs in live mode. The patched check read only the
+  sidecar's first 8 KB, and on 8 of the owner's 102 tables (AC/DC, 24, Transformers, Bad Cats, Hook, both Batmans,
+  Black Knight 2000) Castcade's block starts past it, so they were judged unpatched: no game start was reported and a
+  Limited-attempts tournament refused the score (AC/DC, 2026-10-26). `witness.ts` (`hasSidecar` reads the whole file).
+
 ## [0.2.14] — 2026-10-26
 
 ### Scoring coverage

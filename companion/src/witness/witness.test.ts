@@ -880,6 +880,15 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     return h;
   }
 
+  it('arms when the Castcade block sits behind a long opening banner (AC/DC: the marker at byte 10,866)', async () => {
+    const h = liveHarness();
+    const banner = Array.from({ length: 200 }, () => "' ****************************************************************\r\n").join('');
+    h.fs.put(TFTC_SIDECAR, banner + SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+  });
+
   it('arms on a sidecar, posts the game at game_end with the hook\'s own timing, and does not re-post the .nv at close', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');

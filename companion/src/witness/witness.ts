@@ -159,7 +159,6 @@ type PublishDecision =
 
 /** The sidecar's block 0 calls this; its presence in the first bytes of `<Table>.vbs` marks the file as ours. */
 const SIDECAR_MARKER = 'Castcade_Init';
-const SIDECAR_HEAD_BYTES = 8192;
 /** A `table_loaded` whose session stamp predates the VPX process by more than this is an earlier session's residue. */
 const SESSION_STAMP_SLACK_MS = 15 * 60_000;
 
@@ -842,14 +841,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const hasSidecar = async (vpxPath: string): Promise<boolean> => {
     const sidecar = vpxPath.replace(/\.vpx$/i, '.vbs');
     if (sidecar === vpxPath) return false;
+    // The whole file, not a head: block 0 goes after the table's own opening comments, and a long banner put
+    // the marker past the old 8 KB head (AC/DC at byte 10,866; 8 of the owner's 102 tables), so those tables
+    // were judged unpatched and never armed live mode (2026-10-26). A sidecar is a few hundred KB.
     try {
-      const file = await fs.open(sidecar);
-      try {
-        const head = Buffer.from(await file.read(0, Math.min(file.size, SIDECAR_HEAD_BYTES))).toString('latin1');
-        return head.includes(SIDECAR_MARKER);
-      } finally {
-        await file.close();
-      }
+      return Buffer.from(await fs.readFile(sidecar)).toString('latin1').includes(SIDECAR_MARKER);
     } catch (err) {
       if (isNotFound(err)) return false;
       throw err;
