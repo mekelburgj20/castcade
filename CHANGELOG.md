@@ -7,6 +7,15 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.16] — 2026-10-26
+
+### Live mode
+- A second table opened from the VPX editor, without quitting VPX, now gets its own live mode. Before, the session
+  kept following the first table's journal: the second table never armed, its file was checked against the first
+  table's manifest and its good sidecar renamed `.stale`, and its close-time `.nv` was dropped as the first table's
+  (AC/DC then Walking Dead, 2026-10-26). Going back to a table does not post its earlier games twice. `witness.ts`
+  (`switchTable`, `checkLiveHash` compares a manifest with its own table only, `liveRead`).
+
 ## [0.2.15] — 2026-10-26
 
 ### Live mode
