@@ -145,6 +145,12 @@ interface OpenSession {
   attestation: Attestation | null;
   /** Live mode (journal tail + detector) when the table has a Castcade sidecar; null in basic mode. */
   live: LiveSession | null;
+  /**
+   * Journal sessions (`<tableId>@<stamp>`) this VPX process already read. One process can load several
+   * tables from the editor; going back to a table re-tails its journal from the top, and its earlier
+   * games in this process must not post twice.
+   */
+  liveRead: Set<string>;
   /** Basic mode on a table the import could patch (or not): the sentence Status shows under "Capture". */
   unpatchedNote: string | null;
   /** F5 (B5.2): the script that ran against the table's embedded one, read at launch; null when not inspected. */
@@ -555,6 +561,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const target = path ?? launch.table;
     if (!target || session.identityFor === target) return;
     session.identityFor = target;
+    if (session.live && (!path || tableBaseName(path) !== session.live.tableId)) await switchTable(session);
     if (path) await startLive(session, path);
     if (path && !session.live) await noticeUnpatched(session, path);
     if (path) await inspectScript(session, path);
@@ -829,6 +836,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const checkLiveHash = async (session: OpenSession, vpxPath: string | null, sha256: string | null): Promise<void> => {
     const live = session.live;
     if (!live || !vpxPath || !sha256 || !live.manifest?.vpxSha256 || live.manifest.vpxSha256 === sha256) return;
+    // The manifest must be this table's: another table loaded in the same VPX process has its own (2026-10-26:
+    // Walking Dead's hash against AC/DC's manifest disabled a good sidecar).
+    if (tableBaseName(vpxPath) !== live.tableId) return;
     try {
       const stale = await disableSidecar(fs, vpxPath);
       fail(`Castcade patch for ${live.tableId} was made for another version of this table; disabled (${stale}) — re-import it from Castcade`);
@@ -951,6 +961,25 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitStatus();
   };
 
+  /**
+   * The editor loaded another table in the same VPX process: finish the old table's journal and let the
+   * new one arm its own. The old table's games were posted live, so its close-time `.nv` write is folded
+   * into the baseline rather than captured again under the new table's name.
+   */
+  const switchTable = async (session: OpenSession): Promise<void> => {
+    const old = session.live;
+    if (!old) return;
+    await stopLive(session);
+    session.live = null;
+    session.unpatchedNote = null;
+    session.scriptDiff = null;
+    log(`witness: ${old.tableId}: another table loaded in the same VPX process; stopped following its journal`);
+    if (old.captures > 0) {
+      pending = null;
+      await refreshBaseline();
+    }
+  };
+
   const pumpLive = async (session: OpenSession, live: LiveSession): Promise<void> => {
     live.pumpScheduled = false;
     while (live.lines.length > 0) {
@@ -971,6 +1000,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         log(`witness: journal ${live.tableId}: skipping an earlier session (${ev.session ?? '?'})`);
         return;
       }
+      const readKey = ev.session ? `${live.tableId}@${ev.session}` : null;
+      if (readKey && session.liveRead.has(readKey)) {
+        live.accepted = false;
+        log(`witness: journal ${live.tableId}: session ${ev.session} already read in this VPX process`);
+        return;
+      }
+      if (readKey) session.liveRead.add(readKey);
       live.loadedAtMs = stampMs ?? clock.now() - ev.t * 1000;
       live.lastGameStartMs = null;
       live.sessionStamp = ev.session ?? null;
@@ -1168,6 +1204,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       hashing: null,
       attestation: null,
       live: null,
+      liveRead: new Set(),
       unpatchedNote: null,
       scriptDiff: null,
     };

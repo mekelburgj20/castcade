@@ -1048,6 +1048,56 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it('a second table loaded from the editor in the same VPX process arms its own live mode; its sidecar is not judged by the first table\'s manifest', async () => {
+    // 2026-10-26 on the owner's rig: AC/DC played and posted, then Walking Dead opened from the editor. The
+    // AC/DC session kept its live state, Walking Dead's hash was checked against AC/DC's manifest, and its
+    // good sidecar was renamed .stale; its game was then dropped as "AC/DC: .nv rewritten, not re-posting".
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    const tftcPath = `C:\\VPX\\tables\\${TFTC_TABLE}.vpx`;
+    const mbPath = `C:\\VPX\\tables\\${MB_TABLE}.vpx`;
+    h.fs.put(tftcPath, MM_VPX);
+    h.fs.put(tftcPath.replace(/\.vpx$/, '.vbs'), SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    h.fs.put(mbPath, MB_VPX);
+    h.fs.put(mbPath.replace(/\.vpx$/, '.vbs'), SIDECAR_HEAD.replace(TFTC_TABLE, MB_TABLE) + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    // The first table's manifest pins its own file (the import wrote it); the second table's file differs.
+    h.fs.put('/data/tables/Tales_from_the_Crypt_Data_East_1993_VPW_v1.22.json', JSON.stringify({
+      tableId: TFTC_TABLE, vpxPath: tftcPath, vpxSha256: sha(MM_VPX), vpxSize: MM_VPX.length, vpxMtimeMs: 0, scriptSha256: 'x', class: 'A',
+      recipe: 'A', recipeVersion: '0.3.1', libVersion: '0.4.0', rom: 'tftc_400', sidecarPath: tftcPath.replace(/\.vpx$/, '.vbs'), sidecarSha256: 'x',
+      anchors: {}, warnings: [], renderedAt: '2026-10-26T00:00:00Z', verified: null,
+    }));
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(GL_CMD, 54240, { exe: GL_EXE, startedAt: h.clock.now() - 60_000, windowTitle: 'Visual Pinball' });
+
+    h.setTitle(`Visual Pinball - [${TFTC_TABLE}]`);
+    await h.poll();
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(h.clock.now() + 1000).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.paths('/score')).toHaveLength(1);
+
+    h.setTitle(MB_TITLE);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, captureMode: 'live' });
+    expect(h.fs.has(mbPath.replace(/\.vpx$/, '.vbs'))).toBe(true);
+    expect(h.fs.has(mbPath.replace(/\.vpx$/, '.vbs.stale'))).toBe(false);
+    expect(h.errors).toEqual([]);
+
+    // Back to the first table: its journal is tailed from the top again, and the game it already posted stays posted once.
+    h.setTitle(`Visual Pinball - [${TFTC_TABLE}]`);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.errors).toEqual([]);
+  });
+
   it('ignores an earlier session left in the same journal file, and falls back to basic mode when no game follows', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');
