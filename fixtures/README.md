@@ -62,7 +62,7 @@ every push and pull request against pinned clones of the corpus and parser:
 
 | Dependency | Env var | Pinned commit |
 |---|---|---|
-| `tomlogic/pinmame-nvram-maps` | `CASTCADE_MAPS` | `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7` |
+| `tomlogic/pinmame-nvram-maps` | `CASTCADE_MAPS` | `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd` |
 | `tomlogic/py-pinmame-nvmaps` | `CASTCADE_NVPARSER` | `00ea7847545c9edd84613db99c7dd54976ddf568` |
 
 Locally, point both variables at the clones under `C:\code\repos\ArcAid\tmp\vpx-desktop-witness\`.
@@ -84,7 +84,7 @@ phases table in `docs/design/arcaid-integration-gap-analysis.md`.
 `fixtures/maps/` holds the `pinmame-nvram-maps` map files (plus their platform files, a cut-down
 `index.json`, the ODbL/DbCL licences and a `VERSION` with the commit) that `companion/src/witness/maps.test.ts`
 needs to decode the `mm_109c`, `tftc_400` and `mb_106b` journals above with the companion's own TypeScript interpreter.
-The files are byte-identical to the pinned commit `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7`; see
+The files are byte-identical to the pinned commit `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`; see
 `fixtures/maps/README.md` for attribution. Ground truth for those tests (final scores, player count, ball,
 game-over, high scores) was taken from the Python reference (`tail-journal.py` → `py-pinmame-nvmaps` at the
 pinned commits) on 2026-10-18: MM `[1089510, 0, 0, 0]`, player_count 1, ball 3, game over; TFTC

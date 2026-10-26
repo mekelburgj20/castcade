@@ -6,7 +6,7 @@ nothing outside this repository: only the maps and platform files the recorded j
 `fixtures/nvram/` need.
 
 - Source: `https://github.com/tomlogic/pinmame-nvram-maps`
-- Commit: `f16a0cc6c347370706bf1a3f2c7a77568b3f69e7` (the pin in `.github/workflows/ci.yml`; also in `VERSION`)
+- Commit: `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd` (the pin in `.github/workflows/ci.yml`; also in `VERSION`)
 - Files are byte-identical to that commit except `index.json` and `romnames.json`, which are cut down to the ROMs below
   (`romnames.json` is what the companion falls back to for a table name when VPX gave it none).
 

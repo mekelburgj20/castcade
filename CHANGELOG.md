@@ -7,6 +7,15 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Scoring coverage
+- Maps corpus moved from `f16a0cc` (2026-08-26) to `f0c4220` (2026-10-24): upstream added the live game fields (score,
+  ball, player, game over, tilt) for 23 Stern SAM ROMs (AC/DC, The Walking Dead, Metallica, Tron, Transformers, Batman
+  TDK, Iron Man VE, X-Men LE, 24, …), which a tester found never posted, plus Gottlieb System 1 and Whitestar fixes. All
+  1,589 ROM entries compile; the five recorded fixtures replay unchanged. Pins: `fetch-maps.mjs`, `ci.yml`,
+  `fixtures/maps` (its four vendored maps refreshed).
+- A ROM name is looked up without regard to case: tables that write `cGameName = "SS_15"` or `"Hook_501"` found no map
+  (`witness/maps.ts`).
+
 ### Fairness
 - Script inspection, first half (F5, B5.1–B5.2): at launch the companion works out which script ran — the table's
   own, Castcade's untouched patch of it, Castcade's patch edited by hand, or someone else's sidecar `.vbs` — and diffs

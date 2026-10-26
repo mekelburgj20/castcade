@@ -227,7 +227,7 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
 
     await h.witness.start();
     await h.flush();
-    expect(h.witness.status()).toMatchObject({ running: true, paired: true, nvramDir: '/nv', mapsVersion: 'f16a0cc6c347370706bf1a3f2c7a77568b3f69e7', lastError: null });
+    expect(h.witness.status()).toMatchObject({ running: true, paired: true, nvramDir: '/nv', mapsVersion: 'f0c422099f0b50b69bfdf6d071a6653a8b25a6fd', lastError: null });
     expect(h.witness.status().vpsVersion).toMatch(/^[0-9a-f]{7,40}$/);
     // Idle at start: a heartbeat, then a check-in ("no table open here"), whose reply says where scores go.
     expect(h.calls.map((c) => c.path)).toEqual(['/api/witness/heartbeat', '/api/witness/checkin']);

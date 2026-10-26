@@ -50,7 +50,7 @@ jobs:
     name: fixture replay (detector)
     runs-on: ubuntu-latest
     env:
-      MAPS_COMMIT: f16a0cc6c347370706bf1a3f2c7a77568b3f69e7
+      MAPS_COMMIT: f0c422099f0b50b69bfdf6d071a6653a8b25a6fd
       NVPARSER_COMMIT: 00ea7847545c9edd84613db99c7dd54976ddf568
     steps:
       - uses: actions/checkout@v7

@@ -638,7 +638,9 @@ export function createMapCorpus(dir: string, fs: WitnessFs = nodeFs): MapCorpus 
     async mapFor(rom) {
       const idx = await loadIndex();
       if (!idx) return null;
-      const rel = idx[rom] ?? idx[romFromNvName(rom)];
+      // ROM names are case-insensitive in PinMAME; table scripts write `SS_15` or `Hook_501`, the corpus `ss_15`.
+      const nv = romFromNvName(rom);
+      const rel = idx[rom] ?? idx[rom.toLowerCase()] ?? idx[nv] ?? idx[nv.toLowerCase()];
       return rel ? loadMap(rel) : null;
     },
     async romName(rom) {
@@ -649,7 +651,7 @@ export function createMapCorpus(dir: string, fs: WitnessFs = nodeFs): MapCorpus 
         return out;
       });
       const names = await romnames;
-      const raw = names?.[rom] ?? names?.[romFromNvName(rom)];
+      const raw = names?.[rom] ?? names?.[rom.toLowerCase()] ?? names?.[romFromNvName(rom).toLowerCase()];
       return raw ? stripRomVersion(raw) : null;
     },
     async version() {

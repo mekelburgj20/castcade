@@ -1,5 +1,5 @@
 {
-  "_note": "Subset of tomlogic/pinmame-nvram-maps index.json at f16a0cc6c347370706bf1a3f2c7a77568b3f69e7: only the ROMs the companion witness tests replay (plus afm_113 for its adjustments block). See README.md.",
+  "_note": "Subset of tomlogic/pinmame-nvram-maps index.json at f0c422099f0b50b69bfdf6d071a6653a8b25a6fd: only the ROMs the companion witness tests replay (plus afm_113 for its adjustments block). See README.md.",
   "afm_113": "maps/williams/wpc/afm_113.map.json",
   "afm_113b": "maps/williams/wpc/afm_113.map.json",
   "mb_106": "maps/williams/wpc/mb_106.map.json",

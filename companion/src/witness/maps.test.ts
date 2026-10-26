@@ -25,7 +25,7 @@ const corpus = createMapCorpus(repo('fixtures/maps'));
 /**
  * Ground truth for both fixtures comes from the reference implementation: the final shadow
  * buffer of each journal decoded with `py-pinmame-nvmaps` (`nvram_parser.py`, commit 00ea784)
- * against `pinmame-nvram-maps` f16a0cc, i.e. what `vpx-hook/spike/tail-journal.py` reports at
+ * against `pinmame-nvram-maps` f0c4220, i.e. what `vpx-hook/spike/tail-journal.py` reports at
  * `table_exit` (2026-10-18). Each fixture's `.meta.json` carries the same final scores in prose.
  */
 describe('fixture replay decodes like the reference parser', () => {
@@ -97,9 +97,10 @@ describe('fixture replay decodes like the reference parser', () => {
   });
 
   it('exposes the corpus version and resolves ROM aliases and .nv names', async () => {
-    expect(await corpus.version()).toBe('f16a0cc6c347370706bf1a3f2c7a77568b3f69e7');
+    expect(await corpus.version()).toBe('f0c422099f0b50b69bfdf6d071a6653a8b25a6fd');
     expect(await corpus.mapFor('mm_109')).toBe(await corpus.mapFor('mm_109c'));
     expect(await corpus.mapFor('nope_123')).toBeNull();
+    expect(await corpus.mapFor('MM_109c')).toBe(await corpus.mapFor('mm_109c')); // a script's cGameName may be capitalised
     expect(romFromNvName('mm_109c.nv')).toBe('mm_109c');
     expect(romFromNvName('tftc_400-b.nv')).toBe('tftc_400');
     const empty = createMapCorpus('/nowhere', new MemoryFs());

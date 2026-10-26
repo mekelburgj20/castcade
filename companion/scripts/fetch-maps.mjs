@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-const DEFAULT_COMMIT = 'f16a0cc6c347370706bf1a3f2c7a77568b3f69e7';
+const DEFAULT_COMMIT = 'f0c422099f0b50b69bfdf6d071a6653a8b25a6fd';
 const REPO_URL = 'https://github.com/tomlogic/pinmame-nvram-maps';
 const KEEP = ['index.json', 'romnames.json', 'maps', 'platforms', 'LICENSE-ODbL.md', 'LICENSE-DbCL', 'README.md'];
 
