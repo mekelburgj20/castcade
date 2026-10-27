@@ -1,4 +1,4 @@
-# Castcade tester kit (v0.2.12, October 2026)
+# Castcade tester kit (v0.2.17, October 2026)
 
 Everything a tester needs on one page. The full guide with details and troubleshooting is
 [`phase-2-witness.md`](phase-2-witness.md); this page is the short version to send with the invite.
@@ -21,8 +21,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 
 ## Steps
 
-1. **Download** `Castcade-Setup-0.2.12.exe` from
-   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.12> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
+1. **Download** `Castcade-Setup-0.2.17.exe` from
+   <https://github.com/mekelburgj20/castcade/releases/tag/v0.2.17> (an installed 0.2.3 or later updates itself: it checks at launch and every 4 hours).
 2. **Install.** It is not code-signed yet, so SmartScreen says *Windows protected your PC*: click
    **More info → Run anyway** (the browser may also ask you to *Keep* the file). No admin prompt.
    Castcade starts in the tray (the **C** icon; click the arrow by the clock if Windows hides it).
@@ -34,7 +34,8 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 5. **Patch your tables** (0.2.11 and later). Castcade → **Settings → Import tables for live scores**: **Browse…** to
    your Visual Pinball `tables` folder, then **Patch my tables**. It writes a small Castcade script beside each ROM
    table (the `.vpx` files are never changed; **Remove all Castcade patches** reverts). Without this step only the
-   last game of a session posts, and Castcade tells you so when you open a table.
+   last game of a session posts, and Castcade tells you so when you open a table. From 0.2.17 it skips machines whose
+   live score it can't read yet and lists them as "not patched".
 6. **Play one game, one player, to the end** on a ROM table. Let the last ball drain, wait for game over,
    then **quit the player** (Escape → Quit, or your frontend's exit). Do not kill VPX from Task Manager.
 7. **Check.** Open Castcade → **Status**: **Capture: live** while a patched table is open, *Watching*, *Paired*, your VPX exe, the NVRAM folder, **Sending
@@ -65,4 +66,4 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 > pair with your ArcAid account, play one game to the end, quit the player, send me a screenshot and a
 > log. It changes nothing in your VPX setup and uninstalls cleanly. Steps:
 > https://github.com/mekelburgj20/castcade/blob/main/docs/tester-kit.md
-> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.12
+> Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.17

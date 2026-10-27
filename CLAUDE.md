@@ -19,7 +19,7 @@ the claiming rule in `.claude/commands/work.md`; the board link is on its first 
 `CHANGELOG.md`. Start a session with `/work`, end it with `/wrap`. **Do not write a session narrative
 here**: this section holds standing facts only (ADR 0006).
 
-- Companion 0.2.16 is an unsigned PoC. Code signing waits for GA (owner ruling 2026-10-18). The repo is
+- Companion 0.2.17 is an unsigned PoC. Code signing waits for GA (owner ruling 2026-10-18). The repo is
   public and must stay so: installed apps read the releases feed anonymously (0.2.6).
 - Gates passed: Phase 0 spike (owner's rig, 2026-10-17; findings in `docs/phase-0-spike.md` §8), Phase 1
   protocol + host mode (CI, 2026-10-18), Phase 2 half 1 (Monster Bash to a tournament board with the
@@ -60,7 +60,7 @@ detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing
 
 0. `WORK.md` (`/work`): what is open, claimed, blocked, and what the owner wants next. Then, for the design behind an item:
 1. `docs/design/arcaid-integration-gap-analysis.md` — what ArcAid already has, the owner's rulings, the revised architecture and phases. **Source of truth.**
-2. `docs/decisions/` — ADRs 0001–0006 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker).
+2. `docs/decisions/` — ADRs 0001–0007 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker · functionality before ease of setup).
 3. `docs/design/fairness-and-table-identity.md` — table identity, playfield fingerprint, script inspection, the honest ceiling, build order F1–F6.
 4. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
 5. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
@@ -80,7 +80,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | **Import a table** (per-table script patch) is the primary path; the shared `core.vbs` patch is a forced-choice setup opt-in for bulk Witness scoring. "Patched" never reads as "Castcade-ready". | 2026-10-17 | 0004 |
 | Peer-hosted (host player's companion arbitrates and forwards media); ArcAid does signaling + results only. Architecture B (parallel 1-player games). 2–4 players, protocol N-player from day one. | handoff doc | — |
 | Names in code: product *Castcade*; lobby *Throwdown*; roles *host* / *client*; turn token *grant*. | handoff + 0002 | — |
-| **Functionality before ease of setup.** VPX users accept complex setup; never drop a capability (multiplayer streaming, voice, fairness) to save a setup step. Within that, make install and setup as easy as possible: automate it, or walk the user through it. | 2026-10-27 | — |
+| **Functionality before ease of setup.** VPX users accept complex setup; never drop a capability (multiplayer streaming, voice, fairness) to save a setup step. Within that, make install and setup as easy as possible: automate it, or walk the user through it. | 2026-10-27 | 0007 |
 | Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
 
 ## Repo layout

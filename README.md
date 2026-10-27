@@ -21,7 +21,8 @@ last game's score when VPX exits, shipped as an unsigned per-user installer for 
 v0.2.11, 2026-10-23):** Settings → Import tables → **Patch my tables** gives every ROM table in the folder a sidecar
 script (the `.vpx` is never changed), after which every game posts its own score the moment it ends, not one
 score when the table closes; Castcade says so when a table opens unpatched. v0.2.12 also reports the difficulty,
-slope and nudge settings VPX had in force during the game, so Sanctioned play catches a mid-game tweak-menu change. **End-to-end verified 2026-10-18 (v0.2.2):** a Monster Bash game played
+slope and nudge settings VPX had in force during the game, so Sanctioned play catches a mid-game tweak-menu change. v0.2.17 patches only machines whose live score it can read (84 of
+the owner's 140 tables); the rest post their last game when the table closes. **End-to-end verified 2026-10-18 (v0.2.2):** a Monster Bash game played
 in VR landed on an arcaid.app tournament board with the Witness badge. The clean-machine install check is pending. Start with
 [`docs/design/arcaid-integration-gap-analysis.md`](docs/design/arcaid-integration-gap-analysis.md),
 then the ADRs in [`docs/decisions/`](docs/decisions/). The phased roadmap with gates is in §6 of the gap analysis.
