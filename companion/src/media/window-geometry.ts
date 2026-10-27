@@ -213,3 +213,30 @@ export function portraitSlice(crop: DdagrabCrop, shift = 0): DdagrabCrop {
   const x = Math.max(0, Math.min(room, Math.round(room / 2 + shift * crop.width)));
   return { ...crop, offsetX: crop.offsetX + x, width };
 }
+
+/**
+ * Where a preview window goes so it does not cover what it shows (Desktop Duplication films whatever is on screen, so
+ * a preview inside the crop would film itself): another monitor when there is one, centred; else beside the crop on
+ * its own monitor, on the wider side. Sized to `picture`'s aspect, at most 85 % of the free height and width.
+ */
+export function previewPlacement(crop: DdagrabCrop, outputs: DxgiOutput[], picture: { width: number; height: number }): { left: number; top: number; width: number; height: number; overlapsCapture: boolean } {
+  const captured = outputs.find((o) => o.index === crop.outputIdx) ?? outputs[0];
+  const other = outputs.find((o) => o !== captured);
+  let area: Rect;
+  if (other) area = other.desktop;
+  else if (captured) {
+    const d = captured.desktop;
+    const leftRoom = crop.offsetX;
+    const rightRoom = d.width - (crop.offsetX + crop.width);
+    area = rightRoom >= leftRoom
+      ? { left: d.left + crop.offsetX + crop.width, top: d.top, width: rightRoom, height: d.height }
+      : { left: d.left, top: d.top, width: leftRoom, height: d.height };
+  } else area = { left: 0, top: 0, width: picture.width, height: picture.height };
+  const fit = Math.min((area.width * 0.85) / picture.width, (area.height * 0.85) / picture.height, 1);
+  const width = Math.max(160, Math.round(picture.width * fit));
+  const height = Math.max(90, Math.round(picture.height * fit));
+  const left = area.left + Math.max(0, Math.round((area.width - width) / 2));
+  const top = area.top + Math.max(0, Math.round((area.height - height) / 2));
+  const overlapsCapture = !other && (area.width < 160 || area.height < 90);
+  return { left, top, width, height, overlapsCapture };
+}

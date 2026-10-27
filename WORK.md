@@ -93,7 +93,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
   - **D1.2** `ready` Local recording: MP4 per session, game markers, hash-chained manifest tied to posted scores, retention (last N sessions, default 3; optional total cap, empty = unlimited; Sanctioned kept until the tournament closes) · needs: D1.0
   - **D1.3** `ready` Streaming to Twitch / YouTube: key in `safeStorage`, presets (720p30 default, 1080p30/60), reconnect, health · needs: D1.0
   - **D1.4** `ready` Overlay burned into stream and recording · needs: D1.1, D1.0
-  - **D1.5** `ready` Stream page: go live, record, preview, health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3
+  - **D1.5** `ready` Stream page: go live, record, preview (owner ask 2026-10-27: the streamer sees and adjusts the framing before going live; the spike's `--preview` runs ffplay on the same filter chain, `ffplayPreviewArgs`), health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3
   - **D1.6** `ready` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time (gitignored), extra resource in the installer · needs: D1.0
 - **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2

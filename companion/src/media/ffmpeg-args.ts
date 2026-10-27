@@ -74,11 +74,33 @@ function encoderArgs(e: VideoEncoder, p: QualityPreset): string[] {
   }
 }
 
-export function videoFilter(o: EncodeOptions): string {
+/** What the picture depends on: the same for the encode and the preview. */
+export type PictureOptions = Pick<EncodeOptions, 'crop' | 'preset' | 'overlay'>;
+
+/** The output picture's short side, in pixels: the preset's, never more than the capture's (no upscale). */
+function outputShortSide(o: PictureOptions): number {
+  const c = o.crop;
+  return Math.min(o.preset.height, c.height > c.width ? c.width : c.height) & ~1;
+}
+
+/** The output picture's size in pixels (`scale=…:-2` rounds the long side to even). */
+export function outputSize(o: PictureOptions): { width: number; height: number } {
+  const c = o.crop;
+  const short = outputShortSide(o);
+  const long = Math.round((short * Math.max(c.width, c.height)) / Math.min(c.width, c.height) / 2) * 2;
+  return c.height > c.width ? { width: short, height: long } : { width: long, height: short };
+}
+
+export function videoFilter(o: PictureOptions): string {
+  return `${videoChain(o)}[v]`;
+}
+
+/** The capture → picture chain with no output label (the encode labels it `[v]`; ffplay's lavfi input takes it bare). */
+function videoChain(o: PictureOptions): string {
   const c = o.crop;
   // The preset names the short side (720p = 1280x720, or 720x1280 for a vertical window); never upscale.
   const portrait = c.height > c.width;
-  const outH = Math.min(o.preset.height, portrait ? c.width : c.height) & ~1;
+  const outH = outputShortSide(o);
   const parts = [
     `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${c.offsetX}:offset_y=${c.offsetY}:video_size=${c.width}x${c.height}:draw_mouse=0`,
     'hwdownload',
@@ -94,7 +116,28 @@ export function videoFilter(o: EncodeOptions): string {
     );
   }
   parts.push('format=yuv420p');
-  return `${parts.join(',')}[v]`;
+  return parts.join(',');
+}
+
+export interface PreviewOptions extends PictureOptions {
+  /** Where the preview window opens and how big, in virtual-desktop pixels (`previewPlacement`). */
+  window: { left: number; top: number; width: number; height: number };
+  title?: string;
+}
+
+/**
+ * ffplay showing exactly what the stream would carry (same capture, crop, scale and overlay), with nothing encoded,
+ * recorded or sent: the streamer checks the framing before going live (owner ask 2026-10-27). ffplay ships with ffmpeg.
+ */
+export function ffplayPreviewArgs(o: PreviewOptions): string[] {
+  const w = o.window;
+  return [
+    '-hide_banner', '-nostats', '-loglevel', 'error',
+    '-window_title', o.title ?? 'Castcade preview: what the stream shows (Q to close)',
+    '-left', String(w.left), '-top', String(w.top), '-x', String(w.width), '-y', String(w.height),
+    '-an', '-fflags', 'nobuffer', '-framedrop',
+    '-f', 'lavfi', '-i', videoChain(o),
+  ];
 }
 
 export function ffmpegArgs(o: EncodeOptions): string[] {

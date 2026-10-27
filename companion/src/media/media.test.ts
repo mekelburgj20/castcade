@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ffmpegArgs, filterValue, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
-import { cropFor, pickPlayfield, portraitSlice, type DxgiOutput, type VpxWindow } from './window-geometry.js';
+import { ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
+import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
 /** The owner's rig: two 2560x1440 monitors side by side (probe output, 2026-10-25). */
 const OUTPUTS: DxgiOutput[] = [
@@ -81,5 +81,47 @@ describe('ffmpeg args', () => {
   it('a stream key never reaches a log', () => {
     expect(redactRtmp('… [f=flv]rtmp://live.twitch.tv/app/live_123_secret')).toBe('… [f=flv]rtmp://live.twitch.tv/app/***');
     expect(redactRtmp('rtmps://a.rtmps.youtube.com:443/live2/abcd-efgh')).toBe('rtmps://a.rtmps.youtube.com:443/live2/***');
+  });
+});
+
+describe('stream preview (owner ask 2026-10-27: check the framing before going live)', () => {
+  // The owner's rig, 2026-10-27: Monster Bash windowed on monitor 0, the 9:16 slice it streamed.
+  const crop = { outputIdx: 0, offsetX: 1391, offsetY: 7, width: 806, height: 1432 };
+  const two: DxgiOutput[] = [
+    { index: 0, device: '\\\\.\\DISPLAY1', monitor: 'm0', desktop: { left: 0, top: 0, width: 2560, height: 1440 } },
+    { index: 1, device: '\\\\.\\DISPLAY2', monitor: 'm1', desktop: { left: 2560, top: 0, width: 2560, height: 1440 } },
+  ];
+  const picture = outputSize({ crop, preset: PRESETS['720p30']! });
+
+  it('the output picture is the preset on the short side, even, never upscaled', () => {
+    expect(picture).toEqual({ width: 720, height: 1280 });
+    expect(outputSize({ crop: { ...crop, width: 400, height: 712 }, preset: PRESETS['1080p30']! })).toEqual({ width: 400, height: 712 });
+    expect(outputSize({ crop: { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1920, height: 1080 }, preset: PRESETS['720p30']! })).toEqual({ width: 1280, height: 720 });
+  });
+
+  it('ffplay runs the same capture chain as the encode, with nothing encoded or sent', () => {
+    const overlay = { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' };
+    const args = ffplayPreviewArgs({ crop, preset: PRESETS['720p30']!, overlay, window: { left: 3000, top: 100, width: 690, height: 1224 } });
+    const chain = args[args.indexOf('-i') + 1];
+    expect(`${chain}[v]`).toBe(videoFilter({ crop, preset: PRESETS['720p30']!, overlay }));
+    expect(args).toEqual(expect.arrayContaining(['-f', 'lavfi', '-an', '-left', '3000', '-top', '100', '-x', '690', '-y', '1224']));
+    expect(args.join(' ')).not.toMatch(/rtmp|\.mp4|-c:v/);
+  });
+
+  it('opens on the other monitor when there is one, sized to the picture', () => {
+    const p = previewPlacement(crop, two, picture);
+    expect(p.overlapsCapture).toBe(false);
+    expect(p.left).toBeGreaterThanOrEqual(2560);
+    expect(p.height).toBeLessThanOrEqual(Math.round(1440 * 0.85));
+    expect(Math.abs(p.width / p.height - 720 / 1280)).toBeLessThan(0.01);
+  });
+
+  it('with one monitor, opens beside the crop on the wider side, never on it', () => {
+    const one = [two[0]!];
+    const p = previewPlacement(crop, one, picture); // 1391 px free on the left, 363 on the right
+    expect(p.overlapsCapture).toBe(false);
+    expect(p.left + p.width).toBeLessThanOrEqual(1391);
+    const full = previewPlacement({ outputIdx: 0, offsetX: 0, offsetY: 0, width: 2560, height: 1440 }, one, picture);
+    expect(full.overlapsCapture).toBe(true);
   });
 });

@@ -3,6 +3,9 @@
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
 //   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late 390]  (ms; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
+//   [--preview]  shows what the stream would carry (same crop, scale and overlay) in an ffplay window, and nothing is
+//   recorded or sent: adjust --portrait N / --landscape / --preset until it looks right, close it (Q), then run again
+//   without --preview and with the same options.
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -15,8 +18,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENCODER_PREFERENCE, ffmpegArgs, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
-import { cropFor, pickPlayfield, portraitSlice, probeWindows } from '../dist/media/window-geometry.js';
+import { ENCODER_PREFERENCE, ffmpegArgs, ffplayPreviewArgs, outputSize, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
+import { cropFor, pickPlayfield, portraitSlice, previewPlacement, probeWindows } from '../dist/media/window-geometry.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -115,8 +118,11 @@ app.whenReady().then(async () => {
   // 1. Where to capture.
   let crop;
   let target = 'desktop';
-  if (flag('desktop')) crop = { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1280, height: 720 };
-  else {
+  let outputs = [];
+  if (flag('desktop')) {
+    crop = { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1280, height: 720 };
+    if (flag('preview')) outputs = (await probeWindows()).outputs;
+  } else {
     // Wait for a game: the editor window alone is not the playfield.
     let probe = await probeWindows();
     let pf = pickPlayfield(probe.windows);
@@ -138,6 +144,7 @@ app.whenReady().then(async () => {
     probe = await probeWindows();
     pf = pickPlayfield(probe.windows) ?? pf;
     crop = cropFor(pf, probe.outputs);
+    outputs = probe.outputs;
     target = `"${pf.title}"`;
     if (!crop) {
       log('the VPX window is not on any DXGI output of the default adapter');
@@ -152,6 +159,10 @@ app.whenReady().then(async () => {
     crop = portraitSlice(crop, (s.startsWith('--') ? 10 : Number(s)) / 100);
   }
   log('crop', JSON.stringify(crop), 'target', target);
+  if (flag('preview')) {
+    preview(crop, outputs);
+    return;
+  }
   const encoder = pickEncoder();
   log('encoder', encoder, 'preset', preset.id, rtmp ? 'RTMP on' : 'RTMP off');
 
@@ -262,3 +273,41 @@ setInterval(() => {
     }
   }, 10_000);
 });
+
+/** --preview: the stream's picture in an ffplay window; nothing encoded, recorded or sent. */
+function preview(crop, outputs) {
+  const overlayFile0 = overlayFile;
+  const t0 = Date.now();
+  const tick = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    try {
+      writeFileSync(overlayFile0, `Castcade D1.0 preview   ${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`);
+    } catch {
+      // the next tick writes it
+    }
+  };
+  tick();
+  const timer = setInterval(tick, 500);
+  const overlay = { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' };
+  const picture = outputSize({ crop, preset, overlay });
+  const place = previewPlacement(crop, outputs, picture);
+  if (place.overlapsCapture) log('warning: no room beside the capture on this monitor; the preview may film itself. Move it aside.');
+  const args = ffplayPreviewArgs({ crop, preset, overlay, window: place });
+  log(`preview: ${picture.width}x${picture.height} (${preset.id}) in a window at ${place.left},${place.top}. Close it (Q or the X) when the framing is right.`);
+  const fp = spawn('ffplay', args, { cwd: outDir, windowsHide: false });
+  fp.stderr.on('data', (b) => {
+    const line = b.toString().trim();
+    if (line) log('ffplay:', line);
+  });
+  fp.on('error', (e) => {
+    log('ffplay did not start (it ships with ffmpeg; is it on PATH?):', String(e));
+    app.exit(2);
+  });
+  fp.on('close', (code) => {
+    clearInterval(timer);
+    const opts = argv.filter((a) => a !== '--preview').join(' ');
+    console.log(`\nD1.0 preview | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | picture=${picture.width}x${picture.height} | ffplay exit=${code}`);
+    console.log(`To go live with this framing: npm run spike:stream -w companion -- ${opts}\n`);
+    app.exit(0);
+  });
+}

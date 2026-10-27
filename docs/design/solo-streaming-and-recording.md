@@ -88,7 +88,14 @@ audio flowing ("System audio" track, a 5 s test tone recorded whole with no drop
 frames at 720p30 NVENC, audio and video of equal length. What needs the rig:
 
 1. `git pull`, then `npm ci` at the repo root (once).
-2. Open Monster Bash in VPX (the desktop build, windowed or fullscreen) and start a game.
+2. Open Monster Bash in VPX (the desktop build, fullscreen, or windowed with the taskbar hidden: the capture films
+   whatever is on screen over the window) and start a game.
+   **Preview first:** `npm run spike:stream -w companion -- --preview` shows exactly what the stream would carry (same
+   crop, scale and overlay) in an ffplay window on the other monitor, with nothing recorded or sent. Adjust
+   `--portrait N` (slice shift in % of the window width, + = right; default 10, tuned for VR's left-eye preview; try 0
+   on desktop) or `--landscape` until it looks right, close it (Q or the X), and it prints the command to go live with
+   the same framing. ffplay ships with ffmpeg (owner ask 2026-10-27: a preview before going live, an existing tool
+   preferred).
 3. In another terminal at the repo root: `npm run spike:stream -w companion -- --seconds 120`. Keep playing. Read the FPS on
    VPX's F11 overlay once before you start the command and once while it runs.
 4. Paste back the `D1.0 | …` line with the two FPS numbers filled in, and open the MP4 it names (under `tmp/d1-spike/`):
