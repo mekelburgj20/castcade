@@ -76,7 +76,7 @@ import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
-import type { AttemptStatus, CaptureOutcome, LastCapture, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
+import type { AttemptStatus, CaptureOutcome, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
   clock?: Clock;
@@ -1024,6 +1024,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
   };
 
+  /** D1.1: the game on screen for the OBS overlay; announced only when it changes. */
+  let liveGame: LiveGame | null = null;
+  const setGame = (next: LiveGame | null): void => {
+    if (JSON.stringify(next) === JSON.stringify(liveGame)) return;
+    liveGame = next;
+    emitter.emit('game', next);
+  };
+
   const pumpLive = async (session: OpenSession, live: LiveSession): Promise<void> => {
     live.pumpScheduled = false;
     while (live.lines.length > 0) {
@@ -1083,6 +1091,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           log(`witness: ${live.tableId}: live score can't be read on this machine (ROM ${ev.rom}, ${support.reason}); at most one score posts, at close`);
         }
       }
+      setGame({ table: live.tableId, inGame: false, scores: [], player: null, ball: null });
       refreshTableStatus();
       emitStatus();
       return;
@@ -1096,10 +1105,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         session.lastActivityAt = clock.now();
         live.engineGame = live.engineLast ? [{ ...live.engineLast, t: ev.t }] : [];
         live.scoreTrack.reset();
+        setGame({ table: live.tableId, inGame: true, scores: [], player: null, ball: null });
         await reportAttempt(session, live, ev.players ?? null, at, ev.t);
         break;
       case 'current_scores':
         if (live.lastGameStartMs !== null) live.scoreTrack.add(ev.scores[0] ?? null, ev.t, ev.ball);
+        if (liveGame?.table === live.tableId && liveGame.inGame) {
+          setGame({ ...liveGame, scores: ev.scores, player: ev.player !== null && ev.player >= 1 ? ev.player : null, ball: ev.ball !== null && ev.ball >= 1 ? ev.ball : null });
+        }
         break;
       case 'engine':
         live.engineLast = ev.sample;
@@ -1107,9 +1120,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         if (ev.sample.reason === 'init') log(`witness: ${describeEngine({ atStart: ev.sample, changes: [] })} on ${live.tableId}`);
         break;
       case 'game_end':
+        setGame({ table: live.tableId, inGame: false, scores: ev.scores, player: null, ball: null });
         await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
         break;
       case 'game_abandoned':
+        setGame({ table: live.tableId, inGame: false, scores: ev.scores, player: null, ball: null });
         // Stern SAM has no ball in reach (B10): say so rather than "ball ?".
         await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned${ev.ball !== null ? ` on ball ${ev.ball}` : ''}; score as of the exit`);
         break;
@@ -1201,6 +1216,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     await live.tail.poll().catch(() => {});
     live.tail.stop();
     await pumpLive(session, live);
+    if (liveGame?.table === live.tableId) setGame(null);
   };
 
   // ----------------------------------------------------------------------- alive nv poll --
@@ -1398,6 +1414,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       refreshTableStatus();
       emitStatus();
+    },
+
+    liveGame() {
+      return liveGame;
     },
 
     status() {

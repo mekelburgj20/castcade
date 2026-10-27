@@ -7,6 +7,14 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Streaming
+- An overlay for OBS: Castcade serves a page on `http://127.0.0.1:47390/overlay` (Settings → OBS overlay has the
+  address and a Copy button) that a streamer adds as a Browser source. It shows the table, the score of the player up
+  (every player's in a multi-player game), ball and player, "Game over", the Witness badge (live / last game only / not
+  paired) and the limited-attempts line, and follows the game live over server-sent events. Loopback only, a foreign
+  Host header is refused; `?scale=` and `?side=right` adjust it; a taken port is logged and leaves it off (D1.1).
+  `media/overlay-server.ts`; the witness's new `game` event (`LiveGame`) feeds it.
+
 ## [0.2.17] — 2026-10-26
 
 ### Import and Status

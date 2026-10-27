@@ -21,6 +21,7 @@ export const IPC = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
@@ -128,6 +129,8 @@ export interface CastcadeApi {
       set(openAtLogin: boolean): Promise<LoginItemState>;
     };
     logPath(): Promise<string>;
+    /** D1.1: the OBS overlay page URL, or null when it is not running. */
+    overlayUrl(): Promise<string | null>;
     /** Native folder picker; resolves to the chosen folder, or null when the player cancelled. */
     pickFolder(defaultPath: string | null): Promise<string | null>;
   };

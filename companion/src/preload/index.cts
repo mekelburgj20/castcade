@@ -23,6 +23,7 @@ const CH = {
   appLoginItemGet: 'app:loginItem:get',
   appLoginItemSet: 'app:loginItem:set',
   appLogPath: 'app:logPath',
+  appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
@@ -70,6 +71,7 @@ const castcade: CastcadeApi = {
       set: (on) => ipcRenderer.invoke(CH.appLoginItemSet, on),
     },
     logPath: () => ipcRenderer.invoke(CH.appLogPath),
+    overlayUrl: () => ipcRenderer.invoke(CH.appOverlayUrl),
     pickFolder: (defaultPath) => ipcRenderer.invoke(CH.appPickFolder, defaultPath),
   },
   tables: {

@@ -31,6 +31,7 @@ import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witn
 import { createTablesHost, type TablesHost } from './tables-host.js';
 import { SidecarWatch } from './sidecar-watch.js';
 import { manifestDirFor } from '../witness/witness.js';
+import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../media/overlay-server.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -43,6 +44,8 @@ let log: Logger | null = null;
 let tray: TrayHandle | null = null;
 let sidecarWatch: SidecarWatch | null = null;
 let updater: UpdaterHandle | null = null;
+/** D1.1: the OBS overlay page on 127.0.0.1; null until started (or when its port was taken). */
+let overlay: OverlayServer | null = null;
 
 if (argv.includes('--smoke')) {
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION}\n`);
@@ -141,6 +144,7 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
 async function quit(host: WitnessHost): Promise<void> {
   quitting = true;
   sidecarWatch?.stop();
+  await overlay?.stop();
   await host.stop();
   log?.info('quit');
   app.quit();
@@ -216,6 +220,7 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   ipcMain.handle(IPC.appLoginItemGet, () => loginItemState());
   ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
   ipcMain.handle(IPC.appLogPath, () => logger.file);
+  ipcMain.handle(IPC.appOverlayUrl, () => overlay?.url() ?? null);
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
@@ -297,10 +302,21 @@ async function main(): Promise<void> {
   host.onStatus((status) => {
     tray?.refresh(status);
     if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
+    overlay?.publish();
   });
+  host.onGame(() => overlay?.publish());
 
   await host.start();
   watch.start();
+
+  // D1.1: the overlay page OBS adds as a browser source. A taken port is logged, never fatal.
+  const page = createOverlayServer({ state: () => overlayStateFrom(host.status(), host.liveGame()), log: (line) => logger.info(line) });
+  await page.start().then(
+    () => {
+      overlay = page;
+    },
+    (err: unknown) => logger.warn(`overlay: could not start (${describeError(err)}); the OBS overlay is off this run`),
+  );
 
   if (app.isPackaged) {
     updater = await startUpdater(logger, {

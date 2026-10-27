@@ -73,7 +73,7 @@ source.
 | Step | What |
 |---|---|
 | **D1.0** spike | On the owner's rig: loopback audio from Electron piped into ffmpeg; `ddagrab` cropped to the VPX window (DPI, monitor index); overlay text refreshed live (`drawtext` `reload`); a two-minute RTMP push to a Twitch test channel; frame cost read with the F11 overlay, desktop and VR with `VRPreview` on. Output: the exact ffmpeg graph and any change to this plan. |
-| **D1.1** OBS overlay | A local page on 127.0.0.1 with live score, ball, player and badge from the witness (server-sent events). No capture involved. |
+| **D1.1** OBS overlay | A local page on 127.0.0.1 with live score, ball, player and badge from the witness (server-sent events). No capture involved. Built: `http://127.0.0.1:47390/overlay` (fixed port so the OBS source survives restarts), `/events` (SSE, coalesced 100 ms, sent only on change), `/state.json`; the witness's `game` event (`LiveGame`) is the data D1.4 burns in. |
 | **D1.2** recording | MP4 per session with game start / end markers; a hash-chained manifest (file sha256, previous entry, the score each game posted); retention per §2. |
 | **D1.3** streaming | Twitch / YouTube ingest, key in `safeStorage`, bitrate presets, reconnect with backoff, health (bitrate, dropped frames). |
 | **D1.4** burned-in overlay | The D1.1 data drawn into the stream and the recording. |

@@ -5,7 +5,7 @@
  * module directly, so recreation never leaks a stale instance into IPC handlers.
  */
 import { createWitness } from '../witness/index.js';
-import type { Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
+import type { LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
 import { describeError } from './log.js';
@@ -25,6 +25,9 @@ export interface WitnessHost {
   onStatus(listener: (status: WitnessStatus) => void): () => void;
   /** Player-facing notices (the shell shows a desktop notification). */
   onNotice(listener: (notice: WitnessNotice) => void): () => void;
+  /** D1.1: the game on screen (live mode), for the OBS overlay. */
+  liveGame(): LiveGame | null;
+  onGame(listener: (game: LiveGame | null) => void): () => void;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -41,6 +44,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
 
   let lastCheckin: string | null = null;
   const noticeListeners = new Set<(n: WitnessNotice) => void>();
+  const gameListeners = new Set<(g: LiveGame | null) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -69,6 +73,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
         ),
       ),
       w.on('error', (m) => log.error(`witness: ${m}`)),
+      w.on('game', (g) => {
+        for (const l of gameListeners) l(g);
+      }),
     ];
     return w;
   }
@@ -156,6 +163,13 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       noticeListeners.add(listener);
       return () => {
         noticeListeners.delete(listener);
+      };
+    },
+    liveGame: () => witness.liveGame(),
+    onGame(listener) {
+      gameListeners.add(listener);
+      return () => {
+        gameListeners.delete(listener);
       };
     },
   };

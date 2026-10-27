@@ -145,6 +145,25 @@ export interface WitnessEvents {
   error: (message: string) => void;
   /** Something the player should hear once (a desktop notification in the shell), e.g. a table opened without a Castcade patch. */
   notice: (notice: WitnessNotice) => void;
+  /** D1.1: the game on screen changed (live mode): a start, a score, the end. Null when no live table is open. */
+  game: (game: LiveGame | null) => void;
+}
+
+/**
+ * D1.1: the game on screen as live mode reads it from the hook's journal, for the OBS overlay. Kept apart from
+ * `WitnessStatus` because scores change several times a second and a status update also rebuilds the tray.
+ */
+export interface LiveGame {
+  /** The table file's name (as the journal names it). */
+  table: string;
+  /** A game is being played; false after its end (the final scores stay on screen until the next start). */
+  inGame: boolean;
+  /** Per-player scores in map order, player 1 first; empty before the first score of a game. */
+  scores: (number | null)[];
+  /** Player up (1-based), or null where the machine does not say (Stern SAM). */
+  player: number | null;
+  /** Ball in play, or null where the machine does not say (Stern SAM). */
+  ball: number | null;
 }
 
 export type WitnessNotice =
@@ -172,5 +191,7 @@ export interface Witness {
    */
   confirmTable(filePath: string, vpsTableId: string | null): Promise<void>;
   status(): WitnessStatus;
+  /** D1.1: the game on screen right now (live mode), or null. */
+  liveGame(): LiveGame | null;
   on<K extends keyof WitnessEvents>(event: K, listener: WitnessEvents[K]): () => void;
 }

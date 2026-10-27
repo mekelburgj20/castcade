@@ -11,7 +11,7 @@ import { createMapCorpus } from './maps.js';
 import { createStaticRegistry, NVRAM_DIRECTORY_VALUE, VPM_GLOBALS_KEY } from './nvram-dir.js';
 import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
-import type { LastCapture, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
+import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
 import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
 import { RECIPE_VERSION } from '../patcher/index.js';
@@ -925,6 +925,32 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.flush();
     expect(h.witness.status()).toMatchObject({ captureMode: 'live', note: null });
     expect(h.notices).toEqual([]);
+  });
+
+  it('D1.1: the game on screen follows the journal (table, start, scores with player and ball, end), and clears at exit', async () => {
+    const h = liveHarness();
+    const seen: (LiveGame | null)[] = [];
+    h.witness.on('game', (g) => seen.push(g));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(h.clock.now() + 4000).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(seen[0]).toEqual({ table: TFTC_TABLE, inGame: false, scores: [], player: null, ball: null });
+    expect(seen[1]).toEqual({ table: TFTC_TABLE, inGame: true, scores: [], player: null, ball: null });
+    const during = seen.filter((g) => g?.inGame && g.scores.length > 0);
+    expect(during.length).toBeGreaterThan(3);
+    expect(during.every((g) => g!.player === 1 && g!.ball !== null && g!.ball >= 1)).toBe(true);
+    const end = seen.find((g) => g && !g.inGame && g.scores.length > 0);
+    expect(end?.scores[0]).toBe(2318430);
+    expect(h.witness.liveGame()).toMatchObject({ inGame: false, scores: [2318430, 0, 0, 0] });
+
+    await h.exit();
+    await h.settle(8000);
+    expect(seen.at(-1)).toBeNull();
+    expect(h.witness.liveGame()).toBeNull();
   });
 
   it('arms on a sidecar, posts the game at game_end with the hook\'s own timing, and does not re-post the .nv at close', async () => {

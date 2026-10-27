@@ -123,6 +123,8 @@ export function Settings({ state }: { state: CastcadeState }) {
 
       <ImportTables state={state} />
 
+      <OverlayCard state={state} />
+
       <div className="card">
         <label className="check">
           <input
@@ -173,5 +175,54 @@ export function Settings({ state }: { state: CastcadeState }) {
         (vps-db) community database, version: {status?.vpsVersion ?? 'not bundled'}.
       </p>
     </section>
+  );
+}
+
+/**
+ * D1.1: the OBS overlay. The URL a streamer pastes into OBS as a Browser source; fetched when the card shows, because
+ * the server starts after the window does.
+ */
+function OverlayCard({ state }: { state: CastcadeState }) {
+  const { bridge } = state;
+  const [url, setUrl] = useState<string | null | undefined>(undefined);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!bridge) return;
+    let alive = true;
+    void bridge.app.overlayUrl().then((u) => alive && setUrl(u));
+    return () => {
+      alive = false;
+    };
+  }, [bridge]);
+  const copy = () => {
+    if (!url) return;
+    void navigator.clipboard.writeText(url).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      () => setCopied(false),
+    );
+  };
+  return (
+    <div className="card">
+      <strong>OBS overlay</strong>
+      {url ? (
+        <>
+          <p>
+            <span className="mono">{url}</span>{' '}
+            <button type="button" onClick={copy}>
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </p>
+          <small className="muted">
+            In OBS: Sources → + → Browser, paste the address, width 1920, height 1080. It shows the live score, ball, player and the Witness badge
+            while a patched table is open. Add <span className="mono">?scale=1.5</span> to make it bigger or <span className="mono">?side=right</span> to move it.
+          </small>
+        </>
+      ) : (
+        <small className="muted">{url === undefined ? 'Checking…' : 'Not running: its port was taken when Castcade started (see the log).'}</small>
+      )}
+    </div>
   );
 }

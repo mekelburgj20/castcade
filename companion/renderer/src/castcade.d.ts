@@ -337,6 +337,8 @@ interface CastcadeBridge {
       set(openAtLogin: boolean): Promise<LoginItemState>;
     };
     logPath(): Promise<string>;
+    /** D1.1: the OBS overlay page URL, or null when it is not running. */
+    overlayUrl(): Promise<string | null>;
     pickFolder(defaultPath: string | null): Promise<string | null>;
   };
 }
