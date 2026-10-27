@@ -1,7 +1,8 @@
 /**
  * Import a tables folder (WORK C7, owner ruling 2026-10-21): plan (dry run) → apply. For every `.vpx`
  * the script is extracted and classified; recipe A (VPM / ROM tables) gets a same-basename sidecar
- * and a manifest; originals are skipped with the reason until recipes B/C exist; a `.vbs` that is
+ * and a manifest, unless its machine's live score is out of the hook's reach (`unreadable`, B12);
+ * originals are skipped with the reason until recipes B/C exist; a `.vbs` that is
  * not ours is never touched. The shared library `castcade.vbs` is installed into the VPX `scripts\`
  * folder once per apply. Nothing here ever writes to a `.vpx`.
  *
@@ -17,7 +18,7 @@ import { basenameOf, isVpxName, joinPath, manifestPathFor, sidecarPathFor, stale
 import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, RECIPE_VERSION, isOurSidecar, renderRecipeA } from './render.js';
 import { decodeScript } from './script-text.js';
 
-export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
 
 export interface PlanItem {
   vpxPath: string;
@@ -40,6 +41,12 @@ export interface PlanOptions {
   paths?: string[];
   manifestDir: string;
   recursive?: boolean;
+  /**
+   * B12: can live mode read this ROM's machine (`liveSupport` over its map)? A recipe-A table whose ROM
+   * answers no is `unreadable` and is not patched. Omitted = every ROM is taken as readable (the sidecar
+   * watch, which only re-makes sidecars that exist).
+   */
+  liveSupportFor?: (rom: string) => Promise<{ readable: boolean; reason: string }>;
 }
 
 export type SidecarCheck =
@@ -77,7 +84,7 @@ export interface ApplyResult {
   libInstalled: 'installed' | 'updated' | 'unchanged';
 }
 
-const ACTIONS: readonly PlanAction[] = ['patch', 'repatch', 'already', 'skip', 'foreign', 'unsupported'];
+const ACTIONS: readonly PlanAction[] = ['patch', 'repatch', 'already', 'skip', 'foreign', 'unsupported', 'unreadable'];
 
 const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -159,7 +166,8 @@ export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: 
   return { state: 'ok', manifest };
 }
 
-async function planOne(fs: WitnessFs, vpxPath: string, manifestDir: string): Promise<PlanItem> {
+async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promise<PlanItem> {
+  const { manifestDir } = opts;
   const tableId = tableIdFor(vpxPath);
   const item = (action: PlanAction, cls: ScriptClass | null, rom: string | null, reason: string): PlanItem => ({ vpxPath, tableId, action, cls, rom, reason });
 
@@ -181,6 +189,12 @@ async function planOne(fs: WitnessFs, vpxPath: string, manifestDir: string): Pro
   if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'}${sidecarNote}`);
   if (cls !== 'A') return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe B/C not built yet${sidecarNote}`);
   if (facts.alreadyPatched) return item('already', cls, rom, 'the embedded script already contains Castcade_Init');
+  // B12: a patch on a machine whose live score the hook cannot see would read as ready and post nothing live.
+  // A table with no ROM name is still patched: the hook reports the ROM it really runs.
+  if (rom && opts.liveSupportFor) {
+    const live = await opts.liveSupportFor(rom);
+    if (!live.readable) return item('unreadable', cls, rom, `${live.reason}${sidecarNote}`);
+  }
 
   switch (check.state) {
     case 'none':
@@ -207,7 +221,7 @@ export async function planImport(fs: WitnessFs, opts: PlanOptions): Promise<Impo
   for (const p of opts.paths ?? []) if (isVpxName(basenameOf(p))) paths.add(p);
 
   const items: PlanItem[] = [];
-  for (const p of [...paths].sort()) items.push(await planOne(fs, p, opts.manifestDir));
+  for (const p of [...paths].sort()) items.push(await planOne(fs, p, opts));
   return { items, counts: countActions(items) };
 }
 

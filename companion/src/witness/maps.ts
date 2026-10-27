@@ -556,6 +556,55 @@ export function samEndCounter(map: CompiledMap): number | null {
   return off >= 0 && (!region || region.size <= 0 || off + 4 <= region.size) ? off : null;
 }
 
+/** The `game_state` fields live mode needs on every platform but Stern SAM (`detectTransition`). */
+export const LIVE_FIELDS = ['scores', 'game_over', 'current_ball', 'current_player'] as const;
+
+export interface LiveSupport {
+  /** Live mode can follow a game on this machine: every game posts as it ends. */
+  readable: boolean;
+  /** How: the four live fields, or Stern SAM's scores and end-of-game record (B10.1). Null when not readable. */
+  via: 'game_state' | 'sam_end_counter' | null;
+  /** Live fields the map does not describe at all. */
+  absent: string[];
+  /** Live fields the map puts outside the NVRAM region, where the hook never sees them (CPU RAM). */
+  outside: string[];
+  /** One line for the import list and the Status page. */
+  reason: string;
+}
+
+/**
+ * Can live mode read a game on this machine (B12)? The hook only sees the NVRAM region (`ChangedNVRAM`),
+ * so every live field must be described AND sit inside it: scores, game over, current ball and current
+ * player. Stern SAM keeps ball, player and game over in CPU RAM but qualifies through its end-of-game
+ * record (`samEndCounter`), which needs player 1's score in NVRAM. A field counts by its first
+ * descriptor (player 1's score for `scores`). `null` = no map for the ROM.
+ */
+export function liveSupport(map: CompiledMap | null): LiveSupport {
+  if (!map) return { readable: false, via: null, absent: [...LIVE_FIELDS], outside: [], reason: 'no NVRAM map for this ROM' };
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const base = region?.address ?? 0;
+  const end = region && region.size > 0 ? base + region.size : Number.POSITIVE_INFINITY;
+  const inNvram = (entry: JsonObject): boolean => {
+    const offs = descriptorOffsets(entry);
+    return offs.length > 0 && offs.every((a) => a >= base && a < end);
+  };
+  const absent: string[] = [];
+  const outside: string[] = [];
+  for (const field of LIVE_FIELDS) {
+    const first = map.gameState[field]?.[0];
+    if (!first) absent.push(field);
+    else if (!inNvram(first)) outside.push(field);
+  }
+  if (absent.length === 0 && outside.length === 0) return { readable: true, via: 'game_state', absent, outside, reason: 'live fields in NVRAM' };
+  if (map.platform.name === 'stern-sam' && !absent.includes('scores') && !outside.includes('scores') && samEndCounter(map) !== null) {
+    return { readable: true, via: 'sam_end_counter', absent, outside, reason: 'Stern SAM: scores and the end-of-game record in NVRAM' };
+  }
+  const parts: string[] = [];
+  if (outside.length > 0) parts.push(`${outside.join(', ')} in CPU RAM`);
+  if (absent.length > 0) parts.push(`no ${absent.join(', ')} in the map`);
+  return { readable: false, via: null, absent, outside, reason: `${map.platform.name}: ${parts.join('; ')}` };
+}
+
 export function decodeHighScores(map: CompiledMap, nv: Uint8Array): HighScore[] {
   const mem = new NvMemory(map.platform, nv);
   return map.highScores.map((h) => ({

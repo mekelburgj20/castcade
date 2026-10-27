@@ -6,7 +6,7 @@
  */
 import { applyImport, planImport, removeAllSidecars, type ImportPlan, type PlanItem } from '../patcher/index.js';
 import { nodeFs, type WitnessFs } from '../witness/fs.js';
-import { createMapCorpus, gameStateOffsets } from '../witness/maps.js';
+import { createMapCorpus, gameStateOffsets, liveSupport } from '../witness/maps.js';
 import type { WitnessStatus } from '../witness/types.js';
 import type { TablesApplyResult, TablesDefaults, TablesPlan, TablesRemoveResult } from './ipc-types.js';
 import type { Logger } from './log.js';
@@ -75,6 +75,8 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     const map = await corpus.mapFor(rom).catch(() => null);
     return map ? gameStateOffsets(map) : [];
   };
+  // B12: the import patches only machines whose live score the hook can see.
+  const liveSupportFor = async (rom: string) => liveSupport(await corpus.mapFor(rom).catch(() => null));
 
   // The exe seen this run, else the one remembered from an earlier run (0.2.12): the import then works before any launch.
   const vpxExe = (): string | null => opts.witnessStatus().vpxExe ?? store.get().vpxExe ?? null;
@@ -140,7 +142,7 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     plan(dir) {
       const tablesDir = need(dir);
       return exclusive(async () => {
-        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
+        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true, liveSupportFor });
         log.info(`tables: plan ${tablesDir}: ${Object.entries(plan.counts).map(([k, v]) => `${k}=${v}`).join(' ')}`);
         return toPlanDto(tablesDir, plan);
       });
@@ -155,7 +157,7 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
             `Castcade cannot find the VPX scripts folder: there is no "scripts" folder beside ${tablesDir} and no VPX has run yet. Pick the "tables" folder inside your Visual Pinball folder, or launch any table once and try again.`,
           );
         }
-        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true });
+        const plan = await planImport(fs, { tablesDir, manifestDir, recursive: true, liveSupportFor });
         const result = await applyImport(fs, plan, {
           manifestDir,
           vpxScriptsDir,

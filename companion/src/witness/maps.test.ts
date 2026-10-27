@@ -15,6 +15,7 @@ import {
   romFromNvName,
   sameGame,
   samEndCounter,
+  liveSupport,
   stripRomVersion,
   toInt,
   type Json,
@@ -283,5 +284,39 @@ describe('gameStateOffsets', () => {
     // Ball 0x00036135 and game over 0x00036166 are CPU RAM: the hook never sees them, so never watched.
     expect(offs.every((o) => o >= 0 && o < 0x20000)).toBe(true);
     expect(samEndCounter((await corpus.mapFor('mm_109c'))!)).toBeNull();
+  });
+});
+
+describe('liveSupport (B12)', () => {
+  it('WPC and Data East: all four live fields in NVRAM', async () => {
+    for (const rom of ['mm_109c', 'tftc_400']) {
+      expect(liveSupport(await corpus.mapFor(rom))).toMatchObject({ readable: true, via: 'game_state', absent: [], outside: [] });
+    }
+  });
+
+  it('Stern SAM: ball, player and game over are CPU RAM, but scores and the end-of-game record qualify it', async () => {
+    for (const rom of ['acd_170h', 'twd_160h']) {
+      const s = liveSupport(await corpus.mapFor(rom));
+      expect(s).toMatchObject({ readable: true, via: 'sam_end_counter' });
+      expect(s.outside).toEqual(expect.arrayContaining(['current_ball', 'game_over']));
+    }
+  });
+
+  it('a machine whose scores sit in CPU RAM is not readable, and the reason names the platform and the fields', async () => {
+    const map = (await corpus.mapFor('mm_109c'))!;
+    const moved = { ...map, platform: { ...map.platform, name: 'gottlieb-system80', layout: map.platform.layout.map((r) => (r.type === 'nvram' ? { ...r, address: 0x1800, size: 0x100 } : r)) } };
+    const s = liveSupport(moved);
+    expect(s.readable).toBe(false);
+    expect(s.outside).toContain('scores');
+    expect(s.reason).toMatch(/^gottlieb-system80: .*scores.* in CPU RAM/);
+  });
+
+  it('a map without a live field is not readable; no map at all says so', async () => {
+    const map = (await corpus.mapFor('mm_109c'))!;
+    const { current_ball: _ball, ...rest } = map.gameState;
+    const s = liveSupport({ ...map, gameState: rest });
+    expect(s).toMatchObject({ readable: false, absent: ['current_ball'] });
+    expect(s.reason).toMatch(/no current_ball in the map/);
+    expect(liveSupport(null)).toMatchObject({ readable: false, reason: 'no NVRAM map for this ROM' });
   });
 });

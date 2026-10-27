@@ -7,6 +7,15 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Import and Status
+- The import no longer patches a table whose machine keeps its live score where the hook cannot see it: it is listed
+  as "not patched: this machine's live score can't be read yet" with the reason (no map for the ROM, or the fields in
+  CPU RAM). The rule: scores, game over, current ball and current player inside NVRAM; Stern SAM qualifies through its
+  end-of-game record. On the owner's 140 tables: 84 readable (74 + 10 SAM), 17 not (8 without a map; Gottlieb System
+  1 / 80 / 80B, Williams System 6, Bally 17). A sidecar made before the rule stays (remove-all deletes it). Status
+  shows such a table as basic with the reason instead of "live — every game", and an unpatched one is no longer sent
+  to "Patch my tables" (B12). `maps.ts` (`liveSupport`), `patcher/import.ts`, `witness.ts`.
+
 ## [0.2.16] — 2026-10-26
 
 ### Live mode

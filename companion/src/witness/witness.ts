@@ -50,7 +50,7 @@ import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
-import { createMapCorpus, decodeGameState, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
+import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
 import {
@@ -176,6 +176,11 @@ export function parseSessionStamp(stamp: string | null): number | null {
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
 }
 
+/** B12: what Status says on a machine whose live score the hook cannot see (patched or not). */
+export function unreadableNote(table: string, reason: string): string {
+  return `${table}: this machine's live score can't be read yet (${reason}). At most the last game of this session posts, when the table closes.`;
+}
+
 /** Live mode for one session: the hook's journal followed and decoded while the table is open. */
 interface LiveSession {
   tail: JournalTail;
@@ -207,6 +212,11 @@ interface LiveSession {
   engineGame: EngineSample[];
   /** B6.1: player 1's score moves in the game in progress (flag only, never a gate). */
   scoreTrack: ScoreTrack;
+  /**
+   * B12: why live mode cannot read this ROM's machine (`liveSupport`), set when the hook names the ROM; null
+   * when it can. The journal is still followed, but Status says what really happens: at most one score at close.
+   */
+  unreadable: string | null;
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -499,9 +509,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.currentTable = active?.launch.table ?? null;
     status.currentIdentity = active?.identity ?? null;
     status.currentAttestation = active?.attestation ?? null;
-    status.captureMode = active ? (active.live ? 'live' : 'basic') : null;
+    const following = !!active?.live && active.live.unreadable === null;
+    status.captureMode = active ? (following ? 'live' : 'basic') : null;
     status.attempt = active?.live?.attempt ?? null;
-    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : (active && !active.live ? active.unpatchedNote : null);
+    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : (active && !following ? active.unpatchedNote : null);
   };
 
   // --------------------------------------------------------------------------- attestation --
@@ -905,12 +916,18 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
   const noticeUnpatched = async (session: OpenSession, vpxPath: string): Promise<void> => {
     const table = tableBaseName(vpxPath);
-    const patchable = await readVpxScript(fs, vpxPath)
-      .then((script) => script !== null && classifyScript(decodeScript(script.bytes)).cls === 'A')
-      .catch(() => false);
+    const cls = await readVpxScript(fs, vpxPath)
+      .then((script) => (script !== null ? classifyScript(decodeScript(script.bytes)) : null))
+      .catch(() => null);
+    // B12: the import will not patch a machine whose live score the hook cannot see, so do not send the player there.
+    const rom = cls?.cls === 'A' ? cls.facts.rom ?? null : null;
+    const support = rom ? liveSupport(await corpus.mapFor(rom).catch(() => null)) : null;
+    const patchable = cls?.cls === 'A' && (support === null || support.readable);
     const message = patchable
       ? `${table} is not patched: only the last game of this session will post. Settings → Import tables → Patch my tables, then relaunch the table.`
-      : `${table} has no Castcade patch and its script type has no recipe yet: only the last game of this session will post.`;
+      : support && !support.readable
+        ? unreadableNote(table, support.reason)
+        : `${table} has no Castcade patch and its script type has no recipe yet: only the last game of this session will post.`;
     session.unpatchedNote = message;
     refreshTableStatus();
     if (noticedUnpatched.has(vpxPath)) return;
@@ -944,6 +961,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       engineLast: null,
       engineGame: [],
       scoreTrack: new ScoreTrack(),
+      unreadable: null,
     };
     session.live = live;
     live.tail.on('line', (line) => {
@@ -1021,6 +1039,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         const map = await corpus.mapFor(ev.rom);
         live.detector.setMap(map);
         if (!map) fail(`live mode: no map for ROM ${ev.rom}; games on ${live.tableId} will be captured at close only`);
+        const support = liveSupport(map);
+        live.unreadable = support.readable ? null : support.reason;
+        if (!support.readable) {
+          session.unpatchedNote = unreadableNote(live.tableId, support.reason);
+          log(`witness: ${live.tableId}: live score can't be read on this machine (ROM ${ev.rom}, ${support.reason}); at most one score posts, at close`);
+        }
       }
       refreshTableStatus();
       emitStatus();

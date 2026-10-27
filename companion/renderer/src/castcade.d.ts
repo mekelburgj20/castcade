@@ -246,7 +246,7 @@ interface SettingsPatch {
   deviceLabel?: string;
 }
 
-type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
 
 interface TablesPlanItem {
   vpxPath: string;

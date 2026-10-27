@@ -34,7 +34,7 @@ export const IPC = {
 // ------------------------------------------------------------------------- table import (C7) --
 
 /** What `planImport` decided for one `.vpx` (see `companion/src/patcher`). */
-export type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported';
+export type TablesPlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
 
 export interface TablesPlanItem {
   vpxPath: string;

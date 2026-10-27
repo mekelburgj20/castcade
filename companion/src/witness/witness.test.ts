@@ -889,6 +889,18 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
   });
 
+  it('B12: a patched table whose ROM has no readable live score reads as basic on Status, with the reason', async () => {
+    const h = liveHarness();
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"zz_999","lib":"0.4.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+    await h.poll();
+    await h.flush();
+    const st = h.witness.status();
+    expect(st.captureMode).toBe('basic');
+    expect(st.note).toBe(`${TFTC_TABLE}: this machine's live score can't be read yet (no NVRAM map for this ROM). At most the last game of this session posts, when the table closes.`);
+  });
+
   it('arms on a sidecar, posts the game at game_end with the hook\'s own timing, and does not re-post the .nv at close', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');
@@ -1139,6 +1151,19 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.launch();
     expect(h.notices).toHaveLength(1);
     expect(h.witness.status().note).toMatch(/not patched/);
+  });
+
+  it('B12: a table whose machine the import would refuse is not sent to "Patch my tables"', async () => {
+    const h = harness({}, { journalDir: '/journal' });
+    const script = crlf(VPM_SCRIPT).replace(/cGameName = "[^"]+"/, 'cGameName = "zz_999"');
+    h.fs.put(MM_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(script)), record('ENDB', new Uint8Array(0))) }));
+    await h.witness.start();
+    await h.launch();
+    expect(h.notices).toHaveLength(1);
+    expect(h.notices[0]).toMatchObject({ kind: 'unpatched', table: MM_TABLE, patchable: false, title: 'Castcade: basic mode' });
+    expect(h.notices[0]?.message).toMatch(/live score can't be read yet \(no NVRAM map for this ROM\)/);
+    expect(h.notices[0]?.message).not.toMatch(/Patch my tables/);
+    expect(h.witness.status().note).toBe(h.notices[0]?.message);
   });
 });
 

@@ -8,14 +8,15 @@ const ACTION_LABEL: Record<TablesPlanAction, string> = {
   skip: 'skipped for now',
   foreign: 'left alone (another script sits beside the table)',
   unsupported: 'unsupported',
+  unreadable: "not patched: this machine's live score can't be read yet",
 };
 
-const ACTION_ORDER: TablesPlanAction[] = ['patch', 'repatch', 'already', 'skip', 'foreign', 'unsupported'];
+const ACTION_ORDER: TablesPlanAction[] = ['patch', 'repatch', 'already', 'unreadable', 'skip', 'foreign', 'unsupported'];
 
 /**
  * The folder import for live scores (WORK C7, C8): one button patches the folder (it plans and applies
  * in one go, with progress); "Preview" is the dry run for anyone who wants to see the list first.
- * Every table with a ROM gets a same-basename sidecar `.vbs` and the shared library goes into the VPX
+ * Every table with a ROM whose live score Castcade can read (B12) gets a same-basename sidecar `.vbs` and the shared library goes into the VPX
  * `scripts\` folder. Originals are skipped until their recipes exist; a foreign `.vbs` is never touched.
  */
 export function ImportTables({ state }: { state: CastcadeState }) {
@@ -144,7 +145,7 @@ export function ImportTables({ state }: { state: CastcadeState }) {
           <p>
             <strong>Done.</strong> Patched {applied.patched.length} table{applied.patched.length === 1 ? '' : 's'}
             {applied.already > 0 ? `, ${applied.already} already current` : ''}
-            {applied.skipped > 0 ? `, ${applied.skipped} left as they were (originals, unsupported)` : ''}; library {applied.libInstalled} in{' '}
+            {applied.skipped > 0 ? `, ${applied.skipped} left as they were (originals, unsupported, or a machine whose live score can't be read yet)` : ''}; library {applied.libInstalled} in{' '}
             <span className="mono">{applied.scriptsDir}</span>.
           </p>
           <p>

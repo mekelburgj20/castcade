@@ -63,7 +63,7 @@ describe('planImport (dry run)', () => {
   it('classifies the folder, counts per action and writes nothing', async () => {
     const before = [...(await fs.readdir(TABLES))];
     const plan = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
-    expect(plan.counts).toEqual({ patch: 2, repatch: 0, already: 1, skip: 1, foreign: 1, unsupported: 2 });
+    expect(plan.counts).toEqual({ patch: 2, repatch: 0, already: 1, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
     expect(plan.items.map((i) => i.vpxPath)).toEqual([...plan.items.map((i) => i.vpxPath)].sort());
 
     const mb = byPath(plan.items, MB);
@@ -145,7 +145,7 @@ describe('applyImport', () => {
 
     // second pass: nothing to do
     const plan2 = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
-    expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 3, skip: 1, foreign: 1, unsupported: 2 });
+    expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 3, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
     expect(byPath(plan2.items, MB).reason).toBe(`sidecar current (recipe ${RECIPE_VERSION}, lib ${LIB_VERSION})`);
     const res2 = await applyImport(fs, plan2, applyOpts);
     expect(res2).toMatchObject({ patched: [], failed: [], libInstalled: 'unchanged' });
@@ -286,5 +286,43 @@ describe('watch list through applyImport', () => {
     const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
     await applyImport(fs, plan, applyOpts);
     expect(fs.text(sidecarPathFor(MB))).not.toMatch(/^Castcade_WatchBytes Array/m); // the STUB names the sub; no call line
+  });
+});
+
+describe('B12: machines whose live score the hook cannot see', () => {
+  const cpuRam = async (rom: string) =>
+    rom === 'mb_106b' ? { readable: false, reason: 'gottlieb-system80: scores, game_over, current_ball, current_player in CPU RAM' } : { readable: true, reason: 'live fields in NVRAM' };
+
+  it('plans such a table as unreadable with the reason, and the apply leaves it unpatched', async () => {
+    const asked: string[] = [];
+    const plan = await planImport(fs, {
+      paths: [MB, AFM],
+      manifestDir: MANIFESTS,
+      liveSupportFor: async (rom) => {
+        asked.push(rom);
+        return cpuRam(rom);
+      },
+    });
+    expect(asked.sort()).toEqual(['afm_113b', 'mb_106b']);
+    expect(byPath(plan.items, MB)).toMatchObject({ action: 'unreadable', rom: 'mb_106b', reason: 'gottlieb-system80: scores, game_over, current_ball, current_player in CPU RAM' });
+    expect(byPath(plan.items, AFM).action).toBe('patch');
+    expect(plan.counts.unreadable).toBe(1);
+    const res = await applyImport(fs, plan, applyOpts);
+    expect(res.patched).toEqual([AFM]);
+    expect(fs.has(sidecarPathFor(MB))).toBe(false);
+  });
+
+  it('a table patched before the rule is unreadable, not "already patched", and says its sidecar remains', async () => {
+    await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS, liveSupportFor: cpuRam });
+    expect(byPath(plan.items, MB).action).toBe('unreadable');
+    expect(byPath(plan.items, MB).reason).toMatch(/an existing Castcade sidecar remains/);
+  });
+
+  it('is never asked about a table with no ROM name or a script that is not recipe A', async () => {
+    const asked: string[] = [];
+    const plan = await planImport(fs, { paths: [IRON, NOKEYS], manifestDir: MANIFESTS, liveSupportFor: async (rom) => (asked.push(rom), cpuRam(rom)) });
+    expect(asked).toEqual([]);
+    expect(plan.counts.unreadable).toBe(0);
   });
 });
