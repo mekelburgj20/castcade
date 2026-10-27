@@ -9,11 +9,11 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 - Companion 0.2.16 (unsigned PoC; repo public, keep it so): live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post scores from NVRAM alone (0.2.14, B10.1); 0.2.15 arms live mode on tables whose Castcade block sits past 8 KB (AC/DC and 7 more); 0.2.16 gives a second table opened from the VPX editor its own live mode.
 - In flight: B10.1 field gate (claude; Krobs posts a 1-player AC/DC and Walking Dead score on 0.2.16). D1.0 left: a Twitch `?bandwidthtest=true` push and one 1080p run.
-- Owner actions: update the rig and Krobs to 0.2.16 and have Krobs retry AC/DC and Walking Dead, 1-player (multi-player games never post) · ask Krobs where and when he saw Doctor Who's slow second post (B13) · optional: hold Start on ball 1 of AC/DC on the rig to see what a SAM restart does · re-pair the rig from Settings · E1 clean-machine install · B9 field gate.
+- Owner actions: update the rig and Krobs to 0.2.16 and have Krobs retry AC/DC and Walking Dead, 1-player (multi-player games never post) · ask Krobs where and when he saw Doctor Who's slow second post (B13) · optional: hold Start on ball 1 of AC/DC on the rig to see what a SAM restart does · re-pair the rig from Settings · B9 field gate.
 - Cabinet SAM attempts (AtGames, not Castcade) moved to ArcAid W46 / W47: the ChalataLove test runbook and kit, and asking LU which maps commit the launcher ships, are tracked there.
 - Next by priority: D1 solo streaming (after D1.0). B12 (importer refuses tables whose live score can't be read) then B14 / F13 for the Limited-attempts list. The rest of B5 waits on ArcAid item 12 (F5). Small and unblocked: B4.1, C2.2.
 - Watching: C9 (four arrivals per score, 2026-10-22) — no recurrence since request logging.
-- Last wrap: 2026-10-26 — B4, B5.1, B5.2, B6.1, B6.2 done; 0.2.13–0.2.16 released; B10 / B10.1 claimed (gate open); B12, B13, B14, F13 added.
+- Last wrap: 2026-10-26 — B4, B5.1, B5.2, B6.1, B6.2 done; 0.2.13–0.2.16 released; E1 gate passed; B10 / B10.1 claimed (gate open); B12, B13, B14, F13 added.
 
 ## A. Protocol and match engine
 
@@ -97,7 +97,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
 
 Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/**`, `companion/electron-builder.yml`, `companion/scripts/**`, `.github/workflows/release.yml`.
 
-- **E1** `claimed` Phase 2 gate, half 2: a tester installs on a clean machine from the tester kit and a score lands with the badge · spec: docs/tester-kit.md · owner: owner · since: 2026-10-18
+- **E1** `done 0.2.13` Phase 2 gate, half 2: a tester's clean-machine install from the tester kit posts a badged score (Krobs, 2026-10-25)
 - **E2** `parked` Code signing — deferred until GA by owner ruling 2026-10-18
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
 - **E4** `done 0.2.11` Electron 44 / Vite 8 / vitest 5 follow-through: 0.2.11 is the first packaged build on them (`pack:dir` + `--smoke` green on the owner's rig)

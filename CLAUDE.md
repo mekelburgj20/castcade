@@ -23,7 +23,7 @@ here**: this section holds standing facts only (ADR 0006).
   public and must stay so: installed apps read the releases feed anonymously (0.2.6).
 - Gates passed: Phase 0 spike (owner's rig, 2026-10-17; findings in `docs/phase-0-spike.md` §8), Phase 1
   protocol + host mode (CI, 2026-10-18), Phase 2 half 1 (Monster Bash to a tournament board with the
-  Witness badge, 2026-10-18). Phase 2 half 2 (a tester's clean install) is WORK item E1.
+  Witness badge, 2026-10-18), Phase 2 half 2 (Krobs' clean install posts a badged score, 2026-10-25).
 - Fairness build order F1–F6 is `docs/design/fairness-and-table-identity.md` §7; F1–F4 and F6 shipped (0.2.4 →
   0.2.14 here, ArcAid 2.163 → 2.168); F5 is WORK item B5 (engine shipped, preflight waits on ArcAid). Integrity mode is ADR 0005 here and ArcAid ADR 0027.
 - ArcAid is the server (arcaid.app). Its side of the work is `docs/arcaid-side-changes.md`; it is tracked
