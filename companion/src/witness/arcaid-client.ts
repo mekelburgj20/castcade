@@ -231,6 +231,10 @@ export class ArcaidClient {
       reason: string;
       restarts?: number;
       partial?: boolean;
+      /** B16: 1 = quit before game over, 0 = played to game over; absent = unknown. */
+      quit?: boolean;
+      /** B16: the ball in play when the game was quit, when the machine says. */
+      quit_ball?: number;
       /** Table identity (F1): ignored by today's server, read by ArcAid item 11. */
       vps_game?: string | null;
       vps_table?: string | null;

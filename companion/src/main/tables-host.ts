@@ -170,13 +170,15 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
         });
         for (const f of result.failed) log.warn(`tables: ${f.item.tableId} failed: ${f.error}`);
         const already = result.skipped.filter((it) => it.action === 'already').length;
-        log.info(`tables: patched ${result.patched.length}, already current ${already}, failed ${result.failed.length}, library ${result.libInstalled} in ${vpxScriptsDir}`);
+        for (const p of result.unpatched) log.info(`tables: removed Castcade's patch from ${p} (live score can't be read on this machine)`);
+        log.info(`tables: patched ${result.patched.length}, already current ${already}, unpatched ${result.unpatched.length}, failed ${result.failed.length}, library ${result.libInstalled} in ${vpxScriptsDir}`);
         return {
           dir: tablesDir,
           patched: result.patched,
           failed: result.failed.map((f) => ({ tableId: f.item.tableId, error: f.error })),
           already,
           skipped: result.skipped.length - already,
+          unpatched: result.unpatched.length,
           libInstalled: result.libInstalled,
           scriptsDir: vpxScriptsDir,
         };

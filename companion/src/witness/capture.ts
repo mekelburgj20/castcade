@@ -32,7 +32,7 @@ export interface CaptureInput {
 
 export type CaptureDecision =
   | { kind: 'skip'; players: number; score: number | null; detail: string }
-  | { kind: 'score'; players: 1; score: number; reason: typeof EXIT_SAMPLE_REASON; gameOver: boolean | null; detail?: string };
+  | { kind: 'score'; players: 1; score: number; reason: typeof EXIT_SAMPLE_REASON; gameOver: boolean | null; ball?: number | null; detail?: string };
 
 /**
  * How many people played the last game: the larger of "players with a nonzero score" and the
@@ -69,6 +69,6 @@ export function decideCapture(input: CaptureInput): CaptureDecision {
     score,
     reason: EXIT_SAMPLE_REASON,
     gameOver: after.gameOver,
-    ...(after.gameOver === false ? { detail: 'exited mid-game; score as of the exit' } : {}),
+    ...(after.gameOver === false ? { detail: 'exited mid-game; score as of the exit', ball: after.currentBall } : {}),
   };
 }

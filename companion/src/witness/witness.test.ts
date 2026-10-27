@@ -13,7 +13,7 @@ import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
-import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
+import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
 import { RECIPE_VERSION } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
@@ -310,7 +310,8 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       dur: String(dur),
     });
     const score = posts[2]?.params ?? {};
-    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'fingerprint', 'ini', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'fingerprint', 'ini', 'quit', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    expect(score['quit']).toBe('0'); // B16: the .nv says game over
     // F4: the playfield fingerprint rides beside the file hash.
     expect(score['fingerprint']).toMatch(/^pf1:[0-9a-f]{64}$/);
     expect(score).toMatchObject({
@@ -866,6 +867,19 @@ function tftcJournalAt(atMs: number): { text: string; gameStartT: number; gameEn
   return { text: lines.join('\n') + '\n', gameStartT, gameEndT };
 }
 
+/** The TFTC session cut on ball 2 and closed there (the player quit, B16): the journal ends with `table_exit`. */
+function tftcQuitJournalAt(atMs: number): { text: string; quitBall: number } {
+  const lines = tftcJournalAt(atMs).text.trimEnd().split('\n');
+  const d = new JournalDetector({ mapFor: (rom) => (rom === 'tftc_400' ? tftcMap : null) });
+  for (let i = 0; i < lines.length; i++) {
+    const hit = d.feed(lines[i]!).find((ev) => ev.kind === 'current_scores' && ev.ball === 2 && (ev.scores[0] ?? 0) > 0);
+    if (!hit) continue;
+    const t = hit.t + 1;
+    return { text: [...lines.slice(0, i + 1), `{"event":"table_exit","t":${t.toFixed(3)},"lines":${i + 2}}`].join('\n') + '\n', quitBall: 2 };
+  }
+  throw new Error('fixture replay never reached ball 2');
+}
+
 let tftcMap: CompiledMap;
 beforeAll(async () => {
   const m = await corpus.mapFor('tftc_400');
@@ -979,6 +993,7 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
       rom: 'tftc_400',
       score: '2318430',
       reason: 'game_over',
+      quit: '0',
       started: String(started),
       ended: String(ended),
       dur: String(ended - started),
@@ -1003,6 +1018,23 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.paths('/report')[1]?.params).toHaveProperty('exit');
     expect(h.witness.status()).toMatchObject({ currentTable: null, captureMode: null });
     expect(h.errors).toEqual([]);
+  });
+
+  it('B16: a game quit mid-game posts with quit=1 and the ball it was quit on', async () => {
+    const h = liveHarness();
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    const journal = tftcQuitJournalAt(h.clock.now() + 4000);
+    h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    await h.exit();
+    await h.settle(8000);
+
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({ reason: 'shutdown', quit: '1', quit_ball: String(journal.quitBall) });
+    expect(h.captures[0]?.detail).toMatch(/abandoned on ball 2/);
   });
 
   it('on a limited-attempts board the game start is reported at once with a key the score repeats, and the capture carries the attempt', async () => {
@@ -1249,5 +1281,16 @@ describe('versionOlder', () => {
     expect(versionOlder('0.3', '0.3.1')).toBe(true);
     expect(versionOlder('0.4.0', '0.3.1')).toBe(false);
     expect(versionOlder('x', '0.3.1')).toBe(false);
+  });
+});
+
+describe('quitWire (B16)', () => {
+  it('quit before game over sends the ball when it is plausible; game over sends quit=0; unknown sends nothing', () => {
+    expect(quitWire({ gameOver: false, ball: 3 })).toEqual({ quit: true, quit_ball: 3 });
+    expect(quitWire({ gameOver: false, ball: null })).toEqual({ quit: true });
+    expect(quitWire({ gameOver: false, ball: 0 })).toEqual({ quit: true });
+    expect(quitWire({ gameOver: false, ball: 99 })).toEqual({ quit: true });
+    expect(quitWire({ gameOver: true, ball: 2 })).toEqual({ quit: false });
+    expect(quitWire({ gameOver: null })).toEqual({});
   });
 });

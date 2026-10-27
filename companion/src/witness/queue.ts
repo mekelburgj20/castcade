@@ -39,6 +39,10 @@ export type QueuedPost =
         reason: string;
         restarts?: number;
         partial?: boolean;
+        /** B16: 1 = quit before game over, 0 = played to game over; absent = unknown. */
+        quit?: boolean;
+        /** B16: the ball in play when the game was quit, when the machine says. */
+        quit_ball?: number;
         vps_game?: string | null;
         vps_table?: string | null;
         table_sha256?: string | null;

@@ -312,11 +312,30 @@ describe('B12: machines whose live score the hook cannot see', () => {
     expect(fs.has(sidecarPathFor(MB))).toBe(false);
   });
 
-  it('a table patched before the rule is unreadable, not "already patched", and says its sidecar remains', async () => {
+  it('B12.1: a table patched before the rule is unreadable, and the apply removes its patch (sidecar, .stale copy, manifest)', async () => {
     await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    fs.put(stalePathFor(MB), fs.text(sidecarPathFor(MB))); // an older copy the stale guard set aside
+    expect(fs.has(manifestPathFor(MANIFESTS, tableIdFor(MB)))).toBe(true);
     const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS, liveSupportFor: cpuRam });
-    expect(byPath(plan.items, MB).action).toBe('unreadable');
-    expect(byPath(plan.items, MB).reason).toMatch(/an existing Castcade sidecar remains/);
+    expect(byPath(plan.items, MB)).toMatchObject({ action: 'unreadable', removeSidecar: true });
+    expect(byPath(plan.items, MB).reason).toMatch(/Castcade's earlier patch will be removed/);
+
+    const res = await applyImport(fs, plan, applyOpts); // nothing to patch: the removal still runs
+    expect(res).toMatchObject({ patched: [], unpatched: [MB], failed: [] });
+    expect(fs.has(sidecarPathFor(MB))).toBe(false);
+    expect(fs.has(stalePathFor(MB))).toBe(false);
+    expect(fs.has(manifestPathFor(MANIFESTS, tableIdFor(MB)))).toBe(false);
+    expect(fs.has(MB)).toBe(true);
+
+    const again = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS, liveSupportFor: cpuRam });
+    expect(byPath(again.items, MB)).toMatchObject({ action: 'unreadable' });
+    expect(byPath(again.items, MB).removeSidecar).toBeUndefined();
+  });
+
+  it('B12.1: a table not yet patched plans as unreadable with nothing to remove', async () => {
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS, liveSupportFor: cpuRam });
+    expect(byPath(plan.items, MB).removeSidecar).toBeUndefined();
+    expect((await applyImport(fs, plan, applyOpts)).unpatched).toEqual([]);
   });
 
   it('is never asked about a table with no ROM name or a script that is not recipe A', async () => {

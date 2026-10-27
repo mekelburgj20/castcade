@@ -15,6 +15,16 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   Host header is refused; `?scale=` and `?side=right` adjust it; a taken port is logged and leaves it off (D1.1).
   `media/overlay-server.ts`; the witness's new `game` event (`LiveGame`) feeds it.
 
+### Witness
+- A game quit before game over says so: the score call carries `quit=1` and, when the machine reports it,
+  `quit_ball` (the ball in play); a game played to game over carries `quit=0`. ArcAid marks quit games on the board
+  (owner ruling 2026-10-27; ArcAid side `docs/arcaid-side-changes.md` §16). The game still posts and counts (B16).
+
+### Import
+- "Patch my tables" removes Castcade's own patch from tables whose machine's live score can't be read (patched
+  before 0.2.17's rule): the sidecar, any `.stale` copy and the manifest. A script that is not Castcade's is never
+  touched; the preview says "Castcade's earlier patch will be removed" (B12.1).
+
 ## [0.2.17] — 2026-10-26
 
 ### Import and Status

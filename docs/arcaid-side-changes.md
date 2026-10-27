@@ -419,6 +419,26 @@ decision changes on it. Store it with the other evidence on `witness_evidence`; 
 review shows "Score: 414 changes, largest jump +11,450,000 on ball 2, all in steps of 10", and, when `flag` is set,
 the flag in the panel's warning style. Badge text unchanged.
 
+## 16. A quit game: `quit` and `quit_ball` on the score call (Castcade B16)
+
+**Owner ruling 2026-10-27:** a game the player quits before game over still posts and counts, and the board marks
+it as quit. In a limited-attempts tournament it uses its attempt either way (a quit must not buy a free retry).
+
+**What arrives.** From the companion release after 0.2.17, `/api/witness/score` may carry:
+
+- `quit=1`: the game was quit before game over (live mode: the table closed mid-game, `reason=shutdown`; basic mode:
+  the `.nv` at exit says the game was still running, `reason=exit_sample`).
+- `quit_ball=<n>` with `quit=1`, when the machine reports the ball in play (1–10). Absent on Stern SAM (no ball in
+  NVRAM) and on machines whose map has no current ball.
+- `quit=0`: the game reached game over.
+- Neither: unknown (basic mode on a map with no `game_over`). Read it as today.
+
+Optional like the other evidence: malformed = dropped, never a 400; a cabinet never sends it.
+
+**What to do.** Store both on the score's observation or evidence row. Where the board shows a desktop score, mark a
+quit one: "quit on ball 2", or "quit" with no ball. Badge, never gate: no rank, filter or ingest decision changes on
+it. The Integrity panel shows the same line. Older companions send nothing; their scores read as unknown.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

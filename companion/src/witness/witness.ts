@@ -161,7 +161,16 @@ type CaptureTrigger = 'player' | 'exit';
 
 type PublishDecision =
   | { kind: 'skip'; players: number; score: number | null; detail: string }
-  | { kind: 'score'; players: number; score: number; reason: string; gameOver: boolean | null; detail?: string };
+  /** `gameOver` false = the player quit mid-game (B16), sent as `quit=1` with `quit_ball` when `ball` is known. */
+  | { kind: 'score'; players: number; score: number; reason: string; gameOver: boolean | null; ball?: number | null; detail?: string };
+
+/** B16: whether the game was quit before game over, and on which ball; nothing when unknown. */
+export function quitWire(decision: { gameOver: boolean | null; ball?: number | null }): { quit?: boolean; quit_ball?: number } {
+  if (decision.gameOver === null) return {};
+  if (decision.gameOver) return { quit: false };
+  const ball = decision.ball ?? null;
+  return ball !== null && Number.isInteger(ball) && ball >= 1 && ball <= 10 ? { quit: true, quit_ball: ball } : { quit: true };
+}
 
 /** The sidecar's block 0 calls this; its presence in the first bytes of `<Table>.vbs` marks the file as ours. */
 const SIDECAR_MARKER = 'Castcade_Init';
@@ -780,6 +789,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           ended: sec(ended),
           dur: durationSec,
           reason: decision.reason,
+          ...quitWire(decision),
           vps_game: identity?.vpsGame?.id ?? null,
           vps_table: identity?.vpsTable?.id ?? null,
           table_sha256: identity?.sha256 ?? null,
@@ -1121,12 +1131,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         break;
       case 'game_end':
         setGame({ table: live.tableId, inGame: false, scores: ev.scores, player: null, ball: null });
-        await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null);
+        await captureLive(session, live, ev.scores, ev.players, at, 'game_over', null, null);
         break;
       case 'game_abandoned':
         setGame({ table: live.tableId, inGame: false, scores: ev.scores, player: null, ball: null });
         // Stern SAM has no ball in reach (B10): say so rather than "ball ?".
-        await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned${ev.ball !== null ? ` on ball ${ev.ball}` : ''}; score as of the exit`);
+        await captureLive(session, live, ev.scores, null, at, 'shutdown', `abandoned${ev.ball !== null ? ` on ball ${ev.ball}` : ''}; score as of the exit`, ev.ball);
         break;
       case 'stale_sidecar':
         fail(`Castcade patch for ${live.tableId} is for an older version of the table (${ev.detail ?? 'size or date changed'}); re-import it`);
@@ -1148,6 +1158,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     endedAt: number,
     reason: 'game_over' | 'shutdown',
     note: string | null,
+    /** The ball in play when the game was abandoned (B16's `quit_ball`), when the machine says. */
+    ball: number | null,
   ): Promise<void> => {
     const rom = live.rom;
     const map = rom ? await corpus.mapFor(rom) : null;
@@ -1160,7 +1172,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     let decision: PublishDecision;
     if (n > 1) decision = { kind: 'skip', players: n, score, detail: `multi-player game (${n} players): not attributable to one account` };
     else if (score === null || score <= 0) decision = { kind: 'skip', players: n, score, detail: 'no score (player 1 score is 0)' };
-    else decision = { kind: 'score', players: 1, score, reason, gameOver: reason === 'game_over' };
+    else decision = { kind: 'score', players: 1, score, reason, gameOver: reason === 'game_over', ball };
     const engine: EngineAttestation | null = live.engineGame.length > 0 || live.engineLast
       ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
       : null;

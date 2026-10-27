@@ -61,6 +61,8 @@ export interface TablesApplyResult {
   already: number;
   /** Items the plan did not act on for another reason (skip / foreign / unsupported). */
   skipped: number;
+  /** B12.1: of those, tables whose Castcade patch was removed (their machine's live score can't be read). */
+  unpatched: number;
   libInstalled: 'installed' | 'updated' | 'unchanged';
   scriptsDir: string;
 }

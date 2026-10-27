@@ -28,6 +28,8 @@ export interface PlanItem {
   cls: ScriptClass | null;
   rom: string | null;
   reason: string;
+  /** B12.1: an `unreadable` table that carries Castcade's own patch from before B12; the apply removes it. */
+  removeSidecar?: boolean;
 }
 
 export interface ImportPlan {
@@ -82,6 +84,8 @@ export interface ApplyResult {
   skipped: PlanItem[];
   failed: { item: PlanItem; error: string }[];
   libInstalled: 'installed' | 'updated' | 'unchanged';
+  /** B12.1: `.vpx` paths whose Castcade patch was removed because their machine's live score can't be read. */
+  unpatched: string[];
 }
 
 const ACTIONS: readonly PlanAction[] = ['patch', 'repatch', 'already', 'skip', 'foreign', 'unsupported', 'unreadable'];
@@ -193,7 +197,11 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   // A table with no ROM name is still patched: the hook reports the ROM it really runs.
   if (rom && opts.liveSupportFor) {
     const live = await opts.liveSupportFor(rom);
-    if (!live.readable) return item('unreadable', cls, rom, `${live.reason}${sidecarNote}`);
+    if (!live.readable) {
+      // B12.1: Castcade's own patch from before B12 does nothing live here; the apply removes it (never a foreign file).
+      if (check.state === 'none') return item('unreadable', cls, rom, live.reason);
+      return { ...item('unreadable', cls, rom, `${live.reason}; Castcade's earlier patch will be removed`), removeSidecar: true };
+    }
   }
 
   switch (check.state) {
@@ -262,7 +270,15 @@ export async function installLibrary(fs: WitnessFs, libSource: string, vpxScript
 /** Apply a plan: install the library once, then render sidecar + manifest for every `patch` / `repatch` item. */
 export async function applyImport(fs: WitnessFs, plan: ImportPlan, opts: ApplyOptions): Promise<ApplyResult> {
   const todo = plan.items.filter((it) => it.action === 'patch' || it.action === 'repatch');
-  const result: ApplyResult = { patched: [], skipped: plan.items.filter((it) => !todo.includes(it)), failed: [], libInstalled: 'unchanged' };
+  const result: ApplyResult = { patched: [], skipped: plan.items.filter((it) => !todo.includes(it)), failed: [], libInstalled: 'unchanged', unpatched: [] };
+  for (const item of plan.items.filter((it) => it.removeSidecar)) {
+    try {
+      await unpatchOne(fs, item.vpxPath, opts.manifestDir);
+      result.unpatched.push(item.vpxPath);
+    } catch (err) {
+      result.failed.push({ item, error: errorMessage(err) });
+    }
+  }
   if (todo.length === 0) return result;
 
   result.libInstalled = await installLibrary(fs, opts.libSource, opts.vpxScriptsDir);
@@ -328,6 +344,19 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
   await writeManifest(fs, manifestPathFor(opts.manifestDir, item.tableId), manifest);
   const stalePath = stalePathFor(item.vpxPath);
   if (await exists(fs, stalePath)) await fs.unlink(stalePath);
+}
+
+/**
+ * B12.1: remove Castcade's patch from one table: its sidecar, a disabled `.stale` copy and its manifest. A `.vbs`
+ * that is not ours stays. VPX loads the table's embedded script again at the next launch.
+ */
+async function unpatchOne(fs: WitnessFs, vpxPath: string, manifestDir: string): Promise<void> {
+  for (const p of [sidecarPathFor(vpxPath), stalePathFor(vpxPath)]) {
+    const text = await readTextIfExists(fs, p);
+    if (text !== null && isOurSidecar(text)) await fs.unlink(p);
+  }
+  const manifestPath = manifestPathFor(manifestDir, tableIdFor(vpxPath));
+  if (await exists(fs, manifestPath)) await fs.unlink(manifestPath);
 }
 
 /**

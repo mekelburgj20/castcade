@@ -145,7 +145,8 @@ export function ImportTables({ state }: { state: CastcadeState }) {
           <p>
             <strong>Done.</strong> Patched {applied.patched.length} table{applied.patched.length === 1 ? '' : 's'}
             {applied.already > 0 ? `, ${applied.already} already current` : ''}
-            {applied.skipped > 0 ? `, ${applied.skipped} left as they were (originals, unsupported, or a machine whose live score can't be read yet)` : ''}; library {applied.libInstalled} in{' '}
+            {applied.skipped > 0 ? `, ${applied.skipped} left as they were (originals, unsupported, or a machine whose live score can't be read yet)` : ''}
+            {applied.unpatched > 0 ? `; removed Castcade's earlier patch from ${applied.unpatched} of those (their live score can't be read yet)` : ''}; library {applied.libInstalled} in{' '}
             <span className="mono">{applied.scriptsDir}</span>.
           </p>
           <p>

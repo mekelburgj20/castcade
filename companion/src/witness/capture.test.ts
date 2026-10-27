@@ -37,7 +37,7 @@ describe('decideCapture', () => {
 
   it('notes a game that was still in progress at exit but still posts it', () => {
     const d = decideCapture({ ...base, after: state([4200, 0], { gameOver: false, currentBall: 2 }) });
-    expect(d).toMatchObject({ kind: 'score', score: 4200, gameOver: false, detail: expect.stringMatching(/mid-game/) });
+    expect(d).toMatchObject({ kind: 'score', score: 4200, gameOver: false, ball: 2, detail: expect.stringMatching(/mid-game/) });
   });
 
   it('skips a multi-player game whole, by nonzero scores or by player_count', () => {
