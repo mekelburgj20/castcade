@@ -87,7 +87,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
 
 - **D1** `ready` Phase 4a solo streaming + recording: VPX window capture, NVENC/AMF/QSV encode (Phase 0d path), score/ball/Witness overlay, direct RTMP to Twitch/YouTube with the player's own key (`safeStorage`, never sent to ArcAid), local MP4 · spec: docs/design/solo-streaming-and-recording.md (owner rulings 2026-10-25: architecture A, ffmpeg bundled, 720p30 default, keep 3 sessions + Sanctioned, mic off) · gate: docs/design/solo-streaming-and-recording.md §1
   - **D1.0** `blocked owner` Spike on the owner's rig: the window crop on a real VPX game, the F11 frame cost, a two-minute Twitch push, VR with `VRPreview` on · gate: docs/design/solo-streaming-and-recording.md §5 · note: done without VPX 2026-10-25 — DXGI outputs by monitor handle, Electron loopback audio (a test tone recorded whole), live overlay, 240/240 frames 720p30 NVENC; two traps fixed (constant-rate `fps` filter, overlay file overwritten in place); `npm run spike:stream -w companion`
-  - **D1.1** `ready` OBS overlay page on 127.0.0.1: live score, ball, player, badge (server-sent events); no capture
+  - **D1.1** `claimed` OBS overlay page on 127.0.0.1: live score, ball, player, badge (server-sent events); no capture · owner: claude · since: 2026-10-26
   - **D1.2** `ready` Local recording: MP4 per session, game markers, hash-chained manifest tied to posted scores, retention (last N sessions, default 3; optional total cap, empty = unlimited; Sanctioned kept until the tournament closes) · needs: D1.0
   - **D1.3** `ready` Streaming to Twitch / YouTube: key in `safeStorage`, presets (720p30 default, 1080p30/60), reconnect, health · needs: D1.0
   - **D1.4** `ready` Overlay burned into stream and recording · needs: D1.1, D1.0
@@ -96,6 +96,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
 - **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2
 - **D4** `idea` Runner stage, companion half (ArcAid item 13 is the other half) · needs: D3
+- **D5** `idea` A multiplayer Castcade match (Throwdown, `play_mode='castcade'`) has one stream URL so the whole session can be streamed live: the player up's table, every player's score, whose turn it is and the voice mix, shown as one feed. Open: viewers watch on an ArcAid page fed by the host (D3's link, one per match), a Twitch / YouTube push of the host's composite (D1.3's ingest), or both; where the URL appears (the Throwdown page, the lobby) · needs: D2, D3 · touches: ArcAid Throwdown page (owner request 2026-10-26)
 
 ## E. Shell, updater, packaging, release
 
