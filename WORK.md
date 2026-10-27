@@ -128,7 +128,7 @@ Lane: none here. The work lands in `C:\code\repos\ArcAid` and is tracked in that
 - **F11** `done 2.170.0` Item 15: ArcAid reads `score_plausibility` (B6.1), stores it with the evidence and shows it on the Integrity panel; flag only, never a gate · pr: https://github.com/mekelburgj20/ArcAid/pull/379 (ArcAid W40/W41, 2.170.0) · spec: docs/arcaid-side-changes.md §15
 - **F12** `ready` ArcAid admin UI for the blessed playfield fingerprint: `required_fingerprint` is stored and compared since 2.166.0 and settable through `PATCH` on the integrity route, but the tournament form has no field and no "bless the one I just played" button (§11 runner review); the companion sends `fingerprint` from 0.2.14 · spec: docs/arcaid-side-changes.md §11 "Runner review"
 - **F13** `idea` One curated platform-wide list of games allowed in Limited attempts (owner ruling 2026-10-25: one list for the whole platform), seeded from B14, owner approves entries on an admin page; with `max_attempts` set the game picker offers only listed games and the server refuses others; shares data with F8 · needs: B14
-- **F14** `ready` Item 16: read `quit` / `quit_ball` on the score call and mark a quit game on the board and the Integrity panel ("quit on ball 2"); badge, never gate · spec: docs/arcaid-side-changes.md §16 · needs: B16
+- **F14** `ready` Item 16: read `quit` / `quit_ball` on the score call and mark a quit game on the board and the Integrity panel ("quit on ball 2"); badge, never gate (ArcAid W49) · spec: docs/arcaid-side-changes.md §16 · needs: B16
 
 ## G. Arcade (Phase 6)
 
