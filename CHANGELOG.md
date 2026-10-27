@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.17] — 2026-10-26
+
 ### Import and Status
 - The import no longer patches a table whose machine keeps its live score where the hook cannot see it: it is listed
   as "not patched: this machine's live score can't be read yet" with the reason (no map for the ROM, or the fields in
