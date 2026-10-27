@@ -47,7 +47,7 @@ import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
-import { disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
+import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
@@ -176,6 +176,24 @@ export function parseSessionStamp(stamp: string | null): number | null {
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
 }
 
+/** `a` is an older dotted version than `b` ("0.3.0" before "0.3.1"); false when either does not parse. */
+export function versionOlder(a: string, b: string): boolean {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  if (pa.some((n) => !Number.isInteger(n)) || pb.some((n) => !Number.isInteger(n))) return false;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+/** B15: what Status and the balloon say when a table started on an older Castcade patch than this build makes. */
+export function oldPatchNote(table: string, ran: string): string {
+  return `${table} started with an older Castcade patch (recipe ${ran}; this build makes ${RECIPE_VERSION}), made before Castcade updated. Close the table and open it again so every game posts live.`;
+}
+
 /** B12: what Status says on a machine whose live score the hook cannot see (patched or not). */
 export function unreadableNote(table: string, reason: string): string {
   return `${table}: this machine's live score can't be read yet (${reason}). At most the last game of this session posts, when the table closes.`;
@@ -217,6 +235,11 @@ interface LiveSession {
    * when it can. The journal is still followed, but Status says what really happens: at most one score at close.
    */
   unreadable: string | null;
+  /**
+   * B15: the Status line when the table loaded a patch older than this build renders (`recipe_version` in
+   * `table_loaded`), e.g. one opened while the sidecar watch was still re-making patches after an update. Null when current.
+   */
+  oldPatchNote: string | null;
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -512,7 +535,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const following = !!active?.live && active.live.unreadable === null;
     status.captureMode = active ? (following ? 'live' : 'basic') : null;
     status.attempt = active?.live?.attempt ?? null;
-    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : (active && !following ? active.unpatchedNote : null);
+    status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : active && !following ? active.unpatchedNote : (active?.live?.oldPatchNote ?? null);
   };
 
   // --------------------------------------------------------------------------- attestation --
@@ -884,6 +907,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * game will post, and whether the import would fix it (the script classifies as recipe A).
    */
   const noticedUnpatched = new Set<string>();
+  /** B15: one balloon per table load that ran an older patch (`<tableId>@<session stamp>`). */
+  const noticedOldPatch = new Set<string>();
   /**
    * F5 (B5.2): which script ran and how it differs from the table's own. VPX 10.8 runs a same-basename sidecar
    * instead of the embedded script; Castcade's own sidecar is undone exactly (`unpatchRecipeA`) so only a person's
@@ -962,6 +987,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       engineGame: [],
       scoreTrack: new ScoreTrack(),
       unreadable: null,
+      oldPatchNote: null,
     };
     session.live = live;
     live.tail.on('line', (line) => {
@@ -1035,6 +1061,17 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
+      // B15: the patch VPX loaded predates this build (the re-make after an update had not reached it yet).
+      const ran = ev.recipe === 'A' ? ev.recipeVersion : null;
+      live.oldPatchNote = ran && versionOlder(ran, RECIPE_VERSION) ? oldPatchNote(live.tableId, ran) : null;
+      if (live.oldPatchNote) {
+        log(`witness: ${live.tableId}: loaded with recipe ${ran}, older than this build's ${RECIPE_VERSION}; asking the player to reopen it`);
+        const key = `${live.tableId}@${ev.session ?? ''}`;
+        if (!noticedOldPatch.has(key)) {
+          noticedOldPatch.add(key);
+          emitter.emit('notice', { kind: 'old_patch', table: live.tableId, title: 'Castcade: reopen this table', message: live.oldPatchNote });
+        }
+      }
       if (ev.recipe === 'A' && ev.rom) {
         const map = await corpus.mapFor(ev.rom);
         live.detector.setMap(map);

@@ -16,6 +16,14 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   shows such a table as basic with the reason instead of "live — every game", and an unpatched one is no longer sent
   to "Patch my tables" (B12). `maps.ts` (`liveSupport`), `patcher/import.ts`, `witness.ts`.
 
+### After an update
+- Re-making every table patch after an update no longer re-hashes each `.vpx`: a table whose path, size and timestamp
+  are unchanged keeps its recorded hash, so a re-make costs a script read (2 ms a table on the owner's SSD, was 211 ms).
+  On Krobs' hard disk 334 re-makes took three minutes after 0.2.16 installed, and Walking Dead, opened in that window,
+  ran its old patch: no SAM score was recorded and only the last game posted, at close (2026-10-26). `patcher/import.ts`.
+- A table that loads an older Castcade patch than the build makes says so: Status and a balloon ask the player to close
+  and reopen it (B15). `witness.ts`.
+
 ## [0.2.16] — 2026-10-26
 
 ### Live mode

@@ -62,9 +62,9 @@ export function Status({ state }: { state: CastcadeState }) {
         {status.captureMode && (
           <>
             <dt>Capture</dt>
-            <dd className={status.captureMode === 'basic' ? 'warn' : ''}>
+            <dd className={status.captureMode === 'basic' || status.note ? 'warn' : ''}>
               {status.captureMode === 'live'
-                ? 'live — every game, from the Castcade patch inside the table'
+                ? status.note ?? 'live — every game, from the Castcade patch inside the table'
                 : status.note ?? 'basic — one score when the table closes (Settings → Import tables → Patch my tables for every game)'}
             </dd>
           </>

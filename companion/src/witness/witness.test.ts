@@ -13,7 +13,8 @@ import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
-import { attemptStatusFor, createWitness, outcomeForWire, parseSessionStamp, resolveTableName, type WitnessDeps } from './witness.js';
+import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
+import { RECIPE_VERSION } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
 
@@ -901,6 +902,31 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(st.note).toBe(`${TFTC_TABLE}: this machine's live score can't be read yet (no NVRAM map for this ROM). At most the last game of this session posts, when the table closes.`);
   });
 
+  it('B15: a table that loaded an older patch than this build says so once, and stays live', async () => {
+    const h = liveHarness();
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    const line = (recipe: string, stamp: string) => `{"event":"table_loaded","t":0,"table":"T","recipe":"A","recipe_version":"${recipe}","rom":"tftc_400","lib":"0.4.0","session":"${stamp}","locked":false}\n`;
+    h.fs.put(TFTC_JOURNAL, line('0.3.0', hookStamp(h.clock.now())));
+    await h.poll();
+    await h.flush();
+    expect(h.witness.status().captureMode).toBe('live');
+    expect(h.witness.status().note).toBe(oldPatchNote(TFTC_TABLE, '0.3.0'));
+    expect(h.witness.status().note).toMatch(/older Castcade patch \(recipe 0\.3\.0; this build makes \d+\.\d+\.\d+\).*Close the table and open it again/);
+    expect(h.notices.filter((n) => n.kind === 'old_patch')).toEqual([expect.objectContaining({ kind: 'old_patch', table: TFTC_TABLE, title: 'Castcade: reopen this table' })]);
+  });
+
+  it('B15: a table on the current patch shows no note', async () => {
+    const h = liveHarness();
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","recipe_version":"${RECIPE_VERSION}","rom":"tftc_400","lib":"0.4.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+    await h.poll();
+    await h.flush();
+    expect(h.witness.status()).toMatchObject({ captureMode: 'live', note: null });
+    expect(h.notices).toEqual([]);
+  });
+
   it('arms on a sidecar, posts the game at game_end with the hook\'s own timing, and does not re-post the .nv at close', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');
@@ -1186,5 +1212,16 @@ describe('parseSessionStamp', () => {
     expect(ms).toBe(new Date(2026, 9, 17, 18, 16, 3).getTime());
     expect(parseSessionStamp('2026-10-17 18:16:03')).toBeNull();
     expect(parseSessionStamp(null)).toBeNull();
+  });
+});
+
+describe('versionOlder', () => {
+  it('compares dotted versions numerically and refuses what does not parse', () => {
+    expect(versionOlder('0.3.0', '0.3.1')).toBe(true);
+    expect(versionOlder('0.3.1', '0.3.1')).toBe(false);
+    expect(versionOlder('0.10.0', '0.9.9')).toBe(false);
+    expect(versionOlder('0.3', '0.3.1')).toBe(true);
+    expect(versionOlder('0.4.0', '0.3.1')).toBe(false);
+    expect(versionOlder('x', '0.3.1')).toBe(false);
   });
 });

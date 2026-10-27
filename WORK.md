@@ -8,7 +8,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.16 (unsigned PoC; repo public, keep it so): live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post scores from NVRAM alone (0.2.14, B10.1); 0.2.15 arms live mode on tables whose Castcade block sits past 8 KB (AC/DC and 7 more); 0.2.16 gives a second table opened from the VPX editor its own live mode.
-- In flight: B12 (claude; code on main, unreleased: ships in the next release). D1.0 left: a Twitch `?bandwidthtest=true` push and one 1080p run. B10.1 gate passed 2026-10-26 (AC/DC and Walking Dead post live on Krobs' machine and the rig).
+- In flight: B12, B15 (claude; code on main, unreleased: ship in the next release). D1.0 left: a Twitch `?bandwidthtest=true` push and one 1080p run. B10.1 gate passed 2026-10-26 (AC/DC and Walking Dead post live on Krobs' machine and the rig).
 - Owner actions: get Krobs' `companion.log` + TWD journal for B15 (message sent) · void his `unreported` Walking Dead attempt on Hoser Haven if promised (prod `attempts` row 6) · rule on B16 (quit games) · optional: hold Start on ball 1 of AC/DC on the rig to see what a SAM restart does · re-pair the rig from Settings · B9 field gate.
 - Cabinet SAM attempts (AtGames, not Castcade) moved to ArcAid W46 / W47: the ChalataLove test runbook and kit, and asking LU which maps commit the launcher ships, are tracked there.
 - Next by priority: B12 (in flight), then D1 solo streaming (after D1.0), then B14 / F13 for the Limited-attempts list. The rest of B5 waits on ArcAid item 12 (F5). Small and unblocked: B4.1, C2.2.

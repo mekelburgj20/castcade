@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { MemoryFs } from '../witness/fs.js';
 import { ascii, buildVpx, codeRecord, concat, floatRecord, record, u32le } from '../witness/synth-vpx.test-support.js';
 import { applyImport, checkSidecar, disableSidecar, installLibrary, listVpxFiles, planImport, removeAllSidecars, type PlanItem } from './import.js';
-import { readManifest } from './manifest.js';
+import { readManifest, writeManifest } from './manifest.js';
 import { manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor } from './paths.js';
 import { LIB_VERSION, RECIPE_VERSION, formatLocalStamp } from './render.js';
 import { NO_KEYDOWN_SCRIPT, ORIGINAL_B_SCRIPT, PATCHED_VPM_SCRIPT, VPM_DECLARED_SCRIPT, VPM_SCRIPT, crlf, lf } from './test-scripts.test-support.js';
@@ -324,5 +324,35 @@ describe('B12: machines whose live score the hook cannot see', () => {
     const plan = await planImport(fs, { paths: [IRON, NOKEYS], manifestDir: MANIFESTS, liveSupportFor: async (rom) => (asked.push(rom), cpuRam(rom)) });
     expect(asked).toEqual([]);
     expect(plan.counts.unreadable).toBe(0);
+  });
+});
+
+describe('B15: a re-make for a new recipe does not re-hash an unchanged table', () => {
+  const FAKE = 'ab'.repeat(32);
+  const bumpRecipe = async (sha: string) => {
+    const path = manifestPathFor(MANIFESTS, tableIdFor(MB));
+    const m = (await readManifest(fs, path))!;
+    await writeManifest(fs, path, { ...m, vpxSha256: sha, recipeVersion: '0.3.0' });
+  };
+
+  it('keeps the recorded hash when path, size and timestamp are unchanged', async () => {
+    await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    await bumpRecipe(FAKE);
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    expect(byPath(plan.items, MB).action).toBe('repatch');
+    await applyImport(fs, plan, applyOpts);
+    const m = (await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(MB))))!;
+    expect(m.recipeVersion).toBe(RECIPE_VERSION);
+    expect(m.vpxSha256).toBe(FAKE);
+  });
+
+  it('hashes again when the table file moved', async () => {
+    await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    await bumpRecipe(FAKE);
+    fs.put(MB, vpxWithScript(crlf(VPM_SCRIPT)), T0 - 60_000); // same bytes, new timestamp
+    await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    const m = (await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(MB))))!;
+    expect(m.vpxSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(m.vpxSha256).not.toBe(FAKE);
   });
 });

@@ -147,14 +147,17 @@ export interface WitnessEvents {
   notice: (notice: WitnessNotice) => void;
 }
 
-export interface WitnessNotice {
-  kind: 'unpatched';
-  table: string;
-  /** True when the import would patch this table (recipe A); false when its script type has no recipe yet. */
-  patchable: boolean;
-  title: string;
-  message: string;
-}
+export type WitnessNotice =
+  | {
+      kind: 'unpatched';
+      table: string;
+      /** True when the import would patch this table (recipe A); false when its script type has no recipe yet. */
+      patchable: boolean;
+      title: string;
+      message: string;
+    }
+  /** B15: the table loaded a Castcade patch older than this build renders; reopening it loads the current one. */
+  | { kind: 'old_patch'; table: string; title: string; message: string };
 
 export interface Witness {
   start(): Promise<void>;

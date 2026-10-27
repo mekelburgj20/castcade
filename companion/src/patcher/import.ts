@@ -299,7 +299,12 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
     sidecarPath,
     ...(watchOffsets !== undefined ? { watchOffsets } : {}),
   });
-  const vpxSha256 = (opts.hashOriginals ?? true) ? await sha256File(fs, item.vpxPath) : null;
+  // B15: the table file has not moved since its last render (same path, size and timestamp: the trust `checkSidecar`
+  // gives it): keep its hash. A re-make for a new recipe or hook then costs a script read, not a hash of the whole
+  // `.vpx` (~0.5 s a table from a hard disk, three minutes over 334 tables, during which a table opened ran its old patch).
+  const previous = await readManifest(fs, manifestPathFor(opts.manifestDir, item.tableId)).catch(() => null);
+  const unchanged = previous !== null && previous.vpxSha256 !== null && previous.vpxPath === item.vpxPath && previous.vpxSize === script.size && previous.vpxMtimeMs === script.mtimeMs;
+  const vpxSha256 = unchanged ? previous.vpxSha256 : (opts.hashOriginals ?? true) ? await sha256File(fs, item.vpxPath) : null;
   const manifest: Manifest = {
     tableId: item.tableId,
     vpxPath: item.vpxPath,
