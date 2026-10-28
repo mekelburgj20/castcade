@@ -958,16 +958,21 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const rom = cls?.cls === 'A' ? cls.facts.rom ?? null : null;
     const support = rom ? liveSupport(await corpus.mapFor(rom).catch(() => null)) : null;
     const patchable = cls?.cls === 'A' && (support === null || support.readable);
+    // An original (no ROM) leaves no NVRAM, so basic mode posts nothing at all for it: say so (TNA, rig 2026-10-28).
+    // Classes B–E only: X (unclassified, e.g. no _KeyDown) says nothing about a ROM.
+    const original = cls !== null && ['B', 'C', 'D', 'E'].includes(cls.cls);
     const message = patchable
       ? `${table} is not patched: only the last game of this session will post. Settings → Import tables → Patch my tables, then relaunch the table.`
       : support && !support.readable
         ? unreadableNote(table, support.reason)
-        : `${table} has no Castcade patch and its script type has no recipe yet: only the last game of this session will post.`;
+        : original
+          ? `${table} is an original table (no ROM). Castcade can't read an original's score yet, so games on it won't post.`
+          : `${table} has no Castcade patch and its script type has no recipe yet: only the last game of this session will post.`;
     session.unpatchedNote = message;
     refreshTableStatus();
     if (noticedUnpatched.has(vpxPath)) return;
     noticedUnpatched.add(vpxPath);
-    emitter.emit('notice', { kind: 'unpatched', table, patchable, title: patchable ? 'Castcade: table not patched' : 'Castcade: basic mode', message });
+    emitter.emit('notice', { kind: 'unpatched', table, patchable, title: patchable ? 'Castcade: table not patched' : original ? 'Castcade: score not read' : 'Castcade: basic mode', message });
   };
 
   const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {

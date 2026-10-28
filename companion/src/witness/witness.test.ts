@@ -1249,6 +1249,23 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.notices[0]?.message).not.toMatch(/Patch my tables/);
     expect(h.witness.status().note).toBe(h.notices[0]?.message);
   });
+
+  it('an original table (no ROM) is told its games will not post, not "the last game will post" (TNA, rig 2026-10-28)', async () => {
+    const h = harness({}, { journalDir: '/journal' });
+    const original = [
+      'Sub Table1_KeyDown(ByVal keycode)', 'End Sub',
+      'Sub ResetForNewGame()', 'End Sub',
+      'Sub AddScore(points)', '  Score(CurrentPlayer) = Score(CurrentPlayer) + points', 'End Sub',
+      'Sub EndOfGame()', 'End Sub',
+    ].join('\r\n');
+    h.fs.put(MM_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(original)), record('ENDB', new Uint8Array(0))) }));
+    await h.witness.start();
+    await h.launch();
+    expect(h.notices).toHaveLength(1);
+    expect(h.notices[0]).toMatchObject({ kind: 'unpatched', table: MM_TABLE, patchable: false, title: 'Castcade: score not read' });
+    expect(h.notices[0]?.message).toMatch(/original table \(no ROM\).*won't post/);
+    expect(h.notices[0]?.message).not.toMatch(/last game/);
+  });
 });
 
 describe('attemptStatusFor (what the player is told about a game start)', () => {

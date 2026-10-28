@@ -7,6 +7,12 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Witness
+- Opening an original table (no ROM: JPSalas-style, Scorbit-anchored, ScoreServer or generic script) now says Castcade
+  can't read its score yet and its games won't post. It used to say "only the last game of this session will post",
+  which is true only for ROM tables: an original leaves no NVRAM, so nothing posted (owner's TNA game, 2026-10-28).
+  `witness.ts`.
+
 ### Streaming
 - A monitor turned to portrait in Windows (the usual desktop VPX setup) streams upright. Screen capture delivers such a
   monitor's picture unrotated, so the table came out on its side; the window probe now reads each monitor's rotation,
