@@ -217,11 +217,17 @@ export function cropFor(win: VpxWindow, outputs: DxgiOutput[]): DdagrabCrop | nu
  * the window width (+0.1 = 10 % right), clamped to the window. In VR the preview is one eye's image, whose centre is
  * not the table's (left eye: the table sits right of centre; rig run 4, 2026-10-25), so a centred slice needs a shift.
  */
-export function portraitSlice(crop: DdagrabCrop, shift = 0): DdagrabCrop {
-  const width = Math.min(crop.width, Math.round((crop.height * 9) / 16)) & ~1;
-  const room = crop.width - width;
-  const x = Math.max(0, Math.min(room, Math.round(room / 2 + shift * crop.width)));
-  return { ...crop, offsetX: crop.offsetX + x, width };
+export function portraitSlice(crop: DdagrabCrop, shift = 0, rotate: 0 | 90 | 180 | 270 = 0): DdagrabCrop {
+  // With a quarter `rotate` (ffmpeg-args.ts) the picture's width is the crop's height, so the slice runs along y.
+  // `shift` is in the picture's terms: + = right after the turn (90 clockwise: the crop's top; 270: its bottom).
+  const alongY = rotate === 90 || rotate === 270;
+  const across = alongY ? crop.height : crop.width;
+  const tall = alongY ? crop.width : crop.height;
+  const size = Math.min(across, Math.round((tall * 9) / 16)) & ~1;
+  const room = across - size;
+  const sign = rotate === 90 || rotate === 180 ? -1 : 1;
+  const at = Math.max(0, Math.min(room, Math.round(room / 2 + sign * shift * across)));
+  return alongY ? { ...crop, offsetY: crop.offsetY + at, height: size } : { ...crop, offsetX: crop.offsetX + at, width: size };
 }
 
 /**

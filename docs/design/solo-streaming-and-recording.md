@@ -35,6 +35,10 @@ source.
   shows it: a portrait display (the usual desktop-VPX setup) comes in 2560x1440 with the table on its side (owner's rig,
   2026-10-27, DXGI rotation 4). The probe reads each output's rotation; the crop is mapped into the panel's frame for
   `ddagrab` and the picture turned upright after scaling (`ffmpeg-args.ts` `ddagrabRegion`).
+- **VPX cabinet mode.** With `BGSet = 1` VPX draws the table turned inside a screen Windows calls landscape, for a
+  monitor that physically stands portrait (the owner's switch, 2026-10-27). Nothing in Windows says so, and the turn is
+  in each table's view settings (inside the `.vpx`), so the player picks a **rotate** (90 / 180 / 270 clockwise; 90 on
+  the owner's rig) and checks it in the preview. The vertical slice then runs along the window's height.
 - **Audio.** ffmpeg has no Windows loopback input without a virtual device. Electron's display-media handler offers
   `audio: 'loopback'` (Windows); the companion captures it and pipes raw PCM to ffmpeg's stdin. Loopback is the whole
   system mix (voice chat, music), so the Stream page says so; per-process capture is a later improvement.

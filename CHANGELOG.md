@@ -12,6 +12,10 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   monitor's picture unrotated, so the table came out on its side; the window probe now reads each monitor's rotation,
   the capture region is mapped into the panel's own frame and the picture turned back after scaling. Found on the
   owner's rig with the D1.0 preview. `media/window-geometry.ts`, `media/ffmpeg-args.ts` (`ddagrabRegion`).
+- A rotate option for VPX in cabinet mode, where VPX draws the table on its side for a monitor that stands portrait but
+  that Windows calls landscape: the picture turns 90 / 180 / 270 degrees clockwise after scaling, combined with any
+  monitor rotation into one turn, and the vertical slice follows the turn. The D1.0 spike takes `--rotate`; the Stream
+  page will offer it beside the preview (D1.5). `media/ffmpeg-args.ts` (`rotate`), `window-geometry.ts` (`portraitSlice`).
 
 ### Packaging
 - The installer carries ffmpeg for streaming and recording: Gyan's GPLv3 essentials build of ffmpeg 8.1.1 (`ffmpeg.exe`

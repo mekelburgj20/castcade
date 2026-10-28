@@ -6,6 +6,8 @@
 //   [--preview]  shows what the stream would carry (same crop, scale and overlay) in an ffplay window, and nothing is
 //   recorded or sent: adjust --portrait N / --landscape / --preset until it looks right, close it (Q), then run again
 //   without --preview and with the same options.
+//   [--rotate 90|180|270]  turn the picture clockwise: for VPX in cabinet mode on a monitor Windows calls landscape
+//   but that stands portrait (VPX draws the table on its side; the stream turns it back). Check it with --preview.
 //   [--bundled]  use the build the installer ships (companion/resources/ffmpeg, `npm run fetch-ffmpeg -w companion`)
 //   instead of the ffmpeg / ffplay on PATH.
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
@@ -50,6 +52,8 @@ const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const mp4 = join(outDir, `${stamp}.mp4`);
 const overlayFile = join(outDir, 'overlay.txt');
 const log = (...a) => console.log('[spike]', ...a);
+const rotate = Number(opt('rotate', '0'));
+if (![0, 90, 180, 270].includes(rotate)) throw new Error('--rotate takes 0, 90, 180 or 270');
 // --bundled: the installer's pinned build (D1.6); otherwise whatever is on PATH.
 const ffLoc = resolveFfmpeg({ packaged: false, resourcesPath: '', companionDir: resolve(here, '..') });
 if (flag('bundled') && ffLoc.source !== 'bundled') throw new Error('--bundled: no build in companion/resources/ffmpeg (npm run fetch-ffmpeg -w companion)');
@@ -165,7 +169,7 @@ app.whenReady().then(async () => {
   // --portrait N changes the shift (+ = right, - = left); --landscape films the whole window. Not with --desktop.
   if (!flag('landscape') && !flag('desktop')) {
     const s = opt('portrait', '10');
-    crop = portraitSlice(crop, (s.startsWith('--') ? 10 : Number(s)) / 100);
+    crop = portraitSlice(crop, (s.startsWith('--') ? 10 : Number(s)) / 100, rotate);
   }
   log('crop', JSON.stringify(crop), 'target', target);
   if (flag('preview')) {
@@ -205,6 +209,7 @@ app.whenReady().then(async () => {
   const startFfmpeg = () => {
     const args = ffmpegArgs({
       crop,
+      rotate,
       preset,
       encoder,
       overlay: { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' },
@@ -236,7 +241,7 @@ app.whenReady().then(async () => {
       const m = /frame=\s*(\d+).*?fps=\s*([\d.]+).*?(?:dup=(\d+))?.*?(?:drop=(\d+))?.*?speed=\s*([\d.]+)x/.exec(last) || [];
       if (errors.length) log('ffmpeg errors:', errors.slice(-5).join(' | '));
       console.log(
-        `\nD1.0 | target=${target} | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | encoder=${encoder} | ffmpeg=${ffBuild} | preset=${preset.id} | ` +
+        `\nD1.0 | target=${target} | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | rotate=${rotate} | encoder=${encoder} | ffmpeg=${ffBuild} | preset=${preset.id} | ` +
           `frames=${m[1] ?? '?'}/${seconds * preset.fps} | speed=${m[5] ?? '?'}x | ffmpeg exit=${code} | loopback=${status.loopbackTracks ?? '?'} | pcm=${pcmChunks} chunks ${(pcmBytes / 1e6).toFixed(1)} MB | ` +
           `overlay errors=${overlayErrors} | rtmp=${rtmp ? 'on' : 'off'} | mp4=${(size / 1e6).toFixed(1)} MB | vpx fps before=__ during=__\n`,
       );
@@ -298,10 +303,10 @@ function preview(crop, outputs) {
   tick();
   const timer = setInterval(tick, 500);
   const overlay = { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' };
-  const picture = outputSize({ crop, preset, overlay });
+  const picture = outputSize({ crop, rotate, preset, overlay });
   const place = previewPlacement(crop, outputs, picture);
   if (place.overlapsCapture) log('warning: no room beside the capture on this monitor; the preview may film itself. Move it aside.');
-  const args = ffplayPreviewArgs({ crop, preset, overlay, window: place });
+  const args = ffplayPreviewArgs({ crop, rotate, preset, overlay, window: place });
   log(`preview: ${picture.width}x${picture.height} (${preset.id}) in a window at ${place.left},${place.top}. Close it (Q or the X) when the framing is right.`);
   const fp = spawn(FFPLAY, args, { cwd: outDir, windowsHide: false });
   fp.stderr.on('data', (b) => {
@@ -315,7 +320,7 @@ function preview(crop, outputs) {
   fp.on('close', (code) => {
     clearInterval(timer);
     const opts = argv.filter((a) => a !== '--preview').join(' ');
-    console.log(`\nD1.0 preview | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | picture=${picture.width}x${picture.height} | ffplay exit=${code}`);
+    console.log(`\nD1.0 preview | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | rotate=${rotate} | picture=${picture.width}x${picture.height} | ffplay exit=${code}`);
     console.log(`To go live with this framing: npm run spike:stream -w companion -- ${opts}\n`);
     app.exit(0);
   });

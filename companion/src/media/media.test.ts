@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ddagrabRegion, ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
 import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
-import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DxgiOutput, type VpxWindow } from './window-geometry.js';
+import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DdagrabCrop, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
 /** The owner's rig: two 2560x1440 monitors side by side (probe output, 2026-10-25). */
 const OUTPUTS: DxgiOutput[] = [
@@ -175,5 +175,37 @@ describe('rotated monitors (owner rig 2026-10-27: display 2 set to portrait, DXG
     expect(f).toContain('video_size=2560x1440');
     expect(f).toContain('scale=-2:720,transpose=cclock,');
     expect(outputSize({ crop: full, preset: PRESETS['720p30'] })).toEqual({ width: 720, height: 1280 });
+  });
+});
+
+describe('--rotate: VPX cabinet mode on a landscape monitor that stands portrait (owner rig 2026-10-27)', () => {
+  const cab: DdagrabCrop = { outputIdx: 1, offsetX: 0, offsetY: 0, width: 2560, height: 1440 };
+
+  it('turns the landscape grab into an upright 720x1280 picture, scaling before the turn', () => {
+    const f = videoFilter({ crop: cab, rotate: 90, preset: PRESETS['720p30'] });
+    expect(f).toContain('video_size=2560x1440');
+    expect(f).toContain('scale=-2:720,transpose=clock,');
+    expect(outputSize({ crop: cab, rotate: 90, preset: PRESETS['720p30'] })).toEqual({ width: 720, height: 1280 });
+    expect(videoFilter({ crop: cab, rotate: 270, preset: PRESETS['720p30'] })).toContain('transpose=cclock');
+    expect(videoFilter({ crop: cab, rotate: 0, preset: PRESETS['720p30'] })).not.toContain('transpose');
+  });
+
+  it('adds to the monitor rotation: a flipped landscape (3) plus 90 is one counter-clockwise turn', () => {
+    const flipped = { ...cab, rotation: 3 as const, screen: { width: 2560, height: 1440 } };
+    const f = videoFilter({ crop: flipped, rotate: 90, preset: PRESETS['720p30'] });
+    expect(f).toContain('transpose=cclock');
+    expect(f).not.toContain('hflip');
+    expect(videoFilter({ crop: flipped, rotate: 180, preset: PRESETS['720p30'] })).not.toMatch(/transpose|flip/);
+  });
+
+  it('the vertical slice runs along the window height when turned, and the shift follows the picture', () => {
+    const wide = { ...cab, height: 1000 }; // a turned picture 1000 wide, 2560 tall: wider than 9:16 is 1440
+    expect(portraitSlice(cab, 0.1, 90)).toEqual(cab); // 1440 across, 2560 tall: already 9:16
+    const tall = { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1000, height: 1440 };
+    // turned, the picture is 1440 wide and 1000 tall: slice 562 of the 1440 rows, centred, + = right
+    expect(portraitSlice(tall, 0, 90)).toMatchObject({ offsetY: 439, height: 562, width: 1000 });
+    expect(portraitSlice(tall, 0.1, 90).offsetY).toBe(439 - 144); // 90 clockwise: the picture's right is the crop's top
+    expect(portraitSlice(tall, 0.1, 270).offsetY).toBe(439 + 144);
+    expect(portraitSlice(wide, 0, 0)).toMatchObject({ width: 562 });
   });
 });

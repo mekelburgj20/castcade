@@ -36,6 +36,12 @@ export interface EncodeOptions {
   crop: DdagrabCrop;
   preset: QualityPreset;
   encoder: VideoEncoder;
+  /**
+   * Turn the picture clockwise after capture, in degrees. For VPX in cabinet mode on a monitor that Windows calls
+   * landscape but that stands portrait: VPX draws the table on its side and the stream must turn it back. Windows
+   * cannot see that, so the player picks it (and checks it in the preview).
+   */
+  rotate?: 0 | 90 | 180 | 270;
   /** Live overlay text: the file ffmpeg re-reads every frame, and a TrueType font. */
   overlay?: { textFile: string; fontFile: string } | null;
   /**
@@ -75,7 +81,13 @@ function encoderArgs(e: VideoEncoder, p: QualityPreset): string[] {
 }
 
 /** What the picture depends on: the same for the encode and the preview. */
-export type PictureOptions = Pick<EncodeOptions, 'crop' | 'preset' | 'overlay'>;
+export type PictureOptions = Pick<EncodeOptions, 'crop' | 'preset' | 'overlay' | 'rotate'>;
+
+/** The picture's size before scaling: the crop as the desktop shows it, turned by `rotate`. */
+function pictureDims(o: PictureOptions): { width: number; height: number } {
+  const c = o.crop;
+  return o.rotate === 90 || o.rotate === 270 ? { width: c.height, height: c.width } : { width: c.width, height: c.height };
+}
 
 /** The output picture's short side, in pixels: the preset's, never more than the capture's (no upscale). */
 function outputShortSide(o: PictureOptions): number {
@@ -85,7 +97,7 @@ function outputShortSide(o: PictureOptions): number {
 
 /** The output picture's size in pixels (`scale=…:-2` rounds the long side to even). */
 export function outputSize(o: PictureOptions): { width: number; height: number } {
-  const c = o.crop;
+  const c = pictureDims(o);
   const short = outputShortSide(o);
   const long = Math.round((short * Math.max(c.width, c.height)) / Math.min(c.width, c.height) / 2) * 2;
   return c.height > c.width ? { width: short, height: long } : { width: long, height: short };
@@ -111,16 +123,21 @@ export function ddagrabRegion(c: DdagrabCrop): { x: number; y: number; width: nu
   return { x: c.offsetY, y: s.width - c.offsetX - c.width, width: c.height, height: c.width, turn: 'transpose=clock' };
 }
 
+/** Clockwise quarter turns that undo a DXGI rotation (see `ddagrabRegion`), and the filter for N clockwise quarters. */
+const CORRECTION_QUARTERS: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3 };
+const TURN_FILTER = [null, 'transpose=clock', 'hflip,vflip', 'transpose=cclock'] as const;
+
 /** The capture → picture chain with no output label (the encode labels it `[v]`; ffplay's lavfi input takes it bare). */
 function videoChain(o: PictureOptions): string {
   const c = o.crop;
   // The preset names the short side (720p = 1280x720, or 720x1280 for a vertical window); never upscale.
-  const portrait = c.height > c.width;
   const outH = outputShortSide(o);
   const g = ddagrabRegion(c);
-  // A quarter turn is applied after the scale (a quarter of the pixels to move), so the scale runs in the panel's
-  // orientation, where a portrait picture is still landscape.
-  const scaleTall = g.turn?.startsWith('transpose') ? !portrait : portrait;
+  // Turns run after the scale (fewer pixels to move), so the scale works on the frame as grabbed: its short side.
+  const scaleTall = g.height > g.width;
+  // One turn for both: the monitor's rotation undone, then the player's `rotate` (VPX cabinet mode draws the table
+  // turned inside a landscape screen that is physically mounted portrait; Windows cannot know, rig 2026-10-27).
+  const quarters = ((CORRECTION_QUARTERS[c.rotation ?? 1] ?? 0) + (o.rotate ?? 0) / 90) % 4;
   const parts = [
     `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${g.x}:offset_y=${g.y}:video_size=${g.width}x${g.height}:draw_mouse=0`,
     'hwdownload',
@@ -130,7 +147,8 @@ function videoChain(o: PictureOptions): string {
     `fps=${o.preset.fps}`,
     scaleTall ? `scale=${outH}:-2` : `scale=-2:${outH}`,
   ];
-  if (g.turn) parts.push(g.turn);
+  const turn = TURN_FILTER[quarters];
+  if (turn) parts.push(turn);
   if (o.overlay) {
     parts.push(
       `drawtext=fontfile=${filterValue(o.overlay.fontFile)}:textfile=${filterValue(o.overlay.textFile)}:reload=1:fontsize=${Math.round(outH / 26)}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=${Math.round(outH / 72)}:x=${Math.round(outH / 36)}:y=h-th-${Math.round(outH / 36)}`,
