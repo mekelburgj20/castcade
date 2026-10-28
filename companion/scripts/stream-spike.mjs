@@ -19,7 +19,7 @@ import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from 'el
 import { Buffer } from 'node:buffer';
 import { clearInterval, setInterval, setTimeout } from 'node:timers';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENCODER_PREFERENCE, ffmpegArgs, ffplayPreviewArgs, outputSize, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
@@ -222,10 +222,22 @@ app.whenReady().then(async () => {
     ff.stdin.on('error', () => {});
     let last = '';
     let errors = [];
+    // ffmpeg's whole log beside the MP4 (stream key redacted): the first error names the cause, which the summary's
+    // last five lines lost (rig 2026-10-27: two runs ended with only "Generic error in an external library").
+    const ffLog = mp4.replace(/\.mp4$/, '.ffmpeg.log');
+    const t0ff = Date.now();
     ff.stderr.on('data', (b) => {
       for (const line of b.toString().split(/\r|\n/)) {
+        if (!line.trim()) continue;
         if (/frame=/.test(line)) last = line.trim();
-        else if (/error|failed|invalid/i.test(line)) errors.push(redactRtmp(line.trim()));
+        else {
+          try {
+            appendFileSync(ffLog, `${((Date.now() - t0ff) / 1000).toFixed(1)}s ${redactRtmp(line.trim())}\n`);
+          } catch {
+            /* a diagnostic; never stop the capture for it */
+          }
+          if (/error|failed|invalid|lost/i.test(line)) errors.push(redactRtmp(line.trim()));
+        }
       }
     });
     const statsTimer = setInterval(() => last && log(last), 10_000);
@@ -239,7 +251,8 @@ app.whenReady().then(async () => {
         // no file: ffmpeg failed before writing; the exit code says so
       }
       const m = /frame=\s*(\d+).*?fps=\s*([\d.]+).*?(?:dup=(\d+))?.*?(?:drop=(\d+))?.*?speed=\s*([\d.]+)x/.exec(last) || [];
-      if (errors.length) log('ffmpeg errors:', errors.slice(-5).join(' | '));
+      if (errors.length) log('ffmpeg errors (first 3, last 3):', [...errors.slice(0, 3), '…', ...errors.slice(-3)].join(' | '));
+      log('ffmpeg log:', ffLog);
       console.log(
         `\nD1.0 | target=${target} | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | rotate=${rotate} | encoder=${encoder} | ffmpeg=${ffBuild} | preset=${preset.id} | ` +
           `frames=${m[1] ?? '?'}/${seconds * preset.fps} | speed=${m[5] ?? '?'}x | ffmpeg exit=${code} | loopback=${status.loopbackTracks ?? '?'} | pcm=${pcmChunks} chunks ${(pcmBytes / 1e6).toFixed(1)} MB | ` +
