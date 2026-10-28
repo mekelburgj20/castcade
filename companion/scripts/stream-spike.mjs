@@ -6,6 +6,8 @@
 //   [--preview]  shows what the stream would carry (same crop, scale and overlay) in an ffplay window, and nothing is
 //   recorded or sent: adjust --portrait N / --landscape / --preset until it looks right, close it (Q), then run again
 //   without --preview and with the same options.
+//   [--bundled]  use the build the installer ships (companion/resources/ffmpeg, `npm run fetch-ffmpeg -w companion`)
+//   instead of the ffmpeg / ffplay on PATH.
 //   Start it before or after the game: it waits up to 3 minutes for VPX's player window.
 //   RTMP: set CASTCADE_RTMP_URL (e.g. rtmp://live.twitch.tv/app/<key>) in the environment; it is never printed.
 //
@@ -19,6 +21,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ENCODER_PREFERENCE, ffmpegArgs, ffplayPreviewArgs, outputSize, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
+import { resolveFfmpeg } from '../dist/media/ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, probeWindows } from '../dist/media/window-geometry.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,12 +50,18 @@ const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const mp4 = join(outDir, `${stamp}.mp4`);
 const overlayFile = join(outDir, 'overlay.txt');
 const log = (...a) => console.log('[spike]', ...a);
+// --bundled: the installer's pinned build (D1.6); otherwise whatever is on PATH.
+const ffLoc = resolveFfmpeg({ packaged: false, resourcesPath: '', companionDir: resolve(here, '..') });
+if (flag('bundled') && ffLoc.source !== 'bundled') throw new Error('--bundled: no build in companion/resources/ffmpeg (npm run fetch-ffmpeg -w companion)');
+const FFMPEG = flag('bundled') ? ffLoc.ffmpeg : 'ffmpeg';
+const FFPLAY = flag('bundled') ? ffLoc.ffplay : 'ffplay';
+const ffBuild = flag('bundled') ? ffLoc.build : 'path';
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 function pickEncoder() {
   for (const e of ENCODER_PREFERENCE) {
-    const r = spawnSync('ffmpeg', ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=256x256:d=0.2', '-c:v', e, '-f', 'null', '-'], { windowsHide: true });
+    const r = spawnSync(FFMPEG, ['-hide_banner', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=256x256:d=0.2', '-c:v', e, '-f', 'null', '-'], { windowsHide: true });
     if (r.status === 0) return e;
   }
   throw new Error('no working H.264 encoder (is ffmpeg on PATH?)');
@@ -204,7 +213,7 @@ app.whenReady().then(async () => {
       seconds,
     });
     log('ffmpeg', redactRtmp(args.join(' ')));
-    ff = spawn('ffmpeg', args, { cwd: outDir, windowsHide: true });
+    ff = spawn(FFMPEG, args, { cwd: outDir, windowsHide: true });
     ff.stdin.on('error', () => {});
     let last = '';
     let errors = [];
@@ -227,7 +236,7 @@ app.whenReady().then(async () => {
       const m = /frame=\s*(\d+).*?fps=\s*([\d.]+).*?(?:dup=(\d+))?.*?(?:drop=(\d+))?.*?speed=\s*([\d.]+)x/.exec(last) || [];
       if (errors.length) log('ffmpeg errors:', errors.slice(-5).join(' | '));
       console.log(
-        `\nD1.0 | target=${target} | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | encoder=${encoder} | preset=${preset.id} | ` +
+        `\nD1.0 | target=${target} | crop=${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} | encoder=${encoder} | ffmpeg=${ffBuild} | preset=${preset.id} | ` +
           `frames=${m[1] ?? '?'}/${seconds * preset.fps} | speed=${m[5] ?? '?'}x | ffmpeg exit=${code} | loopback=${status.loopbackTracks ?? '?'} | pcm=${pcmChunks} chunks ${(pcmBytes / 1e6).toFixed(1)} MB | ` +
           `overlay errors=${overlayErrors} | rtmp=${rtmp ? 'on' : 'off'} | mp4=${(size / 1e6).toFixed(1)} MB | vpx fps before=__ during=__\n`,
       );
@@ -294,7 +303,7 @@ function preview(crop, outputs) {
   if (place.overlapsCapture) log('warning: no room beside the capture on this monitor; the preview may film itself. Move it aside.');
   const args = ffplayPreviewArgs({ crop, preset, overlay, window: place });
   log(`preview: ${picture.width}x${picture.height} (${preset.id}) in a window at ${place.left},${place.top}. Close it (Q or the X) when the framing is right.`);
-  const fp = spawn('ffplay', args, { cwd: outDir, windowsHide: false });
+  const fp = spawn(FFPLAY, args, { cwd: outDir, windowsHide: false });
   fp.stderr.on('data', (b) => {
     const line = b.toString().trim();
     if (line) log('ffplay:', line);

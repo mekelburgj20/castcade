@@ -18,7 +18,7 @@ source.
 | Ruling | Detail |
 |---|---|
 | **Architecture A: ffmpeg does the video** | Desktop Duplication (`ddagrab`) cropped to the VPX window → NVENC / AMF / QSV, overlay drawn by ffmpeg. The Chromium path (Windows Graphics Capture + canvas + WebCodecs) is the fallback if the crop proves fragile or a richer burned-in overlay is wanted. |
-| **ffmpeg is bundled** in the installer | A GPL build (compatible with the repo's GPLv3), pinned by release and sha256, fetched at package time like the maps corpus (`fetch-ffmpeg`, gitignored), shipped as an extra resource. Native `aac` only; no `--enable-nonfree` encoders. |
+| **ffmpeg is bundled** in the installer | A GPL build (compatible with the repo's GPLv3), pinned by release and sha256, fetched at package time like the maps corpus (`fetch-ffmpeg`, gitignored), shipped as an extra resource. Native `aac` only; no `--enable-nonfree` encoders. **Built (D1.6, 2026-10-27):** Gyan's `ffmpeg-8.1.1-essentials_build` (GPLv3, static; has `ddagrab`, `drawtext`, NVENC / AMF / QSV, `tee`, RTMP), `ffmpeg.exe` + `ffplay.exe` (the framing preview), +54 MB on the installer; `scripts/fetch-ffmpeg.mjs`, `media/ffmpeg-path.ts`. |
 | **Default quality 720p30, 4.5 Mbps** | Higher presets (1080p30, 1080p60 at 6 Mbps) selectable. |
 | **Recording retention** | Keep the last **3** sessions by default (setting) **plus every recording tied to a Sanctioned score** until its tournament closes. A second setting caps the total number of stored recordings; empty = unlimited. The Sanctioned ones count toward neither limit. |
 | **Microphone off by default** | An option adds the player's microphone for commentary. |

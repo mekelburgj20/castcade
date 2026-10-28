@@ -94,7 +94,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
   - **D1.3** `ready` Streaming to Twitch / YouTube: key in `safeStorage`, presets (720p30 default, 1080p30/60), reconnect, health · needs: D1.0
   - **D1.4** `ready` Overlay burned into stream and recording · needs: D1.1, D1.0
   - **D1.5** `ready` Stream page: go live, record, preview (owner ask 2026-10-27: the streamer sees and adjusts the framing before going live; the spike's `--preview` runs ffplay on the same filter chain, `ffplayPreviewArgs`), health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3
-  - **D1.6** `claimed` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time (gitignored), extra resource in the installer · needs: D1.0 · owner: claude · since: 2026-10-27
+  - **D1.6** `claimed` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time (gitignored), extra resource in the installer · needs: D1.0 · owner: claude · since: 2026-10-27 · note: built on main (fetch-ffmpeg, Gyan essentials 8.1.1 sha256-pinned, `media/ffmpeg-path.ts`, smoke prints it; installer 114 → 168 MB); left: one spike run with `--bundled` on the rig to prove that build captures and encodes, then ship in the next release
 - **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2
 - **D4** `idea` Runner stage, companion half (ArcAid item 13 is the other half) · needs: D3
@@ -110,6 +110,7 @@ Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/*
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
 - **E4** `done 0.2.11` Electron 44 / Vite 8 / vitest 5 follow-through: 0.2.11 is the first packaged build on them (`pack:dir` + `--smoke` green on the owner's rig)
   - **E4.1** `done 0.2.11` The updater installed 0.2.11 on the owner's rig (log 2026-10-23T05:32Z: downloaded, installed on quit) and the next session posted four games live
+- **E5** `ready` GPL source for the bundled ffmpeg before GA: publish the Corresponding Source of the shipped build (FFmpeg at the README's commit plus the static libraries) with each release, or a written offer, and name it in the installer's licence notes (GPLv3 §6) · spec: companion/scripts/fetch-ffmpeg.mjs · needs: D1.6
 
 ## F. ArcAid side
 

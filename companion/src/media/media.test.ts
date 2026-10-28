@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
+import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
 /** The owner's rig: two 2560x1440 monitors side by side (probe output, 2026-10-25). */
@@ -123,5 +124,28 @@ describe('stream preview (owner ask 2026-10-27: check the framing before going l
     expect(p.left + p.width).toBeLessThanOrEqual(1391);
     const full = previewPlacement({ outputIdx: 0, offsetX: 0, offsetY: 0, width: 2560, height: 1440 }, one, picture);
     expect(full.overlapsCapture).toBe(true);
+  });
+});
+
+describe('ffmpeg location (D1.6)', () => {
+  const dev = { packaged: false, resourcesPath: 'R', companionDir: 'C:/repo/companion' };
+  const pkg = { packaged: true, resourcesPath: 'C:/Program Files/Castcade/resources', companionDir: 'x' };
+  const slash = (p: string): string => p.replace(/[\\]/g, '/');
+
+  it('the installer uses its bundled build and reports it from VERSION', () => {
+    const loc = resolveFfmpeg(pkg, () => true, () => 'ffmpeg-8.1.1-essentials_build sha256:abc https://example\n');
+    expect(loc).toMatchObject({ source: 'bundled', build: 'ffmpeg-8.1.1-essentials_build' });
+    expect(slash(loc.ffmpeg)).toBe('C:/Program Files/Castcade/resources/ffmpeg/ffmpeg.exe');
+    expect(slash(loc.ffplay)).toBe('C:/Program Files/Castcade/resources/ffmpeg/ffplay.exe');
+  });
+
+  it('a dev checkout without a fetched build falls back to PATH; a missing VERSION still counts as bundled', () => {
+    expect(slash(ffmpegDir(dev))).toBe('C:/repo/companion/resources/ffmpeg');
+    expect(resolveFfmpeg(dev, () => false)).toEqual({ ffmpeg: 'ffmpeg', ffplay: 'ffplay', source: 'path', build: null });
+    expect(resolveFfmpeg(dev, (p) => !p.endsWith('ffplay.exe'))).toMatchObject({ source: 'path' });
+    const noStamp = resolveFfmpeg(dev, () => true, () => {
+      throw new Error('ENOENT');
+    });
+    expect(noStamp).toMatchObject({ source: 'bundled', build: null });
   });
 });

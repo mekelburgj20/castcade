@@ -32,6 +32,7 @@ import { createTablesHost, type TablesHost } from './tables-host.js';
 import { SidecarWatch } from './sidecar-watch.js';
 import { manifestDirFor } from '../witness/witness.js';
 import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../media/overlay-server.js';
+import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -48,7 +49,9 @@ let updater: UpdaterHandle | null = null;
 let overlay: OverlayServer | null = null;
 
 if (argv.includes('--smoke')) {
-  process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION}\n`);
+  // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
+  const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+  process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'}\n`);
   app.exit(0);
 } else if (!app.requestSingleInstanceLock()) {
   app.exit(0);

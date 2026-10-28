@@ -27,6 +27,11 @@ extraResources:
   # The compact VPS index (ids, names, authors, versions, features only), built by `npm run fetch-vps -w companion`.
   - from: resources/vps
     to: vps
+  # ffmpeg + ffplay for streaming, recording and the framing preview (D1.6): Gyan's GPLv3 essentials build, pinned by
+  # version + sha256 in scripts/fetch-ffmpeg.mjs, fetched by `npm run fetch-ffmpeg -w companion`. Outside the asar so
+  # the executables can run; src/media/ffmpeg-path.ts finds them at resources/ffmpeg.
+  - from: resources/ffmpeg
+    to: ffmpeg
   # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo
   # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
   - from: ../vpx-hook/castcade.vbs

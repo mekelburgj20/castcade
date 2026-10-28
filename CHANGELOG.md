@@ -7,6 +7,13 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Packaging
+- The installer carries ffmpeg for streaming and recording: Gyan's GPLv3 essentials build of ffmpeg 8.1.1 (`ffmpeg.exe`
+  and `ffplay.exe` for the framing preview, its LICENSE and README), pinned by sha256 and fetched at package time by
+  `npm run fetch-ffmpeg -w companion` (`release.yml` runs it). The installer grows by about 54 MB. Nothing uses it
+  in the app yet (D1.2 / D1.3); `Castcade.exe --smoke` reports `ffmpeg bundled <build>`, and the D1.0 spike's
+  `--bundled` runs on it (D1.6). `scripts/fetch-ffmpeg.mjs`, `media/ffmpeg-path.ts`, `electron-builder.yml`.
+
 ## [0.2.18] — 2026-10-27
 
 ### Streaming

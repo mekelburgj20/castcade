@@ -47,6 +47,7 @@ npm run protocol:generate      # regenerate protocol/schemas/*.json and protocol
 npm run generate -w protocol -- --check   # what CI runs: fails if the generated files are stale
 python fixtures/check.py       # replay the recorded journals through the Phase 0 detector (needs the maps corpus, see fixtures/README.md)
 npm run fetch-maps -w companion   # fetch the pinned pinmame-nvram-maps corpus into companion/resources/maps (gitignored; needed to package)
+npm run fetch-ffmpeg -w companion # fetch the pinned ffmpeg build (sha256-checked) into companion/resources/ffmpeg (gitignored; needed to package, D1.6)
 npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run pack:dir -w companion     # unpacked app in companion/release/win-unpacked (then run Castcade.exe --smoke)
 npm run dist:win -w companion     # NSIS installer in companion/release (unsigned)
