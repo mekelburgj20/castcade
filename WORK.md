@@ -8,14 +8,14 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.18 (unsigned PoC; repo public, keep it so): live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post from NVRAM alone (B10.1, 0.2.16); 0.2.17 patches only machines whose live score can be read (B12; 84 of the rig's 140 tables) and re-makes patches fast after an update (B15). 0.2.18 adds the OBS overlay (D1.1), the quit marker on the score call (B16; the board half is F14) and unpatches unreadable tables (B12.1).
-- In flight: D1.6 bundle ffmpeg (claude; built, ran on the rig, ships in the next release). D1.0 done 2026-10-27: live on Twitch from cabinet-mode VPX with no measurable frame cost; D1.2 / D1.3 / D6 are unblocked.
+- In flight: D1.6 bundle ffmpeg (claude; built and run on the rig, ships in the next release). D1.0 done 2026-10-27: cabinet-mode VPX streamed live to Twitch, upright (`--rotate 90`), with no measurable frame cost; a quit to the editor ends the capture, so D1.3 keeps the stream up across tables.
 - New ruling 2026-10-27, ADR 0007: functionality before ease of setup; automate or guide every setup step (D6) and promise testers "guided setup", never "no setup".
 - Owner actions: update the rig and testers to 0.2.18 · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised (prod `attempts` row 6) · B15.1 at the next recipe bump · re-pair the rig from Settings · B9 field gate.
 - Multiplayer stream URL (D5, owner request 2026-10-26; Krobs keen) needs D2 and D3; ADR 0007 leans to both an ArcAid watch page and a Twitch push.
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
-- Next by priority: D1 solo streaming (after D1.0), then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Small and unblocked: B4.1, C2.2.
+- Next by priority: D1.2 recording + D1.3 streaming (unblocked), then D1.4 burned-in overlay and D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Small and unblocked: B4.1, C2.2. Before GA: E5 (GPL source for the bundled ffmpeg).
 - Watching: C9 (four arrivals per score, 2026-10-22), no recurrence since request logging.
-- Last wrap: 2026-10-27 — B12, B15 done 0.2.17 (released); B10 back to ready (B10.1 done); D1.1 built; B12.1, B15.1, B16, C1.1.1, D5, D6 added; ADR 0007.
+- Last wrap: 2026-10-27 (2) — 0.2.18 released (D1.1, B16, B12.1 done); D1.0 done; D1.6 built; D1.3 / D1.5 notes (session model, Rotate); E5 added.
 
 ## A. Protocol and match engine
 
