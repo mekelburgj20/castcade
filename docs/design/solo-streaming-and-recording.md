@@ -42,6 +42,19 @@ source.
 - **Audio.** ffmpeg has no Windows loopback input without a virtual device. Electron's display-media handler offers
   `audio: 'loopback'` (Windows); the companion captures it and pipes raw PCM to ffmpeg's stdin. Loopback is the whole
   system mix (voice chat, music), so the Stream page says so; per-process capture is a later improvement.
+- **The audio must never hold back the screen grab (2026-10-28).** One ffmpeg with the PCM on stdin and `ddagrab` in the
+  same graph stuttered: the ball froze for 50–100 ms several times a second (the owner's first in-app streams: 15–18 new
+  frames a second of 60, in the MP4 too, so not the network; capping VPX at 165 fps changed nothing). ffmpeg's scheduler
+  holds back any input more than ~100 ms ahead of the slowest, the loopback audio always arrives late (chunks over IPC,
+  then the sync trim), and a held-back `ddagrab` misses the screen instead of queuing it. A moving test pattern on the
+  rig: 274 new frames in 5 s with no audio, 37 with the audio 390 ms behind; a queued `-f lavfi` input did not help. So a
+  capture is two processes: `grab` (ddagrab → H.264 in Matroska on stdout, no audio) and `mux` (that stream copied plus
+  the PCM → MP4 / RTMP tee), piped by the host without backpressure (`ffmpeg-pipeline.ts`): 275–276 new frames, no
+  freeze, even with the audio 400 ms late. MPEG-TS between them failed: a copied TS stream keeps TS's codec tag, which
+  tee's mp4 and flv muxers refuse. Bonus: a stop ends `grab`, `mux` drains and closes the MP4 cleanly (D1.8).
+- **Measuring stutter.** `mpdecimate` counts the frames that differ from the one before: a constant-rate 60 fps file
+  with only 15 new frames a second froze for the rest. `ffmpeg -i x.mp4 -vf "mpdecimate=hi=64:lo=32:frac=0.01,showinfo"
+  -fps_mode vfr -f null -` prints each new frame's time; gaps over ~40 ms at 60 fps are visible freezes.
 - **Measured 2026-10-25 (owner's machine, no VPX, 1280x960 crop of monitor 0 → 720p30 NVENC + silent PCM, 20 s):** 600
   frames at a constant 30 fps, AAC exactly as long as the video, overlay text redrawn live. Two traps found:
   Desktop Duplication delivers a frame only when the screen changes (a still desktop gave 192 frames in 20 s), so the
@@ -74,6 +87,12 @@ source.
   `scripts/av-sync.py` (a flash and a beep every 2 s): audio 376–408 ms late, steady through a run. Trimming 390 ms off the
   audio's start (`lateMs`) gave medians of +19 and −3 ms on two further runs. The product keeps the trim as a setting
   with this default and can re-measure it; the latency is the loopback → AudioWorklet → IPC → pipe path plus ffmpeg's start.
+  **Re-measured 2026-10-28 for grab → mux:** `mux` takes PCM only from `grab`'s first video bytes on (ffmpeg's start-up
+  drops out) and the worklet posts 1024 samples (~21 ms) instead of 100 ms, so the chunk phase moves the start by at most
+  21 ms. Audio was then early: medians 121, 86, 132 ms over three runs (±20 ms within a run, no drift over 60 s). The
+  setting became `audioLateMs` (negative = delay the audio, `adelay`), default −110; a check run gave a median of −3 ms
+  (−19 to +18). The old `avLateMs` (390) is not read, so a stored value cannot misapply. `av-sync.py`'s −30 dB beep
+  threshold missed the beeps at the rig's volume that day (peak −27 dB); −45 found all of them.
 - **Stream key** encrypted with Electron `safeStorage`, never sent to ArcAid, never logged.
 
 ## 4. Build order (each step ships alone)

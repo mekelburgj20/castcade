@@ -5,8 +5,8 @@
  *
  * A session outlives one table (owner's rig, 2026-10-27: quitting to the editor closes the player window and ends
  * Desktop Duplication). Every 2 s the engine probes for VPX's player window:
- *   - window there and steady for two probes → capture it: one ffmpeg writing the next MP4 segment and / or the RTMP
- *     push (tee; the recording continues if the push fails);
+ *   - window there and steady for two probes → capture it: an ffmpeg pair (grab → mux, `ffmpeg-pipeline.ts`) writing
+ *     the next MP4 segment and / or the RTMP push (tee; the recording continues if the push fails);
  *   - window gone, moved or resized → stop that ffmpeg (the segment closes with its sha256);
  *   - no window while live → the slate (RTMP only, never recorded) keeps the broadcast up until the next table;
  *   - ffmpeg died on its own (lost Desktop Duplication, the push dropped) → back off 1, 2, 4 … 30 s and start again.
@@ -14,7 +14,8 @@
  */
 import { EventEmitter } from 'node:events';
 import type { LastCapture, LiveGame } from '../witness/types.js';
-import { ffmpegArgs, outputSize, redactRtmp, slateArgs, type QualityPreset, type VideoEncoder } from './ffmpeg-args.js';
+import { captureArgs, outputSize, redactRtmp, slateArgs, type QualityPreset, type VideoEncoder } from './ffmpeg-args.js';
+import type { FfmpegCommand } from './ffmpeg-pipeline.js';
 import { applyRetention, RecordingSession } from './recording.js';
 import { cropFor, pickPlayfield, portraitSlice, type DdagrabCrop, type WindowProbe } from './window-geometry.js';
 
@@ -29,7 +30,7 @@ export interface StreamPlan {
   record: boolean;
   /** The ingest URL with the stream key; null = record only. Never logged raw. */
   rtmpUrl: string | null;
-  audio: { sampleRate: number; channels: number; kbps: number; lateMs: number } | null;
+  audio: { sampleRate: number; channels: number; kbps: number; /** ms; negative = the audio is early and is delayed */ lateMs: number } | null;
   recordingsDir: string;
   retention: { keepSessions: number; maxRecordings: number | null };
   /** For the slate's text; null draws a plain slate (a missing font crashes ffmpeg's drawtext, so the host checks). */
@@ -46,7 +47,8 @@ export interface FfmpegProcess {
 
 export interface EngineDeps {
   probe(): Promise<WindowProbe>;
-  spawn(args: string[]): FfmpegProcess;
+  /** One process (`string[]`) or a capture's grab → mux pair; either way one run to the engine. */
+  spawn(command: FfmpegCommand): FfmpegProcess;
   encoder(): Promise<VideoEncoder>;
   now(): number;
   setTimeout(fn: () => void, ms: number): unknown;
@@ -120,6 +122,8 @@ export class StreamEngine extends EventEmitter {
   private picture: { width: number; height: number } | null = null;
   private table: string | null = null;
   private inGame = false;
+  /** The segment recording at the last game start / end: a score posts ~1 s after its game, maybe after the segment closed. */
+  private gameSegment: string | null = null;
   private since: string | null = null;
 
   constructor(private readonly deps: EngineDeps) {
@@ -150,7 +154,7 @@ export class StreamEngine extends EventEmitter {
     if (!plan.record && !plan.rtmpUrl) throw new Error('nothing to do: neither recording nor a stream key');
     this.encoder = this.encoder ?? (await this.deps.encoder());
     this.plan = plan;
-    Object.assign(this, { restarts: 0, failures: 0, backoffUntil: 0, lastError: null, errors: [], health: null, picture: null, pendingKey: null, steady: 0 });
+    Object.assign(this, { restarts: 0, failures: 0, backoffUntil: 0, lastError: null, errors: [], health: null, picture: null, pendingKey: null, steady: 0, gameSegment: null });
     this.since = new Date(this.deps.now()).toISOString();
     if (plan.record) {
       this.session = await RecordingSession.open(plan.recordingsDir, this.deps.now);
@@ -195,16 +199,21 @@ export class StreamEngine extends EventEmitter {
   noteGame(game: LiveGame | null): void {
     const now = !!game?.inGame;
     if (game && now !== this.inGame && this.session) {
-      const segment = this.session.segment;
+      // A game that ends as its table closes (the segment closed first) keeps the segment it started in.
+      const segment = now ? this.session.segment : (this.session.segment ?? this.gameSegment);
+      this.gameSegment = segment;
       void this.session.append(now ? { kind: 'game_start', table: game.table, segment } : { kind: 'game_end', table: game.table, scores: game.scores, segment });
     }
     this.inGame = now;
   }
 
-  /** A score the witness captured (posted, queued or skipped): tied to the segment that was recording. */
+  /**
+   * A score the witness captured (posted, queued or skipped): tied to the segment its game ended in. It posts about a
+   * second after the game, so quitting the table at once closes the segment first (rig 2026-10-28: `segment: null`).
+   */
   noteCapture(c: LastCapture): void {
     if (!this.session) return;
-    void this.session.append({ kind: 'score_posted', table: c.table, score: c.score, outcome: c.outcome, mode: c.mode ?? null, segment: this.session.segment });
+    void this.session.append({ kind: 'score_posted', table: c.table, score: c.score, outcome: c.outcome, mode: c.mode ?? null, segment: this.gameSegment ?? this.session.segment });
   }
 
   private setState(s: EngineState): void {
@@ -276,7 +285,7 @@ export class StreamEngine extends EventEmitter {
     const picture = outputSize({ crop, rotate: plan.rotate, preset: plan.preset });
     this.picture = picture;
     const mp4 = this.session ? await this.session.startSegment(this.table, picture) : undefined;
-    const args = ffmpegArgs({
+    const args = captureArgs({
       crop,
       rotate: plan.rotate,
       preset: plan.preset,
@@ -302,7 +311,7 @@ export class StreamEngine extends EventEmitter {
     this.setState('slate');
   }
 
-  private launch(kind: Running['kind'], args: string[], key: string | null): void {
+  private launch(kind: Running['kind'], args: FfmpegCommand, key: string | null): void {
     const proc = this.deps.spawn(args);
     let done!: () => void;
     const exited = new Promise<void>((r) => (done = r));

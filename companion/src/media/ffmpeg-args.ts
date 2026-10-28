@@ -9,6 +9,14 @@
  *
  * One output or two: MP4 (fragmented, so a crash still leaves a playable file) and / or FLV to an RTMP ingest. With
  * both, the `tee` muxer writes them from one encode, and `onfail=ignore` keeps the recording going if the stream drops.
+ *
+ * A capture is TWO ffmpeg processes (`captureArgs`): `grab` (ddagrab → filters → H.264 in Matroska on stdout, no audio)
+ * and `mux` (that H.264 on fd 3, copied, plus the PCM on stdin → the outputs). In one process ffmpeg holds back any
+ * input running more than ~100 ms ahead of the slowest one, and the loopback audio always arrives late (100 ms chunks
+ * over IPC); a held-back `ddagrab` simply misses the screen, so the stream froze for 50–100 ms several times a second
+ * (owner's rig 2026-10-28: 15–18 new frames a second of 60; a test pattern went from 274 to 37 new frames in 5 s with
+ * the audio 390 ms behind, and back to 275 with the grab in its own process). The host pipes grab → mux without
+ * backpressure, so only `mux` waits for the audio.
  */
 import type { DdagrabCrop } from './window-geometry.js';
 
@@ -46,8 +54,8 @@ export interface EncodeOptions {
   overlay?: { textFile: string; fontFile: string } | null;
   /**
    * Raw PCM on stdin (`f32le`), from the companion's loopback capture; null = no audio. `lateMs`: how far the PCM trails
-   * the picture (the capture path's latency, ~390 ms measured on the owner's rig with `--sync-test`); that much is cut
-   * from the start of the audio so the two line up.
+   * the picture (measured with `--sync-test`): positive is cut from the audio's start, negative delays it. Grab → mux
+   * puts it about 110 ms early on the owner's rig (2026-10-28; the one-process capture had it 390 ms late).
    */
   audio?: { sampleRate: number; channels: number; kbps: number; lateMs?: number } | null;
   /** Where the encode goes: an MP4 path and / or an RTMP URL (stream key included; never log it raw). */
@@ -57,9 +65,9 @@ export interface EncodeOptions {
 }
 
 /**
- * MP4 fragment length (µs). The engine stops ffmpeg by killing it (stdin carries the audio, so there is no "q"), which
- * loses the fragment being written: at the 2 s keyframe interval that was up to 2 s per segment (engine smoke run,
- * 2026-10-28); 1 s fragments halve it.
+ * MP4 fragment length (µs). A killed `mux` loses the fragment being written (engine smoke run, 2026-10-28: up to 2 s
+ * at the 2 s keyframe interval); the engine now stops `grab` and lets `mux` drain, and 1 s fragments bound the loss
+ * when it cannot.
  */
 const FRAG_US = 1_000_000;
 
@@ -186,8 +194,25 @@ export function ffplayPreviewArgs(o: PreviewOptions): string[] {
   ];
 }
 
-export function ffmpegArgs(o: EncodeOptions): string[] {
-  return encodeArgs(videoFilter(o), o);
+/** The two processes of a capture run (see the module comment); the host feeds `grab`'s stdout to `mux`'s fd 3. */
+export interface CaptureCommand {
+  grab: string[];
+  mux: string[];
+}
+
+export function captureArgs(o: EncodeOptions): CaptureCommand {
+  const grab = [
+    '-hide_banner', '-nostdin', '-nostats', '-loglevel', 'info',
+    '-filter_complex', videoFilter(o), '-map', '[v]',
+    ...encoderArgs(o.encoder, o.preset),
+    // Matroska, not MPEG-TS: a copied TS stream keeps TS's codec tag, which the mp4 / flv muxers inside tee refuse
+    // ("Tag [27][0][0][0] incompatible", 2026-10-28); Matroska has none. Global header: the SPS/PPS go in its header.
+    '-flags', '+global_header', '-f', 'matroska', '-live', '1', '-flush_packets', '1', 'pipe:1',
+  ];
+  const mux = [...LEAD, ...audioInputArgs(o)];
+  mux.push('-thread_queue_size', '1024', '-f', 'matroska', '-i', 'pipe:3', '-map', `${o.audio ? 1 : 0}:v`);
+  mux.push(...audioEncodeArgs(o), '-c:v', 'copy', ...outputArgs(o));
+  return { grab, mux };
 }
 
 /** The stream's stand-in while no table is open (D1.3): the same size and rate, a line of text, the game audio. */
@@ -209,18 +234,27 @@ export function slateArgs(o: SlateOptions): string[] {
   return encodeArgs(filter, { ...o, outputs: { rtmp: o.rtmp } });
 }
 
-function encodeArgs(filter: string, o: Omit<EncodeOptions, 'crop'>): string[] {
+const LEAD = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-stats_period', '2'];
+
+function audioInputArgs(o: Pick<EncodeOptions, 'audio'>): string[] {
+  return o.audio ? ['-thread_queue_size', '1024', '-f', 'f32le', '-ar', String(o.audio.sampleRate), '-ac', String(o.audio.channels), '-i', 'pipe:0'] : [];
+}
+
+/** Maps input 0's audio (the PCM is always the first input) and encodes it. */
+function audioEncodeArgs(o: Pick<EncodeOptions, 'audio'>): string[] {
+  if (!o.audio) return [];
+  const a = ['-map', '0:a'];
+  const late = o.audio.lateMs ?? 0;
+  if (late > 0) a.push('-af', `atrim=start=${(late / 1000).toFixed(3)},asetpts=PTS-STARTPTS`);
+  else if (late < 0) a.push('-af', `adelay=delays=${Math.round(-late)}:all=1`);
+  a.push('-c:a', 'aac', '-b:a', `${o.audio.kbps}k`, '-ar', '48000');
+  return a;
+}
+
+function outputArgs(o: Pick<EncodeOptions, 'outputs' | 'seconds'>): string[] {
   const { mp4, rtmp } = o.outputs;
-  if (!mp4 && !rtmp) throw new Error('ffmpegArgs: no output');
-  const args = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-stats_period', '2'];
-  if (o.audio) args.push('-thread_queue_size', '1024', '-f', 'f32le', '-ar', String(o.audio.sampleRate), '-ac', String(o.audio.channels), '-i', 'pipe:0');
-  args.push('-filter_complex', filter, '-map', '[v]');
-  if (o.audio) {
-    args.push('-map', '0:a');
-    if (o.audio.lateMs) args.push('-af', `atrim=start=${(o.audio.lateMs / 1000).toFixed(3)},asetpts=PTS-STARTPTS`);
-    args.push('-c:a', 'aac', '-b:a', `${o.audio.kbps}k`, '-ar', '48000');
-  }
-  args.push(...encoderArgs(o.encoder, o.preset));
+  if (!mp4 && !rtmp) throw new Error('ffmpeg args: no output');
+  const args: string[] = [];
   if (o.seconds !== undefined) args.push('-t', String(o.seconds));
   if (mp4 && rtmp) {
     args.push('-flags', '+global_header', '-f', 'tee', `[f=mp4:movflags=+frag_keyframe+empty_moov:frag_duration=${FRAG_US}:onfail=ignore]${teePath(mp4)}|[f=flv:onfail=ignore]${rtmp}`);
@@ -230,6 +264,11 @@ function encodeArgs(filter: string, o: Omit<EncodeOptions, 'crop'>): string[] {
     args.push('-f', 'flv', rtmp!);
   }
   return args;
+}
+
+/** One process (the slate: a generated picture, which ffmpeg may hold back without losing anything). */
+function encodeArgs(filter: string, o: Omit<EncodeOptions, 'crop'>): string[] {
+  return [...LEAD, ...audioInputArgs(o), '-filter_complex', filter, '-map', '[v]', ...audioEncodeArgs(o), ...encoderArgs(o.encoder, o.preset), ...outputArgs(o)];
 }
 
 /** An RTMP URL with its stream key (the last path segment) hidden, for logs. */

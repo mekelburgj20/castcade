@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { ENCODER_PREFERENCE, type VideoEncoder } from '../media/ffmpeg-args.js';
 import type { FfmpegLocation } from '../media/ffmpeg-path.js';
-import { StreamEngine, type EngineStatus, type FfmpegProcess } from '../media/stream-engine.js';
+import { spawnFfmpeg } from '../media/ffmpeg-pipeline.js';
+import { StreamEngine, type EngineStatus } from '../media/stream-engine.js';
 import { patchStreamSettings, planFor, readStreamSettings, writeStreamSettings, type StreamSettings } from '../media/stream-settings.js';
 import { probeWindows } from '../media/window-geometry.js';
 import type { LastCapture, LiveGame } from '../witness/types.js';
@@ -95,44 +96,9 @@ export function createStreamHost(opts: {
     throw new Error('no working H.264 encoder in ffmpeg');
   };
 
-  const spawnFfmpeg = (args: string[]): FfmpegProcess => {
-    const child = spawn(opts.ffmpeg.ffmpeg, args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
-    child.stdin.on('error', () => {});
-    let lineCb: (l: string) => void = () => {};
-    let exitCb: (c: number | null) => void = () => {};
-    let carry = '';
-    child.stderr.on('data', (b: Buffer) => {
-      const parts = (carry + b.toString('utf8')).split(/\r|\n/);
-      carry = parts.pop() ?? '';
-      for (const p of parts) if (p.trim()) lineCb(p);
-    });
-    let exited = false;
-    const finish = (code: number | null): void => {
-      if (exited) return;
-      exited = true;
-      if (carry.trim()) lineCb(carry);
-      exitCb(code);
-    };
-    child.on('error', (e) => {
-      lineCb(`ffmpeg failed to start: ${e.message}`);
-      finish(null);
-    });
-    child.on('close', (code) => finish(code));
-    return {
-      write: (c) => {
-        if (child.stdin.writable) child.stdin.write(c);
-      },
-      kill: () => {
-        child.kill();
-      },
-      onLine: (cb) => (lineCb = cb),
-      onExit: (cb) => (exitCb = cb),
-    };
-  };
-
   const engine = new StreamEngine({
     probe: () => probeWindows(),
-    spawn: spawnFfmpeg,
+    spawn: (command) => spawnFfmpeg(opts.ffmpeg.ffmpeg, command),
     encoder: pickEncoder,
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -247,7 +213,8 @@ export function createStreamHost(opts: {
   };
 }
 
-/** The hidden audio page: loopback → game gain → limiter → an AudioWorklet that posts ~100 ms of PCM per message. */
+/** The hidden audio page: loopback → game gain → limiter → an AudioWorklet that posts ~21 ms of PCM per message
+ * (1024 samples: a small chunk keeps the start of the audio within ~21 ms of the picture's, see `ffmpeg-pipeline.ts`). */
 function audioPage(gameVolume: number): string {
   return `<!doctype html><meta charset="utf-8"><script>
 const { ipcRenderer } = require('electron');
@@ -260,7 +227,7 @@ const WORKLET = \`class P extends AudioWorkletProcessor {
     const out = new Float32Array(l.length * 2);
     for (let k = 0; k < l.length; k++) { out[2 * k] = l[k]; out[2 * k + 1] = r[k]; }
     this.buf.push(out); this.n += l.length;
-    if (this.n >= 4800) {
+    if (this.n >= 1024) {
       const all = new Float32Array(this.n * 2); let o = 0;
       for (const b of this.buf) { all.set(b, o); o += b.length; }
       this.port.postMessage(all.buffer, [all.buffer]); this.buf = []; this.n = 0;

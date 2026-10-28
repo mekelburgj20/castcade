@@ -2,10 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_STREAM_SETTINGS, ingestUrl, patchStreamSettings, planFor, readStreamSettings, writeStreamSettings } from './stream-settings.js';
 
 describe('stream settings (D1.2 / D1.3)', () => {
-  it('defaults: 720p30 portrait, Twitch, keep 3 sessions, game at 50 %, 390 ms audio trim', () => {
+  it('defaults: 720p30 portrait, Twitch, keep 3 sessions, game at 50 %, audio delayed 110 ms', () => {
     expect(readStreamSettings(null)).toEqual({ settings: DEFAULT_STREAM_SETTINGS, key: null });
     expect(readStreamSettings('not json').settings).toEqual(DEFAULT_STREAM_SETTINGS);
     expect(readStreamSettings('{"version":99,"rotate":90}').settings.rotate).toBe(0);
+    expect(DEFAULT_STREAM_SETTINGS.audioLateMs).toBe(-110);
+    // the one-process capture's 390 ms trim is not carried over (it would put the audio ~480 ms early now)
+    const old = readStreamSettings('{"version":1,"rotate":90,"avLateMs":390}').settings;
+    expect(old).toMatchObject({ rotate: 90, audioLateMs: -110 });
+    expect(old).not.toHaveProperty('avLateMs');
   });
 
   it('round-trips, with the key as the codec stored it, and drops invalid values to the default', () => {

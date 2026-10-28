@@ -337,7 +337,7 @@ interface StreamSettings {
   keepSessions: number;
   maxRecordings: number | null;
   gameVolume: number;
-  avLateMs: number;
+  audioLateMs: number;
 }
 interface StreamSettingsView extends StreamSettings {
   hasKey: boolean;

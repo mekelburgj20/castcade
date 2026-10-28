@@ -18,6 +18,17 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 - Recordings go to `Videos\Castcade`, one folder per session: an MP4 per table played and a hash-chained
   `manifest.jsonl` holding each MP4's sha256, game starts and ends, and every score posted while it recorded; the newest
   3 sessions are kept by default (D1.2). `media/recording.ts`.
+- Smooth video: a capture runs as two ffmpeg processes, one grabbing and encoding the screen and one adding the game
+  sound and writing the MP4 / stream, so waiting for the sound can no longer pause the screen grab. In one process the
+  ball froze for 50–100 ms several times a second (15–18 new frames a second at 1080p60 on the owner's rig); a test
+  pattern now keeps 276 of 300 frames new with the sound up to 400 ms late. Stopping lets the second process finish the
+  file, so the last second is no longer lost (D1.8). `media/ffmpeg-pipeline.ts`, `media/ffmpeg-args.ts` (`captureArgs`).
+- Sound and picture line up within about 20 ms (measured with the flash-and-beep test): the sound starts with the first
+  video, travels in ~21 ms chunks instead of 100 ms, and is delayed 110 ms by default. The setting is now `audioLateMs`
+  (negative = delay); a stored `avLateMs` from the one-process capture is ignored. `main/stream-host.ts`,
+  `media/stream-settings.ts`.
+- A score that posts after its table was closed (the witness posts about a second after the game) is tied to the
+  recording its game was played in, not to none. `media/stream-engine.ts`.
 
 ### Witness
 - Opening an original table (no ROM: JPSalas-style, Scorbit-anchored, ScoreServer or generic script) now says Castcade

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ddagrabRegion, ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
+import { captureArgs, ddagrabRegion, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
 import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DdagrabCrop, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
@@ -49,21 +49,29 @@ describe('ffmpeg args', () => {
     expect(filterValue('C:\\Windows\\Fonts\\segoeui.ttf')).toBe("'C\\:/Windows/Fonts/segoeui.ttf'");
   });
 
-  it('720p30 NVENC to an MP4 with loopback audio and the overlay', () => {
-    const a = ffmpegArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', overlay: { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' }, audio: { sampleRate: 48000, channels: 2, kbps: 160 }, outputs: { mp4: 'C:\\rec\\s.mp4' }, seconds: 120 });
-    expect(a.slice(a.indexOf('-f'), a.indexOf('-f') + 8)).toEqual(['-f', 'f32le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0']);
-    const vf = a[a.indexOf('-filter_complex') + 1]!;
+  it('720p30 NVENC to an MP4 with loopback audio and the overlay: grab encodes the picture, mux adds the audio', () => {
+    const { grab, mux } = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', overlay: { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' }, audio: { sampleRate: 48000, channels: 2, kbps: 160 }, outputs: { mp4: 'C:\\rec\\s.mp4' }, seconds: 120 });
+    // grab: no audio input (one ffmpeg would hold the screen grab back while it waits for the late audio)
+    expect(grab).not.toContain('pipe:0');
+    const vf = grab[grab.indexOf('-filter_complex') + 1]!;
     expect(vf).toMatch(/^ddagrab=output_idx=1:framerate=30:offset_x=100:offset_y=31:video_size=1920x1080:draw_mouse=0,hwdownload,format=bgra,fps=30,scale=-2:720,drawtext=fontfile='C\\:\/Windows\/Fonts\/segoeui.ttf':textfile='overlay.txt':reload=1:/);
     expect(vf.endsWith(',format=yuv420p[v]')).toBe(true);
-    expect(a).toEqual(expect.arrayContaining(['-c:v', 'h264_nvenc', '-b:v', '4500k', '-g', '60', '-c:a', 'aac', '-t', '120']));
-    expect(a.slice(-8)).toEqual(['-movflags', '+frag_keyframe+empty_moov', '-frag_duration', '1000000', '-f', 'mp4', '-y', 'C:\\rec\\s.mp4']);
+    expect(grab).toEqual(expect.arrayContaining(['-c:v', 'h264_nvenc', '-b:v', '4500k', '-g', '60']));
+    expect(grab.slice(-9)).toEqual(['-flags', '+global_header', '-f', 'matroska', '-live', '1', '-flush_packets', '1', 'pipe:1']);
+    // mux: PCM first (input 0), grab's H.264 on fd 3 (input 1), copied
+    expect(mux.slice(mux.indexOf('-f'), mux.indexOf('-f') + 8)).toEqual(['-f', 'f32le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0']);
+    expect(mux).toEqual(expect.arrayContaining(['-f', 'matroska', '-i', 'pipe:3', '-map', '1:v', '-map', '0:a', '-c:v', 'copy', '-c:a', 'aac', '-t', '120']));
+    expect(mux).not.toContain('-filter_complex');
+    expect(mux.slice(-8)).toEqual(['-movflags', '+frag_keyframe+empty_moov', '-frag_duration', '1000000', '-f', 'mp4', '-y', 'C:\\rec\\s.mp4']);
   });
 
   it('MP4 and RTMP together go through tee, the recording surviving a dropped stream', () => {
-    const a = ffmpegArgs({ crop, preset: PRESETS['1080p60']!, encoder: 'h264_amf', outputs: { mp4: 'C:\\rec\\s.mp4', rtmp: 'rtmp://live.twitch.tv/app/live_123_secret' } });
-    expect(a.slice(-4)).toEqual(['+global_header', '-f', 'tee', '[f=mp4:movflags=+frag_keyframe+empty_moov:frag_duration=1000000:onfail=ignore]C:/rec/s.mp4|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123_secret']);
-    expect(a).toEqual(expect.arrayContaining(['-c:v', 'h264_amf', '-g', '120']));
-    expect(a).not.toContain('pipe:0');
+    const { grab, mux } = captureArgs({ crop, preset: PRESETS['1080p60']!, encoder: 'h264_amf', outputs: { mp4: 'C:\\rec\\s.mp4', rtmp: 'rtmp://live.twitch.tv/app/live_123_secret' } });
+    expect(mux.slice(-4)).toEqual(['+global_header', '-f', 'tee', '[f=mp4:movflags=+frag_keyframe+empty_moov:frag_duration=1000000:onfail=ignore]C:/rec/s.mp4|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123_secret']);
+    expect(grab).toEqual(expect.arrayContaining(['-c:v', 'h264_amf', '-g', '120']));
+    expect(mux).toEqual(expect.arrayContaining(['-i', 'pipe:3', '-map', '0:v']));
+    expect([...grab, ...mux]).not.toContain('pipe:0');
+    expect(grab.join(' ')).not.toContain('rtmp');
   });
 
   it('a vertical window scales its short side to the preset (720p = 720x1280)', () => {
@@ -71,8 +79,10 @@ describe('ffmpeg args', () => {
   });
 
   it('trims the capture latency off the start of the audio', () => {
-    const a = ffmpegArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: 390 }, outputs: { mp4: 'x.mp4' } });
+    const a = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: 390 }, outputs: { mp4: 'x.mp4' } }).mux;
     expect(a[a.indexOf('-af') + 1]).toBe('atrim=start=0.390,asetpts=PTS-STARTPTS');
+    const early = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: -90 }, outputs: { mp4: 'x.mp4' } }).mux;
+    expect(early[early.indexOf('-af') + 1]).toBe('adelay=delays=90:all=1');
   });
 
   it('never upscales a small window', () => {

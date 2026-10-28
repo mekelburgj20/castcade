@@ -2,7 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
-//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late 390]  (ms; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
+//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late -110]  (ms the audio trails the picture, negative = early; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
 //   [--preview]  shows what the stream would carry (same crop, scale and overlay) in an ffplay window, and nothing is
 //   recorded or sent: adjust --portrait N / --landscape / --preset until it looks right, close it (Q), then run again
 //   without --preview and with the same options.
@@ -22,7 +22,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENCODER_PREFERENCE, ffmpegArgs, ffplayPreviewArgs, outputSize, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
+import { captureArgs, ENCODER_PREFERENCE, ffplayPreviewArgs, outputSize, PRESETS, redactRtmp } from '../dist/media/ffmpeg-args.js';
+import { spawnFfmpeg } from '../dist/media/ffmpeg-pipeline.js';
 import { resolveFfmpeg } from '../dist/media/ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, probeWindows } from '../dist/media/window-geometry.js';
 
@@ -41,8 +42,9 @@ const rtmp = process.env.CASTCADE_RTMP_URL || null;
 const micArg = opt('mic', '');
 const micName = micArg.startsWith('--') ? '' : micArg;
 // Mix levels in percent: --game-volume 50 --mic-volume 300 (defaults).
-// How far the loopback audio trails the picture, cut from the audio's start (measured 2026-10-25 with --sync-test).
-const avLateMs = Number(opt('av-late', '390'));
+// How far the loopback audio trails the picture: positive is cut from its start, negative delays it (re-measured
+// 2026-10-28 with --sync-test after the capture became grab → mux: about 110 ms early).
+const avLateMs = Number(opt('av-late', '-110'));
 const gameVolume = Number(opt('game-volume', '50'));
 const micVolume = Number(opt('mic-volume', '300'));
 if (!(gameVolume >= 0 && micVolume >= 0)) throw new Error('--game-volume / --mic-volume take a percentage');
@@ -82,7 +84,7 @@ const WORKLET = \`class P extends AudioWorkletProcessor {
     const out = new Float32Array(l.length * 2);
     for (let k = 0; k < l.length; k++) { out[2 * k] = l[k]; out[2 * k + 1] = r[k]; }
     this.buf.push(out); this.n += l.length;
-    if (this.n >= 4800) { // ~100 ms per IPC message
+    if (this.n >= 1024) { // ~21 ms per IPC message, as the app (src/main/stream-host.ts)
       const all = new Float32Array(this.n * 2); let o = 0;
       for (const b of this.buf) { all.set(b, o); o += b.length; }
       this.port.postMessage(all.buffer, [all.buffer]); this.buf = []; this.n = 0;
@@ -207,7 +209,7 @@ app.whenReady().then(async () => {
     log('audio', JSON.stringify(s));
   });
   const startFfmpeg = () => {
-    const args = ffmpegArgs({
+    const args = captureArgs({
       crop,
       rotate,
       preset,
@@ -217,31 +219,29 @@ app.whenReady().then(async () => {
       outputs: { mp4, ...(rtmp ? { rtmp } : {}) },
       seconds,
     });
-    log('ffmpeg', redactRtmp(args.join(' ')));
-    ff = spawn(FFMPEG, args, { cwd: outDir, windowsHide: true });
-    ff.stdin.on('error', () => {});
+    log('ffmpeg grab', args.grab.join(' '));
+    log('ffmpeg mux', redactRtmp(args.mux.join(' ')));
+    // The app's runner: grab → mux, PCM from the first video on (see src/media/ffmpeg-pipeline.ts).
+    ff = spawnFfmpeg(FFMPEG, args, { cwd: outDir });
     let last = '';
     let errors = [];
     // ffmpeg's whole log beside the MP4 (stream key redacted): the first error names the cause, which the summary's
     // last five lines lost (rig 2026-10-27: two runs ended with only "Generic error in an external library").
     const ffLog = mp4.replace(/\.mp4$/, '.ffmpeg.log');
     const t0ff = Date.now();
-    ff.stderr.on('data', (b) => {
-      for (const line of b.toString().split(/\r|\n/)) {
-        if (!line.trim()) continue;
-        if (/frame=/.test(line)) last = line.trim();
-        else {
-          try {
-            appendFileSync(ffLog, `${((Date.now() - t0ff) / 1000).toFixed(1)}s ${redactRtmp(line.trim())}\n`);
-          } catch {
-            /* a diagnostic; never stop the capture for it */
-          }
-          if (/error|failed|invalid|lost/i.test(line)) errors.push(redactRtmp(line.trim()));
+    ff.onLine((line) => {
+      if (/frame=/.test(line)) last = line.trim();
+      else {
+        try {
+          appendFileSync(ffLog, `${((Date.now() - t0ff) / 1000).toFixed(1)}s ${redactRtmp(line.trim())}\n`);
+        } catch {
+          /* a diagnostic; never stop the capture for it */
         }
+        if (/error|failed|invalid|lost/i.test(line)) errors.push(redactRtmp(line.trim()));
       }
     });
     const statsTimer = setInterval(() => last && log(last), 10_000);
-    ff.on('close', (code) => {
+    ff.onExit((code) => {
       clearInterval(statsTimer);
       clearInterval(overlayTimer);
       let size = 0;
@@ -267,7 +267,7 @@ app.whenReady().then(async () => {
     pcmChunks++;
     pcmBytes += chunk.byteLength;
     if (!ff) startFfmpeg(); // start once audio flows, so the two inputs begin together
-    if (ff && ff.stdin.writable) ff.stdin.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+    ff?.write(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
   });
   // --sync-test (with --desktop): a window at the capture's top-left flashes white and beeps every 2 s, so the recording
   // shows how far the audio trails the picture (analyse with scripts/av-sync.py).
@@ -295,8 +295,8 @@ setInterval(() => {
       log('no audio after 10 s; recording video without the loopback track', JSON.stringify(status));
       startFfmpeg();
       // keep ffmpeg's stdin fed with silence so the audio input exists
-      const silence = Buffer.alloc(4800 * 8);
-      setInterval(() => ff && ff.stdin.writable && ff.stdin.write(silence), 100);
+      const silence = Buffer.alloc(1024 * 8);
+      setInterval(() => ff?.write(silence), 21);
     }
   }, 10_000);
 });

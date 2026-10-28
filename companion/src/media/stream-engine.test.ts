@@ -60,10 +60,17 @@ function harness(plan: Partial<StreamPlan> = {}) {
   const logs: string[] = [];
   const deps: EngineDeps = {
     probe: async (): Promise<WindowProbe> => ({ outputs: OUTPUTS, windows }),
-    spawn: (args) => {
-      const i = args.indexOf('-f');
+    spawn: (cmd) => {
+      // A capture is a grab → mux pair (ffmpeg-pipeline.ts); one run to the engine, so one FakeProc.
+      const args = Array.isArray(cmd) ? cmd : [...cmd.grab, ...cmd.mux];
+      if (!Array.isArray(cmd)) {
+        expect(cmd.grab).not.toContain('pipe:0');
+        expect(cmd.grab.at(-1)).toBe('pipe:1');
+        expect(cmd.mux).toContain('pipe:3');
+      }
       const tee = args.find((a) => a.startsWith('[f=mp4'));
-      const mp4 = tee ? tee.slice(tee.indexOf(']') + 1, tee.indexOf('|')) : args[i + 1] === 'mp4' ? args.at(-1)! : null;
+      const plain = args.findIndex((a, n) => a === 'mp4' && args[n - 1] === '-f');
+      const mp4 = tee ? tee.slice(tee.indexOf(']') + 1, tee.indexOf('|')) : plain >= 0 ? args.at(-1)! : null;
       const p = new FakeProc(args, mp4);
       procs.push(p);
       return p;
@@ -169,6 +176,24 @@ describe('stream engine (D1.2 + D1.3)', () => {
     expect(kinds[4]).toMatchObject({ segment: 'seg-001.mp4' });
     expect(kinds[5]).toMatchObject({ reason: 'player closed', sha256: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect(kinds[7]).toMatchObject({ reason: 'stopped' });
+  });
+
+  it('a score that posts after its table closed still names the segment its game was played in', async () => {
+    const h = harness({ rtmpUrl: null });
+    h.setWindows([PLAYER]);
+    await h.engine.start(h.plan);
+    await h.tick();
+    await h.tick();
+    h.engine.noteGame({ table: 'Monster Bash', inGame: true, scores: [], player: 1, ball: 1 });
+    h.setWindows([EDITOR]); // quit at once: the segment closes before the witness posts
+    await h.tick();
+    h.engine.noteGame({ table: 'Monster Bash', inGame: false, scores: [3_443_920], player: 1, ball: 2 });
+    h.engine.noteCapture({ table: 'Monster Bash', rom: 'mb_106b', players: 1, score: 3_443_920, launchedAt: '', exitedAt: '', outcome: 'ingested', mode: 'live' });
+    await h.engine.stop();
+    const text = readFileSync(join(root, readdirSync(root)[0]!, MANIFEST), 'utf8');
+    const entries = text.trim().split('\n').map((l) => JSON.parse(l) as { kind: string; segment?: string | null });
+    expect(entries.find((e) => e.kind === 'game_end')).toMatchObject({ segment: 'seg-001.mp4' });
+    expect(entries.find((e) => e.kind === 'score_posted')).toMatchObject({ segment: 'seg-001.mp4' });
   });
 
   it('a capture that dies on its own (lost Desktop Duplication) restarts after a backoff that grows, then resets', async () => {

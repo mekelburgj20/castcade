@@ -30,7 +30,12 @@ export interface StreamSettings {
   keepSessions: number;
   maxRecordings: number | null;
   gameVolume: number;
-  avLateMs: number;
+  /**
+   * How far the captured audio trails the picture, in ms: positive is cut from the audio's start, negative delays it.
+   * Measured with the spike's `--desktop --sync-test` + `scripts/av-sync.py`. Renamed from `avLateMs` (390, the one-
+   * process capture) when the capture became grab → mux (2026-10-28), so a stored 390 is dropped rather than misapplied.
+   */
+  audioLateMs: number;
 }
 
 export const DEFAULT_STREAM_SETTINGS: StreamSettings = {
@@ -44,7 +49,9 @@ export const DEFAULT_STREAM_SETTINGS: StreamSettings = {
   keepSessions: 3,
   maxRecordings: null,
   gameVolume: 50,
-  avLateMs: 390,
+  // grab → mux with 21 ms audio chunks: audio early by 121, 86 and 132 ms (medians of three runs, ±20 ms within a run;
+  // rig 2026-10-28), so delayed 110.
+  audioLateMs: -110,
 };
 
 export interface StreamSettingsFile extends Partial<StreamSettings> {
@@ -92,7 +99,7 @@ function sanitize(o: Record<string, unknown>, d: StreamSettings): StreamSettings
     keepSessions: num(o.keepSessions, 0, 1000) !== undefined ? Math.floor(o.keepSessions as number) : d.keepSessions,
     maxRecordings: o.maxRecordings === null ? null : num(o.maxRecordings, 1, 100_000) !== undefined ? Math.floor(o.maxRecordings as number) : d.maxRecordings,
     gameVolume: num(o.gameVolume, 0, 400) ?? d.gameVolume,
-    avLateMs: num(o.avLateMs, 0, 2000) ?? d.avLateMs,
+    audioLateMs: num(o.audioLateMs, -1000, 2000) ?? d.audioLateMs,
   };
 }
 
@@ -125,7 +132,7 @@ export function planFor(
     rotate: s.rotate,
     record: want.record,
     rtmpUrl,
-    audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: s.avLateMs },
+    audio: { sampleRate: 48000, channels: 2, kbps: 160, lateMs: s.audioLateMs },
     recordingsDir: s.recordingsDir ?? ctx.recordingsDir,
     retention: { keepSessions: s.keepSessions, maxRecordings: s.maxRecordings },
     fontFile: ctx.fontFile,
