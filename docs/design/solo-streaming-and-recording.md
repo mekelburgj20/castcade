@@ -31,6 +31,10 @@ source.
 - **Window rect and DPI.** `ddagrab` captures one monitor (`output_idx`) with `offset_x/offset_y/video_size`. The rect must
   be in physical pixels (a DPI-unaware reader gets scaled coordinates) and relative to that monitor; DXGI output order may
   not match Electron's display order. A moved or resized window restarts the capture.
+- **Rotated monitors.** Desktop Duplication returns a rotated monitor's frame as the panel scans it, not as the desktop
+  shows it: a portrait display (the usual desktop-VPX setup) comes in 2560x1440 with the table on its side (owner's rig,
+  2026-10-27, DXGI rotation 4). The probe reads each output's rotation; the crop is mapped into the panel's frame for
+  `ddagrab` and the picture turned upright after scaling (`ffmpeg-args.ts` `ddagrabRegion`).
 - **Audio.** ffmpeg has no Windows loopback input without a virtual device. Electron's display-media handler offers
   `audio: 'loopback'` (Windows); the companion captures it and pipes raw PCM to ffmpeg's stdin. Loopback is the whole
   system mix (voice chat, music), so the Stream page says so; per-process capture is a later improvement.

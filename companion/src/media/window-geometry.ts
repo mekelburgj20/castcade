@@ -23,6 +23,8 @@ export interface DxgiOutput {
   device: string;
   desktop: Rect;
   monitor: string;
+  /** DXGI_MODE_ROTATION: 1 identity (0 unspecified), 2 = 90, 3 = 180, 4 = 270 (a monitor set to portrait). */
+  rotation?: number;
 }
 
 export interface VpxWindow {
@@ -38,12 +40,17 @@ export interface WindowProbe {
   windows: VpxWindow[];
 }
 
+/** A region of one output, in desktop coordinates relative to the output (what the user sees, rotation applied). */
 export interface DdagrabCrop {
   outputIdx: number;
   offsetX: number;
   offsetY: number;
   width: number;
   height: number;
+  /** Set only for a rotated output (DXGI 2 / 3 / 4) with its desktop size: `ddagrab` then needs the region in the
+   * panel's own, unrotated frame and the picture turned upright (`ffmpeg-args.ts` `ddagrabRegion`). */
+  rotation?: 2 | 3 | 4;
+  screen?: { width: number; height: number };
 }
 
 const PS_SCRIPT = String.raw`
@@ -114,7 +121,7 @@ public static class CastcadeProbe {
           DXGI_OUTPUT_DESC d;
           output.GetDesc(out d);
           var c = d.DesktopCoordinates;
-          outs.Add(string.Format("{{\"index\":{0},\"device\":{1},\"desktop\":{2},\"monitor\":\"{3}\"}}", i, J(d.DeviceName), R(c.Left, c.Top, c.Right - c.Left, c.Bottom - c.Top), d.Monitor.ToInt64()));
+          outs.Add(string.Format("{{\"index\":{0},\"device\":{1},\"desktop\":{2},\"monitor\":\"{3}\",\"rotation\":{4}}}", i, J(d.DeviceName), R(c.Left, c.Top, c.Right - c.Left, c.Bottom - c.Top), d.Monitor.ToInt64(), d.Rotation));
         }
       }
     }
@@ -199,7 +206,10 @@ export function cropFor(win: VpxWindow, outputs: DxgiOutput[]): DdagrabCrop | nu
   const width = (x1 - x0) & ~1;
   const height = (y1 - y0) & ~1;
   if (width < 64 || height < 64) return null;
-  return { outputIdx: out.index, offsetX: x0 - out.desktop.left, offsetY: y0 - out.desktop.top, width, height };
+  const crop: DdagrabCrop = { outputIdx: out.index, offsetX: x0 - out.desktop.left, offsetY: y0 - out.desktop.top, width, height };
+  const r = out.rotation;
+  if (r === 2 || r === 3 || r === 4) Object.assign(crop, { rotation: r, screen: { width: out.desktop.width, height: out.desktop.height } });
+  return crop;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
+import { ddagrabRegion, ffmpegArgs, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
 import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
@@ -147,5 +147,33 @@ describe('ffmpeg location (D1.6)', () => {
       throw new Error('ENOENT');
     });
     expect(noStamp).toMatchObject({ source: 'bundled', build: null });
+  });
+});
+
+describe('rotated monitors (owner rig 2026-10-27: display 2 set to portrait, DXGI rotation 4)', () => {
+  const PORTRAIT: DxgiOutput[] = [OUTPUTS[0]!, { ...OUTPUTS[1]!, desktop: { left: 2560, top: 0, width: 1440, height: 2560 }, rotation: 4 }];
+  const full = cropFor(win({ client: { left: 2560, top: 0, width: 1440, height: 2560 } }), PORTRAIT)!;
+
+  it('the crop keeps desktop coordinates and carries the rotation; an unrotated output carries none', () => {
+    expect(full).toEqual({ outputIdx: 1, offsetX: 0, offsetY: 0, width: 1440, height: 2560, rotation: 4, screen: { width: 1440, height: 2560 } });
+    expect(cropFor(win({ monitor: '380248181', client: { left: 0, top: 0, width: 2560, height: 1440 } }), [{ ...OUTPUTS[0]!, rotation: 1 }])).not.toHaveProperty('rotation');
+  });
+
+  it('maps the crop into the panel frame and turns it upright, for each rotation', () => {
+    expect(ddagrabRegion(full)).toEqual({ x: 0, y: 0, width: 2560, height: 1440, turn: 'transpose=cclock' });
+    // The top of the portrait screen (the backbox) is the right of the panel's frame (captured on the rig).
+    const top = { ...full, height: 1280 };
+    expect(ddagrabRegion(top)).toEqual({ x: 1280, y: 0, width: 1280, height: 1440, turn: 'transpose=cclock' });
+    expect(ddagrabRegion({ ...top, rotation: 2 })).toEqual({ x: 0, y: 0, width: 1280, height: 1440, turn: 'transpose=clock' });
+    const land = { outputIdx: 0, offsetX: 0, offsetY: 0, width: 1280, height: 720, rotation: 3 as const, screen: { width: 2560, height: 1440 } };
+    expect(ddagrabRegion(land)).toEqual({ x: 1280, y: 720, width: 1280, height: 720, turn: 'hflip,vflip' });
+    expect(ddagrabRegion({ ...land, rotation: undefined })).toMatchObject({ x: 0, y: 0, turn: null });
+  });
+
+  it('the chain grabs the panel frame, scales it, then turns it: a 720x1280 picture', () => {
+    const f = videoFilter({ crop: full, preset: PRESETS['720p30'] });
+    expect(f).toContain('video_size=2560x1440');
+    expect(f).toContain('scale=-2:720,transpose=cclock,');
+    expect(outputSize({ crop: full, preset: PRESETS['720p30'] })).toEqual({ width: 720, height: 1280 });
   });
 });

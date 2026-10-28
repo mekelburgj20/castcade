@@ -95,21 +95,42 @@ export function videoFilter(o: PictureOptions): string {
   return `${videoChain(o)}[v]`;
 }
 
+/**
+ * Where `ddagrab` must cut, and how to turn the cut upright. Desktop Duplication hands over a rotated monitor's frame as
+ * the panel scans it, not as the desktop shows it: the owner's display 2, set to portrait, reports DXGI rotation 4
+ * (ROTATE270) and `ddagrab` gives 2560x1440 with the table on its side and the backbox on the right (2026-10-27). So the
+ * crop (desktop coordinates) is mapped into the panel's frame, and the picture is turned back: rotation 4 a quarter
+ * turn counter-clockwise, 2 clockwise, 3 a half turn.
+ */
+export function ddagrabRegion(c: DdagrabCrop): { x: number; y: number; width: number; height: number; turn: string | null } {
+  const s = c.screen;
+  if (!c.rotation || !s) return { x: c.offsetX, y: c.offsetY, width: c.width, height: c.height, turn: null };
+  if (c.rotation === 3) return { x: s.width - c.offsetX - c.width, y: s.height - c.offsetY - c.height, width: c.width, height: c.height, turn: 'hflip,vflip' };
+  // A quarter turn swaps the axes: the panel's frame is s.height wide and s.width tall.
+  if (c.rotation === 4) return { x: s.height - c.offsetY - c.height, y: c.offsetX, width: c.height, height: c.width, turn: 'transpose=cclock' };
+  return { x: c.offsetY, y: s.width - c.offsetX - c.width, width: c.height, height: c.width, turn: 'transpose=clock' };
+}
+
 /** The capture → picture chain with no output label (the encode labels it `[v]`; ffplay's lavfi input takes it bare). */
 function videoChain(o: PictureOptions): string {
   const c = o.crop;
   // The preset names the short side (720p = 1280x720, or 720x1280 for a vertical window); never upscale.
   const portrait = c.height > c.width;
   const outH = outputShortSide(o);
+  const g = ddagrabRegion(c);
+  // A quarter turn is applied after the scale (a quarter of the pixels to move), so the scale runs in the panel's
+  // orientation, where a portrait picture is still landscape.
+  const scaleTall = g.turn?.startsWith('transpose') ? !portrait : portrait;
   const parts = [
-    `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${c.offsetX}:offset_y=${c.offsetY}:video_size=${c.width}x${c.height}:draw_mouse=0`,
+    `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${g.x}:offset_y=${g.y}:video_size=${g.width}x${g.height}:draw_mouse=0`,
     'hwdownload',
     'format=bgra',
     // Desktop Duplication only delivers a frame when the screen changes (a still desktop gave 192 frames in 20 s
     // on the owner's rig); repeat the last one so the stream is constant-rate, as RTMP ingests expect.
     `fps=${o.preset.fps}`,
-    portrait ? `scale=${outH}:-2` : `scale=-2:${outH}`,
+    scaleTall ? `scale=${outH}:-2` : `scale=-2:${outH}`,
   ];
+  if (g.turn) parts.push(g.turn);
   if (o.overlay) {
     parts.push(
       `drawtext=fontfile=${filterValue(o.overlay.fontFile)}:textfile=${filterValue(o.overlay.textFile)}:reload=1:fontsize=${Math.round(outH / 26)}:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=${Math.round(outH / 72)}:x=${Math.round(outH / 36)}:y=h-th-${Math.round(outH / 36)}`,
