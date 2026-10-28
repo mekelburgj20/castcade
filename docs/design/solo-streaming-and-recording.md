@@ -120,20 +120,21 @@ frames at 720p30 NVENC, audio and video of equal length. What needs the rig:
 7. **Commentary (optional):** add `--mic` to the command (`... -- --seconds 120 --mic`) and talk while it runs. The spike
    lists the microphones it sees; `--mic "Focusrite"` picks the first whose name contains that text.
 
-**Result (owner's rig, 2026-10-27): framing, cost and Twitch passed; the capture died mid-run twice.** Desktop VPX 10.8.0 in cabinet mode (`BGSet = 1`) on a landscape monitor
+**Result (owner's rig, 2026-10-27): passed.** Desktop VPX 10.8.0 in cabinet mode (`BGSet = 1`) on a landscape monitor
 standing portrait, `--rotate 90 --portrait 0` (§3 "VPX cabinet mode"), NVENC:
 
 | Run | Picture | Frames | VPX F11 |
 |---|---|---|---|
 | 720p30, live on Twitch | 720x1280, 4.6 Mbps, upright, overlay on | 3600 / 3600 | ~450-460 fps, 0.5-0.7 ms, the same without capture |
-| 1080p30, live | 1080x1920, 6.2 Mbps | 3234: capture failed at 108 s, none dropped before | ~350-420 fps, 0.7 ms |
-| 720p30 `--bundled`, live (the installer's ffmpeg, D1.6) | 720x1280, 4.7 Mbps, same picture | 2339: capture failed at 78 s, none dropped before | same as the first run |
+| 1080p30, live | 1080x1920, 6.2 Mbps | 3234 until the player quit at 108 s, none dropped | ~350-420 fps, 0.7 ms |
+| 720p30 `--bundled`, live (the installer's ffmpeg, D1.6) | 720x1280, 4.7 Mbps, same picture | 2339 until the player quit at 78 s, none dropped | same as the first run |
 
-Both failures ended ffmpeg with `Generic error in an external library` from the filter graph, i.e. `ddagrab` lost Desktop
-Duplication (DXGI access lost: a full-screen or mode change, alt-tab off an exclusive full-screen VPX, VPX closing, a
-secure-desktop prompt). The last frames show normal play. The spike kept only the last five error lines, which lost
-`ddagrab`'s own line with the code; it now writes ffmpeg's whole log beside the MP4. Whatever the trigger, the product
-must survive it: D1.3 restarts the capture when it is lost (the MP4 continues in a new segment, RTMP reconnects).
+Both short runs ended when the owner quit to the table editor (Esc → Quit to editor): the full-screen player window
+closes, Desktop Duplication is lost and `ddagrab` stops ffmpeg with `Generic error in an external library`. Expected,
+and it shapes the product: a stream session outlives one table. When the player window goes, the companion keeps the
+stream up on a standby slate, ends the MP4 segment, and restarts the capture on the next player window (D1.3); any other
+loss of Desktop Duplication (alt-tab off exclusive full screen, a secure-desktop prompt) takes the same path. The spike
+now writes ffmpeg's whole log beside the MP4 (the summary's last five lines had dropped `ddagrab`'s own line).
 
 Earlier the same day: a `?bandwidthtest=true` push (stable 4,497 kbps, config Excellent); a windowed player showed the
 taskbar and the VR-tuned +10 % slice cut the table (hence `--preview`); a Windows-rotated portrait monitor came in on
