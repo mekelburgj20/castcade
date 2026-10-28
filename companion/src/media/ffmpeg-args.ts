@@ -180,11 +180,34 @@ export function ffplayPreviewArgs(o: PreviewOptions): string[] {
 }
 
 export function ffmpegArgs(o: EncodeOptions): string[] {
+  return encodeArgs(videoFilter(o), o);
+}
+
+/** The stream's stand-in while no table is open (D1.3): the same size and rate, a line of text, the game audio. */
+export interface SlateOptions extends Omit<EncodeOptions, 'crop' | 'rotate' | 'overlay' | 'outputs'> {
+  size: { width: number; height: number };
+  text: string;
+  fontFile: string;
+  /** RTMP only: the slate is never recorded. */
+  rtmp: string;
+}
+
+export function slateArgs(o: SlateOptions): string[] {
+  const { width, height } = o.size;
+  const short = Math.min(width, height);
+  const filter =
+    `color=c=0x0d1117:s=${width}x${height}:r=${o.preset.fps},` +
+    `drawtext=fontfile=${filterValue(o.fontFile)}:text=${filterValue(o.text)}:fontsize=${Math.round(short / 18)}:fontcolor=white:x=(w-tw)/2:y=(h-th)/2,` +
+    'format=yuv420p[v]';
+  return encodeArgs(filter, { ...o, outputs: { rtmp: o.rtmp } });
+}
+
+function encodeArgs(filter: string, o: Omit<EncodeOptions, 'crop'>): string[] {
   const { mp4, rtmp } = o.outputs;
   if (!mp4 && !rtmp) throw new Error('ffmpegArgs: no output');
   const args = ['-hide_banner', '-nostdin', '-loglevel', 'info', '-stats_period', '2'];
   if (o.audio) args.push('-thread_queue_size', '1024', '-f', 'f32le', '-ar', String(o.audio.sampleRate), '-ac', String(o.audio.channels), '-i', 'pipe:0');
-  args.push('-filter_complex', videoFilter(o), '-map', '[v]');
+  args.push('-filter_complex', filter, '-map', '[v]');
   if (o.audio) {
     args.push('-map', '0:a');
     if (o.audio.lateMs) args.push('-af', `atrim=start=${(o.audio.lateMs / 1000).toFixed(3)},asetpts=PTS-STARTPTS`);
