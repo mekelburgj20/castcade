@@ -8,7 +8,7 @@
 import { BrowserWindow, desktopCapturer, ipcMain, session } from 'electron';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { ENCODER_PREFERENCE, type VideoEncoder } from '../media/ffmpeg-args.js';
 import type { FfmpegLocation } from '../media/ffmpeg-path.js';
 import { StreamEngine, type EngineStatus, type FfmpegProcess } from '../media/stream-engine.js';
@@ -147,9 +147,25 @@ export function createStreamHost(opts: {
     const sources = await desktopCapturer.getSources({ types: ['screen'] });
     cb({ video: sources[0], audio: 'loopback' });
   });
+  let firstPcm: (() => void) | null = null;
   ipcMain.on(PCM_CHANNEL, (e, chunk: Uint8Array) => {
-    if (audioWin && e.sender === audioWin.webContents) engine.pushPcm(chunk);
+    if (!audioWin || e.sender !== audioWin.webContents) return;
+    firstPcm?.();
+    engine.pushPcm(chunk);
   });
+  /** True once PCM flows; false after `ms` without any (ffmpeg would wait on its audio input forever). */
+  const audioFlowing = (ms: number): Promise<boolean> =>
+    new Promise((resolve) => {
+      const t = setTimeout(() => {
+        firstPcm = null;
+        resolve(false);
+      }, ms);
+      firstPcm = () => {
+        clearTimeout(t);
+        firstPcm = null;
+        resolve(true);
+      };
+    });
   ipcMain.on(AUDIO_STATUS_CHANNEL, (e, s: unknown) => {
     if (audioWin && e.sender === audioWin.webContents) log.info(`stream: audio ${JSON.stringify(s)}`);
   });
@@ -159,10 +175,14 @@ export function createStreamHost(opts: {
       show: false,
       width: 200,
       height: 100,
-      // Local content only (a data: URL built here); node for ipcRenderer, in its own session.
+      // Local content only (a page written here); node for ipcRenderer, in its own session.
       webPreferences: { partition: AUDIO_PARTITION, nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
     });
-    void audioWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(audioPage(settings.gameVolume))}`);
+    // A file, not a data: URL: getDisplayMedia needs a secure context, which file:// is and data: is not
+    // (navigator.mediaDevices was undefined in the first in-app run, 2026-10-28; the spike loads a file too).
+    const page = join(dirname(opts.file), 'stream-audio.html');
+    writeFileSync(page, audioPage(settings.gameVolume));
+    void audioWin.loadFile(page);
   };
   const stopAudio = (): void => {
     if (audioWin && !audioWin.isDestroyed()) audioWin.destroy();
@@ -194,7 +214,13 @@ export function createStreamHost(opts: {
     async start(want) {
       const plan = planFor(settings, want, { key: plainKey(), recordingsDir: opts.defaultRecordingsDir, fontFile: existsSync(FONT) ? FONT : null, appVersion: opts.appVersion });
       if (plan.record) mkdirSync(plan.recordingsDir, { recursive: true });
+      const flowing = audioFlowing(5000);
       startAudio();
+      if (!(await flowing)) {
+        log.warn('stream: no game sound from the loopback capture after 5 s; going on without sound');
+        plan.audio = null;
+        stopAudio();
+      }
       try {
         await engine.start(plan);
       } catch (e) {

@@ -158,7 +158,11 @@ async function quit(host: WitnessHost): Promise<void> {
   app.quit();
 }
 
-function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger, streamHost: StreamHost): void {
+function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger, maybeStream: StreamHost | null): void {
+  const sh = (): StreamHost => {
+    if (!maybeStream) throw new Error('streaming is unavailable this run (see the log)');
+    return maybeStream;
+  };
   const str = (v: unknown, what: string): string => {
     if (typeof v !== 'string') throw new Error(`${what} must be a string`);
     return v;
@@ -229,17 +233,17 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
   ipcMain.handle(IPC.appLogPath, () => logger.file);
   ipcMain.handle(IPC.appOverlayUrl, () => overlay?.url() ?? null);
-  ipcMain.handle(IPC.streamStatus, () => streamHost.status());
+  ipcMain.handle(IPC.streamStatus, () => sh().status());
   ipcMain.handle(IPC.streamStart, async (_e, want: unknown) => {
     const w = (want ?? {}) as { record?: unknown; live?: unknown };
-    return streamHost.start({ record: w.record === true, live: w.live === true });
+    return sh().start({ record: w.record === true, live: w.live === true });
   });
-  ipcMain.handle(IPC.streamStop, () => streamHost.stop());
-  ipcMain.handle(IPC.streamSettingsGet, () => streamHost.settings());
-  ipcMain.handle(IPC.streamSettingsSet, (_e, patch: unknown) => streamHost.setSettings((patch ?? {}) as Record<string, never>));
-  ipcMain.handle(IPC.streamSetKey, (_e, key: unknown) => streamHost.setKey(typeof key === 'string' ? key : null));
+  ipcMain.handle(IPC.streamStop, () => sh().stop());
+  ipcMain.handle(IPC.streamSettingsGet, () => sh().settings());
+  ipcMain.handle(IPC.streamSettingsSet, (_e, patch: unknown) => sh().setSettings((patch ?? {}) as Record<string, never>));
+  ipcMain.handle(IPC.streamSetKey, (_e, key: unknown) => sh().setKey(typeof key === 'string' ? key : null));
   ipcMain.handle(IPC.streamOpenRecordings, async () => {
-    const dir = streamHost.recordingsDir();
+    const dir = sh().recordingsDir();
     mkdirSync(dir, { recursive: true });
     await shell.openPath(dir);
   });
@@ -298,21 +302,28 @@ async function main(): Promise<void> {
   sidecarWatch = watch;
 
   // D1.2 / D1.3: recording and streaming; the key shares the pairing token's codec.
-  const streamHost = createStreamHost({
-    file: join(userData, 'stream.json'),
-    codec: tokenCodec(logger),
-    defaultRecordingsDir: join(app.getPath('videos'), 'Castcade'),
-    ffmpeg: resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir }),
-    appVersion,
-    log: logger,
-  });
-  stream = streamHost;
-  streamHost.onStatus((s) => {
-    if (win && !win.isDestroyed()) win.webContents.send(IPC.streamStatusEvent, s);
-    tray?.refresh(host.status());
-  });
-  host.onGame((g) => streamHost.noteGame(g));
-  host.onCapture((c) => streamHost.noteCapture(c));
+  // A failure here turns streaming off for this run; it never stops the witness.
+  let streamHost: StreamHost | null = null;
+  try {
+    streamHost = createStreamHost({
+      file: join(userData, 'stream.json'),
+      codec: tokenCodec(logger),
+      defaultRecordingsDir: join(app.getPath('videos'), 'Castcade'),
+      ffmpeg: resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir }),
+      appVersion,
+      log: logger,
+    });
+    const sh = streamHost;
+    stream = sh;
+    sh.onStatus((st) => {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.streamStatusEvent, st);
+      tray?.refresh(host.status());
+    });
+    host.onGame((g) => sh.noteGame(g));
+    host.onCapture((c) => sh.noteCapture(c));
+  } catch (e) {
+    logger.error(`stream: could not set up (${describeError(e)}); streaming and recording are off this run`);
+  }
 
   registerIpc(store, host, tables, watch, logger, streamHost);
   host.onNotice((n) => tray?.notify(n.title, n.message));
@@ -348,7 +359,7 @@ async function main(): Promise<void> {
   }, host.status());
 
   host.onStatus((status) => {
-    streamHost.noteTable(status.currentTable);
+    streamHost?.noteTable(status.currentTable);
     tray?.refresh(status);
     if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
     overlay?.publish();
