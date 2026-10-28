@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.18] — 2026-10-27
+
 ### Streaming
 - An overlay for OBS: Castcade serves a page on `http://127.0.0.1:47390/overlay` (Settings → OBS overlay has the
   address and a Copy button) that a streamer adds as a Browser source. It shows the table, the score of the player up
@@ -14,11 +16,17 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   paired) and the limited-attempts line, and follows the game live over server-sent events. Loopback only, a foreign
   Host header is refused; `?scale=` and `?side=right` adjust it; a taken port is logged and leaves it off (D1.1).
   `media/overlay-server.ts`; the witness's new `game` event (`LiveGame`) feeds it.
+- The D1.0 stream spike (developer tool, not in the app) gains `--preview`: an ffplay window shows the stream's exact
+  crop, scale and overlay before going live, and nothing is recorded or sent. `media/ffmpeg-args.ts`
+  (`ffplayPreviewArgs`), `media/window-geometry.ts` (`previewPlacement`), `scripts/stream-spike.mjs`.
 
 ### Witness
 - A game quit before game over says so: the score call carries `quit=1` and, when the machine reports it,
   `quit_ball` (the ball in play); a game played to game over carries `quit=0`. ArcAid marks quit games on the board
   (owner ruling 2026-10-27; ArcAid side `docs/arcaid-side-changes.md` §16). The game still posts and counts (B16).
+- Wire: `quit` (0/1) and `quit_ball` (1–10) are new optional query params on `/api/witness/score`; neither is sent when
+  game over is unknown. Covered by the TFTC journal fixture cut at ball 2 (`witness.test.ts`). `witness.ts` (`quitWire`),
+  `capture.ts`, `queue.ts`, `arcaid-client.ts`.
 
 ### Import
 - "Patch my tables" removes Castcade's own patch from tables whose machine's live score can't be read (patched
