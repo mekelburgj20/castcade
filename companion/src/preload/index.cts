@@ -1,12 +1,12 @@
 /**
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
- * mirrors it). Every call is `ipcMain.handle`-backed; the only push is `witness:status`.
+ * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress` and `stream:statusEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -30,7 +30,15 @@ const CH = {
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
   tablesProgressEvent: 'tables:progress',
+  streamStatus: 'stream:status',
+  streamStart: 'stream:start',
+  streamStop: 'stream:stop',
+  streamSettingsGet: 'stream:settings:get',
+  streamSettingsSet: 'stream:settings:set',
+  streamSetKey: 'stream:setKey',
+  streamOpenRecordings: 'stream:openRecordings',
   witnessStatusEvent: 'witness:status',
+  streamStatusEvent: 'stream:statusEvent',
 } as const;
 
 function argValue(flag: string): string {
@@ -73,6 +81,22 @@ const castcade: CastcadeApi = {
     logPath: () => ipcRenderer.invoke(CH.appLogPath),
     overlayUrl: () => ipcRenderer.invoke(CH.appOverlayUrl),
     pickFolder: (defaultPath) => ipcRenderer.invoke(CH.appPickFolder, defaultPath),
+  },
+  stream: {
+    status: () => ipcRenderer.invoke(CH.streamStatus),
+    start: (want) => ipcRenderer.invoke(CH.streamStart, want),
+    stop: () => ipcRenderer.invoke(CH.streamStop),
+    settings: () => ipcRenderer.invoke(CH.streamSettingsGet),
+    setSettings: (patch) => ipcRenderer.invoke(CH.streamSettingsSet, patch),
+    setKey: (key) => ipcRenderer.invoke(CH.streamSetKey, key),
+    openRecordings: () => ipcRenderer.invoke(CH.streamOpenRecordings),
+    onStatus(cb) {
+      const listener = (_e: Electron.IpcRendererEvent, s: EngineStatus): void => cb(s);
+      ipcRenderer.on(CH.streamStatusEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(CH.streamStatusEvent, listener);
+      };
+    },
   },
   tables: {
     defaults: () => ipcRenderer.invoke(CH.tablesDefaults),

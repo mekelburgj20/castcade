@@ -56,12 +56,12 @@ describe('ffmpeg args', () => {
     expect(vf).toMatch(/^ddagrab=output_idx=1:framerate=30:offset_x=100:offset_y=31:video_size=1920x1080:draw_mouse=0,hwdownload,format=bgra,fps=30,scale=-2:720,drawtext=fontfile='C\\:\/Windows\/Fonts\/segoeui.ttf':textfile='overlay.txt':reload=1:/);
     expect(vf.endsWith(',format=yuv420p[v]')).toBe(true);
     expect(a).toEqual(expect.arrayContaining(['-c:v', 'h264_nvenc', '-b:v', '4500k', '-g', '60', '-c:a', 'aac', '-t', '120']));
-    expect(a.slice(-6)).toEqual(['-movflags', '+frag_keyframe+empty_moov', '-f', 'mp4', '-y', 'C:\\rec\\s.mp4']);
+    expect(a.slice(-8)).toEqual(['-movflags', '+frag_keyframe+empty_moov', '-frag_duration', '1000000', '-f', 'mp4', '-y', 'C:\\rec\\s.mp4']);
   });
 
   it('MP4 and RTMP together go through tee, the recording surviving a dropped stream', () => {
     const a = ffmpegArgs({ crop, preset: PRESETS['1080p60']!, encoder: 'h264_amf', outputs: { mp4: 'C:\\rec\\s.mp4', rtmp: 'rtmp://live.twitch.tv/app/live_123_secret' } });
-    expect(a.slice(-4)).toEqual(['+global_header', '-f', 'tee', '[f=mp4:movflags=+frag_keyframe+empty_moov:onfail=ignore]C:/rec/s.mp4|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123_secret']);
+    expect(a.slice(-4)).toEqual(['+global_header', '-f', 'tee', '[f=mp4:movflags=+frag_keyframe+empty_moov:frag_duration=1000000:onfail=ignore]C:/rec/s.mp4|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123_secret']);
     expect(a).toEqual(expect.arrayContaining(['-c:v', 'h264_amf', '-g', '120']));
     expect(a).not.toContain('pipe:0');
   });

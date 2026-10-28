@@ -308,6 +308,42 @@ interface LoginItemState {
   openAtLogin: boolean;
 }
 
+/** D1.2 / D1.3 (mirrors media/stream-engine.ts EngineStatus). */
+interface StreamStatus {
+  state: 'idle' | 'waiting' | 'capturing' | 'slate';
+  live: boolean;
+  recording: boolean;
+  wantsLive: boolean;
+  wantsRecording: boolean;
+  session: string | null;
+  segment: string | null;
+  table: string | null;
+  picture: { width: number; height: number } | null;
+  health: { frames: number; fps: number; speed: number } | null;
+  restarts: number;
+  lastError: string | null;
+  since: string | null;
+}
+
+/** Mirrors media/stream-settings.ts StreamSettings + main/stream-host.ts StreamSettingsView. */
+interface StreamSettings {
+  preset: string;
+  orientation: 'portrait' | 'landscape';
+  shiftPercent: number;
+  rotate: 0 | 90 | 180 | 270;
+  service: 'twitch' | 'youtube' | 'custom';
+  customIngest: string | null;
+  recordingsDir: string | null;
+  keepSessions: number;
+  maxRecordings: number | null;
+  gameVolume: number;
+  avLateMs: number;
+}
+interface StreamSettingsView extends StreamSettings {
+  hasKey: boolean;
+  defaultRecordingsDir: string;
+}
+
 interface CastcadeBridge {
   readonly appVersion: string;
   readonly protocolVersion: number;
@@ -323,6 +359,16 @@ interface CastcadeBridge {
   readonly settings: {
     get(): Promise<RedactedSettings>;
     set(patch: SettingsPatch): Promise<RedactedSettings>;
+  };
+  readonly stream: {
+    status(): Promise<StreamStatus>;
+    start(want: { record: boolean; live: boolean }): Promise<StreamStatus>;
+    stop(): Promise<StreamStatus>;
+    settings(): Promise<StreamSettingsView>;
+    setSettings(patch: Partial<StreamSettings>): Promise<StreamSettingsView>;
+    setKey(key: string | null): Promise<StreamSettingsView>;
+    openRecordings(): Promise<void>;
+    onStatus(cb: (s: StreamStatus) => void): () => void;
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;

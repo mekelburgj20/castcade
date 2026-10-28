@@ -1,6 +1,7 @@
 import { useEffect, useState, type MouseEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
 import { ImportTables } from './ImportTables.js';
+import { StreamCard } from './StreamCard.js';
 
 const PRESETS = [
   { label: 'Production', url: 'https://arcaid.app' },
@@ -122,6 +123,8 @@ export function Settings({ state }: { state: CastcadeState }) {
       </div>
 
       <ImportTables state={state} />
+
+      <StreamCard state={state} />
 
       <OverlayCard state={state} />
 

@@ -9,6 +9,7 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +34,7 @@ import { SidecarWatch } from './sidecar-watch.js';
 import { manifestDirFor } from '../witness/witness.js';
 import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../media/overlay-server.js';
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
+import { createStreamHost, type StreamHost } from './stream-host.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -47,6 +49,8 @@ let sidecarWatch: SidecarWatch | null = null;
 let updater: UpdaterHandle | null = null;
 /** D1.1: the OBS overlay page on 127.0.0.1; null until started (or when its port was taken). */
 let overlay: OverlayServer | null = null;
+/** D1.2 / D1.3: recording and streaming. */
+let stream: StreamHost | null = null;
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -148,12 +152,13 @@ async function quit(host: WitnessHost): Promise<void> {
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();
+  await stream?.stop().catch(() => undefined);
   await host.stop();
   log?.info('quit');
   app.quit();
 }
 
-function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger): void {
+function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger, streamHost: StreamHost): void {
   const str = (v: unknown, what: string): string => {
     if (typeof v !== 'string') throw new Error(`${what} must be a string`);
     return v;
@@ -224,6 +229,20 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
   ipcMain.handle(IPC.appLogPath, () => logger.file);
   ipcMain.handle(IPC.appOverlayUrl, () => overlay?.url() ?? null);
+  ipcMain.handle(IPC.streamStatus, () => streamHost.status());
+  ipcMain.handle(IPC.streamStart, async (_e, want: unknown) => {
+    const w = (want ?? {}) as { record?: unknown; live?: unknown };
+    return streamHost.start({ record: w.record === true, live: w.live === true });
+  });
+  ipcMain.handle(IPC.streamStop, () => streamHost.stop());
+  ipcMain.handle(IPC.streamSettingsGet, () => streamHost.settings());
+  ipcMain.handle(IPC.streamSettingsSet, (_e, patch: unknown) => streamHost.setSettings((patch ?? {}) as Record<string, never>));
+  ipcMain.handle(IPC.streamSetKey, (_e, key: unknown) => streamHost.setKey(typeof key === 'string' ? key : null));
+  ipcMain.handle(IPC.streamOpenRecordings, async () => {
+    const dir = streamHost.recordingsDir();
+    mkdirSync(dir, { recursive: true });
+    await shell.openPath(dir);
+  });
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
@@ -278,7 +297,24 @@ async function main(): Promise<void> {
   });
   sidecarWatch = watch;
 
-  registerIpc(store, host, tables, watch, logger);
+  // D1.2 / D1.3: recording and streaming; the key shares the pairing token's codec.
+  const streamHost = createStreamHost({
+    file: join(userData, 'stream.json'),
+    codec: tokenCodec(logger),
+    defaultRecordingsDir: join(app.getPath('videos'), 'Castcade'),
+    ffmpeg: resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir }),
+    appVersion,
+    log: logger,
+  });
+  stream = streamHost;
+  streamHost.onStatus((s) => {
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.streamStatusEvent, s);
+    tray?.refresh(host.status());
+  });
+  host.onGame((g) => streamHost.noteGame(g));
+  host.onCapture((c) => streamHost.noteCapture(c));
+
+  registerIpc(store, host, tables, watch, logger, streamHost);
   host.onNotice((n) => tray?.notify(n.title, n.message));
 
   if (!argv.includes('--hidden')) win = createWindow();
@@ -300,9 +336,19 @@ async function main(): Promise<void> {
       updater?.quitAndInstall();
     },
     quit: () => void quit(host),
+    streamState: () => {
+      if (!stream) return null;
+      const st = stream.status();
+      return { running: st.state !== 'idle', live: st.wantsLive, recording: st.wantsRecording, hasKey: stream.settings().hasKey };
+    },
+    streamStart: (want) => {
+      void stream?.start(want).catch((e: unknown) => tray?.notify('Castcade: could not start', describeError(e)));
+    },
+    streamStop: () => void stream?.stop(),
   }, host.status());
 
   host.onStatus((status) => {
+    streamHost.noteTable(status.currentTable);
     tray?.refresh(status);
     if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
     overlay?.publish();

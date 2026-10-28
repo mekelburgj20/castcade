@@ -7,6 +7,18 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+### Streaming and recording
+- Castcade records and streams on its own: Settings → **Stream and record** (and the tray) has Go live and record,
+  Record only and Go live only, the stream key (Twitch, YouTube or any RTMP URL; stored encrypted, never shown again,
+  never sent to ArcAid), shape (vertical 9:16 slice or the whole window), rotate (for VPX cabinet mode), quality and how
+  many sessions to keep. A session outlives one table: quitting to the editor ends that recording segment and a live
+  stream shows a "back in a moment" screen until the next table opens; a capture or stream connection that drops
+  restarts by itself (D1.3). `media/stream-engine.ts`, `media/stream-settings.ts`, `main/stream-host.ts`,
+  `views/StreamCard.tsx`, `main/tray.ts`.
+- Recordings go to `Videos\Castcade`, one folder per session: an MP4 per table played and a hash-chained
+  `manifest.jsonl` holding each MP4's sha256, game starts and ends, and every score posted while it recorded; the newest
+  3 sessions are kept by default (D1.2). `media/recording.ts`.
+
 ### Witness
 - Opening an original table (no ROM: JPSalas-style, Scorbit-anchored, ScoreServer or generic script) now says Castcade
   can't read its score yet and its games won't post. It used to say "only the last game of this session will post",

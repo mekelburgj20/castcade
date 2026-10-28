@@ -56,6 +56,13 @@ export interface EncodeOptions {
   seconds?: number;
 }
 
+/**
+ * MP4 fragment length (µs). The engine stops ffmpeg by killing it (stdin carries the audio, so there is no "q"), which
+ * loses the fragment being written: at the 2 s keyframe interval that was up to 2 s per segment (engine smoke run,
+ * 2026-10-28); 1 s fragments halve it.
+ */
+const FRAG_US = 1_000_000;
+
 /** Escape a value for a filtergraph option inside single quotes (`C:/x` → `C\:/x`). */
 export function filterValue(v: string): string {
   return `'${v.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")}'`;
@@ -216,9 +223,9 @@ function encodeArgs(filter: string, o: Omit<EncodeOptions, 'crop'>): string[] {
   args.push(...encoderArgs(o.encoder, o.preset));
   if (o.seconds !== undefined) args.push('-t', String(o.seconds));
   if (mp4 && rtmp) {
-    args.push('-flags', '+global_header', '-f', 'tee', `[f=mp4:movflags=+frag_keyframe+empty_moov:onfail=ignore]${teePath(mp4)}|[f=flv:onfail=ignore]${rtmp}`);
+    args.push('-flags', '+global_header', '-f', 'tee', `[f=mp4:movflags=+frag_keyframe+empty_moov:frag_duration=${FRAG_US}:onfail=ignore]${teePath(mp4)}|[f=flv:onfail=ignore]${rtmp}`);
   } else if (mp4) {
-    args.push('-movflags', '+frag_keyframe+empty_moov', '-f', 'mp4', '-y', mp4);
+    args.push('-movflags', '+frag_keyframe+empty_moov', '-frag_duration', String(FRAG_US), '-f', 'mp4', '-y', mp4);
   } else {
     args.push('-f', 'flv', rtmp!);
   }

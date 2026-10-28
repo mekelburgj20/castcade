@@ -5,8 +5,11 @@
  */
 import type { RedactedSettings, SettingsPatch } from './settings.js';
 import type { WitnessStatus } from '../witness/types.js';
+import type { EngineStatus } from '../media/stream-engine.js';
+import type { StreamSettings } from '../media/stream-settings.js';
+import type { StreamSettingsView } from './stream-host.js';
 
-export type { RedactedSettings, SettingsPatch, WitnessStatus };
+export type { EngineStatus, RedactedSettings, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
   witnessStatus: 'witness:status',
@@ -28,8 +31,16 @@ export const IPC = {
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
   tablesProgressEvent: 'tables:progress',
+  streamStatus: 'stream:status',
+  streamStart: 'stream:start',
+  streamStop: 'stream:stop',
+  streamSettingsGet: 'stream:settings:get',
+  streamSettingsSet: 'stream:settings:set',
+  streamSetKey: 'stream:setKey',
+  streamOpenRecordings: 'stream:openRecordings',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
+  streamStatusEvent: 'stream:statusEvent',
 } as const;
 
 // ------------------------------------------------------------------------- table import (C7) --
@@ -135,6 +146,19 @@ export interface CastcadeApi {
     overlayUrl(): Promise<string | null>;
     /** Native folder picker; resolves to the chosen folder, or null when the player cancelled. */
     pickFolder(defaultPath: string | null): Promise<string | null>;
+  };
+  /** D1.2 / D1.3: record and / or go live. The key goes in, never comes back out. */
+  stream: {
+    status(): Promise<EngineStatus>;
+    start(want: { record: boolean; live: boolean }): Promise<EngineStatus>;
+    stop(): Promise<EngineStatus>;
+    settings(): Promise<StreamSettingsView>;
+    setSettings(patch: Partial<StreamSettings>): Promise<StreamSettingsView>;
+    /** Stores the key encrypted; null or blank clears it. */
+    setKey(key: string | null): Promise<StreamSettingsView>;
+    /** Opens the recordings folder in Explorer. */
+    openRecordings(): Promise<void>;
+    onStatus(cb: (s: EngineStatus) => void): () => void;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;

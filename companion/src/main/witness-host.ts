@@ -5,7 +5,7 @@
  * module directly, so recreation never leaks a stale instance into IPC handlers.
  */
 import { createWitness } from '../witness/index.js';
-import type { LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
+import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
 import { describeError } from './log.js';
@@ -28,6 +28,8 @@ export interface WitnessHost {
   /** D1.1: the game on screen (live mode), for the OBS overlay. */
   liveGame(): LiveGame | null;
   onGame(listener: (game: LiveGame | null) => void): () => void;
+  /** D1.2: every capture (posted, queued, skipped), so a recording can tie the score to its segment. */
+  onCapture(listener: (capture: LastCapture) => void): () => void;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -45,6 +47,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   let lastCheckin: string | null = null;
   const noticeListeners = new Set<(n: WitnessNotice) => void>();
   const gameListeners = new Set<(g: LiveGame | null) => void>();
+  const captureListeners = new Set<(c: LastCapture) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -66,12 +69,13 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
         for (const l of noticeListeners) l(n);
       }),
       w.on('exit', (i) => log.info(`witness: exit ${i.table} after ${i.durationSec}s`)),
-      w.on('capture', (c) =>
+      w.on('capture', (c) => {
         log.info(
           `witness: capture ${c.table} rom=${c.rom ?? '-'} players=${c.players} score=${c.score ?? '-'} ` +
             `outcome=${c.outcome}${c.detail ? ` (${c.detail})` : ''}`,
-        ),
-      ),
+        );
+        for (const l of captureListeners) l(c);
+      }),
       w.on('error', (m) => log.error(`witness: ${m}`)),
       w.on('game', (g) => {
         for (const l of gameListeners) l(g);
@@ -170,6 +174,12 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       gameListeners.add(listener);
       return () => {
         gameListeners.delete(listener);
+      };
+    },
+    onCapture(listener) {
+      captureListeners.add(listener);
+      return () => {
+        captureListeners.delete(listener);
       };
     },
   };
