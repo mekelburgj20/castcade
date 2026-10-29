@@ -152,7 +152,9 @@ Both short runs ended when the owner quit to the table editor (Esc → Quit to e
 closes, Desktop Duplication is lost and `ddagrab` stops ffmpeg with `Generic error in an external library`. Expected,
 and it shapes the product: a stream session outlives one table. When the player window goes, the companion keeps the
 stream up on a standby slate, ends the MP4 segment, and restarts the capture on the next player window (D1.3); any other
-loss of Desktop Duplication (alt-tab off exclusive full screen, a secure-desktop prompt) takes the same path. The spike
+loss of Desktop Duplication (a secure-desktop prompt) takes the same path. Alt-tab does **not** lose it: on the owner's
+rig (2026-10-28) focus moving off VPX kept the capture running and the stream showed the desktop and a chat window. D1.9
+covers the stream whenever the player window is not in front. The spike
 now writes ffmpeg's whole log beside the MP4 (the summary's last five lines had dropped `ddagrab`'s own line).
 
 Earlier the same day: a `?bandwidthtest=true` push (stable 4,497 kbps, config Excellent); a windowed player showed the
