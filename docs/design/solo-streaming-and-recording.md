@@ -93,6 +93,28 @@ source.
   setting became `audioLateMs` (negative = delay the audio, `adelay`), default −110; a check run gave a median of −3 ms
   (−19 to +18). The old `avLateMs` (390) is not read, so a stored value cannot misapply. `av-sync.py`'s −30 dB beep
   threshold missed the beeps at the rig's volume that day (peak −27 dB); −45 found all of them.
+  **Again for D1.9** (the grab became a lavfi input, below): two runs at −110 gave medians −30 and −40, so the default
+  moved to −145; three check runs gave +40, +8 and +2 ms. Runs differ by up to ~40 ms (the start alignment), more than
+  the spread inside one run. The offset is stored only when the player sets their own, so a retuned default reaches
+  everyone else.
+- **Never stream the desktop (D1.9):** Desktop Duplication films the monitor, not VPX. When VPX loses focus (alt-tab, a
+  click elsewhere) the capture keeps running and shows the desktop: the owner's 2026-10-28 run sent a chat window out
+  twice (3 s and 14 s). A restart onto the slate would take a second and reconnect the stream, so the grab carries a
+  **cover** (a full-frame box in the slate's colour and "Paused: back in a moment") that the engine switches on the fly:
+  - a PowerShell helper reports the foreground window's process every change (polled every 25 ms); anything but a
+    `VPinballX*` process in front covers at once; VPX back in front uncovers after 750 ms (leaving and re-entering
+    exclusive full screen flickers); focus unknown (the helper died) uncovers and logs it;
+  - the switch is ffmpeg's interactive `c` command written to the grab's stdin (`c<target> -1 enable 1`, no newline
+    after the `c`). Measured 37–144 ms from the write to the first covered frame: ffmpeg reads its keyboard every
+    100 ms, and the grab's `-stats_period 0.05` sets how often it looks;
+  - **trap:** ffmpeg sends a `c` command to every filtergraph through the graph's inputs. A graph whose only source is
+    `ddagrab` inside `-filter_complex` has no inputs, never reads them, and after two commands its queue is full and
+    ffmpeg's command reading blocks for the rest of the run (the cover stuck on, 8.1.1). So the grab takes `ddagrab`
+    as a lavfi input (`-f lavfi -i ddagrab=…,hwdownload,format=bgra`) and runs one graph after it: 16 of 16 commands
+    applied, and the grab as smooth (273 new frames in 5 s of 300; 275 before);
+  - the MP4 is covered too, and the manifest gets `cover_start` (with what was in front) / `cover_end`, so a reviewer
+    sees why a stretch shows no table. What is in front of VPX on the same monitor while VPX keeps focus (an
+    always-on-top window) is not covered.
 - **Stream key** encrypted with Electron `safeStorage`, never sent to ArcAid, never logged.
 
 ## 4. Build order (each step ships alone)

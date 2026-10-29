@@ -23,10 +23,18 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   ball froze for 50–100 ms several times a second (15–18 new frames a second at 1080p60 on the owner's rig); a test
   pattern now keeps 276 of 300 frames new with the sound up to 400 ms late. Stopping lets the second process finish the
   file, so the last second is no longer lost (D1.8). `media/ffmpeg-pipeline.ts`, `media/ffmpeg-args.ts` (`captureArgs`).
-- Sound and picture line up within about 20 ms (measured with the flash-and-beep test): the sound starts with the first
-  video, travels in ~21 ms chunks instead of 100 ms, and is delayed 110 ms by default. The setting is now `audioLateMs`
-  (negative = delay); a stored `avLateMs` from the one-process capture is ignored. `main/stream-host.ts`,
-  `media/stream-settings.ts`.
+- Sound and picture line up (medians within about 40 ms over several flash-and-beep runs, the owner heard them in sync):
+  the sound starts with the first video, travels in ~21 ms chunks instead of 100 ms, and is delayed 145 ms by default.
+  The setting is now `audioLateMs` (negative = delay), written to the settings file only when changed from the default,
+  so a retuned default still applies; a stored `avLateMs` from the one-process capture is ignored.
+  `main/stream-host.ts`, `media/stream-settings.ts`.
+- The desktop never goes out on the stream or into the recording: the moment VPX stops being the window in front
+  (alt-tab, a click on another window), the picture is covered with "Paused: back in a moment" within about a tenth of
+  a second, without restarting the capture or dropping the stream; it comes off 0.75 s after VPX is back in front. The
+  recording's manifest marks each covered stretch and what was in front, and Settings says when the stream is covered.
+  The owner's first long stream had sent a chat window out twice (D1.9). `media/focus-watch.ts`,
+  `media/ffmpeg-args.ts` (`coverCommand`; the screen grab is now an ffmpeg input so the cover takes commands),
+  `media/stream-engine.ts`, `main/stream-host.ts`, `views/StreamCard.tsx`.
 - A score that posts after its table was closed (the witness posts about a second after the game) is tied to the
   recording its game was played in, not to none. `media/stream-engine.ts`.
 

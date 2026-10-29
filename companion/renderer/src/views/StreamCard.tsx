@@ -170,6 +170,7 @@ function describeStream(st: StreamStatus | null): string {
     case 'slate':
       return `Live: no table open, showing "back in a moment". Start a table to go back on.`;
     case 'capturing': {
+      if (st.covered) return `${st.wantsLive ? 'Live' : 'Recording'}, covered: VPX is not the window in front, so viewers see "Paused: back in a moment". Click the table to go back on.`;
       const pic = st.picture ? `${st.picture.width}x${st.picture.height}` : '';
       const h = st.health ? `, ${Math.round(st.health.fps)} fps, speed ${st.health.speed.toFixed(2)}x` : '';
       return `${st.wantsLive ? 'Live' : 'Recording'}: ${st.table ?? 'the table'} ${pic}${h}${st.recording && st.segment ? ` → ${st.segment}` : ''}.`;

@@ -58,7 +58,7 @@ describe('ffmpeg pipeline: a capture is grab → mux', () => {
     const { mux, grab, spawn } = setup();
     expect(spawn.mock.calls.map((c) => [c[1], (c[2] as { stdio: string[] }).stdio])).toEqual([
       [['mux-args'], ['pipe', 'ignore', 'pipe', 'pipe']],
-      [['grab-args'], ['ignore', 'pipe', 'pipe']],
+      [['grab-args'], ['pipe', 'pipe', 'pipe']],
     ]);
     grab.stdout.write(Buffer.from('ts-1'));
     grab.stdout.write(Buffer.from('ts-2'));
@@ -76,6 +76,18 @@ describe('ffmpeg pipeline: a capture is grab → mux', () => {
     proc.write(new Uint8Array([2, 2]));
     await tick();
     expect(Buffer.concat(mux.got.stdin)).toEqual(Buffer.from([2, 2]));
+  });
+
+  it('control() writes to grab\'s stdin (the cover command), never to mux\'s, and stops once the run is stopping', async () => {
+    const { proc, mux, grab } = setup();
+    proc.control('cdrawbox@cover -1 enable 1\n');
+    await tick();
+    expect(Buffer.concat(grab.got.stdin).toString()).toBe('cdrawbox@cover -1 enable 1\n');
+    expect(mux.got.stdin).toEqual([]);
+    proc.kill();
+    proc.control('late');
+    await tick();
+    expect(Buffer.concat(grab.got.stdin).toString()).not.toContain('late');
   });
 
   it('prefixes grab\'s log lines and splits progress lines on \\r', async () => {

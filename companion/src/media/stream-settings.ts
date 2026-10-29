@@ -34,6 +34,7 @@ export interface StreamSettings {
    * How far the captured audio trails the picture, in ms: positive is cut from the audio's start, negative delays it.
    * Measured with the spike's `--desktop --sync-test` + `scripts/av-sync.py`. Renamed from `avLateMs` (390, the one-
    * process capture) when the capture became grab → mux (2026-10-28), so a stored 390 is dropped rather than misapplied.
+   * Stored only when it differs from the default, so a retuned default reaches everyone who never set their own.
    */
   audioLateMs: number;
 }
@@ -50,8 +51,10 @@ export const DEFAULT_STREAM_SETTINGS: StreamSettings = {
   maxRecordings: null,
   gameVolume: 50,
   // grab → mux with 21 ms audio chunks: audio early by 121, 86 and 132 ms (medians of three runs, ±20 ms within a run;
-  // rig 2026-10-28), so delayed 110.
-  audioLateMs: -110,
+  // rig 2026-10-28), so delayed 110. The grab as a lavfi input (D1.9) puts the picture ~35 ms later again (two runs at
+  // -110: medians -30 and -40), so delayed 145: three check runs gave medians +40, +8 and +2 (late is the side viewers
+  // notice less; runs differ by up to ~40 ms, more than within one run).
+  audioLateMs: -145,
 };
 
 export interface StreamSettingsFile extends Partial<StreamSettings> {
@@ -104,7 +107,8 @@ function sanitize(o: Record<string, unknown>, d: StreamSettings): StreamSettings
 }
 
 export function writeStreamSettings(settings: StreamSettings, key: { scheme: string; value: string } | null): string {
-  const file: StreamSettingsFile = { version: STREAM_SETTINGS_VERSION, ...settings, key };
+  const { audioLateMs, ...rest } = settings;
+  const file: StreamSettingsFile = { version: STREAM_SETTINGS_VERSION, ...rest, ...(audioLateMs !== DEFAULT_STREAM_SETTINGS.audioLateMs ? { audioLateMs } : {}), key };
   return `${JSON.stringify(file, null, 2)}\n`;
 }
 

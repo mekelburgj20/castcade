@@ -321,6 +321,8 @@ interface StreamStatus {
   picture: { width: number; height: number } | null;
   health: { frames: number; fps: number; speed: number } | null;
   restarts: number;
+  /** VPX is not the foreground window, so the picture is covered (D1.9). */
+  covered: boolean;
   lastError: string | null;
   since: string | null;
 }

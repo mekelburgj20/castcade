@@ -9,6 +9,7 @@
  *     start together whatever ffmpeg's start-up time (the remaining offset is the audio path's, `lateMs`);
  *   - `kill()` stops `grab` only: its stdout ends, so `mux` gets the end of both inputs and finishes the MP4 cleanly
  *     (no fragment lost); `mux` is killed after `DRAIN_MS` if it has not exited by then;
+ *   - `control()` writes to `grab`'s stdin: the cover command (D1.9, `coverCommand`);
  *   - either process ending ends the run (`grab` dying ends `mux`'s inputs; `mux` dying kills `grab`); the exit code
  *     is `grab`'s when it failed on its own, else `mux`'s.
  */
@@ -53,6 +54,7 @@ export function spawnFfmpeg(ffmpeg: string, command: FfmpegCommand, opts: { cwd?
     void one.exited.then((c) => exitCb(c));
     return {
       write: (c) => writeTo(one.child.stdin, c),
+      control: () => {}, // the slate has nothing to cover; its stdin is the PCM
       kill: () => void one.child.kill(),
       onLine: (cb) => (lineCb = cb),
       onExit: (cb) => (exitCb = cb),
@@ -60,7 +62,8 @@ export function spawnFfmpeg(ffmpeg: string, command: FfmpegCommand, opts: { cwd?
   }
 
   const mux = start(command.mux, ['pipe', 'ignore', 'pipe', 'pipe'], '');
-  const grab = start(command.grab, ['ignore', 'pipe', 'pipe'], 'grab: ');
+  const grab = start(command.grab, ['pipe', 'pipe', 'pipe'], 'grab: ');
+  quiet(grab.child.stdin);
   const video = mux.child.stdio[3] as Writable | null;
   quiet(mux.child.stdin);
   quiet(video);
@@ -89,6 +92,9 @@ export function spawnFfmpeg(ffmpeg: string, command: FfmpegCommand, opts: { cwd?
   return {
     write: (c) => {
       if (videoFlowing) writeTo(mux.child.stdin, c);
+    },
+    control: (text) => {
+      if (!stopping) writeTo(grab.child.stdin, Buffer.from(text, 'utf8'));
     },
     kill: () => {
       if (stopping) return;

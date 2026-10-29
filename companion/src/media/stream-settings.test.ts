@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_STREAM_SETTINGS, ingestUrl, patchStreamSettings, planFor, readStreamSettings, writeStreamSettings } from './stream-settings.js';
 
 describe('stream settings (D1.2 / D1.3)', () => {
-  it('defaults: 720p30 portrait, Twitch, keep 3 sessions, game at 50 %, audio delayed 110 ms', () => {
+  it('defaults: 720p30 portrait, Twitch, keep 3 sessions, game at 50 %, audio delayed 145 ms', () => {
     expect(readStreamSettings(null)).toEqual({ settings: DEFAULT_STREAM_SETTINGS, key: null });
     expect(readStreamSettings('not json').settings).toEqual(DEFAULT_STREAM_SETTINGS);
     expect(readStreamSettings('{"version":99,"rotate":90}').settings.rotate).toBe(0);
-    expect(DEFAULT_STREAM_SETTINGS.audioLateMs).toBe(-110);
+    expect(DEFAULT_STREAM_SETTINGS.audioLateMs).toBe(-145);
     // the one-process capture's 390 ms trim is not carried over (it would put the audio ~480 ms early now)
     const old = readStreamSettings('{"version":1,"rotate":90,"avLateMs":390}').settings;
-    expect(old).toMatchObject({ rotate: 90, audioLateMs: -110 });
+    expect(old).toMatchObject({ rotate: 90, audioLateMs: -145 });
     expect(old).not.toHaveProperty('avLateMs');
   });
 
@@ -19,6 +19,12 @@ describe('stream settings (D1.2 / D1.3)', () => {
     expect(readStreamSettings(text)).toEqual({ settings: s, key: { scheme: 'safeStorage', value: 'b64' } });
     const bad = readStreamSettings(JSON.stringify({ version: 1, rotate: 45, preset: '4k', shiftPercent: 99, keepSessions: -1, service: 'kick', customIngest: 'http://x' }));
     expect(bad.settings).toEqual(DEFAULT_STREAM_SETTINGS);
+  });
+
+  it('the audio offset is stored only when set away from the default, so a retuned default still reaches everyone', () => {
+    expect(writeStreamSettings(DEFAULT_STREAM_SETTINGS, null)).not.toContain('audioLateMs');
+    const own = writeStreamSettings({ ...DEFAULT_STREAM_SETTINGS, audioLateMs: -60 }, null);
+    expect(readStreamSettings(own).settings.audioLateMs).toBe(-60);
   });
 
   it('a patch from the UI keeps the current value for a bad field', () => {

@@ -11,10 +11,15 @@
  *   - no window while live → the slate (RTMP only, never recorded) keeps the broadcast up until the next table;
  *   - ffmpeg died on its own (lost Desktop Duplication, the push dropped) → back off 1, 2, 4 … 30 s and start again.
  * Twitch sees a short reconnect at each switch; the recording is one MP4 per capture run, listed in the manifest.
+ *
+ * Focus (D1.9): Desktop Duplication films the monitor, not VPX, so when VPX is not the foreground window the desktop
+ * (chat windows included) would go out (owner's rig 2026-10-28). The host reports focus within ~25 ms (`noteFocus`);
+ * the engine covers the capture at once without restarting it (`coverCommand`), uncovers `UNCOVER_MS` after VPX is
+ * back in front (re-entering exclusive full screen flickers), and marks each covered stretch in the manifest.
  */
 import { EventEmitter } from 'node:events';
 import type { LastCapture, LiveGame } from '../witness/types.js';
-import { captureArgs, outputSize, redactRtmp, slateArgs, type QualityPreset, type VideoEncoder } from './ffmpeg-args.js';
+import { captureArgs, coverCommand, outputSize, redactRtmp, slateArgs, type QualityPreset, type VideoEncoder } from './ffmpeg-args.js';
 import type { FfmpegCommand } from './ffmpeg-pipeline.js';
 import { applyRetention, RecordingSession } from './recording.js';
 import { cropFor, pickPlayfield, portraitSlice, type DdagrabCrop, type WindowProbe } from './window-geometry.js';
@@ -40,6 +45,8 @@ export interface StreamPlan {
 
 export interface FfmpegProcess {
   write(chunk: Uint8Array): void;
+  /** Text for a capture's grab (the cover command); ignored by a single process. */
+  control(text: string): void;
   kill(): void;
   onLine(cb: (line: string) => void): void;
   onExit(cb: (code: number | null) => void): void;
@@ -79,6 +86,8 @@ export interface EngineStatus {
   health: EngineHealth | null;
   /** ffmpeg runs that ended on their own (each one restarted). */
   restarts: number;
+  /** The capture is covered: VPX is not the foreground window (D1.9). */
+  covered: boolean;
   lastError: string | null;
   since: string | null;
 }
@@ -89,6 +98,8 @@ export const MAX_BACKOFF_MS = 30_000;
 /** A run this long resets the backoff. */
 export const HEALTHY_RUN_MS = 60_000;
 export const SLATE_TEXT = 'Back in a moment: next table loading';
+/** How long VPX must be back in front before the cover comes off. */
+export const UNCOVER_MS = 750;
 
 /** The tee muxer's line when the push fails while the recording goes on (`onfail=ignore`). */
 const PUSH_FAILED = /slave muxer #\d+ failed/i;
@@ -125,6 +136,9 @@ export class StreamEngine extends EventEmitter {
   /** The segment recording at the last game start / end: a score posts ~1 s after its game, maybe after the segment closed. */
   private gameSegment: string | null = null;
   private since: string | null = null;
+  private covered = false;
+  private coverReason: string | null = null;
+  private uncoverTimer: unknown = null;
 
   constructor(private readonly deps: EngineDeps) {
     super();
@@ -144,6 +158,7 @@ export class StreamEngine extends EventEmitter {
       picture: this.picture,
       health: this.health,
       restarts: this.restarts,
+      covered: this.covered,
       lastError: this.lastError,
       since: this.since,
     };
@@ -156,6 +171,9 @@ export class StreamEngine extends EventEmitter {
     this.plan = plan;
     Object.assign(this, { restarts: 0, failures: 0, backoffUntil: 0, lastError: null, errors: [], health: null, picture: null, pendingKey: null, steady: 0, gameSegment: null });
     this.since = new Date(this.deps.now()).toISOString();
+    this.clearUncover();
+    this.covered = false;
+    this.coverReason = null;
     if (plan.record) {
       this.session = await RecordingSession.open(plan.recordingsDir, this.deps.now);
       await this.session.append({ kind: 'session_start', app: plan.appVersion, preset: plan.preset.id, streaming: !!plan.rtmpUrl, recording: true });
@@ -175,6 +193,7 @@ export class StreamEngine extends EventEmitter {
     this.state = 'idle';
     if (this.timer !== null) this.deps.clearTimeout(this.timer);
     this.timer = null;
+    this.clearUncover();
     await this.stopRun(reason);
     if (this.session) await this.session.close(reason);
     this.session = null;
@@ -188,6 +207,44 @@ export class StreamEngine extends EventEmitter {
   /** Raw f32le PCM from the loopback capture; dropped while no ffmpeg runs. */
   pushPcm(chunk: Uint8Array): void {
     this.run?.proc.write(chunk);
+  }
+
+  /**
+   * Whether a VPX window is the foreground window (null = unknown: the focus watcher is not running; nothing is
+   * covered then). `exe` names what is in front instead, for the log.
+   */
+  noteFocus(vpxInFront: boolean | null, exe: string | null = null): void {
+    if (vpxInFront === false) {
+      this.clearUncover();
+      this.setCovered(true, `${exe ?? 'another window'} in front`);
+    } else if (vpxInFront === null) {
+      this.clearUncover();
+      this.setCovered(false, null);
+    } else if (this.covered && this.uncoverTimer === null && this.state !== 'idle') {
+      this.uncoverTimer = this.deps.setTimeout(() => {
+        this.uncoverTimer = null;
+        this.setCovered(false, null);
+      }, UNCOVER_MS);
+    }
+  }
+
+  private clearUncover(): void {
+    if (this.uncoverTimer !== null) this.deps.clearTimeout(this.uncoverTimer);
+    this.uncoverTimer = null;
+  }
+
+  private setCovered(on: boolean, reason: string | null): void {
+    if (on === this.covered || this.state === 'idle') return;
+    this.covered = on;
+    this.coverReason = reason;
+    const run = this.run;
+    if (run?.kind === 'capture') {
+      run.proc.control(coverCommand(on, !!this.plan?.fontFile));
+      this.deps.log.info(on ? `stream: covered (${reason})` : 'stream: uncovered (VPX in front)');
+      const segment = this.session?.segment ?? null;
+      if (segment) void this.session!.append(on ? { kind: 'cover_start', reason: reason ?? '', segment } : { kind: 'cover_end', segment });
+    }
+    this.emitStatus();
   }
 
   /** The witness's table name (the probe only sees "Visual Pinball Player"). */
@@ -293,8 +350,10 @@ export class StreamEngine extends EventEmitter {
       overlay: null,
       audio: plan.audio,
       outputs: { ...(mp4 ? { mp4 } : {}), ...(plan.rtmpUrl ? { rtmp: plan.rtmpUrl } : {}) },
+      cover: { on: this.covered, fontFile: plan.fontFile },
     });
     this.launch('capture', args, key);
+    if (this.covered && mp4) await this.session!.append({ kind: 'cover_start', reason: this.coverReason ?? '', segment: this.session!.segment });
     this.deps.log.info(`stream: capturing ${crop.width}x${crop.height}@out${crop.outputIdx}+${crop.offsetX},${crop.offsetY} → ${picture.width}x${picture.height}${mp4 ? ` into ${this.session!.segment}` : ''}`);
     this.setState('capturing');
   }

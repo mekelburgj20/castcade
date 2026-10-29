@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureArgs, ddagrabRegion, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
+import { captureArgs, coverCommand, ddagrabRegion, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
 import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
 import { cropFor, pickPlayfield, portraitSlice, previewPlacement, type DdagrabCrop, type DxgiOutput, type VpxWindow } from './window-geometry.js';
 
@@ -53,8 +53,10 @@ describe('ffmpeg args', () => {
     const { grab, mux } = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', overlay: { textFile: 'overlay.txt', fontFile: 'C:\\Windows\\Fonts\\segoeui.ttf' }, audio: { sampleRate: 48000, channels: 2, kbps: 160 }, outputs: { mp4: 'C:\\rec\\s.mp4' }, seconds: 120 });
     // grab: no audio input (one ffmpeg would hold the screen grab back while it waits for the late audio)
     expect(grab).not.toContain('pipe:0');
+    // the grab is a lavfi input (so the graph can take the cover command, D1.9), the picture chain one graph after it
+    expect(grab.slice(grab.indexOf('-f'), grab.indexOf('-f') + 4)).toEqual(['-f', 'lavfi', '-i', 'ddagrab=output_idx=1:framerate=30:offset_x=100:offset_y=31:video_size=1920x1080:draw_mouse=0,hwdownload,format=bgra']);
     const vf = grab[grab.indexOf('-filter_complex') + 1]!;
-    expect(vf).toMatch(/^ddagrab=output_idx=1:framerate=30:offset_x=100:offset_y=31:video_size=1920x1080:draw_mouse=0,hwdownload,format=bgra,fps=30,scale=-2:720,drawtext=fontfile='C\\:\/Windows\/Fonts\/segoeui.ttf':textfile='overlay.txt':reload=1:/);
+    expect(vf).toMatch(/^\[0\]fps=30,scale=-2:720,drawtext=fontfile='C\\:\/Windows\/Fonts\/segoeui.ttf':textfile='overlay.txt':reload=1:/);
     expect(vf.endsWith(',format=yuv420p[v]')).toBe(true);
     expect(grab).toEqual(expect.arrayContaining(['-c:v', 'h264_nvenc', '-b:v', '4500k', '-g', '60']));
     expect(grab.slice(-9)).toEqual(['-flags', '+global_header', '-f', 'matroska', '-live', '1', '-flush_packets', '1', 'pipe:1']);
@@ -87,6 +89,26 @@ describe('ffmpeg args', () => {
 
   it('never upscales a small window', () => {
     expect(videoFilter({ crop: { ...crop, height: 600, width: 800 }, preset: PRESETS['1080p30']!, encoder: 'libx264', outputs: { mp4: 'x' } })).toContain('scale=-2:600');
+  });
+
+  it('D1.9: the grab carries the cover (off or on at start) last before the pixel format, and listens on stdin for it', () => {
+    const font = 'C:\\Windows\\Fonts\\segoeui.ttf';
+    const off = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', outputs: { mp4: 'x.mp4' }, cover: { on: false, fontFile: font } }).grab;
+    // one graph, fed by the lavfi input (a graph with no input never reads ffmpeg's commands)
+    expect(off.filter((a) => a === '-filter_complex')).toHaveLength(1);
+    const vf = off[off.indexOf('-filter_complex') + 1]!;
+    expect(vf).toMatch(/^\[0\]fps=30,.*,format=yuv420p,drawbox@cover=x=0:y=0:w=iw:h=ih:color=0x0d1117:t=fill:enable=0,drawtext@covertext=fontfile='C\\:\/Windows\/Fonts\/segoeui.ttf':text='Paused\\: back in a moment':fontsize=40:.*:enable=0\[v\]$/);
+    expect(off).not.toContain('-nostdin');
+    expect(off).toEqual(expect.arrayContaining(['-stats_period', '0.05', '-map', '[v]']));
+    const on = captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', outputs: { mp4: 'x.mp4' }, cover: { on: true, fontFile: null } }).grab;
+    expect(on[on.indexOf('-filter_complex') + 1]).toMatch(/,format=yuv420p,drawbox@cover=x=0:y=0:w=iw:h=ih:color=0x0d1117:t=fill:enable=1\[v\]$/);
+    // no cover asked for (the spike): no cover filters
+    expect(captureArgs({ crop, preset: PRESETS['720p30']!, encoder: 'h264_nvenc', outputs: { mp4: 'x.mp4' } }).grab.join(' ')).not.toContain('@cover');
+  });
+
+  it('D1.9: the cover command is one ffmpeg `c` line per filter, with no newline after the c', () => {
+    expect(coverCommand(true, true)).toBe('cdrawbox@cover -1 enable 1\ncdrawtext@covertext -1 enable 1\n');
+    expect(coverCommand(false, false)).toBe('cdrawbox@cover -1 enable 0\n');
   });
 
   it('a stream key never reaches a log', () => {

@@ -2,7 +2,7 @@
 // game audio through Electron's loopback capture piped in as raw PCM, a live overlay line, an MP4 and optionally an RTMP push.
 //
 //   npm run spike:stream -w companion -- [--seconds 120] [--preset 720p30|1080p30|1080p60] [--mic ["name"]] [--desktop]
-//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late -110]  (ms the audio trails the picture, negative = early; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
+//   [--game-volume 50] [--mic-volume 300]  (percent)   [--av-late -145]  (ms the audio trails the picture, negative = early; --desktop --sync-test measures it)   [--portrait 10 | --landscape]  (vertical slice shift %, + = right; default vertical, 10)
 //   [--preview]  shows what the stream would carry (same crop, scale and overlay) in an ffplay window, and nothing is
 //   recorded or sent: adjust --portrait N / --landscape / --preset until it looks right, close it (Q), then run again
 //   without --preview and with the same options.
@@ -43,8 +43,9 @@ const micArg = opt('mic', '');
 const micName = micArg.startsWith('--') ? '' : micArg;
 // Mix levels in percent: --game-volume 50 --mic-volume 300 (defaults).
 // How far the loopback audio trails the picture: positive is cut from its start, negative delays it (re-measured
-// 2026-10-28 with --sync-test after the capture became grab → mux: about 110 ms early).
-const avLateMs = Number(opt('av-late', '-110'));
+// 2026-10-28 with --sync-test after the capture became grab → mux: about 110 ms early; about 145 once the grab became
+// a lavfi input, D1.9).
+const avLateMs = Number(opt('av-late', '-145'));
 const gameVolume = Number(opt('game-volume', '50'));
 const micVolume = Number(opt('mic-volume', '300'));
 if (!(gameVolume >= 0 && micVolume >= 0)) throw new Error('--game-volume / --mic-volume take a percentage');

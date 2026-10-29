@@ -33,6 +33,9 @@ export type ManifestEntry =
       /** Set once ArcAid says the score went to a Sanctioned tournament; such a session is never pruned. */
       sanctioned?: boolean;
     }
+  /** The capture was covered (VPX not in front, D1.9) / uncovered; a segment's covered stretches show no table. */
+  | { kind: 'cover_start'; reason: string; segment: string | null }
+  | { kind: 'cover_end'; segment: string | null }
   | { kind: 'session_end'; reason: string };
 
 export type ManifestLine = ManifestEntry & { seq: number; at: string; prev: string };

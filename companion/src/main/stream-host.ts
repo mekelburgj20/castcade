@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import { ENCODER_PREFERENCE, type VideoEncoder } from '../media/ffmpeg-args.js';
 import type { FfmpegLocation } from '../media/ffmpeg-path.js';
+import { isVpxExe, watchFocus, type FocusWatch } from '../media/focus-watch.js';
 import { spawnFfmpeg } from '../media/ffmpeg-pipeline.js';
 import { StreamEngine, type EngineStatus } from '../media/stream-engine.js';
 import { patchStreamSettings, planFor, readStreamSettings, writeStreamSettings, type StreamSettings } from '../media/stream-settings.js';
@@ -155,6 +156,24 @@ export function createStreamHost(opts: {
     audioWin = null;
   };
 
+  // ---- focus (D1.9): cover the capture whenever VPX is not the foreground window ----
+  let focus: FocusWatch | null = null;
+  const startFocus = (): void => {
+    if (focus) return;
+    focus = watchFocus(
+      (c) => engine.noteFocus(isVpxExe(c.exe), c.exe || null),
+      (why) => {
+        focus = null;
+        log.warn(`stream: the focus watch stopped (${why}); the stream is not covered when VPX loses focus`);
+        engine.noteFocus(null);
+      },
+    );
+  };
+  const stopFocus = (): void => {
+    focus?.stop();
+    focus = null;
+  };
+
   const listeners = new Set<(s: EngineStatus) => void>();
   engine.on('status', (s: EngineStatus) => {
     for (const l of listeners) l(s);
@@ -193,9 +212,11 @@ export function createStreamHost(opts: {
         stopAudio();
         throw e;
       }
+      startFocus();
       return engine.status();
     },
     async stop() {
+      stopFocus();
       await engine.stop();
       stopAudio();
       return engine.status();

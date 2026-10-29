@@ -2,9 +2,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PRESETS } from './ffmpeg-args.js';
+import { coverCommand, PRESETS } from './ffmpeg-args.js';
 import { MANIFEST, verifyManifest } from './recording.js';
-import { SLATE_TEXT, StreamEngine, type EngineDeps, type FfmpegProcess, type StreamPlan } from './stream-engine.js';
+import { SLATE_TEXT, StreamEngine, UNCOVER_MS, type EngineDeps, type FfmpegProcess, type StreamPlan } from './stream-engine.js';
 import type { DxgiOutput, VpxWindow, WindowProbe } from './window-geometry.js';
 
 const OUTPUTS: DxgiOutput[] = [
@@ -28,6 +28,10 @@ class FakeProc implements FfmpegProcess {
   }
   write(c: Uint8Array): void {
     this.written += c.length;
+  }
+  readonly controls: string[] = [];
+  control(text: string): void {
+    this.controls.push(text);
   }
   kill(): void {
     this.killed = true;
@@ -58,6 +62,7 @@ function harness(plan: Partial<StreamPlan> = {}) {
   let windows: VpxWindow[] = [EDITOR];
   const procs: FakeProc[] = [];
   const logs: string[] = [];
+  const timers: { fn: () => void; ms: number; live: boolean }[] = [];
   const deps: EngineDeps = {
     probe: async (): Promise<WindowProbe> => ({ outputs: OUTPUTS, windows }),
     spawn: (cmd) => {
@@ -77,8 +82,14 @@ function harness(plan: Partial<StreamPlan> = {}) {
     },
     encoder: async () => 'h264_nvenc',
     now: () => t,
-    setTimeout: () => null, // the test drives tick() by hand
-    clearTimeout: () => {},
+    // The test drives tick() by hand; other timers (the uncover delay) fire with fire(ms).
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms, live: true });
+      return timers.length - 1;
+    },
+    clearTimeout: (h) => {
+      if (typeof h === 'number' && timers[h]) timers[h].live = false;
+    },
     log: { info: (m) => logs.push(m), warn: (m) => logs.push(`WARN ${m}`) },
   };
   const full: StreamPlan = {
@@ -108,6 +119,15 @@ function harness(plan: Partial<StreamPlan> = {}) {
     logs,
     tick,
     setWindows: (w: VpxWindow[]) => (windows = w),
+    fire: (ms: number) => {
+      for (const x of timers) {
+        if (x.live && x.ms === ms) {
+          x.live = false;
+          x.fn();
+        }
+      }
+    },
+    manifest: () => readFileSync(join(root, readdirSync(root)[0]!, MANIFEST), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; segment?: string | null; reason?: string }),
   };
 }
 
@@ -260,5 +280,75 @@ describe('stream engine (D1.2 + D1.3)', () => {
     await h.engine.start(h.plan);
     await h.tick();
     expect(h.procs[0]!.args.join(' ')).not.toContain('drawtext');
+  });
+
+  describe('D1.9: never stream the desktop', () => {
+    it('VPX losing focus covers the running capture at once (no restart); back in front uncovers after UNCOVER_MS', async () => {
+      const h = harness();
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      h.engine.noteFocus(true, 'VPinballX64');
+      await h.tick();
+      await h.tick();
+      const cap = h.procs[0]!;
+      expect(cap.args.join(' ')).toContain('t=fill:enable=0');
+      h.engine.noteFocus(false, 'Discord');
+      expect(cap.controls).toEqual([coverCommand(true, true)]);
+      expect(h.engine.status()).toMatchObject({ state: 'capturing', covered: true });
+      expect(cap.killed).toBe(false);
+      h.engine.noteFocus(false, 'explorer'); // still covered: nothing more to send
+      expect(cap.controls).toHaveLength(1);
+      // back, gone again, back: the flicker of leaving exclusive full screen never uncovers early
+      h.engine.noteFocus(true, 'VPinballX64');
+      h.engine.noteFocus(false, '');
+      h.fire(UNCOVER_MS);
+      expect(h.engine.status().covered).toBe(true);
+      h.engine.noteFocus(true, 'VPinballX64');
+      expect(h.engine.status().covered).toBe(true);
+      h.fire(UNCOVER_MS);
+      expect(cap.controls).toEqual([coverCommand(true, true), coverCommand(false, true)]);
+      expect(h.engine.status().covered).toBe(false);
+      expect(h.logs.join('\n')).toContain('stream: covered (Discord in front)');
+      await h.engine.stop();
+      const m = h.manifest();
+      expect(m.filter((e) => e.kind.startsWith('cover_'))).toEqual([
+        expect.objectContaining({ kind: 'cover_start', reason: 'Discord in front', segment: 'seg-001.mp4' }),
+        expect.objectContaining({ kind: 'cover_end', segment: 'seg-001.mp4' }),
+      ]);
+    });
+
+    it('a capture that starts while VPX is not in front starts covered, and says so in the manifest', async () => {
+      const h = harness({ fontFile: null });
+      await h.engine.start(h.plan);
+      await h.tick(); // slate: nothing to cover there
+      h.engine.noteFocus(false, 'Discord');
+      expect(h.procs[0]!.controls).toEqual([]);
+      h.setWindows([PLAYER]);
+      await h.tick();
+      await h.tick();
+      const cap = h.procs[1]!;
+      expect(cap.args.join(' ')).toContain('t=fill:enable=1');
+      h.engine.noteFocus(true, 'VPinballX64');
+      h.fire(UNCOVER_MS);
+      expect(cap.controls).toEqual([coverCommand(false, false)]);
+      await h.engine.stop();
+      expect(h.manifest().map((e) => e.kind)).toEqual(['session_start', 'segment_start', 'cover_start', 'cover_end', 'segment_end', 'session_end']);
+    });
+
+    it('focus unknown (the watcher stopped) uncovers at once; a stop clears the pending uncover', async () => {
+      const h = harness({ rtmpUrl: null });
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      await h.tick();
+      await h.tick();
+      h.engine.noteFocus(false, 'Discord');
+      h.engine.noteFocus(null);
+      expect(h.engine.status().covered).toBe(false);
+      h.engine.noteFocus(false, 'Discord');
+      h.engine.noteFocus(true, 'VPinballX64');
+      await h.engine.stop();
+      h.fire(UNCOVER_MS);
+      expect(h.procs[0]!.controls).toEqual([coverCommand(true, true), coverCommand(false, true), coverCommand(true, true)]);
+    });
   });
 });

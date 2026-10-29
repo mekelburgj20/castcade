@@ -17,6 +17,12 @@
  * (owner's rig 2026-10-28: 15–18 new frames a second of 60; a test pattern went from 274 to 37 new frames in 5 s with
  * the audio 390 ms behind, and back to 275 with the grab in its own process). The host pipes grab → mux without
  * backpressure, so only `mux` waits for the audio.
+ *
+ * The grab can cover its picture while it runs (D1.9): a full-frame box and a line of text at the end of its filtergraph
+ * (`coverFilters`), both off until the host writes `coverCommand(true)` to the grab's stdin (ffmpeg's interactive `c` command, which a pipe can drive on Windows).
+ * Focus leaving VPX shows the desktop on the captured monitor, so the engine covers it at once rather than restarting
+ * ffmpeg (a restart takes a second and reconnects the stream). Measured 37–144 ms from the write to the first covered
+ * frame (ffmpeg reads its keyboard every 100 ms; 2026-10-28).
  */
 import type { DdagrabCrop } from './window-geometry.js';
 
@@ -62,6 +68,25 @@ export interface EncodeOptions {
   outputs: { mp4?: string; rtmp?: string };
   /** Stop after this many seconds (spike runs); omit to run until stopped. */
   seconds?: number;
+  /**
+   * The privacy cover (D1.9), for a capture: `on` is its state at start; the host toggles it with `coverCommand`.
+   * No font = the box alone (ffmpeg's drawtext crashes on a missing font file).
+   */
+  cover?: { on: boolean; fontFile: string | null } | null;
+}
+
+/** What the cover says. */
+export const COVER_TEXT = 'Paused: back in a moment';
+/** The cover's colour: the slate's. */
+export const COVER_COLOR = '0x0d1117';
+
+/**
+ * The bytes that turn the cover on or off in a running grab: one `c` command per filter, each `<target> <time> <command>
+ * <arg>` on its own line, with no newline between `c` and the target (ffmpeg reads the line straight after the key).
+ */
+export function coverCommand(on: boolean, withText: boolean): string {
+  const v = on ? 1 : 0;
+  return `cdrawbox@cover -1 enable ${v}\n${withText ? `cdrawtext@covertext -1 enable ${v}\n` : ''}`;
 }
 
 /**
@@ -144,6 +169,22 @@ const TURN_FILTER = [null, 'transpose=clock', 'hflip,vflip', 'transpose=cclock']
 
 /** The capture → picture chain with no output label (the encode labels it `[v]`; ffplay's lavfi input takes it bare). */
 function videoChain(o: PictureOptions): string {
+  return `${grabSource(o)},${pictureChain(o)}`;
+}
+
+/** The screen grab itself: Desktop Duplication of the crop, as CPU frames. */
+function grabSource(o: PictureOptions): string {
+  const c = o.crop;
+  const g = ddagrabRegion(c);
+  return [
+    `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${g.x}:offset_y=${g.y}:video_size=${g.width}x${g.height}:draw_mouse=0`,
+    'hwdownload',
+    'format=bgra',
+  ].join(',');
+}
+
+/** The grabbed frames → the picture: constant rate, scaled, turned upright, the overlay, 4:2:0. */
+function pictureChain(o: PictureOptions): string {
   const c = o.crop;
   // The preset names the short side (720p = 1280x720, or 720x1280 for a vertical window); never upscale.
   const outH = outputShortSide(o);
@@ -154,9 +195,6 @@ function videoChain(o: PictureOptions): string {
   // turned inside a landscape screen that is physically mounted portrait; Windows cannot know, rig 2026-10-27).
   const quarters = ((CORRECTION_QUARTERS[c.rotation ?? 1] ?? 0) + (o.rotate ?? 0) / 90) % 4;
   const parts = [
-    `ddagrab=output_idx=${c.outputIdx}:framerate=${o.preset.fps}:offset_x=${g.x}:offset_y=${g.y}:video_size=${g.width}x${g.height}:draw_mouse=0`,
-    'hwdownload',
-    'format=bgra',
     // Desktop Duplication only delivers a frame when the screen changes (a still desktop gave 192 frames in 20 s
     // on the owner's rig); repeat the last one so the stream is constant-rate, as RTMP ingests expect.
     `fps=${o.preset.fps}`,
@@ -171,6 +209,16 @@ function videoChain(o: PictureOptions): string {
   }
   parts.push('format=yuv420p');
   return parts.join(',');
+}
+
+/** The cover's filters (D1.9), after the picture chain: a full-frame box and a line of text, named for `coverCommand`. */
+function coverFilters(o: PictureOptions, cover: NonNullable<EncodeOptions['cover']>): string[] {
+  const v = cover.on ? 1 : 0;
+  const parts = [`drawbox@cover=x=0:y=0:w=iw:h=ih:color=${COVER_COLOR}:t=fill:enable=${v}`];
+  if (cover.fontFile) {
+    parts.push(`drawtext@covertext=fontfile=${filterValue(cover.fontFile)}:text=${filterValue(COVER_TEXT)}:fontsize=${Math.round(outputShortSide(o) / 18)}:fontcolor=white:x=(w-tw)/2:y=(h-th)/2:enable=${v}`);
+  }
+  return parts;
 }
 
 export interface PreviewOptions extends PictureOptions {
@@ -202,8 +250,15 @@ export interface CaptureCommand {
 
 export function captureArgs(o: EncodeOptions): CaptureCommand {
   const grab = [
-    '-hide_banner', '-nostdin', '-nostats', '-loglevel', 'info',
-    '-filter_complex', videoFilter(o), '-map', '[v]',
+    // stdin stays open (no -nostdin) for the cover command; -stats_period sets how often ffmpeg looks at it.
+    '-hide_banner', '-nostats', '-stats_period', '0.05', '-loglevel', 'info',
+    // ddagrab as a lavfi INPUT, not a source inside -filter_complex: ffmpeg hands a `c` command to every filtergraph
+    // through the graph's inputs, and a graph with none never reads it; its queue fills after two commands and blocks
+    // ffmpeg's command reading for the rest of the run (8.1.1, 2026-10-28). As an input: 16 of 16 commands applied, and
+    // the grab as smooth (273 new frames in 5 s of 300; 275 the other way).
+    '-f', 'lavfi', '-i', grabSource(o),
+    '-filter_complex', `[0]${[pictureChain(o), ...(o.cover ? coverFilters(o, o.cover) : [])].join(',')}[v]`,
+    '-map', '[v]',
     ...encoderArgs(o.encoder, o.preset),
     // Matroska, not MPEG-TS: a copied TS stream keeps TS's codec tag, which the mp4 / flv muxers inside tee refuse
     // ("Tag [27][0][0][0] incompatible", 2026-10-28); Matroska has none. Global header: the SPS/PPS go in its header.
