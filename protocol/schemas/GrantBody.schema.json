@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v1/GrantBody.schema.json",
+  "$id": "https://castcade.dev/protocol/v2/GrantBody.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {

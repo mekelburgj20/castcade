@@ -95,6 +95,37 @@ describe('envelope', () => {
     expect(bmp.payload.kind).toBe('bitmap');
   });
 
+  it('defaults HOST_TRANSFER.newHostEndpoint to null and accepts only ws:// or wss:// (A2)', () => {
+    const base = { proposer: 'p1', newHost: 'p2', reason: 'host_requested' as const, logHash: hex64, logLength: 3, currentGrant: null, newHostPublicKey: b64key };
+    const plain = buildMessage('HOST_TRANSFER', base, { matchId: 'TD-1', seq: 1, from: 'p1' });
+    expect(plain.payload.newHostEndpoint).toBeNull();
+    const ws = buildMessage('HOST_TRANSFER', { ...base, newHostEndpoint: 'ws://127.0.0.1:47891' }, { matchId: 'TD-1', seq: 2, from: 'p1' });
+    expect(ws.payload.newHostEndpoint).toBe('ws://127.0.0.1:47891');
+    expect(() => buildMessage('HOST_TRANSFER', { ...base, newHostEndpoint: 'http://x' }, { matchId: 'TD-1', seq: 3, from: 'p1' })).toThrow(ProtocolError);
+  });
+
+  it('round-trips RECONNECT and a RECONNECT_ACK carrying log entries verbatim (A2)', () => {
+    const reconnect = buildMessage('RECONNECT', { player: 'p2', logHash: hex64, logLength: 4, signature: b64sig }, { matchId: 'TD-1', seq: 9, from: 'p2', ts: 1 });
+    expect(decodeFrame(encodeFrame(reconnect))).toEqual(reconnect);
+    const logged = buildMessage('RESUME', {}, { matchId: 'TD-1', seq: 3, from: 'p1', ts: 5 });
+    const entries = [
+      { index: 4, prevHash: hex64, ts: 5, kind: 'msg' as const, from: 'p1', message: logged as unknown as Record<string, unknown>, hash: 'cd'.repeat(32) },
+      {
+        index: 5,
+        prevHash: 'cd'.repeat(32),
+        ts: 6,
+        kind: 'event' as const,
+        from: 'p1',
+        event: { type: 'host_transfer' as const, reason: 'host_requested' as const, proposer: 'p1', from: 'p1', to: 'p2', newHostPublicKey: b64key },
+        hash: 'ef'.repeat(32),
+      },
+    ];
+    const ack = buildMessage('RECONNECT_ACK', { accept: true, code: null, entries, logHash: 'ef'.repeat(32), logLength: 6 }, { matchId: 'TD-1', seq: 4, from: 'p1', ts: 7 });
+    const back = decodeFrame(encodeFrame(ack));
+    expect(back).toEqual(ack);
+    if (back.type === 'RECONNECT_ACK') expect(back.payload.entries[0]?.message).toEqual(logged);
+  });
+
   it('has a direction for every message type', () => {
     for (const t of MESSAGE_TYPES) expect(MESSAGE_DIRECTION[t]).toBeTruthy();
   });

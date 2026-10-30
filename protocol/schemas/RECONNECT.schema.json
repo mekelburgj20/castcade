@@ -1,0 +1,37 @@
+{
+  "$id": "https://castcade.dev/protocol/v2/RECONNECT.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "player": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Who is resuming; must equal the envelope from."
+    },
+    "logHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the last log entry this participant holds; 64 zeros when it holds none."
+    },
+    "logLength": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "signature": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+      "description": "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key."
+    }
+  },
+  "required": [
+    "player",
+    "logHash",
+    "logLength",
+    "signature"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO."
+}

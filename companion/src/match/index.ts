@@ -35,10 +35,18 @@ export {
   type GrantTarget,
   type PendingTransfer,
 } from './state.js';
-export { rankEntries, pickWinner, entryStatus, logSignBody, type ResultEntry } from './result.js';
+export { rankEntries, pickWinner, entryStatus, logSignBody, reconnectSignBody, type ResultEntry } from './result.js';
 export { Session, type SessionOptions } from './session.js';
 export { MemoryBus, type MemoryBusOptions, type Transport, type MessageHandler, type PeerHandler } from './transport.js';
-export { WsHostTransport, WsClientTransport, type WsHostOptions, type WsClientOptions, type ErrorHandler } from './transport-ws.js';
+export {
+  WsHostTransport,
+  WsClientTransport,
+  WsPeerTransport,
+  type WsHostOptions,
+  type WsClientOptions,
+  type WsPeerOptions,
+  type ErrorHandler,
+} from './transport-ws.js';
 export {
   HostMatch,
   compareFingerprints,
@@ -48,6 +56,7 @@ export {
   type RejectInfo,
   type RejectCode,
   type RefuseCode,
+  type ReconnectCode,
   type LogSignRecord,
 } from './host.js';
 export {

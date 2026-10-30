@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v1/GAME_OVER.schema.json",
+  "$id": "https://castcade.dev/protocol/v2/GAME_OVER.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { EnvelopeBase } from './envelope.js';
-import { GameFingerprint, GrantBody, MESSAGE_DIRECTION, MESSAGE_TYPES, ParticipantInfo, payloadSchemas } from './messages.js';
+import { GameFingerprint, GrantBody, LogEntry, MESSAGE_DIRECTION, MESSAGE_TYPES, ParticipantInfo, payloadSchemas } from './messages.js';
 import { PROTOCOL_VERSION } from './version.js';
 
 type JsonSchema = Record<string, unknown>;
@@ -10,6 +10,7 @@ const SHARED = {
   GameFingerprint,
   ParticipantInfo,
   GrantBody,
+  LogEntry,
 } as const;
 
 function toSchema(schema: z.ZodType, id: string): JsonSchema {

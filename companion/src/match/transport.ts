@@ -19,6 +19,20 @@ export interface Transport {
   /** Drop one peer's link (host side: after REFUSE). Optional for transports without per-peer links. */
   closePeer?(peer: PlayerId): void;
   close(): void;
+  /**
+   * `star` (WebSocket): clients reach each other only through the host, so the host relays
+   * HOST_TRANSFER_ACK. Absent means a full mesh (MemoryBus). A2, 2026-10-30.
+   */
+  readonly topology?: 'mesh' | 'star';
+  /**
+   * Star transports only: open a link to `peer` at `endpoint` (default: where `peer` was last
+   * reached) and send `first()` as its opening frame, before any other frame can use the link.
+   * `replacing` names a peer whose existing links stop counting as that peer's connection: their
+   * close is not reported as a leave (the old host after a transfer). Resolves once `first` is sent.
+   */
+  connectTo?(peer: PlayerId, first: () => AnyMessage, opts?: { endpoint?: string; replacing?: PlayerId }): Promise<void>;
+  /** Star transports only: stop listening and close every inbound link without reporting leaves (the old host). */
+  closeListener?(): void;
 }
 
 interface Queued {

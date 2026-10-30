@@ -20,6 +20,7 @@ import {
   type LogHead,
   type MatchLog,
   type Transport,
+  type WsPeerTransport,
 } from '@castcade/companion';
 import { defaultFingerprint, type PlayerScript, type Scenario } from './scenario.js';
 
@@ -49,6 +50,10 @@ export interface FakePlayerOptions {
   expectedJoins?: number;
   /** Host role, `host_left` transfer: called after the host has closed its engine, to drop its link. */
   onHostLeft?: () => void;
+  /** Host role, over WebSocket: the new host's listener for HOST_TRANSFER.newHostEndpoint (A2). */
+  endpointOf?: (player: PlayerId) => string | null;
+  /** Client role: reconnect budget after a dropped host link (A3). */
+  reconnect?: { attempts?: number; delayMs?: number };
   hooks?: FakeHooks;
   companionVersion?: string;
 }
@@ -72,6 +77,10 @@ export interface FakePlayerOutcome {
   signed: boolean;
   hostTransfers: number;
   rolesHeld: ('host' | 'client')[];
+  /** Accepted RECONNECTs (after a host transfer or a drop), with how many log entries each brought. */
+  reconnects: number[];
+  /** Why the host rejected this player's RECONNECT, when it did (A3). */
+  reconnectRejected: string | null;
   error: Error | null;
 }
 
@@ -144,6 +153,7 @@ export class FakePlayer {
         clock,
         companionVersion: opts.companionVersion,
         hostTimeouts: { ballEndTimeoutMs: scenario.ballEndTimeoutMs, logSignTimeoutMs: scenario.logSignTimeoutMs },
+        reconnect: opts.reconnect,
       });
     }
     this.out = {
@@ -162,6 +172,8 @@ export class FakePlayer {
       signed: false,
       hostTransfers: 0,
       rolesHeld: [opts.role],
+      reconnects: [],
+      reconnectRejected: null,
       error: null,
     };
     if (engine instanceof HostMatch) this.attachHost(engine);
@@ -237,6 +249,10 @@ export class FakePlayer {
       this.out.pauses.push(pause);
       this.applyHostPolicy(host, pause);
     });
+    // Traced only, so hooks and tests see them (A2).
+    on('peerLeft', () => undefined);
+    on('reconnected', () => undefined);
+    on('reconnectRejected', () => undefined);
     on('hostTransfer', ({ client }) => {
       this.out.hostTransfers += 1;
       this.out.rolesHeld.push('client');
@@ -273,7 +289,7 @@ export class FakePlayer {
     if (!mine || mine.ballsPlayed !== tr.afterHostBall || grant.player === this.playerId) return;
     this.transferred = true;
     if (tr.reason === 'host_requested') {
-      host.transferHost(tr.to);
+      host.transferHost(tr.to, { endpoint: this.opts.endpointOf?.(tr.to) ?? undefined });
     } else {
       host.close();
       this.detachAll();
@@ -329,6 +345,22 @@ export class FakePlayer {
     on('hostChanged', () => {
       this.out.hostTransfers += 1;
     });
+    on('reconnected', ({ entries }) => {
+      this.out.reconnects.push(entries);
+      // A ball in flight when the link dropped was lost with it; play the re-issued grant afresh.
+      if (!client.myGrant) this.playing = null;
+      // Back after a drop: any participant may RESUME the pause our disconnect caused (A3).
+      const paused = client.state.paused;
+      if (paused?.reason === 'disconnect' && paused.player === this.playerId) client.resume();
+    });
+    on('reconnectRejected', ({ code }) => {
+      // Re-joining takes a fresh HELLO, which a started match refuses; this player is out.
+      this.out.reconnectRejected = code ?? 'rejected';
+      this.finish();
+    });
+    on('reconnectFailed', () => undefined);
+    on('desync', () => undefined);
+    on('peerLeft', () => undefined);
     on('becameHost', (host) => {
       this.out.rolesHeld.push('host');
       this.attachHost(host);
@@ -473,6 +505,62 @@ export async function runLocalScenario(scenario: Scenario, opts: RunLocalOptions
     const outcomes: Record<PlayerId, FakePlayerOutcome> = {};
     for (const o of list) outcomes[o.playerId] = o;
     return { scenario, bus, players, outcomes };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export interface WsRun {
+  scenario: Scenario;
+  transports: Map<PlayerId, WsPeerTransport>;
+  endpoints: Map<PlayerId, string>;
+  outcomes: Record<PlayerId, FakePlayerOutcome>;
+}
+
+/**
+ * Run a scenario over real WebSockets on localhost (A2, 2026-10-30): every participant gets the
+ * given WsPeerTransport and an ephemeral listener (any of them may become host), the clients
+ * connect to the host's, and the run resolves with every participant's outcome. The caller owns
+ * the transports and closes them.
+ */
+export async function runWsScenario(
+  scenario: Scenario,
+  transports: Map<PlayerId, WsPeerTransport>,
+  opts: { timeoutMs?: number; hooks?: FakeHooks; reconnect?: { attempts?: number; delayMs?: number }; players?: (players: FakePlayer[]) => void } = {},
+): Promise<WsRun> {
+  const endpoints = new Map<PlayerId, string>();
+  // Every participant listens, so any of them can become host.
+  for (const [id, t] of transports) endpoints.set(id, await t.listen());
+  const hostEndpoint = endpoints.get(scenario.host);
+  if (!hostEndpoint) throw new Error('no host endpoint');
+  const fakes = scenario.players.map((script) => {
+    const transport = transports.get(script.playerId);
+    if (!transport) throw new Error(`no transport for ${script.playerId}`);
+    return new FakePlayer({
+      role: script.playerId === scenario.host ? 'host' : 'client',
+      transport,
+      script,
+      scenario,
+      expectedJoins: scenario.players.length - 1,
+      endpointOf: (id) => endpoints.get(id) ?? null,
+      hooks: opts.hooks,
+      reconnect: opts.reconnect,
+    });
+  });
+  opts.players?.(fakes);
+  for (const [id, t] of transports) if (id !== scenario.host) await t.connect(hostEndpoint);
+  for (const f of fakes) f.start();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const snaps = fakes.map((f) => ({ id: f.playerId, role: f.role, snap: f.snapshot() }));
+      for (const f of fakes) f.abort('ws scenario timeout');
+      reject(new Error(`${scenario.name} timed out\n${JSON.stringify(snaps, null, 1).slice(0, 4000)}`));
+    }, opts.timeoutMs ?? 10_000);
+  });
+  try {
+    const list = await Promise.race([Promise.all(fakes.map((f) => f.done)), guard]);
+    return { scenario, transports, endpoints, outcomes: Object.fromEntries(list.map((o) => [o.playerId, o])) };
   } finally {
     if (timer) clearTimeout(timer);
   }

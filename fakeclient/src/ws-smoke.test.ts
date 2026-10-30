@@ -1,6 +1,6 @@
 /**
  * WebSocket loopback: a host and one client over `ws` on an ephemeral port complete a
- * 2-player 1-ball match. Host transfer over WebSocket is out of scope for Phase 1.
+ * 2-player 1-ball match. Host transfer over WebSocket is `ws-transfer.test.ts` (A2).
  */
 import { describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';

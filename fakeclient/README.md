@@ -9,8 +9,10 @@ npm run start -w fakeclient -- join ws://127.0.0.1:47891 --player p2      # one 
 npx vitest run fakeclient                                                 # scenarios + gate + ws smoke
 ```
 
-Scenarios live in `scenarios/*.json`; the gate is `src/gate.test.ts`. Host transfer is covered over the
-in-memory full mesh only; over WebSocket clients would have to reconnect to the new host (later phase).
+Scenarios live in `scenarios/*.json`; the gate is `src/gate.test.ts`. Host transfer runs over the
+in-memory full mesh there, and over real WebSockets on localhost in `src/ws-transfer.test.ts` (A2,
+2026-10-30: every participant reconnects to the new host's listener with `RECONNECT`); a client whose
+socket is killed mid-match resumes from its log head in `src/ws-reconnect.test.ts` (A3).
 
 A scripted Castcade participant that speaks the protocol with no emulator present. It lets the host
 arbiter, the match log, host transfer and the ArcAid result path be tested on Linux CI long before

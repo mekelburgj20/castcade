@@ -34,3 +34,13 @@ export function pickWinner(entries: readonly ResultEntry[]): PlayerId | null {
 export function logSignBody(matchId: string, logHash: string, logLength: number): { matchId: string; logHash: string; logLength: number } {
   return { matchId, logHash, logLength };
 }
+
+/** The object a RECONNECT signs with the participant's roster key (A2, 2026-10-30). */
+export function reconnectSignBody(
+  matchId: string,
+  player: PlayerId,
+  logHash: string,
+  logLength: number,
+): { matchId: string; player: PlayerId; logHash: string; logLength: number } {
+  return { matchId, player, logHash, logLength };
+}

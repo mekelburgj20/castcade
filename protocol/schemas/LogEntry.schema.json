@@ -1,0 +1,113 @@
+{
+  "$id": "https://castcade.dev/protocol/v2/LogEntry.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "prevHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the previous entry; 64 zeros before the first."
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991,
+      "description": "The causing message's own ts, never a local clock."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "msg",
+        "grant",
+        "event"
+      ]
+    },
+    "from": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+    },
+    "message": {
+      "description": "The logged envelope, verbatim; absent on an event entry.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    },
+    "event": {
+      "description": "Present only when kind is event.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "host_transfer"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "host_left",
+            "host_requested"
+          ]
+        },
+        "proposer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+        },
+        "from": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "The host before the transfer."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_.:-]+$",
+          "description": "The host after the transfer."
+        },
+        "newHostPublicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+          "description": "Ed25519 public key, 32 raw bytes, base64."
+        }
+      },
+      "required": [
+        "type",
+        "reason",
+        "proposer",
+        "from",
+        "to",
+        "newHostPublicKey"
+      ],
+      "additionalProperties": false
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "sha256(canonicalJson(entry without hash))."
+    }
+  },
+  "required": [
+    "index",
+    "prevHash",
+    "ts",
+    "kind",
+    "from",
+    "hash"
+  ],
+  "additionalProperties": false,
+  "description": "One entry of the hash-chained match log, exactly as every participant holds it."
+}

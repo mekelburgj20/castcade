@@ -15,15 +15,20 @@
  * commits the transfer when the first host-only message (TURN_GRANT, PAUSE, ...) arrives from the
  * new host, which keeps the position of the commit event identical in every log regardless of
  * the order acks travel in.
+ *
+ * Over WebSocket (A2, 2026-10-30) a client has a link to the host only. On a HOST_TRANSFER that
+ * names the new host's listener it opens a socket there and resumes with RECONNECT from its log
+ * head; the RECONNECT_ACK brings the commit event and anything after it, checked entry by entry
+ * against the hash chain, so the commit lands at the same log position as everywhere else.
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
-import { PROTOCOL_VERSION } from '@castcade/protocol';
-import type { Clock } from './clock.js';
+import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
+import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
-import { HostMatch } from './host.js';
+import { HostMatch, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
-import type { LogHead, MatchLog } from './log.js';
-import { logSignBody } from './result.js';
+import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
+import { logSignBody, reconnectSignBody } from './result.js';
 import { Session } from './session.js';
 import { cloneState, isStrictMajority, remainingParticipants, type MatchState } from './state.js';
 import type { Transport } from './transport.js';
@@ -40,6 +45,11 @@ export interface ClientOptions {
   clock?: Clock;
   /** Used if this client becomes host after a transfer. */
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
+  /**
+   * Reconnect after a dropped socket to the host (A3): one attempt every `delayMs` (default 1 s),
+   * at most `attempts` (default 30); then the host counts as gone.
+   */
+  reconnect?: { attempts?: number; delayMs?: number };
 }
 
 export interface AdoptOptions {
@@ -49,6 +59,7 @@ export interface AdoptOptions {
   companionVersion?: string;
   gone?: Iterable<PlayerId>;
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number };
 }
 
 export interface DroppedInfo {
@@ -59,7 +70,7 @@ export interface DroppedInfo {
 }
 
 export interface DesyncInfo {
-  context: 'grant.logHash' | 'result.logHash';
+  context: 'grant.logHash' | 'result.logHash' | 'reconnect.entries';
   expected: string;
   actual: string;
 }
@@ -94,9 +105,29 @@ export interface ClientEvents extends Record<string, unknown> {
   logSigned: PayloadOf<'LOG_SIGN'>;
   result: ResultInfo;
   peerLeft: PlayerId;
+  /** RECONNECT accepted by `host`; `entries` were appended to the log (A2/A3). */
+  reconnected: { host: PlayerId; entries: number };
+  /** RECONNECT rejected: re-join with a fresh HELLO, which after MATCH_READY is refused. */
+  reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
+  /** One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. */
+  reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number };
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT']);
+const DEFAULT_RECONNECT_ATTEMPTS = 30;
+const DEFAULT_RECONNECT_DELAY_MS = 1000;
+
+interface Reconnecting {
+  host: PlayerId;
+  endpoint: string | undefined;
+  replacing: PlayerId | undefined;
+  /** The old host closes its own listener once the new host accepted it. */
+  closeListener: boolean;
+  attemptsLeft: number;
+  /** A socket was opened and RECONNECT sent; waiting for RECONNECT_ACK. */
+  inFlight: boolean;
+  timer: TimerHandle | null;
+}
 
 export class ClientMatch {
   readonly events = new Emitter<ClientEvents>();
@@ -118,6 +149,13 @@ export class ClientMatch {
   private hostLost = false;
   private transferAccepts = new Set<PlayerId>();
   private readonly gone = new Set<PlayerId>();
+  private readonly reconnectAttempts: number;
+  private readonly reconnectDelayMs: number;
+  /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
+  private reconnecting: Reconnecting | null = null;
+  private resultReceived = false;
+  /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
+  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'> }[] = [];
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
 
@@ -130,6 +168,8 @@ export class ClientMatch {
     this.companionVersion = opts.companionVersion ?? '0.1.0';
     this.explicitHostId = opts.hostId ?? null;
     this.hostTimeouts = opts.hostTimeouts ?? {};
+    this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? DEFAULT_RECONNECT_ATTEMPTS);
+    this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.attach();
   }
 
@@ -144,6 +184,7 @@ export class ClientMatch {
         throwdownCode: opts.throwdownCode,
         companionVersion: opts.companionVersion,
         hostTimeouts: opts.hostTimeouts,
+        reconnect: opts.reconnect,
       },
       session,
     );
@@ -287,6 +328,70 @@ export class ClientMatch {
     this.detach();
   }
 
+  /**
+   * Open a new socket to `host` (at `endpoint`, or where it was last reached) and resume with
+   * RECONNECT from this log's head, never a fresh HELLO (A2/A3, 2026-10-30), retrying within the
+   * reconnect budget. A no-op on a transport without per-host links. `replacing`: links to that
+   * peer no longer count as a connection (the old host after a transfer). `closeListenerOnAccept`:
+   * the old host closes its listener once the new host accepted it. `delayFirst`: wait one retry
+   * delay before the first attempt (after a drop, so the host has seen it too).
+   */
+  relinkTo(host: PlayerId, opts: { endpoint?: string; replacing?: PlayerId; closeListenerOnAccept?: boolean; delayFirst?: boolean } = {}): void {
+    if (!this.s.transport.connectTo || this.detached) return;
+    this.cancelReconnect();
+    this.reconnecting = {
+      host,
+      endpoint: opts.endpoint,
+      replacing: opts.replacing,
+      closeListener: opts.closeListenerOnAccept ?? false,
+      attemptsLeft: this.reconnectAttempts,
+      inFlight: false,
+      timer: null,
+    };
+    if (opts.delayFirst) this.scheduleReconnect(this.reconnecting);
+    else this.attemptReconnect(this.reconnecting);
+  }
+
+  private attemptReconnect(r: Reconnecting): void {
+    const connectTo = this.s.transport.connectTo?.bind(this.s.transport);
+    if (this.reconnecting !== r || this.detached || !connectTo) return;
+    r.timer = null;
+    r.attemptsLeft -= 1;
+    r.inFlight = true;
+    connectTo(r.host, () => this.buildReconnect(), { endpoint: r.endpoint, replacing: r.replacing }).catch((e: unknown) =>
+      this.reconnectAttemptFailed(r, e instanceof Error ? e : new Error(String(e))),
+    );
+  }
+
+  private scheduleReconnect(r: Reconnecting): void {
+    r.timer = this.s.clock.setTimeout(() => this.attemptReconnect(r), this.reconnectDelayMs);
+  }
+
+  private reconnectAttemptFailed(r: Reconnecting, error: Error): void {
+    if (this.reconnecting !== r || this.detached) return;
+    r.inFlight = false;
+    this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft });
+    if (r.attemptsLeft > 0) {
+      this.scheduleReconnect(r);
+      return;
+    }
+    // Out of attempts: the host counts as gone, as it always did on a mesh (host_left).
+    this.reconnecting = null;
+    if (r.host === this.hostId) this.onHostGone(r.host);
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnecting?.timer != null) this.s.clock.clearTimeout(this.reconnecting.timer);
+    this.reconnecting = null;
+  }
+
+  private buildReconnect(): Message<'RECONNECT'> {
+    const head = this.s.log.head();
+    const matchId = this.matchIdForWire();
+    const signature = signCanonical(reconnectSignBody(matchId, this.localId, head.hash, head.length), this.s.keys.privateKey);
+    return this.s.build('RECONNECT', { player: this.localId, logHash: head.hash, logLength: head.length, signature }, matchId);
+  }
+
   // ------------------------------------------------------------------------------------------
   // Plumbing
   // ------------------------------------------------------------------------------------------
@@ -302,6 +407,7 @@ export class ClientMatch {
     this.detached = true;
     for (const off of this.unsubscribe) off();
     this.unsubscribe.length = 0;
+    this.cancelReconnect();
   }
 
   private assertActive(): void {
@@ -353,6 +459,20 @@ export class ClientMatch {
     }
     if (msg.type === 'HOST_TRANSFER_ACK') {
       this.onTransferAck(msg);
+      return;
+    }
+    if (msg.type === 'RECONNECT_ACK') {
+      this.onReconnectAck(linkFrom, msg);
+      return;
+    }
+    if (msg.type === 'RECONNECT') {
+      // Over WebSocket a client can reach the new host's listener before the new host has its
+      // majority; hold it and answer at the commit, before the re-issued grant (A2, 2026-10-30).
+      if (this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
+        this.heldReconnects.push({ linkFrom, msg });
+        return;
+      }
+      this.drop(msg, 'not_host');
       return;
     }
     if (linkFrom !== this.hostId) {
@@ -459,6 +579,7 @@ export class ClientMatch {
     const logMatches = r.logHash === head.hash && r.logLength === head.length;
     const signatureValid = key !== null && verifyCanonical(logSignBody(r.matchId, r.logHash, r.logLength), r.hostSignature, key);
     if (!logMatches) this.events.emit('desync', { context: 'result.logHash', expected: r.logHash, actual: head.hash });
+    this.resultReceived = true;
     this.events.emit('result', { result: r, logMatches, signatureValid });
   }
 
@@ -469,7 +590,31 @@ export class ClientMatch {
   private onPeerLeave(peer: PlayerId): void {
     if (this.detached) return;
     this.events.emit('peerLeft', peer);
-    if (peer === this.hostId && this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
+    const r = this.reconnecting;
+    if (r && r.host === peer && r.inFlight) {
+      // The new socket closed before RECONNECT_ACK: one failed attempt.
+      this.reconnectAttemptFailed(r, new Error(`link to ${peer} closed before RECONNECT_ACK`));
+      return;
+    }
+    if (peer === this.hostId && this.mayReconnect()) {
+      // On a star a dropped host link looks the same whether we or the host went away: try to
+      // resume first; the host counts as gone only when the attempts run out (A3, 2026-10-30).
+      this.relinkTo(peer, { delayFirst: true });
+      return;
+    }
+    if (peer === this.hostId) {
+      this.onHostGone(peer);
+      return;
+    }
+    this.gone.add(peer);
+  }
+
+  private mayReconnect(): boolean {
+    return this.s.transport.topology === 'star' && this.s.transport.connectTo !== undefined && this.s.state.phase !== 'lobby' && !this.resultReceived;
+  }
+
+  private onHostGone(peer: PlayerId): void {
+    if (this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
       this.hostLost = true;
       this.events.emit('hostLost', peer);
       this.proposeIfCandidate();
@@ -531,7 +676,128 @@ export class ClientMatch {
     const ack = this.s.build('HOST_TRANSFER_ACK', { proposer: p.proposer, accept, logHash: headBefore.hash }, this.matchIdForWire());
     this.s.transport.send('all', ack);
     this.transferAccepts = accept ? new Set([p.proposer, this.localId]) : new Set([p.proposer]);
-    if (this.s.state.pendingTransfer?.newHost === this.localId) this.checkTransferMajority();
+    if (this.s.state.pendingTransfer?.newHost === this.localId) {
+      this.checkTransferMajority();
+    } else if (p.newHostEndpoint !== null) {
+      // Over WebSocket: move to the new host's listener now; the old host's link stops counting
+      // as a connection, so its close is not a disconnect (A2, 2026-10-30).
+      this.relinkTo(p.newHost, { endpoint: p.newHostEndpoint, replacing: st.hostId ?? undefined });
+    }
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Reconnect (A2/A3, 2026-10-30)
+  // ------------------------------------------------------------------------------------------
+
+  private onReconnectAck(linkFrom: PlayerId, msg: Message<'RECONNECT_ACK'>): void {
+    const want = this.reconnecting;
+    if (!want || !want.inFlight || linkFrom !== want.host || msg.from !== want.host) return this.drop(msg, 'unexpected');
+    this.cancelReconnect();
+    const p = msg.payload;
+    if (!p.accept) {
+      this.events.emit('reconnectRejected', { host: want.host, code: p.code });
+      return;
+    }
+    const appended = this.mergeEntries(p.entries);
+    const head = this.s.log.head();
+    if (appended === null || head.hash !== p.logHash) {
+      this.events.emit('desync', { context: 'reconnect.entries', expected: p.logHash, actual: head.hash });
+    }
+    if (want.closeListener) this.s.transport.closeListener?.();
+    this.events.emit('reconnected', { host: want.host, entries: appended ?? 0 });
+    this.maybeSignLog();
+  }
+
+  /**
+   * Append the host's entries after our head, checking each `prevHash` and `hash`, so this log is
+   * the host's log. Entries we already hold are skipped when their hash agrees. Returns how many
+   * were appended, or null at the first entry that does not chain (nothing after it is taken).
+   */
+  private mergeEntries(entries: PayloadOf<'RECONNECT_ACK'>['entries']): number | null {
+    const seenBefore = this.lastGrantSeqSeen;
+    let appended = 0;
+    for (const raw of entries) {
+      const log = this.s.log;
+      if (raw.index < log.length) {
+        if (log.at(raw.index)?.hash !== raw.hash) return null;
+        continue;
+      }
+      if (raw.index !== log.length || raw.prevHash !== log.head().hash) return null;
+      let message: AnyMessage | undefined;
+      try {
+        message = raw.message === undefined ? undefined : parseMessage(raw.message);
+      } catch {
+        return null;
+      }
+      const body: LogEntryBody = { index: raw.index, prevHash: raw.prevHash, ts: raw.ts, kind: raw.kind, from: raw.from };
+      if (message !== undefined) body.message = message;
+      if (raw.event !== undefined) body.event = raw.event;
+      if (hashEntry(body) !== raw.hash) return null;
+      const oldHost = this.s.state.hostId;
+      const entry = this.s.commit({ ts: raw.ts, kind: raw.kind, from: raw.from, message, event: raw.event });
+      appended += 1;
+      this.afterMergedEntry(entry, oldHost);
+    }
+    // The input lock: released only for an outstanding grant that names us, is newer than any we
+    // had seen before this merge, and verifies against the host key the log now names.
+    const cg = this.s.state.currentGrant;
+    const key = this.hostPublicKey;
+    if (cg && cg.grant.player === this.localId) {
+      if (cg.grant.grantSeq > seenBefore && key && verifyCanonical(cg.grant, cg.grantSig, key)) {
+        this._myGrant = cg.grant;
+        this._inputUnlocked = true;
+        this.events.emit('myTurn', cg.grant);
+      }
+    } else {
+      this._myGrant = null;
+      this._inputUnlocked = false;
+    }
+    return appended;
+  }
+
+  /** The events a live entry would have raised, for an entry that arrived in a RECONNECT_ACK. */
+  private afterMergedEntry(entry: LogEntry, oldHost: PlayerId | null): void {
+    if (entry.event?.type === 'host_transfer') {
+      if (oldHost) this.noteTransferCommitted(oldHost);
+      this.events.emit('hostChanged', { from: entry.event.from, to: entry.event.to });
+      return;
+    }
+    const msg = entry.message;
+    if (!msg) return;
+    switch (msg.type) {
+      case 'MATCH_READY':
+        this.events.emit('ready', msg.payload);
+        return;
+      case 'TURN_GRANT':
+        this.lastGrantSeqSeen = Math.max(this.lastGrantSeqSeen, msg.payload.grant.grantSeq);
+        this.events.emit('grant', msg.payload.grant);
+        return;
+      case 'BALL_END':
+        if (msg.from === this.localId) {
+          this._myGrant = null;
+          this._inputUnlocked = false;
+        }
+        this.events.emit('ballEnd', msg);
+        return;
+      case 'GAME_OVER':
+        this.events.emit('gameOver', msg);
+        return;
+      case 'FORFEIT':
+        this.events.emit('forfeit', msg);
+        return;
+      case 'PAUSE':
+        this._inputUnlocked = false;
+        this.events.emit('pause', msg.payload);
+        return;
+      case 'RESUME':
+        this.events.emit('resume', { from: msg.from });
+        return;
+      case 'HOST_TRANSFER':
+        this.events.emit('transferProposed', msg.payload);
+        return;
+      default:
+        return;
+    }
   }
 
   private onTransferAck(msg: Message<'HOST_TRANSFER_ACK'>): void {
@@ -560,12 +826,16 @@ export class ClientMatch {
       from: oldHost,
       event: { type: 'host_transfer', reason: pt.reason, proposer: pt.proposer, from: oldHost, to: pt.newHost, newHostPublicKey: pt.newHostPublicKey },
     });
+    this.noteTransferCommitted(oldHost);
+    return { oldHost, newHost: pt.newHost };
+  }
+
+  private noteTransferCommitted(oldHost: PlayerId): void {
     if (this.hostLost) {
       this.gone.add(oldHost);
       this.hostLost = false;
     }
     this.transferAccepts.clear();
-    return { oldHost, newHost: pt.newHost };
   }
 
   private commitTransferAsClient(): void {
@@ -587,6 +857,8 @@ export class ClientMatch {
     });
     this.events.emit('hostChanged', { from: done.oldHost, to: done.newHost });
     this.events.emit('becameHost', host);
+    // Answer the held RECONNECTs first, so those clients get the commit event before the re-issued grant.
+    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, { seqChecked: true });
     host.run();
   }
 }

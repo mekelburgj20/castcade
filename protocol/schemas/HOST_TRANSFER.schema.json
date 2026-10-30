@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v1/HOST_TRANSFER.schema.json",
+  "$id": "https://castcade.dev/protocol/v2/HOST_TRANSFER.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -113,6 +113,20 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]+={0,2}$",
       "description": "Grants after the transfer are signed with this key. Must equal the roster entry for newHost."
+    },
+    "newHostEndpoint": {
+      "default": null,
+      "description": "The new host's listener (ws:// or wss:// URL); everyone else reconnects there. null on a transport without per-host sockets.",
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^wss?:\\/\\/\\S+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -122,7 +136,8 @@
     "logHash",
     "logLength",
     "currentGrant",
-    "newHostPublicKey"
+    "newHostPublicKey",
+    "newHostEndpoint"
   ],
   "additionalProperties": false,
   "description": "host -> all, or client -> all when the host is gone. Takes effect when a majority of the remaining participants ack it."

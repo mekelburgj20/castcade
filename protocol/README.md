@@ -1,6 +1,7 @@
 # protocol/
 
-**Status: version 1 implemented (Phase 1, 2026-10-18).** `src/messages.ts` is the source of truth (zod
+**Status: version 2 (2026-10-30): version 1 (Phase 1, 2026-10-18) plus `HOST_TRANSFER.newHostEndpoint`,
+`RECONNECT` and `RECONNECT_ACK` for host transfer and reconnect over WebSocket (A2, A3).** `src/messages.ts` is the source of truth (zod
 schemas); `schemas/*.schema.json` and [`SPEC.md`](SPEC.md) are generated from it plus `docs/prose.md` by
 `npm run protocol:generate`, and CI fails when they are stale. Behaviour (joining, rotation, pauses, host
 transfer, result) is specified in `SPEC.md`; the table below is the original sketch and `SPEC.md` wins
