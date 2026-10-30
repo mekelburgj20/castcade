@@ -34,6 +34,8 @@ export interface PendingTransfer {
   /** `ts` of the HOST_TRANSFER message; reused as the `ts` of the commit event so all logs agree. */
   proposedTs: number;
   currentGrant: PayloadOf<'TURN_GRANT'> | null;
+  /** Where the new host listens, when the transport needs one (WebSocket, A2). */
+  newHostEndpoint: string | null;
 }
 
 export interface MatchState {
@@ -184,6 +186,7 @@ function applyMessage(st: MatchState, msg: AnyMessage): void {
         logLength: p.logLength,
         proposedTs: msg.ts,
         currentGrant: p.currentGrant,
+        newHostEndpoint: p.newHostEndpoint,
       };
       break;
     }

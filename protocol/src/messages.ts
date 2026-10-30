@@ -198,6 +198,14 @@ export const HostTransfer = z
     logLength: z.number().int().min(0),
     currentGrant: TurnGrant.nullable().describe('The last grant the proposer saw, so the match resumes at the same handoff.'),
     newHostPublicKey: PublicKey.describe('Grants after the transfer are signed with this key. Must equal the roster entry for newHost.'),
+    // A2 (2026-10-30): over WebSocket the other participants must know where the new host listens.
+    newHostEndpoint: z
+      .string()
+      .max(256)
+      .regex(/^wss?:\/\/\S+$/)
+      .nullable()
+      .default(null)
+      .describe("The new host's listener (ws:// or wss:// URL); everyone else reconnects there. null on a transport without per-host sockets."),
   })
   .describe('host -> all, or client -> all when the host is gone. Takes effect when a majority of the remaining participants ack it.');
 
@@ -208,6 +216,31 @@ export const HostTransferAck = z
     logHash: Sha256Hex.describe("The acker's own log head, for diagnosis when accept is false."),
   })
   .describe('client -> proposer (and all).');
+
+// A2 (2026-10-30): RECONNECT_ACK carries log entries verbatim, so the log entry shape is part of the wire.
+export const LogEvent = z
+  .object({
+    type: z.literal('host_transfer'),
+    reason: z.enum(['host_left', 'host_requested']),
+    proposer: PlayerId,
+    from: PlayerId.describe('The host before the transfer.'),
+    to: PlayerId.describe('The host after the transfer.'),
+    newHostPublicKey: PublicKey,
+  })
+  .describe('The derived log entry that commits an accepted HOST_TRANSFER.');
+
+export const LogEntry = z
+  .object({
+    index: z.number().int().min(0),
+    prevHash: Sha256Hex.describe('Hash of the previous entry; 64 zeros before the first.'),
+    ts: z.number().int().describe("The causing message's own ts, never a local clock."),
+    kind: z.enum(['msg', 'grant', 'event']),
+    from: PlayerId,
+    message: z.record(z.string(), z.unknown()).optional().describe('The logged envelope, verbatim; absent on an event entry.'),
+    event: LogEvent.optional().describe('Present only when kind is event.'),
+    hash: Sha256Hex.describe('sha256(canonicalJson(entry without hash)).'),
+  })
+  .describe('One entry of the hash-chained match log, exactly as every participant holds it.');
 
 export const LogSign = z
   .object({
@@ -267,6 +300,28 @@ export const Reject = z
   })
   .describe('host -> client. A message was ignored; diagnostic only, never changes match state.');
 
+export const Reconnect = z
+  .object({
+    player: PlayerId.describe('Who is resuming; must equal the envelope from.'),
+    logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
+    logLength: z.number().int().min(0),
+    signature: Signature.describe("The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key."),
+  })
+  .describe('client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO.');
+
+export const ReconnectAck = z
+  .object({
+    accept: z.boolean(),
+    code: z
+      .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started'])
+      .nullable()
+      .describe('Why the RECONNECT was rejected; null when accepted.'),
+    entries: z.array(LogEntry).describe('Every log entry after the one the client named, in order; empty when it is current or rejected.'),
+    logHash: Sha256Hex.describe("The host's log head after these entries."),
+    logLength: z.number().int().min(0),
+  })
+  .describe('host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection.');
+
 // ---------------------------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------------------------
@@ -289,6 +344,8 @@ export const payloadSchemas = {
   RESUME: Resume,
   FORFEIT: Forfeit,
   REJECT: Reject,
+  RECONNECT: Reconnect,
+  RECONNECT_ACK: ReconnectAck,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -316,4 +373,6 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   RESUME: 'any',
   FORFEIT: 'any',
   REJECT: 'host->client',
+  RECONNECT: 'client->host',
+  RECONNECT_ACK: 'host->client',
 };

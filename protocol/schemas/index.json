@@ -1,11 +1,12 @@
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "envelope": "Envelope.schema.json",
   "shared": [
     "Envelope.schema.json",
     "GameFingerprint.schema.json",
     "ParticipantInfo.schema.json",
-    "GrantBody.schema.json"
+    "GrantBody.schema.json",
+    "LogEntry.schema.json"
   ],
   "messages": {
     "HELLO": {
@@ -75,6 +76,14 @@
     "REJECT": {
       "direction": "host->client",
       "schema": "REJECT.schema.json"
+    },
+    "RECONNECT": {
+      "direction": "client->host",
+      "schema": "RECONNECT.schema.json"
+    },
+    "RECONNECT_ACK": {
+      "direction": "host->client",
+      "schema": "RECONNECT_ACK.schema.json"
     }
   }
 }

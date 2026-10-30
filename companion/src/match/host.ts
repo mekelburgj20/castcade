@@ -33,9 +33,9 @@ import {
 import { ClientMatch } from './client.js';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
-import { signCanonical, type KeyPair } from './keys.js';
-import type { LogHead, MatchLog } from './log.js';
-import { logSignBody, pickWinner, rankEntries } from './result.js';
+import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
+import { GENESIS_HASH, type LogHead, type MatchLog } from './log.js';
+import { logSignBody, pickWinner, rankEntries, reconnectSignBody } from './result.js';
 import { Session } from './session.js';
 import {
   cloneState,
@@ -49,6 +49,7 @@ import type { Transport } from './transport.js';
 
 export type RejectCode = PayloadOf<'REJECT'>['code'];
 export type RefuseCode = PayloadOf<'REFUSE'>['code'];
+export type ReconnectCode = NonNullable<PayloadOf<'RECONNECT_ACK'>['code']>;
 
 export interface HostOptions {
   transport: Transport;
@@ -110,11 +111,16 @@ export interface HostEvents extends Record<string, unknown> {
   hostTransfer: { from: PlayerId; to: PlayerId; client: ClientMatch };
   result: { result: PayloadOf<'RESULT'>; signatures: LogSignRecord[] };
   peerLeft: PlayerId;
+  /** A RECONNECT was accepted; `entries` is how many log entries it was sent. */
+  reconnected: { playerId: PlayerId; entries: number };
+  reconnectRejected: { playerId: PlayerId; code: ReconnectCode };
 }
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT']);
+/** Frames a host passes on with `from` preserved on a star transport. */
+const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK']);
 
 export class HostMatch {
   readonly events = new Emitter<HostEvents>();
@@ -322,8 +328,11 @@ export class HostMatch {
     this.onResume(this.s.build('RESUME', {}, this.matchId));
   }
 
-  /** Planned handover (`host_requested`). Takes effect once a strict majority acks. */
-  transferHost(to: PlayerId): void {
+  /**
+   * Planned handover (`host_requested`). Takes effect once a strict majority acks. Over WebSocket
+   * `endpoint` is the new host's open listener (A2); how this host learned it is above the protocol.
+   */
+  transferHost(to: PlayerId, opts: { endpoint?: string } = {}): void {
     this.assertActive();
     const st = this.s.state;
     if (st.phase !== 'running') throw new Error('transferHost: match is not running');
@@ -341,6 +350,7 @@ export class HostMatch {
         logLength: head.length,
         currentGrant: st.currentGrant,
         newHostPublicKey: target.publicKey,
+        newHostEndpoint: opts.endpoint ?? null,
       },
       this.matchId,
     );
@@ -413,18 +423,26 @@ export class HostMatch {
   // Inbound dispatch
   // ------------------------------------------------------------------------------------------
 
-  private handle(linkFrom: PlayerId, msg: AnyMessage): void {
+  /** Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). */
+  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
     if (this.detached) return;
     if (msg.from !== linkFrom) {
+      // On a star the old host relays acks and mirrors frames until it steps down; one that
+      // reaches this host after the transfer is stale, not an impersonation (A2, 2026-10-30).
+      if (this.s.transport.topology === 'star' && RELAYED_TYPES.has(msg.type)) return;
       this.reject(msg, 'unknown_player', `from=${msg.from} does not match the link peer ${linkFrom}`);
       return;
     }
-    if (!this.s.checkSeq(msg.from, msg.seq)) {
+    if (!opts.seqChecked && !this.s.checkSeq(msg.from, msg.seq)) {
       this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
       return;
     }
     if (msg.type === 'HELLO') {
       this.onHello(msg);
+      return;
+    }
+    if (msg.type === 'RECONNECT') {
+      this.onReconnect(linkFrom, msg);
       return;
     }
     if (!this.isParticipant(msg.from)) {
@@ -802,6 +820,8 @@ export class HostMatch {
   // ------------------------------------------------------------------------------------------
 
   private onTransferAck(msg: Message<'HOST_TRANSFER_ACK'>): void {
+    // A star has no client-to-client links: pass every ack on so the new host can count it (A2).
+    if (this.s.transport.topology === 'star') this.mirror(msg);
     const pt = this.s.state.pendingTransfer;
     // Acks that arrive after the transfer already took effect are expected; ignore them quietly.
     if (!pt || msg.payload.proposer !== pt.proposer) return;
@@ -839,6 +859,42 @@ export class HostMatch {
     });
     this.events.emit('hostTransfer', { from, to: pt.newHost, client });
     if (trigger && linkFrom !== null) client.handle(linkFrom, trigger, { seqChecked: true });
+    // Over WebSocket the old host becomes a client of the new host's listener, and closes its own
+    // once that RECONNECT is accepted (A2, 2026-10-30).
+    if (pt.newHostEndpoint !== null) client.relinkTo(pt.newHost, { endpoint: pt.newHostEndpoint, closeListenerOnAccept: true });
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Reconnect (A2/A3, 2026-10-30): resume from the log head, never a fresh HELLO
+  // ------------------------------------------------------------------------------------------
+
+  private onReconnect(linkFrom: PlayerId, msg: Message<'RECONNECT'>): void {
+    const code = this.checkReconnect(msg);
+    const head = this.s.log.head();
+    const matchId = this.s.state.matchId ?? this.matchId;
+    if (code !== null) {
+      this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId));
+      this.events.emit('reconnectRejected', { playerId: msg.from, code });
+      this.s.transport.closePeer?.(linkFrom);
+      return;
+    }
+    const entries = this.s.log.entries().slice(msg.payload.logLength);
+    this.s.transport.send(
+      linkFrom,
+      this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: entries.map((e) => ({ ...e })), logHash: head.hash, logLength: head.length }, matchId),
+    );
+    this.events.emit('reconnected', { playerId: msg.from, entries: entries.length });
+  }
+
+  private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {
+    const st = this.s.state;
+    const p = msg.payload;
+    if (st.phase === 'lobby' || !st.matchId) return 'match_not_started';
+    const who = st.participants.find((x) => x.playerId === msg.from);
+    if (!who || p.player !== msg.from) return 'unknown_player';
+    if (!verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey)) return 'bad_signature';
+    const known = p.logLength === 0 ? p.logHash === GENESIS_HASH : this.s.log.at(p.logLength - 1)?.hash === p.logHash;
+    return known ? null : 'unknown_log_hash';
   }
 }
 
