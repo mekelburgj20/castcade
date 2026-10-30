@@ -43,7 +43,7 @@ import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import { readVpxScript } from './vpx-file.js';
 import type { EngineAttestation } from './attestation-types.js';
 import { Emitter } from '../match/events.js';
-import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
+import { ArcaidClient, ArcaidError, type AttemptStartAnswer, type AttemptStartParams, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
@@ -312,9 +312,31 @@ export function outcomeForWire(
   }
 }
 
+/**
+ * B21: ArcAid's `ATTEMPT_REFUSAL_TEXT.not_started` ("you have not pressed Start attempts for this table on Arcaid yet —
+ * this play used no attempt"), answered as `no_match` on the attempt call (W38). Matched on its opening words so a
+ * change of punctuation after the dash does not lose the state.
+ */
+export function isNotStartedReason(reason: string | null | undefined): boolean {
+  return !!reason && reason.trim().toLowerCase().startsWith('you have not pressed start attempts');
+}
+
+/** B21: what Status says on a game start that used no attempt because Start attempts was not pressed. */
+export const NEEDS_START_TEXT = 'This table needs Start attempts: press the button on Status, then start a new game.';
+
+/** B21: the one line Status shows under the Start attempts button for ArcAid's answer to a press. */
+export function attemptStartText(answer: AttemptStartAnswer): string {
+  if (answer.status === 'started') {
+    const names = answer.started.map((r) => r.game).filter((g) => g.trim() !== '');
+    const again = answer.started.length > 0 && answer.started.every((r) => r.alreadyStarted) ? ' (already started)' : '';
+    return `Start attempts pressed for ${names.length > 0 ? names.join(', ') : 'this device'}${again}`;
+  }
+  return answer.reason ?? `ArcAid answered "${answer.status ?? 'nothing'}" to Start attempts`;
+}
+
 /** What the player is told about a game start on a limited-attempts board (ADR 0029, "Castcade's half", item 2). */
 export function attemptStatusFor(key: string, posted: PostResult): AttemptStatus {
-  const base = { key, n: null, of: null, remaining: null, late: false, game: null };
+  const base = { key, n: null, of: null, remaining: null, late: false, game: null, needsStart: false };
   if (posted.state === 'queued') return { ...base, state: 'queued', text: 'offline: this attempt will not count' };
   if (posted.state === 'rejected') return { ...base, state: 'rejected', text: `ArcAid refused the attempt: ${posted.error.message}` };
   const a = posted.attempt ?? null;
@@ -328,6 +350,7 @@ export function attemptStatusFor(key: string, posted: PostResult): AttemptStatus
     case 'unlimited':
       return { ...base, state: 'unlimited', game: a.game, text: '' };
     case 'no_match':
+      if (isNotStartedReason(a.reason)) return { ...base, state: 'no_match', game: a.game, needsStart: true, text: NEEDS_START_TEXT };
       return { ...base, state: 'no_match', text: '' };
     default:
       return { ...base, state: 'rejected', text: `ArcAid answered "${a?.status ?? 'nothing'}" to the attempt` };
@@ -354,6 +377,14 @@ export function resolveTableName(launch: Pick<VpxLaunch, 'table' | 'tableSource'
   if (romName) return { table: romName, source: 'romname' };
   if (rom) return { table: rom, source: 'rom' };
   return null;
+}
+
+/** The table name and second name key a game start sends; the B21 press sends the same so it lands on the same games. */
+function wireTableNames(launch: Pick<VpxLaunch, 'table' | 'tableSource'>, romName: string | null, rom: string | null): { table: string; slug: string | null } | null {
+  const resolved = resolveTableName(launch, romName, rom);
+  if (!resolved) return null;
+  const table = catalogueTableName(resolved.table);
+  return { table, slug: romName && catalogueTableName(romName) !== table ? catalogueTableName(romName) : null };
 }
 
 const SOURCE_TEXT: Record<TableSource, string> = {
@@ -396,6 +427,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     note: null,
     captureMode: null,
     attempt: null,
+    attemptStart: null,
   };
 
   const sessions = new Map<number, OpenSession>();
@@ -1339,9 +1371,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (!token) return;
     const rom = live.rom;
     const romName = rom ? await corpus.romName(rom) : null;
-    const resolved = resolveTableName(session.launch, romName, rom);
-    const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
-    const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
+    const wire = wireTableNames(session.launch, romName, rom);
+    const wireTable = wire?.table ?? UNKNOWN_TABLE;
+    const wireSlug = wire?.slug ?? null;
     const key = attemptKey(live.sessionStamp, live.loadedAtMs, t);
     await pinIdentityByRom(session, rom); // B19: no-op once `table_loaded` pinned it
     const identity = session.identity;
@@ -1586,6 +1618,45 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       refreshTableStatus();
       emitStatus();
+    },
+
+    async startAttempts() {
+      const { token, deviceId } = store.get();
+      // The queue's word for a call made while unpaired, so every path says the same.
+      if (!token) throw new ArcaidError('auth', 'not paired');
+      const params: AttemptStartParams = { device: deviceId };
+      const session = activeSession();
+      if (session) {
+        // The loaded table's identity as its game start would send it (reportAttempt), so the press lands on the
+        // games its plays land on. Read, not re-pinned: B19 pins the identity at `table_loaded`.
+        const rom = session.live?.rom ?? session.identityRom ?? null;
+        const romName = rom ? await corpus.romName(rom).catch(() => null) : null;
+        const wire = wireTableNames(session.launch, romName, rom);
+        if (wire) {
+          const playDevice = session.attestation ? playDeviceFor(session.attestation.vr) : null;
+          Object.assign(params, {
+            table: wire.table,
+            rom,
+            slug: wire.slug,
+            vps_game: session.identity?.vpsGame?.id ?? null,
+            ...(playDevice ? { play_device: playDevice } : {}),
+          });
+        }
+      }
+      let answer: AttemptStartAnswer;
+      try {
+        answer = await arcaid().attemptStart(token, params);
+      } catch (err) {
+        log(`witness: start attempts${params.table ? ` for ${params.table}` : ''} failed: ${errText(err)}`);
+        throw err;
+      }
+      const text = attemptStartText(answer);
+      status.sendingTo = answer.sendingTo;
+      status.attemptStart = { at: iso(clock.now()), status: answer.status ?? 'unknown', text };
+      clearArcaidError();
+      log(`witness: start attempts${params.table ? ` for ${params.table}` : ''}: ${answer.status ?? '?'} (${text})`);
+      emitStatus();
+      return { ...status };
     },
 
     liveGame() {

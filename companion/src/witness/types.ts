@@ -100,6 +100,11 @@ export interface AttemptStatus {
   game: string | null;
   /** One line for the player, e.g. "Attempt 3 of 5" or "No attempts left: this score will not count". */
   text: string;
+  /**
+   * B21: ArcAid refused the start because the tournament requires Start attempts and the player has not pressed it
+   * for this table (W38: `no_match` with `ATTEMPT_REFUSAL_TEXT.not_started`). `state` stays `no_match`.
+   */
+  needsStart: boolean;
 }
 
 export interface WitnessStatus {
@@ -134,6 +139,11 @@ export interface WitnessStatus {
   captureMode: 'live' | 'basic' | null;
   /** The game in progress on a limited-attempts board (live mode only); null otherwise. */
   attempt: AttemptStatus | null;
+  /**
+   * B21: the last "Start attempts" press from Status: when, ArcAid's `status`, and one line for the player
+   * ("Start attempts pressed for …", else ArcAid's reason). Null until pressed in this run.
+   */
+  attemptStart: { at: string; status: string; text: string } | null;
 }
 
 export interface WitnessEvents {
@@ -192,6 +202,11 @@ export interface Witness {
    * file path, applied to the current session and the last capture's display at once. `null` forgets.
    */
   confirmTable(filePath: string, vpsTableId: string | null): Promise<void>;
+  /**
+   * B21: press "Start attempts" on ArcAid (W45) for the loaded table's games, or for every start-required table this
+   * device routes to when none is loaded. Throws when unpaired or when ArcAid cannot be reached.
+   */
+  startAttempts(): Promise<WitnessStatus>;
   status(): WitnessStatus;
   /** D1.1: the game on screen right now (live mode), or null. */
   liveGame(): LiveGame | null;

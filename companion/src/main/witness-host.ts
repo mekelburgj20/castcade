@@ -15,6 +15,8 @@ export interface WitnessHost {
   pair(code: string): Promise<WitnessStatus>;
   unpair(): Promise<WitnessStatus>;
   confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
+  /** B21: press "Start attempts" on ArcAid for the loaded table (or every start-required table this device routes to). */
+  startAttempts(): Promise<WitnessStatus>;
   /** Pause = stop watching (status.running false) without forgetting anything. */
   setPaused(paused: boolean): Promise<WitnessStatus>;
   isPaused(): boolean;
@@ -109,6 +111,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       broadcast();
       return witness.status();
     },
+    // The module logs the answer (or the failure) and emits the status itself.
+    startAttempts: () => witness.startAttempts(),
     isPaused: () => paused,
     async setPaused(next) {
       if (next === paused) return witness.status();

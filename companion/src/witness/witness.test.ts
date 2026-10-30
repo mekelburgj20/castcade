@@ -4,7 +4,7 @@ import { ascii, buildVpx, codeRecord, concat, floatRecord, record, u32le } from 
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
-import { ArcaidError, type FetchLike } from './arcaid-client.js';
+import { ArcaidError, type AttemptStartAnswer, type FetchLike } from './arcaid-client.js';
 import { MemoryFs } from './fs.js';
 import { readJournalLines, replayJournal } from './journal-replay.js';
 import { createMapCorpus } from './maps.js';
@@ -14,7 +14,7 @@ import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
 import { POSTED_GAMES_FILE } from './posted-games.js';
-import { attemptStatusFor, createWitness, embeddedPatchNote, manifestDirFor, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
+import { attemptStartText, attemptStatusFor, createWitness, embeddedPatchNote, manifestDirFor, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
 import { RECIPE_VERSION, classifyScript, manifestPathFor, renderRecipeA } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
@@ -1174,6 +1174,54 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it('B21: a start refused because Start attempts was not pressed says so on Status (needsStart), and the score still posts', async () => {
+    const h = liveHarness();
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    h.setRespond((path) =>
+      path.endsWith('/attempt')
+        ? { status: 200, body: { ok: true, status: 'no_match', game: 'Tales from the Crypt', attempt: null, of: null, remaining: null, late: false, reason: 'you have not pressed Start attempts for this table on Arcaid yet — this play used no attempt' } }
+        : { status: 200, body: { ok: true, status: 'global', game: 'Tales from the Crypt' } },
+    );
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 37);
+    const loadedAt = h.clock.now() + 4000;
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(loadedAt).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/attempt')).toHaveLength(1);
+    const shown = h.statuses.find((s) => s.attempt?.needsStart);
+    expect(shown?.attempt).toMatchObject({ state: 'no_match', needsStart: true, game: 'Tales from the Crypt', text: 'This table needs Start attempts: press the button on Status, then start a new game.' });
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('B21: Start attempts with a live table loaded sends the identity its game start would send', async () => {
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    h.setRespond((path) =>
+      path.endsWith('/attempt-start')
+        ? { status: 200, body: { ok: true, status: 'started', started: [{ game: 'Tales from the Crypt', gameId: 'g1', tournamentId: 't1', startedTs: 1, alreadyStarted: false }], sendingTo: 'Room / Event · 5 OF 5 ATTEMPTS LEFT' } }
+        : { status: 200, body: { ok: true } },
+    );
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 38);
+    h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"tftc_400","lib":"0.4.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+    await h.poll();
+    await h.flush();
+
+    const st = await h.witness.startAttempts();
+    expect(h.paths('/attempt-start')).toHaveLength(1);
+    expect(h.paths('/attempt-start')[0]).toMatchObject({ token: 'tok', params: { device: 'dev-1', table: 'Tales from the Crypt (Data East 1993)', rom: 'tftc_400', vps_game: 'fXaQ33KC' } });
+    expect(st.attemptStart).toMatchObject({ status: 'started', text: 'Start attempts pressed for Tales from the Crypt' });
+    expect(st.sendingTo).toBe('Room / Event · 5 OF 5 ATTEMPTS LEFT');
+    expect(logs.filter((l) => l.startsWith('witness: start attempts'))).toEqual(['witness: start attempts for Tales from the Crypt (Data East 1993): started (Start attempts pressed for Tales from the Crypt)']);
+  });
+
   it("B19: the game start carries the ROM's VPS game, not the file's: the identity is pinned at table_loaded", async () => {
     // The file at TFTC_PATH is MM_VPX, whose TableInfo says Medieval Madness: resolved from the file alone the
     // identity is MM (-5yMpqSy), the ROM in the journal says Tales from the Crypt (fXaQ33KC). Krobs' Tron did
@@ -1494,6 +1542,67 @@ describe('attemptStatusFor (what the player is told about a game start)', () => 
     expect(attemptStatusFor('k', done({ status: 'no_match' }))).toMatchObject({ state: 'no_match', text: '' });
     expect(attemptStatusFor('k', { state: 'queued', error: new ArcaidError('network', 'ArcAid unreachable') })).toMatchObject({ state: 'queued', text: 'offline: this attempt will not count' });
     expect(attemptStatusFor('k', { state: 'rejected', error: new ArcaidError('auth', 'unpaired by ArcAid') })).toMatchObject({ state: 'rejected', text: 'ArcAid refused the attempt: unpaired by ArcAid' });
+  });
+
+  it('B21: a no_match for want of the Start attempts press is needsStart, with its own text; other refusals are not', () => {
+    const notStarted = 'you have not pressed Start attempts for this table on Arcaid yet — this play used no attempt';
+    expect(attemptStatusFor('k', done({ status: 'no_match', game: 'MB', reason: notStarted }))).toEqual({
+      key: 'k', state: 'no_match', n: null, of: null, remaining: null, late: false, game: 'MB', needsStart: true,
+      text: 'This table needs Start attempts: press the button on Status, then start a new game.',
+    });
+    expect(attemptStatusFor('k', done({ status: 'no_match', reason: 'something else' }))).toMatchObject({ state: 'no_match', needsStart: false, text: '' });
+    expect(attemptStatusFor('k', done({ status: 'counted', attempt: 1, of: 5, remaining: 4 }))).toMatchObject({ needsStart: false });
+  });
+});
+
+describe('Start attempts (B21)', () => {
+  const answer = (o: Partial<AttemptStartAnswer>): AttemptStartAnswer => ({ status: 'started', started: [], reason: null, sendingTo: null, ...o });
+  const row = (game: string, alreadyStarted: boolean) => ({ game, gameId: 'g', tournamentId: 't', startedTs: 1, alreadyStarted });
+
+  it('names the pressed games, says when every one was already started, else gives ArcAid reason', () => {
+    expect(attemptStartText(answer({ started: [row('Monster Bash', false), row('Tales from the Crypt', true)] }))).toBe('Start attempts pressed for Monster Bash, Tales from the Crypt');
+    expect(attemptStartText(answer({ started: [row('Monster Bash', true), row('Tales from the Crypt', true)] }))).toBe('Start attempts pressed for Monster Bash, Tales from the Crypt (already started)');
+    expect(attemptStartText(answer({ status: 'nothing_to_start', reason: 'no limited-attempts table needing Start attempts is open for this device' }))).toBe('no limited-attempts table needing Start attempts is open for this device');
+    expect(attemptStartText(answer({ status: 'no_match', reason: null }))).toBe('ArcAid answered "no_match" to Start attempts');
+  });
+
+  it('with no table open presses for the device alone, refreshes sendingTo from the answer and keeps the result on Status', async () => {
+    const h = harness();
+    await h.witness.start();
+    await h.flush();
+    expect(h.witness.status()).toMatchObject({ sendingTo: SENDING_TO, attemptStart: null });
+    h.setRespond((path) =>
+      path.endsWith('/attempt-start')
+        ? { status: 200, body: { ok: true, status: 'started', started: [row('Monster Bash', false)], sendingTo: 'Flippin Fear Fest / Limited · 5 OF 5 ATTEMPTS LEFT' } }
+        : { status: 200, body: { ok: true } },
+    );
+    const st = await h.witness.startAttempts();
+    expect(h.paths('/attempt-start')).toHaveLength(1);
+    expect(h.paths('/attempt-start')[0]).toMatchObject({ token: 'tok', params: { device: 'dev-1' } });
+    expect(Object.keys(h.paths('/attempt-start')[0]!.params)).toEqual(['device']);
+    expect(st).toMatchObject({
+      sendingTo: 'Flippin Fear Fest / Limited · 5 OF 5 ATTEMPTS LEFT',
+      attemptStart: { at: new Date(h.clock.now()).toISOString(), status: 'started', text: 'Start attempts pressed for Monster Bash' },
+    });
+    expect(h.statuses.at(-1)?.attemptStart?.text).toBe('Start attempts pressed for Monster Bash');
+
+    h.setRespond(() => ({ status: 200, body: { ok: true, status: 'nothing_to_start', started: [], reason: 'no limited-attempts table needing Start attempts is open for this device', sendingTo: SENDING_TO } }));
+    expect((await h.witness.startAttempts()).attemptStart).toMatchObject({ status: 'nothing_to_start', text: 'no limited-attempts table needing Start attempts is open for this device' });
+    expect(h.witness.status().sendingTo).toBe(SENDING_TO);
+  });
+
+  it('unpaired throws the queue\'s "not paired" without calling ArcAid; a 401 throws "unpaired by ArcAid"', async () => {
+    const h = harness({ token: null });
+    await h.witness.start();
+    await expect(h.witness.startAttempts()).rejects.toMatchObject({ kind: 'auth', message: 'not paired' });
+    expect(h.paths('/attempt-start')).toHaveLength(0);
+
+    const p = harness();
+    await p.witness.start();
+    await p.flush();
+    p.setRespond(() => ({ status: 401, body: { ok: false } }));
+    await expect(p.witness.startAttempts()).rejects.toMatchObject({ kind: 'auth', message: 'unpaired by ArcAid' });
+    expect(p.witness.status().attemptStart).toBeNull();
   });
 });
 

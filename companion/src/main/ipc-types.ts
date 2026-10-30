@@ -17,6 +17,7 @@ export const IPC = {
   witnessUnpair: 'witness:unpair',
   witnessSetPaused: 'witness:setPaused',
   witnessConfirmTable: 'witness:confirmTable',
+  witnessStartAttempts: 'witness:startAttempts',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   appOpenExternal: 'app:openExternal',
@@ -128,6 +129,8 @@ export interface CastcadeApi {
     setPaused(paused: boolean): Promise<WitnessStatus>;
     /** Remember the player's answer to "which VPS table is this file?"; null forgets it. */
     confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
+    /** B21: press "Start attempts" on ArcAid (W45); the answer lands on `WitnessStatus.attemptStart`. */
+    startAttempts(): Promise<WitnessStatus>;
     onStatus(cb: (status: WitnessStatus) => void): () => void;
   };
   settings: {
