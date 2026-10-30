@@ -79,6 +79,7 @@ import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
+import { createRomMapStore, fetchRomMap, withServedRoms, type CachedRomMap, type RomMap } from './rom-map.js';
 import type { AttemptStatus, CaptureOutcome, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
@@ -112,6 +113,12 @@ export interface WitnessDeps {
   /** Poll step of the nvram directory while a VPX process is open. */
   nvAlivePollMs?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * B8: how often the ROM → VPS game map ArcAid serves is re-fetched (once at start, then this often). Omitted or
+   * null = never, and the shipped seed alone maps ROMs: the shell passes `DEFAULT_ROM_MAP_REFRESH_MS`, so tests that
+   * do not exercise B8 keep their exact call lists.
+   */
+  romMapRefreshMs?: number | null;
   requestTimeoutMs?: number;
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
@@ -433,7 +440,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const sessions = new Map<number, OpenSession>();
   const identityStore = createIdentityStore(fs, store.get().dataDir, () => clock.now());
   const postedGames = createPostedGames(fs, store.get().dataDir, () => clock.now());
-  const vpsIndex = deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs);
+  /** B8: the served ROM map in use (fetched, or the cached copy); null = the seed alone. */
+  let servedRoms: RomMap | null = null;
+  const vpsIndex = withServedRoms(deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs), () => servedRoms);
   const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
   const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
   const builds = createBuildAttester({ fs, registry, log });
@@ -549,6 +558,64 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const stopHeartbeat = () => {
     if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
     heartbeatTimer = null;
+  };
+
+  // ----------------------------------------------------------------------- ROM map (B8) --
+
+  const romMapMs = deps.romMapRefreshMs ?? null;
+  const romMapStore = createRomMapStore(fs, store.get().dataDir);
+  let romMapCache: CachedRomMap | null = null;
+  let romMapTimer: TimerHandle | null = null;
+
+  /**
+   * Revalidate the served map against the paired server (unpaired: no fetch). A failure keeps the cache; with no
+   * cache the seed serves. One log line says which is in use.
+   */
+  const refreshRomMap = async (): Promise<void> => {
+    const { token, arcaidBaseUrl } = store.get();
+    let why = '';
+    let served = false;
+    if (!token) why = ' — not paired, no fetch';
+    else {
+      const r = await fetchRomMap(deps.fetch ?? ((input, init) => globalThis.fetch(input, init)), arcaidBaseUrl, romMapCache?.etag ?? null, deps.requestTimeoutMs);
+      if (r.kind === 'fresh') {
+        romMapCache = { fetchedAt: iso(clock.now()), etag: r.etag, map: r.map };
+        served = true;
+        await romMapStore.save(romMapCache).catch((err: unknown) => {
+          why = ` — not cached: ${errText(err)}`;
+        });
+      } else if (r.kind === 'unchanged') served = romMapCache !== null;
+      else why = ` — fetch failed: ${r.error}`;
+    }
+    servedRoms = romMapCache?.map ?? null;
+    if (servedRoms) log(`witness: ROM map ${servedRoms.version} (${servedRoms.count} ROMs, ${served ? 'served' : 'cached'})${why}`);
+    else log(`witness: ROM map ${(await vpsIndex.version().catch(() => null)) ?? 'unknown'} (seed)${why}`);
+  };
+
+  const scheduleRomMap = (ms: number) => {
+    romMapTimer = clock.setTimeout(() => {
+      romMapTimer = null;
+      void refreshRomMap().finally(() => {
+        if (status.running) scheduleRomMap(ms);
+      });
+    }, ms);
+  };
+
+  const startRomMap = async (): Promise<void> => {
+    if (romMapMs === null) return;
+    romMapCache = await romMapStore.load().catch((err: unknown) => {
+      log(`witness: ROM map cache unreadable: ${errText(err)}`);
+      return null;
+    });
+    servedRoms = romMapCache?.map ?? null;
+    void refreshRomMap().finally(() => {
+      if (status.running && romMapTimer === null) scheduleRomMap(romMapMs);
+    });
+  };
+
+  const stopRomMap = () => {
+    if (romMapTimer !== null) clock.clearTimeout(romMapTimer);
+    romMapTimer = null;
   };
 
   // ------------------------------------------------------------------------------ helpers --
@@ -1570,6 +1637,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       await postedGames.load().catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
       queue.resume();
       startHeartbeat();
+      await startRomMap();
       watch.start();
       emitStatus();
     },
@@ -1579,6 +1647,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       status.running = false;
       watch.stop();
       stopHeartbeat();
+      stopRomMap();
       stopNvPoll();
       queue.stop();
       await chain;
@@ -1598,6 +1667,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       status.lastError = null;
       startHeartbeat();
+      // B8: the map is fetched after pairing too, not only at the next start.
+      if (romMapMs !== null && status.running) void refreshRomMap();
       void queue.flush();
       emitStatus();
     },

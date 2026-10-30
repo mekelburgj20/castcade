@@ -1636,3 +1636,45 @@ describe('quitWire (B16)', () => {
     expect(quitWire({ gameOver: null })).toEqual({});
   });
 });
+
+describe('the served ROM map (B8)', () => {
+  const DAY = 24 * 60 * 60_000;
+  const MAP = { version: '0123456789abcdef', count: 1, roms: { rollstob: { vpsGameId: '-bG4P570', globalGameId: 'gg-rs', name: 'Rolling Stones', manufacturer: 'Bally', year: 1980 } } };
+
+  it('is fetched at start and daily from the paired server, cached in the data dir, and kept when a fetch fails', async () => {
+    const logs: string[] = [];
+    const h = harness({}, { romMapRefreshMs: DAY, log: (l) => logs.push(l) });
+    let answer: { status: number; body?: unknown } = { status: 200, body: MAP };
+    h.setRespond((path) => (path.endsWith('/roms') ? answer : path.endsWith('/checkin') ? { status: 200, body: { ok: true, sendingTo: SENDING_TO } } : { status: 200, body: { ok: true } }));
+    const romLines = () => logs.filter((l) => l.startsWith('witness: ROM map'));
+    await h.witness.start();
+    await h.flush();
+    expect(h.paths('/roms')).toHaveLength(1);
+    expect(h.paths('/roms')[0]?.params).toEqual({});
+    expect(romLines()).toEqual(['witness: ROM map 0123456789abcdef (1 ROMs, served)']);
+    expect(JSON.parse(h.fs.text('/data/roms.json') ?? 'null')).toMatchObject({ etag: '"0123456789abcdef"', map: { version: '0123456789abcdef', count: 1 } });
+
+    answer = { status: 304 };
+    await h.playFor(DAY);
+    expect(h.paths('/roms')).toHaveLength(2);
+    expect(romLines().at(-1)).toBe('witness: ROM map 0123456789abcdef (1 ROMs, served)');
+
+    answer = { status: 500, body: { error: 'Internal Server Error' } };
+    await h.playFor(DAY);
+    expect(h.paths('/roms')).toHaveLength(3);
+    expect(romLines().at(-1)).toBe('witness: ROM map 0123456789abcdef (1 ROMs, cached) — fetch failed: HTTP 500');
+
+    await h.witness.stop();
+    await h.playFor(DAY);
+    expect(h.paths('/roms')).toHaveLength(3);
+  });
+
+  it('unpaired: no fetch, the seed serves', async () => {
+    const logs: string[] = [];
+    const h = harness({ token: null }, { romMapRefreshMs: DAY, log: (l) => logs.push(l) });
+    await h.witness.start();
+    await h.flush();
+    expect(h.paths('/roms')).toHaveLength(0);
+    expect(logs.filter((l) => l.startsWith('witness: ROM map'))).toEqual([`witness: ROM map ${await vpsIndex.version()} (seed) — not paired, no fetch`]);
+  });
+});
