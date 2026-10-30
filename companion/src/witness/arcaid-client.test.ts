@@ -134,6 +134,60 @@ describe('ArcaidClient', () => {
     expect(await ask()).toBeUndefined();
   });
 
+  it("B21: attempt carries ArcAid's refusal reason when it sends one", async () => {
+    const reason = 'you have not pressed Start attempts for this table on Arcaid yet — this play used no attempt';
+    const client = new ArcaidClient({ baseUrl: 'https://a', fetch: fakeFetch(() => ({ status: 200, body: { ok: true, status: 'no_match', game: 'Monster Bash', attempt: null, of: null, remaining: null, late: false, reason } })).fetch });
+    expect(await client.attempt('tok', { device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', started: 1, key: 'k' })).toMatchObject({ status: 'no_match', game: 'Monster Bash', reason });
+  });
+
+  it('B21: attemptStart sends the device, token and the named table, and parses started / nothing_to_start / no_match', async () => {
+    const { fetch, calls } = fakeFetch(() => ({
+      status: 200,
+      body: {
+        ok: true,
+        status: 'started',
+        started: [
+          { game: 'Monster Bash', gameId: 'g1', tournamentId: 't1', startedTs: 1_761_800_000, alreadyStarted: false },
+          { game: 'Tales from the Crypt', gameId: 'g2', tournamentId: 't1', startedTs: 1_761_700_000, alreadyStarted: true },
+        ],
+        sendingTo: 'Room / Event · 4 OF 5 ATTEMPTS LEFT',
+      },
+    }));
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });
+    const a = await client.attemptStart('tok', { device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', slug: null, vps_game: 'F1Skyh5h', play_device: 'pc' });
+    expect(calls[0]?.url.pathname).toBe('/api/witness/attempt-start');
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', vps_game: 'F1Skyh5h', play_device: 'pc' });
+    expect(calls[0]?.headers['x-witness-token']).toBe('tok');
+    expect(a).toEqual({
+      status: 'started',
+      started: [
+        { game: 'Monster Bash', gameId: 'g1', tournamentId: 't1', startedTs: 1_761_800_000, alreadyStarted: false },
+        { game: 'Tales from the Crypt', gameId: 'g2', tournamentId: 't1', startedTs: 1_761_700_000, alreadyStarted: true },
+      ],
+      reason: null,
+      sendingTo: 'Room / Event · 4 OF 5 ATTEMPTS LEFT',
+    });
+
+    const none = fakeFetch(() => ({ status: 200, body: { ok: true, status: 'nothing_to_start', started: [], reason: 'no limited-attempts table needing Start attempts is open for this device', sendingTo: 'Room / Event' } }));
+    const bare = await new ArcaidClient({ baseUrl: 'https://a', fetch: none.fetch }).attemptStart('tok', { device: 'd' });
+    expect(Object.fromEntries(none.calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd' });
+    expect(bare).toEqual({ status: 'nothing_to_start', started: [], reason: 'no limited-attempts table needing Start attempts is open for this device', sendingTo: 'Room / Event' });
+
+    const miss = fakeFetch(() => ({ status: 200, body: { ok: true, status: 'no_match', started: [], reason: '"Medieval Madness" is not an open limited-attempts table needing Start attempts for this device', sendingTo: null } }));
+    expect(await new ArcaidClient({ baseUrl: 'https://a', fetch: miss.fetch }).attemptStart('tok', { device: 'd', table: 'Medieval Madness' })).toEqual({
+      status: 'no_match',
+      started: [],
+      reason: '"Medieval Madness" is not an open limited-attempts table needing Start attempts for this device',
+      sendingTo: null,
+    });
+  });
+
+  it('B21: attemptStart maps 401 to the auth failure attempt() uses', async () => {
+    const revoked = new ArcaidClient({ baseUrl: 'https://a', fetch: fakeFetch(() => ({ status: 401, body: { ok: false } })).fetch });
+    await expect(revoked.attemptStart('t', { device: 'd' })).rejects.toMatchObject({ kind: 'auth', status: 401, message: 'unpaired by ArcAid', retryable: false });
+    await expect(revoked.attempt('t', { device: 'd', table: 'x', rom: null, started: 1, key: 'k' })).rejects.toMatchObject({ kind: 'auth', status: 401, message: 'unpaired by ArcAid' });
+  });
+
   it('times out a hanging request as a network failure', async () => {
     const hanging: FetchLike = (_input, init) =>
       new Promise((_resolve, reject) => {

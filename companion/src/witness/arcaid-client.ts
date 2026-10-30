@@ -106,6 +106,11 @@ export interface AttemptWireAnswer {
   of: number | null;
   remaining: number | null;
   late: boolean;
+  /**
+   * ArcAid's words when it refused the start, e.g. `ATTEMPT_REFUSAL_TEXT.not_started` on a `no_match` (W38: the
+   * player has not pressed Start attempts). Present only when the server sent one (B21).
+   */
+  reason?: string;
 }
 
 export type AttemptParams = {
@@ -122,6 +127,42 @@ export type AttemptParams = {
   players?: number | null;
   play_device?: 'pc' | 'vr_headset';
 };
+
+/**
+ * `GET /api/witness/attempt-start` (ArcAid 2.188.0, W45, ADR 0033 §4): the device twin of the web "Start attempts"
+ * button. With no table named every open start-required limited table this device's plays land on is pressed; the
+ * identity fields narrow it to the loaded table's games, read exactly as on the attempt call.
+ */
+export type AttemptStartParams = {
+  device: string;
+  table?: string | null;
+  rom?: string | null;
+  slug?: string | null;
+  vps_game?: string | null;
+  play_device?: 'pc' | 'vr_headset';
+};
+
+export interface AttemptStartRow {
+  game: string;
+  gameId: string;
+  tournamentId: string;
+  /** Epoch seconds of the press ArcAid keeps (first press wins). */
+  startedTs: number | null;
+  /** The table had been pressed before; the original time stands. */
+  alreadyStarted: boolean;
+}
+
+/**
+ * The press's answer, always a 200: `started` (at least one row), `nothing_to_start` (no start-required table routes
+ * from this device; `reason`), `no_match` (the named table is not one of them; `reason`). `sendingTo` is the
+ * heartbeat's routing line, the same text the check-in carries.
+ */
+export interface AttemptStartAnswer {
+  status: 'started' | 'nothing_to_start' | 'no_match' | string | null;
+  started: AttemptStartRow[];
+  reason: string | null;
+  sendingTo: string | null;
+}
 
 export interface ArcaidClientOptions {
   baseUrl: string;
@@ -317,6 +358,32 @@ export class ArcaidClient {
       of: num(body['of']),
       remaining: num(body['remaining']),
       late: body['late'] === true || body['late'] === 1,
+      ...(typeof body['reason'] === 'string' && body['reason'].trim() ? { reason: body['reason'] } : {}),
+    };
+  }
+
+  /** `GET /api/witness/attempt-start` — press "Start attempts" (B21); the same auth, timeout and failures as `attempt()`. */
+  async attemptStart(token: string, params: AttemptStartParams): Promise<AttemptStartAnswer> {
+    const { body } = await this.get('api/witness/attempt-start', params, token);
+    const idText = (v: unknown): string => (typeof v === 'string' || typeof v === 'number' ? String(v) : '');
+    const started: AttemptStartRow[] = [];
+    for (const r of Array.isArray(body['started']) ? (body['started'] as unknown[]) : []) {
+      if (typeof r !== 'object' || r === null) continue;
+      const o = r as Record<string, unknown>;
+      if (typeof o['game'] !== 'string') continue;
+      started.push({
+        game: o['game'],
+        gameId: idText(o['gameId']),
+        tournamentId: idText(o['tournamentId']),
+        startedTs: num(o['startedTs']),
+        alreadyStarted: o['alreadyStarted'] === true || o['alreadyStarted'] === 1,
+      });
+    }
+    return {
+      status: typeof body['status'] === 'string' ? body['status'] : null,
+      started,
+      reason: typeof body['reason'] === 'string' && body['reason'].trim() ? body['reason'] : null,
+      sendingTo: typeof body['sendingTo'] === 'string' && body['sendingTo'] ? body['sendingTo'] : null,
     };
   }
 

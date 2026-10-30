@@ -30,6 +30,8 @@ interface AttemptStatus {
   late: boolean;
   game: string | null;
   text: string;
+  /** B21: the start used no attempt because Start attempts was not pressed for this table. */
+  needsStart: boolean;
 }
 
 interface PhysicsSetValues {
@@ -224,6 +226,8 @@ interface WitnessStatus {
   note?: string | null;
   captureMode: 'live' | 'basic' | null;
   attempt: AttemptStatus | null;
+  /** B21: the last Start attempts press and ArcAid's answer, as one line. */
+  attemptStart: { at: string; status: string; text: string } | null;
 }
 
 interface RedactedSettings {
@@ -365,6 +369,7 @@ interface CastcadeBridge {
     unpair(): Promise<WitnessStatus>;
     setPaused(paused: boolean): Promise<WitnessStatus>;
     confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
+    startAttempts(): Promise<WitnessStatus>;
     onStatus(cb: (status: WitnessStatus) => void): () => void;
   };
   readonly settings: {

@@ -4,7 +4,7 @@
  * the module reads at start (ArcAid URL, nvram dir) changes. The shell talks to this, never to the
  * module directly, so recreation never leaks a stale instance into IPC handlers.
  */
-import { createWitness } from '../witness/index.js';
+import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS } from '../witness/index.js';
 import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
@@ -15,6 +15,8 @@ export interface WitnessHost {
   pair(code: string): Promise<WitnessStatus>;
   unpair(): Promise<WitnessStatus>;
   confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
+  /** B21: press "Start attempts" on ArcAid for the loaded table (or every start-required table this device routes to). */
+  startAttempts(): Promise<WitnessStatus>;
   /** Pause = stop watching (status.running false) without forgetting anything. */
   setPaused(paused: boolean): Promise<WitnessStatus>;
   isPaused(): boolean;
@@ -41,7 +43,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   const statusListeners = new Set<(status: WitnessStatus) => void>();
   let paused = false;
   let unsubscribe: Array<() => void> = [];
-  const deps = { log: (line: string) => log.info(line) };
+  // B8: ArcAid's ROM → VPS game map, fetched at start and daily; the module's default is off for its tests.
+  const deps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS };
   let witness: Witness = attach(createWitness(store, deps));
 
   let lastCheckin: string | null = null;
@@ -109,6 +112,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       broadcast();
       return witness.status();
     },
+    // The module logs the answer (or the failure) and emits the status itself.
+    startAttempts: () => witness.startAttempts(),
     isPaused: () => paused,
     async setPaused(next) {
       if (next === paused) return witness.status();

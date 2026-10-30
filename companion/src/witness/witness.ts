@@ -43,7 +43,7 @@ import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import { readVpxScript } from './vpx-file.js';
 import type { EngineAttestation } from './attestation-types.js';
 import { Emitter } from '../match/events.js';
-import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
+import { ArcaidClient, ArcaidError, type AttemptStartAnswer, type AttemptStartParams, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
@@ -79,6 +79,7 @@ import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
+import { createRomMapStore, fetchRomMap, withServedRoms, type CachedRomMap, type RomMap } from './rom-map.js';
 import type { AttemptStatus, CaptureOutcome, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
@@ -112,6 +113,12 @@ export interface WitnessDeps {
   /** Poll step of the nvram directory while a VPX process is open. */
   nvAlivePollMs?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * B8: how often the ROM → VPS game map ArcAid serves is re-fetched (once at start, then this often). Omitted or
+   * null = never, and the shipped seed alone maps ROMs: the shell passes `DEFAULT_ROM_MAP_REFRESH_MS`, so tests that
+   * do not exercise B8 keep their exact call lists.
+   */
+  romMapRefreshMs?: number | null;
   requestTimeoutMs?: number;
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
@@ -312,9 +319,31 @@ export function outcomeForWire(
   }
 }
 
+/**
+ * B21: ArcAid's `ATTEMPT_REFUSAL_TEXT.not_started` ("you have not pressed Start attempts for this table on Arcaid yet —
+ * this play used no attempt"), answered as `no_match` on the attempt call (W38). Matched on its opening words so a
+ * change of punctuation after the dash does not lose the state.
+ */
+export function isNotStartedReason(reason: string | null | undefined): boolean {
+  return !!reason && reason.trim().toLowerCase().startsWith('you have not pressed start attempts');
+}
+
+/** B21: what Status says on a game start that used no attempt because Start attempts was not pressed. */
+export const NEEDS_START_TEXT = 'This table needs Start attempts: press the button on Status, then start a new game.';
+
+/** B21: the one line Status shows under the Start attempts button for ArcAid's answer to a press. */
+export function attemptStartText(answer: AttemptStartAnswer): string {
+  if (answer.status === 'started') {
+    const names = answer.started.map((r) => r.game).filter((g) => g.trim() !== '');
+    const again = answer.started.length > 0 && answer.started.every((r) => r.alreadyStarted) ? ' (already started)' : '';
+    return `Start attempts pressed for ${names.length > 0 ? names.join(', ') : 'this device'}${again}`;
+  }
+  return answer.reason ?? `ArcAid answered "${answer.status ?? 'nothing'}" to Start attempts`;
+}
+
 /** What the player is told about a game start on a limited-attempts board (ADR 0029, "Castcade's half", item 2). */
 export function attemptStatusFor(key: string, posted: PostResult): AttemptStatus {
-  const base = { key, n: null, of: null, remaining: null, late: false, game: null };
+  const base = { key, n: null, of: null, remaining: null, late: false, game: null, needsStart: false };
   if (posted.state === 'queued') return { ...base, state: 'queued', text: 'offline: this attempt will not count' };
   if (posted.state === 'rejected') return { ...base, state: 'rejected', text: `ArcAid refused the attempt: ${posted.error.message}` };
   const a = posted.attempt ?? null;
@@ -328,6 +357,7 @@ export function attemptStatusFor(key: string, posted: PostResult): AttemptStatus
     case 'unlimited':
       return { ...base, state: 'unlimited', game: a.game, text: '' };
     case 'no_match':
+      if (isNotStartedReason(a.reason)) return { ...base, state: 'no_match', game: a.game, needsStart: true, text: NEEDS_START_TEXT };
       return { ...base, state: 'no_match', text: '' };
     default:
       return { ...base, state: 'rejected', text: `ArcAid answered "${a?.status ?? 'nothing'}" to the attempt` };
@@ -354,6 +384,14 @@ export function resolveTableName(launch: Pick<VpxLaunch, 'table' | 'tableSource'
   if (romName) return { table: romName, source: 'romname' };
   if (rom) return { table: rom, source: 'rom' };
   return null;
+}
+
+/** The table name and second name key a game start sends; the B21 press sends the same so it lands on the same games. */
+function wireTableNames(launch: Pick<VpxLaunch, 'table' | 'tableSource'>, romName: string | null, rom: string | null): { table: string; slug: string | null } | null {
+  const resolved = resolveTableName(launch, romName, rom);
+  if (!resolved) return null;
+  const table = catalogueTableName(resolved.table);
+  return { table, slug: romName && catalogueTableName(romName) !== table ? catalogueTableName(romName) : null };
 }
 
 const SOURCE_TEXT: Record<TableSource, string> = {
@@ -396,12 +434,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     note: null,
     captureMode: null,
     attempt: null,
+    attemptStart: null,
   };
 
   const sessions = new Map<number, OpenSession>();
   const identityStore = createIdentityStore(fs, store.get().dataDir, () => clock.now());
   const postedGames = createPostedGames(fs, store.get().dataDir, () => clock.now());
-  const vpsIndex = deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs);
+  /** B8: the served ROM map in use (fetched, or the cached copy); null = the seed alone. */
+  let servedRoms: RomMap | null = null;
+  const vpsIndex = withServedRoms(deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs), () => servedRoms);
   const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
   const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
   const builds = createBuildAttester({ fs, registry, log });
@@ -517,6 +558,64 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const stopHeartbeat = () => {
     if (heartbeatTimer !== null) clock.clearTimeout(heartbeatTimer);
     heartbeatTimer = null;
+  };
+
+  // ----------------------------------------------------------------------- ROM map (B8) --
+
+  const romMapMs = deps.romMapRefreshMs ?? null;
+  const romMapStore = createRomMapStore(fs, store.get().dataDir);
+  let romMapCache: CachedRomMap | null = null;
+  let romMapTimer: TimerHandle | null = null;
+
+  /**
+   * Revalidate the served map against the paired server (unpaired: no fetch). A failure keeps the cache; with no
+   * cache the seed serves. One log line says which is in use.
+   */
+  const refreshRomMap = async (): Promise<void> => {
+    const { token, arcaidBaseUrl } = store.get();
+    let why = '';
+    let served = false;
+    if (!token) why = ' — not paired, no fetch';
+    else {
+      const r = await fetchRomMap(deps.fetch ?? ((input, init) => globalThis.fetch(input, init)), arcaidBaseUrl, romMapCache?.etag ?? null, deps.requestTimeoutMs);
+      if (r.kind === 'fresh') {
+        romMapCache = { fetchedAt: iso(clock.now()), etag: r.etag, map: r.map };
+        served = true;
+        await romMapStore.save(romMapCache).catch((err: unknown) => {
+          why = ` — not cached: ${errText(err)}`;
+        });
+      } else if (r.kind === 'unchanged') served = romMapCache !== null;
+      else why = ` — fetch failed: ${r.error}`;
+    }
+    servedRoms = romMapCache?.map ?? null;
+    if (servedRoms) log(`witness: ROM map ${servedRoms.version} (${servedRoms.count} ROMs, ${served ? 'served' : 'cached'})${why}`);
+    else log(`witness: ROM map ${(await vpsIndex.version().catch(() => null)) ?? 'unknown'} (seed)${why}`);
+  };
+
+  const scheduleRomMap = (ms: number) => {
+    romMapTimer = clock.setTimeout(() => {
+      romMapTimer = null;
+      void refreshRomMap().finally(() => {
+        if (status.running) scheduleRomMap(ms);
+      });
+    }, ms);
+  };
+
+  const startRomMap = async (): Promise<void> => {
+    if (romMapMs === null) return;
+    romMapCache = await romMapStore.load().catch((err: unknown) => {
+      log(`witness: ROM map cache unreadable: ${errText(err)}`);
+      return null;
+    });
+    servedRoms = romMapCache?.map ?? null;
+    void refreshRomMap().finally(() => {
+      if (status.running && romMapTimer === null) scheduleRomMap(romMapMs);
+    });
+  };
+
+  const stopRomMap = () => {
+    if (romMapTimer !== null) clock.clearTimeout(romMapTimer);
+    romMapTimer = null;
   };
 
   // ------------------------------------------------------------------------------ helpers --
@@ -1340,9 +1439,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (!token) return;
     const rom = live.rom;
     const romName = rom ? await corpus.romName(rom) : null;
-    const resolved = resolveTableName(session.launch, romName, rom);
-    const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
-    const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
+    const wire = wireTableNames(session.launch, romName, rom);
+    const wireTable = wire?.table ?? UNKNOWN_TABLE;
+    const wireSlug = wire?.slug ?? null;
     const key = attemptKey(live.sessionStamp, live.loadedAtMs, t);
     await pinIdentityByRom(session, rom); // B19: no-op once `table_loaded` pinned it
     const identity = session.identity;
@@ -1539,6 +1638,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       await postedGames.load().catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
       queue.resume();
       startHeartbeat();
+      await startRomMap();
       watch.start();
       emitStatus();
     },
@@ -1548,6 +1648,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       status.running = false;
       watch.stop();
       stopHeartbeat();
+      stopRomMap();
       stopNvPoll();
       queue.stop();
       await chain;
@@ -1567,6 +1668,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       status.lastError = null;
       startHeartbeat();
+      // B8: the map is fetched after pairing too, not only at the next start.
+      if (romMapMs !== null && status.running) void refreshRomMap();
       void queue.flush();
       emitStatus();
     },
@@ -1587,6 +1690,45 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       }
       refreshTableStatus();
       emitStatus();
+    },
+
+    async startAttempts() {
+      const { token, deviceId } = store.get();
+      // The queue's word for a call made while unpaired, so every path says the same.
+      if (!token) throw new ArcaidError('auth', 'not paired');
+      const params: AttemptStartParams = { device: deviceId };
+      const session = activeSession();
+      if (session) {
+        // The loaded table's identity as its game start would send it (reportAttempt), so the press lands on the
+        // games its plays land on. Read, not re-pinned: B19 pins the identity at `table_loaded`.
+        const rom = session.live?.rom ?? session.identityRom ?? null;
+        const romName = rom ? await corpus.romName(rom).catch(() => null) : null;
+        const wire = wireTableNames(session.launch, romName, rom);
+        if (wire) {
+          const playDevice = session.attestation ? playDeviceFor(session.attestation.vr) : null;
+          Object.assign(params, {
+            table: wire.table,
+            rom,
+            slug: wire.slug,
+            vps_game: session.identity?.vpsGame?.id ?? null,
+            ...(playDevice ? { play_device: playDevice } : {}),
+          });
+        }
+      }
+      let answer: AttemptStartAnswer;
+      try {
+        answer = await arcaid().attemptStart(token, params);
+      } catch (err) {
+        log(`witness: start attempts${params.table ? ` for ${params.table}` : ''} failed: ${errText(err)}`);
+        throw err;
+      }
+      const text = attemptStartText(answer);
+      status.sendingTo = answer.sendingTo;
+      status.attemptStart = { at: iso(clock.now()), status: answer.status ?? 'unknown', text };
+      clearArcaidError();
+      log(`witness: start attempts${params.table ? ` for ${params.table}` : ''}: ${answer.status ?? '?'} (${text})`);
+      emitStatus();
+      return { ...status };
     },
 
     liveGame() {

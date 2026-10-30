@@ -14,6 +14,7 @@ const OUTCOME_LABEL: Record<CaptureOutcome, string> = {
 export function Status({ state }: { state: CastcadeState }) {
   const { bridge, status } = state;
   const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function togglePaused() {
@@ -26,6 +27,20 @@ export function Status({ state }: { state: CastcadeState }) {
       setError(describe(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** B21: press Start attempts on ArcAid (W45); the answer comes back as `status.attemptStart`. */
+  async function startAttempts() {
+    if (!bridge) return;
+    setStarting(true);
+    setError(null);
+    try {
+      state.applyStatus(await bridge.witness.startAttempts());
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -72,7 +87,7 @@ export function Status({ state }: { state: CastcadeState }) {
         {status.attempt && status.attempt.text && (
           <>
             <dt>Attempt</dt>
-            <dd className={status.attempt.state === 'counted' && !status.attempt.late ? 'ok' : 'error'} title="This tournament limits attempts per table; every game start counts (ArcAid ADR 0029)">
+            <dd className={status.attempt.state === 'counted' && !status.attempt.late ? 'ok' : status.attempt.needsStart ? 'warn' : 'error'} title="This tournament limits attempts per table; every game start counts (ArcAid ADR 0029)">
               {status.attempt.text}
               {status.attempt.game ? ` · ${status.attempt.game}` : ''}
             </dd>
@@ -105,6 +120,18 @@ export function Status({ state }: { state: CastcadeState }) {
           {status.sendingTo ?? (status.paired ? 'not yet reported by ArcAid' : '—')}
         </dd>
       </dl>
+
+      <div className="card">
+        <button type="button" className="small" onClick={() => void startAttempts()} disabled={!bridge || !status.paired || starting}>
+          Start attempts
+        </button>
+        <p className="muted">For tournaments that require Start attempts: press once, then play; every game from then on counts.</p>
+        {status.attemptStart && (
+          <p className={status.attemptStart.status === 'started' ? 'ok' : ''}>
+            {status.attemptStart.text} · {formatTime(status.attemptStart.at)}
+          </p>
+        )}
+      </div>
 
       <h3>Last capture</h3>
       {c ? (

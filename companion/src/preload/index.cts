@@ -17,6 +17,7 @@ const CH = {
   witnessUnpair: 'witness:unpair',
   witnessSetPaused: 'witness:setPaused',
   witnessConfirmTable: 'witness:confirmTable',
+  witnessStartAttempts: 'witness:startAttempts',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   appOpenExternal: 'app:openExternal',
@@ -64,6 +65,7 @@ const castcade: CastcadeApi = {
     unpair: () => ipcRenderer.invoke(CH.witnessUnpair),
     setPaused: (paused) => ipcRenderer.invoke(CH.witnessSetPaused, paused),
     confirmTable: (filePath, vpsTableId) => ipcRenderer.invoke(CH.witnessConfirmTable, filePath, vpsTableId),
+    startAttempts: () => ipcRenderer.invoke(CH.witnessStartAttempts),
     onStatus(cb) {
       const listener = (_e: Electron.IpcRendererEvent, status: WitnessStatus): void => cb(status);
       ipcRenderer.on(CH.witnessStatusEvent, listener);

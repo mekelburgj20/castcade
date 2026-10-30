@@ -183,6 +183,7 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
     if (vpsTableId !== null && typeof vpsTableId !== 'string') throw new Error('vpsTableId must be a string or null');
     return host.confirmTable(filePath, vpsTableId);
   });
+  ipcMain.handle(IPC.witnessStartAttempts, () => host.startAttempts());
   ipcMain.handle(IPC.settingsGet, () => redactSettings(store.get()));
   ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
     const clean = sanitizePatch(patch);
