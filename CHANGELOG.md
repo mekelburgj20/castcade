@@ -7,6 +7,15 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Table import and hook
+- C10: saving a patched table in the VPX editor copies the Castcade script into the table itself; a tester's colour
+  change then brought the "made for an older version of this table" dialog at every launch and "Patch my tables"
+  refused the table as already patched. Hook 0.4.1's guard is silent when it runs from the table (it journals
+  `embedded_patch` instead), the importer and the folder watch patch the script underneath instead of refusing, the
+  witness arms live mode on such a table, tells the player once and puts a fresh script beside it, and the script
+  inspection no longer reads the patch as a hand edit. The Tables card and the tester kit say so. `vpx-hook/castcade.vbs`,
+  `patcher/import.ts` (`patchSource`), `main/tables-host.ts` (`repair`), `witness/witness.ts`.
+
 ### Witness
 - B17: a Castcade restart while the same VPX process stays open no longer re-posts that process's earlier games.
   Live mode remembers every game it posted in `posted-games.json` (key = table id + the attempt key ArcAid dedupes

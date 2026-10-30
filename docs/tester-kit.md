@@ -54,6 +54,11 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 ## Good to know
 
 - Opening a table from the editor without `-Play` is fine; the capture happens when you close the player.
+- Editing a patched table in the VPX editor and saving it copies the Castcade script into the table itself (VPX
+  asks whether to update the `.vbs` too; either answer is fine). Games still post. The next time the table opens,
+  Castcade shows one balloon and puts a fresh script beside the table. If you see the dialog *"This Castcade patch
+  was made for an older version of this table"* more than once for the same table, you are on a build before 0.2.20:
+  update Castcade, or Settings → Import tables → Patch my tables.
 - Two-player games are skipped on purpose. Games under 20 seconds are skipped.
 - *skipped: no map for ROM* means that ROM has no last-game map yet; try one of the known-good tables.
 - Castcade updates itself from GitHub; when a new version has downloaded it installs on the next quit.

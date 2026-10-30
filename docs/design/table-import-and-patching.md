@@ -167,6 +167,18 @@ press is journaled as `key_blocked`, which is how the verification run proves th
      That one session still runs the old script (the embedded script is out of reach once VPX chose the sidecar).
   This is the maintenance cost of the per-table path, stated plainly; the folder watch makes the other two rare.
 
+  **The editor save (C10, Krobs 2026-10-29).** The VPX editor loads a same-basename sidecar as the table's script, and
+  saving the table writes that script back into the `.vpx` (it also offers to rewrite the `.vbs`). After a colour
+  change and a save, Castcade's patch was the table's own script with the old stamp: layer 3 fired at every launch with
+  nothing left to rename, and the import refused the table as already patched. The rules since hook 0.4.1 /
+  companion 0.2.20: `Castcade_Guard` with no sidecar beside the table journals `embedded_patch` and returns, because
+  script and table were saved together and nothing is stale; the importer (`patchSource`) undoes its own patch found in
+  an embedded script and patches the script underneath, so the folder watch heals an editor save within one look and
+  "Patch my tables" never refuses it; the witness arms live mode on an embedded patch, tells the player once and has
+  the shell render a fresh sidecar over it (`TablesHost.repair`), so the next launch runs a patch Castcade can keep
+  current; the F5 baseline is the script underneath too, so the patch never reads as a person's edit. Nothing writes
+  to the `.vpx`: the embedded copy stays, inert under the sidecar, until the author saves a clean script.
+
   Two rules the folder watch follows (companion `main/sidecar-watch.ts`): it runs every look under the same lock as
   the card's plan / patch / remove-all, so a re-patch never runs twice over one table at once; and a stale sidecar
   whose only fault is version drift (a newer companion with a newer recipe or library) is re-made quietly, all such

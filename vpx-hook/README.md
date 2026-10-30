@@ -95,6 +95,17 @@ capture detail ("CHANGED DURING THE GAME: difficulty 20% → 80%"). No recipe ch
 the 0.4.0 library as is; the folder watch re-makes the manifests on the first look. Harness:
 `cscript engine-harness.vbs` with a fake `ActiveTable` (three lines: init, a difficulty change, a tilt change).
 
+### 0.4.1 — `Castcade_Guard` is silent when it runs from the table itself (C10)
+
+The VPX editor loads a sidecar as the table's script and saves it back into the `.vpx` (Krobs, 2026-10-29, after a
+colour change). The patch then runs embedded, with no sidecar beside the table and a stamp that can never match again:
+0.4.0 showed the stale dialog at every launch with nothing to rename. 0.4.1 checks the sidecar path first: when it does
+not exist the script is the table's own, script and table were saved together, nothing is stale; the library journals
+`embedded_patch` (`original`) and returns. Everything else in the guard is unchanged. The companion renders a fresh
+sidecar over such a table (importer `patchSource`, witness notice → `TablesHost.repair`), so the embedded copy only ever
+runs until the next launch. No recipe change; the lib bump makes the folder watch re-make every sidecar on its first look.
+Checked with a `cscript` harness: an existing original and a missing sidecar journal `embedded_patch` and no `MsgBox`.
+
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)
