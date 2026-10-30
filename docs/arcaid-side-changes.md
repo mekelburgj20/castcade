@@ -455,6 +455,27 @@ half that would have saved the attempts anyway.
 start call with the same miss reason the score call records (`notCounted` / `reason`), so the companion can show why
 a start counted nowhere. Badge, never gate: this widens matching, it refuses nothing.
 
+## 18. The score answer names the tournament that took the play (Castcade D1.7)
+
+**Why.** The companion records every session (D1.2) and keeps the newest three; a session holding a score that a
+Sanctioned tournament took is never pruned until that tournament closes (owner ruling 2026-10-25). Today's score
+answer says `ingested` and the game's name, never which tournament took it or in which integrity mode, so the
+companion cannot tell a Sanctioned recording from any other.
+
+**What to add** to the `GET /api/witness/score` answer, additive and optional (older companions ignore it):
+
+- `tournament`: `{ id, name, integrity_mode, closes_at }` for the FIRST landing (the one the top-level `status`
+  describes) whenever that landing is `ingested` or `duplicate` in a tournament: `id` the tournament's id, `name` its
+  name, `integrity_mode` `open` or `sanctioned` (ArcAid ADR 0027), `closes_at` the ISO time the tournament stops
+  taking plays (its end or its check-in close, whichever ends play), or `null` when it has no end date.
+- The same object on each `landed[]` row (W37) for plays tried in several tournaments.
+- Nothing when the play went to Global or nowhere.
+
+**What the companion does** (D1.7, companion 0.2.22): the recording manifest's `score_posted` line carries
+`sanctioned: true` and `tournament: { id, name, closesAt }` when `integrity_mode` is `sanctioned`; retention keeps
+that session while `closesAt` is in the future or `null`, and prunes it by the normal rules afterwards. Badge, never
+gate: nothing on the board changes.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).
