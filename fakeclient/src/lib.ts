@@ -52,6 +52,8 @@ export interface FakePlayerOptions {
   onHostLeft?: () => void;
   /** Host role, over WebSocket: the new host's listener for HOST_TRANSFER.newHostEndpoint (A2). */
   endpointOf?: (player: PlayerId) => string | null;
+  /** Client role: reconnect budget after a dropped host link (A3). */
+  reconnect?: { attempts?: number; delayMs?: number };
   hooks?: FakeHooks;
   companionVersion?: string;
 }
@@ -77,6 +79,8 @@ export interface FakePlayerOutcome {
   rolesHeld: ('host' | 'client')[];
   /** Accepted RECONNECTs (after a host transfer or a drop), with how many log entries each brought. */
   reconnects: number[];
+  /** Why the host rejected this player's RECONNECT, when it did (A3). */
+  reconnectRejected: string | null;
   error: Error | null;
 }
 
@@ -149,6 +153,7 @@ export class FakePlayer {
         clock,
         companionVersion: opts.companionVersion,
         hostTimeouts: { ballEndTimeoutMs: scenario.ballEndTimeoutMs, logSignTimeoutMs: scenario.logSignTimeoutMs },
+        reconnect: opts.reconnect,
       });
     }
     this.out = {
@@ -168,6 +173,7 @@ export class FakePlayer {
       hostTransfers: 0,
       rolesHeld: [opts.role],
       reconnects: [],
+      reconnectRejected: null,
       error: null,
     };
     if (engine instanceof HostMatch) this.attachHost(engine);
@@ -341,6 +347,16 @@ export class FakePlayer {
     });
     on('reconnected', ({ entries }) => {
       this.out.reconnects.push(entries);
+      // A ball in flight when the link dropped was lost with it; play the re-issued grant afresh.
+      if (!client.myGrant) this.playing = null;
+      // Back after a drop: any participant may RESUME the pause our disconnect caused (A3).
+      const paused = client.state.paused;
+      if (paused?.reason === 'disconnect' && paused.player === this.playerId) client.resume();
+    });
+    on('reconnectRejected', ({ code }) => {
+      // Re-joining takes a fresh HELLO, which a started match refuses; this player is out.
+      this.out.reconnectRejected = code ?? 'rejected';
+      this.finish();
     });
     on('reconnectFailed', () => undefined);
     on('desync', () => undefined);
@@ -510,7 +526,7 @@ export interface WsRun {
 export async function runWsScenario(
   scenario: Scenario,
   transports: Map<PlayerId, WsPeerTransport>,
-  opts: { timeoutMs?: number; hooks?: FakeHooks; players?: (players: FakePlayer[]) => void } = {},
+  opts: { timeoutMs?: number; hooks?: FakeHooks; reconnect?: { attempts?: number; delayMs?: number }; players?: (players: FakePlayer[]) => void } = {},
 ): Promise<WsRun> {
   const endpoints = new Map<PlayerId, string>();
   // Every participant listens, so any of them can become host.
@@ -528,6 +544,7 @@ export async function runWsScenario(
       expectedJoins: scenario.players.length - 1,
       endpointOf: (id) => endpoints.get(id) ?? null,
       hooks: opts.hooks,
+      reconnect: opts.reconnect,
     });
   });
   opts.players?.(fakes);

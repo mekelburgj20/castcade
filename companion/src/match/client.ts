@@ -23,7 +23,7 @@
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
-import type { Clock } from './clock.js';
+import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
 import { HostMatch, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
@@ -45,6 +45,11 @@ export interface ClientOptions {
   clock?: Clock;
   /** Used if this client becomes host after a transfer. */
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
+  /**
+   * Reconnect after a dropped socket to the host (A3): one attempt every `delayMs` (default 1 s),
+   * at most `attempts` (default 30); then the host counts as gone.
+   */
+  reconnect?: { attempts?: number; delayMs?: number };
 }
 
 export interface AdoptOptions {
@@ -54,6 +59,7 @@ export interface AdoptOptions {
   companionVersion?: string;
   gone?: Iterable<PlayerId>;
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number };
 }
 
 export interface DroppedInfo {
@@ -103,11 +109,25 @@ export interface ClientEvents extends Record<string, unknown> {
   reconnected: { host: PlayerId; entries: number };
   /** RECONNECT rejected: re-join with a fresh HELLO, which after MATCH_READY is refused. */
   reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
-  /** The socket to `host` could not be opened. */
-  reconnectFailed: { host: PlayerId; error: Error };
+  /** One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. */
+  reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number };
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT']);
+const DEFAULT_RECONNECT_ATTEMPTS = 30;
+const DEFAULT_RECONNECT_DELAY_MS = 1000;
+
+interface Reconnecting {
+  host: PlayerId;
+  endpoint: string | undefined;
+  replacing: PlayerId | undefined;
+  /** The old host closes its own listener once the new host accepted it. */
+  closeListener: boolean;
+  attemptsLeft: number;
+  /** A socket was opened and RECONNECT sent; waiting for RECONNECT_ACK. */
+  inFlight: boolean;
+  timer: TimerHandle | null;
+}
 
 export class ClientMatch {
   readonly events = new Emitter<ClientEvents>();
@@ -129,8 +149,11 @@ export class ClientMatch {
   private hostLost = false;
   private transferAccepts = new Set<PlayerId>();
   private readonly gone = new Set<PlayerId>();
-  /** The RECONNECT in flight: who must answer, and whether to close our listener on accept (old host). */
-  private awaitingReconnect: { host: PlayerId; closeListener: boolean } | null = null;
+  private readonly reconnectAttempts: number;
+  private readonly reconnectDelayMs: number;
+  /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
+  private reconnecting: Reconnecting | null = null;
+  private resultReceived = false;
   /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
   private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'> }[] = [];
   private detached = false;
@@ -145,6 +168,8 @@ export class ClientMatch {
     this.companionVersion = opts.companionVersion ?? '0.1.0';
     this.explicitHostId = opts.hostId ?? null;
     this.hostTimeouts = opts.hostTimeouts ?? {};
+    this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? DEFAULT_RECONNECT_ATTEMPTS);
+    this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.attach();
   }
 
@@ -159,6 +184,7 @@ export class ClientMatch {
         throwdownCode: opts.throwdownCode,
         companionVersion: opts.companionVersion,
         hostTimeouts: opts.hostTimeouts,
+        reconnect: opts.reconnect,
       },
       session,
     );
@@ -304,19 +330,59 @@ export class ClientMatch {
 
   /**
    * Open a new socket to `host` (at `endpoint`, or where it was last reached) and resume with
-   * RECONNECT from this log's head, never a fresh HELLO (A2/A3, 2026-10-30). A no-op on a transport
-   * without per-host links. `replacing`: links to that peer no longer count as a connection (the
-   * old host after a transfer). `closeListenerOnAccept`: the old host closes its listener once the
-   * new host accepted it.
+   * RECONNECT from this log's head, never a fresh HELLO (A2/A3, 2026-10-30), retrying within the
+   * reconnect budget. A no-op on a transport without per-host links. `replacing`: links to that
+   * peer no longer count as a connection (the old host after a transfer). `closeListenerOnAccept`:
+   * the old host closes its listener once the new host accepted it. `delayFirst`: wait one retry
+   * delay before the first attempt (after a drop, so the host has seen it too).
    */
-  relinkTo(host: PlayerId, opts: { endpoint?: string; replacing?: PlayerId; closeListenerOnAccept?: boolean } = {}): void {
-    const t = this.s.transport;
-    if (!t.connectTo || this.detached) return;
-    this.awaitingReconnect = { host, closeListener: opts.closeListenerOnAccept ?? false };
-    t.connectTo(host, () => this.buildReconnect(), { endpoint: opts.endpoint, replacing: opts.replacing }).catch((e: unknown) => {
-      if (this.awaitingReconnect?.host === host) this.awaitingReconnect = null;
-      this.events.emit('reconnectFailed', { host, error: e instanceof Error ? e : new Error(String(e)) });
-    });
+  relinkTo(host: PlayerId, opts: { endpoint?: string; replacing?: PlayerId; closeListenerOnAccept?: boolean; delayFirst?: boolean } = {}): void {
+    if (!this.s.transport.connectTo || this.detached) return;
+    this.cancelReconnect();
+    this.reconnecting = {
+      host,
+      endpoint: opts.endpoint,
+      replacing: opts.replacing,
+      closeListener: opts.closeListenerOnAccept ?? false,
+      attemptsLeft: this.reconnectAttempts,
+      inFlight: false,
+      timer: null,
+    };
+    if (opts.delayFirst) this.scheduleReconnect(this.reconnecting);
+    else this.attemptReconnect(this.reconnecting);
+  }
+
+  private attemptReconnect(r: Reconnecting): void {
+    const connectTo = this.s.transport.connectTo?.bind(this.s.transport);
+    if (this.reconnecting !== r || this.detached || !connectTo) return;
+    r.timer = null;
+    r.attemptsLeft -= 1;
+    r.inFlight = true;
+    connectTo(r.host, () => this.buildReconnect(), { endpoint: r.endpoint, replacing: r.replacing }).catch((e: unknown) =>
+      this.reconnectAttemptFailed(r, e instanceof Error ? e : new Error(String(e))),
+    );
+  }
+
+  private scheduleReconnect(r: Reconnecting): void {
+    r.timer = this.s.clock.setTimeout(() => this.attemptReconnect(r), this.reconnectDelayMs);
+  }
+
+  private reconnectAttemptFailed(r: Reconnecting, error: Error): void {
+    if (this.reconnecting !== r || this.detached) return;
+    r.inFlight = false;
+    this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft });
+    if (r.attemptsLeft > 0) {
+      this.scheduleReconnect(r);
+      return;
+    }
+    // Out of attempts: the host counts as gone, as it always did on a mesh (host_left).
+    this.reconnecting = null;
+    if (r.host === this.hostId) this.onHostGone(r.host);
+  }
+
+  private cancelReconnect(): void {
+    if (this.reconnecting?.timer != null) this.s.clock.clearTimeout(this.reconnecting.timer);
+    this.reconnecting = null;
   }
 
   private buildReconnect(): Message<'RECONNECT'> {
@@ -341,6 +407,7 @@ export class ClientMatch {
     this.detached = true;
     for (const off of this.unsubscribe) off();
     this.unsubscribe.length = 0;
+    this.cancelReconnect();
   }
 
   private assertActive(): void {
@@ -512,6 +579,7 @@ export class ClientMatch {
     const logMatches = r.logHash === head.hash && r.logLength === head.length;
     const signatureValid = key !== null && verifyCanonical(logSignBody(r.matchId, r.logHash, r.logLength), r.hostSignature, key);
     if (!logMatches) this.events.emit('desync', { context: 'result.logHash', expected: r.logHash, actual: head.hash });
+    this.resultReceived = true;
     this.events.emit('result', { result: r, logMatches, signatureValid });
   }
 
@@ -522,7 +590,31 @@ export class ClientMatch {
   private onPeerLeave(peer: PlayerId): void {
     if (this.detached) return;
     this.events.emit('peerLeft', peer);
-    if (peer === this.hostId && this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
+    const r = this.reconnecting;
+    if (r && r.host === peer && r.inFlight) {
+      // The new socket closed before RECONNECT_ACK: one failed attempt.
+      this.reconnectAttemptFailed(r, new Error(`link to ${peer} closed before RECONNECT_ACK`));
+      return;
+    }
+    if (peer === this.hostId && this.mayReconnect()) {
+      // On a star a dropped host link looks the same whether we or the host went away: try to
+      // resume first; the host counts as gone only when the attempts run out (A3, 2026-10-30).
+      this.relinkTo(peer, { delayFirst: true });
+      return;
+    }
+    if (peer === this.hostId) {
+      this.onHostGone(peer);
+      return;
+    }
+    this.gone.add(peer);
+  }
+
+  private mayReconnect(): boolean {
+    return this.s.transport.topology === 'star' && this.s.transport.connectTo !== undefined && this.s.state.phase !== 'lobby' && !this.resultReceived;
+  }
+
+  private onHostGone(peer: PlayerId): void {
+    if (this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
       this.hostLost = true;
       this.events.emit('hostLost', peer);
       this.proposeIfCandidate();
@@ -598,9 +690,9 @@ export class ClientMatch {
   // ------------------------------------------------------------------------------------------
 
   private onReconnectAck(linkFrom: PlayerId, msg: Message<'RECONNECT_ACK'>): void {
-    const want = this.awaitingReconnect;
-    if (!want || linkFrom !== want.host || msg.from !== want.host) return this.drop(msg, 'unexpected');
-    this.awaitingReconnect = null;
+    const want = this.reconnecting;
+    if (!want || !want.inFlight || linkFrom !== want.host || msg.from !== want.host) return this.drop(msg, 'unexpected');
+    this.cancelReconnect();
     const p = msg.payload;
     if (!p.accept) {
       this.events.emit('reconnectRejected', { host: want.host, code: p.code });

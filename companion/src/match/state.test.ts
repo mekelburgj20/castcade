@@ -106,6 +106,22 @@ describe('state fold', () => {
     expect(st.lastGrantSeq).toBe(2);
   });
 
+  it('RESUME after a disconnect pause marks a still-playing player connected again, a forfeited one not (A3)', () => {
+    const log = readyLog(['p1', 'p2', 'p3'], 1);
+    const pause = (player: string) =>
+      log.append({ ts: 5, kind: 'msg', from: 'p1', message: buildMessage('PAUSE', { reason: 'disconnect', player }, { matchId: 'M', seq: ++seq, from: 'p1', ts: 5 }) });
+    const resume = () => log.append({ ts: 6, kind: 'msg', from: 'p1', message: buildMessage('RESUME', {}, { matchId: 'M', seq: ++seq, from: 'p1', ts: 6 }) });
+    pause('p2');
+    resume();
+    expect(replayLog(log).players['p2']?.connected).toBe(true);
+    pause('p3');
+    log.append({ ts: 7, kind: 'msg', from: 'p1', message: buildMessage('FORFEIT', { player: 'p3', reason: 'gone' }, { matchId: 'M', seq: ++seq, from: 'p1', ts: 7 }) });
+    resume();
+    const st = replayLog(log);
+    expect(st.players['p3']).toMatchObject({ connected: false, status: 'forfeit' });
+    expect(remainingParticipants(st)).toEqual(['p1', 'p2']);
+  });
+
   it('HOST_TRANSFER resolves the new host by key; the event switches host and re-issues', () => {
     const otherKey = Buffer.alloc(32, 9).toString('base64');
     const log = new MatchLog();

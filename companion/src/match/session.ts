@@ -52,6 +52,11 @@ export class Session {
     return true;
   }
 
+  /** Forget the last seq from `from`: a HELLO opens a new connection with a fresh counter (A3). */
+  resetSeq(from: PlayerId): void {
+    this.lastSeq.delete(from);
+  }
+
   build<T extends MessageType>(type: T, payload: PayloadInput<T>, matchId: string | null): Message<T> {
     return buildMessage(type, payload, { matchId, seq: this.nextSeq(), from: this.localId, ts: this.clock.now() });
   }

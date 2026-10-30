@@ -14,7 +14,10 @@ export interface PlayerProgress {
   ballsPlayed: number;
   score: number;
   status: PlayerStatus;
-  /** False once a PAUSE(disconnect) named this player or the player left as host. */
+  /**
+   * False once a PAUSE(disconnect) named this player or the player left as host; true again when a
+   * RESUME clears that disconnect pause while the player still plays (A3).
+   */
   connected: boolean;
 }
 
@@ -167,6 +170,13 @@ function applyMessage(st: MatchState, msg: AnyMessage): void {
       break;
     }
     case 'RESUME': {
+      // A3 (2026-10-30): clearing a disconnect pause for a player still playing means it is back;
+      // if it is not, the host pauses again at its next grant (SPEC, Reconnect).
+      const held = st.paused;
+      if (held?.reason === 'disconnect' && held.player) {
+        const p = st.players[held.player];
+        if (p && p.status === 'playing') p.connected = true;
+      }
       st.paused = null;
       if (st.currentGrant) {
         st.pendingReissue = { player: st.currentGrant.grant.player, ballNumber: st.currentGrant.grant.ballNumber };

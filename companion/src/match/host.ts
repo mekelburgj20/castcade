@@ -18,6 +18,9 @@
  *   (`unexpected_state`), so no entry can land between the HOST_TRANSFER entry and the commit event.
  * - A BALL_END for the outstanding grant is accepted during a pause; RESUME then simply advances.
  * - GAME_OVER from a player whose game already ended is rejected (`unexpected_state`).
+ * - A3 (2026-10-30): an accepted RECONNECT puts the player back on a link but does not RESUME; the
+ *   pause its drop caused waits for a RESUME from anyone (the fake client sends its own). A
+ *   participant that reconnects after RESULT went out is sent RESULT again.
  */
 import {
   PROTOCOL_VERSION,
@@ -137,6 +140,8 @@ export class HostMatch {
   private logSignTimer: TimerHandle | null = null;
   private finalHead: LogHead | null = null;
   private resultSent = false;
+  /** The RESULT as sent, for a participant that reconnects after it went out (A3). */
+  private resultMsg: Message<'RESULT'> | null = null;
   private readonly signatures = new Map<PlayerId, LogSignRecord>();
   /** Players whose link dropped, by the transport's account (independent of the log). */
   private readonly gone = new Set<PlayerId>();
@@ -433,6 +438,9 @@ export class HostMatch {
       this.reject(msg, 'unknown_player', `from=${msg.from} does not match the link peer ${linkFrom}`);
       return;
     }
+    // `seq` is strictly increasing within a connection, and a HELLO opens one: a client that must
+    // re-join after a rejected RECONNECT starts a fresh session, so its counter starts over (A3).
+    if (msg.type === 'HELLO') this.s.resetSeq(msg.from);
     if (!opts.seqChecked && !this.s.checkSeq(msg.from, msg.seq)) {
       this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
       return;
@@ -811,6 +819,7 @@ export class HostMatch {
       finishedAt: st.endedAt ?? this.s.clock.now(),
     };
     const msg = this.s.build('RESULT', payload, this.matchId);
+    this.resultMsg = msg;
     this.broadcast(msg);
     this.events.emit('result', { result: msg.payload, signatures: [...this.signatures.values()] });
   }
@@ -876,6 +885,8 @@ export class HostMatch {
       this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId));
       this.events.emit('reconnectRejected', { playerId: msg.from, code });
       this.s.transport.closePeer?.(linkFrom);
+      // A participant that cannot resume is disconnected: the usual pause rules apply (A3).
+      if (this.isParticipant(linkFrom)) this.onPeerLeave(linkFrom);
       return;
     }
     const entries = this.s.log.entries().slice(msg.payload.logLength);
@@ -883,7 +894,11 @@ export class HostMatch {
       linkFrom,
       this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: entries.map((e) => ({ ...e })), logHash: head.hash, logLength: head.length }, matchId),
     );
+    // Back on a link (A3). Its log still says disconnected until a RESUME clears the disconnect
+    // pause; until then the rotation pauses again rather than grant to it.
+    this.gone.delete(msg.from);
     this.events.emit('reconnected', { playerId: msg.from, entries: entries.length });
+    if (this.resultMsg) this.s.transport.send(linkFrom, this.resultMsg);
   }
 
   private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {
