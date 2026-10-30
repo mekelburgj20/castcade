@@ -16,12 +16,12 @@ describe('burned-in overlay text (D1.4)', () => {
 
   it('in a game, one player: the table, the player up with the ball, the badge', () => {
     const s = state({ table: 'Monster Bash', game: game({ scores: [1_234_560], player: 1, ball: 2 }), badge: LIVE });
-    expect(overlayText(s)).toBe('Monster Bash\n▶ P1 1,234,560 · Ball 2\nArcaid Witness · live');
+    expect(overlayText(s)).toBe('Monster Bash\n► P1 1,234,560 · Ball 2\nArcaid Witness · live');
   });
 
   it('two players with player 2 up: one line each, the ball on the player-up line', () => {
     const s = state({ table: 'Monster Bash', game: game({ scores: [4_571_120, 980], player: 2, ball: 1 }), badge: LIVE });
-    expect(overlayText(s)).toBe('Monster Bash\nP1 4,571,120\n▶ P2 980 · Ball 1\nArcaid Witness · live');
+    expect(overlayText(s)).toBe('Monster Bash\nP1 4,571,120\n► P2 980 · Ball 1\nArcaid Witness · live');
   });
 
   it('no score yet: "In play", with the ball when known', () => {
@@ -31,7 +31,7 @@ describe('burned-in overlay text (D1.4)', () => {
 
   it('a limited-attempts game: the attempt on its own line (in a game only)', () => {
     const s = state({ table: 'Monster Bash', game: game({ scores: [10_000], ball: 3 }), badge: LIVE, attempt: 'Attempt 2 of 10' });
-    expect(overlayText(s)).toBe('Monster Bash\n▶ P1 10,000 · Ball 3\nAttempt 2 of 10\nArcaid Witness · live');
+    expect(overlayText(s)).toBe('Monster Bash\n► P1 10,000 · Ball 3\nAttempt 2 of 10\nArcaid Witness · live');
     expect(overlayText({ ...s, game: null })).toBe('Monster Bash\nArcaid Witness · live');
   });
 

@@ -47,7 +47,8 @@ export function overlayText(state: OverlayState): string {
     if (scored.length === 0) lines.push(`In play${ball}`);
     for (const { s, p } of scored) {
       const up = p === game.player;
-      lines.push(`${up ? '▶ ' : ''}P${p} ${groupThousands(s)}${up ? ball : ''}`);
+      // U+25BA (WGL4, in Segoe UI); U+25B6 is not, and would draw as a box.
+      lines.push(`${up ? '► ' : ''}P${p} ${groupThousands(s)}${up ? ball : ''}`);
     }
     if (state.attempt) lines.push(state.attempt);
   } else if (state.lastPost) {
