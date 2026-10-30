@@ -17,6 +17,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   only same-named VPS game on both halves resolves to nothing rather than to that game; one half off (a re-release
   year) stays `likely`, as before. `witness/witness.ts` (`pinIdentityByRom`), `witness/table-match.ts`
   (`parentheticalContradicts`).
+- B20: when a score lands on the Global Scoreboard instead of a board, Status says why in ArcAid's words ("no open
+  game matched …", "played before … went up in …", "your device is set to send to …"; ArcAid's `notCounted`, W27),
+  so the player need not ask. A refused attempt ("no game start was reported for this score", "reported late") is
+  shown as "not counted for the tournament", no longer as "Sanctioned play". `witness/arcaid-client.ts`,
+  `witness/witness.ts` (`outcomeForWire`).
 
 ## [0.2.20] — 2026-10-30
 

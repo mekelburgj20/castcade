@@ -60,6 +60,8 @@ export interface ScoreWireStatus {
   game: string | null;
   reasons: string[];
   fallback: string | null;
+  /** ArcAid W27 (ADR 0033 §5): why the play counted in no tournament when it went to Global or nowhere (B20). */
+  notCounted: string | null;
   /** ArcAid 2.167.0 (ADR 0029): on a limited-attempts board, which attempt this score used. */
   attempt?: { n: number; of: number; remaining: number } | null;
 }
@@ -269,6 +271,7 @@ export class ArcaidClient {
       game: typeof body['game'] === 'string' ? body['game'] : null,
       reasons,
       fallback: typeof body['fallback'] === 'string' ? body['fallback'] : null,
+      notCounted: typeof body['notCounted'] === 'string' && body['notCounted'].trim() ? body['notCounted'] : null,
       ...(attempt ? { attempt } : {}),
     };
   }

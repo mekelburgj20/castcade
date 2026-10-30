@@ -654,11 +654,23 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(outcomeForWire(null).outcome).toBe('ingested');
   });
 
+  it("B20: a play that went to Global says why it counted on no board, in ArcAid's words", () => {
+    const global = outcomeForWire('global', { notCounted: 'no open game matched "Tron Legacy (Stern 2011)"' });
+    expect(global.outcome).toBe('ingested');
+    expect(global.detail).toBe('recorded on the Global Scoreboard; not counted for a board: no open game matched "Tron Legacy (Stern 2011)"');
+    expect(outcomeForWire('global', { notCounted: '  ' }).detail).toBe('recorded on the Global Scoreboard');
+    expect(outcomeForWire('no_match', { notCounted: 'played before "Tron" went up in "LA-T4" in Arcaid Witness Demo' }).detail)
+      .toBe('ArcAid: no open game or catalogue entry matched this table: played before "Tron" went up in "LA-T4" in Arcaid Witness Demo');
+    // An attempt refusal arrives as `not_sanctioned` too (ADR 0029): the text must not call it Sanctioned play.
+    const refused = outcomeForWire('not_sanctioned', { reasons: ['no game start was reported for this score — import this table in Castcade so live mode can count attempts'], fallback: 'global' });
+    expect(refused.detail).toBe('ArcAid: not counted for the tournament: no game start was reported for this score — import this table in Castcade so live mode can count attempts; recorded on the Global Scoreboard instead');
+  });
+
   it('a Sanctioned refusal (ArcAid 2.165.0) is rejected with the reasons and says where the play went instead', () => {
     const held = outcomeForWire('not_sanctioned', { reasons: ['tilt sensitivity 10 is below the minimum 300'], fallback: 'global' });
     expect(held.outcome).toBe('rejected');
-    expect(held.detail).toBe('ArcAid: not counted for the tournament (Sanctioned play): tilt sensitivity 10 is below the minimum 300; recorded on the Global Scoreboard instead');
-    expect(outcomeForWire('not_sanctioned', { reasons: [], fallback: null }).detail).toBe('ArcAid: not counted for the tournament (Sanctioned play)');
+    expect(held.detail).toBe('ArcAid: not counted for the tournament: tilt sensitivity 10 is below the minimum 300; recorded on the Global Scoreboard instead');
+    expect(outcomeForWire('not_sanctioned', { reasons: [], fallback: null }).detail).toBe('ArcAid: not counted for the tournament');
   });
 });
 

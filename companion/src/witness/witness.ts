@@ -279,29 +279,33 @@ function joinPath(dir: string, name: string): string {
 /** Map ArcAid's wire `status` for a score to the module's outcome vocabulary. */
 export function outcomeForWire(
   status: string | null,
-  wire: { reasons?: string[]; fallback?: string | null } = {},
+  wire: { reasons?: string[]; fallback?: string | null; notCounted?: string | null } = {},
 ): { outcome: CaptureOutcome; detail?: string } {
+  // B20: ArcAid says why a play counted in no tournament ("no open game matched …", "played before … went
+  // up in …", "your device is set to send to …"); shown so the player need not ask.
+  const why = wire.notCounted?.trim() ? `: ${wire.notCounted.trim()}` : '';
   switch (status) {
     case null:
     case 'ingested':
     case 'global':
-      return { outcome: 'ingested', ...(status === 'global' ? { detail: 'recorded on the Global Scoreboard' } : {}) };
+      return { outcome: 'ingested', ...(status === 'global' ? { detail: `recorded on the Global Scoreboard${why ? `; not counted for a board${why}` : ''}` } : {}) };
     case 'duplicate':
     case 'global_duplicate':
       return { outcome: 'duplicate' };
     case 'no_match':
-      return { outcome: 'skipped', detail: 'ArcAid: no open game or catalogue entry matched this table' };
+      return { outcome: 'skipped', detail: `ArcAid: no open game or catalogue entry matched this table${why}` };
     case 'invalid':
       return { outcome: 'rejected', detail: 'ArcAid: invalid score' };
     case 'not_sanctioned': {
-      // ArcAid 2.165.0 (item 11): the tournament is in Sanctioned play and a rule failed. The
-      // reasons are the server's own words; the play still reached the Global Scoreboard when
-      // `fallback` says so. Shown on the Status page so the player knows what to change.
+      // ArcAid 2.165.0 (item 11): the tournament held the score out. A Sanctioned rule failed, or (the
+      // same wire status, ADR 0029) the attempt was refused: "no game start was reported for this score",
+      // "reported late". The reasons are the server's own words; the play still reached the Global
+      // Scoreboard when `fallback` says so. Shown on the Status page so the player knows what to change.
       const reasons = (wire.reasons ?? []).filter((r) => r.trim().length > 0);
-      const why = reasons.length > 0 ? `: ${reasons.join('; ')}` : '';
+      const held = reasons.length > 0 ? `: ${reasons.join('; ')}` : '';
       const went = wire.fallback === 'global' ? '; recorded on the Global Scoreboard instead'
         : wire.fallback === 'global_duplicate' ? '; already on the Global Scoreboard' : '';
-      return { outcome: 'rejected', detail: `ArcAid: not counted for the tournament (Sanctioned play)${why}${went}` };
+      return { outcome: 'rejected', detail: `ArcAid: not counted for the tournament${held}${went}` };
     }
     default:
       return { outcome: 'rejected', detail: `ArcAid: ${status}` };

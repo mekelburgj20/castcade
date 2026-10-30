@@ -79,7 +79,7 @@ describe('ArcaidClient', () => {
     await client.report('tok', { device: 'd', table: 'MM', launch: 1_700_000_000, exit: 1_700_000_300, dur: 300 });
     const wire = await client.score('tok', { device: 'd', table: 'MM', rom: 'mm_109c', score: 1089510, started: 1_700_000_000, ended: 1_700_000_300, dur: 300, reason: 'exit_sample' });
     await client.heartbeat('tok', 'd');
-    expect(wire).toEqual({ status: 'ingested', game: 'Medieval Madness', reasons: [], fallback: null });
+    expect(wire).toEqual({ status: 'ingested', game: 'Medieval Madness', reasons: [], fallback: null, notCounted: null });
     expect(calls.map((c) => c.url.pathname)).toEqual(['/api/witness/report', '/api/witness/score', '/api/witness/heartbeat']);
     for (const c of calls) expect(c.headers['x-witness-token']).toBe('tok');
     expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd', table: 'MM', launch: '1700000000', exit: '1700000300', dur: '300' });
@@ -117,7 +117,7 @@ describe('ArcaidClient', () => {
     expect(calls[0]?.headers['x-witness-token']).toBe('tok');
     const wire = await client.score('tok', { device: 'd', table: 'Monster Bash (Williams 1998)', rom: 'mb_106b', score: 228982910, started: 1_700_000_000, ended: 1_700_000_900, dur: 900, reason: 'game_over', attempt: '2026-10-22T16:07:18#89430' });
     expect(Object.fromEntries(calls[1]?.url.searchParams ?? [])).toMatchObject({ attempt: '2026-10-22T16:07:18#89430' });
-    expect(wire).toEqual({ status: 'ingested', game: 'Monster Bash', reasons: [], fallback: null, attempt: { n: 2, of: 5, remaining: 3 } });
+    expect(wire).toEqual({ status: 'ingested', game: 'Monster Bash', reasons: [], fallback: null, notCounted: null, attempt: { n: 2, of: 5, remaining: 3 } });
   });
 
   it('times out a hanging request as a network failure', async () => {
