@@ -71,7 +71,7 @@ base64-encoded.
   `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, and one derived `host_transfer` event per
   accepted transfer (below). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the *other*
   participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
-  `HOST_TRANSFER_ACK`, `RESULT`.
+  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`.
 - Each entry is `{index, prevHash, ts, kind, from, message | event}` with
   `hash = sha256(canonicalJson(entry))` and `prevHash` the previous hash (64 zeros before the first
   entry). `ts` is always the message's own `ts`, never a local clock, so hashes agree across machines.
@@ -119,6 +119,47 @@ base64-encoded.
   `HOST_TRANSFER` entry and the commit event; the holder answers the re-issued grant instead.
 - After the commit the new host re-issues the outstanding grant with a new `grantSeq`, signed with its
   own key, and the match resumes at the same handoff. `RESULT.hostTransfers` counts transfers.
+- Over WebSocket (A2, 2026-10-30) clients reach each other only through the host. The host relays
+  every `HOST_TRANSFER_ACK` to the other participants, so the prospective new host can count them.
+  `HOST_TRANSFER.newHostEndpoint` carries the new host's listener (a `ws://` or `wss://` URL); it is
+  `null` on a transport without per-host sockets (the in-memory bus, a data channel set up by
+  signaling). For `host_left` the endpoint is the proposer's own; for `host_requested` the current host
+  learns it the way the first connections were bootstrapped. The listener is open before the proposal
+  goes out.
+- Every other participant, the old host included, opens a new socket to that endpoint and sends
+  `RECONNECT` from its log position (see Reconnect), never a fresh `HELLO`. A client does so as soon as
+  it has logged and acked the `HOST_TRANSFER`; the old host does so after its commit. The new host holds
+  a `RECONNECT` that arrives before its own commit and answers it at the commit, before it re-issues the
+  grant. The old host closes its listener, and with it every socket to it, once its own `RECONNECT` is
+  accepted. A socket to the old host that closes after the proposal is not a disconnect.
+- The transfer is one entry in the hash-chained log like everything else: a participant that was not
+  linked to the new host when the commit landed receives the `host_transfer` event, and anything after
+  it, in its `RECONNECT_ACK`, at the same log position as everyone else.
+- `host_left` over WebSocket needs the candidate's endpoint before the host is gone, which this
+  version does not carry; a client that loses the host first tries to reconnect to it (see Reconnect).
+
+## Reconnect
+
+- A client that lost its socket reconnects to the current host, at the endpoint it last reached it on,
+  and sends `RECONNECT` as the first frame: its player id, the hash and length of the last log entry it
+  holds, and its signature over `{matchId, player, logHash, logLength}` with its roster key. It never
+  sends a fresh `HELLO` to resume.
+- The host answers `RECONNECT_ACK`. When it holds an entry with that hash at that position, the answer
+  carries every entry after it, in order, verbatim (nothing when the client is already current). The
+  client checks each entry's `prevHash` and `hash` before appending it, so its log is the host's log.
+  When the hash is unknown, the signature does not verify, or the player is not in the roster, the
+  answer is a rejection with a `code` and no entries, and the host closes the socket.
+- A rejected client must re-join with a fresh `HELLO`. It is a new participant only if the match allows
+  it, which after `MATCH_READY` it does not (`match_started`).
+- The existing pause and timeout rules apply while a player is disconnected: the drop pauses the match
+  (`PAUSE(disconnect, player)`), the host may forfeit a player who does not return, and any participant
+  may `RESUME`. A `RESUME` that clears a `disconnect` pause for a player who is still playing marks that
+  player connected again; if it is still gone, the host pauses again at its next grant.
+- After an accepted `RECONNECT` the client unlocks input only for an outstanding grant that names it
+  and verifies, signs the log if every game has ended, and receives the `RESULT` again if the host has
+  already sent it.
+- A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
+  (`host_left`, above).
 
 ## Result
 
