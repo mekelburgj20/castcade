@@ -84,6 +84,7 @@ export { catalogueTableName } from './table-name.js';
 export * from './identity-types.js';
 export { createIdentityResolver, type IdentityResolver, type IdentityResolverDeps } from './identity-resolver.js';
 export { createIdentityStore, IDENTITY_FILE, type IdentityStore, type CachedFacts, type Confirmation } from './identity-store.js';
+export { createPostedGames, postedGameKey, POSTED_GAMES_FILE, MAX_POSTED_GAMES, type PostedGames } from './posted-games.js';
 export { findTableFile, tableRootsFor, tableBaseName } from './table-locator.js';
 export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer } from './vps-index.js';
 export { matchGame, matchTable, parseTableFileName, namePrefixes, versionFromName, versionForms, TABLE_SCORES, TABLE_MARGIN, type ParsedTableFileName } from './table-match.js';

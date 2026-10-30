@@ -13,6 +13,7 @@ import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
+import { POSTED_GAMES_FILE } from './posted-games.js';
 import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
 import { RECIPE_VERSION } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
@@ -1215,6 +1216,97 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.paths('/score')).toHaveLength(1);
     expect(h.paths('/score')[0]?.params).toMatchObject({ reason: 'exit_sample', score: '1089510' });
     expect(h.captures[0]?.mode).toBe('basic');
+  });
+
+  /** B17: the first run posts the journal's game for a VPX process that started a minute ago; returns what a restart needs. */
+  async function firstRunPosts() {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    const loadedAt = h.clock.now() - 30_000;
+    const journal = tftcJournalAt(loadedAt);
+    h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.paths('/score')).toHaveLength(1);
+    const key = `${TFTC_TABLE}@${hookStamp(loadedAt)}#${Math.round(journal.gameStartT * 1000)}`;
+    expect(h.fs.text('/data/' + POSTED_GAMES_FILE)).toContain(JSON.stringify(key));
+    // Castcade closes; VPX stays open.
+    await h.witness.stop();
+    return { h, startedAt, journal };
+  }
+
+  it('B17: a Castcade restart while VPX stays open does not re-post the games an earlier run posted; a new session still posts', async () => {
+    const { h, startedAt, journal } = await firstRunPosts();
+
+    // The restart: a new witness over the same files, the same VPX process (pid and creation time).
+    const h2 = harness({}, { fs: h.fs, journalDir: '/journal', journalPollMs: 250 });
+    await h2.witness.start();
+    await h2.launch(TFTC_CMD, 32, { startedAt });
+    await h2.poll();
+    await h2.flush();
+    await h2.flush();
+    expect(h2.paths('/score')).toHaveLength(0);
+    expect(h2.witness.status().captureMode).toBe('live');
+
+    // The player opens the table again in the same process: a new session in the same file posts.
+    const loadedAt2 = h2.clock.now();
+    const next = tftcJournalAt(loadedAt2);
+    h.fs.put(TFTC_JOURNAL, journal.text + next.text);
+    await h2.poll();
+    await h2.flush();
+    await h2.flush();
+    expect(h2.paths('/score')).toHaveLength(1);
+    const started = Math.floor((loadedAt2 + next.gameStartT * 1000) / 1000);
+    const ended = Math.floor((loadedAt2 + next.gameEndT * 1000) / 1000);
+    expect(h2.paths('/score')[0]?.params).toMatchObject({
+      device: 'dev-1',
+      table: 'Tales from the Crypt (Data East 1993)',
+      rom: 'tftc_400',
+      score: '2318430',
+      reason: 'game_over',
+      started: String(started),
+      ended: String(ended),
+    });
+    expect(h2.errors).toEqual([]);
+    await h2.witness.stop();
+  });
+
+  it('B17: after a restart that replayed only posted games, the .nv rewrite at close does not post the last one either', async () => {
+    const { h, startedAt } = await firstRunPosts();
+    const h2 = harness({}, { fs: h.fs, journalDir: '/journal', journalPollMs: 250 });
+    await h.fs.mkdir('/nv');
+    // Explicit mtimes: the shared fs would stamp both writes with the first run's stopped clock.
+    h.fs.put('/nv/mm_109c.nv', mmBefore, h2.clock.now());
+    await h2.witness.start();
+    await h2.launch(TFTC_CMD, 32, { startedAt });
+    await h2.poll();
+    await h2.flush();
+    await h2.playFor(60_000);
+    // VPinMAME rewrites the .nv as the table closes: the game the earlier run posted, again.
+    h.fs.put('/nv/mm_109c.nv', mmAfter, h2.clock.now());
+    await h2.exit();
+    await h2.settle(8000);
+    expect(h2.paths('/score')).toHaveLength(0);
+    await h2.witness.stop();
+  });
+
+  it('B17: a game that was never posted (Castcade was not running) still posts after a restart', async () => {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    // VPX ran and the game was played while no Castcade was running: the journal holds it, the posted file does not.
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(h.clock.now() - 30_000).text);
+    expect(h.fs.text('/data/' + POSTED_GAMES_FILE)).toBeNull();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.witness.start();
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({ table: 'Tales from the Crypt (Data East 1993)', score: '2318430', reason: 'game_over' });
+    await h.witness.stop();
   });
 
   it('a table without a sidecar stays in basic mode, and the player is told once that the import would fix it', async () => {

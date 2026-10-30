@@ -70,6 +70,7 @@ import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attest
 import { NO_VR_PROBE, createPowershellVrProbe, describeVr, playDeviceFor, type VrProbe } from './vr-detect.js';
 import { createIdentityResolver } from './identity-resolver.js';
 import { createIdentityStore } from './identity-store.js';
+import { attemptKey, createPostedGames, postedGameKey } from './posted-games.js';
 import { describeIni, readIniAttestation } from './ini-attestation.js';
 import type { TableIdentity, VpsIndex } from './identity-types.js';
 import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
@@ -148,7 +149,7 @@ interface OpenSession {
   /**
    * Journal sessions (`<tableId>@<stamp>`) this VPX process already read. One process can load several
    * tables from the editor; going back to a table re-tails its journal from the top, and its earlier
-   * games in this process must not post twice.
+   * games in this process must not post twice. Across Castcade runs the guard is `posted-games.json` (B17).
    */
   liveRead: Set<string>;
   /** Basic mode on a table the import could patch (or not): the sentence Status shows under "Capture". */
@@ -233,6 +234,10 @@ interface LiveSession {
   sessionStamp: string | null;
   /** The game in progress on a limited-attempts board (ADR 0029): set at game start, cleared at capture. */
   attempt: AttemptStatus | null;
+  /** B17: the game in progress as `posted-games.json` keys it; set at game start, recorded and cleared at capture. */
+  gameKey: string | null;
+  /** B17: the game in progress was posted by an earlier Castcade run (a restart replayed it); its events are ignored to its end. */
+  skipGame: boolean;
   /** The last `engine` sample the hook wrote (hook 0.4.0), whatever the game state. */
   engineLast: EngineSample | null;
   /** The samples that belong to the game in progress: the one in force at its start, then every change. */
@@ -383,6 +388,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
   const sessions = new Map<number, OpenSession>();
   const identityStore = createIdentityStore(fs, store.get().dataDir, () => clock.now());
+  const postedGames = createPostedGames(fs, store.get().dataDir, () => clock.now());
   const vpsIndex = deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs);
   const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
   const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
@@ -998,6 +1004,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       manifest,
       sessionStamp: null,
       attempt: null,
+      gameKey: null,
+      skipGame: false,
       engineLast: null,
       engineGame: [],
       scoreTrack: new ScoreTrack(),
@@ -1078,6 +1086,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.lastGameStartMs = null;
       live.sessionStamp = ev.session ?? null;
       live.attempt = null;
+      live.gameKey = null;
+      live.skipGame = false;
       live.engineLast = null;
       live.engineGame = [];
       live.scoreTrack = new ScoreTrack(ev.recipe === 'A' ? ROM_SCORE_STEP : null);
@@ -1113,8 +1123,34 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
     if (!live.accepted) return;
     const at = (live.loadedAtMs ?? clock.now()) + ev.t * 1000;
+    if (live.skipGame) {
+      // B17: a game an earlier run posted, replayed after a restart. Follow it to its end and post nothing;
+      // only the engine values carry over (the next game's `atStart` needs them).
+      switch (ev.kind) {
+        case 'current_scores':
+          return;
+        case 'engine':
+          live.engineLast = ev.sample;
+          return;
+        case 'game_end':
+        case 'game_abandoned':
+          live.skipGame = false;
+          live.gameKey = null;
+          // It went out from the journal (in the earlier run), so the `.nv` rewrite at close must not post it again.
+          live.captures++;
+          return;
+        default:
+          break;
+      }
+    }
     switch (ev.kind) {
       case 'game_start':
+        live.gameKey = postedGameKey(live.tableId, attemptKey(live.sessionStamp, live.loadedAtMs, ev.t));
+        if (postedGames.has(live.gameKey)) {
+          live.skipGame = true;
+          log(`witness: journal ${live.tableId}: game ${live.gameKey} was posted by an earlier run; not posting it again`);
+          break;
+        }
         live.lastGameStartMs = at;
         live.games++;
         session.lastActivityAt = clock.now();
@@ -1182,6 +1218,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
       : null;
     await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result() });
+    // B17: whatever the outcome (the persisted queue owns delivery retries), this game is done: a restart must not replay it.
+    if (live.gameKey) await postedGames.add(live.gameKey).catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
+    live.gameKey = null;
     if (decision.kind === 'score') live.captures++;
     live.attempt = null;
     live.engineGame = [];
@@ -1202,7 +1241,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const resolved = resolveTableName(session.launch, romName, rom);
     const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
     const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
-    const key = `${live.sessionStamp ?? String(live.loadedAtMs ?? 0)}#${Math.round(t * 1000)}`;
+    const key = attemptKey(live.sessionStamp, live.loadedAtMs, t);
     const identity = session.identity;
     const playDevice = session.attestation ? playDeviceFor(session.attestation.vr) : null;
     const posted = await queue.submit({
@@ -1381,6 +1420,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       status.nvramDir = await resolveDir(null);
       await queue.load();
       await identityStore.load().catch((err: unknown) => fail(`identity store: ${err instanceof Error ? err.message : String(err)}`));
+      await postedGames.load().catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
       queue.resume();
       startHeartbeat();
       watch.start();
