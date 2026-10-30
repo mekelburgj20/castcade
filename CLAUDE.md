@@ -50,6 +50,7 @@ npm run fetch-maps -w companion   # fetch the pinned pinmame-nvram-maps corpus i
 npm run fetch-ffmpeg -w companion # fetch the pinned ffmpeg build (sha256-checked) into companion/resources/ffmpeg (gitignored; needed to package, D1.6)
 npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run playfield-tags -w companion -- "<table.vpx>"   # re-record fixtures/playfield/tags.json (B4.1) after a VPX update: tag names and counts only
+npm run witness-games -w companion   # regenerate docs/witness-games.{json,md} (B14) from the fetched VPS index × maps corpus; verified = a fixtures/nvram/<rom> folder
 npm run pack:dir -w companion     # unpacked app in companion/release/win-unpacked (then run Castcade.exe --smoke)
 npm run dist:win -w companion     # NSIS installer in companion/release (unsigned)
 ```

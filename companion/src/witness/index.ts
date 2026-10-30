@@ -88,6 +88,7 @@ export { createIdentityStore, IDENTITY_FILE, type IdentityStore, type CachedFact
 export { createPostedGames, postedGameKey, POSTED_GAMES_FILE, MAX_POSTED_GAMES, type PostedGames } from './posted-games.js';
 export { findTableFile, tableRootsFor, tableBaseName } from './table-locator.js';
 export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer } from './vps-index.js';
+export { buildSupportList, preloadMaps, romSupport, NO_MAP_REASON, NO_ROM_REASON, NO_PLATFORM, type SupportList, type GameSupport, type RomSupport, type SupportStatus, type SupportListInput } from './support-list.js';
 export { matchGame, matchTable, parseTableFileName, namePrefixes, versionFromName, versionForms, TABLE_SCORES, TABLE_MARGIN, type ParsedTableFileName } from './table-match.js';
 export { readVpxFacts, sha256File, parseTableInfo, parseGameDataPhysics, EMPTY_TABLE_INFO, DEFAULT_SHA256_CHUNK_BYTES, type Sha256Options } from './vpx-file.js';
 export * from './attestation-types.js';

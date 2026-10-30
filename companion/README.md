@@ -23,7 +23,8 @@ mode, `src/witness/`, see below).** No patcher, media or launch code yet (Phase 
 - Commands: `npm run dev -w companion` (build + open with the Vite dev server), `npm run smoke -w companion`,
   `npx vitest run companion`, `npm run pack:dir -w companion` (unpacked app in `release/win-unpacked`),
   `npm run dist:win -w companion` (installer in `release/`), `npm run release:win -w companion` (also
-  publishes to GitHub Releases; needs `GH_TOKEN`).
+  publishes to GitHub Releases; needs `GH_TOKEN`), `npm run witness-games -w companion` (B14: rewrites
+  `docs/witness-games.json` and `.md`, the witness-supported games list, from the fetched VPS index and maps).
 - Tester guide: `docs/phase-2-witness.md`.
 
 ### Packaging as built (Phase 2)

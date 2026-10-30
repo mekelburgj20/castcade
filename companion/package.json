@@ -22,6 +22,7 @@
     "fetch-maps": "node scripts/fetch-maps.mjs",
     "fetch-vps": "node scripts/fetch-vps.mjs",
     "playfield-tags": "tsx scripts/playfield-tags.ts",
+    "witness-games": "tsx scripts/witness-games.ts",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "spike:stream": "tsc -b && electron scripts/stream-spike.mjs",
     "dist:win": "npm run build && electron-builder --win --publish never",
