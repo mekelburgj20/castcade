@@ -7,6 +7,8 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 
 ## [Unreleased]
 
+## [0.2.19] — 2026-10-29
+
 ### Streaming and recording
 - Castcade records and streams on its own: Settings → **Stream and record** (and the tray) has Go live and record,
   Record only and Go live only, the stream key (Twitch, YouTube or any RTMP URL; stored encrypted, never shown again,
@@ -37,14 +39,6 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   `media/stream-engine.ts`, `main/stream-host.ts`, `views/StreamCard.tsx`.
 - A score that posts after its table was closed (the witness posts about a second after the game) is tied to the
   recording its game was played in, not to none. `media/stream-engine.ts`.
-
-### Witness
-- Opening an original table (no ROM: JPSalas-style, Scorbit-anchored, ScoreServer or generic script) now says Castcade
-  can't read its score yet and its games won't post. It used to say "only the last game of this session will post",
-  which is true only for ROM tables: an original leaves no NVRAM, so nothing posted (owner's TNA game, 2026-10-28).
-  `witness.ts`.
-
-### Streaming
 - A monitor turned to portrait in Windows (the usual desktop VPX setup) streams upright. Screen capture delivers such a
   monitor's picture unrotated, so the table came out on its side; the window probe now reads each monitor's rotation,
   the capture region is mapped into the panel's own frame and the picture turned back after scaling. Found on the
@@ -54,11 +48,17 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
   monitor rotation into one turn, and the vertical slice follows the turn. The D1.0 spike takes `--rotate`; the Stream
   page will offer it beside the preview (D1.5). `media/ffmpeg-args.ts` (`rotate`), `window-geometry.ts` (`portraitSlice`).
 
+### Witness
+- Opening an original table (no ROM: JPSalas-style, Scorbit-anchored, ScoreServer or generic script) now says Castcade
+  can't read its score yet and its games won't post. It used to say "only the last game of this session will post",
+  which is true only for ROM tables: an original leaves no NVRAM, so nothing posted (owner's TNA game, 2026-10-28).
+  `witness.ts`.
+
 ### Packaging
 - The installer carries ffmpeg for streaming and recording: Gyan's GPLv3 essentials build of ffmpeg 8.1.1 (`ffmpeg.exe`
   and `ffplay.exe` for the framing preview, its LICENSE and README), pinned by sha256 and fetched at package time by
-  `npm run fetch-ffmpeg -w companion` (`release.yml` runs it). The installer grows by about 54 MB. Nothing uses it
-  in the app yet (D1.2 / D1.3); `Castcade.exe --smoke` reports `ffmpeg bundled <build>`, and the D1.0 spike's
+  `npm run fetch-ffmpeg -w companion` (`release.yml` runs it). The installer grows by about 54 MB; recording
+  and streaming run on it (D1.2 / D1.3); `Castcade.exe --smoke` reports `ffmpeg bundled <build>`, and the D1.0 spike's
   `--bundled` runs on it (D1.6). `scripts/fetch-ffmpeg.mjs`, `media/ffmpeg-path.ts`, `electron-builder.yml`.
 
 ## [0.2.18] — 2026-10-27
