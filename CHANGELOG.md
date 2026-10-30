@@ -7,6 +7,61 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+Built 2026-10-30 as the 0.2.22 candidate; not tagged until the rig checks in `WORK.md` (Now) pass.
+
+### Streaming and recording
+- D1.5: a `Stream` tab replaces the card on Settings. **Preview** opens the bundled ffplay on exactly the picture the
+  stream would carry (the engine's window probe, portrait slice, rotate and burned-in overlay; `media/preview.ts`),
+  on the other monitor or beside the captured area, and restarts when shape, slice, rotate, quality or overlay
+  changes; it closes with Q or the window's X, on Stop, and on quit. A health table shows fps against the preset,
+  speed, frames, restarts, the segment and the cover state while capturing. New settings on the page: the recordings
+  folder (Choose… / Use default), a cap on MP4s kept, game volume, the audio delay (under Advanced). The OBS overlay
+  card moved to the Stream page. Microphone capture is still not built; the page says so.
+- D1.7: a recording whose score a Sanctioned tournament took is kept until that tournament closes. The manifest's
+  `score_posted` line carries `sanctioned` and `tournament {id, name, closesAt}` from the score answer's optional
+  `tournament` object (ArcAid hand-off §18, F16; nothing is served yet, so today's behaviour is unchanged), and
+  retention keeps the session while `closesAt` is in the future or unknown. `media/recording.ts`,
+  `witness/arcaid-client.ts`.
+
+### Witness
+- B21: a **Start attempts** button on Status presses Start for the open start-required limited-attempts tables this
+  device's plays land on (`GET /api/witness/attempt-start`, ArcAid 2.188.0, W45), narrowed to the loaded table when
+  there is one; the result line and "Sending to" refresh from the answer. When a game's attempt call answers that
+  Start attempts was not pressed, Status says so and points at the button. `witness/arcaid-client.ts`
+  (`attemptStart`), `witness/witness.ts`, `renderer/src/views/Status.tsx`.
+- B8: the ROM → VPS game map is read from ArcAid (`GET /api/witness/roms`, ArcAid 2.193.0, W12) after the witness
+  starts and after pairing, then daily with `If-None-Match`, cached in `witness/roms.json`; an exact served ROM wins
+  over the shipped vps-db seed, an ambiguous or unknown ROM falls through to the seed and its family rule. Log line
+  `witness: ROM map <version> (<n> ROMs, served|cached|seed)`. `witness/rom-map.ts`.
+- B14: `npm run witness-games -w companion` generates the platform-wide list of witness-supported games from the VPS
+  index × the maps corpus: `docs/witness-games.md` for tournament directors and `docs/witness-games.json` for ArcAid
+  (2365 VPX games: 13 verified, 297 supported, 2055 unsupported with the reason; vps-db `cce9160b`, maps `f0c42209`).
+  `witness/support-list.ts`.
+
+### Protocol and match engine (no app wiring yet)
+- H3, A2, A3: `protocol/docs/prose.md` gains the WebSocket paragraph under "Host transfer" and a "Reconnect" section;
+  **protocol 2**: `HOST_TRANSFER.newHostEndpoint` (a `ws://` / `wss://` URL, null on the in-memory bus), new
+  `RECONNECT` (`player`, `logHash`, `logLength`, signed with the roster key) and `RECONNECT_ACK` (`accept`, `code`,
+  the missing `entries[]`, `logHash`, `logLength`; rejections `unknown_log_hash`, `unknown_player`, `bad_signature`,
+  `match_not_started`), and `LogEntry` as a schema. `companion/src/match/transport-ws.ts` adds `WsPeerTransport` (one
+  role-agnostic listener + outbound links); the new host opens its listener before the proposal, the old host relays
+  the acks and reconnects to the new host after the commit; a dropped client retries once a second for 30 s, resumes
+  from its log head and verifies each replayed entry's chain. Gates `fakeclient/src/ws-transfer.test.ts` and
+  `ws-reconnect.test.ts` run over real sockets on 127.0.0.1 in `npm test`. v1 peers are refused on HELLO.
+
+### Packaging
+- E5: the GPL Corresponding Source of the bundled ffmpeg. `docs/ffmpeg-source.md` holds the written offer (GPLv3
+  §6(b), three years from each release, by GitHub issue) and the library list copied from the build's README;
+  `SOURCE-OFFER.txt` ships beside `ffmpeg.exe`; `npm run ffmpeg-source -w companion` downloads FFmpeg at the build's
+  commit and `release.yml` uploads `ffmpeg-<version>-source.tar.gz` + `-SOURCES.txt` to each release (the step never
+  blocks a release).
+
+### Wire / journal
+- Score parameters and the journal format are unchanged (hook 0.4.1). New calls: `GET /api/witness/attempt-start`
+  (B21) and `GET /api/witness/roms` (B8). The score answer's optional `tournament` object (§18) is read when present.
+  The recording manifest's `score_posted` line gains optional `sanctioned` and `tournament` fields (additive; the
+  hash chain is unchanged).
+
 ## [0.2.21] — 2026-10-30
 
 ### Witness

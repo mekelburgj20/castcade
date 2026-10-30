@@ -7,25 +7,28 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 
 ## Now
 
-- Companion 0.2.21 (unsigned PoC; repo public, keep it so): records and streams from the app with the overlay burned in (D1.2, D1.3, D1.4; bundled ffmpeg D1.6, two-process capture, the desktop never goes out D1.9); live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post from NVRAM alone (B10.1, 0.2.16); 0.2.17 patches only machines whose live score can be read (B12; 84 of the rig's 140 tables) and re-makes patches fast after an update (B15). 0.2.18 adds the OBS overlay (D1.1), the quit marker on the score call (B16; the board half is F14) and unpatches unreadable tables (B12.1). 0.2.20 (hook 0.4.1) no longer re-posts after a Castcade restart with VPX open (B17), arms live mode when started mid-game (B18), patches over a script the VPX editor saved into the table (C10) and pins the fingerprint's record tags (B4.1). 0.2.21 pins the game-start report's VPS game by ROM (B19; Krobs' three `start not reported` Tron attempts on Arcaid Witness Demo, 2026-10-29, were the symptom; the ArcAid half is F15) and shows ArcAid's reason when a score counts on no board (B20).
-- Rig checks owed on 0.2.21: D1.4 (overlay legible at 720p30, no flicker from the in-place rewrite, `►` glyph draws), B17 (restart Castcade while VPX stays open: no `duplicate` answers), B18 (start Castcade with the player already up: live mode arms at once), B15.1 (the hook bump re-makes every patch on the first look), C10.1 (Krobs' saved table).
-- New ruling 2026-10-27, ADR 0007: functionality before ease of setup; automate or guide every setup step (D6) and promise testers "guided setup", never "no setup".
-- Owner actions: update the rig and testers to 0.2.21 · void Krobs' three `start not reported` Tron attempts on Arcaid Witness Demo (B19; the scores are on Global) · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised (prod `attempts` row 6) · B15.1 on 0.2.21 (hook bump re-makes every patch) · re-pair the rig from Settings · B9 field gate · record an extra-ball session on a mapped table for C2.2 (fixtures are never hand-authored).
+- Companion 0.2.21 is the installed release; **0.2.22 is built on `main` (2026-10-30), untagged** until the rig checks below pass, then `/release-docs 0.2.22`. New in it: the Stream tab with Preview and health (D1.5), Sanctioned recordings kept until the tournament closes (D1.7, needs ArcAid F16 to serve `tournament`), the Start attempts button and the "not started" state (B21), the served ROM map (B8), the platform-wide supported-games list (B14, `docs/witness-games.md`), the ffmpeg GPL source offer and release assets (E5), and host transfer + reconnect over WebSocket with protocol 2 (H3, A2, A3; engine only, no app wiring: A6).
+- Rig checks owed on 0.2.22: D1.5.1 (Stream tab, Preview, health), B21.1 (Start attempts against arcaid.app, ROM map log line), plus the 0.2.21 ones still open: D1.4 (overlay legible at 720p30), B17 (restart with VPX open), B18 (start mid-game), B15.1 (hook bump re-makes every patch), C10.1 (Krobs' saved table).
+- Decisions made without the owner on 2026-10-30 (revert if wrong): protocol version 2 (new `RECONNECT` messages; v1 peers refused); no microphone control until a capture path exists; the OBS overlay card lives on the Stream page; the GPL offer points at GitHub issues, not an email, and the source-upload step never blocks a release; `docs/witness-games.*` are committed outputs; verified = a `fixtures/nvram/<rom>` folder; the ROM map cache sits in `witness\roms.json`.
+- Owner actions: update the rig and testers to 0.2.21 · void Krobs' three `start not reported` Tron attempts on Arcaid Witness Demo (B19) · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised · re-pair the rig from Settings · B9 field gate · record an extra-ball session on a mapped table for C2.2 · B14.1: one Taito and one Bally 35 game decide whether the list or B10.2 is right.
+- ArcAid side owed: F15 (ROM fallback on the start call, Krobs' Tron), F16 (`tournament` on the score answer for D1.7), F12 (blessed fingerprint UI), F13 (Limited-attempts list seeded from B14's JSON).
 - Multiplayer stream URL (D5, owner request 2026-10-26; Krobs keen) needs D2 and D3; ADR 0007 leans to both an ArcAid watch page and a Twitch push.
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
-- Next by priority: D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Before GA: E5 (GPL source for the bundled ffmpeg).
+- Next by priority: the rig checks, then release 0.2.22; E6 (stop ffmpeg on an update restart); C1.1 recipes B–E (the owner's Spooky TNA posts nothing); A6 / A7 only when Phase 5 starts. B5 waits on ArcAid item 12 (F5).
 - Watching: C9 (four arrivals per score, 2026-10-22), no recurrence since request logging.
-- Last wrap: 2026-10-30 — 0.2.20 and 0.2.21 released; B19, B20 done (Krobs' Tron diagnosis); B19.1 and C10.1 are Krobs' field gates on 0.2.21; F15 added for ArcAid.
+- Last wrap: 2026-10-30 (second) — A2, A3, B8, B14, B21, D1.5, D1.7, E5, H3 done on main as 0.2.22 (untagged); F8, F14 mirrored done; new A6, A7, B8.1, B14.1, B14.2, B21.1, D1.5.1, D1.7.1, E5.1, E6, F16.
 
 ## A. Protocol and match engine
 
 Lane: `protocol/**`, `companion/src/match/**`, `fakeclient/**`. Phase 1 shipped 2026-10-18 (gate passed, CI green); these are the gaps it carried.
 
 - **A1** `done 0.1.0` Phase 1: v1 schemas, host arbiter, client, hash-chained log, Ed25519 keys, in-memory + WebSocket transports, fakeclient gate test
-- **A2** `claimed` Host transfer over WebSocket — clients must reconnect to the new host today · spec: protocol/docs/prose.md · gate: fakeclient scenario with a forced transfer over WS · owner: fable@main · since: 2026-10-30 · branch: wt-a2 (with H3, A3)
-- **A3** `claimed` Client reconnect after a drop — resume from the log hash, not a fresh HELLO · needs: A2 · owner: fable@main · since: 2026-10-30
+- **A2** `done 0.2.22` Host transfer over WebSocket — `HOST_TRANSFER.newHostEndpoint`, `WsPeerTransport`, protocol 2; gate `fakeclient/src/ws-transfer.test.ts`
+- **A3** `done 0.2.22` Client reconnect after a drop — `RECONNECT` / `RECONNECT_ACK` resume from the log head, signed; gate `fakeclient/src/ws-reconnect.test.ts` · needs: A2
 - **A4** `idea` Simultaneous mode — exists in the schemas, never exercised; needs a fakeclient scenario before it is called supported
 - **A5** `blocked F6` Post a signed RESULT to ArcAid — waits on the ArcAid roster, relay and ingest (F6)
+- **A6** `idea` Match transport in the app: the main process creates a `WsPeerTransport`, opens the listener, and learns the new host's endpoint (ArcAid signalling, F6); the fakeclient CLI (`host` / `join`) still uses the Phase 1 transports · needs: A2, F6
+- **A7** `idea` Transfer / reconnect hardening left by A2–A3: no abort when a transfer never reaches a majority; no timeout on a socket waiting for `RECONNECT_ACK`; a client that reconnects to the old host does not follow a `HOST_TRANSFER` it missed; `host_left` over WS has no candidate endpoint; a bad-signature reconnect closes that player's other links · spec: protocol/docs/prose.md "Reconnect", commits 9b6da24 and 3772379
 
 ## B. Witness and fairness
 
@@ -46,7 +49,9 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
   - **B6.1** `done 0.2.13` Score plausibility from the live journal → `score_plausibility` (largest jump, off-step flag; flag only, never a gate) · spec: docs/arcaid-side-changes.md §15
   - **B6.2** `done 0.2.13` [BUG] Live difficulty read 100× too big (VPX `GlobalDifficulty` is 0–100); the detector divides by 100
 - **B7** `ready` Nudge telemetry: HID trace + lift detector, `nudge` param on the score · spec: docs/design/fairness-and-table-identity.md §5a
-- **B8** `claimed` ROM→VPS game map served by ArcAid with a shipped seed — `GET /api/witness/roms` (ArcAid 2.193.0, W12; contract in ArcAid docs/vpx-desktop-witness-plan.md §4) fetched after pairing and daily with `If-None-Match`, cached in userData, the shipped vps-db seed as the fallback; served map wins · spec: docs/design/fairness-and-table-identity.md §8 · needs: F8 · owner: fable@main · since: 2026-10-30
+- **B8** `done 0.2.22` ROM→VPS game map served by ArcAid (`GET /api/witness/roms`, W12), cached in `witness/roms.json`, the shipped seed as the fallback (`witness/rom-map.ts`)
+  - **B8.1** `idea` Send the served map's `globalGameId` with the start and score calls, and count ROMs in the seed log line
+
 - **B9** `ready` Field gate for F1–F2's live half: the owner flips a physics override on and off and the ini values show in the Integrity panel on arcaid.app (2.166.0) · owner: owner · gate: docs/design/fairness-and-table-identity.md §7 "Gate for F1–F2"
 - **B10** `ready` Machines whose live fields sit in CPU RAM, outside the NVRAM `ChangedNVRAM` reports: Stern SAM, Gottlieb System 1 / 80 / 80B, Bally 17/35, Stern M100/M200, Williams System 4–7, Atari. Tester Krobs: AC/DC, Walking Dead, Haunted House (System 80) never posted, 2026-10-25. Route per family: an NVRAM-only detector where NVRAM holds the scores and some end signal, else a live-memory producer (VPX plugin, ADR 0001)
   - **B10.1** `done 0.2.16` Stern SAM from NVRAM alone: start = scores reset to 0, end = the last-game record's counter 16 bytes before player 1's score (+1 per player), no ball events; watch-list offsets count from the platform's NVRAM start (recipe 0.3.1). Fixtures `acd_170h/2026-10-25-1`, `twd_160h/2026-10-26-1`. Gate passed 2026-10-26: Krobs' AC/DC and Walking Dead post live at game end to both rooms; on the rig a 90 s plunge-and-drain TWD game posts at game over and a game quit on ball 1 posts as abandoned · touches: ArcAid W46, W47 (the AtGames cabinet side)
@@ -55,7 +60,10 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B12** `done 0.2.17` Import and Status refuse to call a table witness-ready unless its machine's live score can be read (`liveSupport`: scores, game over, current ball and current player in NVRAM, or Stern SAM's end-of-game record); 84 of the rig's 140 tables qualify
   - **B12.1** `done 0.2.18` "Patch my tables" removes Castcade's own patch from tables whose live score can't be read
 - **B13** `ready` Platform verification pass before the platform list ships: one real game per platform family (Whitestar, Data East, System 11, Gottlieb System 80 / 80B / 3, Bally 35, Stern M100/M200; only WPC is verified). A Gottlieb table failed for Krobs with a complete map: cause unknown, needs his table name and journal. Doctor Who's slow second post (2026-10-25) was the third table loaded in one editor session on 0.2.15: no live mode, posted from the `.nv` at close with no attempt key (prod `attempts` "unreported"), the bug 0.2.16 fixed · owner: owner
-- **B14** `claimed` Platform-wide list of witness-supported games: generator over the VPS index × maps corpus (ROM version families, full live fields, per table release), status verified / supported / unsupported with the reason; JSON for ArcAid plus a readable page for tournament directors · needs: B12 · owner: fable@main · since: 2026-10-30
+- **B14** `done 0.2.22` Platform-wide list of witness-supported games: `npm run witness-games -w companion` → `docs/witness-games.md` + `.json` (2365 games: 13 verified, 297 supported) · needs: B12
+  - **B14.1** `ready` [CHECK] The list calls all 66 Taito games and Bally 35's game over readable from NVRAM, which contradicts B10.2's premise (no game-over signal there); one real Taito game and one Bally 35 game on the rig decide which is right before F13 trusts the list (part of B13) · owner: owner · spec: docs/witness-games.md
+  - **B14.2** `idea` List shape follow-ups: per-table rows (a table on an unlisted ROM revision can differ from its game's row), verified limited to the original machine (originals that reuse a verified ROM count today), a compact JSON for ArcAid (1 MB today, mostly per-ROM `live` objects)
+
 - **B15** `done 0.2.17` [BUG] A table opened while the patches were still being re-made after an update ran its old patch (Krobs, Walking Dead, 2026-10-26): re-makes keep an unchanged table's hash (2 ms a table on the rig, was 211 ms); a table loaded with an older recipe asks the player to reopen it
   - **B15.1** `ready` Field check at the next recipe bump: the update re-makes the rig's 140 patches in seconds, and a table opened during it shows "reopen this table" on Status and a balloon · owner: owner · gate: this line
 - **B16** `done 0.2.18` A game quit before game over posts and counts, marked as quit (companion half: `quit` / `quit_ball` on the score call; board mark is F14)
@@ -65,7 +73,9 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B19** `done 0.2.21` [BUG] The game-start report carried the VPS game resolved from the file name alone (Krobs' Tron: VPS's 2016 original, so ArcAid matched the start to nothing and the score landed as `unreported`) — the identity is pinned by the ROM at `table_loaded`; a file contradicting the only same-named game on manufacturer and year resolves to nothing
   - **B19.1** `ready` Field gate for B19: Krobs' next Tron game on 0.2.21 shows "Attempt n of 5" on Status and lands on the Arcaid Witness Demo board (void the three `start not reported` attempts first) · owner: owner · gate: this line
 - **B20** `done 0.2.21` Status shows ArcAid's reason when a score lands on the Global Scoreboard instead of a board (`notCounted` on the score answer, ArcAid W27); an attempt refusal is no longer labelled "Sanctioned play"
-- **B21** `claimed` "Start attempts" from the companion (ArcAid W45, 2.188.0, ADR 0033 §4): a Status button calling `GET /api/witness/attempt-start` (device token; optional `table` / `rom` / `vps_game` narrow it; answer `started` / `nothing_to_start` / `no_match` + `sendingTo`), and a "not started" state on Status when the attempt call answers `not_started` · spec: ArcAid docs/vpx-desktop-witness-plan.md §4 "Wire contract: pressing Start attempts" · owner: fable@main · since: 2026-10-30
+- **B21** `done 0.2.22` "Start attempts" button on Status (`GET /api/witness/attempt-start`, ArcAid W45) and the "not started" state
+  - **B21.1** `ready` Field gate for B21 on arcaid.app: play a start-required table before pressing → Status says "This table needs Start attempts"; press with the table open → "Start attempts pressed for <game>" and Sending to flips to "N OF M ATTEMPTS LEFT"; press again → "(already started)"; the next game counts; the log shows `witness: ROM map <hash> (<n> ROMs, served)` and `witness\roms.json` exists (B8) · owner: owner · gate: this line
+
 
 ## C. Table import, hook, detector, turn lock (Phase 3)
 
@@ -101,16 +111,20 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
   - **D1.2** `done 0.2.19` Local recording: MP4 per session, game markers, hash-chained manifest tied to posted scores, retention
   - **D1.3** `done 0.2.19` Streaming to Twitch / YouTube from the app: key in `safeStorage`, presets, reconnect, a session outlives one table (slate between tables)
   - **D1.4** `done 0.2.20` Overlay burned into stream and recording — the D1.1 state as text, drawn by ffmpeg `drawtext` `reload=1`; Stream setting to turn it off
-  - **D1.5** `claimed` Stream page: go live, record, preview (owner ask 2026-10-27: the streamer sees and adjusts the framing before going live; the spike's `--preview` runs ffplay on the same filter chain, `ffplayPreviewArgs`; a Rotate setting beside it for VPX cabinet mode, `--rotate` in the spike, 90 on the owner's rig; later a default read from `BGSet` and the table's cabinet view), health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3 · owner: fable@main · since: 2026-10-30
+  - **D1.5** `done 0.2.22` Stream page: `Stream` tab with Preview (bundled ffplay on the engine's own picture), health table, folder / cap / volume / delay settings; OBS card moved here · needs: D1.2, D1.3
+    - **D1.5.1** `ready` Field gate for D1.5 on the rig: the Stream tab shows and Settings lost its Stream / OBS cards; with a table up, Preview opens ffplay on the other monitor with the stream's framing (vertical, rotate 90, overlay text); shape / rotate / shift / quality / overlay changes redraw it within a second; Q or X closes it; no table → "Start a table in VPX first"; preview during a capture works, Stop closes it, tray Quit leaves no ffplay.exe; the health table fills during a capture; folder Choose… / Use default; ffplay placement on a DPI-scaled display · owner: owner · gate: this line
+
   - **D1.6** `done 0.2.19` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time, extra resource in the installer
-  - **D1.7** `claimed` Mark a recording's score Sanctioned from ArcAid's answer (the score call or check-in says which tournament took it), so retention keeps it, and prune it once that tournament closes — companion half reads the optional `tournament` object on the score answer (F16) · spec: companion/src/media/recording.ts, docs/arcaid-side-changes.md §18 · needs: D1.2 · owner: fable@main · since: 2026-10-30
+  - **D1.7** `done 0.2.22` A Sanctioned recording is kept until its tournament closes, from the score answer's `tournament` object (§18; served by F16) · needs: D1.2
+    - **D1.7.1** `idea` A score that posts later from the offline queue may not carry its `tournament` into the manifest (the capture is noted once); `landed[]` rows are not parsed, so a play whose first landing is Open and a later one Sanctioned is not kept · needs: F16
+
   - **D1.8** `done 0.2.19` Stop ffmpeg cleanly instead of killing it (grab → mux split; a stop no longer loses the last second)
   - **D1.9** `done 0.2.19` Never stream the desktop: cover the picture whenever VPX is not the foreground window
 - **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2
 - **D4** `idea` Runner stage, companion half (ArcAid item 13 is the other half) · needs: D3
 - **D5** `idea` A multiplayer Castcade match (Throwdown, `play_mode='castcade'`) has one stream URL so the whole session can be streamed live: the player up's table, every player's score, whose turn it is and the voice mix, shown as one feed. Open: viewers watch on an ArcAid page fed by the host (D3's link, one per match), a Twitch / YouTube push of the host's composite (D1.3's ingest), or both (ADR 0007 leans both); where the URL appears (the Throwdown page, the lobby) · needs: D2, D3 · touches: ArcAid Throwdown page (owner request 2026-10-26)
-- **D6** `idea` Guided setup for streaming and matches (ADR 0007): a check per required step that names the fix: `VRPreview` on with its window 1280x720 or larger for VR players, upload bandwidth for the chosen preset, whether the host is reachable (STUN, then TURN, then which router port to open) · spec: docs/decisions/0007-functionality-before-ease-of-setup.md · needs: D1.0
+- **D6** `idea` Guided setup for streaming and matches (ADR 0007): a check per required step that names the fix: `VRPreview` on with its window 1280x720 or larger for VR players (read `[PlayerVR] PreviewWidth / PreviewHeight` from the ini), upload bandwidth for the chosen preset, whether the host is reachable (STUN, then TURN, then which router port to open); a named microphone picker (D1.5 built no microphone path; the Windows default is often a virtual device, design doc §5) · spec: docs/decisions/0007-functionality-before-ease-of-setup.md · needs: D1.0
 
 ## E. Shell, updater, packaging, release
 
@@ -121,7 +135,10 @@ Lane: `companion/src/main/**`, `companion/src/preload/**`, `companion/renderer/*
 - **E3** `done 0.2.6` Updater re-checks every 4 h (30 min after a failure); repo made public so the releases feed answers
 - **E4** `done 0.2.11` Electron 44 / Vite 8 / vitest 5 follow-through: 0.2.11 is the first packaged build on them (`pack:dir` + `--smoke` green on the owner's rig)
   - **E4.1** `done 0.2.11` The updater installed 0.2.11 on the owner's rig (log 2026-10-23T05:32Z: downloaded, installed on quit) and the next session posted four games live
-- **E5** `claimed` GPL source for the bundled ffmpeg before GA: publish the Corresponding Source of the shipped build (FFmpeg at the README's commit plus the static libraries) with each release, or a written offer, and name it in the installer's licence notes (GPLv3 §6) · spec: companion/scripts/fetch-ffmpeg.mjs · needs: D1.6 · owner: fable@main · since: 2026-10-30
+- **E5** `done 0.2.22` GPL Corresponding Source for the bundled ffmpeg: written offer (`docs/ffmpeg-source.md`, `SOURCE-OFFER.txt` beside ffmpeg.exe) + `ffmpeg-source` release assets · needs: D1.6
+  - **E5.1** `idea` Stronger Corresponding Source: mirror each statically linked library's tarball at the README's version and Gyan's build scripts with the release, instead of "upstream at that version"
+- **E6** `ready` [BUG] The updater's `quitAndInstall` path never calls `stream.stop()`: a running capture's ffmpeg pair may be orphaned on an update restart (the preview is covered by the process exit hook, D1.5) · spec: companion/src/main/updater.ts, stream-host.ts
+
 
 ## F. ArcAid side
 
@@ -158,4 +175,4 @@ Lane: `docs/**`, `.claude/**`, `WORK.md`, `CHANGELOG.md`, `tools/**`, `.github/w
 
 - **H1** `done` Single work tracker + board + `/work` and `/wrap` (ADR 0006), 2026-10-21
 - **H2** `done 0.2.20` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub
-- **H3** `claimed` Protocol prose for A2/A3 before the code — a WebSocket paragraph under the existing "Host transfer" section and a new "Reconnect" section (resume from the log head, not a fresh HELLO) in `protocol/docs/prose.md`, then `npm run protocol:generate` (SPEC.md is generated) · owner: fable@main · since: 2026-10-30
+- **H3** `done 0.2.22` Protocol prose for host transfer over WebSocket and reconnect (`protocol/docs/prose.md`), 2026-10-30
