@@ -7,6 +7,8 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.21] — 2026-10-30
+
 ### Witness
 - B19: the game-start report (the attempt on a limited-attempts board) carried the VPS game resolved from the file name
   alone; the score, re-matched by ROM, carried the right one. For "Tron Legacy (Stern 2011) VPW Mod v1.1" the file name
@@ -22,6 +24,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   so the player need not ask. A refused attempt ("no game start was reported for this score", "reported late") is
   shown as "not counted for the tournament", no longer as "Sanctioned play". `witness/arcaid-client.ts`,
   `witness/witness.ts` (`outcomeForWire`).
+
+### Wire / journal
+- Score parameters, the attempt call and the journal format are unchanged (hook 0.4.1). The attempt call's `vps_game`
+  now carries the ROM-pinned game, as the score call already did. The score answer's optional `notCounted` (ArcAid W27)
+  is now read; answers are not recorded as fixtures, `witness/arcaid-client.test.ts` covers the parse.
 
 ## [0.2.20] — 2026-10-30
 
