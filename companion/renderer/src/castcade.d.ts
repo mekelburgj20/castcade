@@ -347,6 +347,14 @@ interface StreamSettingsView extends StreamSettings {
   defaultRecordingsDir: string;
 }
 
+/** D1.5 (mirrors main/stream-host.ts PreviewStatus). */
+interface PreviewStatus {
+  previewing: boolean;
+  picture: { width: number; height: number } | null;
+  warning: string | null;
+  error: string | null;
+}
+
 interface CastcadeBridge {
   readonly appVersion: string;
   readonly protocolVersion: number;
@@ -372,6 +380,12 @@ interface CastcadeBridge {
     setKey(key: string | null): Promise<StreamSettingsView>;
     openRecordings(): Promise<void>;
     onStatus(cb: (s: StreamStatus) => void): () => void;
+    readonly preview: {
+      start(): Promise<PreviewStatus>;
+      stop(): Promise<PreviewStatus>;
+      status(): Promise<PreviewStatus>;
+      onStatus(cb: (s: PreviewStatus) => void): () => void;
+    };
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;

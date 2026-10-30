@@ -3,21 +3,23 @@
  * from a hidden window that asks for display media with `audio: 'loopback'` (Windows) and posts raw f32le PCM over
  * IPC (the D1.0 spike's path: ffmpeg has no Windows loopback input of its own). The stream key lives in
  * `<userData>/stream.json` through the token codec (safeStorage); it is never logged, never shown back to the
- * renderer and never sent to ArcAid.
+ * renderer and never sent to ArcAid. The framing preview (D1.5) is an ffplay window on the stream's own picture chain
+ * (`media/preview.ts`), separate from the engine: it may run beside a capture.
  */
 import { BrowserWindow, desktopCapturer, ipcMain, session } from 'electron';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ENCODER_PREFERENCE, type VideoEncoder } from '../media/ffmpeg-args.js';
+import { DEFAULT_PRESET, ENCODER_PREFERENCE, PRESETS, type VideoEncoder } from '../media/ffmpeg-args.js';
 import type { FfmpegLocation } from '../media/ffmpeg-path.js';
 import { isVpxExe, watchFocus, type FocusWatch } from '../media/focus-watch.js';
 import { spawnFfmpeg } from '../media/ffmpeg-pipeline.js';
 import type { OverlayState } from '../media/overlay-server.js';
-import { OVERLAY_TEXT_FILE } from '../media/overlay-text.js';
+import { OVERLAY_TEXT_FILE, overlayText } from '../media/overlay-text.js';
+import { previewCommand } from '../media/preview.js';
 import { StreamEngine, type EngineStatus } from '../media/stream-engine.js';
 import { patchStreamSettings, planFor, readStreamSettings, writeStreamSettings, type StreamSettings } from '../media/stream-settings.js';
-import { probeWindows } from '../media/window-geometry.js';
+import { probeWindows, type WindowProbe } from '../media/window-geometry.js';
 import type { LastCapture, LiveGame } from '../witness/types.js';
 import type { Logger } from './log.js';
 import type { TokenCodec } from './settings.js';
@@ -28,6 +30,20 @@ export interface StreamSettingsView extends StreamSettings {
   /** The folder sessions go to when `recordingsDir` is null. */
   defaultRecordingsDir: string;
 }
+
+/** D1.5: the framing preview (an ffplay window showing what viewers would see). */
+export interface PreviewStatus {
+  previewing: boolean;
+  picture: { width: number; height: number } | null;
+  warning: string | null;
+  error: string | null;
+}
+
+export const PREVIEW_OVERLAPS = 'The preview window sits inside the captured area; close it before going live or viewers will see it.';
+
+/** Settings that change the picture: a running preview restarts on them so the streamer sees the change at once. */
+const PICTURE_KEYS = ['orientation', 'shiftPercent', 'rotate', 'preset', 'overlay'] as const satisfies readonly (keyof StreamSettings)[];
+const PREVIEW_RESTART_MS = 300;
 
 export interface StreamHost {
   status(): EngineStatus;
@@ -43,6 +59,11 @@ export interface StreamHost {
   noteCapture(c: LastCapture): void;
   /** D1.4: the overlay state to burn into the capture. */
   noteOverlay(state: OverlayState): void;
+  /** D1.5: open the preview (a running one is replaced); allowed while a capture runs. */
+  startPreview(): Promise<PreviewStatus>;
+  stopPreview(): Promise<PreviewStatus>;
+  previewStatus(): PreviewStatus;
+  onPreview(cb: (s: PreviewStatus) => void): () => void;
 }
 
 const AUDIO_PARTITION = 'castcade-audio';
@@ -180,6 +201,112 @@ export function createStreamHost(opts: {
     focus = null;
   };
 
+  // ---- preview (D1.5): ffplay on the stream's own picture chain, in a window beside the capture ----
+  const overlayTextFile = join(dirname(opts.file), OVERLAY_TEXT_FILE);
+  const previewListeners = new Set<(s: PreviewStatus) => void>();
+  const CLOSED: PreviewStatus = { previewing: false, picture: null, warning: null, error: null };
+  let preview: PreviewStatus = CLOSED;
+  let previewProc: ChildProcess | null = null;
+  /** The overlay file is in the running preview's picture (the setting on, a font, the file written). */
+  let previewOverlay = false;
+  let previewWritten: string | null = null;
+  /** The probe the preview opened on. A settings restart reuses it: the window has not moved, and a fresh probe is a
+   * PowerShell start (about a second) the streamer would wait through on every change. */
+  let previewProbe: WindowProbe | null = null;
+  let previewStarting: Promise<PreviewStatus> | null = null;
+  let previewRestart: ReturnType<typeof setTimeout> | null = null;
+  /** The last state given to `noteOverlay` (the engine keeps its own copy). */
+  let lastOverlay: OverlayState | null = null;
+
+  const setPreview = (next: PreviewStatus): void => {
+    preview = next;
+    for (const l of previewListeners) l(next);
+  };
+  /** The engine's `writeOverlay`: the same text, the same file, overwritten in place (ffmpeg re-reads it every frame;
+   * a rename makes that open fail on Windows). */
+  const writePreviewOverlay = (force: boolean): boolean => {
+    const t = lastOverlay ? overlayText(lastOverlay) : '';
+    if (!force && t === previewWritten) return true;
+    try {
+      writeFileSync(overlayTextFile, t);
+      previewWritten = t;
+      return true;
+    } catch (e) {
+      log.warn(`stream: preview: could not write the overlay text: ${String(e)}`);
+      return false;
+    }
+  };
+  /** Kill the running ffplay; its exit is then ignored (`previewProc` no longer names it). */
+  const killPreview = (): void => {
+    if (previewRestart) clearTimeout(previewRestart);
+    previewRestart = null;
+    const p = previewProc;
+    previewProc = null;
+    previewOverlay = false;
+    if (p && p.exitCode === null) p.kill();
+  };
+  const closePreview = (): void => {
+    killPreview();
+    if (preview !== CLOSED) setPreview(CLOSED);
+  };
+  // ffplay is a separate process: Windows does not end it with the app, whichever way the app quits.
+  process.once('exit', () => previewProc?.kill());
+
+  const openPreview = (reuseProbe: boolean): Promise<PreviewStatus> => {
+    if (previewStarting) return previewStarting;
+    previewStarting = (async (): Promise<PreviewStatus> => {
+      try {
+        const probe = reuseProbe && previewProbe ? previewProbe : await probeWindows();
+        previewProbe = probe;
+        const fontFile = existsSync(FONT) ? FONT : null;
+        // As the engine does: the file exists before ffplay opens it, and a failed write previews without the overlay.
+        const withOverlay = settings.overlay && fontFile !== null && writePreviewOverlay(true);
+        const cmd = previewCommand({ probe, settings, preset: PRESETS[settings.preset] ?? PRESETS[DEFAULT_PRESET]!, fontFile, overlayTextFile: withOverlay ? overlayTextFile : null });
+        killPreview();
+        if ('error' in cmd) {
+          setPreview({ ...CLOSED, error: cmd.error });
+          return preview;
+        }
+        // windowsHide false: the preview IS a window.
+        const p = spawn(opts.ffmpeg.ffplay, cmd.args, { windowsHide: false, stdio: ['ignore', 'ignore', 'pipe'] });
+        previewProc = p;
+        previewOverlay = withOverlay;
+        let partial = '';
+        let lastLine: string | null = null;
+        p.stderr?.on('data', (b: Buffer) => {
+          const lines = (partial + b.toString('utf8')).split(/\r?\n/);
+          partial = lines.pop() ?? '';
+          for (const l of lines.map((x) => x.trim()).filter(Boolean)) {
+            lastLine = l;
+            log.warn(`stream: preview: ffplay: ${l}`);
+          }
+        });
+        const ended = (error: string | null): void => {
+          if (previewProc !== p) return; // replaced or closed from here
+          previewProc = null;
+          previewOverlay = false;
+          setPreview({ ...CLOSED, error });
+        };
+        p.on('error', (e) => ended(`ffplay did not start (${e.message}).`));
+        // Q, Esc or the window's X end ffplay with 0; anything else is a failure worth showing (its last line).
+        p.on('close', (code) => {
+          if (previewProc === p) log.info(`stream: preview closed (ffplay exit ${code})`);
+          ended(code === 0 ? null : (lastLine ?? `ffplay exited (${code})`));
+        });
+        log.info(`stream: preview ${cmd.picture.width}x${cmd.picture.height} (${settings.preset} ${settings.orientation}, rotate ${settings.rotate}${withOverlay ? ', overlay' : ''})${cmd.overlapsCapture ? ' inside the captured area' : ''}`);
+        setPreview({ previewing: true, picture: cmd.picture, warning: cmd.overlapsCapture ? PREVIEW_OVERLAPS : null, error: null });
+        return preview;
+      } catch (e) {
+        killPreview();
+        setPreview({ ...CLOSED, error: `The preview could not start: ${e instanceof Error ? e.message : String(e)}` });
+        return preview;
+      } finally {
+        previewStarting = null;
+      }
+    })();
+    return previewStarting;
+  };
+
   const listeners = new Set<(s: EngineStatus) => void>();
   engine.on('status', (s: EngineStatus) => {
     for (const l of listeners) l(s);
@@ -191,8 +318,17 @@ export function createStreamHost(opts: {
     status: () => engine.status(),
     settings: view,
     setSettings(patch) {
+      const before = settings;
       settings = patchStreamSettings(settings, patch);
       save();
+      // D1.5: a running preview follows a framing change at once (debounced: a typed shift is several changes).
+      if (previewProc && PICTURE_KEYS.some((k) => before[k] !== settings[k])) {
+        if (previewRestart) clearTimeout(previewRestart);
+        previewRestart = setTimeout(() => {
+          previewRestart = null;
+          if (previewProc) void openPreview(true);
+        }, PREVIEW_RESTART_MS);
+      }
       return view();
     },
     setKey(k) {
@@ -203,7 +339,6 @@ export function createStreamHost(opts: {
       return view();
     },
     async start(want) {
-      const overlayTextFile = join(dirname(opts.file), OVERLAY_TEXT_FILE);
       const plan = planFor(settings, want, { key: plainKey(), recordingsDir: opts.defaultRecordingsDir, fontFile: existsSync(FONT) ? FONT : null, overlayTextFile, appVersion: opts.appVersion });
       if (plan.record) mkdirSync(plan.recordingsDir, { recursive: true });
       const flowing = audioFlowing(5000);
@@ -223,6 +358,7 @@ export function createStreamHost(opts: {
       return engine.status();
     },
     async stop() {
+      closePreview();
       stopFocus();
       await engine.stop();
       stopAudio();
@@ -238,7 +374,23 @@ export function createStreamHost(opts: {
     noteTable: (t) => engine.noteTable(t),
     noteGame: (g) => engine.noteGame(g),
     noteCapture: (c) => engine.noteCapture(c),
-    noteOverlay: (st) => engine.noteOverlay(st),
+    noteOverlay: (st) => {
+      lastOverlay = st;
+      engine.noteOverlay(st);
+      if (previewProc && previewOverlay) writePreviewOverlay(false);
+    },
+    startPreview: () => openPreview(false),
+    async stopPreview() {
+      closePreview();
+      return preview;
+    },
+    previewStatus: () => preview,
+    onPreview(cb) {
+      previewListeners.add(cb);
+      return () => {
+        previewListeners.delete(cb);
+      };
+    },
   };
 }
 

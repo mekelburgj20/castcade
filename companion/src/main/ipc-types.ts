@@ -7,9 +7,9 @@ import type { RedactedSettings, SettingsPatch } from './settings.js';
 import type { WitnessStatus } from '../witness/types.js';
 import type { EngineStatus } from '../media/stream-engine.js';
 import type { StreamSettings } from '../media/stream-settings.js';
-import type { StreamSettingsView } from './stream-host.js';
+import type { PreviewStatus, StreamSettingsView } from './stream-host.js';
 
-export type { EngineStatus, RedactedSettings, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
+export type { EngineStatus, PreviewStatus, RedactedSettings, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
   witnessStatus: 'witness:status',
@@ -38,9 +38,13 @@ export const IPC = {
   streamSettingsSet: 'stream:settings:set',
   streamSetKey: 'stream:setKey',
   streamOpenRecordings: 'stream:openRecordings',
+  streamPreviewStart: 'stream:preview:start',
+  streamPreviewStop: 'stream:preview:stop',
+  streamPreviewStatus: 'stream:preview:status',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
+  streamPreviewEvent: 'stream:previewEvent',
 } as const;
 
 // ------------------------------------------------------------------------- table import (C7) --
@@ -159,6 +163,13 @@ export interface CastcadeApi {
     /** Opens the recordings folder in Explorer. */
     openRecordings(): Promise<void>;
     onStatus(cb: (s: EngineStatus) => void): () => void;
+    /** D1.5: the framing preview, an ffplay window showing what viewers would see; allowed while a capture runs. */
+    preview: {
+      start(): Promise<PreviewStatus>;
+      stop(): Promise<PreviewStatus>;
+      status(): Promise<PreviewStatus>;
+      onStatus(cb: (s: PreviewStatus) => void): () => void;
+    };
   };
   tables: {
     defaults(): Promise<TablesDefaults>;
