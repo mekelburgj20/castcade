@@ -7,6 +7,8 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.20] — 2026-10-30
+
 ### Table import and hook
 - C10: saving a patched table in the VPX editor copies the Castcade script into the table itself; a tester's colour
   change then brought the "made for an older version of this table" dialog at every launch and "Patch my tables"
@@ -20,22 +22,31 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 - B18: Castcade started while the VPX player window was already up (the title names no table) now names the table from
   the newest hook journal whose `table_loaded` falls inside that process's lifetime, takes the `.vpx` from the import
   manifest, and arms live mode at once instead of learning the table when play ends. A journal from an earlier
-  process is never taken.
+  process is never taken. `witness/journal-scan.ts` (`newestJournalSince`), `witness/witness.ts` (`tableFromJournal`).
 - B17: a Castcade restart while the same VPX process stays open no longer re-posts that process's earlier games.
   Live mode remembers every game it posted in `posted-games.json` (key = table id + the attempt key ArcAid dedupes
   on, capped at 2000); a replayed game is followed to its end and posts nothing, and the `.nv` rewrite at close
-  stays suppressed. Games played while Castcade was not running still post.
+  stays suppressed. Games played while Castcade was not running still post. `witness/posted-games.ts`, `witness/witness.ts`.
 - B4.1: the playfield fingerprint's record tags are pinned against a tag census of a real table
   (`fixtures/playfield/tags.json`, tag names and counts only, recorded from the rig's Medieval Madness, file
   version 1080); a VPX release that renames a tag now fails `npm test`, not a tournament. Re-record with
-  `npm run playfield-tags -w companion -- "<table.vpx>"`.
+  `npm run playfield-tags -w companion -- "<table.vpx>"`. `witness/playfield-fingerprint.ts` (`playfieldTagCensus`),
+  `companion/scripts/playfield-tags.ts`.
 
 ### Streaming and recording
 - D1.4: the overlay (table, score per player with the player up and the ball, the limited-attempts line, the last
   post, the Arcaid Witness badge) is burned into the stream and the recording: the same state as the OBS page,
   written as text to `stream-overlay.txt` (overwritten in place) and drawn by ffmpeg's `drawtext` with `reload=1`.
   On by default; Settings → Stream and record → "Overlay in the stream and recording" turns it off for OBS users
-  who draw the browser-source overlay themselves. No font, no overlay (as for the slate).
+  who draw the browser-source overlay themselves. No font, no overlay (as for the slate). `media/overlay-text.ts`,
+  `media/stream-engine.ts`, `media/ffmpeg-args.ts` (`overlay`), `main/stream-host.ts`, `views/StreamCard.tsx`.
+
+### Wire / journal
+- Score parameters and the match protocol are unchanged. The hook is 0.4.1 (`vpx-hook/castcade.vbs`, `patcher/render.ts`
+  `LIB_VERSION`): one new journal line, `embedded_patch`, written when the guard runs from a script the VPX editor saved
+  into the table; `recipe_version` stays 0.3.1 and every existing line is unchanged. No recorded fixture carries the new
+  line yet (the detector and witness tests cover it, `witness/journal-detector.test.ts`); Krobs' saved table is the field
+  gate (C10.1). New local file `posted-games.json` beside the post queue (B17).
 
 ## [0.2.19] — 2026-10-29
 
