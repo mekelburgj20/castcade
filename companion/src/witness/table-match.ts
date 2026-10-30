@@ -118,6 +118,25 @@ function parentheticalAgrees(game: VpsGameEntry, file: ParsedTableFileName | nul
   );
 }
 
+/**
+ * B19: the file says `(Stern 2011)` and the only game of that name is an Original from 2016 (VPS has a
+ * "TRON Legacy" original beside "Disney TRON Legacy (Limited Edition)"). Both halves disagreeing means
+ * a different game, not a misspelt manufacturer; one half off (a re-release year, a licensee) stays
+ * `likely`, as before.
+ */
+function parentheticalContradicts(game: VpsGameEntry, file: ParsedTableFileName | null): boolean {
+  return (
+    !!file &&
+    file.hasParenthetical &&
+    file.year !== null &&
+    !!file.manufacturer &&
+    game.year !== null &&
+    game.year !== file.year &&
+    !!game.manufacturer &&
+    !sameManufacturer(game.manufacturer, file.manufacturer)
+  );
+}
+
 async function firstNameHit(
   index: VpsIndex,
   names: string[],
@@ -194,9 +213,10 @@ export async function matchGame(index: VpsIndex, evidence: GameMatchEvidence): P
     const hits = await firstNameHit(index, names, hint);
     if (hits.length === 1) {
       const game = hits[0] as VpsGameEntry;
-      return done(game, parentheticalAgrees(game, file) ? 'exact' : 'likely', 'filename');
-    }
-    if (hits.length > 1 && !tie) tie = { games: hits, source: 'filename' };
+      if (parentheticalAgrees(game, file)) return done(game, 'exact', 'filename');
+      // B19: not this game; the ROM (live mode) or the player's pick decides, never a same-named original.
+      if (!parentheticalContradicts(game, file)) return done(game, 'likely', 'filename');
+    } else if (hits.length > 1 && !tie) tie = { games: hits, source: 'filename' };
   }
 
   if (evidence.romName) {

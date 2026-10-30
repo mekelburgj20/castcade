@@ -1162,6 +1162,38 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.errors).toEqual([]);
   });
 
+  it("B19: the game start carries the ROM's VPS game, not the file's: the identity is pinned at table_loaded", async () => {
+    // The file at TFTC_PATH is MM_VPX, whose TableInfo says Medieval Madness: resolved from the file alone the
+    // identity is MM (-5yMpqSy), the ROM in the journal says Tales from the Crypt (fXaQ33KC). Krobs' Tron did
+    // the same with VPS's 2016 original, and ArcAid matched the start to nothing (2026-10-29).
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    h.setRespond((path) =>
+      path.endsWith('/attempt')
+        ? { status: 200, body: { ok: true, status: 'counted', game: 'Tales from the Crypt', attempt: 1, of: 5, remaining: 4, late: false } }
+        : { status: 200, body: { ok: true, status: 'ingested', game: 'Tales from the Crypt' } },
+    );
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 36);
+    const loadedAt = h.clock.now() + 4000;
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(loadedAt).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.paths('/attempt')).toHaveLength(1);
+    expect(h.paths('/attempt')[0]?.params).toMatchObject({ rom: 'tftc_400', vps_game: 'fXaQ33KC' });
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params['vps_game']).toBe('fXaQ33KC');
+    expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: 'fXaQ33KC' }, gameSource: 'rom' });
+    expect(logs).toContain('witness: identity pinned by ROM tftc_400: Tales from the Crypt (fXaQ33KC), was -5yMpqSy');
+    expect(h.errors).toEqual([]);
+  });
+
   it('hook 0.4.0 engine lines ride on the score as `engine`, and an in-game change is named in the capture detail', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');

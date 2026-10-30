@@ -341,6 +341,12 @@ float32 values widened to double (0.20000000298023224, not 0.2); ArcAid-side com
 compare as float32. Table matching scores authors (+4 lead author, +2 other), version equality (+3,
 near +1.5), feature words in the file name (+1 each) and VPS comment words (+0.5); `exact` needs a
 lead of 3 with author or version evidence, `likely` a lead of 1, else `ambiguous` and the picker.
+The ROM wins over the file name whenever it is known, and it is known at `table_loaded` in live mode:
+from B19 (2026-10-30) the identity is pinned by the ROM there, before the game-start report goes to
+ArcAid, so the start and the score name the same VPS game. A file name alone never resolves to the
+one same-named game whose manufacturer *and* year both disagree with its `(Manufacturer Year)`:
+"Tron Legacy (Stern 2011) …" is not VPS's 2016 original "TRON Legacy"; it is nothing until the ROM
+says `akYNyhNO`. One half off (a re-release year, a licensee) still reads `likely`.
 
 ## 8. Open questions
 

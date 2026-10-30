@@ -439,6 +439,22 @@ Optional like the other evidence: malformed = dropped, never a 400; a cabinet ne
 quit one: "quit on ball 2", or "quit" with no ball. Badge, never gate: no rank, filter or ingest decision changes on
 it. The Integrity panel shows the same line. Older companions send nothing; their scores read as unknown.
 
+## 17. A `vps_game` that matches no open game: fall back to the ROM's game (Castcade B19)
+
+**What happened (Krobs, Arcaid Witness Demo, 2026-10-29).** Three Tron games went to the Global Scoreboard as
+`start not reported` and used three attempts. The companion's start call (`GET /api/witness/attempt`) carried the VPS
+game its file-name match had chosen, VPS's 2016 original "TRON Legacy" (`pif7TsS27U`); the score call, re-matched by
+ROM, carried the licensed game `akYNyhNO`. `VpxScoreIngestService.match` tries the catalogue game named by `vps_game`
+first and consults the ROM (`catalogueGameForRom`, W12) only when the catalogue does not know that VPS id at all, so
+the start matched nothing (the name fallback loses on "Disney TRON Legacy (Limited Edition)" vs "tron legacy") while
+the score matched the room game by catalogue id. Companion B19 fixes the start call's identity; this is the server
+half that would have saved the attempts anyway.
+
+**What to do.** In `match`, when the `vps_game` catalogue game yields no open game, try the ROM's catalogue game
+(`rom`, through `global_game_roms`) before the device-name fallback, on both the start and the score call. Answer the
+start call with the same miss reason the score call records (`notCounted` / `reason`), so the companion can show why
+a start counted nowhere. Badge, never gate: this widens matching, it refuses nothing.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

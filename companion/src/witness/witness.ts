@@ -142,6 +142,8 @@ interface OpenSession {
   identity: TableIdentity | null;
   /** What `identity` was resolved for (file path, or the bare name when no file was found). */
   identityFor: string | null;
+  /** B19: the ROM `identity` was last pinned with (`pinIdentityByRom`), so a journal replay pins once. */
+  identityRom: string | null;
   /** The background hash of the table file, when one is running. */
   hashing: Promise<void> | null;
   /** Settings and builds measured when the table became known; completed (adjustments, cheat flag) at capture. */
@@ -622,6 +624,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (path) await inspectScript(session, path);
     const identity = await resolver.fromFile(path, path ? tableBaseName(path) : launch.table);
     session.identity = identity;
+    session.identityRom = null; // B19: a fresh file identity; the next `table_loaded` or start report pins it again
     if (identity.vpsGame) log(`witness: identity ${identity.vpsGame.name} (${identity.vpsGame.id}) / ${identity.vpsTable ? `${identity.vpsTable.label} (${identity.vpsTable.id}, ${identity.tableConfidence})` : `table ${identity.tableConfidence}`}`);
     else log(`witness: identity unresolved for ${target}: ${identity.notes.join('; ')}`);
     session.attestation = await measureAttestation(session);
@@ -652,6 +655,28 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   };
 
   /** The identity a capture posts: the session's, upgraded by the ROM, with the hash if it is in time. */
+  /**
+   * B19: pin the session's identity to the ROM's game as soon as the ROM is known (the journal's
+   * `table_loaded`), so the game-start report carries the same `vps_game` the score will. Resolved from
+   * the file alone, "Tron Legacy (Stern 2011) VPW Mod v1.1" read as the 2016 original "TRON Legacy" and
+   * ArcAid matched the start to nothing: the score then landed as `unreported` and used an attempt
+   * (Krobs, 2026-10-29). The capture path re-pins anyway (`identityForCapture`); this is the early copy.
+   */
+  const pinIdentityByRom = async (session: OpenSession, rom: string | null): Promise<void> => {
+    if (!rom || session.identityRom === rom) return;
+    const before = session.identity;
+    if (!before) return;
+    const romName = await corpus.romName(rom);
+    const pinned = await resolver.withRom(before, rom, romName);
+    if (session.identity !== before) return; // the background hash landed meanwhile; the next call pins again
+    session.identity = pinned;
+    session.identityRom = rom;
+    const was = before.vpsGame?.id ?? null;
+    if (pinned.vpsGame && pinned.vpsGame.id !== was) {
+      log(`witness: identity pinned by ROM ${rom}: ${pinned.vpsGame.name} (${pinned.vpsGame.id})${was ? `, was ${was}` : ', was unresolved'}`);
+    }
+  };
+
   const identityForCapture = async (session: OpenSession, rom: string | null, romName: string | null): Promise<TableIdentity | null> => {
     if (session.hashing) {
       let timer: TimerHandle | null = null;
@@ -1162,6 +1187,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
+      await pinIdentityByRom(session, ev.rom);
       // B15: the patch VPX loaded predates this build (the re-make after an update had not reached it yet).
       const ran = ev.recipe === 'A' ? ev.recipeVersion : null;
       live.oldPatchNote = ran && versionOlder(ran, RECIPE_VERSION) ? oldPatchNote(live.tableId, ran) : null;
@@ -1313,6 +1339,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const wireTable = resolved ? catalogueTableName(resolved.table) : UNKNOWN_TABLE;
     const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
     const key = attemptKey(live.sessionStamp, live.loadedAtMs, t);
+    await pinIdentityByRom(session, rom); // B19: no-op once `table_loaded` pinned it
     const identity = session.identity;
     const playDevice = session.attestation ? playDeviceFor(session.attestation.vr) : null;
     const posted = await queue.submit({
@@ -1405,6 +1432,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       reported: null,
       identity: null,
       identityFor: null,
+      identityRom: null,
       hashing: null,
       attestation: null,
       live: null,

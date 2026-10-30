@@ -7,6 +7,17 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Witness
+- B19: the game-start report (the attempt on a limited-attempts board) carried the VPS game resolved from the file name
+  alone; the score, re-matched by ROM, carried the right one. For "Tron Legacy (Stern 2011) VPW Mod v1.1" the file name
+  resolved to VPS's 2016 original "TRON Legacy", so ArcAid matched the start to nothing and the score landed as
+  `start not reported`: the attempt was used and the score did not count (Krobs, Arcaid Witness Demo, three games on
+  2026-10-29). The identity is now pinned by the ROM the moment the journal's `table_loaded` names it, before the start
+  goes out (`witness: identity pinned by ROM …` in the log), and a file whose `(Manufacturer Year)` disagrees with the
+  only same-named VPS game on both halves resolves to nothing rather than to that game; one half off (a re-release
+  year) stays `likely`, as before. `witness/witness.ts` (`pinIdentityByRom`), `witness/table-match.ts`
+  (`parentheticalContradicts`).
+
 ## [0.2.20] — 2026-10-30
 
 ### Table import and hook

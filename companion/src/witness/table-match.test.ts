@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { GameMatchEvidence, VpsGameEntry } from './identity-types.js';
 import { matchGame, matchTable, namePrefixes, parseTableFileName, versionForms, versionFromName } from './table-match.js';
+import { MemoryFs } from './fs.js';
 import { createVpsIndex } from './vps-index.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
@@ -22,6 +23,55 @@ const MM_FILE = 'Medieval Madness (Williams 1997) VPW v1.0.1';
 const MM_INFO = { tableName: 'Medieval Madness', authorName: 'VPW', tableVersion: '1.0.1' };
 const TFTC_FILE = 'Tales from the Crypt (Data East 1993) VPW v1.22';
 const TFTC_INFO = { tableName: 'Tales from the Crypt', authorName: 'VPW', tableVersion: '1.22' };
+
+/** VPS as of 2026-10: a licensed game and a same-named original (Krobs' Tron, B19). Tables trimmed to one each. */
+const TRON_INDEX = {
+  version: 'test',
+  generatedAt: '2026-10-30T00:00:00.000Z',
+  games: [
+    {
+      id: 'akYNyhNO', name: 'Disney TRON Legacy (Limited Edition)', manufacturer: 'Stern', year: 2011, type: 'SS', roms: ['trn_174h'],
+      tables: [{ id: 'EbbcvZL7', authors: ['VPW', 'nFozzy', 'AstroNasty', 'Fluffhead35'], version: '1.1', features: ['MOD', 'VR', 'Hybrid', 'SSF', 'FSS', 'nFozzy', 'Fleep'], format: 'VPX', comment: null, updatedAt: 1783983827945 }],
+    },
+    {
+      id: 'pif7TsS27U', name: 'TRON Legacy', manufacturer: 'Original', year: 2016, type: 'SS', roms: [],
+      tables: [{ id: '7URlZHUpv8', authors: ['TerryRed', 'SLAMT1LT'], version: '1.13', features: ['MOD'], format: 'FP', comment: null, updatedAt: 1747834060131 }],
+    },
+  ],
+};
+
+describe('B19: a file whose (Manufacturer Year) contradicts the only same-named game', () => {
+  const fs = new MemoryFs();
+  fs.put('/vps/index.json', JSON.stringify(TRON_INDEX));
+  const tron = createVpsIndex('/vps', fs);
+  const FILE = 'Tron Legacy (Stern 2011) VPW Mod v1.1';
+
+  it('is not that game: the 2016 original is refused for a Stern 2011 file', async () => {
+    const byFile = await matchGame(tron, evidence({ fileName: FILE }));
+    expect(byFile).toEqual({ game: null, confidence: 'none', source: 'none', candidates: [] });
+    const mr = await matchGame(tron, evidence({ fileName: 'Tron Legacy (Stern 2011)MR VPW Mod v1.1' }));
+    expect(mr.game).toBeNull();
+  });
+
+  it('the ROM pins the licensed game, and the VPW table, exactly', async () => {
+    const byRom = await matchGame(tron, evidence({ rom: 'trn_174h', romName: 'TRON: Legacy Limited Edition', fileName: FILE }));
+    expect(byRom).toMatchObject({ confidence: 'exact', source: 'rom' });
+    expect(byRom.game?.id).toBe('akYNyhNO');
+    const table = matchTable(byRom.game!, { fileName: FILE, tableInfo: null });
+    expect(table.table?.id).toBe('EbbcvZL7');
+    expect(table.confidence).toBe('exact');
+  });
+
+  it('a file that names the original keeps it; one half off stays likely', async () => {
+    const original = await matchGame(tron, evidence({ fileName: 'TRON Legacy (Original 2016) v1.13' }));
+    expect(original).toMatchObject({ confidence: 'exact', source: 'filename' });
+    expect(original.game?.id).toBe('pif7TsS27U');
+    // Same manufacturer, a different year (a re-release): still the one game of that name.
+    const yearOff = await matchGame(tron, evidence({ fileName: 'TRON Legacy (Original 2017)' }));
+    expect(yearOff).toMatchObject({ confidence: 'likely', source: 'filename' });
+    expect(yearOff.game?.id).toBe('pif7TsS27U');
+  });
+});
 
 describe('parseTableFileName', () => {
   it('splits name, manufacturer, year and the suffix', () => {
