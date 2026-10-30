@@ -17,6 +17,10 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   `patcher/import.ts` (`patchSource`), `main/tables-host.ts` (`repair`), `witness/witness.ts`.
 
 ### Witness
+- B18: Castcade started while the VPX player window was already up (the title names no table) now names the table from
+  the newest hook journal whose `table_loaded` falls inside that process's lifetime, takes the `.vpx` from the import
+  manifest, and arms live mode at once instead of learning the table when play ends. A journal from an earlier
+  process is never taken.
 - B17: a Castcade restart while the same VPX process stays open no longer re-posts that process's earlier games.
   Live mode remembers every game it posted in `posted-games.json` (key = table id + the attempt key ArcAid dedupes
   on, capped at 2000); a replayed game is followed to its end and posts nothing, and the `.nv` rewrite at close

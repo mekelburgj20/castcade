@@ -8,7 +8,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.19 (unsigned PoC; repo public, keep it so): records and streams from the app (D1.2, D1.3; bundled ffmpeg D1.6, two-process capture, the desktop never goes out D1.9); live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post from NVRAM alone (B10.1, 0.2.16); 0.2.17 patches only machines whose live score can be read (B12; 84 of the rig's 140 tables) and re-makes patches fast after an update (B15). 0.2.18 adds the OBS overlay (D1.1), the quit marker on the score call (B16; the board half is F14) and unpatches unreadable tables (B12.1).
-- On main, unreleased (next release): B17 (a Castcade restart with VPX open no longer re-posts: posted game keys persist in `posted-games.json`), D1.4 (the overlay burned into the stream and the recording; Settings → Stream has the switch), B4.1 (fingerprint record tags pinned against a census of the rig's Medieval Madness), H2. B18 (Castcade started mid-game names the table from the newest journal of the VPX process) is finished on `fix/b18-table-from-journal`, check green, and fast-forwards once the C10 session commits its `witness.ts` edits.
+- On main, unreleased (next release): B17 (a Castcade restart with VPX open no longer re-posts: posted game keys persist in `posted-games.json`), B18 (Castcade started mid-game names the table from the newest journal of the VPX process and arms live mode at once), D1.4 (the overlay burned into the stream and the recording; Settings → Stream has the switch), B4.1 (fingerprint record tags pinned against a census of the rig's Medieval Madness), H2, and C10 (next bullet).
 - Rig checks owed on the next build: D1.4 (overlay legible at 720p30, no flicker from the in-place rewrite, `►` glyph draws), B17 (restart Castcade while VPX stays open: no `duplicate` answers), B18 (start Castcade with the player already up: live mode arms at once).
 - C10 (an editor save bakes the patch into the table; Krobs 2026-10-29) is built on main (cabc78c, hook 0.4.1) and goes out with the next release; the update re-makes every patch on the first look, so B15.1 can be checked on the same build. Krobs' saved table is the gate.
 - New ruling 2026-10-27, ADR 0007: functionality before ease of setup; automate or guide every setup step (D6) and promise testers "guided setup", never "no setup".
@@ -17,7 +17,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
 - Next by priority: release (C10 is on main); then D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Before GA: E5 (GPL source for the bundled ffmpeg).
 - Watching: C9 (four arrivals per score, 2026-10-22), no recurrence since request logging.
-- Last wrap: 2026-10-29 (second session, five worktree agents) — B17, B4.1, H2, D1.4 done; B18 on its branch; C2.2 needs a rig recording.
+- Last wrap: 2026-10-29 (second session, five worktree agents) — B17, B18, B4.1, H2, D1.4 done; C10 done by a parallel session; C2.2 needs a rig recording.
 
 ## A. Protocol and match engine
 
@@ -63,8 +63,7 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B16** `done 0.2.18` A game quit before game over posts and counts, marked as quit (companion half: `quit` / `quit_ball` on the score call; board mark is F14)
 - **B11** `done 0.2.11` Limited attempts, companion half (ArcAid ADR 0029 / A16): attempt call at every live-mode game start, `attempt=<key>` on the score, Status shows the answer
 - **B17** `done 2026-10-29` [BUG] A restart of Castcade while the same VPX process stays open re-posted that process's earlier games — posted game keys persist per journal (`posted-games.json`), a replayed game is followed to its end and posted nothing
-- **B18** `claimed` [BUG] Castcade started while the VPX player window is already up does not know the table until play ends (`launch null`: the player title names no table), so no live mode, no overlay, a recording segment with no table, and the games post only when the player closes (rig 2026-10-30T03:49Z). Fix: name the table from the newest journal whose `table_loaded` falls inside the process's lifetime, or from VPX's last-opened table · spec: companion.log 2026-10-30T03:49:55Z, `witness.ts` `onLaunch` / `onTitle` · owner: fable@main · since: 2026-10-29 · branch: fix/b18-table-from-journal
-  Resume: finished and rebased on main (B17), `npm run check` green (54 files / 476 tests); `git merge --ff-only fix/b18-table-from-journal` once the C10 session has committed its `witness.ts` edits in the main checkout
+- **B18** `done 2026-10-29` [BUG] Castcade started while the VPX player window was already up learned the table only when play ended — the table comes from the newest journal whose `table_loaded` falls inside the VPX process's lifetime (`journal-scan.ts`), its import manifest gives the `.vpx`, live mode arms at once
 
 ## C. Table import, hook, detector, turn lock (Phase 3)
 
