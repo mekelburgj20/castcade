@@ -15,7 +15,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
 - Next by priority: D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Before GA: E5 (GPL source for the bundled ffmpeg).
 - Watching: C9 (four arrivals per score, 2026-10-22), no recurrence since request logging.
-- Last wrap: 2026-10-29 (second session, five worktree agents) — B17, B18, B4.1, H2, D1.4 done; C10 done by a parallel session; C2.2 needs a rig recording.
+- Last wrap: 2026-10-30 — 0.2.20 and 0.2.21 released; B19, B20 done (Krobs' Tron diagnosis); B19.1 and C10.1 are Krobs' field gates on 0.2.21; F15 added for ArcAid.
 
 ## A. Protocol and match engine
 
