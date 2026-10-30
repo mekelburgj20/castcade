@@ -342,3 +342,60 @@ export function fingerprintPlayfield(streams: VpxPlayfieldStreams): PlayfieldFin
 export async function readPlayfieldFingerprint(fs: WitnessFs, path: string): Promise<PlayfieldFingerprint> {
   return fingerprintPlayfield(await readVpxPlayfieldStreams(fs, path));
 }
+
+// --- B4.1: the tags the fingerprint relies on, checked against a census of a real table ---
+
+export interface TagCensus {
+  /** Record tag → occurrences in the GameData stream. */
+  gameData: Record<string, number>;
+  /** Per type label: item count, item-level tags, and tags inside `DPNT`…`ENDB` shape points. */
+  types: Record<string, { items: number; tags: Record<string, number>; pointTags: Record<string, number> }>;
+  /** Item types the fingerprint does not know, by numeric id → item count. */
+  unknownTypes: Record<number, number>;
+}
+
+const bump = (m: Record<string, number>, k: string): void => {
+  m[k] = (m[k] ?? 0) + 1;
+};
+
+/** Count every record tag a table's streams contain, listed or not (pure). B4.1: re-recorded after a VPX update. */
+export function playfieldTagCensus(streams: VpxPlayfieldStreams): TagCensus {
+  const census: TagCensus = { gameData: {}, types: {}, unknownTypes: {} };
+  if (streams.gameData) for (const r of records(streams.gameData)) bump(census.gameData, r.tag);
+  for (const s of streams.items) {
+    const spec = PLAYFIELD_TYPES[s.type];
+    if (!spec) {
+      census.unknownTypes[s.type] = (census.unknownTypes[s.type] ?? 0) + 1;
+      continue;
+    }
+    const t = (census.types[spec.label] ??= { items: 0, tags: {}, pointTags: {} });
+    t.items++;
+    let inPoint = false;
+    for (const r of records(s.body)) {
+      if (r.tag === 'DPNT') {
+        inPoint = true;
+        bump(t.tags, r.tag);
+      } else if (inPoint) {
+        bump(t.pointTags, r.tag);
+        if (r.tag === 'ENDB') inPoint = false;
+      } else {
+        bump(t.tags, r.tag);
+      }
+    }
+  }
+  return census;
+}
+
+/** Sorted `label.TAG`, `label.point.TAG` and `gameData.TAG` for every record the fingerprint reads. */
+export function fingerprintTagList(): string[] {
+  const out = new Set<string>();
+  for (const spec of Object.values(PLAYFIELD_TYPES)) {
+    for (const tag of Object.keys(spec.fields)) out.add(`${spec.label}.${tag}`);
+    for (const tag of Object.keys(spec.points ?? {})) out.add(`${spec.label}.point.${tag}`);
+    if (spec.collidable) out.add(`${spec.label}.${spec.collidable}`);
+    if (spec.mesh) for (const tag of ['ISTO', 'M3VN', 'M3FN', 'M3CX', 'M3CI']) out.add(`${spec.label}.${tag}`);
+  }
+  for (const tag of Object.keys(TABLE_FIELDS)) out.add(`gameData.${tag}`);
+  out.add('gameData.PHMA');
+  return [...out].sort();
+}

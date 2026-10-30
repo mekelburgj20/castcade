@@ -345,8 +345,7 @@ lead of 3 with author or version evidence, `likely` a lead of 1, else `ambiguous
 ## 8. Open questions
 
 - Script-readable table / flipper properties on 10.8.0 (engine attestation field list).
-- Exact record tags for every fingerprint field (take them from VPX's source and `vpxtool`'s parser,
-  pin the list in a fixture so a VPX update that renames a tag fails a test, not a tournament).
+- Exact record tags for every fingerprint field: **settled 2026-10-29 (B4.1).** The tags are pinned against a tag census of a real table in `fixtures/playfield/tags.json`; re-record it after a VPX update.
 - Baseline licensing: **settled 2026-10-18.** The runner uploads a script they own a copy of, for the
   private use of the tournament; ArcAid stores it per tournament game, never publishes it, and deletes it
   with the tournament. The owner is comfortable with this for Sanctioned play ("it would contain nothing

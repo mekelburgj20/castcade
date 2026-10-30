@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { MemoryFs } from './fs.js';
-import { canonicalJson, canonicalPlayfield, fingerprintPlayfield, readPlayfieldFingerprint } from './playfield-fingerprint.js';
+import { canonicalJson, canonicalPlayfield, fingerprintPlayfield, fingerprintTagList, playfieldTagCensus, readPlayfieldFingerprint, type TagCensus } from './playfield-fingerprint.js';
 import type { VpxPlayfieldStreams } from './vpx-file.js';
 import { ascii, buildVpx, concat, f32le, floatRecord, gameItem, intRecord, nameRecord, record, stringRecord, u32le, vec2Record } from './synth-vpx.test-support.js';
 
@@ -144,5 +146,53 @@ describe('playfield fingerprint', () => {
     const got = await readPlayfieldFingerprint(fs, '/t.vpx');
     expect(got.id).toBe(fp([flipper(), wall()]));
     expect(got.counts).toEqual({ flipper: 1, wall: 1 });
+  });
+});
+
+describe('B4.1: record tags pinned against a census', () => {
+  it('counts item tags, point tags, GameData tags and unknown types', () => {
+    const unknown = gameItem(99, intRecord('ZZZZ', 1));
+    const c = playfieldTagCensus(streams([wall(), wall(), flipper(), unknown]));
+    expect(c.gameData).toMatchObject({ GAVT: 1, SLOP: 1, PHMA: 1, ENDB: 1 });
+    expect(c.unknownTypes).toEqual({ 99: 1 });
+    expect(c.types['wall']!.items).toBe(2);
+    expect(c.types['wall']!.tags).toMatchObject({ CLDW: 2, ELAS: 2, DPNT: 4, ENDB: 2 });
+    expect(c.types['wall']!.pointTags).toEqual({ VCEN: 4, POSZ: 4, SMTH: 4, SLNG: 4, LOCK: 4, ENDB: 4 });
+    expect(c.types['flipper']).toMatchObject({ items: 1, pointTags: {} });
+    expect(c.types['flipper']!.tags).toMatchObject({ VCEN: 1, STRG: 1, ENBL: 1 });
+  });
+
+  const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('../../../fixtures/playfield/tags.json', import.meta.url)), 'utf8')) as {
+    pinned: string[];
+    census: TagCensus;
+  };
+
+  it('the fingerprint tag list equals the pinned list', () => {
+    expect(
+      fingerprintTagList(),
+      'PLAYFIELD_TYPES / TABLE_FIELDS changed: a change to the tag list is a deliberate fixture update (re-record fixtures/playfield/tags.json)',
+    ).toEqual(fixture.pinned);
+  });
+
+  it('every tag the fingerprint relies on exists in the census of a real table', () => {
+    for (const entry of fingerprintTagList()) {
+      const parts = entry.split('.');
+      const tag = parts[parts.length - 1]!;
+      let seen: Record<string, number> | undefined;
+      if (parts[0] === 'gameData') seen = fixture.census.gameData;
+      else {
+        const t = fixture.census.types[parts[0]!];
+        if (!t || t.items === 0) continue; // the recorded table has none of this type
+        seen = parts[1] === 'point' ? t.pointTags : t.tags;
+      }
+      expect(
+        seen[tag],
+        `${entry} is missing from the census: a VPX rename or a wrong tag in PLAYFIELD_TYPES. Re-record with: npm run playfield-tags -w companion -- <table.vpx>`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it('the census is not empty (at least 8 item types present)', () => {
+    expect(Object.values(fixture.census.types).filter((t) => t.items > 0).length).toBeGreaterThanOrEqual(8);
   });
 });

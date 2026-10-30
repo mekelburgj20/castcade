@@ -16,6 +16,7 @@ export {
 } from './witness.js';
 export { ArcaidClient, ArcaidError, buildUrl, type FetchLike, type FetchResponseLike, type ArcaidFailureKind, type ScoreWireStatus } from './arcaid-client.js';
 export { decideCapture, countPlayers, MIN_SESSION_SEC, EXIT_SAMPLE_REASON, type CaptureDecision, type CaptureInput } from './capture.js';
+export { playfieldTagCensus, fingerprintTagList, type TagCensus } from './playfield-fingerprint.js';
 export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat, type RandomAccessFile } from './fs.js';
 export { replayJournal, readJournalLines, type JournalReplay } from './journal-replay.js';
 export { JournalDetector, detectTransition, plausible, replayDetector, GAME_EVENT_KINDS, type GameEvent, type GameEventKind, type HookEvent, type JournalEvent, type SessionSummary, type JournalDetectorOptions } from './journal-detector.js';
