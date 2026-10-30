@@ -41,6 +41,16 @@ jobs:
       - name: Package (publish to the release on tag pushes only)
         working-directory: companion
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      # GPLv3 section 6(d) (E5): the Corresponding Source of the bundled ffmpeg rides on the same release. continue-on-error
+      # because a source-upload failure must not block a release; the written offer in docs/ffmpeg-source.md still
+      # stands, and the owner re-runs this step.
+      - name: Publish the GPL Corresponding Source for the bundled ffmpeg
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true
+        shell: bash
+        run: |
+          npm run ffmpeg-source -w companion
+          gh release upload "$GITHUB_REF_NAME" companion/release/ffmpeg-*-source.tar.gz companion/release/ffmpeg-*-SOURCES.txt --clobber --repo "$GITHUB_REPOSITORY"
       - name: Upload installer as a workflow artifact
         uses: actions/upload-artifact@v7
         with:

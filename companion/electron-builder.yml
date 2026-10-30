@@ -29,7 +29,8 @@ extraResources:
     to: vps
   # ffmpeg + ffplay for streaming, recording and the framing preview (D1.6): Gyan's GPLv3 essentials build, pinned by
   # version + sha256 in scripts/fetch-ffmpeg.mjs, fetched by `npm run fetch-ffmpeg -w companion`. Outside the asar so
-  # the executables can run; src/media/ffmpeg-path.ts finds them at resources/ffmpeg.
+  # the executables can run; src/media/ffmpeg-path.ts finds them at resources/ffmpeg. SOURCE-OFFER.txt (the GPLv3 written
+  # offer, E5) is written there by fetch-ffmpeg and ships with them; the source itself is docs/ffmpeg-source.md.
   - from: resources/ffmpeg
     to: ffmpeg
   # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo

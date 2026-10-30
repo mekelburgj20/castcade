@@ -7,7 +7,7 @@
  * Downloads Gyan's "essentials" Windows build (GPLv3, static, no --enable-nonfree) from its GitHub release, checks
  * the zip's sha256 against the pin below, and copies ffmpeg.exe (capture, encode, stream, record), ffplay.exe (the
  * framing preview), LICENSE and README.txt (the build's configuration and source commit) into the out dir, plus a
- * VERSION file the companion reports. A matching VERSION already there skips the download (--force re-fetches).
+ * SOURCE-OFFER.txt (GPLv3 written offer, E5; the source itself is `npm run ffmpeg-source -w companion`) and a VERSION file the companion reports. A matching VERSION already there skips the download (--force re-fetches).
  * The out dir is wiped first. Windows only: extraction uses Windows' own tar.exe (bsdtar reads zip).
  *
  * To move the pin: change VERSION + SHA256, run it, check the README's library list still has ddagrab, drawtext,
@@ -33,6 +33,17 @@ const KEEP = [
   ['LICENSE', 'LICENSE'],
   ['README.txt', 'README.txt'],
 ];
+/** Written by this script, not taken from the zip: the GPLv3 section 6(b) written offer that ships beside the binaries (E5). */
+const GENERATED = ['SOURCE-OFFER.txt'];
+const SOURCE_OFFER = [
+  'This folder holds ffmpeg and ffplay, built by Gyan Doshi (www.gyan.dev) under the GNU GPL version 3 (see LICENSE).',
+  'Written offer (GPLv3 section 6(b)): for three years from the date of the Castcade release you installed, anyone who',
+  'holds this installer may obtain the Corresponding Source of these binaries, free of charge beyond the cost of transfer.',
+  'Place 1: the assets ffmpeg-<version>-source.tar.gz and ffmpeg-<version>-SOURCES.txt on that release,',
+  '  https://github.com/mekelburgj20/castcade/releases',
+  'Place 2: docs/ffmpeg-source.md in https://github.com/mekelburgj20/castcade (or open an issue there to ask).',
+  '',
+].join('\n');
 /** What VERSION holds; the companion reads its first line. */
 const STAMP = `${NAME} sha256:${SHA256} ${URL_}\n`;
 
@@ -59,7 +70,7 @@ async function main() {
   if (process.platform !== 'win32') throw new Error('Windows only (the bundle is Windows binaries; extraction uses the system tar)');
   const opts = parseArgs(process.argv.slice(2));
   const stampFile = join(opts.out, 'VERSION');
-  if (!opts.force && existsSync(stampFile) && readFileSync(stampFile, 'utf8') === STAMP && KEEP.every(([, to]) => existsSync(join(opts.out, to)))) {
+  if (!opts.force && existsSync(stampFile) && readFileSync(stampFile, 'utf8') === STAMP && [...KEEP.map(([, to]) => to), ...GENERATED].every((f) => existsSync(join(opts.out, f)))) {
     console.log(`ffmpeg ${NAME} already in ${opts.out}`);
     return;
   }
@@ -81,8 +92,9 @@ async function main() {
     rmSync(opts.out, { recursive: true, force: true });
     mkdirSync(opts.out, { recursive: true });
     for (const [from, to] of KEEP) copyFileSync(join(work, NAME, from), join(opts.out, to));
+    writeFileSync(join(opts.out, 'SOURCE-OFFER.txt'), SOURCE_OFFER);
     writeFileSync(stampFile, STAMP);
-    console.log(`wrote ${KEEP.map(([, to]) => to).join(', ')} + VERSION (${NAME}, sha256 ok) to ${opts.out}`);
+    console.log(`wrote ${[...KEEP.map(([, to]) => to), ...GENERATED].join(', ')} + VERSION (${NAME}, sha256 ok) to ${opts.out}`);
   } finally {
     rmSync(work, { recursive: true, force: true });
   }

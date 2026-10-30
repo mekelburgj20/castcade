@@ -34,7 +34,8 @@ mode, `src/witness/`, see below).** No patcher, media or launch code yet (Phase 
 install (the corpus is fetched by `npm run fetch-maps -w companion` before packaging; `release.yml` does
 this), `resources/vps`, the hook library, and `resources/ffmpeg` (D1.6: `npm run fetch-ffmpeg -w companion`
 fetches Gyan's GPLv3 essentials build of ffmpeg 8.1.1, sha256-pinned in `scripts/fetch-ffmpeg.mjs`, and keeps
-`ffmpeg.exe`, `ffplay.exe`, `LICENSE`, `README.txt` and a `VERSION`; it adds about 54 MB to the installer).
+`ffmpeg.exe`, `ffplay.exe`, `LICENSE`, `README.txt`, a `SOURCE-OFFER.txt` it writes (E5) and a `VERSION`; it adds about 54 MB to the installer).
+GPL source (E5): `npm run ffmpeg-source -w companion` downloads FFmpeg at the build's commit plus its library list into `release/`, `release.yml` uploads both to each tagged release, and `docs/ffmpeg-source.md` holds the written offer.
 `src/media/ffmpeg-path.ts` finds it; `Castcade.exe --smoke` prints `ffmpeg bundled <build>` when it is there. `npmRebuild: false` and an **exact** `electron` version in `package.json` are required because the
 companion is an npm workspace (hoisted `node_modules`). Publish target: GitHub Releases
 (`mekelburgj20/castcade`), which is also where electron-updater looks. The repo must stay **public**: the
