@@ -21,6 +21,7 @@ export { nodeFs, MemoryFs, isNotFound, type WitnessFs, type FileStat, type Rando
 export { replayJournal, readJournalLines, type JournalReplay } from './journal-replay.js';
 export { JournalDetector, detectTransition, plausible, replayDetector, GAME_EVENT_KINDS, type GameEvent, type GameEventKind, type HookEvent, type JournalEvent, type SessionSummary, type JournalDetectorOptions } from './journal-detector.js';
 export { JournalTail, DEFAULT_TAIL_POLL_MS, journalFileName, journalDir, journalPathFor, type JournalTailEvents, type JournalTailOptions } from './journal-tail.js';
+export { newestJournalSince, parseSessionStamp, type JournalCandidate } from './journal-scan.js';
 export {
   compileMap,
   compilePlatform,

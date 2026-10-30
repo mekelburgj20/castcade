@@ -63,7 +63,14 @@ export function splitCommandLine(commandLine: string): string[] {
 }
 
 /** How the table name of a session was established, strongest first. */
-export type TableSource = 'play' | 'arg' | 'title' | 'romname' | 'rom';
+export type TableSource =
+  | 'play'
+  | 'arg'
+  | 'title'
+  | 'romname'
+  | 'rom'
+  /** B18: the player was already up when Castcade started; the hook's journal of this process named it. */
+  | 'journal';
 
 /**
  * The path argument of a switch such as `-Ini` / `-TableIni` (case-insensitive): a quoted path is

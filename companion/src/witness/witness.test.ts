@@ -14,8 +14,8 @@ import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
 import { POSTED_GAMES_FILE } from './posted-games.js';
-import { attemptStatusFor, createWitness, embeddedPatchNote, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
-import { RECIPE_VERSION, classifyScript, renderRecipeA } from '../patcher/index.js';
+import { attemptStatusFor, createWitness, embeddedPatchNote, manifestDirFor, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
+import { RECIPE_VERSION, classifyScript, manifestPathFor, renderRecipeA } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
 
@@ -807,6 +807,70 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     await h.exit();
     expect(h.exits).toEqual([{ table: null, durationSec: expect.any(Number) }]);
     expect(h.captures).toHaveLength(1);
+  });
+
+  /** B18: a TFTC install as the import leaves it (table, sidecar, manifest) and a VPX whose player is already up. */
+  function playerUpHarness() {
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    const manifest = {
+      tableId: TFTC_TABLE, vpxPath: TFTC_PATH, vpxSha256: null, vpxSize: MM_VPX.length, vpxMtimeMs: 0, scriptSha256: '0'.repeat(64),
+      class: 'A', recipe: 'A', recipeVersion: RECIPE_VERSION, libVersion: '0.4.0', rom: 'tftc_400', sidecarPath: TFTC_SIDECAR,
+      sidecarSha256: '0'.repeat(64), anchors: {}, warnings: [], renderedAt: '2026-10-29T00:00:00Z', verified: null,
+    };
+    h.fs.put(manifestPathFor(manifestDirFor('/data'), TFTC_TABLE), JSON.stringify(manifest));
+    return h;
+  }
+
+  it('B18: started with the player already up, the table comes from the newest journal of this VPX process and live mode arms', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    // The table loaded 30 s ago in a VPX started a minute ago (rig 2026-10-30T03:49Z: `launch null` until play ended).
+    const loadedAt = now - 30_000;
+    const journal = tftcJournalAt(loadedAt);
+    h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: 'Visual Pinball Player' });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: TFTC_TABLE, pid: 32 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({
+      table: 'Tales from the Crypt (Data East 1993)',
+      rom: 'tftc_400',
+      score: '2318430',
+      reason: 'game_over',
+      started: String(Math.floor((loadedAt + journal.gameStartT * 1000) / 1000)),
+      table_sha256: sha(MM_VPX),
+    });
+    expect(h.captures[0]).toMatchObject({ table: TFTC_TABLE, mode: 'live', outcome: 'ingested' });
+    expect(h.captures[0]?.detail).toMatch(/table from the hook's journal/);
+    expect(h.errors).toEqual([]);
+
+    // The exit line names the table too.
+    await h.exit();
+    await h.settle(8000);
+    expect(h.exits).toEqual([{ table: TFTC_TABLE, durationSec: expect.any(Number) }]);
+    expect(h.paths('/score')).toHaveLength(1);
+  });
+
+  it('B18: a journal from before this VPX process is not taken as its table', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(now - 24 * 3_600_000).text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: 'Visual Pinball Player' });
+    await h.poll();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: null, pid: 32 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: null, captureMode: 'basic' });
+    expect(h.paths('/score')).toHaveLength(0);
+    expect(h.errors).toEqual([]);
   });
 
   it('a file-association launch takes the table from the positional .vpx', async () => {

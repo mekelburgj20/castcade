@@ -47,6 +47,7 @@ import { ArcaidClient, ArcaidError, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
+import { newestJournalSince, parseSessionStamp } from './journal-scan.js';
 import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
@@ -57,6 +58,7 @@ import {
   createPowershellLister,
   ProcessWatch,
   DEFAULT_POLL_INTERVAL_MS,
+  parseWindowTitle,
   type ProcessLister,
   type TableSource,
   type VpxExit,
@@ -156,6 +158,10 @@ interface OpenSession {
   unpatchedNote: string | null;
   /** F5 (B5.2): the script that ran against the table's embedded one, read at launch; null when not inspected. */
   scriptDiff: ScriptDiffReport | null;
+  /** B18: the journals were searched for this player-up's table (once per player-up, reset when it goes down). */
+  journalLooked: boolean;
+  /** B18: the table file the journal's manifest named, while `launch.tablePath` still holds it. */
+  journalPath: string | null;
 }
 
 type CaptureTrigger = 'player' | 'exit';
@@ -178,13 +184,7 @@ const SIDECAR_MARKER = 'Castcade_Init';
 /** A `table_loaded` whose session stamp predates the VPX process by more than this is an earlier session's residue. */
 const SESSION_STAMP_SLACK_MS = 15 * 60_000;
 
-/** The hook's `session` stamp (`Castcade_Stamp`, local time `yyyy-mm-ddThh:mm:ss`) as epoch ms, or null when unparseable. */
-export function parseSessionStamp(stamp: string | null): number | null {
-  if (!stamp) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(stamp);
-  if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])).getTime();
-}
+export { parseSessionStamp };
 
 /** `a` is an older dotted version than `b` ("0.3.0" before "0.3.1"); false when either does not parse. */
 export function versionOlder(a: string, b: string): boolean {
@@ -356,6 +356,7 @@ const SOURCE_TEXT: Record<TableSource, string> = {
   title: 'table from the editor window title',
   romname: 'table name derived from the ROM (romnames.json)',
   rom: 'table name is the ROM id (no better name known)',
+  journal: "table from the hook's journal",
 };
 
 export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {}): Witness {
@@ -1081,6 +1082,39 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
   };
 
+  /**
+   * B18: Castcade started while the player window was already up, whose title names no table (`launch null`
+   * until play ended: no live mode, no overlay, games posted only at close; rig 2026-10-30T03:49Z). The table
+   * in play is the one whose journal has a `table_loaded` inside this process's lifetime; its import manifest
+   * gives the `.vpx`, so identity and live mode then arm as for `-Play`. Never throws.
+   */
+  const tableFromJournal = async (session: OpenSession): Promise<void> => {
+    const { launch } = session;
+    if (launch.table !== null || journalRoot === null) return;
+    session.journalLooked = true;
+    try {
+      // The same rule as `onJournalEvent` uses to accept a `table_loaded` as this process's.
+      const slack = launch.startedAt !== null ? 90_000 : SESSION_STAMP_SLACK_MS;
+      const c = await newestJournalSince(fs, journalRoot, session.startedAt - slack);
+      if (!c) {
+        log(`witness: pid ${launch.pid}: the player is up with no table name and no journal of this process; waiting for play to end`);
+        return;
+      }
+      const manifest = await readManifest(fs, manifestPathFor(manifestDir, c.tableId)).catch(() => null);
+      const tablePath = manifest?.vpxPath ?? null;
+      const table = tablePath ? tableBaseName(tablePath) : (c.table ?? c.tableId);
+      // In place, not a copy: the watch keeps this object and updates it from later titles (an editor title
+      // naming a table still wins over the journal), and its exit event hands the same object back.
+      launch.table = table;
+      launch.tablePath = tablePath;
+      launch.tableSource = 'journal';
+      session.journalPath = tablePath;
+      log(`witness: pid ${launch.pid}: table ${table} from the hook's journal (${c.path}, session ${c.sessionStamp ?? '?'})`);
+    } catch (err) {
+      fail(`pid ${launch.pid}: could not read the hook's journals: ${errText(err)}`);
+    }
+  };
+
   /** D1.1: the game on screen for the OBS overlay; announced only when it changes. */
   let liveGame: LiveGame | null = null;
   const setGame = (next: LiveGame | null): void => {
@@ -1377,8 +1411,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       liveRead: new Set(),
       unpatchedNote: null,
       scriptDiff: null,
+      journalLooked: false,
+      journalPath: null,
     };
     sessions.set(launch.pid, session);
+    // B18: Castcade started with the player already up; name the table before the launch line goes out.
+    if (parseWindowTitle(launch.title).kind === 'player') await tableFromJournal(session);
     if (!baseline) await refreshBaseline();
     refreshTableStatus();
     emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt) });
@@ -1393,6 +1431,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (!session) return;
     session.playerUp = t.parsed.kind === 'player';
     session.lastActivityAt = t.at;
+    if (!session.playerUp) session.journalLooked = false;
+    // B18: an editor title named another table than the journal did; the journal's file is not this one's.
+    const { launch } = session;
+    if (session.journalPath !== null && launch.tablePath === session.journalPath && launch.table !== tableBaseName(session.journalPath)) {
+      launch.tablePath = null;
+      session.journalPath = null;
+    }
+    if (session.playerUp && launch.table === null && !session.journalLooked) await tableFromJournal(session);
     refreshTableStatus();
     emitStatus();
     // The editor named a table, or the player went up for another game on it: open that session.
