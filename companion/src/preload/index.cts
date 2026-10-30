@@ -1,12 +1,13 @@
 /**
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
- * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress` and `stream:statusEvent`.
+ * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`
+ * and `stream:previewEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, EngineStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -37,8 +38,12 @@ const CH = {
   streamSettingsSet: 'stream:settings:set',
   streamSetKey: 'stream:setKey',
   streamOpenRecordings: 'stream:openRecordings',
+  streamPreviewStart: 'stream:preview:start',
+  streamPreviewStop: 'stream:preview:stop',
+  streamPreviewStatus: 'stream:preview:status',
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
+  streamPreviewEvent: 'stream:previewEvent',
 } as const;
 
 function argValue(flag: string): string {
@@ -96,6 +101,18 @@ const castcade: CastcadeApi = {
       return () => {
         ipcRenderer.removeListener(CH.streamStatusEvent, listener);
       };
+    },
+    preview: {
+      start: () => ipcRenderer.invoke(CH.streamPreviewStart),
+      stop: () => ipcRenderer.invoke(CH.streamPreviewStop),
+      status: () => ipcRenderer.invoke(CH.streamPreviewStatus),
+      onStatus(cb) {
+        const listener = (_e: Electron.IpcRendererEvent, s: PreviewStatus): void => cb(s);
+        ipcRenderer.on(CH.streamPreviewEvent, listener);
+        return () => {
+          ipcRenderer.removeListener(CH.streamPreviewEvent, listener);
+        };
+      },
     },
   },
   tables: {

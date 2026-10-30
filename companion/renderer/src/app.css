@@ -260,6 +260,18 @@ a {
 .ok {
   color: var(--ok);
 }
+/* D1.5: the Stream page disables a card's settings with a fieldset while a capture runs; it is not a visible box. */
+.card fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+/* D1.5: a number worth a look (Stream health: speed under 0.95x, frame rate under 80 % of the preset's; the preview
+   sitting inside the captured area; the VR note). */
+.warn {
+  color: var(--warn);
+}
 .error {
   color: var(--err);
   white-space: pre-wrap;

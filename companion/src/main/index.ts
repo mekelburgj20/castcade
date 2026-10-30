@@ -247,6 +247,9 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
     mkdirSync(dir, { recursive: true });
     await shell.openPath(dir);
   });
+  ipcMain.handle(IPC.streamPreviewStart, () => sh().startPreview());
+  ipcMain.handle(IPC.streamPreviewStop, () => sh().stopPreview());
+  ipcMain.handle(IPC.streamPreviewStatus, () => sh().previewStatus());
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
@@ -318,6 +321,10 @@ async function main(): Promise<void> {
     sh.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.streamStatusEvent, st);
       tray?.refresh(host.status());
+    });
+    // D1.5: the preview closes on its own when the streamer presses Q or closes its window.
+    sh.onPreview((p) => {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.streamPreviewEvent, p);
     });
     host.onGame((g) => sh.noteGame(g));
     host.onCapture((c) => sh.noteCapture(c));
