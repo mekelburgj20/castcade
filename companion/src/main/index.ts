@@ -363,8 +363,12 @@ async function main(): Promise<void> {
     tray?.refresh(status);
     if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
     overlay?.publish();
+    streamHost?.noteOverlay(overlayStateFrom(host.status(), host.liveGame())); // D1.4: the same state, burned in
   });
-  host.onGame(() => overlay?.publish());
+  host.onGame(() => {
+    overlay?.publish();
+    streamHost?.noteOverlay(overlayStateFrom(host.status(), host.liveGame()));
+  });
 
   await host.start();
   watch.start();

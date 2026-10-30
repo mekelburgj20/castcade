@@ -13,6 +13,8 @@ import { ENCODER_PREFERENCE, type VideoEncoder } from '../media/ffmpeg-args.js';
 import type { FfmpegLocation } from '../media/ffmpeg-path.js';
 import { isVpxExe, watchFocus, type FocusWatch } from '../media/focus-watch.js';
 import { spawnFfmpeg } from '../media/ffmpeg-pipeline.js';
+import type { OverlayState } from '../media/overlay-server.js';
+import { OVERLAY_TEXT_FILE } from '../media/overlay-text.js';
 import { StreamEngine, type EngineStatus } from '../media/stream-engine.js';
 import { patchStreamSettings, planFor, readStreamSettings, writeStreamSettings, type StreamSettings } from '../media/stream-settings.js';
 import { probeWindows } from '../media/window-geometry.js';
@@ -39,6 +41,8 @@ export interface StreamHost {
   noteTable(table: string | null): void;
   noteGame(game: LiveGame | null): void;
   noteCapture(c: LastCapture): void;
+  /** D1.4: the overlay state to burn into the capture. */
+  noteOverlay(state: OverlayState): void;
 }
 
 const AUDIO_PARTITION = 'castcade-audio';
@@ -104,6 +108,8 @@ export function createStreamHost(opts: {
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+    // D1.4: in place (writeFileSync truncates the same file); a rename would stop ffmpeg's per-frame reads.
+    writeText: (path, t) => writeFileSync(path, t),
     log,
   });
 
@@ -197,7 +203,8 @@ export function createStreamHost(opts: {
       return view();
     },
     async start(want) {
-      const plan = planFor(settings, want, { key: plainKey(), recordingsDir: opts.defaultRecordingsDir, fontFile: existsSync(FONT) ? FONT : null, appVersion: opts.appVersion });
+      const overlayTextFile = join(dirname(opts.file), OVERLAY_TEXT_FILE);
+      const plan = planFor(settings, want, { key: plainKey(), recordingsDir: opts.defaultRecordingsDir, fontFile: existsSync(FONT) ? FONT : null, overlayTextFile, appVersion: opts.appVersion });
       if (plan.record) mkdirSync(plan.recordingsDir, { recursive: true });
       const flowing = audioFlowing(5000);
       startAudio();
@@ -231,6 +238,7 @@ export function createStreamHost(opts: {
     noteTable: (t) => engine.noteTable(t),
     noteGame: (g) => engine.noteGame(g),
     noteCapture: (c) => engine.noteCapture(c),
+    noteOverlay: (st) => engine.noteOverlay(st),
   };
 }
 

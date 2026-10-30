@@ -42,11 +42,21 @@ describe('stream settings (D1.2 / D1.3)', () => {
   });
 
   it('plans a session: going live needs a key; record-only does not', () => {
-    const ctx = { key: null, recordingsDir: 'C:/Videos/Castcade', fontFile: null, appVersion: '0.2.19' };
+    const ctx = { key: null, recordingsDir: 'C:/Videos/Castcade', fontFile: null, overlayTextFile: null, appVersion: '0.2.19' };
     expect(() => planFor(DEFAULT_STREAM_SETTINGS, { record: true, live: true }, ctx)).toThrow(/no stream key/);
     const p = planFor({ ...DEFAULT_STREAM_SETTINGS, rotate: 90, shiftPercent: 10 }, { record: true, live: false }, ctx);
     expect(p).toMatchObject({ record: true, rtmpUrl: null, rotate: 90, shift: 0.1, recordingsDir: 'C:/Videos/Castcade', retention: { keepSessions: 3, maxRecordings: null } });
     expect(p.preset.id).toBe('720p30');
     expect(planFor(DEFAULT_STREAM_SETTINGS, { record: false, live: true }, { ...ctx, key: 'k' }).rtmpUrl).toBe('rtmp://live.twitch.tv/app/k');
+  });
+
+  it('D1.4: the burned-in overlay is on by default, also for a file from before the setting, and reaches the plan', () => {
+    expect(DEFAULT_STREAM_SETTINGS.overlay).toBe(true);
+    expect(readStreamSettings('{"version":1,"rotate":90}').settings.overlay).toBe(true);
+    expect(readStreamSettings(writeStreamSettings({ ...DEFAULT_STREAM_SETTINGS, overlay: false }, null)).settings.overlay).toBe(false);
+    expect(patchStreamSettings(DEFAULT_STREAM_SETTINGS, { overlay: 'no' as never }).overlay).toBe(true);
+    const ctx = { key: null, recordingsDir: 'C:/Videos/Castcade', fontFile: 'C:/f.ttf', overlayTextFile: 'C:/userData/stream-overlay.txt', appVersion: '0.2.19' };
+    expect(planFor(DEFAULT_STREAM_SETTINGS, { record: true, live: false }, ctx)).toMatchObject({ overlay: true, overlayTextFile: 'C:/userData/stream-overlay.txt', fontFile: 'C:/f.ttf' });
+    expect(planFor({ ...DEFAULT_STREAM_SETTINGS, overlay: false }, { record: true, live: false }, ctx).overlay).toBe(false);
   });
 });

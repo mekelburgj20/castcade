@@ -16,9 +16,14 @@
  * (chat windows included) would go out (owner's rig 2026-10-28). The host reports focus within ~25 ms (`noteFocus`);
  * the engine covers the capture at once without restarting it (`coverCommand`), uncovers `UNCOVER_MS` after VPX is
  * back in front (re-entering exclusive full screen flickers), and marks each covered stretch in the manifest.
+ *
+ * Overlay (D1.4): the D1.1 overlay state (`noteOverlay`) as text (`overlayText`) in a file the capture's `drawtext`
+ * re-reads every frame; the engine rewrites it in place only when the text changes. No font, no overlay.
  */
 import { EventEmitter } from 'node:events';
 import type { LastCapture, LiveGame } from '../witness/types.js';
+import type { OverlayState } from './overlay-server.js';
+import { overlayText } from './overlay-text.js';
 import { captureArgs, coverCommand, outputSize, redactRtmp, slateArgs, type QualityPreset, type VideoEncoder } from './ffmpeg-args.js';
 import type { FfmpegCommand } from './ffmpeg-pipeline.js';
 import { applyRetention, RecordingSession } from './recording.js';
@@ -40,6 +45,10 @@ export interface StreamPlan {
   retention: { keepSessions: number; maxRecordings: number | null };
   /** For the slate's text; null draws a plain slate (a missing font crashes ffmpeg's drawtext, so the host checks). */
   fontFile: string | null;
+  /** D1.4: burn the overlay into the capture (the setting); needs `fontFile` and `overlayTextFile` too. */
+  overlay: boolean;
+  /** The text file the capture's drawtext re-reads every frame; null = no overlay. */
+  overlayTextFile: string | null;
   appVersion: string;
 }
 
@@ -60,6 +69,11 @@ export interface EngineDeps {
   now(): number;
   setTimeout(fn: () => void, ms: number): unknown;
   clearTimeout(handle: unknown): void;
+  /**
+   * Overwrite `path` with `text`, synchronously: truncate and write the SAME file, never a temp file renamed over it
+   * (ffmpeg opens the overlay file every frame, and on Windows a rename makes that open fail and the encode stop).
+   */
+  writeText(path: string, text: string): void;
   log: { info(msg: string): void; warn(msg: string): void };
 }
 
@@ -139,6 +153,9 @@ export class StreamEngine extends EventEmitter {
   private covered = false;
   private coverReason: string | null = null;
   private uncoverTimer: unknown = null;
+  /** D1.4: the latest overlay state, and the text last written to the plan's overlay file. */
+  private overlayState: OverlayState | null = null;
+  private overlayWritten: string | null = null;
 
   constructor(private readonly deps: EngineDeps) {
     super();
@@ -273,6 +290,33 @@ export class StreamEngine extends EventEmitter {
     void this.session.append({ kind: 'score_posted', table: c.table, score: c.score, outcome: c.outcome, mode: c.mode ?? null, segment: this.gameSegment ?? this.session.segment });
   }
 
+  /** D1.4: the overlay state (the one the OBS page shows); a running capture's burned-in text follows it. */
+  noteOverlay(state: OverlayState): void {
+    this.overlayState = state;
+    const file = this.overlayFile();
+    if (this.run?.kind === 'capture' && file) this.writeOverlay(file);
+  }
+
+  /** The overlay file when this plan burns the overlay in (a missing font crashes ffmpeg's drawtext). */
+  private overlayFile(): string | null {
+    const p = this.plan;
+    return p?.overlay && p.fontFile && p.overlayTextFile ? p.overlayTextFile : null;
+  }
+
+  /** Write the overlay text if it changed (or `force`); false when the write failed. */
+  private writeOverlay(file: string, force = false): boolean {
+    const text = this.overlayState ? overlayText(this.overlayState) : '';
+    if (!force && text === this.overlayWritten) return true;
+    try {
+      this.deps.writeText(file, text);
+      this.overlayWritten = text;
+      return true;
+    } catch (e) {
+      this.deps.log.warn(`stream: could not write the overlay text: ${String(e)}`);
+      return false;
+    }
+  }
+
   private setState(s: EngineState): void {
     this.state = s;
     this.emitStatus();
@@ -342,12 +386,16 @@ export class StreamEngine extends EventEmitter {
     const picture = outputSize({ crop, rotate: plan.rotate, preset: plan.preset });
     this.picture = picture;
     const mp4 = this.session ? await this.session.startSegment(this.table, picture) : undefined;
+    // D1.4: the file must exist before ffmpeg opens it (drawtext fails on a missing textfile): written first, and a
+    // failed write starts this capture without the overlay rather than not at all.
+    let overlayFile = this.overlayFile();
+    if (overlayFile && !this.writeOverlay(overlayFile, true)) overlayFile = null;
     const args = captureArgs({
       crop,
       rotate: plan.rotate,
       preset: plan.preset,
       encoder: this.encoder!,
-      overlay: null,
+      overlay: overlayFile ? { textFile: overlayFile, fontFile: plan.fontFile! } : null,
       audio: plan.audio,
       outputs: { ...(mp4 ? { mp4 } : {}), ...(plan.rtmpUrl ? { rtmp: plan.rtmpUrl } : {}) },
       cover: { on: this.covered, fontFile: plan.fontFile },

@@ -37,6 +37,11 @@ export interface StreamSettings {
    * Stored only when it differs from the default, so a retuned default reaches everyone who never set their own.
    */
   audioLateMs: number;
+  /**
+   * D1.4: the overlay (table, score, ball, player, the Witness badge) burned into the stream and the recording. Off
+   * for a streamer who draws the D1.1 browser-source overlay in OBS and would see it twice.
+   */
+  overlay: boolean;
 }
 
 export const DEFAULT_STREAM_SETTINGS: StreamSettings = {
@@ -55,6 +60,7 @@ export const DEFAULT_STREAM_SETTINGS: StreamSettings = {
   // -110: medians -30 and -40), so delayed 145: three check runs gave medians +40, +8 and +2 (late is the side viewers
   // notice less; runs differ by up to ~40 ms, more than within one run).
   audioLateMs: -145,
+  overlay: true,
 };
 
 export interface StreamSettingsFile extends Partial<StreamSettings> {
@@ -103,6 +109,7 @@ function sanitize(o: Record<string, unknown>, d: StreamSettings): StreamSettings
     maxRecordings: o.maxRecordings === null ? null : num(o.maxRecordings, 1, 100_000) !== undefined ? Math.floor(o.maxRecordings as number) : d.maxRecordings,
     gameVolume: num(o.gameVolume, 0, 400) ?? d.gameVolume,
     audioLateMs: num(o.audioLateMs, -1000, 2000) ?? d.audioLateMs,
+    overlay: typeof o.overlay === 'boolean' ? o.overlay : d.overlay,
   };
 }
 
@@ -125,7 +132,7 @@ export function ingestUrl(s: StreamSettings, key: string | null): string | null 
 export function planFor(
   s: StreamSettings,
   want: { record: boolean; live: boolean },
-  ctx: { key: string | null; recordingsDir: string; fontFile: string | null; appVersion: string },
+  ctx: { key: string | null; recordingsDir: string; fontFile: string | null; overlayTextFile: string | null; appVersion: string },
 ): StreamPlan {
   const rtmpUrl = want.live ? ingestUrl(s, ctx.key) : null;
   if (want.live && !rtmpUrl) throw new Error(s.service === 'custom' && !s.customIngest ? 'no ingest URL set' : 'no stream key set');
@@ -140,6 +147,8 @@ export function planFor(
     recordingsDir: s.recordingsDir ?? ctx.recordingsDir,
     retention: { keepSessions: s.keepSessions, maxRecordings: s.maxRecordings },
     fontFile: ctx.fontFile,
+    overlay: s.overlay,
+    overlayTextFile: ctx.overlayTextFile,
     appVersion: ctx.appVersion,
   };
 }

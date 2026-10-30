@@ -155,6 +155,11 @@ export function StreamCard({ state }: { state: CastcadeState }) {
             posted score to its video.
           </small>
         </label>
+        <label className="check">
+          <input type="checkbox" checked={cfg.overlay} onChange={(e) => patch({ overlay: e.target.checked })} />
+          Overlay in the stream and recording
+        </label>
+        <small>Table, score, ball and the Witness badge, drawn on the picture. Turn it off if OBS shows the overlay page instead.</small>
       </fieldset>
       <small className="muted">The sound is everything Windows plays (game, voice chat, music). Between tables a live stream shows a "back in a moment" screen.</small>
     </div>

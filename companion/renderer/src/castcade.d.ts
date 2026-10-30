@@ -340,6 +340,7 @@ interface StreamSettings {
   maxRecordings: number | null;
   gameVolume: number;
   audioLateMs: number;
+  overlay: boolean;
 }
 interface StreamSettingsView extends StreamSettings {
   hasKey: boolean;

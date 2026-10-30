@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { coverCommand, PRESETS } from './ffmpeg-args.js';
+import type { OverlayState } from './overlay-server.js';
+import { overlayText } from './overlay-text.js';
 import { MANIFEST, verifyManifest } from './recording.js';
 import { SLATE_TEXT, StreamEngine, UNCOVER_MS, type EngineDeps, type FfmpegProcess, type StreamPlan } from './stream-engine.js';
 import type { DxgiOutput, VpxWindow, WindowProbe } from './window-geometry.js';
@@ -63,6 +65,10 @@ function harness(plan: Partial<StreamPlan> = {}) {
   const procs: FakeProc[] = [];
   const logs: string[] = [];
   const timers: { fn: () => void; ms: number; live: boolean }[] = [];
+  const writes: { path: string; text: string }[] = [];
+  /** 'write' and 'spawn' in the order they happened (the overlay file must exist before ffmpeg opens it). */
+  const order: string[] = [];
+  let failWrite = false;
   const deps: EngineDeps = {
     probe: async (): Promise<WindowProbe> => ({ outputs: OUTPUTS, windows }),
     spawn: (cmd) => {
@@ -78,6 +84,7 @@ function harness(plan: Partial<StreamPlan> = {}) {
       const mp4 = tee ? tee.slice(tee.indexOf(']') + 1, tee.indexOf('|')) : plain >= 0 ? args.at(-1)! : null;
       const p = new FakeProc(args, mp4);
       procs.push(p);
+      order.push('spawn');
       return p;
     },
     encoder: async () => 'h264_nvenc',
@@ -89,6 +96,11 @@ function harness(plan: Partial<StreamPlan> = {}) {
     },
     clearTimeout: (h) => {
       if (typeof h === 'number' && timers[h]) timers[h].live = false;
+    },
+    writeText: (path, text) => {
+      if (failWrite) throw new Error('EACCES');
+      writes.push({ path, text });
+      order.push('write');
     },
     log: { info: (m) => logs.push(m), warn: (m) => logs.push(`WARN ${m}`) },
   };
@@ -103,6 +115,8 @@ function harness(plan: Partial<StreamPlan> = {}) {
     recordingsDir: root,
     retention: { keepSessions: 3, maxRecordings: null },
     fontFile: 'C:/Windows/Fonts/segoeui.ttf',
+    overlay: true,
+    overlayTextFile: '/tmp/stream-overlay.txt',
     appVersion: '0.2.19',
     ...plan,
   };
@@ -117,6 +131,9 @@ function harness(plan: Partial<StreamPlan> = {}) {
     plan: full,
     procs,
     logs,
+    writes,
+    order,
+    failWrites: (on: boolean) => (failWrite = on),
     tick,
     setWindows: (w: VpxWindow[]) => (windows = w),
     fire: (ms: number) => {
@@ -280,6 +297,95 @@ describe('stream engine (D1.2 + D1.3)', () => {
     await h.engine.start(h.plan);
     await h.tick();
     expect(h.procs[0]!.args.join(' ')).not.toContain('drawtext');
+  });
+
+  describe('D1.4: the overlay burned in', () => {
+    const playing = (score: number): OverlayState => ({
+      v: 1,
+      table: 'Monster Bash',
+      game: { inGame: true, scores: [score], player: 1, ball: 1 },
+      badge: { kind: 'live', text: 'Arcaid Witness · live' },
+      attempt: null,
+      lastPost: null,
+    });
+    /** The grab's filtergraph (the capture's first `-filter_complex`). */
+    const grabGraph = (args: string[]) => args[args.indexOf('-filter_complex') + 1]!;
+
+    it('a capture draws the overlay file with reload=1, written before ffmpeg starts', async () => {
+      const h = harness({ rtmpUrl: null });
+      h.engine.noteOverlay(playing(1000));
+      expect(h.writes).toEqual([]); // nothing runs yet
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      await h.tick();
+      await h.tick();
+      const graph = grabGraph(h.procs[0]!.args);
+      expect(graph).toContain('drawtext=');
+      expect(graph).toContain("textfile='/tmp/stream-overlay.txt':reload=1");
+      expect(h.writes).toEqual([{ path: '/tmp/stream-overlay.txt', text: overlayText(playing(1000)) }]);
+      expect(h.order).toEqual(['write', 'spawn']);
+    });
+
+    it('a changed state rewrites the file once per change; an identical one does not; waiting writes nothing', async () => {
+      const h = harness({ rtmpUrl: null });
+      await h.engine.start(h.plan);
+      await h.tick();
+      h.engine.noteOverlay(playing(10)); // waiting: no run
+      expect(h.writes).toEqual([]);
+      h.setWindows([PLAYER]);
+      await h.tick();
+      await h.tick();
+      expect(h.writes.map((w) => w.text)).toEqual([overlayText(playing(10))]);
+      h.engine.noteOverlay(playing(10));
+      h.engine.noteOverlay(playing(2500));
+      h.engine.noteOverlay(playing(2500));
+      h.engine.noteOverlay(playing(9000));
+      expect(h.writes.map((w) => w.text)).toEqual([overlayText(playing(10)), overlayText(playing(2500)), overlayText(playing(9000))]);
+      expect(h.writes.every((w) => w.path === '/tmp/stream-overlay.txt')).toBe(true);
+    });
+
+    it('with no state yet the file is written empty, so ffmpeg finds it', async () => {
+      const h = harness({ rtmpUrl: null });
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      await h.tick();
+      await h.tick();
+      expect(h.writes).toEqual([{ path: '/tmp/stream-overlay.txt', text: '' }]);
+    });
+
+    it('overlay off (the setting): no textfile in the capture and no write', async () => {
+      const h = harness({ rtmpUrl: null, overlay: false });
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      await h.tick();
+      await h.tick();
+      h.engine.noteOverlay(playing(1000));
+      expect(h.procs[0]!.args.join(' ')).not.toContain('textfile=');
+      expect(h.writes).toEqual([]);
+    });
+
+    it('no font: no textfile (a missing font crashes ffmpeg drawtext) and no write', async () => {
+      const h = harness({ rtmpUrl: null, fontFile: null });
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      await h.tick();
+      await h.tick();
+      h.engine.noteOverlay(playing(1000));
+      expect(h.procs[0]!.args.join(' ')).not.toContain('textfile=');
+      expect(h.writes).toEqual([]);
+    });
+
+    it('a failed first write starts the capture without the overlay', async () => {
+      const h = harness({ rtmpUrl: null });
+      h.setWindows([PLAYER]);
+      await h.engine.start(h.plan);
+      h.failWrites(true);
+      await h.tick();
+      await h.tick();
+      expect(h.procs).toHaveLength(1);
+      expect(h.procs[0]!.args.join(' ')).not.toContain('textfile=');
+      expect(h.logs.join('\n')).toContain('could not write the overlay text');
+    });
   });
 
   describe('D1.9: never stream the desktop', () => {
