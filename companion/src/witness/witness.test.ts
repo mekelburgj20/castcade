@@ -14,8 +14,8 @@ import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
 import type { LastCapture, LiveGame, WitnessSettings, WitnessStatus, WitnessNotice } from './types.js';
 import { createVpsIndex } from './vps-index.js';
 import { POSTED_GAMES_FILE } from './posted-games.js';
-import { attemptStatusFor, createWitness, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
-import { RECIPE_VERSION } from '../patcher/index.js';
+import { attemptStatusFor, createWitness, embeddedPatchNote, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
+import { RECIPE_VERSION, classifyScript, renderRecipeA } from '../patcher/index.js';
 import { JournalDetector } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
 
@@ -929,6 +929,22 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.witness.status().note).toBe(oldPatchNote(TFTC_TABLE, '0.3.0'));
     expect(h.witness.status().note).toMatch(/older Castcade patch \(recipe 0\.3\.0; this build makes \d+\.\d+\.\d+\).*Close the table and open it again/);
     expect(h.notices.filter((n) => n.kind === 'old_patch')).toEqual([expect.objectContaining({ kind: 'old_patch', table: TFTC_TABLE, title: 'Castcade: reopen this table' })]);
+  });
+
+  it("C10: a table whose own script is Castcade's patch (the VPX editor saved it there) arms live mode without a sidecar, and the player is told once", async () => {
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    const script = crlf(VPM_SCRIPT);
+    const patch = renderRecipeA(script, classifyScript(script), { tableId: TFTC_TABLE, rom: 'tftc_400', originalPath: TFTC_PATH, originalSize: 1, originalMtimeMs: 0, sidecarPath: TFTC_SIDECAR });
+    h.fs.put(TFTC_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(patch.bytes), record('ENDB', new Uint8Array(0))) }));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    expect(h.notices).toEqual([expect.objectContaining({ kind: 'embedded_patch', table: TFTC_TABLE, vpxPath: TFTC_PATH, title: 'Castcade: patch saved into the table', message: embeddedPatchNote(TFTC_TABLE) })]);
+    expect(h.notices[0]?.message).toMatch(/the VPX editor saved it into the table. Games still post/);
+    // The same table again this run: no second balloon.
+    await h.exit();
+    await h.launch(TFTC_CMD, 32);
+    expect(h.notices).toHaveLength(1);
   });
 
   it('B15: a table on the current patch shows no note', async () => {

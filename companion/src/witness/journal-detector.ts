@@ -54,6 +54,8 @@ export type HookEvent =
   | { kind: 'key_blocked'; t: number; key: number | null }
   | { kind: 'warn'; t: number; msg: string | null; err: string | null }
   | { kind: 'stale_sidecar'; t: number; detail: string | null }
+  /** Hook 0.4.1 (C10): the patch runs from the table's own script, not a sidecar; nothing is stale. */
+  | { kind: 'embedded_patch'; t: number; original: string | null }
   | { kind: 'engine'; t: number; sample: EngineSample }
   | { kind: 'table_exit'; t: number; lines: number | null; nvramCallbacks: number | null; blockedKeys: number | null };
 
@@ -344,6 +346,8 @@ export class JournalDetector {
         return [{ kind: 'warn', t, msg: str(e.msg), err: str(e.err) }];
       case 'stale_sidecar':
         return [{ kind: 'stale_sidecar', t, detail: str(e.detail) ?? str(e.msg) }];
+      case 'embedded_patch':
+        return [{ kind: 'embedded_patch', t, original: str(e.original) }];
       case 'engine': {
         const n = typeof e.nudge === 'object' && e.nudge !== null ? (e.nudge as Record<string, unknown>) : null;
         return [{

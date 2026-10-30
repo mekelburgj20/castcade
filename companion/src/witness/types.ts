@@ -176,7 +176,9 @@ export type WitnessNotice =
       message: string;
     }
   /** B15: the table loaded a Castcade patch older than this build renders; reopening it loads the current one. */
-  | { kind: 'old_patch'; table: string; title: string; message: string };
+  | { kind: 'old_patch'; table: string; title: string; message: string }
+  /** C10: the table's own script is Castcade's patch (the VPX editor saved a sidecar into the `.vpx`); the shell renders a fresh sidecar over it. */
+  | { kind: 'embedded_patch'; table: string; vpxPath: string; title: string; message: string };
 
 export interface Witness {
   start(): Promise<void>;

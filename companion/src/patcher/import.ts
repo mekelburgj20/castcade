@@ -6,6 +6,10 @@
  * not ours is never touched. The shared library `castcade.vbs` is installed into the VPX `scripts\`
  * folder once per apply. Nothing here ever writes to a `.vpx`.
  *
+ * C10: a table's own script can be Castcade's patch itself (the VPX editor loads a sidecar as the table's script
+ * and saves it back into the `.vpx`); `patchSource` undoes it exactly and the table is patched from the script
+ * underneath, so the plan never refuses a table a player merely edited.
+ *
  * Also the companion-side half of the stale-sidecar guard (§6): `checkSidecar` compares a table
  * with its manifest, `disableSidecar` renames the sidecar `.stale`, `removeAllSidecars` reverts.
  */
@@ -15,7 +19,7 @@ import { readVpxScript, sha256File } from '../witness/vpx-file.js';
 import { classifyScript, describeClass, type ClassifyResult, type ScriptClass } from './classify.js';
 import { readManifest, writeManifest, type Manifest } from './manifest.js';
 import { basenameOf, isVpxName, joinPath, manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor, vpxPathForSidecar } from './paths.js';
-import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, RECIPE_VERSION, isOurSidecar, renderRecipeA } from './render.js';
+import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, RECIPE_VERSION, isOurSidecar, renderRecipeA, unpatchRecipeA } from './render.js';
 import { decodeScript } from './script-text.js';
 
 export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
@@ -30,6 +34,8 @@ export interface PlanItem {
   reason: string;
   /** B12.1: an `unreadable` table that carries Castcade's own patch from before B12; the apply removes it. */
   removeSidecar?: boolean;
+  /** C10: the embedded script was Castcade's patch (saved into the `.vpx` by the VPX editor); the plan is for the script underneath. */
+  embeddedPatch?: boolean;
 }
 
 export interface ImportPlan {
@@ -170,6 +176,17 @@ export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: 
   return { state: 'ok', manifest };
 }
 
+/**
+ * C10: the script a table is patched from. When the embedded script is Castcade's own sidecar (the VPX editor saved
+ * it into the `.vpx`), it is undone exactly and the script underneath is what gets patched. Someone else's
+ * `Castcade_Init` (no marker, or an unpatch that fails) is left to the classifier's `alreadyPatched`.
+ */
+export function patchSource(text: string): { text: string; embeddedPatch: boolean } {
+  if (!isOurSidecar(text)) return { text, embeddedPatch: false };
+  const underneath = unpatchRecipeA(text);
+  return underneath === null ? { text, embeddedPatch: false } : { text: underneath, embeddedPatch: true };
+}
+
 async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promise<PlanItem> {
   const { manifestDir } = opts;
   const tableId = tableIdFor(vpxPath);
@@ -186,8 +203,8 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   }
   if (!script) return item('unsupported', null, null, 'no script in the table (no GameStg/GameData/CODE record)');
 
-  const result = classifyScript(decodeScript(script.bytes));
-  const { cls, facts } = result;
+  const source = patchSource(decodeScript(script.bytes));
+  const { cls, facts } = classifyScript(source.text);
   const rom = facts.rom ?? null;
   const sidecarNote = check.state === 'none' || check.state === 'disabled' ? '' : '; an existing Castcade sidecar remains (remove-all deletes it)';
   if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'}${sidecarNote}`);
@@ -204,21 +221,26 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
     }
   }
 
-  switch (check.state) {
-    case 'none':
-      return item('patch', cls, rom, `${describeClass(cls)}${rom ? `, ROM ${rom}` : ', no cGameName'}`);
-    case 'disabled':
-      return item('patch', cls, rom, `previous sidecar was disabled as stale (${basenameOf(check.stalePath)}); re-render`);
-    case 'stale':
-      return item('repatch', cls, rom, check.why);
-    case 'ok': {
-      // The hash matched but the stamp the sidecar checks at load is size + mtime; re-render when the
-      // mtime moved further than Castcade_Guard tolerates or the guard would disable it at launch.
-      const drift = Math.abs(script.mtimeMs - check.manifest.vpxMtimeMs) / 1000;
-      if (drift > GUARD_MTIME_TOLERANCE_SEC) return item('repatch', cls, rom, `the .vpx timestamp moved ${Math.round(drift)} s; the in-script stamp must be re-rendered`);
-      return item('already', cls, rom, `sidecar current (recipe ${check.manifest.recipeVersion}, lib ${check.manifest.libVersion})`);
+  // C10: the reason names the cause (it is what the plan list shows) and the item carries the flag.
+  const underneath = source.embeddedPatch ? "; the table's own script carries Castcade's patch (the VPX editor saved it there), so the fresh patch is made from the script underneath" : '';
+  const planned = ((): PlanItem => {
+    switch (check.state) {
+      case 'none':
+        return item('patch', cls, rom, `${describeClass(cls)}${rom ? `, ROM ${rom}` : ', no cGameName'}${underneath}`);
+      case 'disabled':
+        return item('patch', cls, rom, `previous sidecar was disabled as stale (${basenameOf(check.stalePath)}); re-render${underneath}`);
+      case 'stale':
+        return item('repatch', cls, rom, `${check.why}${underneath}`);
+      case 'ok': {
+        // The hash matched but the stamp the sidecar checks at load is size + mtime; re-render when the
+        // mtime moved further than Castcade_Guard tolerates or the guard would disable it at launch.
+        const drift = Math.abs(script.mtimeMs - check.manifest.vpxMtimeMs) / 1000;
+        if (drift > GUARD_MTIME_TOLERANCE_SEC) return item('repatch', cls, rom, `the .vpx timestamp moved ${Math.round(drift)} s; the in-script stamp must be re-rendered${underneath}`);
+        return item('already', cls, rom, `sidecar current (recipe ${check.manifest.recipeVersion}, lib ${check.manifest.libVersion})`);
+      }
     }
-  }
+  })();
+  return source.embeddedPatch ? { ...planned, embeddedPatch: true } : planned;
 }
 
 /** Dry run: what an apply would do, per table. Writes nothing. */
@@ -301,7 +323,7 @@ export async function applyImport(fs: WitnessFs, plan: ImportPlan, opts: ApplyOp
 async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: () => number): Promise<void> {
   const script = await readVpxScript(fs, item.vpxPath);
   if (!script) throw new Error('no script in the table');
-  const text = decodeScript(script.bytes);
+  const text = patchSource(decodeScript(script.bytes)).text;
   const cls: ClassifyResult = classifyScript(text);
   const sidecarPath = sidecarPathFor(item.vpxPath);
   const rom = cls.facts.rom ?? null;

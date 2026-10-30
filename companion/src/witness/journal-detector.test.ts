@@ -347,3 +347,12 @@ describe('torn and foreign lines', () => {
     expect(d.summary()).toMatchObject({ torn: 2, rom: null, recipe: 'B', lines: { table_loaded: 1, something_new: 1, lock: 1 } });
   });
 });
+
+describe('hook events the detector passes through', () => {
+  it('embedded_patch (hook 0.4.1, C10): the patch ran from the table\'s own script', () => {
+    const d = new JournalDetector();
+    expect(d.feed('{"event":"table_loaded","t":0,"table":"MB","recipe":"A","rom":"mb_106b","lib":"0.4.1","session":"2026-10-29T10:00:00","locked":false}')).toEqual([expect.objectContaining({ kind: 'table_loaded' })]);
+    expect(d.feed('{"event":"embedded_patch","t":0.512,"original":"C:\\\\Tables\\\\MB.vpx"}')).toEqual([{ kind: 'embedded_patch', t: 0.512, original: 'C:\\Tables\\MB.vpx' }]);
+    expect(d.feed('{"event":"stale_sidecar","t":0.6,"detail":"size 1 vs 2","original":"x"}')).toEqual([{ kind: 'stale_sidecar', t: 0.6, detail: 'size 1 vs 2' }]);
+  });
+});

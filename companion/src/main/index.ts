@@ -326,7 +326,17 @@ async function main(): Promise<void> {
   }
 
   registerIpc(store, host, tables, watch, logger, streamHost);
-  host.onNotice((n) => tray?.notify(n.title, n.message));
+  host.onNotice((n) => {
+    tray?.notify(n.title, n.message);
+    // C10: a patch the VPX editor saved into a table gets a fresh sidecar over it, so the next launch runs one Castcade can keep current.
+    if (n.kind === 'embedded_patch') {
+      void tables.repair(n.vpxPath).then((r) => {
+        if (r.result === 'patched') return;
+        logger.warn(`tables: repair of ${n.table} ${r.result}: ${r.detail}`);
+        if (r.result === 'failed') tray?.notify('Castcade could not re-patch a table', `${n.table}: ${r.detail}. Settings → Import tables → Patch my tables.`);
+      });
+    }
+  });
 
   if (!argv.includes('--hidden')) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());

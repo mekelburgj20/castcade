@@ -68,6 +68,22 @@ describe('SidecarWatch', () => {
     expect(await h.watch.tick()).toEqual([]);
   });
 
+  it("C10: a table saved from the VPX editor (its own script is now the sidecar's) gets a fresh patch over it, not a refusal", async () => {
+    const h = await harness();
+    await h.watch.tick();
+    const sidecar = Buffer.from(await h.fs.readFile(sidecarPathFor(MB))).toString('latin1');
+    h.clock.advance(60_000);
+    h.fs.put(MB, vpx(sidecar, 4096)); // the editor saved the sidecar's text into the .vpx; the .vbs it rewrote reads the same
+    const out = await h.watch.tick();
+    expect(out).toEqual([{ vpxPath: MB, result: 'repatched', detail: expect.stringContaining('re-made') }]);
+    const fresh = Buffer.from(await h.fs.readFile(sidecarPathFor(MB))).toString('latin1');
+    expect(fresh.match(/Castcade_Init /g)).toHaveLength(1);
+    expect(fresh).toContain('Castcade_Guard ');
+    expect(h.fs.has(stalePathFor(MB))).toBe(false);
+    h.clock.advance(30_000);
+    expect(await h.watch.tick()).toEqual([]);
+  });
+
   it('a table replaced by an original (no recipe yet) has its patch disabled, not re-made', async () => {
     const h = await harness();
     await h.watch.tick();

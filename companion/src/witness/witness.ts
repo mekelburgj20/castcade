@@ -200,6 +200,11 @@ export function versionOlder(a: string, b: string): boolean {
 }
 
 /** B15: what Status and the balloon say when a table started on an older Castcade patch than this build makes. */
+/** C10: what the player is told when the VPX editor saved Castcade's patch into the table's own script. */
+export function embeddedPatchNote(table: string): string {
+  return `${table}'s own script carries Castcade's patch: the VPX editor saved it into the table. Games still post. Castcade is putting a fresh patch beside the table now; it loads the next time you open the table.`;
+}
+
 export function oldPatchNote(table: string, ran: string): string {
   return `${table} started with an older Castcade patch (recipe ${ran}; this build makes ${RECIPE_VERSION}), made before Castcade updated. Close the table and open it again so every game posts live.`;
 }
@@ -898,6 +903,16 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   };
 
   /** A table runs the hook when `<Table>.vbs` sits beside its `.vpx` and carries the sidecar's marker. */
+  /** C10: the table's own script carries Castcade's marker (a sidecar the VPX editor saved back into the `.vpx`). */
+  const hasEmbeddedPatch = async (vpxPath: string): Promise<boolean> => {
+    try {
+      const script = await readVpxScript(fs, vpxPath);
+      return script !== null && isOurSidecar(decodeScript(script.bytes));
+    } catch {
+      return false;
+    }
+  };
+
   const hasSidecar = async (vpxPath: string): Promise<boolean> => {
     const sidecar = vpxPath.replace(/\.vpx$/i, '.vbs');
     if (sidecar === vpxPath) return false;
@@ -925,6 +940,16 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const noticedUnpatched = new Set<string>();
   /** B15: one balloon per table load that ran an older patch (`<tableId>@<session stamp>`). */
   const noticedOldPatch = new Set<string>();
+  /** C10: one balloon per table per run for a patch the VPX editor saved into the table itself. */
+  const noticedEmbeddedPatch = new Set<string>();
+  const noticeEmbeddedPatch = (vpxPath: string): void => {
+    if (noticedEmbeddedPatch.has(vpxPath)) return;
+    noticedEmbeddedPatch.add(vpxPath);
+    const table = tableBaseName(vpxPath);
+    const message = embeddedPatchNote(table);
+    log(`witness: ${message}`);
+    emitter.emit('notice', { kind: 'embedded_patch', table, vpxPath, title: 'Castcade: patch saved into the table', message });
+  };
   /**
    * F5 (B5.2): which script ran and how it differs from the table's own. VPX 10.8 runs a same-basename sidecar
    * instead of the embedded script; Castcade's own sidecar is undone exactly (`unpatchRecipeA`) so only a person's
@@ -934,7 +959,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     try {
       const script = await readVpxScript(fs, vpxPath);
       if (!script) return;
-      const embedded = decodeScript(script.bytes);
+      const embeddedText = decodeScript(script.bytes);
+      // C10: the table's own script can be Castcade's patch itself (the VPX editor saved a sidecar into the .vpx):
+      // the baseline is the script underneath, and with no sidecar beside the table that patch is what ran.
+      const underneath = isOurSidecar(embeddedText) ? unpatchRecipeA(embeddedText) : null;
+      const embedded = underneath ?? embeddedText;
       let sidecar: string | null = null;
       try {
         sidecar = decodeScript(await fs.readFile(sidecarPathFor(vpxPath)));
@@ -942,7 +971,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         if (!isNotFound(err)) throw err;
       }
       let report: ScriptDiffReport;
-      if (sidecar === null) report = scriptDiffReport(embedded, embedded, { ran: 'embedded', baseline: 'embedded' });
+      if (sidecar === null) report = scriptDiffReport(embedded, embedded, { ran: underneath !== null ? 'castcade' : 'embedded', baseline: 'embedded' });
       else if (isOurSidecar(sidecar)) {
         const own = unpatchRecipeA(sidecar);
         const r = scriptDiffReport(embedded, own ?? sidecar, { ran: 'castcade', baseline: 'embedded' });
@@ -983,7 +1012,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
   const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {
     if (session.live || !journalRoot) return;
-    if (!(await hasSidecar(vpxPath).catch(() => false))) return;
+    if (!(await hasSidecar(vpxPath).catch(() => false))) {
+      // C10: no sidecar, but the table's own script is Castcade's patch (the VPX editor saved it there): it journals
+      // like a sidecar, so live mode arms; the player is told once and the shell renders a fresh sidecar over it.
+      if (!(await hasEmbeddedPatch(vpxPath))) return;
+      noticeEmbeddedPatch(vpxPath);
+    }
     const tableId = tableBaseName(vpxPath);
     const path = joinPath(journalRoot, journalFileName(tableId));
     const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableId)).catch(() => null);
@@ -1181,6 +1215,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         break;
       case 'stale_sidecar':
         fail(`Castcade patch for ${live.tableId} is for an older version of the table (${ev.detail ?? 'size or date changed'}); re-import it`);
+        break;
+      case 'embedded_patch':
+        log(`witness: the hook on ${live.tableId} runs from the table's own script${ev.original ? ` (${ev.original})` : ''}`);
         break;
       case 'warn':
         log(`witness: hook warning on ${live.tableId}: ${ev.msg ?? ''} ${ev.err ?? ''}`.trimEnd());

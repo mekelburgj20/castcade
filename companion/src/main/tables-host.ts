@@ -29,6 +29,11 @@ export interface TablesHost {
   plan(dir: string | null): Promise<TablesPlan>;
   apply(dir: string | null, onProgress?: (done: number, total: number, tableId: string) => void): Promise<TablesApplyResult>;
   removeAll(dir: string | null): Promise<TablesRemoveResult>;
+  /**
+   * C10: one table whose own script carries Castcade's patch (the VPX editor saved a sidecar into the `.vpx`):
+   * render a fresh sidecar over it from the script underneath, under the folder lock.
+   */
+  repair(vpxPath: string): Promise<{ result: 'patched' | 'skipped' | 'failed'; detail: string }>;
   /** The folder a null `dir` means right now, or null when nothing is known yet. */
   resolveTablesDir(dir: string | null): string | null;
   scriptsDir(): string | null;
@@ -182,6 +187,21 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
           libInstalled: result.libInstalled,
           scriptsDir: vpxScriptsDir,
         };
+      });
+    },
+
+    repair(vpxPath) {
+      return exclusive(async () => {
+        const vpxScriptsDir = await resolveScriptsDir(resolveTablesDir(null) ?? dirnameOf(vpxPath));
+        if (!vpxScriptsDir) return { result: 'failed', detail: 'the VPX scripts folder is not known yet' };
+        const plan = await planImport(fs, { paths: [vpxPath], manifestDir, liveSupportFor });
+        const item = plan.items[0];
+        if (!item || (item.action !== 'patch' && item.action !== 'repatch')) return { result: 'skipped', detail: item ? `${item.action}: ${item.reason}` : 'not a .vpx' };
+        const applied = await applyImport(fs, plan, { manifestDir, vpxScriptsDir, libSource, watchOffsetsFor });
+        const failed = applied.failed[0];
+        if (failed) return { result: 'failed', detail: failed.error };
+        log.info(`tables: repaired ${item.tableId}: a fresh sidecar over the patch the VPX editor saved into the table (library ${applied.libInstalled})`);
+        return { result: 'patched', detail: item.reason };
       });
     },
 

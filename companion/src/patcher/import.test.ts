@@ -166,7 +166,7 @@ describe('applyImport', () => {
     fs.put(`${SCRIPTS}/castcade.vbs`, 'older');
     expect(await installLibrary(fs, LIB_SRC, SCRIPTS)).toBe('updated');
     fs.put('C:/old.vbs', 'Dim Castcade_LibVersion : Castcade_LibVersion = "0.1.0"\n');
-    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(/0\.1\.0.*0\.4\.0/);
+    await expect(installLibrary(fs, 'C:/old.vbs', SCRIPTS)).rejects.toThrow(`declares Castcade_LibVersion 0.1.0, this build needs ${LIB_VERSION}`);
     fs.put('C:/none.vbs', "' nothing");
     await expect(installLibrary(fs, 'C:/none.vbs', SCRIPTS)).rejects.toThrow(/\(none\)/);
   });
@@ -373,5 +373,63 @@ describe('B15: a re-make for a new recipe does not re-hash an unchanged table', 
     const m = (await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(MB))))!;
     expect(m.vpxSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(m.vpxSha256).not.toBe(FAKE);
+  });
+});
+
+describe("C10: the VPX editor saved Castcade's patch into the table's own script", () => {
+  const latin1 = (b: Uint8Array): string => Buffer.from(b).toString('latin1');
+  const stripGuard = (s: string): string => s.replace(/^Castcade_Guard .*$/m, '');
+
+  /** Patch MB, then do what the editor does: the sidecar's text becomes the table's own script (new size and time). */
+  async function saveFromTheEditor(): Promise<string> {
+    await applyImport(fs, await planImport(fs, { paths: [MB], manifestDir: MANIFESTS }), applyOpts);
+    const sidecar = latin1(await fs.readFile(sidecarPathFor(MB)));
+    now += 600_000;
+    fs.put(MB, vpxWithScript(sidecar, 2048));
+    return sidecar;
+  }
+
+  it('plans the table from the script underneath (repatch, with the cause), and the fresh sidecar is what a clean table gets', async () => {
+    const before = await saveFromTheEditor();
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    const item = byPath(plan.items, MB);
+    expect(item).toMatchObject({ action: 'repatch', cls: 'A', rom: 'mb_106b', embeddedPatch: true });
+    expect(item.reason).toMatch(/size \d+ vs \d+.*the table's own script carries Castcade's patch \(the VPX editor saved it there\).*script underneath/);
+
+    const applied = await applyImport(fs, plan, applyOpts);
+    expect(applied.patched).toEqual([MB]);
+    const fresh = latin1(await fs.readFile(sidecarPathFor(MB)));
+    expect(fresh.match(/Castcade_Init /g)).toHaveLength(1); // patched once, not on top of itself
+    expect(stripGuard(fresh)).toBe(stripGuard(before));
+    expect(fresh).toContain(`"${formatLocalStamp(now)}"`); // the guard stamp is the saved table's
+    // Current now: the next look leaves it alone, and the manifest pins the saved table.
+    expect(byPath((await planImport(fs, { paths: [MB], manifestDir: MANIFESTS })).items, MB)).toMatchObject({ action: 'already', embeddedPatch: true });
+    const manifest = await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(MB)));
+    expect(manifest?.vpxMtimeMs).toBe(now);
+  });
+
+  it('after the guard disabled the sidecar (.stale beside the table), the plan is patch and the apply clears the .stale', async () => {
+    await saveFromTheEditor();
+    await fs.rename(sidecarPathFor(MB), stalePathFor(MB));
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    expect(byPath(plan.items, MB)).toMatchObject({ action: 'patch', embeddedPatch: true });
+    expect(byPath(plan.items, MB).reason).toMatch(/disabled as stale.*script underneath/);
+    await applyImport(fs, plan, applyOpts);
+    expect(fs.has(sidecarPathFor(MB))).toBe(true);
+    expect(fs.has(stalePathFor(MB))).toBe(false);
+  });
+
+  it('with no sidecar at all (deleted by hand) the table is patched again from the script underneath', async () => {
+    await saveFromTheEditor();
+    await fs.unlink(sidecarPathFor(MB));
+    const plan = await planImport(fs, { paths: [MB], manifestDir: MANIFESTS });
+    expect(byPath(plan.items, MB)).toMatchObject({ action: 'patch', embeddedPatch: true });
+    expect(byPath(plan.items, MB).reason).toMatch(/ROM mb_106b; the table's own script carries/);
+  });
+
+  it("a Castcade_Init that is not our sidecar's (no block-0 markers) is still refused as already patched", async () => {
+    const plan = await planImport(fs, { paths: [PATCHED], manifestDir: MANIFESTS });
+    expect(byPath(plan.items, PATCHED)).toMatchObject({ action: 'already', reason: 'the embedded script already contains Castcade_Init' });
+    expect(byPath(plan.items, PATCHED).embeddedPatch).toBeUndefined();
   });
 });

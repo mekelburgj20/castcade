@@ -120,7 +120,9 @@ export function ImportTables({ state }: { state: CastcadeState }) {
           the table closes. The .vpx files are never changed: a Castcade script is written beside each one (delete it to
           revert), and the shared library
           {defaults?.scriptsDir ? <> goes into <span className="mono">{defaults.scriptsDir}</span></> : ' goes into the VPX scripts folder beside the tables folder'}
-          {defaults?.hookVersion ? ` (hook ${defaults.hookVersion})` : ''}. Originals are skipped until their recipes exist.
+          {defaults?.hookVersion ? ` (hook ${defaults.hookVersion})` : ''}. Originals are skipped until their recipes exist. Saving a patched
+          table in the VPX editor copies the Castcade script into the table itself; that still works, and Castcade puts a fresh
+          script beside the table the next time it opens (or when you patch again).
         </small>
       </label>
       <div className="row">

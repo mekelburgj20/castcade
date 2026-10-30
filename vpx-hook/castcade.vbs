@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.4.0
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.4.1
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
@@ -40,11 +40,13 @@
 '    warn           msg, err
 '    stale_sidecar  detail, original             (0.2.0: the .vpx no longer matches the sidecar's stamp;
 '                                                 the sidecar renamed itself .stale, see Castcade_Guard)
+'    embedded_patch original                     (0.4.1: this patch runs from the table's own script, not a
+'                                                 sidecar: the VPX editor saved it into the .vpx; nothing is stale)
 '    table_exit     lines, nvram_callbacks, blocked_keys
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.4.0"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.4.1"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -122,11 +124,20 @@ End Sub
 ' the old script for this one session.  VBScript cannot hash, so the size is the strong signal; the
 ' mtime tolerance is +/-3601 s because DST transitions and FILETIME conversions shift it by an hour.
 ' A missing original (moved table) is not a mismatch: nothing happens.
+' 0.4.1: a missing SIDECAR means this script is the table's own: the VPX editor loads a sidecar as the
+' table's script and saves it back into the .vpx (Krobs, 2026-10-29). Script and table were saved
+' together, so nothing is stale; the stamp would never match again and the dialog would show at every
+' launch with nothing to rename. Journal embedded_patch instead and carry on; the companion renders a
+' fresh sidecar over it at the next import.
 Sub Castcade_Guard(originalPath, originalSize, originalMtime, sidecarPath)
     On Error Resume Next
     Dim f, size, modified, want, diff, detail
     If Not IsObject(Castcade_fso) Then Exit Sub
     If Not Castcade_fso.FileExists(originalPath) Then Exit Sub
+    If Not Castcade_fso.FileExists(sidecarPath) Then
+        Castcade_Emit "embedded_patch", """original"":" & Castcade_Q(originalPath)
+        Exit Sub
+    End If
     Set f = Castcade_fso.GetFile(originalPath)
     size = f.Size
     modified = f.DateLastModified

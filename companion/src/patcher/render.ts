@@ -10,7 +10,7 @@ import type { ClassifyResult } from './classify.js';
 import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } from './script-text.js';
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
-export const LIB_VERSION = '0.4.0';
+export const LIB_VERSION = '0.4.1';
 /** 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes every sidecar at the next look. */
 export const RECIPE_VERSION = '0.3.1';
 
