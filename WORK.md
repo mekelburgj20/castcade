@@ -8,14 +8,16 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 ## Now
 
 - Companion 0.2.19 (unsigned PoC; repo public, keep it so): records and streams from the app (D1.2, D1.3; bundled ffmpeg D1.6, two-process capture, the desktop never goes out D1.9); live mode, one-click table import, engine attestation, score plausibility flag, limited attempts, playfield fingerprint and script inspection on every score. Stern SAM tables post from NVRAM alone (B10.1, 0.2.16); 0.2.17 patches only machines whose live score can be read (B12; 84 of the rig's 140 tables) and re-makes patches fast after an update (B15). 0.2.18 adds the OBS overlay (D1.1), the quit marker on the score call (B16; the board half is F14) and unpatches unreadable tables (B12.1).
-- In flight (2026-10-29, fable@main orchestrating five worktree agents): B17, B18, B4.1, H2, D1.4. Two witness bugs from the owner's 2026-10-29 stream: B17 (a Castcade restart with VPX still open re-posts that process's games; ArcAid rejects them as duplicates) and B18 (Castcade started mid-game learns the table only when play ends).
+- On main, unreleased (next release): B17 (a Castcade restart with VPX open no longer re-posts: posted game keys persist in `posted-games.json`), D1.4 (the overlay burned into the stream and the recording; Settings → Stream has the switch), B4.1 (fingerprint record tags pinned against a census of the rig's Medieval Madness), H2. B18 (Castcade started mid-game names the table from the newest journal of the VPX process) is finished on `fix/b18-table-from-journal`, check green, and fast-forwards once the C10 session commits its `witness.ts` edits.
+- Rig checks owed on the next build: D1.4 (overlay legible at 720p30, no flicker from the in-place rewrite, `►` glyph draws), B17 (restart Castcade while VPX stays open: no `duplicate` answers), B18 (start Castcade with the player already up: live mode arms at once).
+- In flight: C10 (fable@main, a second session: an editor save bakes the patch into the table; Krobs 2026-10-29) goes out with the next release.
 - New ruling 2026-10-27, ADR 0007: functionality before ease of setup; automate or guide every setup step (D6) and promise testers "guided setup", never "no setup".
-- Owner actions: update the rig and testers to 0.2.19 · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised (prod `attempts` row 6) · B15.1 at the next recipe bump · re-pair the rig from Settings · B9 field gate.
+- Owner actions: update the rig and testers to 0.2.19 · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised (prod `attempts` row 6) · B15.1 at the next recipe bump · re-pair the rig from Settings · B9 field gate · record an extra-ball session on a mapped table for C2.2 (fixtures are never hand-authored).
 - Multiplayer stream URL (D5, owner request 2026-10-26; Krobs keen) needs D2 and D3; ADR 0007 leans to both an ArcAid watch page and a Twitch push.
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
-- Next by priority: C10 (editor save bakes the patch into the table; Krobs 2026-10-29) goes out with the next release; then B17 / B18, then D1.4 burned-in overlay and D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Small and unblocked: B4.1, C2.2. Before GA: E5 (GPL source for the bundled ffmpeg).
+- Next by priority: C10, then release; then D1.5 Stream page (preview + Rotate setting); then B14 / F13 for the Limited-attempts list. B5 waits on ArcAid item 12 (F5). Before GA: E5 (GPL source for the bundled ffmpeg).
 - Watching: C9 (four arrivals per score, 2026-10-22), no recurrence since request logging.
-- Last wrap: 2026-10-29 — 0.2.19 released (D1.2, D1.3, D1.6, D1.8, D1.9 done; original-table notice); D1.9 verified in the app; B17, B18 added.
+- Last wrap: 2026-10-29 (second session, five worktree agents) — B17, B4.1, H2, D1.4 done; B18 on its branch; C2.2 needs a rig recording.
 
 ## A. Protocol and match engine
 
@@ -35,7 +37,7 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
 - **B2** `done 0.2.8` F2 attestation: ini, NVRAM adjustments, build hashes + family, VPinMAME cheat flag, accelerometer and tilt keys (0.2.5 → 0.2.8)
 - **B3** `done 0.2.10` F3 companion half: `not_sanctioned` → rejected capture with reasons on Status; `play_device` (VR headset vs monitor) per session
 - **B4** `done 0.2.14` F4 playfield fingerprint `pf1:<sha256>` on every score · spec: docs/design/fairness-and-table-identity.md §3
-  - **B4.1** `claimed` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament · spec: docs/design/fairness-and-table-identity.md §8 · owner: sonnet@wt-b4-1 · since: 2026-10-29 · branch: feat/b4-1-pin-record-tags
+  - **B4.1** `done 2026-10-29` Pin the record-tag list in a fixture so a VPX rename fails a test, not a tournament — `fixtures/playfield/tags.json`, `npm run playfield-tags -w companion`
   - **B4.2** `ready` Field gate for F4: the owner launches Monster Bash twice (the log line `witness: playfield pf1:…` is the same both times), then moves a flipper in the VPX editor, saves, launches again: the line changes. A byte-patched copy passed both halves on 2026-10-25 · owner: owner · gate: this line
 - **B5** `blocked F5` F5 script diff, companion half — baseline download, normalise, classify, preflight verdict, diff report · needs: B4 · spec: docs/design/fairness-and-table-identity.md §4 · touches: ArcAid item 12 (F5)
   - **B5.1** `done 0.2.14` Engine: normalise, Myers diff, classify allowed / restricted / unknown, capped `script_diff` report (`script-diff.ts`)
@@ -60,8 +62,9 @@ Lane: `companion/src/witness/**`, `docs/design/fairness-and-table-identity.md`. 
   - **B15.1** `ready` Field check at the next recipe bump: the update re-makes the rig's 140 patches in seconds, and a table opened during it shows "reopen this table" on Status and a balloon · owner: owner · gate: this line
 - **B16** `done 0.2.18` A game quit before game over posts and counts, marked as quit (companion half: `quit` / `quit_ball` on the score call; board mark is F14)
 - **B11** `done 0.2.11` Limited attempts, companion half (ArcAid ADR 0029 / A16): attempt call at every live-mode game start, `attempt=<key>` on the score, Status shows the answer
-- **B17** `claimed` [BUG] A restart of Castcade while the same VPX process stays open re-posts that process's earlier games: the journal replay accepts every session since the process started and the "already posted" set lives in memory only (rig 2026-10-29: VPX pid 72736 open since 2026-10-28; two restarts re-sent 927770 and 4571120, ArcAid answered `duplicate`; attempts are idempotent per device + key, so none were spent). Fix: persist posted attempt keys per journal, or skip sessions that ended before Castcade started · spec: companion.log 2026-10-29T01:38:40Z and 2026-10-30T03:53:58Z, `witness.ts` `onJournalEvent` · owner: opus@wt-b17 · since: 2026-10-29 · branch: fix/b17-no-repost-after-restart
-- **B18** `claimed` [BUG] Castcade started while the VPX player window is already up does not know the table until play ends (`launch null`: the player title names no table), so no live mode, no overlay, a recording segment with no table, and the games post only when the player closes (rig 2026-10-30T03:49Z). Fix: name the table from the newest journal whose `table_loaded` falls inside the process's lifetime, or from VPX's last-opened table · spec: companion.log 2026-10-30T03:49:55Z, `witness.ts` `onLaunch` / `onTitle` · owner: opus@wt-b18 · since: 2026-10-29 · branch: fix/b18-table-from-journal
+- **B17** `done 2026-10-29` [BUG] A restart of Castcade while the same VPX process stays open re-posted that process's earlier games — posted game keys persist per journal (`posted-games.json`), a replayed game is followed to its end and posted nothing
+- **B18** `claimed` [BUG] Castcade started while the VPX player window is already up does not know the table until play ends (`launch null`: the player title names no table), so no live mode, no overlay, a recording segment with no table, and the games post only when the player closes (rig 2026-10-30T03:49Z). Fix: name the table from the newest journal whose `table_loaded` falls inside the process's lifetime, or from VPX's last-opened table · spec: companion.log 2026-10-30T03:49:55Z, `witness.ts` `onLaunch` / `onTitle` · owner: fable@main · since: 2026-10-29 · branch: fix/b18-table-from-journal
+  Resume: finished and rebased on main (B17), `npm run check` green (54 files / 476 tests); `git merge --ff-only fix/b18-table-from-journal` once the C10 session has committed its `witness.ts` edits in the main checkout
 
 ## C. Table import, hook, detector, turn lock (Phase 3)
 
@@ -95,7 +98,7 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
   - **D1.1** `done 0.2.18` OBS overlay page on 127.0.0.1 (Settings → OBS overlay)
   - **D1.2** `done 0.2.19` Local recording: MP4 per session, game markers, hash-chained manifest tied to posted scores, retention
   - **D1.3** `done 0.2.19` Streaming to Twitch / YouTube from the app: key in `safeStorage`, presets, reconnect, a session outlives one table (slate between tables)
-  - **D1.4** `claimed` Overlay burned into stream and recording · needs: D1.1, D1.0 · owner: opus@wt-d1-4 · since: 2026-10-29 · branch: feat/d1-4-burned-in-overlay
+  - **D1.4** `done 2026-10-29` Overlay burned into stream and recording — the D1.1 state as text, drawn by ffmpeg `drawtext` `reload=1`; Stream setting to turn it off
   - **D1.5** `ready` Stream page: go live, record, preview (owner ask 2026-10-27: the streamer sees and adjusts the framing before going live; the spike's `--preview` runs ffplay on the same filter chain, `ffplayPreviewArgs`; a Rotate setting beside it for VPX cabinet mode, `--rotate` in the spike, 90 on the owner's rig; later a default read from `BGSet` and the table's cabinet view), health, settings (quality, retention, microphone off by default) · needs: D1.2, D1.3
   - **D1.6** `done 0.2.19` Bundle ffmpeg: pinned GPL build + sha256, `fetch-ffmpeg` at package time, extra resource in the installer
   - **D1.7** `ready` Mark a recording's score Sanctioned from ArcAid's answer (the score call or check-in says which tournament took it), so retention keeps it, and prune it once that tournament closes · spec: companion/src/media/recording.ts · needs: D1.2
@@ -150,5 +153,5 @@ Lane: `arcade/**`. Needs no VPX; can overlap with anything.
 Lane: `docs/**`, `.claude/**`, `WORK.md`, `CHANGELOG.md`, `tools/**`, `.github/workflows/ci.yml`.
 
 - **H1** `done` Single work tracker + board + `/work` and `/wrap` (ADR 0006), 2026-10-21
-- **H2** `claimed` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub (the seed entry lists them in one line each) · owner: sonnet@wt-h2 · since: 2026-10-29 · branch: docs/h2-changelog-backfill
+- **H2** `done 2026-10-29` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub
 - **H3** `idea` Protocol prose for A2/A3 before the code — a WebSocket paragraph under the existing "Host transfer" section and a new "Reconnect" section (resume from the log head, not a fresh HELLO) in `protocol/docs/prose.md`, then `npm run protocol:generate` (SPEC.md is generated)

@@ -3,9 +3,26 @@
 Release history of the Castcade companion (`companion/package.json` version, tags `v<version>`,
 installers from `.github/workflows/release.yml`). The live work list is `WORK.md`; design and rulings
 are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commit log on 2026-10-21
-(WORK item H2 back-fills them from the GitHub release notes).
+and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
+
+### Witness
+- B17: a Castcade restart while the same VPX process stays open no longer re-posts that process's earlier games.
+  Live mode remembers every game it posted in `posted-games.json` (key = table id + the attempt key ArcAid dedupes
+  on, capped at 2000); a replayed game is followed to its end and posts nothing, and the `.nv` rewrite at close
+  stays suppressed. Games played while Castcade was not running still post.
+- B4.1: the playfield fingerprint's record tags are pinned against a tag census of a real table
+  (`fixtures/playfield/tags.json`, tag names and counts only, recorded from the rig's Medieval Madness, file
+  version 1080); a VPX release that renames a tag now fails `npm test`, not a tournament. Re-record with
+  `npm run playfield-tags -w companion -- "<table.vpx>"`.
+
+### Streaming and recording
+- D1.4: the overlay (table, score per player with the player up and the ball, the limited-attempts line, the last
+  post, the Arcaid Witness badge) is burned into the stream and the recording: the same state as the OBS page,
+  written as text to `stream-overlay.txt` (overwritten in place) and drawn by ffmpeg's `drawtext` with `reload=1`.
+  On by default; Settings → Stream and record → "Overlay in the stream and recording" turns it off for OBS users
+  who draw the browser-source overlay themselves. No font, no overlay (as for the slate).
 
 ## [0.2.19] — 2026-10-29
 
