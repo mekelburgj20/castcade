@@ -19,7 +19,7 @@ the claiming rule in `.claude/commands/work.md`; the board link is on its first 
 `CHANGELOG.md`. Start a session with `/work`, end it with `/wrap`. **Do not write a session narrative
 here**: this section holds standing facts only (ADR 0006).
 
-- Companion 0.2.18 is an unsigned PoC. Code signing waits for GA (owner ruling 2026-10-18). The repo is
+- Companion 0.2.19 is an unsigned PoC. Code signing waits for GA (owner ruling 2026-10-18). The repo is
   public and must stay so: installed apps read the releases feed anonymously (0.2.6).
 - Gates passed: Phase 0 spike (owner's rig, 2026-10-17; findings in `docs/phase-0-spike.md` §8), Phase 1
   protocol + host mode (CI, 2026-10-18), Phase 2 half 1 (Monster Bash to a tournament board with the
