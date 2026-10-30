@@ -349,20 +349,32 @@ are in `docs/`. Entries before 0.2.4 are one-liners reconstructed from the commi
 - `GET /api/witness/checkin` whenever no VPX process runs (start, after every exit, each idle heartbeat);
   the reply's `sendingTo` shows in Status and the tray. A launch-only `report` opens a session as soon as
   it has a table name; the capture's report closes it on the same key. Tester kit `docs/tester-kit.md`.
+- In an event with a check-in window the player's row turns *ready* on its own; the lobby shows *table open*
+  while the table is being played. Status and the tray tooltip show where ArcAid is sending scores.
 
 ## [0.2.2] — 2026-10-18
 - Catalogue-grade wire name (`catalogueTableName`) plus the ROM name as `slug`, so ArcAid can match.
   Phase 2 gate, half 1, passed on the owner's rig with this build (Monster Bash to the tournament board
   with the Witness badge).
+- Fix: scores were captured but ArcAid answered "no match" because the raw file name was sent
+  ("Monster Bash (Williams 1998) VPWmod v1.0"); the name is now cut after the "(Manufacturer Year)" part.
 
 ## [0.2.1] — 2026-10-18
 - Capture on `.nv` change while VPX stays open (editor-driven play), table from the window title.
+- Captures play sessions started from the VPX editor, the recent-files list or a file association, not only
+  `-Play` launches; the table name comes from the command line, the editor window title or the ROM's name.
+- Captures when the player closes while VPX stays open: one capture per player session; quitting VPX is
+  still the final chance.
+- Every VPX process shows up in the log and the Status view.
 
 ## [0.2.0] — 2026-10-18
 - Phase 2: the Arcaid Witness desktop producer in basic mode (`companion/src/witness/`: process watch,
   `.nv` decode with the pinmame-nvram-maps corpus, GET posts, offline queue, heartbeat) behind a tray shell
   (pairing, status, settings); electron-builder NSIS per-user installer from `release.yml` on `v*` tags.
   Unsigned. Tester guide `docs/phase-2-witness.md`.
+- Posts the last one-player game's score from the ROM's NVRAM to the ArcAid board with the Witness badge when
+  VPX 10.8.0 exits; pairs with an ArcAid account by the Account Settings pairing code; changes nothing in the
+  Visual Pinball install.
 
 ## [0.1.0] — 2026-10-18
 - Phase 1: npm workspaces; `protocol/` v1 schemas with generated `SPEC.md`; `companion/src/match/`
