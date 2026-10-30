@@ -233,6 +233,22 @@ describe('stream engine (D1.2 + D1.3)', () => {
     expect(entries.find((e) => e.kind === 'score_posted')).toMatchObject({ segment: 'seg-001.mp4' });
   });
 
+  it('D1.7: noteCapture writes sanctioned + tournament only for a Sanctioned answer', async () => {
+    const h = harness({ rtmpUrl: null });
+    h.setWindows([PLAYER]);
+    await h.engine.start(h.plan);
+    await h.tick();
+    const base = { table: 'Monster Bash', rom: 'mb_106b', players: 1, score: 1, launchedAt: '', exitedAt: '', outcome: 'ingested', mode: 'live' } as const;
+    h.engine.noteCapture({ ...base, tournament: { id: '9', name: 'Open Cup', integrityMode: 'open', closesAt: null } });
+    h.engine.noteCapture({ ...base, tournament: { id: '7', name: 'Fear Fest', integrityMode: 'sanctioned', closesAt: '2026-11-01T00:00:00Z' } });
+    await h.engine.stop();
+    const text = readFileSync(join(root, readdirSync(root)[0]!, MANIFEST), 'utf8');
+    const posted = text.trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>).filter((e) => e['kind'] === 'score_posted');
+    expect(posted[0]).not.toHaveProperty('sanctioned');
+    expect(posted[0]).not.toHaveProperty('tournament');
+    expect(posted[1]).toMatchObject({ sanctioned: true, tournament: { id: '7', name: 'Fear Fest', closesAt: '2026-11-01T00:00:00Z' } });
+  });
+
   it('a capture that dies on its own (lost Desktop Duplication) restarts after a backoff that grows, then resets', async () => {
     const h = harness({ rtmpUrl: null });
     h.setWindows([PLAYER]);

@@ -95,4 +95,20 @@ describe('retention (owner ruling 2026-10-25: last 3 sessions, optional cap, San
     expect((await listSessions(root)).map((s) => s.id)).toEqual(['2026-10-02T00-00-00Z', '2026-10-03T00-00-00Z']);
     expect(await listSessions(join(root, 'missing'))).toEqual([]);
   });
+
+  it('D1.7: a Sanctioned session is kept while its tournament is open or has no end date, and pruned once it closes', async () => {
+    const cases: [string, unknown][] = [
+      ['2026-10-01T00-00-00Z', { id: '1', name: 'T', closesAt: '2026-11-01T00:00:00Z' }],
+      ['2026-10-02T00-00-00Z', { id: '2', name: 'T', closesAt: null }],
+      ['2026-10-03T00-00-00Z', undefined],
+    ];
+    for (const [id, tournament] of cases) {
+      await mkdir(join(root, id));
+      await writeFile(join(root, id, MANIFEST), `not json\n${JSON.stringify({ kind: 'score_posted', sanctioned: true, ...(tournament ? { tournament } : {}) })}\n`);
+    }
+    const keeps = async (nowIso: string) => (await listSessions(root, () => Date.parse(nowIso))).map((s) => s.keep);
+    expect(await keeps('2026-10-31T00:00:00Z')).toEqual([true, true, true]);
+    expect(await keeps('2026-11-02T00:00:00Z')).toEqual([false, true, true]);
+    expect(await applyRetention(root, { keepSessions: 0, maxRecordings: null }, null, () => Date.parse('2026-11-02T00:00:00Z'))).toEqual(['2026-10-01T00-00-00Z']);
+  });
 });

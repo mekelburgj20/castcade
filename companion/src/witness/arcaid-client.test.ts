@@ -120,6 +120,20 @@ describe('ArcaidClient', () => {
     expect(wire).toEqual({ status: 'ingested', game: 'Monster Bash', reasons: [], fallback: null, notCounted: null, attempt: { n: 2, of: 5, remaining: 3 } });
   });
 
+  it('score parses the tournament object (§18, D1.7); a malformed one is null, an absent one is absent', async () => {
+    const ask = async (tournament?: unknown) => {
+      const { fetch } = fakeFetch(() => ({ status: 200, body: { ok: true, status: 'ingested', game: 'G', ...(tournament === undefined ? {} : { tournament }) } }));
+      return (await new ArcaidClient({ baseUrl: 'https://a', fetch }).score('tok', { device: 'd', table: 'T', rom: null, score: 1, started: 1, ended: 2, dur: 1, reason: 'game_over' })).tournament;
+    };
+    expect(await ask({ id: 42, name: 'Fear Fest', integrity_mode: 'Sanctioned', closes_at: '2026-11-01T00:00:00Z' })).toEqual({ id: '42', name: 'Fear Fest', integrityMode: 'sanctioned', closesAt: '2026-11-01T00:00:00Z' });
+    expect(await ask({ id: 'abc', name: 'Open One', integrity_mode: 'open', closes_at: null })).toEqual({ id: 'abc', name: 'Open One', integrityMode: 'open', closesAt: null });
+    expect(await ask({ id: 1, name: 'X', integrity_mode: 'weird', closes_at: 'not a date' })).toEqual({ id: '1', name: 'X', integrityMode: null, closesAt: null });
+    expect(await ask({ id: 1 })).toBeNull();
+    expect(await ask('nope')).toBeNull();
+    expect(await ask(null)).toBeNull();
+    expect(await ask()).toBeUndefined();
+  });
+
   it('times out a hanging request as a network failure', async () => {
     const hanging: FetchLike = (_input, init) =>
       new Promise((_resolve, reject) => {
