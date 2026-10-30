@@ -9,8 +9,9 @@
  * to posted scores" means here; sending the recording's hash with the score is a later ArcAid step.
  *
  * Retention: keep the newest N sessions (default 3) and, optionally, cap the number of MP4s kept; a session holding a
- * score marked Sanctioned is never pruned by either rule (owner ruling 2026-10-25; "until its tournament closes" needs
- * the close date from ArcAid, a later item).
+ * score marked Sanctioned is not pruned by either rule until its tournament closes (owner ruling 2026-10-25). The close
+ * date comes from ArcAid's score answer (`docs/arcaid-side-changes.md` §18, D1.7) and is written on the `score_posted`
+ * line; once it has passed, the normal rules prune the session.
  */
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -30,8 +31,10 @@ export type ManifestEntry =
       outcome: string;
       mode: string | null;
       segment: string | null;
-      /** Set once ArcAid says the score went to a Sanctioned tournament; such a session is never pruned. */
+      /** Set once ArcAid says the score went to a Sanctioned tournament; such a session is kept until it closes. */
       sanctioned?: boolean;
+      /** D1.7: that tournament (written with `sanctioned`); `closesAt` null = no end date, so kept. */
+      tournament?: { id: string; name: string; closesAt: string | null };
     }
   /** The capture was covered (VPX not in front, D1.9) / uncovered; a segment's covered stretches show no table. */
   | { kind: 'cover_start'; reason: string; segment: string | null }
@@ -162,11 +165,27 @@ export interface SessionSummary {
   id: string;
   /** MP4 files in the folder. */
   recordings: number;
-  /** Holds a score marked Sanctioned: never pruned. */
+  /** Holds a score marked Sanctioned whose tournament has not closed: not pruned. */
   keep: boolean;
 }
 
-export async function listSessions(root: string): Promise<SessionSummary[]> {
+/** One manifest line: a Sanctioned `score_posted` whose tournament has no close date or has not closed yet. */
+function keepsSession(line: string, nowMs: number): boolean {
+  if (!line.includes('"score_posted"')) return false;
+  let e: { kind?: unknown; sanctioned?: unknown; tournament?: { closesAt?: unknown } | null };
+  try {
+    e = JSON.parse(line) as typeof e;
+  } catch {
+    return false;
+  }
+  if (e.kind !== 'score_posted' || e.sanctioned !== true) return false;
+  const closes = e.tournament?.closesAt;
+  if (typeof closes !== 'string') return true;
+  const at = Date.parse(closes);
+  return Number.isNaN(at) || at > nowMs; // an unreadable date errs on keeping the recording
+}
+
+export async function listSessions(root: string, now: () => number = () => Date.now()): Promise<SessionSummary[]> {
   let names: string[];
   try {
     names = await readdir(root);
@@ -187,7 +206,7 @@ export async function listSessions(root: string): Promise<SessionSummary[]> {
     let keep: boolean;
     try {
       const text = await readFile(join(dir, MANIFEST), 'utf8');
-      keep = text.split('\n').some((l) => l.includes('"score_posted"') && l.includes('"sanctioned":true'));
+      keep = text.split('\n').some((l) => keepsSession(l, now()));
     } catch {
       keep = false;
     }
@@ -218,8 +237,8 @@ export function planRetention(sessions: SessionSummary[], opts: { keepSessions: 
   return prunable.filter((s) => doomed.has(s.id)).map((s) => s.id);
 }
 
-export async function applyRetention(root: string, opts: { keepSessions: number; maxRecordings: number | null }, currentId: string | null): Promise<string[]> {
-  const doomed = planRetention(await listSessions(root), opts, currentId);
+export async function applyRetention(root: string, opts: { keepSessions: number; maxRecordings: number | null }, currentId: string | null, now: () => number = () => Date.now()): Promise<string[]> {
+  const doomed = planRetention(await listSessions(root, now), opts, currentId);
   for (const id of doomed) await rm(join(root, id), { recursive: true, force: true });
   return doomed;
 }

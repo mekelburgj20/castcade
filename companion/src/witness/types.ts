@@ -7,6 +7,7 @@
  */
 import type { Attestation } from './attestation-types.js';
 import type { TableIdentity } from './identity-types.js';
+import type { ScoreTournament } from './arcaid-client.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
 export type {
@@ -76,6 +77,8 @@ export interface LastCapture {
   mode?: 'live' | 'basic';
   /** On a limited-attempts board (ArcAid 2.167.0): which attempt this score used; null when the board has no limit. */
   attempt?: { n: number; of: number; remaining: number } | null;
+  /** ArcAid §18 (D1.7): the tournament that took this score (ingested / duplicate); the recording's retention reads it. */
+  tournament?: ScoreTournament | null;
 }
 
 /**

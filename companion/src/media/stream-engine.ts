@@ -194,7 +194,7 @@ export class StreamEngine extends EventEmitter {
     if (plan.record) {
       this.session = await RecordingSession.open(plan.recordingsDir, this.deps.now);
       await this.session.append({ kind: 'session_start', app: plan.appVersion, preset: plan.preset.id, streaming: !!plan.rtmpUrl, recording: true });
-      const gone = await applyRetention(plan.recordingsDir, plan.retention, this.session.id).catch((e: unknown) => {
+      const gone = await applyRetention(plan.recordingsDir, plan.retention, this.session.id, this.deps.now).catch((e: unknown) => {
         this.deps.log.warn(`stream: retention failed: ${String(e)}`);
         return [];
       });
@@ -287,7 +287,10 @@ export class StreamEngine extends EventEmitter {
    */
   noteCapture(c: LastCapture): void {
     if (!this.session) return;
-    void this.session.append({ kind: 'score_posted', table: c.table, score: c.score, outcome: c.outcome, mode: c.mode ?? null, segment: this.gameSegment ?? this.session.segment });
+    // D1.7: ArcAid's score answer names the tournament (§18); a Sanctioned one keeps this session until it closes.
+    const t = c.tournament;
+    const sanctioned = t?.integrityMode === 'sanctioned' ? { sanctioned: true, tournament: { id: t.id, name: t.name, closesAt: t.closesAt } } : {};
+    void this.session.append({ kind: 'score_posted', table: c.table, score: c.score, outcome: c.outcome, mode: c.mode ?? null, segment: this.gameSegment ?? this.session.segment, ...sanctioned });
   }
 
   /** D1.4: the overlay state (the one the OBS page shows); a running capture's burned-in text follows it. */

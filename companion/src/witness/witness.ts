@@ -853,6 +853,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         result.attempt = posted.wire.attempt;
         details.push(`attempt ${posted.wire.attempt.n} of ${posted.wire.attempt.of}`);
       }
+      if (posted.state === 'done' && posted.wire?.tournament && (mapped.outcome === 'ingested' || mapped.outcome === 'duplicate')) result.tournament = posted.wire.tournament;
       for (const d of [decision.detail, mapped.detail]) if (d) details.unshift(d);
       if (posted.state === 'queued') {
         const last = queue.pending()[queue.size() - 1];

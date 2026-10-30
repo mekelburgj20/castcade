@@ -50,6 +50,30 @@ export interface CheckinResult {
   sendingTo: string | null;
 }
 
+/** ArcAid `docs/arcaid-side-changes.md` §18 (D1.7): the tournament that took a play, with its integrity mode and close time. */
+export interface ScoreTournament {
+  id: string;
+  name: string;
+  integrityMode: 'open' | 'sanctioned' | null;
+  closesAt: string | null;
+}
+
+/** Parse §18's `tournament` object; anything malformed is null (an older ArcAid sends none). */
+export function parseTournament(v: unknown): ScoreTournament | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const t = v as Record<string, unknown>;
+  const id = typeof t['id'] === 'number' && Number.isFinite(t['id']) ? String(t['id']) : typeof t['id'] === 'string' && t['id'].trim() ? t['id'] : null;
+  if (id === null || typeof t['name'] !== 'string') return null;
+  const mode = typeof t['integrity_mode'] === 'string' ? t['integrity_mode'].toLowerCase() : null;
+  const closes = t['closes_at'];
+  return {
+    id,
+    name: t['name'],
+    integrityMode: mode === 'open' || mode === 'sanctioned' ? mode : null,
+    closesAt: typeof closes === 'string' && !Number.isNaN(Date.parse(closes)) ? closes : null,
+  };
+}
+
 export interface ScoreWireStatus {
   /**
    * `ingested` | `duplicate` | `global` | `global_duplicate` | `no_match` | `invalid` (suppressed arrives as
@@ -64,6 +88,8 @@ export interface ScoreWireStatus {
   notCounted: string | null;
   /** ArcAid 2.167.0 (ADR 0029): on a limited-attempts board, which attempt this score used. */
   attempt?: { n: number; of: number; remaining: number } | null;
+  /** ArcAid §18 (D1.7): the tournament that took the play (ingested / duplicate); absent when none, null when malformed. */
+  tournament?: ScoreTournament | null;
 }
 
 /**
@@ -273,6 +299,7 @@ export class ArcaidClient {
       fallback: typeof body['fallback'] === 'string' ? body['fallback'] : null,
       notCounted: typeof body['notCounted'] === 'string' && body['notCounted'].trim() ? body['notCounted'] : null,
       ...(attempt ? { attempt } : {}),
+      ...(body['tournament'] !== undefined ? { tournament: parseTournament(body['tournament']) } : {}),
     };
   }
 
