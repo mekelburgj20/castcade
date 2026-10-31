@@ -7,6 +7,17 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.23] — 2026-10-31
+
+### Match (alpha)
+- A6: the rig (VR headset or monitor) is decided the moment you Host or Join, by probing the running VPX process
+  right then, not from the sample taken when the VPX process started (on the owner's rig that first sample ran
+  before the player had loaded its VR runtime, so 0.2.22 built the desktop panel and never started the headset
+  overlay). The witness also re-samples VR when the table loads. If the decision was "monitor" and VR shows up
+  later, the panel moves into the headset and the overlay starts. The Match tab shows `Rig: VR headset (…)` /
+  `Rig: monitor (…)` with the reason. `main/match-setup.ts` (`decideRig`), `match-host.ts`, `media/rtc-host.ts`
+  (`setVr`), `witness/witness.ts` (`sampleVr`).
+
 ## [0.2.22] — 2026-10-31
 
 The alpha match build. Released untested on a rig so both players' companions receive it through the updater; the
