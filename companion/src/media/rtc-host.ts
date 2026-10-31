@@ -9,7 +9,8 @@
  * Capture: a `desktopCapturer` window source id handed to the page (the stream-host audio page's pattern, with its own
  * session partition; `setDisplayMediaRequestHandler` answers the page's getDisplayMedia fallback with the same window,
  * no picker). Nothing here throws out of `attach`: a missing window or microphone leaves the match running without
- * that medium and says so in `lastError`.
+ * that medium and says so in `lastError`. A window missing at `attach` is looked for every 3 s until one is found, and
+ * again after the page's capture ends (D2, 2026-10-31), so the track is on the connections before this rig's turn.
  */
 import { BrowserWindow, desktopCapturer, ipcMain, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -63,6 +64,12 @@ export const VR_PANEL_SIZE = { width: 960, height: 640 } as const;
 export const DESKTOP_PANEL_SIZE = { width: 480, height: 720 } as const;
 export const PANEL_FPS = 20;
 const READY_TIMEOUT_MS = 15_000;
+/**
+ * D2 (2026-10-31, the first two-player match): while attached with no capture, the VPX windows are probed this often.
+ * The host pressed Host before its table was up and the capture was looked for again only at its first turn, so the
+ * whole of ball 1 went on acquiring it, adding the track and renegotiating: no picture for the others.
+ */
+export const CAPTURE_RETRY_MS = 3_000;
 const PLAYER_TITLE = 'Visual Pinball Player';
 
 // ---- pure parts ----
@@ -225,6 +232,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let lastState: PanelState | null = null;
   let capture: PanelCapture | null = null;
   let captureSrc: DesktopCapturerSource | null = null;
+  /** The capture the page was given (in `attach` or on the capture channel): each one is announced once. */
+  let announced: PanelCapture | null = null;
+  let captureTimer: ReturnType<typeof setTimeout> | null = null;
   /** The panel window itself failed (it did not open, load or start, or its renderer died). */
   let panelError: string | null = null;
   /** No window to send, or the capturer does not offer it; cleared by a later pick that finds one. */
@@ -249,6 +259,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     emitStatus();
   };
   const setCaptureError = (msg: string): void => {
+    // The capture is looked for every 3 s until found (D2, 2026-10-31): say each reason once, not at every look.
+    if (captureError === msg) return;
     log.warn(`media: ${msg}`);
     captureError = msg;
     emitStatus();
@@ -293,7 +305,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   ipcMain.on(PANEL_CHANNELS.status, (e, s: PanelPageStatus) => {
     if (!fromPanel(e)) return;
     if (page?.error !== s.error && s.error) log.warn(`media: panel: ${s.error}`);
+    const ended = page?.capturing === true && !s.capturing;
     page = s;
+    // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
+    if (ended && capture && attached) {
+      log.info(`media: the capture of ${capture.label} ended; looking for the VPX window again`);
+      capture = null;
+      captureSrc = null;
+      announced = null;
+      scheduleCapture(generation);
+    }
     emitStatus();
   });
   const setMics = (d: unknown[]): void => {
@@ -455,6 +476,39 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     return done;
   };
 
+  /**
+   * D2 (2026-10-31): a capture found after `attach` goes to the page at once, not at this rig's first turn. The page
+   * adds the track to every connection disabled (`enabled = sending`), so the negotiation happens before the turn
+   * and `setSending(true)` only flips the flag. Each capture is announced and logged once.
+   */
+  const announceCapture = (gen: number): void => {
+    if (gen !== generation || !attached || !capture || capture === announced) return;
+    announced = capture;
+    log.info(`media: capture ${capture.label} ready`);
+    if (attachMsg && !attachSent) attachMsg.capture = capture;
+    else toPage(PANEL_CHANNELS.capture, capture);
+    emitStatus();
+  };
+  /** One look now: found → announced; not found → another look in `CAPTURE_RETRY_MS`. */
+  const lookForCapture = (gen: number): Promise<void> =>
+    pickCapture(gen).then(() => {
+      if (gen !== generation || !attached) return;
+      if (capture) announceCapture(gen);
+      else scheduleCapture(gen);
+    });
+  function scheduleCapture(gen: number): void {
+    if (captureTimer || gen !== generation || !attached || capture) return;
+    captureTimer = setTimeout(() => {
+      captureTimer = null;
+      if (gen !== generation || !attached || capture) return;
+      void lookForCapture(gen);
+    }, CAPTURE_RETRY_MS);
+  }
+  const stopCaptureTimer = (): void => {
+    if (captureTimer) clearTimeout(captureTimer);
+    captureTimer = null;
+  };
+
   const detach = async (quiet = false): Promise<void> => {
     generation++;
     offSignal?.();
@@ -477,6 +531,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     queue = [];
     capture = null;
     captureSrc = null;
+    announced = null;
+    stopCaptureTimer();
     page = null;
     sending = false;
     peers.clear();
@@ -523,6 +579,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const s = opts.settings.get();
     attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
     log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
+    if (capture) {
+      announced = capture;
+      log.info(`media: capture ${capture.label} ready`);
+    } else scheduleCapture(gen);
     flush();
     emitStatus();
   };
@@ -532,15 +592,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     sending = on;
     if (attachMsg && !attachSent) attachMsg.sending = on;
     toPage(PANEL_CHANNELS.sending, on);
-    // VPX may not have been up at attach: look again when this rig's turn starts.
+    // Still no window at this rig's turn (the 3 s looks found none yet): look once more now, not at the next tick.
     if (on && attached && !capture) {
-      const gen = generation;
-      void pickCapture(gen).then(() => {
-        if (gen !== generation || !capture) return;
-        log.info(`media: capture ${capture.label}`);
-        toPage(PANEL_CHANNELS.capture, capture);
-        emitStatus();
-      });
+      stopCaptureTimer();
+      void lookForCapture(generation);
     }
     emitStatus();
   };

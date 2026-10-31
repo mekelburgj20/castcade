@@ -457,6 +457,84 @@ describe('createRtcHost (D2)', () => {
     await host.detach();
   });
 
+  it('D2 (2026-10-31): no window at attach → a look every 3 s until found; the capture goes to the page before the turn, once; again after it ends', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let windows: VpxWindow[] = [EDITOR];
+      let probes = 0;
+      const probe = async (): Promise<WindowProbe> => {
+        probes++;
+        return { outputs: [], windows };
+      };
+      const host = createRtcHost({ userData: dir, log, probe, settings: store() });
+      await host.attach(signalling('owner').sig, []);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      expect(w.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: null, sending: false })]]);
+      expect(probes).toBe(1);
+
+      vi.advanceTimersByTime(2_999);
+      await settle();
+      expect(probes).toBe(1);
+      vi.advanceTimersByTime(1);
+      await settle();
+      expect(probes).toBe(2);
+      // The reason is said once, not at every look.
+      expect(logs.filter((l) => l.includes('no "Visual Pinball Player" window to send'))).toHaveLength(1);
+
+      // The table starts in the lobby: the next look finds it and the page gets it at once, still not sending.
+      windows = [EDITOR, PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(probes).toBe(3);
+      expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, { sourceId: 'window:42:0', label: 'Visual Pinball Player (1280x720)' }]]);
+      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual(['media: capture Visual Pinball Player (1280x720) ready']);
+      expect(host.status()).toMatchObject({ sending: false, lastError: null });
+
+      // Found: no more looks; the turn only flips the flag.
+      vi.advanceTimersByTime(30_000);
+      await settle();
+      expect(probes).toBe(3);
+      host.setSending(true);
+      await settle();
+      expect(w.webContents.sent.slice(2)).toEqual([[PANEL_CHANNELS.sending, true]]);
+      expect(probes).toBe(3);
+
+      // The page's capture ends (VPX restarted): looking again, and the new window is announced.
+      const st = (capturing: boolean): PanelPageStatus => ({ sending: true, peers: {}, mic: 'open', capturing, error: null });
+      fromPage(w, PANEL_CHANNELS.status, st(true));
+      fromPage(w, PANEL_CHANNELS.status, st(false));
+      expect(logs).toContain('media: the capture of Visual Pinball Player (1280x720) ended; looking for the VPX window again');
+      fake.sources.list = [{ id: 'window:77:0', name: 'Visual Pinball Player' }];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(probes).toBe(4);
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' }]);
+
+      // Detached: no looks.
+      fromPage(w, PANEL_CHANNELS.status, st(true));
+      fromPage(w, PANEL_CHANNELS.status, st(false));
+      await host.detach();
+      vi.advanceTimersByTime(10_000);
+      await settle();
+      expect(probes).toBe(4);
+
+      // Found before the page is ready: it rides in `attach` itself, no separate capture message.
+      windows = [EDITOR];
+      probes = 0;
+      await host.attach(signalling('owner').sig, []);
+      const w2 = fake.FakeWindow.all.at(-1)!;
+      windows = [PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      fromPage(w2, PANEL_CHANNELS.ready);
+      expect(w2.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' } })]]);
+      await host.detach();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('D2 (2026-10-31): in VR with only the editor and a DMD on the desktop, nothing is sent and the Match tab says to turn VRPreview on', async () => {
     fake.sources.list = [{ id: 'window:44:0', name: 'FlexDMD' }];
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, win('FlexDMD', 1280, 720)] }), settings: store() });

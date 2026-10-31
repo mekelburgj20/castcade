@@ -93,7 +93,10 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   comments and falls back to the largest VPX window), else the player window. The fallback never takes a DMD,
   backglass or PinUP window (title `/dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i`) or one under 640x360: the first
   two-player match (2026-10-31) sent a VR player's VPinMAME DMD because his `VRPreview` was off. With only those, nothing
-  is sent and the Match tab says to turn VRPreview on. Microphone from a named device
+  is sent and the Match tab says to turn VRPreview on. With no window at attach the VPX windows are probed every 3 s
+  until one is found (and again when the capture ends); the track goes on every connection at once, disabled until
+  `setSending(true)`, so a player's first turn only flips the flag (the first match lost ball 1's picture to a
+  capture looked for only at the turn). Microphone from a named device
   (`micDeviceId` setting; the panel lists devices, and before a match a hidden page in the same partition does when
   the Match tab opens, B22; the Windows default is often a virtual device in VR).
 - **ICE**: STUN `stun:stun.l.google.com:19302` and `stun:stun1.l.google.com:19302`; optional TURN from settings
