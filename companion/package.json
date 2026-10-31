@@ -24,6 +24,7 @@
     "playfield-tags": "tsx scripts/playfield-tags.ts",
     "witness-games": "tsx scripts/witness-games.ts",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
+    "fetch-vr-overlay": "node scripts/fetch-vr-overlay.mjs",
     "ffmpeg-source": "node scripts/ffmpeg-source.mjs",
     "spike:stream": "tsc -b && electron scripts/stream-spike.mjs",
     "dist:win": "npm run build && electron-builder --win --publish never",

@@ -33,6 +33,11 @@ extraResources:
   # offer, E5) is written there by fetch-ffmpeg and ships with them; the source itself is docs/ffmpeg-source.md.
   - from: resources/ffmpeg
     to: ffmpeg
+  # The OpenVR overlay helper (D7): castcade-vr-overlay.exe + openvr_api.dll (BSD-3) + THIRD-PARTY.md, the zip the
+  # vr-overlay workflow attaches to a release, fetched by `npm run fetch-vr-overlay -w companion` (release tag pinned in
+  # scripts/fetch-vr-overlay.mjs). Outside the asar so the exe can run; src/media/vr-overlay.ts finds it here.
+  - from: resources/vr-overlay
+    to: vr-overlay
   # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo
   # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
   - from: ../vpx-hook/castcade.vbs
