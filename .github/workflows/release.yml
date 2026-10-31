@@ -33,6 +33,15 @@ jobs:
         run: npm run fetch-vps -w companion
       - name: Fetch the pinned ffmpeg build (sha256-checked) into companion/resources/ffmpeg
         run: npm run fetch-ffmpeg -w companion
+      # D7: the installer carries the OpenVR overlay helper built from THIS tag (vr-overlay.yml builds the same thing in
+      # parallel for the release's zip; a tag cannot fetch its own zip, so the release job builds it here too).
+      - name: Build the VR overlay helper and stage it into companion/resources/vr-overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S vr-overlay -B vr-overlay/build -A x64
+          cmake --build vr-overlay/build --config Release
+          node companion/scripts/fetch-vr-overlay.mjs --from vr-overlay/build/Release
       - run: npm run build
       - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
         if: startsWith(github.ref, 'refs/tags/')
