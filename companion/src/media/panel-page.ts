@@ -1,0 +1,509 @@
+/**
+ * D2 (alpha-match.md §4, 2026-10-30): the match panel page. ONE page holds the WebRTC mesh (microphone to every peer,
+ * the VR preview window's video to every peer, enabled only while this rig is up) AND the panel the player looks at
+ * (the up player's video large, whose ball it is, the scores, the mic, one message line). `rtc-host.ts` writes it to
+ * `<userData>/match-panel.html` and loads it as a file (getUserMedia needs a secure context; `data:` is not one, the
+ * stream-host audio page found that on 2026-10-28); in VR the window is offscreen and its paint feeds the headset.
+ *
+ * Everything the page shows comes from `PanelState` (the match controller computes it); the page only formats. The
+ * formatting helpers below are embedded into the page by their own source, like `rtc-signaling.ts`'s classes: they
+ * must stay self-contained (no imports, no module constants, only each other). Remote players' names reach the DOM
+ * through `textContent` only.
+ */
+import type { MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
+import type { IceServer } from './media-settings.js';
+import { negotiationSource } from './rtc-signaling.js';
+
+/** The IPC channels between the panel page and the main process (`rtc-host.ts`). */
+export const PANEL_CHANNELS = {
+  // main -> page
+  attach: 'castcade-panel:attach',
+  signal: 'castcade-panel:signal',
+  addPeer: 'castcade-panel:add-peer',
+  removePeer: 'castcade-panel:remove-peer',
+  sending: 'castcade-panel:sending',
+  state: 'castcade-panel:state',
+  muted: 'castcade-panel:muted',
+  capture: 'castcade-panel:capture',
+  microphone: 'castcade-panel:microphone',
+  detach: 'castcade-panel:detach',
+  // page -> main
+  ready: 'castcade-panel:ready',
+  send: 'castcade-panel:send',
+  status: 'castcade-panel:status',
+  devices: 'castcade-panel:devices',
+} as const;
+
+/** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
+export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
+
+export interface PanelCapture {
+  /** `desktopCapturer` source id, `window:<hwnd>:0`. */
+  sourceId: string;
+  /** What `MediaStatus.captureSource` says, also used in the page's error lines. */
+  label: string;
+}
+
+export interface PanelAttach {
+  localId: MatchPlayerId;
+  peers: MatchPlayerId[];
+  ice: IceServer[];
+  capture: PanelCapture | null;
+  micDeviceId: string | null;
+  muted: boolean;
+  sending: boolean;
+}
+
+/** What the page reports; `rtc-host.ts` adds `attached` and `captureSource`. */
+export interface PanelPageStatus {
+  sending: boolean;
+  peers: MediaStatus['peers'];
+  mic: MediaStatus['mic'];
+  capturing: boolean;
+  error: string | null;
+}
+
+export interface MicDevice {
+  deviceId: string;
+  label: string;
+}
+
+export interface StripRow {
+  id: MatchPlayerId;
+  name: string;
+  score: string;
+  detail: string;
+  up: boolean;
+  flags: string[];
+}
+
+// ---- formatting helpers (embedded in the page; keep them self-contained) ----
+
+/** `YOUR BALL 2` / `KROBS IS UP`, or the phase when nobody is. */
+export function headerText(s: PanelState): string {
+  if (s.phase === 'over') return 'MATCH OVER';
+  if (s.phase === 'idle') return 'WAITING FOR THE START';
+  const up = s.players.find((p) => p.id === s.playerUp);
+  const ball = s.ball !== null ? ' ' + s.ball : '';
+  const turn = s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING';
+  return s.phase === 'paused' ? 'PAUSED · ' + turn : turn;
+}
+
+export function scoreText(score: number | null): string {
+  return score === null ? '–' : score.toLocaleString('en-US');
+}
+
+/** The score strip: players in the controller's order while playing, the standings by place once it is over. */
+export function stripRows(s: PanelState): StripRow[] {
+  if (s.phase === 'over' && s.result) {
+    return [...s.result]
+      .sort((a, b) => a.place - b.place)
+      .map((r) => ({ id: r.id, name: r.name, score: scoreText(r.score), detail: '#' + r.place, up: false, flags: [] }));
+  }
+  return s.players.map((p) => {
+    const detail = p.isUp && s.ball !== null ? 'BALL ' + s.ball : p.ballsDone >= s.ballsPerGame ? 'DONE' : p.ballsDone + '/' + s.ballsPerGame;
+    const flags = p.flags.map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : String(f).toUpperCase()));
+    return { id: p.id, name: p.name, score: scoreText(p.score), detail, up: p.isUp, flags };
+  });
+}
+
+export function micText(mic: PanelState['mic']): string {
+  return mic === 'open' ? 'MIC ON' : mic === 'muted' ? 'MIC MUTED' : 'NO MIC';
+}
+
+/** Whose picture fills the stage: `self` (my own preview while I am up), the up player's id, or nobody. */
+export function videoPeer(s: PanelState): MatchPlayerId | 'self' | null {
+  if (s.phase !== 'playing' && s.phase !== 'paused') return null;
+  if (s.myTurn) return 'self';
+  return s.playerUp;
+}
+
+/** The line over an empty stage. */
+export function stageText(s: PanelState | null, hasVideo: boolean): string {
+  if (!s || hasVideo) return '';
+  if (s.phase === 'over' || s.phase === 'idle') return '';
+  if (s.myTurn) return 'NO PICTURE FROM YOUR TABLE';
+  const up = s.players.find((p) => p.id === s.playerUp);
+  return up ? 'WAITING FOR ' + up.name.toUpperCase() + "'S TABLE" : '';
+}
+
+const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText];
+
+/** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
+export function panelPageHtml(opts: { vr: boolean }): string {
+  const helpers = HELPERS.map((f) => f.toString()).join('\n');
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Castcade match</title>
+<style>
+  :root { --bg: #000; --panel: #11141b; --text: #fff; --dim: #b8c0cc; --mine: #ffd400; --up: #4fd1ff; --bad: #ff6b6b; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
+  body { display: grid; grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
+  #head { font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
+  #head.mine { color: var(--mine); }
+  #stage { position: relative; min-height: 0; background: var(--panel); border-radius: 1vmin; overflow: hidden; }
+  #video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  #idle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+    padding: 4vmin; font-size: 4.5vmin; color: var(--dim); }
+  #strip { display: grid; gap: 0.6vmin; }
+  .row { display: grid; grid-template-columns: 1fr auto auto; gap: 2vmin; align-items: baseline; padding: 0.6vmin 1.5vmin;
+    background: var(--panel); border-radius: 0.8vmin; font-size: 4.8vmin; }
+  .row.up { outline: 0.5vmin solid var(--up); }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .detail { color: var(--dim); font-size: 3.6vmin; }
+  .row .score { font-variant-numeric: tabular-nums; }
+  .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
+  footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; }
+  #mic { color: var(--dim); white-space: nowrap; }
+  #mic.muted, #mic.none { color: var(--bad); }
+  #msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style></head>
+<body class="${opts.vr ? 'vr' : 'desktop'}">
+<div id="head">CASTCADE MATCH</div>
+<div id="stage"><video id="video" autoplay playsinline muted></video><div id="idle"></div></div>
+<div id="strip"></div>
+<footer><span id="mic"></span><span id="msg"></span></footer>
+<script>
+'use strict';
+const { ipcRenderer } = require('electron');
+const C = ${JSON.stringify(PANEL_CHANNELS)};
+const VIDEO = ${JSON.stringify(PANEL_VIDEO)};
+${helpers}
+${negotiationSource()}
+${PAGE_SCRIPT}
+</script>
+</body></html>
+`;
+}
+
+/**
+ * The page's own logic (plain JS; no template literals, so nothing here is interpolated by the TS template above).
+ * Media: one local MediaStream (mic + capture), `addTrack` on every connection (addTrack transceivers are reused when
+ * offers cross; addTransceiver ones are not), the video track enabled only while sending, `maxBitrate` set once the
+ * sender has encodings, remote audio played by one muted-free <audio> per peer, the stage <video> muted.
+ */
+const PAGE_SCRIPT = String.raw`
+let mesh = null;
+let localId = null;
+let ice = [];
+let sending = false;
+let muted = false;
+let micTrack = null;
+let micState = 'unavailable';
+let videoTrack = null;
+let panel = null;
+let localError = null;
+let stageKey = null;
+const localStream = new MediaStream();
+const remote = new Map();
+const $ = (id) => document.getElementById(id);
+const errText = (e) => (e && e.message ? e.message : String(e));
+
+function report() {
+  const peers = {};
+  for (const [id, r] of remote) {
+    const v = r.stream.getVideoTracks()[0];
+    const a = r.stream.getAudioTracks()[0];
+    peers[id] = {
+      ice: r.pc.iceConnectionState,
+      receivingVideo: !!v && v.readyState === 'live' && !v.muted,
+      receivingAudio: !!a && a.readyState === 'live' && !a.muted,
+    };
+  }
+  ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: localError });
+}
+
+function fail(msg) {
+  localError = msg;
+  report();
+  render();
+}
+
+function render() {
+  const head = $('head');
+  if (!panel) {
+    head.textContent = 'CASTCADE MATCH';
+    head.className = '';
+  } else {
+    head.textContent = headerText(panel);
+    head.className = panel.myTurn && panel.phase === 'playing' ? 'mine' : '';
+  }
+  const who = panel ? videoPeer(panel) : null;
+  let stream = null;
+  if (who === 'self') stream = videoTrack ? new MediaStream([videoTrack]) : null;
+  else if (who && remote.has(who)) stream = remote.get(who).stream;
+  const key = who === 'self' ? 'self:' + (videoTrack ? videoTrack.id : '') : who ? 'peer:' + who : '';
+  const video = $('video');
+  if (key !== stageKey) {
+    stageKey = key;
+    video.srcObject = stream;
+  }
+  const hasVideo = !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live' && (who === 'self' || !t.muted));
+  $('idle').textContent = stageText(panel, hasVideo);
+  const strip = $('strip');
+  strip.replaceChildren();
+  for (const row of panel ? stripRows(panel) : []) {
+    const el = document.createElement('div');
+    el.className = row.up ? 'row up' : 'row';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = row.name;
+    for (const f of row.flags) {
+      const flag = document.createElement('span');
+      flag.className = 'flag';
+      flag.textContent = f;
+      name.appendChild(flag);
+    }
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = row.detail;
+    const score = document.createElement('span');
+    score.className = 'score';
+    score.textContent = row.score;
+    el.append(name, detail, score);
+    strip.appendChild(el);
+  }
+  const mic = panel ? panel.mic : micState;
+  $('mic').textContent = micText(mic);
+  $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
+  $('msg').textContent = (panel && panel.message) || localError || '';
+}
+
+async function sendDevices() {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    const mics = all.filter((d) => d.kind === 'audioinput').map((d) => ({ deviceId: d.deviceId, label: d.label || 'Microphone' }));
+    ipcRenderer.send(C.devices, mics);
+  } catch (e) {
+    ipcRenderer.send(C.devices, []);
+  }
+}
+navigator.mediaDevices.addEventListener('devicechange', () => void sendDevices());
+
+async function getMic(deviceId) {
+  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  if (!deviceId) return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: Object.assign({ deviceId: { exact: deviceId } }, base), video: false });
+  } catch (e) {
+    localError = 'The chosen microphone is not available; using the Windows default.';
+    return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+  }
+}
+
+/** The match goes on without voice from this rig when there is no microphone: never throw. */
+async function openMic(deviceId) {
+  try {
+    const s = await getMic(deviceId);
+    const t = s.getAudioTracks()[0];
+    if (!t) throw new Error('no audio track');
+    t.enabled = !muted;
+    const old = micTrack;
+    micTrack = t;
+    if (old) {
+      localStream.removeTrack(old);
+      old.stop();
+    }
+    localStream.addTrack(t);
+    for (const r of remote.values()) attachAudio(r);
+    micState = muted ? 'muted' : 'open';
+  } catch (e) {
+    micState = 'unavailable';
+    localError = 'No microphone (' + errText(e) + '); the others will not hear you.';
+  }
+  void sendDevices();
+  report();
+  render();
+}
+
+/** The capture: legacy desktop getUserMedia with the source id; getDisplayMedia (main answers with the same source) if that fails. */
+async function openCapture(cap) {
+  if (!cap) return;
+  let s = null;
+  try {
+    s = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: cap.sourceId, maxWidth: VIDEO.width, maxHeight: VIDEO.height, maxFrameRate: VIDEO.fps } },
+    });
+  } catch (e1) {
+    try {
+      s = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { width: VIDEO.width, height: VIDEO.height, frameRate: VIDEO.fps } });
+    } catch (e2) {
+      fail('Could not capture ' + cap.label + ' (' + errText(e1) + '); the others will not see your table.');
+      return;
+    }
+  }
+  const t = s.getVideoTracks()[0];
+  if (!t) {
+    fail('Could not capture ' + cap.label + ' (no video track).');
+    return;
+  }
+  // Pinball is motion: keep the frame rate, give up sharpness first under a thin uplink.
+  try { t.contentHint = 'motion'; } catch (e) { /* older engines */ }
+  t.enabled = sending;
+  const old = videoTrack;
+  videoTrack = t;
+  if (old) {
+    localStream.removeTrack(old);
+    old.stop();
+  }
+  localStream.addTrack(t);
+  t.addEventListener('ended', () => {
+    if (videoTrack !== t) return;
+    videoTrack = null;
+    fail('The capture of ' + cap.label + ' ended (the window closed?).');
+  });
+  for (const r of remote.values()) attachVideo(r);
+  if (localError && localError.indexOf('Could not capture') === 0) localError = null;
+  report();
+  render();
+}
+
+function attachAudio(r) {
+  if (!micTrack) return;
+  if (r.audioSender) void r.audioSender.replaceTrack(micTrack);
+  else r.audioSender = r.pc.addTrack(micTrack, localStream);
+}
+
+function attachVideo(r) {
+  if (!videoTrack) return;
+  if (r.videoSender) void r.videoSender.replaceTrack(videoTrack);
+  else r.videoSender = r.pc.addTrack(videoTrack, localStream);
+  void applyBitrate(r);
+}
+
+async function applyBitrate(r) {
+  const sender = r.videoSender;
+  if (!sender) return;
+  try {
+    const p = sender.getParameters();
+    if (!p.encodings || !p.encodings.length) return;
+    if (p.encodings[0].maxBitrate === VIDEO.maxBitrate) return;
+    p.encodings[0].maxBitrate = VIDEO.maxBitrate;
+    p.encodings[0].maxFramerate = VIDEO.fps;
+    await sender.setParameters(p);
+  } catch (e) {
+    /* before negotiation there may be no encodings yet; the next stable state retries */
+  }
+}
+
+function closeRemote(peer) {
+  const r = remote.get(peer);
+  if (!r) return;
+  remote.delete(peer);
+  clearInterval(r.retry);
+  r.audio.srcObject = null;
+  try { r.pc.close(); } catch (e) { /* closed */ }
+  if (stageKey === 'peer:' + peer) stageKey = null;
+}
+
+/** The mesh's factory: a connection to one peer with our tracks on it. */
+function openPeer(peer) {
+  closeRemote(peer);
+  const pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle' });
+  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null };
+  r.audio.autoplay = true;
+  r.audio.srcObject = r.stream;
+  pc.addEventListener('track', (e) => {
+    const t = e.track;
+    for (const old of r.stream.getTracks()) if (old.kind === t.kind && old !== t) r.stream.removeTrack(old);
+    r.stream.addTrack(t);
+    t.addEventListener('mute', () => { report(); render(); });
+    t.addEventListener('unmute', () => { report(); render(); });
+    void r.audio.play().catch(() => undefined);
+    if (stageKey === 'peer:' + peer) stageKey = null;
+    report();
+    render();
+  });
+  pc.addEventListener('iceconnectionstatechange', () => {
+    if (pc.iceConnectionState === 'failed') pc.restartIce();
+    report();
+  });
+  pc.addEventListener('signalingstatechange', () => {
+    if (pc.signalingState === 'stable') void applyBitrate(r);
+  });
+  remote.set(peer, r);
+  attachAudio(r);
+  attachVideo(r);
+  // An offer lost on the way (the peer attached late, a reconnect) is sent again until the connection is up.
+  r.retry = setInterval(() => {
+    const n = mesh && mesh.get(peer);
+    const st = pc.iceConnectionState;
+    if (n && n.pc === pc && st !== 'connected' && st !== 'completed') n.resendOffer();
+  }, 5000);
+  return pc;
+}
+
+async function attach(a) {
+  detach();
+  localId = a.localId;
+  ice = a.ice || [];
+  muted = !!a.muted;
+  sending = !!a.sending;
+  localError = null;
+  // The mesh exists at once so early signals are held for their peer; peers are added once our tracks are ready,
+  // so the first offer already carries them.
+  mesh = new SignalingMesh(
+    localId,
+    openPeer,
+    (to, signal) => ipcRenderer.send(C.send, { to: to, signal: signal }),
+    (peer, e, where) => { localError = 'Media with ' + peer + ' (' + where + '): ' + errText(e); report(); },
+  );
+  const m = mesh;
+  await Promise.all([openMic(a.micDeviceId), openCapture(a.capture)]);
+  if (mesh !== m) return;
+  for (const p of a.peers) mesh.add(p);
+  report();
+  render();
+}
+
+function detach() {
+  if (mesh) mesh.close();
+  mesh = null;
+  for (const id of [...remote.keys()]) closeRemote(id);
+  for (const t of localStream.getTracks()) {
+    localStream.removeTrack(t);
+    t.stop();
+  }
+  micTrack = null;
+  videoTrack = null;
+  micState = 'unavailable';
+  sending = false;
+  stageKey = null;
+  report();
+  render();
+}
+
+ipcRenderer.on(C.attach, (_e, a) => void attach(a));
+ipcRenderer.on(C.signal, (_e, m) => { if (mesh) void mesh.receive(m.from, m.signal); });
+ipcRenderer.on(C.addPeer, (_e, p) => { if (mesh) mesh.add(p); report(); });
+ipcRenderer.on(C.removePeer, (_e, p) => {
+  if (mesh) mesh.remove(p);
+  closeRemote(p);
+  report();
+  render();
+});
+ipcRenderer.on(C.sending, (_e, on) => {
+  sending = !!on;
+  if (videoTrack) videoTrack.enabled = sending;
+  report();
+  render();
+});
+ipcRenderer.on(C.state, (_e, s) => { panel = s; render(); });
+ipcRenderer.on(C.muted, (_e, on) => {
+  muted = !!on;
+  if (micTrack) {
+    micTrack.enabled = !muted;
+    micState = muted ? 'muted' : 'open';
+  }
+  report();
+  render();
+});
+ipcRenderer.on(C.capture, (_e, cap) => void openCapture(cap));
+ipcRenderer.on(C.microphone, (_e, id) => void openMic(id));
+ipcRenderer.on(C.detach, () => detach());
+setInterval(report, 2000);
+render();
+ipcRenderer.send(C.ready);
+`;
