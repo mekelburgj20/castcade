@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { NetworkInterfaceInfo } from 'node:os';
-import { signCanonical, verifyCanonical } from '../match/keys.js';
+import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
+import { ClientMatch } from '../match/client.js';
+import { HostMatch } from '../match/host.js';
+import { generateKeys, signCanonical, verifyCanonical, type KeyPair } from '../match/keys.js';
+import { MemoryBus } from '../match/transport.js';
+import type { MediaSignal } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import {
   adoptHostFingerprint,
@@ -8,6 +13,7 @@ import {
   formatInvite,
   gameFingerprintFrom,
   lockPathFrom,
+  matchSignalling,
   newMatchCode,
   newMatchIdentity,
   parseInvite,
@@ -104,5 +110,48 @@ describe('match setup (A6)', () => {
     expect(lockPathFrom({ LOCALAPPDATA: 'C:\\Users\\p\\AppData\\Local' })).toBe('C:\\Users\\p\\AppData\\Local\\Castcade\\lock\\turn.lock');
     expect(lockPathFrom({ TEMP: 'C:\\Temp' })).toBe('C:\\Temp\\Castcade\\lock\\turn.lock');
     expect(lockPathFrom({})).toBe('C:\\Castcade\\Castcade\\lock\\turn.lock');
+  });
+
+  it('signalling: holds what lands before the media layer listens, then delivers live, without the envelope (D2)', async () => {
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 6; i++) await new Promise<void>((r) => setTimeout(r, 0));
+    };
+    const game: GameFingerprint = gameFingerprintFrom(status(), '0.3.1');
+    const who = (id: string, keys: KeyPair): ParticipantInfo => ({ playerId: id, displayName: id, publicKey: keys.publicKeyB64, rig: 'pc' });
+    const bus = new MemoryBus();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: who('h', hk), hostGame: game });
+    const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: who('c', ck), game, throwdownCode: 'M', hostId: 'h' });
+    const hs = matchSignalling(host, 'h');
+    const cs = matchSignalling(client, 'c');
+    client.join();
+    await flush();
+    host.start();
+    await flush();
+    const offer: MediaSignal = { kind: 'offer', sdp: 'v=0' };
+    const ice: MediaSignal = { kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 10.0.0.2 5 typ host', sdpMid: '0', sdpMLineIndex: 0 } };
+    hs.send('c', offer);
+    hs.send('c', ice);
+    await flush();
+    const got: Array<[string, MediaSignal]> = [];
+    const off = cs.onSignal((from, s) => got.push([from, s]));
+    expect(got).toEqual([
+      ['h', offer],
+      ['h', ice],
+    ]);
+    const atHost: Array<[string, MediaSignal]> = [];
+    hs.onSignal((from, s) => atHost.push([from, s]));
+    cs.send('h', { kind: 'answer', sdp: 'v=0 answer' });
+    await flush();
+    expect(atHost).toEqual([['c', { kind: 'answer', sdp: 'v=0 answer' }]]);
+    off();
+    hs.send('c', offer);
+    await flush();
+    expect(got).toHaveLength(2);
+    cs.onSignal((from, s) => got.push([from, s]));
+    expect(got).toHaveLength(3);
+    client.close();
+    host.close();
   });
 });

@@ -1,14 +1,17 @@
 /**
  * A6 (2026-10-30): the pure parts of `match-host.ts`, apart so they unit-test without Electron: the match settings in
  * `<userData>/match.json`, the match keys in `<userData>/match-keys.json`, the invite string, the match code, the
- * GameFingerprint the witness's current table gives, the advisory fingerprint adoption, the rig and the lock path
- * the hook reads (docs/design/alpha-match.md §1, §3).
+ * GameFingerprint the witness's current table gives, the advisory fingerprint adoption, the rig, the lock path
+ * the hook reads (docs/design/alpha-match.md §1, §3) and the media signalling over the role (§4, D2).
  */
 import { createPrivateKey, createPublicKey, randomInt, randomUUID } from 'node:crypto';
 import type { NetworkInterfaceInfo } from 'node:os';
 import { win32 } from 'node:path';
 import { GameFingerprint, PlayerId, type PayloadOf } from '@castcade/protocol';
+import type { ClientMatch } from '../match/client.js';
+import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
+import type { MediaSignal, MediaSignalling } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 
 export const DEFAULT_MATCH_PORT = 27401;
@@ -188,4 +191,55 @@ export function rigFrom(status: WitnessStatus): 'vr_headset' | 'pc' {
 export function lockPathFrom(env: Record<string, string | undefined>): string {
   const root = env.LOCALAPPDATA || env.TEMP || 'C:\\Castcade';
   return win32.join(root, 'Castcade', 'lock', 'turn.lock');
+}
+
+// ---------------------------------------------------------------------------------- signalling --
+
+/** Signals held while the media layer has no listener; far more than one offer, answer and its ICE candidates. */
+export const SIGNAL_BUFFER_MAX = 256;
+
+/**
+ * D2 in the shell (2026-10-30): the media layer's `MediaSignalling` over the role's MEDIA_SIGNAL. It listens from the
+ * role's creation (before HELLO) because the engine's emitter drops an event nobody listens to, while the media layer
+ * listens only from its `attach` (after the join resolves): a signal landing in between waits here and is handed over
+ * when `onSignal` gets its listener. It follows the role through a host transfer (a HostMatch to the ClientMatch it
+ * hands over to, a ClientMatch to the HostMatch it becomes), so the mesh keeps its signalling when the host changes.
+ */
+export function matchSignalling(role: HostMatch | ClientMatch, localId: string, max = SIGNAL_BUFFER_MAX): MediaSignalling {
+  let current: HostMatch | ClientMatch = role;
+  let listener: ((from: string, signal: MediaSignal) => void) | null = null;
+  const held: Array<[string, MediaSignal]> = [];
+  const deliver = (from: string, p: PayloadOf<'MEDIA_SIGNAL'>): void => {
+    // The media layer never sees the envelope: `to` is this player.
+    const signal: MediaSignal = { kind: p.kind };
+    if (p.sdp !== undefined) signal.sdp = p.sdp;
+    if (p.candidate !== undefined) signal.candidate = { ...p.candidate };
+    if (listener) return listener(from, signal);
+    held.push([from, signal]);
+    if (held.length > max) held.shift();
+  };
+  const bind = (r: HostMatch | ClientMatch): void => {
+    current = r;
+    if (r instanceof HostMatch) {
+      r.on('mediaSignal', ({ from, signal }) => deliver(from, signal));
+      r.on('hostTransfer', (t) => bind(t.client));
+    } else {
+      r.on('mediaSignal', ({ from, signal }) => deliver(from, signal));
+      r.on('becameHost', (h) => bind(h));
+    }
+  };
+  bind(role);
+  return {
+    localId,
+    send: (to, signal) => {
+      current.sendMediaSignal(to, signal);
+    },
+    onSignal(cb) {
+      listener = cb;
+      for (const [from, signal] of held.splice(0)) cb(from, signal);
+      return () => {
+        if (listener === cb) listener = null;
+      };
+    },
+  };
 }

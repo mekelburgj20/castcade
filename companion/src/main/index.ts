@@ -36,6 +36,12 @@ import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../me
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
+import { matchSignalling, rigFrom } from './match-setup.js';
+import type { VrOverlay } from '../media/match-media-types.js';
+import { createMediaSettingsStore } from '../media/media-settings.js';
+import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
+import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
+import { probeWindows } from '../media/window-geometry.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -54,6 +60,9 @@ let overlay: OverlayServer | null = null;
 let stream: StreamHost | null = null;
 /** A6: the match (host or join by invite); null when it could not be set up this run. */
 let match: MatchHost | null = null;
+/** D2 / D7: the match's video and voice, and the headset panel; null when they could not be set up this run. */
+let matchMedia: RtcHost | null = null;
+let matchOverlay: VrOverlay | null = null;
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -157,6 +166,8 @@ async function quit(host: WitnessHost): Promise<void> {
   await overlay?.stop();
   await stream?.stop().catch(() => undefined);
   await match?.stop().catch(() => undefined); // forfeits a match in progress and removes the turn lock
+  await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
+  await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await host.stop();
   log?.info('quit');
   app.quit();
@@ -362,8 +373,28 @@ async function main(): Promise<void> {
     logger.error(`stream: could not set up (${describeError(e)}); streaming and recording are off this run`);
   }
 
-  // A6 + C3: the match (host or join by invite). Media (D2) and the VR overlay (D7) are wired by the lead; the match
-  // runs without them. A failure here turns matches off for this run; it never stops the witness.
+  // D2 + D7 (alpha-match.md §4, §5): the match's video and voice, and the panel in the headset. Each one that fails to
+  // set up is logged and left out: the match then runs without it (2026-10-30: media never blocks a match).
+  try {
+    matchMedia = createRtcHost({
+      userData,
+      log: logger,
+      vr: () => rigFrom(host.status()) === 'vr_headset',
+      probe: () => probeWindows(),
+      settings: createMediaSettingsStore(join(userData, 'media.json'), (e) => logger.warn(`media: could not save media.json: ${describeError(e)}`)),
+    });
+  } catch (e) {
+    logger.error(`media: could not set up (${describeError(e)}); matches run without video and voice this run`);
+  }
+  try {
+    const exePath = resolveVrOverlay({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    if (!exePath) logger.info('vr-overlay: no helper in this build; in VR the match panel shows on the desktop');
+    matchOverlay = createVrOverlay({ exePath, log: (line) => logger.info(line) });
+  } catch (e) {
+    logger.error(`vr-overlay: could not set up (${describeError(e)}); the match panel shows on the desktop this run`);
+  }
+
+  // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   try {
     matchHost = createMatchHost({
@@ -374,6 +405,10 @@ async function main(): Promise<void> {
         const cur = store.get();
         return { deviceId: cur.deviceId, deviceLabel: cur.deviceLabel };
       },
+      media: matchMedia ?? undefined,
+      vrOverlay: matchOverlay ?? undefined,
+      // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
+      signalling: (role, localId) => matchSignalling(role, localId),
       appVersion,
       log: logger,
     });
