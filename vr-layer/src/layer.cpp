@@ -517,7 +517,7 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
     system = props.systemName;
   }
   const char* api = s->api == Api::D3D11 ? "D3D11" : s->api == Api::OpenGL ? "OpenGL (Win32)" : nullptr;
-  logLine("session created on '" + system + "' (max " + std::to_string(s->maxLayers) + " layers): graphics binding " + (api ? api : binding) +
+  logLine("session created on '" + system + "' (max " + std::to_string(s->maxLayers) + " layers): graphics binding " + (api ? std::string(api) : binding) +
           (api ? "; the panel is drawn in this session" : "; not supported, this session passes through"));
   std::lock_guard<std::mutex> lk(g_mutex);
   g_sessions[handle] = std::move(s);
