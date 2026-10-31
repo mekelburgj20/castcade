@@ -189,7 +189,8 @@ export function Match({ state }: { state: CastcadeState }) {
                         {p.name}
                         {p.id === st.localId ? ' (you)' : ''}
                         {p.id === st.hostId ? ' · host' : ''}
-                        {p.tableMatch === false && <span className="warn"> · different table file</span>}
+                        {p.tableMatch === false && <span className="warn"> · {p.tableNote ?? 'different table file'}</span>}
+                        {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
                         {row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
                       </td>
                       <td>{RIG_LABEL[p.rig]}</td>

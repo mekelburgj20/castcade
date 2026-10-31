@@ -52,8 +52,13 @@ export interface ControllerStatus {
   /** Lobby roster before the start, the MATCH_READY roster after. */
   participants: ParticipantInfo[];
   hostId: PlayerId | null;
-  /** Players whose GameFingerprint differed from the host's at HELLO (advisory). */
+  /**
+   * Players whose table differs from the host's (advisory): any GameFingerprint field but `emulatorVersion`. A VPX
+   * build difference alone is not a table difference (D2.5, 2026-10-31): see `mismatches`.
+   */
   tableMismatch: PlayerId[];
+  /** The GameFingerprint fields that differ from the host's, per player (none: agrees); `mismatchWords` words them. */
+  mismatches: Record<PlayerId, string[]>;
   panel: PanelState;
 }
 
@@ -75,6 +80,24 @@ export interface MatchControllerOptions {
   stateIntervalMs?: number;
   /** For the panel before MATCH_READY says it (the host knows its own choice; a client learns it at the start). */
   ballsPerGame?: number;
+}
+
+/**
+ * D2.5 (2026-10-31, the second two-player match): what a fingerprint difference means to a player. The two rigs ran
+ * different VPX builds (10.8.0.2078.Panasony and 10.8.0.2058.800a99c); `emulatorVersion` carries the build, and the
+ * panel read "different table file" although the table may have been the same. So the build is its own advisory note
+ * (`build`), and the table line says what differs: another table (`tableName`, or the patch recipe), the same table
+ * in another file (only `tableHash`: a re-save or another download), or something else of its setup (ROM, physics).
+ */
+export function mismatchWords(fields: readonly string[]): { table: string | null; build: string | null } {
+  const f = new Set(fields);
+  const build = f.has('emulatorVersion') ? 'different VPX build' : null;
+  f.delete('emulatorVersion');
+  let table: string | null = null;
+  if (f.has('tableName') || f.has('recipeVersion')) table = 'different table file';
+  else if (f.has('tableHash')) table = 'same table, different file (a re-save or another download)';
+  else if (f.size > 0) table = 'different table setup';
+  return { table, build };
 }
 
 const DEFAULT_SETTLE_MS = 2000;
@@ -163,7 +186,8 @@ export class MatchController {
       myTurn: this.holding !== null,
       participants: this.participants().map((p) => ({ ...p })),
       hostId: this.hostId,
-      tableMismatch: [...this.mismatch.keys()],
+      tableMismatch: [...this.mismatch].filter(([, f]) => mismatchWords(f).table !== null).map(([id]) => id),
+      mismatches: Object.fromEntries([...this.mismatch].map(([id, f]) => [id, [...f]])),
       panel: this.panel(),
     };
   }
@@ -630,7 +654,9 @@ export class MatchController {
     const players = this.participants().map((p) => {
       const prog = st.players[p.playerId];
       const flags: PanelState['players'][number]['flags'] = [];
-      if (this.mismatch.has(p.playerId)) flags.push('table_mismatch');
+      const words = mismatchWords(this.mismatch.get(p.playerId) ?? []);
+      if (words.table) flags.push('table_mismatch');
+      if (words.build) flags.push('build_mismatch');
       if (this.left.has(p.playerId) || prog?.connected === false) flags.push('disconnected');
       return {
         id: p.playerId,
@@ -658,12 +684,14 @@ export class MatchController {
 
   private panelMessage(): string | null {
     if (this.message) return this.message;
-    if (this.mismatch.size > 0 && this.phase !== 'over') {
-      const who = [...this.mismatch.keys()].map((id) => (id === this.localId ? 'you' : this.nameOf(id)));
-      const fields = new Set([...this.mismatch.values()].flat());
-      const what = fields.has('tableHash') || fields.has('tableName') ? 'different table file' : fields.has('emulatorVersion') ? 'different VPX build' : 'different table setup';
-      return `${what}: ${who.join(', ')}`;
+    // The table line, grouped by what differs. A VPX build difference alone is a muted flag on the player's row, not
+    // this line: it would hold the line for the whole match and hide the turn prompts (D2.5, 2026-10-31).
+    const byWhat = new Map<string, string[]>();
+    for (const [id, fields] of this.mismatch) {
+      const what = mismatchWords(fields).table;
+      if (what) byWhat.set(what, [...(byWhat.get(what) ?? []), id === this.localId ? 'you' : this.nameOf(id)]);
     }
+    if (byWhat.size > 0 && this.phase !== 'over') return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
     const st = this.role.state;
     if (this.phase === 'lobby') return isHostRole(this.role) && this.participants().length >= 2 ? 'Everyone in? Press Start match' : isHostRole(this.role) ? 'Waiting for players' : 'Waiting for the host to start';
     if (this.phase === 'paused') {

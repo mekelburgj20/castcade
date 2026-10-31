@@ -14,7 +14,7 @@ import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
-import { MatchController, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MatchController, mismatchWords, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus } from '../media/match-media-types.js';
@@ -67,7 +67,11 @@ export interface MatchStatus {
   code: string | null;
   localId: string | null;
   hostId: string | null;
-  participants: Array<{ id: string; name: string; rig: ParticipantInfo['rig']; tableMatch: boolean | null }>;
+  /**
+   * `tableNote` (D2.5, 2026-10-31): how the player's table differs from the host's (`mismatchWords`), null when it does
+   * not; `buildMatch`: false when their VPX build differs (shown muted; the table may still be the same).
+   */
+  participants: Array<{ id: string; name: string; rig: ParticipantInfo['rig']; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
@@ -309,12 +313,17 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       code: a?.code ?? null,
       localId: a ? a.engine.localId : null,
       hostId: c?.hostId ?? null,
-      participants: (c?.participants ?? []).map((p) => ({
-        id: p.playerId,
-        name: p.displayName,
-        rig: p.rig,
-        tableMatch: c ? !c.tableMismatch.includes(p.playerId) : null,
-      })),
+      participants: (c?.participants ?? []).map((p) => {
+        const words = c ? mismatchWords(c.mismatches[p.playerId] ?? []) : null;
+        return {
+          id: p.playerId,
+          name: p.displayName,
+          rig: p.rig,
+          tableMatch: c ? !c.tableMismatch.includes(p.playerId) : null,
+          tableNote: words?.table ?? null,
+          buildMatch: words ? words.build === null : null,
+        };
+      }),
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
       vrOverlay: a && offSteamVr(a) ? { ...RUNTIME_NOT_STEAMVR } : a && opts.vrOverlay ? opts.vrOverlay.status() : null,

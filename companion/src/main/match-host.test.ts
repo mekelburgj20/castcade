@@ -93,8 +93,10 @@ describe('match host (A6)', () => {
     ]);
     await until(() => H.mh.status().participants.length === 2);
     expect(H.mh.status().participants.find((p) => p.name === 'Krobs')?.tableMatch).toBe(false);
-    expect(H.mh.status().panel?.message).toBe('different table file: Krobs');
-    expect(C.mh.status().panel?.message).toBe('different table file: you');
+    // Same table name, another hash (D2.5, 2026-10-31): the same table in another file.
+    expect(H.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): Krobs');
+    expect(C.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): you');
+    expect(H.mh.status().participants.find((p) => p.name === 'Krobs')).toMatchObject({ tableNote: 'same table, different file (a re-save or another download)', buildMatch: true });
     expect(C.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags).toEqual(['table_mismatch']);
 
     await H.mh.start();
@@ -425,7 +427,7 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     // A different table file is still a difference.
     krobs.load('cd'.repeat(32), VR_VD);
     await until(() => row(H.mh, 'Krobs')?.tableMatch === false && row(C.mh, 'Krobs')?.tableMatch === false);
-    expect(H.mh.status().panel?.message).toBe('different table file: Krobs');
+    expect(H.mh.status().panel?.message).toBe('same table, different file (a re-save or another download): Krobs');
 
     // After MATCH_READY the roster is final: a table load changes nothing.
     await H.mh.start();

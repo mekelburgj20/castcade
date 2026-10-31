@@ -8,7 +8,7 @@ import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../media/match-media-types.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { isHostRole, MatchController, type ControllerFeed, type CueKind } from './controller.js';
+import { isHostRole, MatchController, mismatchWords, type ControllerFeed, type CueKind } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -328,10 +328,48 @@ describe('MatchController', () => {
     expect(H.ctl.status().tableMismatch).toEqual(['c']);
     // The client learns it from HELLO_ACK's hostGame, with nobody telling its controller by hand.
     expect(C.ctl.status().tableMismatch).toEqual(['c']);
-    expect(C.media.panel.message).toBe('different table file: you');
-    expect(H.media.panel.message).toBe('different table file: Krobs');
+    // The same name in another file (D2.5, 2026-10-31): said so.
+    expect(C.media.panel.message).toBe('same table, different file (a re-save or another download): you');
+    expect(H.media.panel.message).toBe('same table, different file (a re-save or another download): Krobs');
     for (const seat of [H, C]) expect(seat.media.panel.players.find((p) => p.id === 'c')?.flags).toEqual(['table_mismatch']);
     expect(H.media.panel.players.find((p) => p.id === 'h')?.flags).toEqual([]);
+  });
+
+  describe('D2.5 (2026-10-31): the wording follows the fields that differ', () => {
+    it('mismatchWords: another name or recipe → different table file; the hash alone → same table, different file; the build is its own note', () => {
+      expect(mismatchWords(['tableHash'])).toEqual({ table: 'same table, different file (a re-save or another download)', build: null });
+      expect(mismatchWords(['tableName', 'tableHash'])).toEqual({ table: 'different table file', build: null });
+      expect(mismatchWords(['recipeVersion', 'sidecarHash'])).toEqual({ table: 'different table file', build: null });
+      expect(mismatchWords(['romHash'])).toEqual({ table: 'different table setup', build: null });
+      expect(mismatchWords(['emulatorVersion'])).toEqual({ table: null, build: 'different VPX build' });
+      expect(mismatchWords(['emulatorVersion', 'tableHash'])).toEqual({ table: 'same table, different file (a re-save or another download)', build: 'different VPX build' });
+      expect(mismatchWords([])).toEqual({ table: null, build: null });
+    });
+
+    it('another table name: "different table file", flagged table_mismatch', async () => {
+      const { H, C } = await rig(3, { ...game, tableName: 'Monster Bash', tableHash: 'cd'.repeat(32) }, 'advise');
+      expect(H.media.panel.message).toBe('different table file: Krobs');
+      expect(C.media.panel.message).toBe('different table file: you');
+      expect(H.media.panel.players.find((p) => p.id === 'c')?.flags).toEqual(['table_mismatch']);
+      expect(H.ctl.status()).toMatchObject({ tableMismatch: ['c'], mismatches: { c: ['tableName', 'tableHash'] } });
+    });
+
+    it('the same table on another VPX build (the second match: 10.8.0.2078.Panasony vs 10.8.0.2058.800a99c): build_mismatch only, no table line', async () => {
+      const { H, C } = await rig(3, { ...game, emulatorVersion: '10.8.0.2058.800a99c' }, 'advise');
+      for (const seat of [H, C]) {
+        expect(seat.media.panel.players.find((p) => p.id === 'c')?.flags).toEqual(['build_mismatch']);
+        expect(seat.ctl.status().tableMismatch).toEqual([]);
+        expect(seat.media.panel.message ?? '').not.toMatch(/table|build/);
+      }
+      expect(H.ctl.status().mismatches).toEqual({ c: ['emulatorVersion'] });
+    });
+
+    it('both: the table line and the build flag', async () => {
+      const { H } = await rig(3, { ...game, tableHash: 'cd'.repeat(32), emulatorVersion: '10.8.0.2058.800a99c' }, 'advise');
+      expect(H.media.panel.message).toBe('same table, different file (a re-save or another download): Krobs');
+      expect(H.media.panel.players.find((p) => p.id === 'c')?.flags).toEqual(['table_mismatch', 'build_mismatch']);
+      expect(H.ctl.status().tableMismatch).toEqual(['c']);
+    });
   });
 
   it('a `refuse` host (the engine default) keeps the different table out, and flags nobody', async () => {

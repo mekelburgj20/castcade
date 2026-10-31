@@ -25,8 +25,11 @@ export interface PanelState {
     /** Balls that player has finished. */
     ballsDone: number;
     isUp: boolean;
-    /** `table_mismatch`: their GameFingerprint differs from the host's (advisory, alpha-match.md §3). */
-    flags: Array<'table_mismatch' | 'disconnected'>;
+    /**
+     * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
+     * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same.
+     */
+    flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected'>;
   }>;
   /** `idle` before start, `playing`, `paused` (someone dropped), `over` once RESULT is in. */
   phase: 'idle' | 'playing' | 'paused' | 'over';
