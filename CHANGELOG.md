@@ -9,6 +9,32 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 Built 2026-10-30 as the 0.2.22 candidate; not tagged until the rig checks in `WORK.md` (Now) pass.
 
+### Match (alpha): two players, one table, video and voice in the headset
+- A6 + C3: a **Match** tab. Host shows an invite (`castcade:ws://<ip>:<port>#<code>`, default TCP 27401, the public
+  IP from api.ipify.org with the LAN address as the fallback); Join pastes it. `match/controller.ts` turns the
+  engine's grants into the turn lock (`%LOCALAPPDATA%\Castcade\lock\turn.lock`: the hook swallows flippers,
+  plunger, nudge and Start while it exists, so each player starts their own one-player game when their first grant
+  arrives) and a sound cue in the headset, and turns the witness's live events into `BALL_END` (the score sampled at
+  the next `current_scores` or 2 s after the ball end, shoot-again from the detector's extra balls), `GAME_OVER` and
+  `STATE`; the result is signed by every companion and shown on both sides. Each player's game still posts to ArcAid
+  as a normal Witness score; the Throwdown result on arcaid.app is still A5 / F6. Keys in `match-keys.json`,
+  settings in `match.json`. Design: `docs/design/alpha-match.md`; runbook: `docs/alpha-match-runbook.md`.
+- D2: video and voice between the players over WebRTC, peer to peer, signalled with the new `MEDIA_SIGNAL` message
+  through the host (never logged, never through ArcAid). A full mesh for 2–4 players: every rig sends its microphone
+  (Opus, echo cancellation and noise suppression, open mic with Mute; a named microphone, because the Windows default
+  in VR is often a virtual device); video goes only from the player up (the VPX player / VR preview window at up to
+  1280x720, 30 fps, 2.5 Mbps). Google STUN by default, an optional TURN in `media.json`. The **panel** (one page:
+  the peer connections and the in-headset UI: the up player's video, `YOUR BALL 2` / `<NAME> IS UP`, scores, mic
+  state) is a desktop window on a monitor rig and an offscreen window in VR. `media/rtc-host.ts`, `panel-page.ts`,
+  `rtc-signaling.ts`, `media-settings.ts`.
+- D7: `vr-overlay/`, a C++ OpenVR overlay helper (`castcade-vr-overlay.exe`, OpenVR SDK v2.15.6, BSD-3) that draws
+  the panel inside the headset over VPX's VR session: frames arrive over stdin (BGRA, a 16-byte `CVO1` header), the
+  overlay is head-anchored 0.55 m wide below the line of sight, hides after 5 s without frames, exits 2 when SteamVR
+  is not running. Built by `.github/workflows/vr-overlay.yml` on windows-latest, fetched into the installer by
+  `npm run fetch-vr-overlay -w companion`, driven by `media/vr-overlay.ts`.
+- Protocol 2 additions: `MEDIA_SIGNAL`, `HELLO_ACK.hostGame` (a table-file mismatch is advisory on both sides, shown
+  as "different table file", never a refusal in `advise` mode).
+
 ### Streaming and recording
 - D1.5: a `Stream` tab replaces the card on Settings. **Preview** opens the bundled ffplay on exactly the picture the
   stream would carry (the engine's window probe, portrait slice, rotate and burned-in overlay; `media/preview.ts`),

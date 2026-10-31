@@ -1,6 +1,6 @@
 # Alpha match: two VR players, one table, video and voice in the headset
 
-**Status:** design 2026-10-30 for the first real match (owner + tester Krobs, both in VR). Builds on the Phase 1 engine
+**Status:** design 2026-10-30; built 2026-10-31 on `main` (A6 + C3, D2, D7, H4: `match/controller.ts`, `main/match-host.ts`, `media/rtc-host.ts`, `media/panel-page.ts`, `media/vr-overlay.ts`, `vr-overlay/`), untested on a rig; the §6 checks are the gate. Design for the first real match (owner + tester Krobs, both in VR). Builds on the Phase 1 engine
 (`companion/src/match/`), A2/A3 (WebSocket transfer and reconnect), the live detector (C2), the turn lock in hook
 0.1.0+ (`vpx-hook/castcade.vbs`, Phase 0c pass), the VR detection (`witness/vr-detect.ts`) and the D1 media stack.
 Owner ask 2026-10-30: build the final product, not an interim; video and voice between the players; both in VR.
@@ -73,7 +73,7 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 
 - **Signalling**: new protocol message `MEDIA_SIGNAL` `{ to: PlayerId, kind: 'offer' | 'answer' | 'ice', sdp?: string,
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null } }`, direction `any`; the host
-  relays it to `to` only (never logged, like STATE); protocol stays 2 (unreleased). Prose: a "Media signalling"
+  relays it to `to` only (never logged, like STATE); protocol stays 2 (unreleased). Built: `HELLO_ACK.hostGame` was added too, so a client learns of a table-file mismatch and both panels flag it (the host accepts the HELLO in `advise` mode). Prose: a "Media signalling"
   section (what is signalled, that media never crosses ArcAid, that video flows only from the player up).
 - **Topology**: full mesh of `RTCPeerConnection`s (2–4 players; perfect negotiation, polite = the lexically smaller
   playerId). Voice: every peer sends its microphone, Opus, echo cancellation and noise suppression on, open mic with a
