@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { headerText, micText, PANEL_CHANNELS, panelPageHtml, scoreText, stageText, stripRows, videoPeer } from './panel-page.js';
+import { headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, scoreText, stageText, stripRows, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -30,9 +30,14 @@ describe('panel text (D2)', () => {
 
   it('strip: the controller order while playing, with the ball, balls done and flags; standings by place when over', () => {
     expect(stripRows(state())).toEqual([
-      { id: 'owner', name: 'Owner', score: '1,234,560', detail: '2/3', up: false, flags: [] },
-      { id: 'krobs', name: 'Krobs', score: '990,000', detail: 'BALL 2', up: true, flags: ['DIFFERENT TABLE'] },
+      { id: 'owner', name: 'Owner', score: '1,234,560', detail: '2/3', up: false, flags: [], notes: [] },
+      { id: 'krobs', name: 'Krobs', score: '990,000', detail: 'BALL 2', up: true, flags: ['DIFFERENT TABLE'], notes: [] },
     ]);
+    // D2.5 (2026-10-31): a different VPX build is a muted note, not a red flag; with a different table, both.
+    const build = state({ players: [{ id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: false, flags: ['build_mismatch'] }] });
+    expect(stripRows(build)[0]).toMatchObject({ flags: [], notes: ['DIFFERENT VPX BUILD'] });
+    const both = state({ players: [{ id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: false, flags: ['table_mismatch', 'build_mismatch'] }] });
+    expect(stripRows(both)[0]).toMatchObject({ flags: ['DIFFERENT TABLE'], notes: ['DIFFERENT VPX BUILD'] });
     const done = state({ players: [{ id: 'owner', name: 'Owner', score: null, ballsDone: 3, isUp: false, flags: ['disconnected'] }] });
     expect(stripRows(done)[0]).toMatchObject({ score: '–', detail: 'DONE', flags: ['OFFLINE'] });
     const over = state({
@@ -64,6 +69,53 @@ describe('panel text (D2)', () => {
     expect([micText('open'), micText('muted'), micText('unavailable')]).toEqual(['MIC ON', 'MIC MUTED', 'NO MIC']);
     expect(scoreText(0)).toBe('0');
     expect(scoreText(null)).toBe('–');
+  });
+});
+
+// ---- D2.5: the crop and the cover, drawn onto the canvas ----
+
+const CAP = { sourceId: 'screen:0:0', label: 'screen 1, crop 1280x720 of Visual Pinball Player', screen: { width: 2560, height: 1440 }, crop: { x: 100, y: 200, width: 1280, height: 720 }, out: { width: 1280, height: 720 } };
+
+function fakeCtx() {
+  const calls: Array<[string, ...unknown[]]> = [];
+  const ctx: Paint2D & { calls: typeof calls } = {
+    calls,
+    fillStyle: '',
+    font: '',
+    textAlign: '',
+    textBaseline: '',
+    fillRect: (...a: number[]) => calls.push(['fillRect', ...a]),
+    fillText: (t: string, x: number, y: number) => calls.push(['fillText', t, x, y]),
+    drawImage: (_src: unknown, ...a: number[]) => calls.push(['drawImage', ...a]),
+  };
+  return ctx;
+}
+
+describe('match video crop (D2.5)', () => {
+  it('the crop in the video\'s own pixels: as given at the display\'s size, scaled when Chromium delivers it smaller, clamped, none before a frame', () => {
+    expect(videoCropRect(CAP, 2560, 1440)).toEqual({ sx: 100, sy: 200, sw: 1280, sh: 720 });
+    expect(videoCropRect(CAP, 1280, 720)).toEqual({ sx: 50, sy: 100, sw: 640, sh: 360 });
+    expect(videoCropRect({ ...CAP, crop: { x: 2000, y: 1000, width: 1280, height: 720 } }, 2560, 1440)).toEqual({ sx: 2000, sy: 1000, sw: 560, sh: 440 });
+    expect(videoCropRect(CAP, 0, 0)).toBeNull();
+  });
+
+  it('paints the crop at the output size; covered, a dark frame saying "Paused: back in a moment"; no frame yet, nothing', () => {
+    const ctx = fakeCtx();
+    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, false)).toBe('crop');
+    expect(ctx.calls).toEqual([['drawImage', 100, 200, 1280, 720, 0, 0, 1280, 720]]);
+    ctx.calls.length = 0;
+    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, true)).toBe('cover');
+    expect(ctx.calls).toEqual([
+      ['fillRect', 0, 0, 1280, 720],
+      ['fillText', 'Paused: back in a moment', 640, 360],
+    ]);
+    expect(ctx.font).toMatch(/^700 60px /);
+    // A portrait crop: the text is sized by the width so it fits.
+    paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, { ...CAP, out: { width: 404, height: 720 } }, true);
+    expect(ctx.font).toMatch(/^700 25px /);
+    ctx.calls.length = 0;
+    expect(paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, CAP, false)).toBe('blank');
+    expect(ctx.calls).toEqual([]);
   });
 });
 
@@ -109,7 +161,10 @@ class FakeElement {
   textContent = '';
   className = '';
   srcObject: unknown = null;
+  videoWidth = 2560;
+  videoHeight = 1440;
   children: FakeElement[] = [];
+  async play(): Promise<void> {}
   appendChild(c: FakeElement): void {
     this.children.push(c);
   }
@@ -168,6 +223,25 @@ class FakePeerConnection {
   }
 }
 
+class FakeCanvas {
+  static last: FakeCanvas | null = null;
+  width = 300;
+  height = 150;
+  ctx = fakeCtx();
+  streams: FakeStream[] = [];
+  constructor() {
+    FakeCanvas.last = this;
+  }
+  getContext(): Paint2D {
+    return this.ctx;
+  }
+  captureStream(): FakeStream {
+    const s = new FakeStream([new FakeTrack('video')]);
+    this.streams.push(s);
+    return s;
+  }
+}
+
 function loadPage(media: { mic: boolean; capture: boolean }) {
   const html = panelPageHtml({ vr: true });
   const script = /<script>([\s\S]*)<\/script>/.exec(html)?.[1] ?? '';
@@ -179,12 +253,15 @@ function loadPage(media: { mic: boolean; capture: boolean }) {
       if (!els.has(id)) els.set(id, new FakeElement());
       return els.get(id)!;
     },
-    createElement: () => new FakeElement(),
+    createElement: (tag: string) => (tag === 'canvas' ? new FakeCanvas() : new FakeElement()),
   };
+  const captures: Array<{ constraints: unknown; track: FakeTrack }> = [];
   const gum = async (c: { audio?: unknown; video?: unknown }) => {
     if (c.video) {
       if (!media.capture) throw new Error('capture refused');
-      return new FakeStream([new FakeTrack('video')]);
+      const track = new FakeTrack('video');
+      captures.push({ constraints: c.video, track });
+      return new FakeStream([track]);
     }
     if (!media.mic) throw new Error('NotFoundError');
     return new FakeStream([new FakeTrack('audio')]);
@@ -211,10 +288,12 @@ function loadPage(media: { mic: boolean; capture: boolean }) {
     play = async () => undefined;
   }
   FakePeerConnection.all = [];
+  const intervals: Array<{ cb: () => void; ms: number }> = [];
   const run = new Function('require', 'document', 'navigator', 'MediaStream', 'RTCPeerConnection', 'Audio', 'setInterval', 'clearInterval', script);
-  run(() => electron, document, navigator, FakeStream, FakePeerConnection, FakeAudio, () => 0, () => undefined);
+  run(() => electron, document, navigator, FakeStream, FakePeerConnection, FakeAudio, (cb: () => void, ms: number) => intervals.push({ cb, ms }), () => undefined);
+  const canvas = FakeCanvas.last!;
   const emit = (ch: string, arg?: unknown): void => handlers.get(ch)?.({}, arg);
-  return { html, script, sent, emit, el: (id: string) => document.getElementById(id), handlers };
+  return { html, script, sent, emit, el: (id: string) => document.getElementById(id), handlers, canvas, captures, intervals };
 }
 
 const settle = async (): Promise<void> => {
@@ -226,7 +305,7 @@ describe('panel page script (D2)', () => {
     const { html, script } = loadPage({ mic: true, capture: true });
     expect(html).toContain('<body class="vr">');
     expect(panelPageHtml({ vr: false })).toContain('<body class="desktop">');
-    for (const name of ['function headerText', 'function stripRows', 'class PeerNegotiator', 'class SignalingMesh', 'function isPolite']) expect(script).toContain(name);
+    for (const name of ['function headerText', 'function stripRows', 'function videoCropRect', 'function paintFrame', 'class PeerNegotiator', 'class SignalingMesh', 'function isPolite']) expect(script).toContain(name);
     expect(script).toContain(PANEL_CHANNELS.attach);
     expect(script).not.toContain('innerHTML');
   });
@@ -247,7 +326,7 @@ describe('panel page script (D2)', () => {
 
   it('attach: mic and capture on every connection, video enabled only while sending, 2.5 Mbps cap, offers addressed to the peer', async () => {
     const p = loadPage({ mic: true, capture: true });
-    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'third'], ice: [{ urls: ['stun:x'] }], capture: { sourceId: 'window:1:0', label: 'Visual Pinball Player' }, micDeviceId: 'hs', muted: false, sending: false });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'third'], ice: [{ urls: ['stun:x'] }], capture: CAP, micDeviceId: 'hs', muted: false, sending: false });
     await settle();
     expect(FakePeerConnection.all).toHaveLength(2);
     expect(FakePeerConnection.all[0]?.config).toEqual({ iceServers: [{ urls: ['stun:x'] }], bundlePolicy: 'max-bundle' });
@@ -280,14 +359,73 @@ describe('panel page script (D2)', () => {
 
   it('no microphone and no capture: the mesh still opens (receive only) and the status says why', async () => {
     const p = loadPage({ mic: false, capture: false });
-    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: { sourceId: 'window:1:0', label: 'Visual Pinball Player' }, micDeviceId: null, muted: false, sending: false });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: false });
     await settle();
     expect(FakePeerConnection.all).toHaveLength(1);
     expect(FakePeerConnection.all[0]?.senders).toEqual([]);
     const st = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { mic: string; capturing: boolean; error: string; peers: Record<string, { ice: string }> };
     expect(st.mic).toBe('unavailable');
     expect(st.capturing).toBe(false);
-    expect(st.error).toMatch(/Could not capture Visual Pinball Player|No microphone/);
+    expect(st.error).toMatch(/Could not capture screen 1, crop 1280x720 of Visual Pinball Player|No microphone/);
     expect(st.peers['krobs']?.ice).toBe('new');
+  });
+
+  it('D2.5: films the screen at its own size, sends the canvas track; a moved window re-crops without a new capture; the cover; null stops it', async () => {
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    expect(p.captures).toHaveLength(1);
+    expect(p.captures[0]?.constraints).toEqual({ mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: 'screen:0:0', maxWidth: 2560, maxHeight: 1440, maxFrameRate: 30 } });
+    expect(p.el('src').srcObject).not.toBeNull();
+    expect([p.canvas.width, p.canvas.height]).toEqual([1280, 720]);
+    // The peers get the canvas's track, not the screen's.
+    const sender = FakePeerConnection.all[0]!.senders.find((s) => s.track.kind === 'video')!;
+    expect(sender.track).toBe(p.canvas.streams[0]?.getVideoTracks()[0]);
+    expect(sender.track).not.toBe(p.captures[0]?.track);
+    expect(sender.track.contentHint).toBe('motion');
+
+    // The draw loop: a 33 ms timer; while not sending, once a second.
+    const loop = p.intervals.find((i) => i.ms === 33)!;
+    p.canvas.ctx.calls.length = 0;
+    for (let i = 0; i < 30; i++) loop.cb();
+    expect(p.canvas.ctx.calls.filter((c) => c[0] === 'drawImage')).toHaveLength(1);
+    p.emit(PANEL_CHANNELS.sending, true);
+    p.canvas.ctx.calls.length = 0;
+    for (let i = 0; i < 30; i++) loop.cb();
+    expect(p.canvas.ctx.calls.filter((c) => c[0] === 'drawImage')).toHaveLength(30);
+
+    // Moved and resized on the same screen: a new crop and output size, the same capture and the same sent track.
+    p.emit(PANEL_CHANNELS.capture, { ...CAP, crop: { x: 0, y: 0, width: 1920, height: 1080 }, out: { width: 1280, height: 720 } });
+    await settle();
+    expect(p.captures).toHaveLength(1);
+    p.canvas.ctx.calls.length = 0;
+    loop.cb();
+    expect(p.canvas.ctx.calls).toEqual([['drawImage', 0, 0, 1920, 1080, 0, 0, 1280, 720]]);
+    // Another screen: a new capture, the canvas track stays (no renegotiation).
+    p.emit(PANEL_CHANNELS.capture, { ...CAP, sourceId: 'screen:1:0' });
+    await settle();
+    expect(p.captures).toHaveLength(2);
+    expect(p.captures[0]?.track.readyState).toBe('ended');
+    expect(p.canvas.streams).toHaveLength(1);
+    expect(sender.track.readyState).toBe('live');
+
+    // Covered: the "Paused" frame at once and at every tick, until uncovered.
+    p.canvas.ctx.calls.length = 0;
+    p.emit(PANEL_CHANNELS.cover, true);
+    loop.cb();
+    expect(p.canvas.ctx.calls.filter((c) => c[0] === 'fillText').map((c) => c[1])).toEqual(['Paused: back in a moment', 'Paused: back in a moment']);
+    expect(p.canvas.ctx.calls.some((c) => c[0] === 'drawImage')).toBe(false);
+    p.emit(PANEL_CHANNELS.cover, false);
+    p.canvas.ctx.calls.length = 0;
+    loop.cb();
+    expect(p.canvas.ctx.calls[0]?.[0]).toBe('drawImage');
+
+    // Main found no window any more: the capture stops and the status says so.
+    p.emit(PANEL_CHANNELS.capture, null);
+    await settle();
+    expect(p.captures[1]?.track.readyState).toBe('ended');
+    expect(sender.track.readyState).toBe('ended');
+    const st = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { capturing: boolean };
+    expect(st.capturing).toBe(false);
   });
 });

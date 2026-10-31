@@ -33,6 +33,10 @@ const fake = vi.hoisted(() => {
     destroyed = false;
     shown = 0;
     hidden = 0;
+    contentProtected = false;
+    setContentProtection(on: boolean): void {
+      this.contentProtected = on;
+    }
     constructor(readonly opts: Record<string, unknown>) {
       FakeWindow.all.push(this);
     }
@@ -67,8 +71,9 @@ const fake = vi.hoisted(() => {
       this.displayHandler = h;
     },
   };
-  const sources = { list: [{ id: 'window:42:0', name: 'Visual Pinball Player' }] as Array<{ id: string; name: string }> };
-  return { FakeWindow, ipc, ses, sources };
+  const sources = { list: [{ id: 'screen:0:0', name: 'Screen 1', display_id: '1' }] as Array<{ id: string; name: string; display_id?: string }> };
+  const displays = { list: [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 }] };
+  return { FakeWindow, ipc, ses, sources, displays };
 });
 
 vi.mock('electron', () => ({
@@ -76,14 +81,21 @@ vi.mock('electron', () => ({
   ipcMain: { on: (ch: string, cb: (e: { sender: unknown }, arg?: unknown) => void) => fake.ipc.set(ch, cb) },
   session: { fromPartition: () => fake.ses },
   desktopCapturer: { getSources: async () => fake.sources.list },
+  screen: {
+    getAllDisplays: () => fake.displays.list,
+    dipToScreenRect: (_w: unknown, r: { x: number; y: number; width: number; height: number }) => r,
+  },
 }));
 
-const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, frameFromBitmap, matchSource, mergeStatus, noCaptureReason, pickCaptureWindow } = await import('./rtc-host.js');
+const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, frameFromBitmap, mergeStatus, noCaptureReason, pickCaptureWindow } = await import('./rtc-host.js');
 
 const win = (title: string, width: number, height: number, pid = 7): VpxWindow => ({ pid, title, client: { left: 0, top: 0, width, height }, monitor: '1' });
 const PLAYER = win('Visual Pinball Player', 1280, 720);
 const EDITOR = win('Visual Pinball - [Monster Bash (Williams 1998)]', 1920, 1040);
 const DMD = win('PUPDMD', 512, 128);
+/** D2.5: what the page gets for PLAYER on the fake 1920x1080 display: its screen, and the window's crop of it. */
+const LABEL = 'screen 1, crop 1280x720 of Visual Pinball Player';
+const CAPTURE = { sourceId: 'screen:0:0', label: LABEL, screen: { width: 1920, height: 1080 }, crop: { x: 0, y: 0, width: 1280, height: 720 }, out: { width: 1280, height: 720 } };
 
 /** In VR on SteamVR: the offscreen panel for the overlay helper. */
 const VR_STEAM = { inVr: true, headsetPanel: true } as const;
@@ -134,19 +146,10 @@ describe('capture window choice (D2)', () => {
     expect(pickCaptureWindow([EDITOR, PINMAME, DMD, preview], true)).toEqual({ window: preview, fallback: true });
   });
 
-  it('labels: title and size; a fallback says so', () => {
-    expect(captureLabel({ window: PLAYER, fallback: false })).toBe('Visual Pinball Player (1280x720)');
-    expect(captureLabel({ window: win('VPX VR Preview', 1280, 720), fallback: true })).toBe('VPX VR Preview (1280x720; the largest VPX window, none is titled "Visual Pinball Player")');
-  });
-
-  it('finds the capturer source by title, exact first', () => {
-    const s = [
-      { id: 'window:1:0', name: 'visual pinball player ' },
-      { id: 'window:2:0', name: 'Visual Pinball Player' },
-    ];
-    expect(matchSource(s, 'Visual Pinball Player')?.id).toBe('window:2:0');
-    expect(matchSource([s[0]!], 'Visual Pinball Player')?.id).toBe('window:1:0');
-    expect(matchSource(s, 'Other')).toBeNull();
+  it('D2.5 labels: the screen, the crop size and the window; a fallback says so', () => {
+    const t = { index: 1, crop: { x: 10, y: 20, width: 1280, height: 720 } };
+    expect(captureLabel({ window: PLAYER, fallback: false }, t)).toBe('screen 2, crop 1280x720 of Visual Pinball Player');
+    expect(captureLabel({ window: win('VPX VR Preview', 1280, 720), fallback: true }, t)).toBe('screen 2, crop 1280x720 of VPX VR Preview (the largest VPX window, none is titled "Visual Pinball Player")');
   });
 });
 
@@ -228,7 +231,7 @@ describe('createRtcHost (D2)', () => {
     dir = mkdtempSync(join(tmpdir(), 'castcade-rtc-'));
     fake.FakeWindow.all = [];
     fake.ipc.clear();
-    fake.sources.list = [{ id: 'window:42:0', name: 'Visual Pinball Player' }];
+    fake.sources.list = [{ id: 'screen:0:0', name: 'Screen 1', display_id: '1' }];
     logs.length = 0;
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -260,7 +263,7 @@ describe('createRtcHost (D2)', () => {
       localId: 'owner',
       peers: ['krobs'],
       ice: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-      capture: { sourceId: 'window:42:0', label: 'Visual Pinball Player (1280x720)' },
+      capture: CAPTURE,
       micDeviceId: 'headset',
       muted: false,
       sending: false,
@@ -275,7 +278,7 @@ describe('createRtcHost (D2)', () => {
 
     // status: from the page, with main's capture label
     fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
-    expect(host.status()).toMatchObject({ attached: true, mic: 'open', captureSource: 'Visual Pinball Player (1280x720)', lastError: null, peers: { krobs: { ice: 'connected' } } });
+    expect(host.status()).toMatchObject({ attached: true, mic: 'open', captureSource: LABEL, lastError: null, peers: { krobs: { ice: 'connected' } } });
     expect(statuses.length).toBeGreaterThan(0);
 
     // frames: paint -> PanelFrame
@@ -325,6 +328,8 @@ describe('createRtcHost (D2)', () => {
     await host.attach(net.sig, ['owner']);
     const w = fake.FakeWindow.all[0]!;
     expect(w.opts).toMatchObject({ show: false, width: 480, height: 720, alwaysOnTop: true, webPreferences: { offscreen: false } });
+    // D2.5: the match video films the screen; the panel over the player window must not be in it.
+    expect(w.contentProtected).toBe(true);
     expect(host.frames()).toBeNull();
     host.showPanel();
     expect(w.shown).toBe(1);
@@ -342,13 +347,13 @@ describe('createRtcHost (D2)', () => {
     await settle();
     expect(w.webContents.sent.slice(1)).toEqual([
       [PANEL_CHANNELS.sending, true],
-      [PANEL_CHANNELS.capture, { sourceId: 'window:42:0', label: 'Visual Pinball Player (1280x720)' }],
+      [PANEL_CHANNELS.capture, CAPTURE],
     ]);
     expect(host.status().lastError).toBeNull();
-    // the getDisplayMedia fallback is answered with the same window
+    // the getDisplayMedia fallback is answered with the same screen
     let answered: unknown = null;
     fake.ses.displayHandler?.({}, (s) => (answered = s));
-    expect(answered).toEqual({ video: { id: 'window:42:0', name: 'Visual Pinball Player' } });
+    expect(answered).toEqual({ video: { id: 'screen:0:0', name: 'Screen 1', display_id: '1' } });
     let allowed: boolean | null = null;
     fake.ses.permission?.({}, 'geolocation', (ok) => (allowed = ok));
     expect(allowed).toBe(false);
@@ -373,7 +378,7 @@ describe('createRtcHost (D2)', () => {
     const host2 = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
     await host2.setVr(VR_STEAM);
     await host2.attach(signalling('owner').sig, ['krobs']);
-    expect(host2.status().lastError).toBe('the window "Visual Pinball Player" is not offered for capture');
+    expect(host2.status().lastError).toBe('screen 1, which shows "Visual Pinball Player", is not offered for capture');
     // a second attach replaces the first window
     await host2.attach(signalling('owner').sig, ['krobs']);
     expect(fake.FakeWindow.all.filter((x) => !x.destroyed)).toHaveLength(1);
@@ -439,7 +444,6 @@ describe('createRtcHost (D2)', () => {
 
   it('B22 (2026-10-31): in VR off SteamVR a visible desktop panel and no frames, while the capture still picks as in VR', async () => {
     const preview = win('VR Preview', 1280, 720);
-    fake.sources.list = [{ id: 'window:43:0', name: 'VR Preview' }];
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, DMD, preview] }), settings: store() });
     await host.setVr({ inVr: true, headsetPanel: false });
     await host.attach(signalling('owner').sig, ['krobs']);
@@ -452,7 +456,7 @@ describe('createRtcHost (D2)', () => {
     // No "Visual Pinball Player" window: the desktop rule would send nothing; in VR the largest VPX window goes.
     expect(host.status().lastError).toBeNull();
     fromPage(w, PANEL_CHANNELS.ready);
-    expect(w.webContents.sent[0]?.[1]).toMatchObject({ capture: { sourceId: 'window:43:0' } });
+    expect(w.webContents.sent[0]?.[1]).toMatchObject({ capture: { sourceId: 'screen:0:0', label: 'screen 1, crop 1280x720 of VR Preview (the largest VPX window, none is titled "Visual Pinball Player")' } });
     expect(logs.some((l) => l.startsWith('media: attach (VR, desktop panel)'))).toBe(true);
     await host.detach();
   });
@@ -487,29 +491,34 @@ describe('createRtcHost (D2)', () => {
       vi.advanceTimersByTime(3_000);
       await settle();
       expect(probes).toBe(3);
-      expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, { sourceId: 'window:42:0', label: 'Visual Pinball Player (1280x720)' }]]);
-      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual(['media: capture Visual Pinball Player (1280x720) ready']);
+      expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, CAPTURE]]);
+      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual([`media: capture ${LABEL} ready`]);
       expect(host.status()).toMatchObject({ sending: false, lastError: null });
 
-      // Found: no more looks; the turn only flips the flag.
-      vi.advanceTimersByTime(30_000);
+      // Found: no more 3 s looks, only the 5 s re-probe (D2.5), which says nothing while the window stays put.
+      vi.advanceTimersByTime(4_999);
       await settle();
       expect(probes).toBe(3);
+      vi.advanceTimersByTime(1);
+      await settle();
+      expect(probes).toBe(4);
+      expect(w.webContents.sent).toHaveLength(2);
+      // The turn only flips the flag.
       host.setSending(true);
       await settle();
       expect(w.webContents.sent.slice(2)).toEqual([[PANEL_CHANNELS.sending, true]]);
-      expect(probes).toBe(3);
+      expect(probes).toBe(4);
 
       // The page's capture ends (VPX restarted): looking again, and the new window is announced.
       const st = (capturing: boolean): PanelPageStatus => ({ sending: true, peers: {}, mic: 'open', capturing, error: null });
       fromPage(w, PANEL_CHANNELS.status, st(true));
       fromPage(w, PANEL_CHANNELS.status, st(false));
-      expect(logs).toContain('media: the capture of Visual Pinball Player (1280x720) ended; looking for the VPX window again');
-      fake.sources.list = [{ id: 'window:77:0', name: 'Visual Pinball Player' }];
+      expect(logs).toContain(`media: the capture of ${LABEL} ended; looking for the VPX window again`);
+      fake.sources.list = [{ id: 'screen:7:0', name: 'Screen 1', display_id: '1' }];
       vi.advanceTimersByTime(3_000);
       await settle();
-      expect(probes).toBe(4);
-      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' }]);
+      expect(probes).toBe(5);
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { ...CAPTURE, sourceId: 'screen:7:0' }]);
 
       // Detached: no looks.
       fromPage(w, PANEL_CHANNELS.status, st(true));
@@ -517,7 +526,7 @@ describe('createRtcHost (D2)', () => {
       await host.detach();
       vi.advanceTimersByTime(10_000);
       await settle();
-      expect(probes).toBe(4);
+      expect(probes).toBe(5);
 
       // Found before the page is ready: it rides in `attach` itself, no separate capture message.
       windows = [EDITOR];
@@ -528,7 +537,7 @@ describe('createRtcHost (D2)', () => {
       vi.advanceTimersByTime(3_000);
       await settle();
       fromPage(w2, PANEL_CHANNELS.ready);
-      expect(w2.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' } })]]);
+      expect(w2.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: { ...CAPTURE, sourceId: 'screen:7:0' } })]]);
       await host.detach();
     } finally {
       vi.useRealTimers();
@@ -536,7 +545,6 @@ describe('createRtcHost (D2)', () => {
   });
 
   it('D2 (2026-10-31): in VR with only the editor and a DMD on the desktop, nothing is sent and the Match tab says to turn VRPreview on', async () => {
-    fake.sources.list = [{ id: 'window:44:0', name: 'FlexDMD' }];
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, win('FlexDMD', 1280, 720)] }), settings: store() });
     await host.setVr({ inVr: true, headsetPanel: false });
     await host.attach(signalling('krobs').sig, ['owner']);
@@ -584,5 +592,108 @@ describe('createRtcHost (D2)', () => {
     await host.refreshMicrophones();
     expect(fake.FakeWindow.all).toHaveLength(before);
     await host.detach();
+  });
+
+  it('D2.5: while the capture is live the window is re-probed every 5 s: moved → a new crop once; probe failure → kept; gone → stopped, looked for again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let windows: VpxWindow[] = [PLAYER];
+      let fail = false;
+      const probe = async (): Promise<WindowProbe> => {
+        if (fail) throw new Error('probe timed out');
+        return { outputs: [], windows };
+      };
+      const host = createRtcHost({ userData: dir, log, probe, settings: store() });
+      await host.attach(signalling('owner').sig, []);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      expect(w.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: CAPTURE })]]);
+
+      // Moved and resized: the page gets the same screen with the new crop, logged once.
+      windows = [{ ...PLAYER, client: { left: 100, top: 50, width: 1600, height: 900 } }];
+      vi.advanceTimersByTime(5_000);
+      await settle();
+      const moved = { ...CAPTURE, label: 'screen 1, crop 1600x900 of Visual Pinball Player', crop: { x: 100, y: 50, width: 1600, height: 900 }, out: { width: 1280, height: 720 } };
+      expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, moved]]);
+      vi.advanceTimersByTime(5_000);
+      await settle();
+      expect(w.webContents.sent).toHaveLength(2);
+      expect(logs.filter((l) => l.startsWith('media: the VPX window moved'))).toEqual(['media: the VPX window moved or resized: screen 1, crop 1600x900 of Visual Pinball Player at 100,50']);
+      expect(host.status()).toMatchObject({ lastError: null });
+
+      // A probe that fails says nothing about the window: the capture stays.
+      fail = true;
+      vi.advanceTimersByTime(5_000);
+      await settle();
+      expect(w.webContents.sent).toHaveLength(2);
+      fail = false;
+
+      // The table closed: the page stops the capture, the Match tab says why, the 3 s looks find the next window.
+      windows = [EDITOR];
+      vi.advanceTimersByTime(5_000);
+      await settle();
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, null]);
+      expect(host.status().lastError).toBe('no "Visual Pinball Player" window to send: start the table');
+      windows = [PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, CAPTURE]);
+      expect(host.status().lastError).toBeNull();
+      await host.detach();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('D2.5: the focus is watched while the capture is live; VPX losing it covers the video at once, back in front uncovers after 750 ms', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let windows: VpxWindow[] = [EDITOR];
+      const watch = { started: 0, stopped: 0, change: (_c: { pid: number; exe: string }) => {}, end: (_why: string) => {} };
+      const watchFocus = (onChange: (c: { pid: number; exe: string }) => void, onEnd: (why: string) => void) => {
+        watch.started++;
+        watch.change = onChange;
+        watch.end = onEnd;
+        return { stop: () => void watch.stopped++ };
+      };
+      const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows }), settings: store(), watchFocus });
+      await host.attach(signalling('owner').sig, []);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      // No capture, no watch.
+      expect(watch.started).toBe(0);
+      windows = [PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(watch.started).toBe(1);
+      const covers = (): unknown[] => w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.cover).map(([, p]) => p);
+
+      watch.change({ pid: 9, exe: 'explorer' });
+      expect(covers()).toEqual([true]);
+      expect(logs).toContain('media: match video covered (explorer in front)');
+      watch.change({ pid: 7, exe: 'VPinballX64' });
+      vi.advanceTimersByTime(749);
+      expect(covers()).toEqual([true]);
+      vi.advanceTimersByTime(1);
+      expect(covers()).toEqual([true, false]);
+      watch.change({ pid: 7, exe: 'VPinballX64' });
+      expect(covers()).toEqual([true, false]);
+
+      // The watcher died: focus unknown, never covered.
+      watch.change({ pid: 9, exe: 'electron' });
+      watch.end('exit 1');
+      expect(covers()).toEqual([true, false, true, false]);
+      expect(logs).toContain('WARN media: the focus watch stopped (exit 1); the match video is not covered when VPX loses focus');
+
+      await host.detach();
+      // It died on its own: nothing left to stop. A new capture starts a new watch, and detach stops it.
+      expect(watch.stopped).toBe(0);
+      await host.attach(signalling('owner').sig, []);
+      expect(watch.started).toBe(2);
+      await host.detach();
+      expect(watch.stopped).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

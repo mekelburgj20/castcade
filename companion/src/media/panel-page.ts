@@ -25,6 +25,8 @@ export const PANEL_CHANNELS = {
   state: 'castcade-panel:state',
   muted: 'castcade-panel:muted',
   capture: 'castcade-panel:capture',
+  /** D2.5: `true` while VPX is not the foreground window; the page sends a "Paused" frame instead of the crop. */
+  cover: 'castcade-panel:cover',
   microphone: 'castcade-panel:microphone',
   detach: 'castcade-panel:detach',
   // page -> main
@@ -37,11 +39,22 @@ export const PANEL_CHANNELS = {
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
 export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
 
+/**
+ * D2.5 (2026-10-31): a screen source and the player window's region of it (`capture-crop.ts`). The page films the
+ * whole display and draws the crop onto a canvas, whose track is what the peers get. A capture with the same `sourceId`
+ * as the live one only moves the crop (the window moved or resized); `null` on the capture channel stops the capture.
+ */
 export interface PanelCapture {
-  /** `desktopCapturer` source id, `window:<hwnd>:0`. */
+  /** `desktopCapturer` source id, `screen:<n>:0`. */
   sourceId: string;
   /** What `MediaStatus.captureSource` says, also used in the page's error lines. */
   label: string;
+  /** The display's frame size in physical pixels (what the capture should deliver). */
+  screen: { width: number; height: number };
+  /** The window's client area in that frame. */
+  crop: { x: number; y: number; width: number; height: number };
+  /** The size the crop is drawn at and sent: at most 1280x720, the crop's aspect. */
+  out: { width: number; height: number };
 }
 
 export interface PanelAttach {
@@ -74,7 +87,10 @@ export interface StripRow {
   score: string;
   detail: string;
   up: boolean;
+  /** Shown in red: a different table, offline. */
   flags: string[];
+  /** Shown muted (D2.5, 2026-10-31): a different VPX build, which says nothing about the table. */
+  notes: string[];
 }
 
 // ---- formatting helpers (embedded in the page; keep them self-contained) ----
@@ -98,12 +114,13 @@ export function stripRows(s: PanelState): StripRow[] {
   if (s.phase === 'over' && s.result) {
     return [...s.result]
       .sort((a, b) => a.place - b.place)
-      .map((r) => ({ id: r.id, name: r.name, score: scoreText(r.score), detail: '#' + r.place, up: false, flags: [] }));
+      .map((r) => ({ id: r.id, name: r.name, score: scoreText(r.score), detail: '#' + r.place, up: false, flags: [], notes: [] }));
   }
   return s.players.map((p) => {
     const detail = p.isUp && s.ball !== null ? 'BALL ' + s.ball : p.ballsDone >= s.ballsPerGame ? 'DONE' : p.ballsDone + '/' + s.ballsPerGame;
-    const flags = p.flags.map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : String(f).toUpperCase()));
-    return { id: p.id, name: p.name, score: scoreText(p.score), detail, up: p.isUp, flags };
+    const flags = p.flags.filter((f) => f !== 'build_mismatch').map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : String(f).toUpperCase()));
+    const notes = p.flags.includes('build_mismatch') ? ['DIFFERENT VPX BUILD'] : [];
+    return { id: p.id, name: p.name, score: scoreText(p.score), detail, up: p.isUp, flags, notes };
   });
 }
 
@@ -127,7 +144,59 @@ export function stageText(s: PanelState | null, hasVideo: boolean): string {
   return up ? 'WAITING FOR ' + up.name.toUpperCase() + "'S TABLE" : '';
 }
 
-const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText];
+/**
+ * D2.5: the crop in the video's own pixels. Chromium may deliver the screen smaller than asked (a constraint, a GPU
+ * limit), so the crop is scaled by the video's size against the display's, and clamped to the frame. Null before the
+ * video has a frame.
+ */
+export function videoCropRect(cap: Pick<PanelCapture, 'screen' | 'crop'>, videoWidth: number, videoHeight: number): { sx: number; sy: number; sw: number; sh: number } | null {
+  if (!(videoWidth > 0 && videoHeight > 0 && cap.screen.width > 0 && cap.screen.height > 0)) return null;
+  const kx = videoWidth / cap.screen.width;
+  const ky = videoHeight / cap.screen.height;
+  const sx = Math.max(0, Math.min(videoWidth, Math.round(cap.crop.x * kx)));
+  const sy = Math.max(0, Math.min(videoHeight, Math.round(cap.crop.y * ky)));
+  const sw = Math.min(videoWidth - sx, Math.round(cap.crop.width * kx));
+  const sh = Math.min(videoHeight - sy, Math.round(cap.crop.height * ky));
+  return sw >= 2 && sh >= 2 ? { sx, sy, sw, sh } : null;
+}
+
+/** The canvas calls `paintFrame` makes (a 2D context has them all). */
+export interface Paint2D {
+  fillStyle: string;
+  font: string;
+  textAlign: string;
+  textBaseline: string;
+  fillRect(x: number, y: number, w: number, h: number): void;
+  fillText(text: string, x: number, y: number): void;
+  drawImage(src: unknown, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
+}
+
+/**
+ * D2.5: one frame of the match video. Covered (D1.9: VPX is not in front, so the screen shows something else): a flat
+ * dark frame saying so. Else the window's crop of the screen, scaled to the output. `blank` (no video frame yet) leaves
+ * the canvas as it was.
+ */
+export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeight: number }, cap: Pick<PanelCapture, 'screen' | 'crop' | 'out'>, covered: boolean): 'cover' | 'crop' | 'blank' {
+  const w = cap.out.width;
+  const h = cap.out.height;
+  if (covered) {
+    ctx.fillStyle = '#11141b';
+    ctx.fillRect(0, 0, w, h);
+    // 24 characters at about 0.55 em each fit in 90 % of a portrait crop's width too.
+    ctx.font = '700 ' + Math.max(12, Math.round(Math.min(h / 12, w / 16))) + 'px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Paused: back in a moment', w / 2, h / 2);
+    return 'cover';
+  }
+  const r = videoCropRect(cap, video.videoWidth, video.videoHeight);
+  if (!r) return 'blank';
+  ctx.drawImage(video, r.sx, r.sy, r.sw, r.sh, 0, 0, w, h);
+  return 'crop';
+}
+
+const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -154,6 +223,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   .row .detail { color: var(--dim); font-size: 3.6vmin; }
   .row .score { font-variant-numeric: tabular-nums; }
   .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
+  .row .note { color: var(--dim); font-size: 3vmin; font-weight: 400; margin-left: 1.5vmin; }
   footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; }
   #mic { color: var(--dim); white-space: nowrap; }
   #mic.muted, #mic.none { color: var(--bad); }
@@ -162,6 +232,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
 <body class="${opts.vr ? 'vr' : 'desktop'}">
 <div id="head">CASTCADE MATCH</div>
 <div id="stage"><video id="video" autoplay playsinline muted></video><div id="idle"></div></div>
+<video id="src" autoplay playsinline muted style="position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none"></video>
 <div id="strip"></div>
 <footer><span id="mic"></span><span id="msg"></span></footer>
 <script>
@@ -231,6 +302,13 @@ let muted = false;
 let micTrack = null;
 let micState = 'unavailable';
 let videoTrack = null;
+// D2.5: the screen capture (srcTrack, played into the hidden <video id="src">: a 2px transparent element rather than
+// display:none, so Chromium keeps producing frames) and the live capture's crop; videoTrack is the canvas's track.
+let srcTrack = null;
+let cap = null;
+let covered = false;
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d', { alpha: false });
 let panel = null;
 let localError = null;
 let stageKey = null;
@@ -294,6 +372,12 @@ function render() {
       flag.textContent = f;
       name.appendChild(flag);
     }
+    for (const n of row.notes) {
+      const note = document.createElement('span');
+      note.className = 'note';
+      note.textContent = n;
+      name.appendChild(note);
+    }
     const detail = document.createElement('span');
     detail.className = 'detail';
     detail.textContent = row.detail;
@@ -356,48 +440,113 @@ async function openMic(deviceId) {
   render();
 }
 
-/** The capture: legacy desktop getUserMedia with the source id; getDisplayMedia (main answers with the same source) if that fails. */
-async function openCapture(cap) {
-  if (!cap) return;
+/** D2.5: one frame of the match video onto the canvas (the crop, or the cover). */
+function paint() {
+  if (!cap || !ctx) return;
+  try { paintFrame(ctx, $('src'), cap, covered); } catch (e) { /* a frame lost; the next tick draws again */ }
+}
+
+/** A new crop for the live capture: the canvas takes the output size (a new size resets it, so it is drawn at once). */
+function setCrop(c) {
+  cap = c;
+  if (canvas.width !== c.out.width) canvas.width = c.out.width;
+  if (canvas.height !== c.out.height) canvas.height = c.out.height;
+  paint();
+}
+
+/** Stops the capture (main found no window any more, or the screen capture ended): the peers get no frames. */
+function dropCapture() {
+  const src = srcTrack;
+  const out = videoTrack;
+  srcTrack = null;
+  videoTrack = null;
+  cap = null;
+  $('src').srcObject = null;
+  if (src) src.stop();
+  if (out) {
+    localStream.removeTrack(out);
+    out.stop();
+  }
+  report();
+  render();
+}
+
+/**
+ * D2.5: the capture is the whole display (legacy desktop getUserMedia with the screen source id, at the display's own
+ * size so the crop stays sharp; getDisplayMedia, which main answers with the same source, if that fails), drawn cropped
+ * onto the canvas. The canvas track outlives a change of display: the peers keep their sender and nothing renegotiates.
+ */
+async function openCapture(c) {
+  if (!c) {
+    if (srcTrack || videoTrack) dropCapture();
+    return;
+  }
+  if (cap && srcTrack && srcTrack.readyState === 'live' && cap.sourceId === c.sourceId) {
+    setCrop(c);
+    return;
+  }
   let s = null;
   try {
     s = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: cap.sourceId, maxWidth: VIDEO.width, maxHeight: VIDEO.height, maxFrameRate: VIDEO.fps } },
+      video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: c.sourceId, maxWidth: c.screen.width, maxHeight: c.screen.height, maxFrameRate: VIDEO.fps } },
     });
   } catch (e1) {
     try {
-      s = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { width: VIDEO.width, height: VIDEO.height, frameRate: VIDEO.fps } });
+      s = await navigator.mediaDevices.getDisplayMedia({ audio: false, video: { width: c.screen.width, height: c.screen.height, frameRate: VIDEO.fps } });
     } catch (e2) {
-      fail('Could not capture ' + cap.label + ' (' + errText(e1) + '); the others will not see your table.');
+      fail('Could not capture ' + c.label + ' (' + errText(e1) + '); the others will not see your table.');
       return;
     }
   }
   const t = s.getVideoTracks()[0];
   if (!t) {
-    fail('Could not capture ' + cap.label + ' (no video track).');
+    fail('Could not capture ' + c.label + ' (no video track).');
     return;
   }
-  // Pinball is motion: keep the frame rate, give up sharpness first under a thin uplink.
-  try { t.contentHint = 'motion'; } catch (e) { /* older engines */ }
-  t.enabled = sending;
-  const old = videoTrack;
-  videoTrack = t;
-  if (old) {
-    localStream.removeTrack(old);
-    old.stop();
-  }
-  localStream.addTrack(t);
+  const oldSrc = srcTrack;
+  srcTrack = t;
+  if (oldSrc) oldSrc.stop();
+  const v = $('src');
+  v.srcObject = new MediaStream([t]);
+  void Promise.resolve(v.play()).catch(() => undefined);
+  setCrop(c);
   t.addEventListener('ended', () => {
-    if (videoTrack !== t) return;
-    videoTrack = null;
-    fail('The capture of ' + cap.label + ' ended (the window closed?).');
+    if (srcTrack !== t) return;
+    dropCapture();
+    fail('The capture of ' + c.label + ' ended (the display went away?).');
   });
-  for (const r of remote.values()) attachVideo(r);
+  if (!videoTrack || videoTrack.readyState !== 'live') {
+    const out = canvas.captureStream(VIDEO.fps).getVideoTracks()[0];
+    if (!out) {
+      fail('Could not capture ' + c.label + ' (the canvas gave no track).');
+      return;
+    }
+    // Pinball is motion: keep the frame rate, give up sharpness first under a thin uplink.
+    try { out.contentHint = 'motion'; } catch (e) { /* older engines */ }
+    out.enabled = sending;
+    videoTrack = out;
+    localStream.addTrack(out);
+    for (const r of remote.values()) attachVideo(r);
+  }
   if (localError && localError.indexOf('Could not capture') === 0) localError = null;
   report();
   render();
 }
+
+/**
+ * D2.5: the draw loop. A timer, not requestAnimationFrame: the headset panel is an offscreen window painted at 20 fps
+ * (rAF would cap the video there) and the desktop panel is hidden until the match shows it (no rAF at all); the window
+ * has backgroundThrottling off, so the timer keeps its rate. While this rig is not up the track is disabled and the
+ * canvas is drawn once a second only.
+ */
+let tick = 0;
+setInterval(() => {
+  tick++;
+  if (!videoTrack) return;
+  if (!sending && tick % VIDEO.fps !== 0) return;
+  paint();
+}, Math.round(1000 / VIDEO.fps));
 
 function attachAudio(r) {
   if (!micTrack) return;
@@ -507,6 +656,10 @@ function detach() {
   }
   micTrack = null;
   videoTrack = null;
+  srcTrack = null;
+  cap = null;
+  covered = false;
+  $('src').srcObject = null;
   micState = 'unavailable';
   sending = false;
   stageKey = null;
@@ -539,7 +692,11 @@ ipcRenderer.on(C.muted, (_e, on) => {
   report();
   render();
 });
-ipcRenderer.on(C.capture, (_e, cap) => void openCapture(cap));
+ipcRenderer.on(C.capture, (_e, c) => void openCapture(c));
+ipcRenderer.on(C.cover, (_e, on) => {
+  covered = !!on;
+  paint();
+});
 ipcRenderer.on(C.microphone, (_e, id) => void openMic(id));
 ipcRenderer.on(C.detach, () => detach());
 setInterval(report, 2000);

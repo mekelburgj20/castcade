@@ -6,19 +6,26 @@
  * the controller shows with `showPanel()`. The page talks to main over the `castcade-panel:*` channels; this file
  * bridges them to the controller's `MediaSignalling` and keeps `MediaStatus`.
  *
- * Capture: a `desktopCapturer` window source id handed to the page (the stream-host audio page's pattern, with its own
- * session partition; `setDisplayMediaRequestHandler` answers the page's getDisplayMedia fallback with the same window,
- * no picker). Nothing here throws out of `attach`: a missing window or microphone leaves the match running without
- * that medium and says so in `lastError`. A window missing at `attach` is looked for every 3 s until one is found, and
- * again after the page's capture ends (D2, 2026-10-31), so the track is on the connections before this rig's turn.
+ * Capture (D2.5, 2026-10-31): the `desktopCapturer` SCREEN source of the display that holds the player window, and the
+ * window's region of it (`capture-crop.ts`), handed to the page, which draws the crop onto a canvas and sends that
+ * (the stream-host audio page's pattern, with its own session partition; `setDisplayMediaRequestHandler` answers the
+ * page's getDisplayMedia fallback with the same screen, no picker). A window capture froze the moment the player
+ * Alt-Tabbed into VPX in VR; the solo engine's monitor capture never did. While the capture is live the window is
+ * probed every 5 s (it moved, resized, or closed) and the focus is watched: the page sends a "Paused" frame while VPX
+ * is not in front (D1.9). Nothing here throws out of `attach`: a missing window or microphone leaves the match running
+ * without that medium and says so in `lastError`. A window missing at `attach` is looked for every 3 s until one is
+ * found, and again after the capture ends (D2, 2026-10-31), so the track is on the connections before this rig's turn.
  */
-import { BrowserWindow, desktopCapturer, ipcMain, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
+import { BrowserWindow, desktopCapturer, ipcMain, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
+import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
+import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { UNCOVER_MS } from './stream-engine.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
 
 export interface RtcHostOptions {
@@ -26,6 +33,11 @@ export interface RtcHostOptions {
   log: Pick<Logger, 'info' | 'warn'>;
   probe: () => Promise<WindowProbe>;
   settings: MediaSettingsStore;
+  /**
+   * D2.5: `focus-watch.ts` `watchFocus`, run while the capture is live so the match video is covered while VPX is not
+   * in front. Absent (tests), nothing is covered.
+   */
+  watchFocus?: (onChange: (c: FocusChange) => void, onEnd: (why: string) => void) => FocusWatch;
 }
 
 /** `MatchMedia` plus the microphone picker the Match tab needs (the panel page lists the devices). */
@@ -70,6 +82,8 @@ const READY_TIMEOUT_MS = 15_000;
  * whole of ball 1 went on acquiring it, adding the track and renegotiating: no picture for the others.
  */
 export const CAPTURE_RETRY_MS = 3_000;
+/** D2.5: while the capture is live, the window is probed this often: a move or a resize re-crops, a closed window stops it. */
+export const RECROP_MS = 5_000;
 const PLAYER_TITLE = 'Visual Pinball Player';
 
 // ---- pure parts ----
@@ -123,17 +137,14 @@ export function noCaptureReason(windows: VpxWindow[], vr: boolean): string {
   return 'no VPX window to send: open the table in VR with VRPreview on';
 }
 
-/** `MediaStatus.captureSource`: the window title and its size (the runbook wants the VR preview at 1280x720). */
-export function captureLabel(p: CapturePick): string {
-  const size = `${p.window.client.width}x${p.window.client.height}`;
-  if (!p.fallback) return `${p.window.title} (${size})`;
-  return `${p.window.title || 'untitled VPX window'} (${size}; the largest VPX window, none is titled "${PLAYER_TITLE}")`;
-}
-
-/** The capturer's source for a window title: exact first, then ignoring case and surrounding space. */
-export function matchSource<S extends { id: string; name: string }>(sources: S[], title: string): S | null {
-  const want = title.trim().toLowerCase();
-  return sources.find((s) => s.name === title) ?? sources.find((s) => s.name.trim().toLowerCase() === want) ?? null;
+/**
+ * `MediaStatus.captureSource` (D2.5): which screen and the size of the crop sent from it (the runbook wants the VR
+ * preview at 1280x720), e.g. `screen 2, crop 1280x720 of Visual Pinball Player`.
+ */
+export function captureLabel(p: CapturePick, t: Pick<ScreenTarget, 'index' | 'crop'>): string {
+  const what = `screen ${t.index + 1}, crop ${t.crop.width}x${t.crop.height} of`;
+  if (!p.fallback) return `${what} ${p.window.title}`;
+  return `${what} ${p.window.title || 'untitled VPX window'} (the largest VPX window, none is titled "${PLAYER_TITLE}")`;
 }
 
 /**
@@ -235,6 +246,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** The capture the page was given (in `attach` or on the capture channel): each one is announced once. */
   let announced: PanelCapture | null = null;
   let captureTimer: ReturnType<typeof setTimeout> | null = null;
+  /** D2.5: the re-probe while the capture is live, and the focus watch that covers it. */
+  let recropTimer: ReturnType<typeof setTimeout> | null = null;
+  let focus: FocusWatch | null = null;
   /** The panel window itself failed (it did not open, load or start, or its renderer died). */
   let panelError: string | null = null;
   /** No window to send, or the capturer does not offer it; cleared by a later pick that finds one. */
@@ -272,7 +286,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
   /** Latest-wins channels: an older queued value is useless once a newer one is queued. */
-  const LATEST = new Set<string>([PANEL_CHANNELS.state, PANEL_CHANNELS.sending, PANEL_CHANNELS.muted, PANEL_CHANNELS.capture, PANEL_CHANNELS.microphone]);
+  const LATEST = new Set<string>([PANEL_CHANNELS.state, PANEL_CHANNELS.sending, PANEL_CHANNELS.muted, PANEL_CHANNELS.capture, PANEL_CHANNELS.cover, PANEL_CHANNELS.microphone]);
   const toPage = (channel: string, payload?: unknown): void => {
     if (win && ready && attachSent) return post(channel, payload);
     if (LATEST.has(channel)) queue = queue.filter(([c]) => c !== channel);
@@ -310,9 +324,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
     if (ended && capture && attached) {
       log.info(`media: the capture of ${capture.label} ended; looking for the VPX window again`);
-      capture = null;
-      captureSrc = null;
-      announced = null;
+      dropCapture(false);
       scheduleCapture(generation);
     }
     emitStatus();
@@ -434,6 +446,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         if (f) hub.push(f);
       });
     } else {
+      // D2.5: the match video films the screen now, and this always-on-top window may sit over the player window (it
+      // shows the sent picture itself while this rig is up: a hall of mirrors). Kept out of every screen capture.
+      w.setContentProtection(true);
       // The page holds the connections: closing the window hides it; the match ends them with detach().
       w.on('close', (e) => {
         e.preventDefault();
@@ -443,29 +458,51 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     return w;
   };
 
+  /**
+   * D2.5: Electron's displays with their physical rects (`dipToScreenRect`, Windows: a display's own bounds map to its
+   * pixels exactly, mixed DPI included); without it `capture-crop.ts` scales the DIP bounds.
+   */
+  const displays = (): ScreenDisplay[] =>
+    screen.getAllDisplays().map((d) => {
+      let physical: ScreenDisplay['physical'];
+      try {
+        const r = screen.dipToScreenRect(null, d.bounds);
+        physical = { left: r.x, top: r.y, width: r.width, height: r.height };
+      } catch {
+        physical = undefined;
+      }
+      return { id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor, physical };
+    });
+
+  type Resolved = { capture: PanelCapture; src: DesktopCapturerSource; pick: CapturePick } | { error: string };
+  /** The window to send, the screen that holds it and its crop. Throws only when the probe or the capturer does. */
+  const resolveCapture = async (): Promise<Resolved> => {
+    const probe = await opts.probe();
+    const pick = pickCaptureWindow(probe.windows, inVr);
+    if (!pick) return { error: noCaptureReason(probe.windows, inVr) };
+    const target = screenCropFor(pick.window, probe.outputs, displays());
+    if (!target) return { error: `the window "${pick.window.title}" is on no display` };
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
+    const src = matchScreenSource(sources, target.display.id);
+    if (!src) return { error: `screen ${target.index + 1}, which shows "${pick.window.title}", is not offered for capture` };
+    return { capture: { sourceId: src.id, label: captureLabel(pick, target), screen: target.screen, crop: target.crop, out: target.out }, src, pick };
+  };
+
   /** Finds the window to send and its capturer source; never throws. A newer attach or detach discards the result. */
   const pickCapture = (gen: number): Promise<void> => {
     if (picking?.gen === gen) return picking.done;
     const done = (async () => {
       try {
-        const probe = await opts.probe();
-        const pick = pickCaptureWindow(probe.windows, inVr);
+        const r = await resolveCapture();
         if (gen !== generation) return;
-        if (!pick) {
-          setCaptureError(noCaptureReason(probe.windows, inVr));
+        if ('error' in r) {
+          setCaptureError(r.error);
           return;
         }
-        const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
-        if (gen !== generation) return;
-        const src = matchSource(sources, pick.window.title);
-        if (!src) {
-          setCaptureError(`the window "${pick.window.title}" is not offered for capture`);
-          return;
-        }
-        captureSrc = src;
-        capture = { sourceId: src.id, label: captureLabel(pick) };
+        captureSrc = r.src;
+        capture = r.capture;
         captureError = null;
-        if (pick.fallback) log.warn(`media: no "${PLAYER_TITLE}" window; sending the largest VPX window instead: ${capture.label}`);
+        if (r.pick.fallback) log.warn(`media: no "${PLAYER_TITLE}" window; sending the largest VPX window instead: ${capture.label}`);
       } catch (e) {
         if (gen === generation) setCaptureError(`the VPX window could not be found (${errText(e)})`);
       } finally {
@@ -474,6 +511,84 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     })();
     picking = { gen, done };
     return done;
+  };
+
+  // ---- D2.5: while the capture is live: the cover (D1.9) and the re-crop ----
+  const gate = new CoverGate((on, why) => {
+    log.info(on ? `media: match video covered (${why})` : 'media: match video uncovered (VPX in front)');
+    toPage(PANEL_CHANNELS.cover, on);
+  }, UNCOVER_MS);
+  const startFocus = (): void => {
+    if (focus || !opts.watchFocus) return;
+    focus = opts.watchFocus(
+      (c) => gate.note(isVpxExe(c.exe), c.exe || null),
+      (why) => {
+        focus = null;
+        log.warn(`media: the focus watch stopped (${why}); the match video is not covered when VPX loses focus`);
+        gate.note(null);
+      },
+    );
+  };
+  const stopLive = (): void => {
+    focus?.stop();
+    focus = null;
+    if (recropTimer) clearTimeout(recropTimer);
+    recropTimer = null;
+    if (gate.covered) toPage(PANEL_CHANNELS.cover, false);
+    gate.reset();
+  };
+  /** The capture is gone (no window any more, or the page's capture ended); `tellPage`: main noticed it first. */
+  function dropCapture(tellPage: boolean): void {
+    capture = null;
+    captureSrc = null;
+    announced = null;
+    stopLive();
+    if (tellPage) toPage(PANEL_CHANNELS.capture, null);
+  }
+  function scheduleRecrop(gen: number): void {
+    if (recropTimer || gen !== generation || !attached || !capture) return;
+    recropTimer = setTimeout(() => {
+      recropTimer = null;
+      void recrop(gen);
+    }, RECROP_MS);
+  }
+  /** One re-probe of a live capture: same crop → nothing; moved or resized → the page re-crops; gone → dropped. */
+  const recrop = async (gen: number): Promise<void> => {
+    if (gen !== generation || !attached || !capture) return;
+    let r: Resolved;
+    try {
+      r = await resolveCapture();
+    } catch {
+      // A probe that failed says nothing about the window: keep sending, look again next time.
+      scheduleRecrop(gen);
+      return;
+    }
+    const cur = capture;
+    if (gen !== generation || !attached || !cur) return;
+    if ('error' in r) {
+      log.info(`media: stopped sending ${cur.label}: ${r.error}`);
+      dropCapture(true);
+      setCaptureError(r.error);
+      scheduleCapture(gen);
+      emitStatus();
+      return;
+    }
+    if (r.capture.sourceId !== cur.sourceId || !sameCrop(r.capture.crop, cur.crop) || r.capture.label !== cur.label) {
+      // Logged once per change: an unchanged window says nothing.
+      const c = r.capture.crop;
+      log.info(`media: the VPX window moved or resized: ${r.capture.label} at ${c.x},${c.y}`);
+      captureSrc = r.src;
+      capture = r.capture;
+      announced = capture;
+      toPage(PANEL_CHANNELS.capture, capture);
+      emitStatus();
+    }
+    scheduleRecrop(gen);
+  };
+  /** A capture went to the page: watch the focus and the window while it lives. */
+  const captureLive = (gen: number): void => {
+    startFocus();
+    scheduleRecrop(gen);
   };
 
   /**
@@ -487,6 +602,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     log.info(`media: capture ${capture.label} ready`);
     if (attachMsg && !attachSent) attachMsg.capture = capture;
     else toPage(PANEL_CHANNELS.capture, capture);
+    captureLive(gen);
     emitStatus();
   };
   /** One look now: found → announced; not found → another look in `CAPTURE_RETRY_MS`. */
@@ -533,6 +649,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     captureSrc = null;
     announced = null;
     stopCaptureTimer();
+    stopLive();
     page = null;
     sending = false;
     peers.clear();
@@ -582,6 +699,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (capture) {
       announced = capture;
       log.info(`media: capture ${capture.label} ready`);
+      captureLive(gen);
     } else scheduleCapture(gen);
     flush();
     emitStatus();
