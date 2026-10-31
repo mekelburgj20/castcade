@@ -359,6 +359,60 @@ interface PreviewStatus {
   error: string | null;
 }
 
+/** A6 (mirrors media/match-media-types.ts PanelState, MediaStatus, VrOverlayStatus). */
+interface PanelState {
+  playerUp: string | null;
+  myTurn: boolean;
+  ball: number | null;
+  ballsPerGame: number;
+  players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'disconnected'> }>;
+  phase: 'idle' | 'playing' | 'paused' | 'over';
+  result: Array<{ id: string; name: string; score: number; place: number }> | null;
+  message: string | null;
+  mic: 'open' | 'muted' | 'unavailable';
+}
+interface MediaStatus {
+  attached: boolean;
+  sending: boolean;
+  peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean }>;
+  mic: 'open' | 'muted' | 'unavailable';
+  captureSource: string | null;
+  lastError: string | null;
+}
+interface VrOverlayStatus {
+  state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
+  reason: string | null;
+}
+
+/** A6 (mirrors main/match-setup.ts MatchSettings). */
+interface MatchSettings {
+  port: number;
+  ballsPerGame: 3 | 5;
+  displayName: string | null;
+  cueVolume: number;
+}
+
+/** A6 (mirrors main/match-host.ts MatchStatus). */
+interface MatchStatus {
+  role: 'none' | 'host' | 'client';
+  phase: 'none' | 'connecting' | 'lobby' | 'playing' | 'paused' | 'over';
+  endpoint: string | null;
+  invite: string | null;
+  ipSource: 'public' | 'lan' | null;
+  port: number | null;
+  code: string | null;
+  localId: string | null;
+  hostId: string | null;
+  participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null }>;
+  panel: PanelState | null;
+  media: MediaStatus | null;
+  vrOverlay: VrOverlayStatus | null;
+  locked: boolean;
+  settings: MatchSettings;
+  defaultName: string;
+  lastError: string | null;
+}
+
 interface CastcadeBridge {
   readonly appVersion: string;
   readonly protocolVersion: number;
@@ -391,6 +445,15 @@ interface CastcadeBridge {
       status(): Promise<PreviewStatus>;
       onStatus(cb: (s: PreviewStatus) => void): () => void;
     };
+  };
+  readonly match: {
+    status(): Promise<MatchStatus>;
+    host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    join(invite: string, displayName: string): Promise<MatchStatus>;
+    start(): Promise<MatchStatus>;
+    leave(): Promise<MatchStatus>;
+    setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
+    onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;

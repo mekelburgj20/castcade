@@ -68,3 +68,16 @@ export {
   type DesyncInfo,
   type ResultInfo,
 } from './client.js';
+export {
+  MatchController,
+  isHostRole,
+  muteSignalling,
+  type MatchControllerOptions,
+  type ControllerStatus,
+  type ControllerPhase,
+  type ControllerFeed,
+  type CueKind,
+  type MatchRole,
+  type HostRole,
+  type ClientRole,
+} from './controller.js';

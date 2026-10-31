@@ -35,6 +35,7 @@ import { manifestDirFor } from '../witness/witness.js';
 import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../media/overlay-server.js';
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
+import { createMatchHost, type MatchHost } from './match-host.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -51,6 +52,8 @@ let updater: UpdaterHandle | null = null;
 let overlay: OverlayServer | null = null;
 /** D1.2 / D1.3: recording and streaming. */
 let stream: StreamHost | null = null;
+/** A6: the match (host or join by invite); null when it could not be set up this run. */
+let match: MatchHost | null = null;
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -153,15 +156,28 @@ async function quit(host: WitnessHost): Promise<void> {
   sidecarWatch?.stop();
   await overlay?.stop();
   await stream?.stop().catch(() => undefined);
+  await match?.stop().catch(() => undefined); // forfeits a match in progress and removes the turn lock
   await host.stop();
   log?.info('quit');
   app.quit();
 }
 
-function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost, watch: SidecarWatch, logger: Logger, maybeStream: StreamHost | null): void {
+function registerIpc(
+  store: SettingsStore,
+  host: WitnessHost,
+  tables: TablesHost,
+  watch: SidecarWatch,
+  logger: Logger,
+  maybeStream: StreamHost | null,
+  maybeMatch: MatchHost | null,
+): void {
   const sh = (): StreamHost => {
     if (!maybeStream) throw new Error('streaming is unavailable this run (see the log)');
     return maybeStream;
+  };
+  const mh = (): MatchHost => {
+    if (!maybeMatch) throw new Error('matches are unavailable this run (see the log)');
+    return maybeMatch;
   };
   const str = (v: unknown, what: string): string => {
     if (typeof v !== 'string') throw new Error(`${what} must be a string`);
@@ -251,6 +267,19 @@ function registerIpc(store: SettingsStore, host: WitnessHost, tables: TablesHost
   ipcMain.handle(IPC.streamPreviewStart, () => sh().startPreview());
   ipcMain.handle(IPC.streamPreviewStop, () => sh().stopPreview());
   ipcMain.handle(IPC.streamPreviewStatus, () => sh().previewStatus());
+  ipcMain.handle(IPC.matchStatus, () => mh().status());
+  ipcMain.handle(IPC.matchHost, (_e, o: unknown) => {
+    const w = (o ?? {}) as { port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
+    return mh().host({
+      port: w.port === undefined || w.port === null ? undefined : Number(w.port),
+      ballsPerGame: w.ballsPerGame === 5 ? 5 : 3,
+      displayName: typeof w.displayName === 'string' ? w.displayName : '',
+    });
+  });
+  ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => mh().join(str(invite, 'invite'), typeof displayName === 'string' ? displayName : ''));
+  ipcMain.handle(IPC.matchStart, () => mh().start());
+  ipcMain.handle(IPC.matchLeave, () => mh().leave());
+  ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
@@ -333,7 +362,30 @@ async function main(): Promise<void> {
     logger.error(`stream: could not set up (${describeError(e)}); streaming and recording are off this run`);
   }
 
-  registerIpc(store, host, tables, watch, logger, streamHost);
+  // A6 + C3: the match (host or join by invite). Media (D2) and the VR overlay (D7) are wired by the lead; the match
+  // runs without them. A failure here turns matches off for this run; it never stops the witness.
+  let matchHost: MatchHost | null = null;
+  try {
+    matchHost = createMatchHost({
+      file: join(userData, 'match.json'),
+      keysFile: join(userData, 'match-keys.json'),
+      witness: host,
+      device: () => {
+        const cur = store.get();
+        return { deviceId: cur.deviceId, deviceLabel: cur.deviceLabel };
+      },
+      appVersion,
+      log: logger,
+    });
+    match = matchHost;
+    matchHost.onStatus((st) => {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.matchStatusEvent, st);
+    });
+  } catch (e) {
+    logger.error(`match: could not set up (${describeError(e)}); matches are off this run`);
+  }
+
+  registerIpc(store, host, tables, watch, logger, streamHost, matchHost);
   host.onNotice((n) => {
     tray?.notify(n.title, n.message);
     // C10: a patch the VPX editor saved into a table gets a fresh sidecar over it, so the next launch runs one Castcade can keep current.

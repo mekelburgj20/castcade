@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 import { useCastcade } from './useCastcade.js';
+import { Match } from './views/Match.js';
 import { Pairing } from './views/Pairing.js';
 import { Settings } from './views/Settings.js';
 import { Status } from './views/Status.js';
 import { Stream } from './views/Stream.js';
 
-type View = 'pairing' | 'status' | 'stream' | 'settings';
+type View = 'pairing' | 'status' | 'stream' | 'match' | 'settings';
 
 const TABS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'pairing', label: 'Pairing' },
   { id: 'status', label: 'Status' },
   { id: 'stream', label: 'Stream' },
+  { id: 'match', label: 'Match' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -48,6 +50,7 @@ export function App() {
       {current === 'pairing' && <Pairing state={state} />}
       {current === 'status' && <Status state={state} />}
       {current === 'stream' && <Stream state={state} />}
+      {current === 'match' && <Match state={state} />}
       {current === 'settings' && <Settings state={state} />}
     </main>
   );

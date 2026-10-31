@@ -318,3 +318,46 @@ a {
 .banner.ok { color: var(--ok, #2f9e44); }
 p.error.banner { color: var(--error, #d9480f); }
 button.primary { font-weight: 600; }
+
+/* A6: the Match page. The turn line is the one thing a player glances at between balls. */
+.turn-line {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin: 0.2rem 0 0.5rem;
+}
+.turn-line.mine {
+  color: var(--ok);
+}
+.match-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+.match-table th,
+.match-table td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+.match-table th {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.8rem;
+}
+.match-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.match-table tr.up td {
+  color: var(--accent);
+  font-weight: 600;
+}
+code.invite {
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+input.port {
+  width: 7rem;
+}

@@ -8,8 +8,10 @@ import type { WitnessStatus } from '../witness/types.js';
 import type { EngineStatus } from '../media/stream-engine.js';
 import type { StreamSettings } from '../media/stream-settings.js';
 import type { PreviewStatus, StreamSettingsView } from './stream-host.js';
+import type { MatchStatus } from './match-host.js';
+import type { MatchSettings } from './match-setup.js';
 
-export type { EngineStatus, PreviewStatus, RedactedSettings, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
+export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, RedactedSettings, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
   witnessStatus: 'witness:status',
@@ -42,10 +44,17 @@ export const IPC = {
   streamPreviewStart: 'stream:preview:start',
   streamPreviewStop: 'stream:preview:stop',
   streamPreviewStatus: 'stream:preview:status',
+  matchStatus: 'match:status',
+  matchHost: 'match:host',
+  matchJoin: 'match:join',
+  matchStart: 'match:start',
+  matchLeave: 'match:leave',
+  matchSettingsSet: 'match:settings:set',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
+  matchStatusEvent: 'match:statusEvent',
 } as const;
 
 // ------------------------------------------------------------------------- table import (C7) --
@@ -173,6 +182,17 @@ export interface CastcadeApi {
       status(): Promise<PreviewStatus>;
       onStatus(cb: (s: PreviewStatus) => void): () => void;
     };
+  };
+  /** A6 + C3: host or join a match by invite string; the Match tab. */
+  match: {
+    status(): Promise<MatchStatus>;
+    host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    join(invite: string, displayName: string): Promise<MatchStatus>;
+    /** Host only: freeze the roster (two or more players) and issue the first grant. */
+    start(): Promise<MatchStatus>;
+    leave(): Promise<MatchStatus>;
+    setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
+    onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;

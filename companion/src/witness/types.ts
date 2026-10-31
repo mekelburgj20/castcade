@@ -8,6 +8,7 @@
 import type { Attestation } from './attestation-types.js';
 import type { TableIdentity } from './identity-types.js';
 import type { ScoreTournament } from './arcaid-client.js';
+import type { GameEvent } from './journal-detector.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
 export type {
@@ -160,6 +161,11 @@ export interface WitnessEvents {
   notice: (notice: WitnessNotice) => void;
   /** D1.1: the game on screen changed (live mode): a start, a score, the end. Null when no live table is open. */
   game: (game: LiveGame | null) => void;
+  /**
+   * A6 (2026-10-30): every detector game event of the live session, as it is read (a replayed game an earlier run
+   * posted is not re-emitted). The match controller turns these into BALL_END / GAME_OVER / STATE.
+   */
+  event: (event: GameEvent) => void;
 }
 
 /**
