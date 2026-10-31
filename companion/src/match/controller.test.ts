@@ -97,12 +97,12 @@ function seat(role: HostMatch | ClientMatch, clock: ManualClock, ballsPerGame?: 
   return { ctl, locks, cues, media, logs };
 }
 
-async function rig(balls = 3, clientGame: GameFingerprint = game) {
+async function rig(balls = 3, clientGame: GameFingerprint = game, fingerprintPolicy?: 'refuse' | 'advise') {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
   const ck = generateKeys();
-  const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, clock });
+  const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy, clock });
   const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'ABCDEF', hostId: 'h', clock });
   const H = seat(host, clock, balls);
   const C = seat(client, clock);
@@ -321,13 +321,24 @@ describe('MatchController', () => {
     expect(C.ctl.status().locked).toBe(true);
   });
 
-  it('flags a participant the host refused for a different fingerprint (advisory)', async () => {
+  it('a different table file is advisory: an `advise` host accepts it and both panels flag it (alpha-match.md §3)', async () => {
     const other: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
-    const { H, C } = await rig(3, other);
+    const { H, C } = await rig(3, other, 'advise');
     expect(H.ctl.status().tableMismatch).toEqual(['c']);
-    C.ctl.noteTableMismatch('c', ['tableHash']);
+    // The client learns it from HELLO_ACK's hostGame, with nobody telling its controller by hand.
+    expect(C.ctl.status().tableMismatch).toEqual(['c']);
     expect(C.media.panel.message).toBe('different table file: you');
-    expect(H.media.panel.message).toBe('different table file: c');
+    expect(H.media.panel.message).toBe('different table file: Krobs');
+    for (const seat of [H, C]) expect(seat.media.panel.players.find((p) => p.id === 'c')?.flags).toEqual(['table_mismatch']);
+    expect(H.media.panel.players.find((p) => p.id === 'h')?.flags).toEqual([]);
+  });
+
+  it('a `refuse` host (the engine default) keeps the different table out, and flags nobody', async () => {
+    const other: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
+    const { H, client } = await rig(3, other);
+    expect(client.refused?.code).toBe('fingerprint_mismatch');
+    expect(H.ctl.status().tableMismatch).toEqual([]);
+    expect(H.ctl.status().participants.map((p) => p.playerId)).toEqual(['h']);
   });
 
   it('close() unlocks a locked table and detaches media', async () => {

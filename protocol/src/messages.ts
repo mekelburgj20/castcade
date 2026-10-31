@@ -103,6 +103,9 @@ export const HelloAck = z
     hostPlayerId: PlayerId,
     hostPublicKey: PublicKey.describe('Clients verify every TURN_GRANT against this key.'),
     participants: z.array(ParticipantInfo).describe('Everyone accepted so far, in join order.'),
+    hostGame: GameFingerprint.nullable()
+      .default(null)
+      .describe("The host's fingerprint, so a client the host accepted despite a difference (advisory mode) can show it too. null from a host that does not send it."),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY.');
 

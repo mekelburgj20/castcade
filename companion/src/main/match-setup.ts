@@ -1,13 +1,13 @@
 /**
  * A6 (2026-10-30): the pure parts of `match-host.ts`, apart so they unit-test without Electron: the match settings in
  * `<userData>/match.json`, the match keys in `<userData>/match-keys.json`, the invite string, the match code, the
- * GameFingerprint the witness's current table gives, the advisory fingerprint adoption, the rig, the lock path
+ * GameFingerprint the witness's current table gives, the rig, the lock path
  * the hook reads (docs/design/alpha-match.md §1, §3) and the media signalling over the role (§4, D2).
  */
 import { createPrivateKey, createPublicKey, randomInt, randomUUID } from 'node:crypto';
 import type { NetworkInterfaceInfo } from 'node:os';
 import { win32 } from 'node:path';
-import { GameFingerprint, PlayerId, type PayloadOf } from '@castcade/protocol';
+import { PlayerId, type GameFingerprint, type PayloadOf } from '@castcade/protocol';
 import type { ClientMatch } from '../match/client.js';
 import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
@@ -165,22 +165,6 @@ export function gameFingerprintFrom(status: WitnessStatus, recipeVersion: string
     sidecarHash: null,
     emulatorVersion: emulator,
   };
-}
-
-/**
- * The engine's host refuses a HELLO whose fingerprint differs (host.ts); the alpha treats the table check as advisory
- * (§3: "different table file" on both panels), so the client re-joins with the host's values for the fields the
- * REFUSE named. Null when the REFUSE's values do not make a valid fingerprint.
- */
-export function adoptHostFingerprint(own: GameFingerprint, mismatches: PayloadOf<'REFUSE'>['mismatches']): { game: GameFingerprint; fields: string[] } | null {
-  if (mismatches.length === 0) return null;
-  const next: Record<string, unknown> = { ...own };
-  for (const m of mismatches) {
-    if (!(m.field in own)) return null;
-    next[m.field] = m.expected;
-  }
-  const parsed = GameFingerprint.safeParse(next);
-  return parsed.success ? { game: parsed.data, fields: mismatches.map((m) => m.field) } : null;
 }
 
 export function rigFrom(status: WitnessStatus): 'vr_headset' | 'pc' {

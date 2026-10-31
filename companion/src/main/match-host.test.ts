@@ -1,7 +1,7 @@
 /**
  * A6 (2026-10-30): two match hosts on localhost over real WebSockets, Electron stubbed (the cue window only): host,
- * join with a different table file (refused by the engine, re-joined with the host's fingerprint and flagged on both
- * sides), start, the turn lock file on each rig, leave.
+ * join with a different table file (accepted by the host's `advise` policy and flagged on both sides: the client from
+ * HELLO_ACK's hostGame), start, the turn lock file on each rig, leave.
  */
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -91,6 +91,8 @@ describe('match host (A6)', () => {
     await until(() => H.mh.status().participants.length === 2);
     expect(H.mh.status().participants.find((p) => p.name === 'Krobs')?.tableMatch).toBe(false);
     expect(H.mh.status().panel?.message).toBe('different table file: Krobs');
+    expect(C.mh.status().panel?.message).toBe('different table file: you');
+    expect(C.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags).toEqual(['table_mismatch']);
 
     await H.mh.start();
     await until(() => C.mh.status().phase === 'playing');

@@ -141,6 +141,48 @@ describe('joining', () => {
     expect(r.host.state.currentGrant?.grant).toMatchObject({ player: 'h', ballNumber: 1, grantSeq: 1 });
     expect(r.clients['a']?.inputUnlocked).toBe(false);
   });
+
+  it('fingerprintPolicy: refuse (default) refuses a different table; advise accepts it and both sides flag it (alpha, 2026-10-30)', async () => {
+    const other: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
+    const setup = (policy?: 'refuse' | 'advise') => {
+      const bus = new MemoryBus();
+      const hk = generateKeys();
+      const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: policy });
+      const ck = generateKeys();
+      const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: other, throwdownCode: 'M', hostId: 'h' });
+      const hostFlags: string[][] = [];
+      const clientFlags: Array<{ playerId: string; fields: string[] }> = [];
+      host.on('tableMismatch', (m) => hostFlags.push(m.mismatches.map((x) => x.field)));
+      client.on('tableMismatch', (m) => clientFlags.push({ playerId: m.playerId, fields: m.mismatches.map((x) => x.field) }));
+      return { host, client, hostFlags, clientFlags };
+    };
+
+    const refuse = setup();
+    refuse.client.join();
+    await flush();
+    expect(refuse.client.refused?.code).toBe('fingerprint_mismatch');
+    expect(refuse.host.roster().map((p) => p.playerId)).toEqual(['h']);
+    expect(refuse.hostFlags).toEqual([]);
+
+    const advise = setup('advise');
+    const acks: PayloadOf<'HELLO_ACK'>[] = [];
+    advise.client.on('joined', (a) => acks.push(a));
+    advise.client.join();
+    await flush();
+    expect(advise.client.isJoined).toBe(true);
+    expect(advise.host.roster().map((p) => p.playerId)).toEqual(['h', 'c']);
+    expect(acks[0]?.hostGame).toEqual(game);
+    expect(advise.hostFlags).toEqual([['tableHash']]);
+    expect(advise.host.tableMismatches()['c']?.[0]).toMatchObject({ field: 'tableHash', expected: game.tableHash, received: other.tableHash });
+    expect(advise.clientFlags).toEqual([{ playerId: 'c', fields: ['tableHash'] }]);
+
+    // A HELLO_ACK without hostGame (a host that does not send it) parses as null, and the client flags nothing then.
+    expect(buildMessage('HELLO_ACK', { hostPlayerId: 'h', hostPublicKey: generateKeys().publicKeyB64, participants: [] }, { matchId: null, seq: 1, from: 'h' }).payload.hostGame).toBeNull();
+    for (const x of [refuse, advise]) {
+      x.client.close();
+      x.host.close();
+    }
+  });
 });
 
 describe('rejects and the seq rule', () => {

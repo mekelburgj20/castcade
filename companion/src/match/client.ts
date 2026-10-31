@@ -25,7 +25,7 @@ import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, Part
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
-import { HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
+import { compareFingerprints, HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
 import { logSignBody, reconnectSignBody } from './result.js';
@@ -84,6 +84,8 @@ export interface ResultInfo {
 export interface ClientEvents extends Record<string, unknown> {
   joined: PayloadOf<'HELLO_ACK'>;
   refused: PayloadOf<'REFUSE'>;
+  /** HELLO_ACK's `hostGame` differs from this client's own fingerprint (a host in advisory mode); raised before `joined`. */
+  tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   myTurn: GrantBody;
@@ -461,6 +463,10 @@ export class ClientMatch {
         this.joined = true;
         this.ackHostId = msg.payload.hostPlayerId;
         this.ackHostKey = msg.payload.hostPublicKey;
+        // Advisory (alpha-match.md §3, 2026-10-30): the host accepted us anyway; say so on this side too.
+        const hostGame = msg.payload.hostGame;
+        const mismatches = hostGame ? compareFingerprints(hostGame, this.game, msg.payload.hostPlayerId) : [];
+        if (mismatches.length > 0) this.events.emit('tableMismatch', { playerId: this.localId, mismatches });
         this.events.emit('joined', msg.payload);
       } else if (msg.type === 'REFUSE') {
         this.refusedWith = msg.payload;

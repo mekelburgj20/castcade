@@ -282,14 +282,8 @@ export class MatchController {
     this.lobby = h.roster();
     const offs = this.offs;
     offs.push(h.on('joined', () => this.onLobby(h.roster())));
-    offs.push(
-      h.on('refused', (r) => {
-        if (r.refuse.code !== 'fingerprint_mismatch') return;
-        // The client re-joins with the host's fingerprint (main/match-host.ts): the table check is advisory (§3).
-        this.mismatch.set(r.playerId, r.refuse.mismatches.map((m) => m.field));
-        this.push();
-      }),
-    );
+    // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
+    offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(h.on('ready', (p) => this.onReady(p)));
     offs.push(h.on('grant', (g) => this.onGrant(g, g.player === this.localId)));
     offs.push(h.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
@@ -326,6 +320,8 @@ export class MatchController {
         this.onLobby(ack.participants);
       }),
     );
+    // HELLO_ACK's `hostGame` differs from this player's own: the host accepted it anyway (§3, advisory).
+    offs.push(c.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(c.on('ready', (p) => this.onReady(p)));
     // `grant` comes for every grant; this player's own is acted on at `myTurn`, raised only once its signature verified.
     offs.push(

@@ -62,6 +62,12 @@ export interface HostOptions {
   ballsPerGame: number;
   hostParticipant: ParticipantInfo;
   hostGame: GameFingerprint;
+  /**
+   * A HELLO whose `game` differs from `hostGame`: `refuse` it with `fingerprint_mismatch` (default, the Phase 1 rule),
+   * or `advise`: accept it and raise `tableMismatch` (the alpha match, alpha-match.md §3, 2026-10-30: "different
+   * table file" on both panels, never a refusal; the client learns it from `HELLO_ACK.hostGame`).
+   */
+  fingerprintPolicy?: 'refuse' | 'advise';
   turnMode?: 'alternating' | 'simultaneous';
   clock?: Clock;
   /** No BALL_END within this long of a grant pauses the match. Default 20 minutes. */
@@ -98,6 +104,8 @@ export interface LogSignRecord {
 export interface HostEvents extends Record<string, unknown> {
   joined: ParticipantInfo;
   refused: { playerId: PlayerId; refuse: PayloadOf<'REFUSE'> };
+  /** `fingerprintPolicy: 'advise'`: a player accepted although its fingerprint differs; raised just before `joined`. */
+  tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
@@ -141,6 +149,9 @@ export class HostMatch {
   /** Pre-start roster, host first. After start the roster lives in state.participants. */
   private lobby: ParticipantInfo[] = [];
   private hostGame: GameFingerprint;
+  private readonly fingerprintPolicy: 'refuse' | 'advise';
+  /** Players accepted with a differing fingerprint (`advise` only), with what differed. */
+  private readonly mismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
   private turnMode: 'alternating' | 'simultaneous';
   private ballEndTimer: TimerHandle | null = null;
   private logSignTimer: TimerHandle | null = null;
@@ -162,6 +173,7 @@ export class HostMatch {
     this.logSignTimeoutMs = opts.logSignTimeoutMs ?? DEFAULT_LOG_SIGN_TIMEOUT_MS;
     this.companionVersion = opts.companionVersion ?? '0.1.0';
     this.hostGame = { ...opts.hostGame };
+    this.fingerprintPolicy = opts.fingerprintPolicy ?? 'refuse';
     this.turnMode = opts.turnMode ?? 'alternating';
     if (opts.hostParticipant.playerId !== opts.transport.localId) {
       throw new Error('hostParticipant.playerId must equal transport.localId');
@@ -238,6 +250,11 @@ export class HostMatch {
 
   on<K extends keyof HostEvents>(name: K, cb: (payload: HostEvents[K]) => void): () => void {
     return this.events.on(name, cb);
+  }
+
+  /** Who joined with a differing fingerprint (`fingerprintPolicy: 'advise'`) and what differed. Advisory only. */
+  tableMismatches(): Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']> {
+    return Object.fromEntries([...this.mismatched].map(([id, m]) => [id, m.map((x) => ({ ...x }))]));
   }
 
   snapshot(): { role: 'host'; state: MatchState; log: LogHead; lobby: ParticipantInfo[]; gone: PlayerId[]; finalHead: LogHead | null; signatures: LogSignRecord[] } {
@@ -611,7 +628,7 @@ export class HostMatch {
       return;
     }
     const mismatches = compareFingerprints(this.hostGame, p.game, hostId);
-    if (mismatches.length > 0) {
+    if (mismatches.length > 0 && this.fingerprintPolicy === 'refuse') {
       const fields = mismatches.map((m) => m.field).join(', ');
       this.refuse(msg, 'fingerprint_mismatch', `game fingerprint differs in: ${fields}`, mismatches);
       return;
@@ -620,10 +637,14 @@ export class HostMatch {
     this.lobby.push(participant);
     const ack = this.s.build(
       'HELLO_ACK',
-      { hostPlayerId: hostId, hostPublicKey: this.publicKey, participants: this.lobby.map((x) => ({ ...x })) },
+      { hostPlayerId: hostId, hostPublicKey: this.publicKey, participants: this.lobby.map((x) => ({ ...x })), hostGame: { ...this.hostGame } },
       null,
     );
     this.s.transport.send(msg.from, ack);
+    if (mismatches.length > 0) {
+      this.mismatched.set(participant.playerId, mismatches);
+      this.events.emit('tableMismatch', { playerId: participant.playerId, mismatches });
+    }
     this.events.emit('joined', participant);
   }
 

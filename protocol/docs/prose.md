@@ -34,6 +34,8 @@ base64-encoded.
    side differs. `tableHash` is the hash of the *original* `.vpx`; the patch is proven by `recipeVersion`
    plus `sidecarHash` (ADR 0004).
 3. Accepted clients receive `HELLO_ACK` with the host's public key and the roster so far.
+   A host in advisory mode (the alpha match, 2026-10-30) accepts a differing fingerprint instead, and
+   `HELLO_ACK.hostGame` carries the host's fingerprint so the client flags the difference too.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 

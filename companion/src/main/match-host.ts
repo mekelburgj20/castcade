@@ -22,7 +22,6 @@ import { RECIPE_VERSION } from '../patcher/render.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
 import {
-  adoptHostFingerprint,
   cleanName,
   cleanPort,
   formatInvite,
@@ -357,6 +356,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         ballsPerGame,
         hostParticipant: participant(me, name),
         hostGame: gameFingerprintFrom(witness.status(), RECIPE_VERSION),
+        // §3: a different table file is shown on both panels, never refused (the client learns it from HELLO_ACK).
+        fingerprintPolicy: 'advise',
         companionVersion: opts.appVersion.slice(0, 32),
       });
       const controller = makeController(engine, ballsPerGame);
@@ -423,19 +424,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       connecting = true;
       emit();
       try {
-        const own = gameFingerprintFrom(witness.status(), RECIPE_VERSION);
-        let out = await tryJoin(parsed.url, parsed.code, me, name, own);
-        let adoptedFields: string[] | null = null;
-        if (out.kind === 'refused' && out.refuse.code === 'fingerprint_mismatch') {
-          const adopted = adoptHostFingerprint(own, out.refuse.mismatches);
-          if (adopted) {
-            adoptedFields = adopted.fields;
-            log.warn(`match: the host's table differs (${adopted.fields.join(', ')}); joining anyway, flagged on both panels`);
-            out = await tryJoin(parsed.url, parsed.code, me, name, adopted.game);
-          }
-        }
+        const out = await tryJoin(parsed.url, parsed.code, me, name, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
-        if (adoptedFields) out.controller.noteTableMismatch(me, adoptedFields);
+        const differs = out.controller.status().tableMismatch.includes(me);
+        if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
         const a: Active = { role: 'client', transport: out.transport, engine: out.engine, controller: out.controller, code: parsed.code, port: parsed.port, invite: null, ipSource: null, overlayStarted: false, offs: [] };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
         active = a;

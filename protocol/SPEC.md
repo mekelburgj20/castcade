@@ -38,6 +38,8 @@ base64-encoded.
    side differs. `tableHash` is the hash of the *original* `.vpx`; the patch is proven by `recipeVersion`
    plus `sidecarHash` (ADR 0004).
 3. Accepted clients receive `HELLO_ACK` with the host's public key and the roster so far.
+   A host in advisory mode (the alpha match, 2026-10-30) accepts a differing fingerprint instead, and
+   `HELLO_ACK.hostGame` carries the host's fingerprint so the client flags the difference too.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 
@@ -262,6 +264,7 @@ host -> client. The HELLO was accepted; the match is not ready until MATCH_READY
 | `hostPlayerId` | string (`^[A-Za-z0-9_.:-]+$`) | yes | Stable participant id for this match: the ArcAid user id, or a fakeclient label. |
 | `hostPublicKey` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | Clients verify every TURN_GRANT against this key. |
 | `participants` | array of object | yes | Everyone accepted so far, in join order. |
+| `hostGame` | object \| null | yes | The host's fingerprint, so a client the host accepted despite a difference (advisory mode) can show it too. null from a host that does not send it. |
 
 ### `REFUSE`
 

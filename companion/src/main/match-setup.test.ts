@@ -8,7 +8,6 @@ import { MemoryBus } from '../match/transport.js';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import {
-  adoptHostFingerprint,
   DEFAULT_MATCH_SETTINGS,
   formatInvite,
   gameFingerprintFrom,
@@ -88,16 +87,6 @@ describe('match setup (A6)', () => {
       '0.3.1',
     );
     expect(fp).toMatchObject({ tableName: 'Monster Bash', tableHash: 'ab'.repeat(32), emulatorVersion: '10.8.0.2051' });
-  });
-
-  it('adopts the host values the REFUSE named, and nothing invalid', () => {
-    const own = gameFingerprintFrom(status(), '0.3.1');
-    const out = adoptHostFingerprint(own, [{ field: 'tableHash', expected: 'cd'.repeat(32), received: ZERO_SHA256, expectedFrom: 'h' }]);
-    expect(out?.fields).toEqual(['tableHash']);
-    expect(out?.game.tableHash).toBe('cd'.repeat(32));
-    expect(adoptHostFingerprint(own, [{ field: 'tableHash', expected: 'nope', received: null, expectedFrom: 'h' }])).toBeNull();
-    expect(adoptHostFingerprint(own, [{ field: 'bogus', expected: 'x', received: null, expectedFrom: 'h' }])).toBeNull();
-    expect(adoptHostFingerprint(own, [])).toBeNull();
   });
 
   it('rig, LAN address and lock path', () => {
