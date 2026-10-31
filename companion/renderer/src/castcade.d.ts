@@ -375,7 +375,7 @@ interface PanelState {
   myTurn: boolean;
   ball: number | null;
   ballsPerGame: number;
-  players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'disconnected'> }>;
+  players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected'> }>;
   phase: 'idle' | 'playing' | 'paused' | 'over';
   result: Array<{ id: string; name: string; score: number; place: number }> | null;
   message: string | null;
@@ -413,7 +413,7 @@ interface MatchStatus {
   code: string | null;
   localId: string | null;
   hostId: string | null;
-  participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null }>;
+  participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;

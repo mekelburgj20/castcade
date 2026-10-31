@@ -42,6 +42,7 @@ import { createMediaSettingsStore } from '../media/media-settings.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
+import { watchFocus } from '../media/focus-watch.js';
 import { probeWindows } from '../media/window-geometry.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
@@ -400,6 +401,8 @@ async function main(): Promise<void> {
       log: logger,
       // The panel's kind (desktop or headset) is the match host's decision at host / join (A6, 2026-10-31): `setVr`.
       probe: () => probeWindows(),
+      // D2.5: the match video is covered while VPX is not in front (it films the screen now).
+      watchFocus,
       settings: mediaSettings,
     });
   } catch (e) {
