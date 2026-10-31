@@ -6,6 +6,7 @@
  */
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS } from '../witness/index.js';
 import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
+import type { GameEvent } from '../witness/journal-detector.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
 import { describeError } from './log.js';
@@ -32,6 +33,11 @@ export interface WitnessHost {
   onGame(listener: (game: LiveGame | null) => void): () => void;
   /** D1.2: every capture (posted, queued, skipped), so a recording can tie the score to its segment. */
   onCapture(listener: (capture: LastCapture) => void): () => void;
+  /**
+   * A6 (2026-10-30): every detector game event of the live session, plus `table_exit` when the VPX process ends,
+   * for the match controller.
+   */
+  onEvent(listener: (event: GameEvent | { kind: 'table_exit' }) => void): () => void;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -51,6 +57,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   const noticeListeners = new Set<(n: WitnessNotice) => void>();
   const gameListeners = new Set<(g: LiveGame | null) => void>();
   const captureListeners = new Set<(c: LastCapture) => void>();
+  const eventListeners = new Set<(e: GameEvent | { kind: 'table_exit' }) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -71,7 +78,10 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
         log.info(`witness: notice ${n.kind}: ${n.message}`);
         for (const l of noticeListeners) l(n);
       }),
-      w.on('exit', (i) => log.info(`witness: exit ${i.table} after ${i.durationSec}s`)),
+      w.on('exit', (i) => {
+        log.info(`witness: exit ${i.table} after ${i.durationSec}s`);
+        for (const l of eventListeners) l({ kind: 'table_exit' });
+      }),
       w.on('capture', (c) => {
         log.info(
           `witness: capture ${c.table} rom=${c.rom ?? '-'} players=${c.players} score=${c.score ?? '-'} ` +
@@ -82,6 +92,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       w.on('error', (m) => log.error(`witness: ${m}`)),
       w.on('game', (g) => {
         for (const l of gameListeners) l(g);
+      }),
+      w.on('event', (e) => {
+        for (const l of eventListeners) l(e);
       }),
     ];
     return w;
@@ -185,6 +198,12 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       captureListeners.add(listener);
       return () => {
         captureListeners.delete(listener);
+      };
+    },
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => {
+        eventListeners.delete(listener);
       };
     },
   };

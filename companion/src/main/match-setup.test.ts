@@ -1,0 +1,108 @@
+import { describe, expect, it } from 'vitest';
+import type { NetworkInterfaceInfo } from 'node:os';
+import { signCanonical, verifyCanonical } from '../match/keys.js';
+import type { WitnessStatus } from '../witness/types.js';
+import {
+  adoptHostFingerprint,
+  DEFAULT_MATCH_SETTINGS,
+  formatInvite,
+  gameFingerprintFrom,
+  lockPathFrom,
+  newMatchCode,
+  newMatchIdentity,
+  parseInvite,
+  parseMatchIdentity,
+  patchMatchSettings,
+  pickLanAddress,
+  readMatchSettings,
+  rigFrom,
+  serializeMatchIdentity,
+  writeMatchSettings,
+  ZERO_SHA256,
+} from './match-setup.js';
+
+const status = (over: Partial<WitnessStatus> = {}): WitnessStatus =>
+  ({ paired: true, running: true, currentTable: null, currentIdentity: null, currentAttestation: null, ...over }) as WitnessStatus;
+
+describe('match setup (A6)', () => {
+  it('invites round-trip, tolerate the wrapping a chat adds, and refuse anything else', () => {
+    const inv = formatInvite('203.0.113.7', 27401, 'ABCDEF');
+    expect(inv).toBe('castcade:ws://203.0.113.7:27401#ABCDEF');
+    expect(parseInvite(inv)).toEqual({ url: 'ws://203.0.113.7:27401', host: '203.0.113.7', port: 27401, code: 'ABCDEF' });
+    expect(parseInvite(` \`${inv}\` `).code).toBe('ABCDEF');
+    expect(parseInvite('castcade:ws://192.168.1.20:27401#abcdef').code).toBe('ABCDEF');
+    for (const bad of ['', 'ws://1.2.3.4:27401#ABCDEF', 'castcade:ws://1.2.3.4#ABCDEF', 'castcade:ws://1.2.3.4:27401#ABC', 'castcade:ws://1.2.3.4:99999#ABCDEF', 'castcade:http://1.2.3.4:1#ABCDEF']) {
+      expect(() => parseInvite(bad), bad).toThrow(/not a Castcade invite/);
+    }
+  });
+
+  it('match codes are six letters from the alphabet without I and O', () => {
+    for (let i = 0; i < 50; i++) expect(newMatchCode()).toMatch(/^[A-HJ-NP-Z]{6}$/);
+    expect(newMatchCode(() => 0)).toBe('AAAAAA');
+  });
+
+  it('settings default, clamp and round-trip', () => {
+    expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
+    expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
+    const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100 });
+    expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
+    expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
+  });
+
+  it('match keys survive a save and still sign', () => {
+    const id = newMatchIdentity();
+    const back = parseMatchIdentity(serializeMatchIdentity(id));
+    expect(back?.installId).toBe(id.installId);
+    expect(back?.keys.publicKeyB64).toBe(id.keys.publicKeyB64);
+    const sig = signCanonical({ a: 1 }, back!.keys.privateKey);
+    expect(verifyCanonical({ a: 1 }, sig, id.keys.publicKeyB64)).toBe(true);
+    expect(parseMatchIdentity('{"installId":"x","privateKey":"junk"}')).toBeNull();
+    expect(parseMatchIdentity(null)).toBeNull();
+  });
+
+  it('the fingerprint uses the table file facts, zeros when no table is known', () => {
+    expect(gameFingerprintFrom(status(), '0.3.1')).toEqual({
+      kind: 'vpx',
+      tableName: 'no table open',
+      tableHash: ZERO_SHA256,
+      romName: null,
+      romHash: null,
+      physicsHash: null,
+      recipeVersion: '0.3.1',
+      sidecarHash: null,
+      emulatorVersion: 'unknown',
+    });
+    const fp = gameFingerprintFrom(
+      status({
+        currentTable: 'Monster Bash (Williams 1998)',
+        currentIdentity: { sha256: 'AB'.repeat(32), tableInfo: { tableName: 'Monster Bash' } } as WitnessStatus['currentIdentity'],
+        currentAttestation: { build: { vpx: { version: { fileVersionText: '10.8.0.2051' } } }, vr: { inVr: true } } as unknown as WitnessStatus['currentAttestation'],
+      }),
+      '0.3.1',
+    );
+    expect(fp).toMatchObject({ tableName: 'Monster Bash', tableHash: 'ab'.repeat(32), emulatorVersion: '10.8.0.2051' });
+  });
+
+  it('adopts the host values the REFUSE named, and nothing invalid', () => {
+    const own = gameFingerprintFrom(status(), '0.3.1');
+    const out = adoptHostFingerprint(own, [{ field: 'tableHash', expected: 'cd'.repeat(32), received: ZERO_SHA256, expectedFrom: 'h' }]);
+    expect(out?.fields).toEqual(['tableHash']);
+    expect(out?.game.tableHash).toBe('cd'.repeat(32));
+    expect(adoptHostFingerprint(own, [{ field: 'tableHash', expected: 'nope', received: null, expectedFrom: 'h' }])).toBeNull();
+    expect(adoptHostFingerprint(own, [{ field: 'bogus', expected: 'x', received: null, expectedFrom: 'h' }])).toBeNull();
+    expect(adoptHostFingerprint(own, [])).toBeNull();
+  });
+
+  it('rig, LAN address and lock path', () => {
+    expect(rigFrom(status())).toBe('pc');
+    expect(rigFrom(status({ currentAttestation: { vr: { inVr: true } } as unknown as WitnessStatus['currentAttestation'] }))).toBe('vr_headset');
+    const nic = (address: string, internal = false, family: 'IPv4' | 'IPv6' = 'IPv4'): NetworkInterfaceInfo =>
+      ({ address, internal, family, netmask: '', mac: '', cidr: null }) as NetworkInterfaceInfo;
+    expect(pickLanAddress({ lo: [nic('127.0.0.1', true)], wifi: [nic('fe80::1', false, 'IPv6'), nic('169.254.3.4'), nic('192.168.1.20')] })).toBe('192.168.1.20');
+    expect(pickLanAddress({ lo: [nic('127.0.0.1', true)] })).toBeNull();
+    expect(lockPathFrom({ LOCALAPPDATA: 'C:\\Users\\p\\AppData\\Local' })).toBe('C:\\Users\\p\\AppData\\Local\\Castcade\\lock\\turn.lock');
+    expect(lockPathFrom({ TEMP: 'C:\\Temp' })).toBe('C:\\Temp\\Castcade\\lock\\turn.lock');
+    expect(lockPathFrom({})).toBe('C:\\Castcade\\Castcade\\lock\\turn.lock');
+  });
+});

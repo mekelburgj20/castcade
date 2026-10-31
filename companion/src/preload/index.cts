@@ -1,13 +1,13 @@
 /**
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
- * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`
- * and `stream:previewEvent`.
+ * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`,
+ * `stream:previewEvent` and `match:statusEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, EngineStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, MatchStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -42,9 +42,16 @@ const CH = {
   streamPreviewStart: 'stream:preview:start',
   streamPreviewStop: 'stream:preview:stop',
   streamPreviewStatus: 'stream:preview:status',
+  matchStatus: 'match:status',
+  matchHost: 'match:host',
+  matchJoin: 'match:join',
+  matchStart: 'match:start',
+  matchLeave: 'match:leave',
+  matchSettingsSet: 'match:settings:set',
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
+  matchStatusEvent: 'match:statusEvent',
 } as const;
 
 function argValue(flag: string): string {
@@ -115,6 +122,21 @@ const castcade: CastcadeApi = {
           ipcRenderer.removeListener(CH.streamPreviewEvent, listener);
         };
       },
+    },
+  },
+  match: {
+    status: () => ipcRenderer.invoke(CH.matchStatus),
+    host: (opts) => ipcRenderer.invoke(CH.matchHost, opts),
+    join: (invite, displayName) => ipcRenderer.invoke(CH.matchJoin, invite, displayName),
+    start: () => ipcRenderer.invoke(CH.matchStart),
+    leave: () => ipcRenderer.invoke(CH.matchLeave),
+    setSettings: (patch) => ipcRenderer.invoke(CH.matchSettingsSet, patch),
+    onStatus(cb) {
+      const listener = (_e: Electron.IpcRendererEvent, s: MatchStatus): void => cb(s);
+      ipcRenderer.on(CH.matchStatusEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(CH.matchStatusEvent, listener);
+      };
     },
   },
   tables: {

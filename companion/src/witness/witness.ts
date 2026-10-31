@@ -1341,6 +1341,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           break;
       }
     }
+    // A6: the match controller hears every game event before the capture work below (a game_end's post can take
+    // seconds); a game_start is announced once it is known not to be a replay.
+    if (!live.skipGame && (ev.kind === 'current_scores' || ev.kind === 'ball_end' || ev.kind === 'game_end' || ev.kind === 'game_abandoned')) emitter.emit('event', ev);
     switch (ev.kind) {
       case 'game_start':
         live.gameKey = postedGameKey(live.tableId, attemptKey(live.sessionStamp, live.loadedAtMs, ev.t));
@@ -1349,6 +1352,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           log(`witness: journal ${live.tableId}: game ${live.gameKey} was posted by an earlier run; not posting it again`);
           break;
         }
+        emitter.emit('event', ev);
         live.lastGameStartMs = at;
         live.games++;
         session.lastActivityAt = clock.now();
