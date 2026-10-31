@@ -10,7 +10,7 @@
 # nor OpenGL (it calls the app's D3D11 device through its interface and finds the GL entry points in the opengl32.dll
 # the app already loaded, so a D3D or Vulkan app never gets opengl32 pulled in by us).
 cmake_minimum_required(VERSION 3.20)
-project(castcade_vr_layer VERSION 0.1.0 LANGUAGES CXX)
+project(castcade_vr_layer VERSION 0.2.0 LANGUAGES CXX)  # 0.2.0: D7.4, pipe protocol 2 (modes, theater)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "XrApiLayer_castcade_panel builds for Windows x64 only (VPinballX_GL64 and the OpenXR runtimes it reaches are x64)")
