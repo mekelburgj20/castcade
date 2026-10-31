@@ -208,3 +208,4 @@ Lane: `docs/**`, `.claude/**`, `WORK.md`, `CHANGELOG.md`, `tools/**`, `.github/w
 - **H2** `done 0.2.20` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub
 - **H4** `done 0.2.22` Alpha match runbook (`docs/alpha-match-runbook.md`)
 - **H3** `done 0.2.22` Protocol prose for host transfer over WebSocket and reconnect (`protocol/docs/prose.md`), 2026-10-30
+- **H5** `ready` Add a `LICENSE` file at the repo root — `package.json` says `GPL-3.0-only` but the public repo ships no licence text, so the GitHub release page and the Arcaid communique (ArcAid H6) cannot point at one
