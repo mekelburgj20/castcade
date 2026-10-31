@@ -151,7 +151,16 @@ interface Attestation {
   measuredAt: string;
   ini: IniAttestation | null;
   build: BuildAttestation | null;
-  vr: { inVr: boolean; runtimeLoaded: boolean; compositorRunning: boolean; vrCapableBuild: boolean; sampledAt: string } | null;
+  vr: {
+    inVr: boolean;
+    /** B22 (mirrors witness/vr-detect.ts VrRuntime); absent in samples from before it. */
+    runtime?: 'steamvr' | 'virtual-desktop' | 'oculus' | 'openxr-other' | null;
+    runtimeLoaded: boolean;
+    compositorRunning: boolean;
+    vrCapableBuild: boolean;
+    activeOpenXrRuntime?: string | null;
+    sampledAt: string;
+  } | null;
   adjustments: AdjustmentsReport | null;
   vpmCheat: boolean | null;
   iniChanged: boolean;

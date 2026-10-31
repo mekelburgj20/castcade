@@ -245,7 +245,8 @@ tournament: `min_tilt_sensitivity` (default 300, provisional; VPX's own default 
 displayed; ArcAid 2.166.0 puts it on the score's device axis for desktop devices, so the badge says VR headset;
 absent = monitor; the companion decides "headset" when the SteamVR runtime client `vrclient_x64.dll` is loaded
 in the VPX process and `vrcompositor`/`vrserver` is running, because VPX 10.8.0's VR builds turn VR on at
-player start whenever OpenVR reports a headset, not from any ini key), and later `fingerprint`,
+player start whenever OpenVR reports a headset, not from any ini key; B22, 2026-10-31: also when an OpenXR runtime
+is in the process, Virtual Desktop's `virtualdesktop-openxr.dll` on the owner's rig, which read `pc` before), and later `fingerprint`,
 `script_sha256`, `script_diff` (a short JSON summary: counts per class plus the restricted hunks' identifiers).
 
 As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params; each absent when not measured):
