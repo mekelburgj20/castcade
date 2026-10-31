@@ -96,7 +96,10 @@ export interface PanelFrameSource {
 
 export interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
-  /** Why `unavailable`: `steamvr_not_running`, `helper_missing`, `helper_failed:<detail>`. */
+  /**
+   * Why `unavailable`: `steamvr_not_running`, `helper_missing`, `helper_failed:<detail>`; `runtime_not_steamvr` (B22,
+   * 2026-10-31) is set by the match host, not the helper: VPX is in VR on another runtime, so the helper is not spawned.
+   */
   reason: string | null;
 }
 

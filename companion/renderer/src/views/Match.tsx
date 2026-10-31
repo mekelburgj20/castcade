@@ -73,7 +73,7 @@ export function Match({ state }: { state: CastcadeState }) {
   const toggleMute = () => {
     void bridge.match.setMuted(!st.muted).then(setSt, (e: unknown) => setError(describe(e)));
   };
-  // The saved choice may not be listed yet: the panel page lists the devices once a match opens it.
+  // The saved choice may not be listed yet: the list comes from a hidden page when this tab opens (B22), or the panel page in a match.
   const savedMicMissing = st.micDeviceId !== null && !st.microphones.some((m) => m.deviceId === st.micDeviceId);
 
   return (
@@ -130,7 +130,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     if (v.startsWith('castcade:')) {
                       setError(null);
                       setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade invite (it starts with castcade:ws://�).');
+                    } else setError('The clipboard does not hold a Castcade invite (it starts with castcade:ws://…).');
                   }, (e: unknown) => setError(describe(e)))
                 }
               >
@@ -265,7 +265,7 @@ export function Match({ state }: { state: CastcadeState }) {
         </div>
         <small>
           Pick your headset microphone: in VR the Windows default is often a virtual device.
-          {st.microphones.length === 0 ? ' The list fills in once you host or join a match.' : ''}
+          {st.microphones.length === 0 ? ' No microphone listed yet: plug one in, then open this tab again.' : ''}
         </small>
       </div>
 
@@ -317,11 +317,26 @@ function mediaLine(m: MatchStatus['media']): string {
   return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
 }
 
+/** B22 (mirrors witness/vr-detect.ts VR_RUNTIME_LABEL). */
+const RUNTIME_LABEL: Record<NonNullable<MatchStatus['vrRuntime']>, string> = {
+  steamvr: 'SteamVR',
+  'virtual-desktop': 'Virtual Desktop (OpenXR)',
+  oculus: 'the Oculus / Meta runtime (OpenXR)',
+  'openxr-other': 'an OpenXR runtime',
+};
+
 /** A6 (2026-10-31): the panel's place as the match host decided it, so the player sees it without the log. */
 function rigLine(st: MatchStatus): string {
   if (st.rig === 'pc') return 'Rig: monitor (desktop panel).';
   const o = st.vrOverlay;
-  return `Rig: VR headset (overlay: ${o ? `${o.state}${o.reason ? `, ${o.reason}` : ''}` : 'no helper in this build'}).`;
+  const rt = st.vrRuntime ?? 'steamvr';
+  if (rt === 'steamvr') return `Rig: VR headset via SteamVR (overlay: ${o ? `${o.state}${o.reason ? `, ${o.reason}` : ''}` : 'no helper in this build'}).`;
+  // B22 (2026-10-31): the OpenVR overlay helper draws into SteamVR's compositor; on any other runtime there is none.
+  const how = rt === 'virtual-desktop' ? "Virtual Desktop → Launch SteamVR, then VPX's OpenVR mode" : "start SteamVR first, then VPX's OpenVR mode";
+  return (
+    `Rig: VR headset via ${RUNTIME_LABEL[rt]}. The in-headset panel needs SteamVR as VPX's VR runtime; on this runtime the panel stays on the desktop ` +
+    `(voice, the turn cue and the lock work the same). To get the panel in the headset, run VPX through SteamVR (${how}).`
+  );
 }
 
 function overlayLine(o: MatchStatus['vrOverlay']): string {

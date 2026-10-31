@@ -71,7 +71,10 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **Media hooks**: on `MATCH_READY` → `media.attach(signalling, peerIds)`; on my grant → `media.setSending(true)`; on
   my `ball_end` accepted → `setSending(false)`; every state change → `media.setPanelState(...)`; on leave → `detach()`.
   In VR (`inVr`) the controller also starts `VrOverlay` with the panel's frame source; on the desktop the panel window
-  is simply shown.
+  is simply shown. B22 (2026-10-31): only when the VR runtime is SteamVR (`RigDecision.runtime`); in VR on another
+  runtime (the owner's rig: Virtual Desktop's OpenXR) the panel is a visible desktop window, the helper is not spawned,
+  `VrOverlayStatus` reads `unavailable` / `runtime_not_steamvr`, and the Match tab says how to get the panel in the
+  headset. The rig, `play_device` and the capture pick still follow `inVr`.
 
 ## 4. Media (D2)
 
@@ -88,7 +91,8 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **Capture**: `desktopCapturer` window source: in VR the VPX VR preview window (title from `probeWindows()`: the
   window of the VPX process that is not "Visual Pinball Player"; the agent confirms the title on the fixtures /
   comments and falls back to the largest VPX window), else the player window. Microphone from a named device
-  (`micDeviceId` setting; the panel lists devices; the Windows default is often a virtual device in VR).
+  (`micDeviceId` setting; the panel lists devices, and before a match a hidden page in the same partition does when
+  the Match tab opens, B22; the Windows default is often a virtual device in VR).
 - **ICE**: STUN `stun:stun.l.google.com:19302` and `stun:stun1.l.google.com:19302`; optional TURN from settings
   (`turnUrl`, `turnUser`, `turnCredential`); no relay of ours yet.
 - **Panel page**: one HTML page (a template string, like `stream-host.ts`'s audio page) holding the peer connections
@@ -108,7 +112,9 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   3 on an OpenVR error, and prints one JSON line per event on stdout (`{"event":"ready"}`, `{"event":"hidden"}`, …).
 - `companion/src/media/vr-overlay.ts`: `createVrOverlay(opts)` spawns it (path from `resources/vr-overlay/`,
   dev fallback `vr-overlay/build/Release/`), pipes `PanelFrameSource` frames (drop frames when the pipe is behind),
-  restarts once if it exits unexpectedly, reports `unavailable` with the reason on exit 2/3.
+  restarts once if it exits unexpectedly, reports `unavailable` with the reason on exit 2/3. The match host starts it
+  only on SteamVR (B22, 2026-10-31): the helper draws into SteamVR's compositor, which an OpenXR runtime such as
+  Virtual Desktop's does not run.
 - CI: `.github/workflows/vr-overlay.yml` builds on `windows-latest` on every push touching `vr-overlay/**`, uploads
   the exe as an artifact, attaches it to the GitHub release on `v*` tags; `companion/scripts/fetch-vr-overlay.mjs`
   downloads it from a pinned release tag into `companion/resources/vr-overlay/` (or `--from <dir>` for a local build);

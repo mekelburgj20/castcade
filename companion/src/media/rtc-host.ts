@@ -1,7 +1,8 @@
 /**
  * D2 (alpha-match.md §4, 2026-10-30): `MatchMedia` in the main process. One window holds the panel page
- * (`panel-page.ts`: the WebRTC mesh and the panel UI). In VR it is offscreen: never shown, painted at 20 fps, and every
- * paint becomes a `PanelFrame` for the OpenVR overlay helper (D7). On the desktop it is a normal always-on-top window
+ * (`panel-page.ts`: the WebRTC mesh and the panel UI). In VR on SteamVR it is offscreen: never shown, painted at 20 fps,
+ * and every paint becomes a `PanelFrame` for the OpenVR overlay helper (D7). On the desktop, and in VR on any other
+ * runtime (B22, 2026-10-31: no SteamVR compositor for the helper to draw into), it is a normal always-on-top window
  * the controller shows with `showPanel()`. The page talks to main over the `castcade-panel:*` channels; this file
  * bridges them to the controller's `MediaSignalling` and keeps `MediaStatus`.
  *
@@ -16,7 +17,7 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
-import { PANEL_CHANNELS, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
 
 export interface RtcHostOptions {
@@ -33,17 +34,30 @@ export interface RtcHost extends MatchMedia {
   /** Saves the choice and, while attached, switches the live microphone (no renegotiation: the sender is kept). */
   setMicrophone(deviceId: string | null): void;
   /**
-   * A6 (2026-10-31): the rig the match host decided (VR: an offscreen panel for the overlay helper; else a desktop
-   * window). Before `attach` it sets the next panel's kind. While attached on the desktop, `true` moves the panel
+   * A6 (2026-10-31): the rig the match host decided. B22 (2026-10-31) split it in two, because a headset on a runtime
+   * other than SteamVR has no place for the panel: `inVr` is the rig (it picks the window to send: in VR, the largest
+   * VPX window when none is titled "Visual Pinball Player"); `headsetPanel` is the panel window (true: an offscreen
+   * panel for the OpenVR overlay helper, SteamVR only; false: a visible desktop window, also in VR on another runtime).
+   * Before `attach` it sets the next panel. While attached on the desktop, `headsetPanel: true` moves the panel
    * offscreen: a new window, re-attached with the current peers, panel state, sending flag, microphone and mute
    * (the peers renegotiate through the page's offer resend), so `frames()` has a source for the overlay once it
-   * resolves. VR → desktop while attached is not supported: logged and ignored until the match ends.
+   * resolves. Headset → desktop while attached is not supported: logged and ignored until the match ends.
    */
-  setVr(on: boolean): Promise<void>;
+  setVr(rig: { inVr: boolean; headsetPanel: boolean }): Promise<void>;
+  /**
+   * B22 (2026-10-31): list the microphones before a match (the panel page lists them only once it opens, so a tester
+   * saw "Windows default" alone at Host / Join). A hidden page in the panel's partition enumerates them, opening the
+   * microphone once and stopping it when the labels are hidden; `onMicrophones` gets the list. A no-op while attached
+   * (the panel page keeps the list current) and while a listing runs.
+   */
+  refreshMicrophones(): Promise<void>;
 }
 
 const PARTITION = 'castcade-panel';
 const PAGE_FILE = 'match-panel.html';
+const MIC_PAGE_FILE = 'match-mics.html';
+/** The hidden microphone page answers in well under a second; a stuck one is closed after this. */
+const MIC_LIST_TIMEOUT_MS = 10_000;
 /** The headset panel: 3:2, wide enough for a 16:9 picture plus the header and strip at 0.55 m (alpha-match.md §5). */
 export const VR_PANEL_SIZE = { width: 960, height: 640 } as const;
 export const DESKTOP_PANEL_SIZE = { width: 480, height: 720 } as const;
@@ -168,10 +182,12 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
 export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const { log } = opts;
   let win: BrowserWindow | null = null;
-  /** The panel kind the match host decided (`setVr`): the next attach opens this. */
-  let wantVr = false;
-  /** The kind of the panel window open now. */
-  let vr = false;
+  /** The panel kind the match host decided (`setVr`'s `headsetPanel`): the next attach opens this. */
+  let wantHeadset = false;
+  /** The kind of the panel window open now: offscreen for the headset overlay, or a desktop window. */
+  let headset = false;
+  /** The rig is in VR (`setVr`'s `inVr`), whatever the panel window: the capture pick reads this. */
+  let inVr = false;
   let ready = false;
   let attached = false;
   let attachMsg: PanelAttach | null = null;
@@ -256,11 +272,70 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     page = s;
     emitStatus();
   });
-  ipcMain.on(PANEL_CHANNELS.devices, (e, d: unknown) => {
-    if (!fromPanel(e) || !Array.isArray(d)) return;
+  const setMics = (d: unknown[]): void => {
     mics = d.filter((x): x is MicDevice => typeof x === 'object' && x !== null && typeof (x as MicDevice).deviceId === 'string' && typeof (x as MicDevice).label === 'string');
     for (const l of micListeners) l(mics);
+  };
+  ipcMain.on(PANEL_CHANNELS.devices, (e, d: unknown) => {
+    if (!fromPanel(e) || !Array.isArray(d)) return;
+    setMics(d);
   });
+
+  // ---- B22 (2026-10-31): the microphones before a match, from a hidden page in the same partition ----
+  let micWin: BrowserWindow | null = null;
+  let micAnswer: ((r: unknown) => void) | null = null;
+  let listing: Promise<void> | null = null;
+  ipcMain.on(MIC_LIST_CHANNEL, (e, r: unknown) => {
+    if (!micWin || micWin.isDestroyed() || e.sender !== micWin.webContents) return;
+    micAnswer?.(r);
+  });
+  const listMicrophones = async (): Promise<void> => {
+    let w: BrowserWindow | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      panelSession();
+      const file = join(opts.userData, MIC_PAGE_FILE);
+      mkdirSync(opts.userData, { recursive: true });
+      writeFileSync(file, micListPageHtml());
+      const answer = new Promise<unknown>((resolve) => {
+        micAnswer = resolve;
+      });
+      timer = setTimeout(() => micAnswer?.({ mics: null, error: 'no answer in time' }), MIC_LIST_TIMEOUT_MS);
+      w = new BrowserWindow({
+        show: false,
+        width: 320,
+        height: 120,
+        webPreferences: { partition: PARTITION, nodeIntegration: true, contextIsolation: false, backgroundThrottling: false },
+      });
+      micWin = w;
+      w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      w.webContents.on('will-navigate', (e) => e.preventDefault());
+      void w.loadFile(file).catch((e: unknown) => micAnswer?.({ mics: null, error: `the page did not load (${errText(e)})` }));
+      const r = (await answer) as { mics?: unknown; error?: unknown } | null;
+      // A match opened meanwhile: its panel page lists them now, and its list wins.
+      if (attached) return;
+      if (r && Array.isArray(r.mics)) {
+        setMics(r.mics);
+        log.info(`media: ${mics.length} microphone(s) listed before the match`);
+      } else {
+        log.warn(`media: could not list the microphones before the match (${typeof r?.error === 'string' ? r.error : 'no answer'})`);
+      }
+    } catch (e) {
+      log.warn(`media: could not list the microphones before the match (${errText(e)})`);
+    } finally {
+      clearTimeout(timer);
+      micAnswer = null;
+      micWin = null;
+      if (w && !w.isDestroyed()) w.destroy();
+    }
+  };
+  const refreshMicrophones = (): Promise<void> => {
+    if (attached) return Promise.resolve();
+    listing ??= listMicrophones().finally(() => {
+      listing = null;
+    });
+    return listing;
+  };
 
   // ---- session: media permission only, and the getDisplayMedia fallback answered with the chosen window ----
   let sessionReady = false;
@@ -278,7 +353,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     return ses;
   };
 
-  const createWindow = (inVr: boolean): BrowserWindow => {
+  const createWindow = (offscreen: boolean): BrowserWindow => {
     panelSession();
     const webPreferences = {
       partition: PARTITION,
@@ -287,9 +362,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       contextIsolation: false,
       backgroundThrottling: false,
       autoplayPolicy: 'no-user-gesture-required' as const,
-      offscreen: inVr,
+      offscreen,
     };
-    const w = inVr
+    const w = offscreen
       ? new BrowserWindow({ show: false, frame: false, useContentSize: true, ...VR_PANEL_SIZE, webPreferences })
       : new BrowserWindow({
           show: false,
@@ -306,7 +381,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     w.webContents.on('render-process-gone', (_e, d) => {
       if (win === w) setPanelError(`the match panel stopped (${d.reason}); video and voice are off`);
     });
-    if (inVr) {
+    if (offscreen) {
       w.webContents.setFrameRate(PANEL_FPS);
       w.webContents.on('paint', (_e, _dirty, image: NativeImage) => {
         if (!hub.wanted()) return;
@@ -329,10 +404,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const done = (async () => {
       try {
         const probe = await opts.probe();
-        const pick = pickCaptureWindow(probe.windows, vr);
+        const pick = pickCaptureWindow(probe.windows, inVr);
         if (gen !== generation) return;
         if (!pick) {
-          setCaptureError(vr ? 'no VPX window to send: open the table in VR with VRPreview on' : `no "${PLAYER_TITLE}" window to send: start the table`);
+          setCaptureError(inVr ?'no VPX window to send: open the table in VR with VRPreview on' : `no "${PLAYER_TITLE}" window to send: start the table`);
           return;
         }
         const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
@@ -394,7 +469,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const gen = ++generation;
     attached = true;
     signalling = sig;
-    vr = wantVr;
+    headset = wantHeadset;
     for (const p of initialPeers) if (p !== sig.localId) peers.add(p);
     if (restore) {
       sending = restore.sending;
@@ -407,8 +482,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
-      writeFileSync(file, panelPageHtml({ vr }));
-      win = createWindow(vr);
+      writeFileSync(file, panelPageHtml({ vr: headset }));
+      win = createWindow(headset);
       void win.loadFile(file).catch((e: unknown) => {
         if (gen === generation) setPanelError(`the match panel did not load (${errText(e)})`);
       });
@@ -423,7 +498,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (gen !== generation) return;
     const s = opts.settings.get();
     attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
-    log.info(`media: attach (${vr ? 'VR, offscreen panel' : 'desktop panel'}), ${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
+    log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
     flush();
     emitStatus();
   };
@@ -477,17 +552,19 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         statusListeners.delete(cb);
       };
     },
-    frames: () => (attached && vr ? hub.source : null),
+    frames: () => (attached && headset ? hub.source : null),
     showPanel() {
-      if (vr || !win || win.isDestroyed()) return;
+      if (headset || !win || win.isDestroyed()) return;
       // showInactive: focus stays with VPX, whose window takes the player's keys.
       win.showInactive();
     },
     detach: () => detach(),
-    async setVr(on) {
-      wantVr = on;
-      if (!attached || on === vr) return;
-      if (!on) {
+    async setVr(rig) {
+      // The capture pick follows the rig at once (the next pick reads it); the window kind needs a re-attach.
+      inVr = rig.inVr;
+      wantHeadset = rig.headsetPanel;
+      if (!attached || rig.headsetPanel === headset) return;
+      if (!rig.headsetPanel) {
         log.info('media: the rig reads the monitor now; the panel stays in the headset until the match ends');
         return;
       }
@@ -500,6 +577,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       await attach(sig, keep, { state: lastState, sending });
     },
     microphones: () => mics,
+    refreshMicrophones,
     onMicrophones(cb) {
       micListeners.add(cb);
       return () => {

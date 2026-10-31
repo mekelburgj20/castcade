@@ -163,13 +163,17 @@ type MediaOpt = NonNullable<Parameters<typeof createMatchHost>[0]['media']>;
 type OverlayOpt = NonNullable<Parameters<typeof createMatchHost>[0]['vrOverlay']>;
 type WStatus = ReturnType<WitnessHost['status']>;
 
-const VR_ON = { inVr: true, runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:47.000Z' };
-const VR_OFF = { inVr: false, runtimeLoaded: false, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:40.000Z' };
+type Vr = { inVr: boolean; runtime: string | null; runtimeLoaded: boolean; compositorRunning: boolean; vrCapableBuild: boolean; activeOpenXrRuntime: string | null; sampledAt: string };
+const VR_ON: Vr = { inVr: true, runtime: 'steamvr', runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, activeOpenXrRuntime: null, sampledAt: '2026-10-31T06:07:47.000Z' };
+const VR_OFF: Vr = { inVr: false, runtime: null, runtimeLoaded: false, compositorRunning: true, vrCapableBuild: true, activeOpenXrRuntime: null, sampledAt: '2026-10-31T06:07:40.000Z' };
+/** B22: the owner's rig, VPX on Virtual Desktop's OpenXR runtime (no vrclient, no SteamVR). */
+const VD_JSON = 'C:\\Program Files\\Virtual Desktop Streamer\\OpenXR\\virtualdesktop-openxr.json';
+const VR_VD: Vr = { inVr: true, runtime: 'virtual-desktop', runtimeLoaded: false, compositorRunning: false, vrCapableBuild: true, activeOpenXrRuntime: VD_JSON, sampledAt: '2026-10-31T06:07:50.000Z' };
 
 /** A witness whose status the test changes and announces, and whose live probe answers `live`. */
-function liveWitness(live: typeof VR_ON | null, vr: typeof VR_ON | null = VR_OFF) {
+function liveWitness(live: Vr | null, vr: Vr | null = VR_OFF) {
   const listeners = new Set<(s: WStatus) => void>();
-  let attestation: { vr: typeof VR_ON | null } | null = vr ? { vr } : null;
+  let attestation: { vr: Vr | null } | null = vr ? { vr } : null;
   const status = (): WStatus => ({ paired: false, currentTable: 'Monster Bash', currentIdentity: { sha256: 'ab'.repeat(32), tableInfo: null }, currentAttestation: attestation }) as unknown as WStatus;
   const w = {
     status,
@@ -183,7 +187,7 @@ function liveWitness(live: typeof VR_ON | null, vr: typeof VR_ON | null = VR_OFF
   return {
     w,
     /** The witness re-sampled (table_loaded) and emitted its status. */
-    setVr(next: typeof VR_ON | null) {
+    setVr(next: Vr | null) {
       attestation = { vr: next };
       for (const l of listeners) l(status());
     },
@@ -216,11 +220,15 @@ function fakeMedia() {
       attached = false;
       calls.push('detach');
     },
-    async setVr(on: boolean) {
-      calls.push(`setVr ${on}`);
-      // As RtcHost: VR -> desktop while attached is ignored.
-      if (attached && !on) return;
-      vr = on;
+    async setVr(rig: { inVr: boolean; headsetPanel: boolean }) {
+      // `setVr true` / `false`: the panel window kind; ` (in VR)` marks a VR rig with a desktop panel (B22).
+      calls.push(`setVr ${rig.headsetPanel}${rig.inVr && !rig.headsetPanel ? ' (in VR)' : ''}`);
+      // As RtcHost: headset -> desktop while attached is ignored.
+      if (attached && !rig.headsetPanel) return;
+      vr = rig.headsetPanel;
+    },
+    refreshMicrophones: async () => {
+      calls.push('refreshMicrophones');
     },
   };
   return { media: media as unknown as MediaOpt, calls, source };
@@ -263,7 +271,7 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     expect(o.started).toEqual([m.source]);
     expect(st).toMatchObject({ rig: 'vr_headset', rigReason: 'VPX probed now: vrclient loaded, compositor running', vrOverlay: { state: 'showing' } });
     expect(st.participants[0]?.rig).toBe('vr_headset');
-    expect(lines).toContain('match: rig vr_headset (VPX probed now: vrclient loaded, compositor running)');
+    expect(lines).toContain('match: rig vr_headset via steamvr (VPX probed now: vrclient loaded, compositor running)');
   });
 
   it('host on the monitor reading, then the witness reads VR (table_loaded): the panel moves into the headset and the overlay starts; the reverse is ignored', async () => {
@@ -305,6 +313,57 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const H = make('none', 'ab'.repeat(32), { witness: wit.w, media: m.media });
     expect(H.mh.status()).toMatchObject({ rig: 'pc', rigReason: 'no match; decided again when you host or join (no VPX table open to probe; monitor assumed)' });
     const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
-    expect(st).toMatchObject({ rig: 'pc', rigReason: 'no VPX table open to probe; monitor assumed' });
+    expect(st).toMatchObject({ rig: 'pc', rigReason: 'no VPX table open to probe; monitor assumed', vrRuntime: null });
+  });
+
+  it("B22 (2026-10-31): VR on Virtual Desktop's OpenXR runtime: rig vr_headset, a visible desktop panel, no overlay helper, and the reason", async () => {
+    const wit = liveWitness(VR_VD, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const { log, lines } = logLines();
+    const H = make('vd', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
+    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(m.calls).toEqual(['setVr false (in VR)', 'attach desktop 0', 'showPanel']);
+    expect(o.started).toEqual([]);
+    expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: { state: 'unavailable', reason: 'runtime_not_steamvr' } });
+    expect(st.rigReason).toBe(`VPX probed now: Virtual Desktop (OpenXR), vrclient not loaded, compositor not running, active OpenXR runtime ${VD_JSON}`);
+    expect(st.participants[0]?.rig).toBe('vr_headset');
+    expect(lines.some((l) => l.startsWith('match: rig vr_headset via virtual-desktop ('))).toBe(true);
+    expect(lines.some((l) => l.includes('runtime_not_steamvr'))).toBe(true);
+
+    // More VD readings change nothing; a SteamVR reading (VPX restarted through SteamVR) moves the panel into the headset.
+    wit.setVr(VR_VD);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.calls).toHaveLength(3);
+    wit.setVr(VR_ON);
+    await until(() => o.started.length === 1);
+    expect(m.calls.slice(3)).toEqual(['setVr true']);
+    expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrRuntime: 'steamvr', vrOverlay: { state: 'showing' } });
+  });
+
+  it('B22: hosted on the monitor reading, then the witness reads VR on Virtual Desktop: the rig switches, the desktop panel stays', async () => {
+    const wit = liveWitness(null, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const H = make('vd-late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay });
+    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
+    wit.setVr(VR_VD);
+    await until(() => H.mh.status().rig === 'vr_headset' && m.calls.length === 5);
+    expect(m.calls.slice(3)).toEqual(['setVr false (in VR)', 'showPanel']);
+    expect(o.started).toEqual([]);
+    expect(H.mh.status()).toMatchObject({ vrRuntime: 'virtual-desktop', vrOverlay: { state: 'unavailable', reason: 'runtime_not_steamvr' } });
+  });
+
+  it('B22: the Match tab opening lists the microphones when no match runs, never during one', async () => {
+    const m = fakeMedia();
+    const H = make('mics', 'ab'.repeat(32), { witness: liveWitness(null, null).w, media: m.media });
+    H.mh.refreshMicrophones();
+    expect(m.calls).toEqual(['refreshMicrophones']);
+    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    H.mh.refreshMicrophones();
+    expect(m.calls.filter((c) => c === 'refreshMicrophones')).toHaveLength(1);
+    // A bare media layer (no picker) is fine.
+    make('mics-bare', 'ab'.repeat(32)).mh.refreshMicrophones();
   });
 });

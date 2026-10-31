@@ -13,7 +13,7 @@ import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
 import type { MediaSignal, MediaSignalling } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
-import { describeVrEvidence, type VrObservation } from '../witness/vr-detect.js';
+import { describeVrEvidence, vrRuntimeOf, type VrObservation, type VrRuntime } from '../witness/vr-detect.js';
 
 export const DEFAULT_MATCH_PORT = 27401;
 export const ZERO_SHA256 = '0'.repeat(64);
@@ -178,6 +178,11 @@ export type Rig = 'vr_headset' | 'pc';
 export interface RigDecision {
   rig: Rig;
   reason: string;
+  /**
+   * B22 (2026-10-31): the VR runtime when `rig` is `vr_headset`, else null. Only `steamvr` gets the in-headset panel
+   * (the OpenVR overlay helper draws into SteamVR's compositor); any other runtime keeps a visible desktop panel.
+   */
+  runtime: VrRuntime | null;
 }
 
 /**
@@ -187,15 +192,16 @@ export interface RigDecision {
  */
 export async function decideRig(w: { status(): WitnessStatus; sampleVr(): Promise<VrObservation | null> }): Promise<RigDecision> {
   const now = await w.sampleVr().catch(() => null);
-  if (now) return { rig: now.inVr ? 'vr_headset' : 'pc', reason: `VPX probed now: ${describeVrEvidence(now)}` };
+  if (now) return { rig: now.inVr ? 'vr_headset' : 'pc', reason: `VPX probed now: ${describeVrEvidence(now)}`, runtime: now.inVr ? vrRuntimeOf(now) : null };
   return rigFromStatus(w.status());
 }
 
 /** The decision from the witness's last sample alone (no VPX to probe, or a later status change). */
 export function rigFromStatus(status: WitnessStatus): RigDecision {
   const vr = status.currentAttestation?.vr;
-  if (!vr) return { rig: 'pc', reason: 'no VPX table open to probe; monitor assumed' };
-  return { rig: rigFrom(status), reason: `the witness's sample at ${vr.sampledAt}: ${describeVrEvidence(vr)}` };
+  if (!vr) return { rig: 'pc', reason: 'no VPX table open to probe; monitor assumed', runtime: null };
+  const rig = rigFrom(status);
+  return { rig, reason: `the witness's sample at ${vr.sampledAt}: ${describeVrEvidence(vr)}`, runtime: rig === 'vr_headset' ? vrRuntimeOf(vr) : null };
 }
 
 /** Where the hook looks (vpx-hook/castcade.vbs: %LOCALAPPDATA%, else %TEMP%, else C:\Castcade; then \Castcade\lock). */

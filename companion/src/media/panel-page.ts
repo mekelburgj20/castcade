@@ -177,6 +177,45 @@ ${PAGE_SCRIPT}
 `;
 }
 
+/** page -> main: `{ mics: MicDevice[] | null, error: string | null }` from the microphone list page. */
+export const MIC_LIST_CHANNEL = 'castcade-mics:list';
+
+/**
+ * B22 (2026-10-31): a hidden page in the panel's partition that lists the microphones before a match, so the Match
+ * tab's picker is filled before Host / Join (tester Krobs saw "Windows default" alone). Chromium hides the labels
+ * (and the ids) until the page has had the microphone once: then it opens it, stops the track at once and lists
+ * again. Same mapping as the panel page's `sendDevices`.
+ */
+export function micListPageHtml(): string {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Castcade microphones</title></head><body>
+<script>
+'use strict';
+const { ipcRenderer } = require('electron');
+const CH = ${JSON.stringify(MIC_LIST_CHANNEL)};
+async function inputs() {
+  const all = await navigator.mediaDevices.enumerateDevices();
+  return all.filter((d) => d.kind === 'audioinput');
+}
+(async () => {
+  try {
+    let found = await inputs();
+    if (found.length > 0 && found.some((d) => !d.label || !d.deviceId)) {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      for (const t of s.getTracks()) t.stop();
+      found = await inputs();
+    }
+    const mics = found.filter((d) => d.deviceId).map((d) => ({ deviceId: d.deviceId, label: d.label || 'Microphone' }));
+    ipcRenderer.send(CH, { mics, error: null });
+  } catch (e) {
+    ipcRenderer.send(CH, { mics: null, error: e && e.message ? String(e.message) : String(e) });
+  }
+})();
+</script>
+</body></html>
+`;
+}
+
 /**
  * The page's own logic (plain JS; no template literals, so nothing here is interpolated by the TS template above).
  * Media: one local MediaStream (mic + capture), `addTrack` on every connection (addTrack transceivers are reused when

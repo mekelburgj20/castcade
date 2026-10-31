@@ -9,6 +9,7 @@ import type { MediaSignal } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import {
   DEFAULT_MATCH_SETTINGS,
+  decideRig,
   formatInvite,
   gameFingerprintFrom,
   lockPathFrom,
@@ -21,6 +22,7 @@ import {
   pickLanAddress,
   readMatchSettings,
   rigFrom,
+  rigFromStatus,
   serializeMatchIdentity,
   writeMatchSettings,
   ZERO_SHA256,
@@ -87,6 +89,15 @@ describe('match setup (A6)', () => {
       '0.3.1',
     );
     expect(fp).toMatchObject({ tableName: 'Monster Bash', tableHash: 'ab'.repeat(32), emulatorVersion: '10.8.0.2051' });
+  });
+
+  it('B22 (2026-10-31): the rig decision carries the VR runtime; a sample from before B22 reads SteamVR', async () => {
+    const vd = { inVr: true, runtime: 'virtual-desktop', runtimeLoaded: false, compositorRunning: false, vrCapableBuild: true, activeOpenXrRuntime: null, sampledAt: 't' } as const;
+    const w = (now: unknown, vr: unknown = null) => ({ status: () => status({ currentAttestation: (vr ? { vr } : null) as WitnessStatus['currentAttestation'] }), sampleVr: async () => now as never });
+    expect(await decideRig(w(vd))).toMatchObject({ rig: 'vr_headset', runtime: 'virtual-desktop' });
+    expect(await decideRig(w({ ...vd, inVr: false, runtime: null }))).toMatchObject({ rig: 'pc', runtime: null });
+    expect(await decideRig(w(null, { inVr: true, runtimeLoaded: true, compositorRunning: true, sampledAt: 't' }))).toMatchObject({ rig: 'vr_headset', runtime: 'steamvr' });
+    expect(rigFromStatus(status())).toEqual({ rig: 'pc', reason: 'no VPX table open to probe; monitor assumed', runtime: null });
   });
 
   it('rig, LAN address and lock path', () => {

@@ -48,6 +48,7 @@ import {
   type Rig,
   type RigDecision,
 } from './match-setup.js';
+import type { VrRuntime } from '../witness/vr-detect.js';
 import type { WitnessHost } from './witness-host.js';
 
 export type MatchPhase = 'none' | 'connecting' | 'lobby' | 'playing' | 'paused' | 'over';
@@ -74,7 +75,15 @@ export interface MatchStatus {
    */
   rig: Rig;
   rigReason: string;
-  /** The microphones the panel page lists (empty until a match opens the panel), the saved choice and the mute. */
+  /**
+   * B22 (2026-10-31): the VR runtime behind `rig: 'vr_headset'`, else null. Not `steamvr`: no in-headset panel (the
+   * OpenVR overlay helper needs SteamVR's compositor); the panel stays on the desktop and the Match tab says why.
+   */
+  vrRuntime: VrRuntime | null;
+  /**
+   * The microphones (the panel page lists them during a match; before one, `refreshMicrophones` does, B22), the saved
+   * choice and the mute.
+   */
   microphones: MicDevice[];
   /** Null: the Windows default device. */
   micDeviceId: string | null;
@@ -95,6 +104,8 @@ export interface MatchHost {
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
   setMicrophone(deviceId: string | null): MatchStatus;
   setMuted(muted: boolean): MatchStatus;
+  /** B22 (2026-10-31): the Match tab opened: list the microphones if no match lists them; a status follows. Never throws. */
+  refreshMicrophones(): void;
   status(): MatchStatus;
   onStatus(cb: (s: MatchStatus) => void): () => void;
   /** On quit: leave any match and close the cue window. */
@@ -108,7 +119,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   vrOverlay?: VrOverlay;
@@ -146,6 +157,8 @@ interface Active {
   /** A6 (2026-10-31): the rig decided at host / join; `pc` turns into `vr_headset` when the witness reads VR later. */
   rig: Rig;
   rigReason: string;
+  /** B22 (2026-10-31): the runtime behind a `vr_headset` rig; only `steamvr` puts the panel in the headset. */
+  runtime: VrRuntime | null;
   /** The witness's own reading at the last status, so a VR -> monitor change is logged once, not at every status. */
   witnessRig: Rig;
   /** A switch to the headset is under way (status events keep coming meanwhile). */
@@ -252,14 +265,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   // ---- status ----
   const idleRig = (): RigDecision => {
     const d = rigFromStatus(witness.status());
-    return { rig: d.rig, reason: `no match; decided again when you host or join (${d.reason})` };
+    return { rig: d.rig, reason: `no match; decided again when you host or join (${d.reason})`, runtime: d.runtime };
   };
   /** `RigDecision` names it `reason`; the status calls it `rigReason`. */
-  const rigOf = (d: RigDecision): { rig: Rig; rigReason: string } => ({ rig: d.rig, rigReason: d.reason });
+  const rigOf = (d: RigDecision): { rig: Rig; rigReason: string; runtime: VrRuntime | null } => ({ rig: d.rig, rigReason: d.reason, runtime: d.runtime });
+  /**
+   * B22 (2026-10-31): the panel goes in the headset only on SteamVR, the one runtime whose compositor the OpenVR overlay
+   * helper can draw into. "In VR" for everything else (the rig, play_device, the capture pick) is `rig`.
+   */
+  const headsetPanel = (a: Pick<Active, 'rig' | 'runtime'>): boolean => a.rig === 'vr_headset' && a.runtime === 'steamvr';
+  const offSteamVr = (a: Pick<Active, 'rig' | 'runtime'>): boolean => a.rig === 'vr_headset' && a.runtime !== 'steamvr';
+  const RUNTIME_NOT_STEAMVR: VrOverlayStatus = { state: 'unavailable', reason: 'runtime_not_steamvr' };
+  const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a) });
   const status = (): MatchStatus => {
     const a = active;
     const c: ControllerStatus | null = a ? a.controller.status() : null;
     const phase: MatchPhase = connecting ? 'connecting' : c ? c.phase : 'none';
+    const r = a ? { rig: a.rig, rigReason: a.rigReason, runtime: a.runtime } : rigOf(idleRig());
     return {
       role: a ? a.role : 'none',
       phase,
@@ -278,8 +300,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       })),
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
-      vrOverlay: a && opts.vrOverlay ? opts.vrOverlay.status() : null,
-      ...(a ? { rig: a.rig, rigReason: a.rigReason } : rigOf(idleRig())),
+      vrOverlay: a && offSteamVr(a) ? { ...RUNTIME_NOT_STEAMVR } : a && opts.vrOverlay ? opts.vrOverlay.status() : null,
+      rig: r.rig,
+      rigReason: r.rigReason,
+      vrRuntime: r.runtime,
       microphones: opts.media?.microphones?.() ?? [],
       micDeviceId: opts.mediaSettings?.get().micDeviceId ?? null,
       muted: opts.mediaSettings?.get().muted ?? false,
@@ -311,16 +335,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   witness.onEvent((ev) => active?.controller.feed(ev));
   // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
   // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
-  // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored.
+  // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. B22
+  // (2026-10-31): a VR reading on another runtime than SteamVR switches the rig but keeps the desktop panel; a later
+  // SteamVR reading then moves the panel into the headset.
   witness.onStatus((s) => {
     const a = active;
     if (!a) return;
-    const now = rigFrom(s);
+    const d = rigFromStatus(s);
+    const now = d.rig;
     const was = a.witnessRig;
     a.witnessRig = now;
     if (now === 'vr_headset') {
-      if (a.rig === 'pc') void switchToVr(a, rigFromStatus(s).reason);
-      else if (!a.overlayStarted && !a.switching && opts.vrOverlay && opts.media?.frames()) void startOverlay(a);
+      if (a.rig === 'pc' || (!headsetPanel(a) && d.runtime === 'steamvr')) void switchToVr(a, d);
+      else if (headsetPanel(a) && !a.overlayStarted && !a.switching && opts.vrOverlay && opts.media?.frames()) void startOverlay(a);
     } else if (was === 'vr_headset' && a.rig === 'vr_headset') {
       log.info('match: the witness reads the monitor now; the panel stays in the headset for this match');
     }
@@ -364,35 +391,47 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts, of the kind decided then. */
   const openPanel = async (a: Active): Promise<void> => {
-    await opts.media?.setVr?.(a.rig === 'vr_headset');
+    await opts.media?.setVr?.(mediaRig(a));
     await a.controller.open();
-    if (a.rig === 'vr_headset') await startOverlay(a);
-    else opts.media?.showPanel();
+    if (headsetPanel(a)) await startOverlay(a);
+    else showDesktopPanel(a);
   };
 
-  /** A6 (2026-10-31): the desktop panel moves into the headset when the witness reads VR after host / join. */
-  const switchToVr = async (a: Active, why: string): Promise<void> => {
-    if (a.switching || a.rig === 'vr_headset') return;
+  /** B22 (2026-10-31): in VR off SteamVR the panel is a visible desktop window, and the log says why. */
+  const showDesktopPanel = (a: Active): void => {
+    if (offSteamVr(a)) log.info(`match: in VR via ${a.runtime ?? 'an unknown runtime'}; the in-headset panel needs SteamVR, so the panel shows on the desktop (overlay unavailable: runtime_not_steamvr)`);
+    opts.media?.showPanel();
+  };
+
+  /**
+   * A6 (2026-10-31): the desktop panel moves into the headset when the witness reads VR after host / join. B22: only a
+   * SteamVR reading moves it; another runtime switches the rig (and the capture pick) and keeps the desktop panel.
+   */
+  const switchToVr = async (a: Active, d: RigDecision): Promise<void> => {
+    if (a.switching) return;
+    if (a.rig === 'vr_headset' && (headsetPanel(a) || d.runtime !== 'steamvr')) return;
     a.switching = true;
     a.rig = 'vr_headset';
-    a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${why}`;
+    a.runtime = d.runtime;
+    a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${d.reason}`;
     log.info(`match: rig vr_headset (${a.rigReason})`);
     emit();
     try {
-      await opts.media?.setVr?.(true);
+      await opts.media?.setVr?.(mediaRig(a));
     } catch (e) {
       log.warn(`match: the panel did not move into the headset: ${describeError(e)}`);
     }
     a.switching = false;
     if (active !== a) return;
-    await startOverlay(a);
+    if (headsetPanel(a)) await startOverlay(a);
+    else showDesktopPanel(a);
     emit();
   };
 
   /** The rig at host / join, logged with its evidence; a failing probe never stops a match (the monitor is assumed). */
   const decide = async (): Promise<RigDecision> => {
-    const d = await (opts.rig ?? (() => decideRig(witness)))().catch((e: unknown): RigDecision => ({ rig: 'pc', reason: `the VR probe failed (${describeError(e)}); monitor assumed` }));
-    log.info(`match: rig ${d.rig} (${d.reason})`);
+    const d = await (opts.rig ?? (() => decideRig(witness)))().catch((e: unknown): RigDecision => ({ rig: 'pc', reason: `the VR probe failed (${describeError(e)}); monitor assumed`, runtime: null }));
+    log.info(`match: rig ${d.rig}${d.runtime ? ` via ${d.runtime}` : ''} (${d.reason})`);
     return d;
   };
 
@@ -613,6 +652,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       active?.controller.refresh();
       emit();
       return status();
+    },
+    refreshMicrophones() {
+      // During a match the panel page keeps the list; the new list reaches the tab through onMicrophones -> emit.
+      if (active || !opts.media?.refreshMicrophones) return;
+      void opts.media.refreshMicrophones().catch((e: unknown) => log.warn(`match: microphone list: ${describeError(e)}`));
     },
     status,
     onStatus(cb) {

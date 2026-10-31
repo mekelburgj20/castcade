@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaSignal, MediaSignalling, MediaStatus, PanelFrame } from './match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, patchMediaSettings, type MediaSettings, type MediaSettingsStore } from './media-settings.js';
-import { PANEL_CHANNELS, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, type PanelPageStatus } from './panel-page.js';
 import type { VpxWindow, WindowProbe } from './window-geometry.js';
 
 // ---- Electron, faked: windows record what they were built with and what they were sent ----
@@ -84,6 +84,9 @@ const win = (title: string, width: number, height: number, pid = 7): VpxWindow =
 const PLAYER = win('Visual Pinball Player', 1280, 720);
 const EDITOR = win('Visual Pinball - [Monster Bash (Williams 1998)]', 1920, 1040);
 const DMD = win('PUPDMD', 512, 128);
+
+/** In VR on SteamVR: the offscreen panel for the overlay helper. */
+const VR_STEAM = { inVr: true, headsetPanel: true } as const;
 
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
@@ -208,7 +211,7 @@ describe('createRtcHost (D2)', () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
     const probe = async (): Promise<WindowProbe> => ({ outputs: [], windows });
     const host = createRtcHost({ userData: dir, log, probe, settings: store({ micDeviceId: 'headset' }) });
-    await host.setVr(true);
+    await host.setVr(VR_STEAM);
     const net = signalling('owner');
     const statuses: MediaStatus[] = [];
     host.onStatus((s) => statuses.push(s));
@@ -333,14 +336,14 @@ describe('createRtcHost (D2)', () => {
       },
       settings: store(),
     });
-    await host.setVr(true);
+    await host.setVr(VR_STEAM);
     await expect(host.attach(signalling('owner').sig, ['krobs'])).resolves.toBeUndefined();
     expect(host.status()).toMatchObject({ attached: true, lastError: 'the VPX window could not be found (powershell missing)' });
     await host.detach();
 
     fake.sources.list = [];
     const host2 = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
-    await host2.setVr(true);
+    await host2.setVr(VR_STEAM);
     await host2.attach(signalling('owner').sig, ['krobs']);
     expect(host2.status().lastError).toBe('the window "Visual Pinball Player" is not offered for capture');
     // a second attach replaces the first window
@@ -364,7 +367,7 @@ describe('createRtcHost (D2)', () => {
     host.addPeer('fourth');
     host.setSending(true);
 
-    await host.setVr(true);
+    await host.setVr(VR_STEAM);
     expect(desk.destroyed).toBe(true);
     const vrWin = fake.FakeWindow.all[1]!;
     expect(vrWin.opts).toMatchObject({ show: false, width: 960, height: 640, webPreferences: { offscreen: true } });
@@ -392,7 +395,7 @@ describe('createRtcHost (D2)', () => {
     expect(frames).toHaveLength(1);
 
     // VR -> desktop while attached is not supported: logged, the headset panel stays.
-    await host.setVr(false);
+    await host.setVr({ inVr: false, headsetPanel: false });
     expect(fake.FakeWindow.all).toHaveLength(2);
     expect(host.frames()).not.toBeNull();
     expect(logs).toContain('media: the rig reads the monitor now; the panel stays in the headset until the match ends');
@@ -403,6 +406,65 @@ describe('createRtcHost (D2)', () => {
     expect(host.frames()).toBeNull();
     await host.attach(net.sig, ['krobs']);
     expect(fake.FakeWindow.all[2]?.opts).toMatchObject({ alwaysOnTop: true });
+    await host.detach();
+  });
+
+  it('B22 (2026-10-31): in VR off SteamVR a visible desktop panel and no frames, while the capture still picks as in VR', async () => {
+    const preview = win('VR Preview', 1280, 720);
+    fake.sources.list = [{ id: 'window:43:0', name: 'VR Preview' }];
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, DMD, preview] }), settings: store() });
+    await host.setVr({ inVr: true, headsetPanel: false });
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all[0]!;
+    expect(w.opts).toMatchObject({ width: 480, height: 720, alwaysOnTop: true, webPreferences: { offscreen: false } });
+    expect(readFileSync(join(dir, 'match-panel.html'), 'utf8')).toContain('<body class="desktop">');
+    expect(host.frames()).toBeNull();
+    host.showPanel();
+    expect(w.shown).toBe(1);
+    // No "Visual Pinball Player" window: the desktop rule would send nothing; in VR the largest VPX window goes.
+    expect(host.status().lastError).toBeNull();
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect(w.webContents.sent[0]?.[1]).toMatchObject({ capture: { sourceId: 'window:43:0' } });
+    expect(logs.some((l) => l.startsWith('media: attach (VR, desktop panel)'))).toBe(true);
+    await host.detach();
+  });
+
+  it('B22 (2026-10-31): the microphones before a match, from a hidden page in the panel partition; one listing at a time; none while attached', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    const seen: number[] = [];
+    host.onMicrophones((m) => seen.push(m.length));
+    const p = host.refreshMicrophones();
+    expect(host.refreshMicrophones()).toBe(p);
+    await settle();
+    expect(fake.FakeWindow.all).toHaveLength(1);
+    const w = fake.FakeWindow.all[0]!;
+    expect(w.opts).toMatchObject({ show: false, webPreferences: { partition: 'castcade-panel', nodeIntegration: true } });
+    expect(w.loaded).toBe(join(dir, 'match-mics.html'));
+    const page = readFileSync(join(dir, 'match-mics.html'), 'utf8');
+    expect(page).toContain(MIC_LIST_CHANNEL);
+    expect(page).toContain('t.stop()');
+    // Another webContents is not the listing page.
+    fake.ipc.get(MIC_LIST_CHANNEL)?.({ sender: {} }, { mics: [{ deviceId: 'x', label: 'X' }], error: null });
+    fromPage(w, MIC_LIST_CHANNEL, { mics: [{ deviceId: 'headset-1', label: 'Headset' }, { nope: 1 }], error: null });
+    await p;
+    expect(host.microphones()).toEqual([{ deviceId: 'headset-1', label: 'Headset' }]);
+    expect(seen).toEqual([1]);
+    expect(w.destroyed).toBe(true);
+    expect(logs).toContain('media: 1 microphone(s) listed before the match');
+
+    // A failure keeps the last list and says why.
+    const p2 = host.refreshMicrophones();
+    await settle();
+    fromPage(fake.FakeWindow.all[1]!, MIC_LIST_CHANNEL, { mics: null, error: 'NotAllowedError' });
+    await p2;
+    expect(host.microphones()).toHaveLength(1);
+    expect(logs).toContain('WARN media: could not list the microphones before the match (NotAllowedError)');
+
+    // Attached: the panel page lists them; no hidden page.
+    await host.attach(signalling('owner').sig, []);
+    const before = fake.FakeWindow.all.length;
+    await host.refreshMicrophones();
+    expect(fake.FakeWindow.all).toHaveLength(before);
     await host.detach();
   });
 });

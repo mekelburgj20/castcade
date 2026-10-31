@@ -286,7 +286,11 @@ function registerIpc(
   ipcMain.handle(IPC.streamPreviewStart, () => sh().startPreview());
   ipcMain.handle(IPC.streamPreviewStop, () => sh().stopPreview());
   ipcMain.handle(IPC.streamPreviewStatus, () => sh().previewStatus());
-  ipcMain.handle(IPC.matchStatus, () => mh().status());
+  ipcMain.handle(IPC.matchStatus, () => {
+    // B22 (2026-10-31): the Match tab asks for its status when it opens; list the microphones then, before any match.
+    mh().refreshMicrophones();
+    return mh().status();
+  });
   ipcMain.handle(IPC.matchHost, (_e, o: unknown) => {
     const w = (o ?? {}) as { port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
     return mh().host({
