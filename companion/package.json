@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@castcade/protocol": "*",
-    "electron-updater": "^6.8.9",
+    "electron-updater": "^6.8.11",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -44,9 +44,9 @@
     "@vitejs/plugin-react": "^6.1.2",
     "cfb": "1.2.2",
     "electron": "44.9.0",
-    "electron-builder": "^26.15.3",
+    "electron-builder": "^26.18.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "vite": "^8.3.4"
+    "vite": "^8.3.5"
   }
 }
