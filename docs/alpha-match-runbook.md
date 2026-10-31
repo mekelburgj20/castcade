@@ -90,7 +90,7 @@ Run these a day or more before the match. If one fails, stop and send what is li
 
 ## 5. What to send the lead after the night
 
-- Both `companion.log` files (`%APPDATA%Castcadeogsmpanion.log`; no tokens in it).
+- Both `companion.log` files (`%APPDATA%\Castcade\logs\companion.log`; no tokens in it).
 - The match id (shown on the Match tab; to confirm on the build) and the table and ROM.
 - Which of the three rig checks passed, and which turns went wrong, with the rough time.
 - A screenshot or phone photo of the headset view if the panel looked wrong (size, position, readability).
