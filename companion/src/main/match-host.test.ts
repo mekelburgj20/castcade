@@ -236,6 +236,7 @@ function fakeMedia() {
 
 function fakeOverlay() {
   const started: unknown[] = [];
+  let stops = 0;
   let state: 'stopped' | 'showing' = 'stopped';
   const overlay = {
     async start(src: unknown) {
@@ -244,12 +245,13 @@ function fakeOverlay() {
       return { state, reason: null };
     },
     async stop() {
+      stops++;
       state = 'stopped';
     },
     status: () => ({ state, reason: null }),
     onStatus: () => () => undefined,
   };
-  return { overlay: overlay as unknown as OverlayOpt, started };
+  return { overlay: overlay as unknown as OverlayOpt, started, stops: () => stops };
 }
 
 describe('match host: the rig (A6, 2026-10-31)', () => {
@@ -316,43 +318,65 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     expect(st).toMatchObject({ rig: 'pc', rigReason: 'no VPX table open to probe; monitor assumed', vrRuntime: null });
   });
 
-  it("B22 (2026-10-31): VR on Virtual Desktop's OpenXR runtime: rig vr_headset, a visible desktop panel, no overlay helper, and the reason", async () => {
+  it("D7.3 (2026-10-31): VR on Virtual Desktop's OpenXR runtime: offscreen panel into the OpenXR layer, not the SteamVR helper", async () => {
+    const wit = liveWitness(VR_VD, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const layer = fakeOverlay();
+    const { log, lines } = logLines();
+    const H = make('vd', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, vrLayer: layer.overlay, log });
+    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(m.calls).toEqual(['setVr true', 'attach vr 0']);
+    expect(layer.started).toEqual([m.source]);
+    expect(o.started).toEqual([]);
+    expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: { state: 'showing' } });
+    expect(st.rigReason).toBe(`VPX probed now: Virtual Desktop (OpenXR), vrclient not loaded, compositor not running, active OpenXR runtime ${VD_JSON}`);
+    expect(st.participants[0]?.rig).toBe('vr_headset');
+    expect(lines.some((l) => l.startsWith('match: rig vr_headset via virtual-desktop ('))).toBe(true);
+    expect(lines).toContain('match: VR overlay showing via the OpenXR layer (virtual-desktop)');
+
+    // More VD readings change nothing; a SteamVR reading (VPX restarted through SteamVR) swaps the layer for the helper.
+    wit.setVr(VR_VD);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(m.calls).toHaveLength(2);
+    expect(layer.started).toHaveLength(1);
+    wit.setVr(VR_ON);
+    await until(() => o.started.length === 1);
+    expect(layer.stops()).toBe(1);
+    expect(o.started).toEqual([m.source]);
+    expect(m.calls.slice(2)).toEqual(['setVr true']);
+    expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrRuntime: 'steamvr', vrOverlay: { state: 'showing' } });
+    await H.mh.leave();
+    expect(o.stops()).toBe(1);
+    expect(layer.stops()).toBe(1);
+  });
+
+  it('D7.3: hosted on the monitor reading, then the witness reads VR on Virtual Desktop: the panel moves into the headset through the layer', async () => {
+    const wit = liveWitness(null, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const layer = fakeOverlay();
+    const H = make('vd-late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, vrLayer: layer.overlay });
+    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
+    expect(H.mh.status().vrOverlay).toEqual({ state: 'stopped', reason: null }); // the monitor: the SteamVR helper's (idle) status, as before
+    wit.setVr(VR_VD);
+    await until(() => layer.started.length === 1);
+    expect(m.calls.slice(3)).toEqual(['setVr true']);
+    expect(o.started).toEqual([]);
+    expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: { state: 'showing' } });
+  });
+
+  it('D7.3: an OpenXR runtime with no layer set up: no overlay status, and the log says why', async () => {
     const wit = liveWitness(VR_VD, VR_OFF);
     const m = fakeMedia();
     const o = fakeOverlay();
     const { log, lines } = logLines();
-    const H = make('vd', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
+    const H = make('vd-nolayer', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
     const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
-    expect(m.calls).toEqual(['setVr false (in VR)', 'attach desktop 0', 'showPanel']);
     expect(o.started).toEqual([]);
-    expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: { state: 'unavailable', reason: 'runtime_not_steamvr' } });
-    expect(st.rigReason).toBe(`VPX probed now: Virtual Desktop (OpenXR), vrclient not loaded, compositor not running, active OpenXR runtime ${VD_JSON}`);
-    expect(st.participants[0]?.rig).toBe('vr_headset');
-    expect(lines.some((l) => l.startsWith('match: rig vr_headset via virtual-desktop ('))).toBe(true);
-    expect(lines.some((l) => l.includes('runtime_not_steamvr'))).toBe(true);
-
-    // More VD readings change nothing; a SteamVR reading (VPX restarted through SteamVR) moves the panel into the headset.
-    wit.setVr(VR_VD);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(m.calls).toHaveLength(3);
-    wit.setVr(VR_ON);
-    await until(() => o.started.length === 1);
-    expect(m.calls.slice(3)).toEqual(['setVr true']);
-    expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrRuntime: 'steamvr', vrOverlay: { state: 'showing' } });
-  });
-
-  it('B22: hosted on the monitor reading, then the witness reads VR on Virtual Desktop: the rig switches, the desktop panel stays', async () => {
-    const wit = liveWitness(null, VR_OFF);
-    const m = fakeMedia();
-    const o = fakeOverlay();
-    const H = make('vd-late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay });
-    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
-    expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
-    wit.setVr(VR_VD);
-    await until(() => H.mh.status().rig === 'vr_headset' && m.calls.length === 5);
-    expect(m.calls.slice(3)).toEqual(['setVr false (in VR)', 'showPanel']);
-    expect(o.started).toEqual([]);
-    expect(H.mh.status()).toMatchObject({ vrRuntime: 'virtual-desktop', vrOverlay: { state: 'unavailable', reason: 'runtime_not_steamvr' } });
+    expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: null });
+    expect(lines).toContain('match: in VR but no OpenXR layer; showing the desktop panel');
   });
 
   it('B22: the Match tab opening lists the microphones when no match runs, never during one', async () => {

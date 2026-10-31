@@ -38,6 +38,12 @@ extraResources:
   # scripts/fetch-vr-overlay.mjs). Outside the asar so the exe can run; src/media/vr-overlay.ts finds it here.
   - from: resources/vr-overlay
     to: vr-overlay
+  # The OpenXR panel layer (D7.3): XrApiLayer_castcade_panel.dll + its manifest .json + THIRD-PARTY.md, the zip the
+  # vr-layer workflow attaches to a release (release.yml builds it from the tag), fetched by `npm run fetch-vr-layer -w
+  # companion`. Outside the asar: the OpenXR loader inside VPX reads the json and loads the dll from this folder, which
+  # src/media/vr-layer.ts registers under HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit.
+  - from: resources/vr-layer
+    to: vr-layer
   # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo
   # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
   - from: ../vpx-hook/castcade.vbs

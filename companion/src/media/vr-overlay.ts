@@ -5,11 +5,8 @@
  * the frame source.
  *
  * Rules:
- *   - frames: header (`frameHeader`) + BGRA bytes, as they come. While the previous write has not drained, new frames
- *     are not written; the newest one is written on `drain` (the ones in between are dropped: a VR panel wants the
- *     current picture, never a backlog);
- *   - keepalive: the panel page paints only when the picture changes, and the helper hides the overlay after 5 s
- *     without a frame, so the last frame is re-sent when nothing was written for `KEEPALIVE_MS`;
+ *   - frames: `panel-frame-writer.ts` (header + BGRA, drop-when-behind, the keepalive), shared with the OpenXR layer's
+ *     pipe (`vr-layer.ts`, D7.3);
  *   - exit 2 (or SteamVR's quit) → `unavailable steamvr_not_running`; exit 3 (OpenVR error) or 64 (bad arguments) →
  *     `unavailable helper_failed:<code>` at once (a restart would fail the same way); any other exit we did not ask for
  *     → one restart after `RESTART_DELAY_MS`, then `unavailable helper_failed:<code>`;
@@ -18,15 +15,12 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { VR_OVERLAY_DEFAULTS, VR_OVERLAY_FRAME_MAGIC, type PanelFrame, type PanelFrameSource, type VrOverlay, type VrOverlayStatus } from './match-media-types.js';
+import { VR_OVERLAY_DEFAULTS, type PanelFrameSource, type VrOverlay, type VrOverlayStatus } from './match-media-types.js';
+import { createPanelFrameWriter } from './panel-frame-writer.js';
 
 export const VR_OVERLAY_EXE = 'castcade-vr-overlay.exe';
-/** The helper refuses larger frames (exit 4); `frameHeader` refuses them first. */
-export const VR_OVERLAY_MAX_SIDE = 4096;
 export const RESTART_DELAY_MS = 2000;
 export const STOP_GRACE_MS = 2000;
-/** Below the helper's 5 s hide timeout, with room for a slow write. */
-export const KEEPALIVE_MS = 2000;
 
 /** Placement flags. Wider than `typeof VR_OVERLAY_DEFAULTS` (whose literals are `as const`), so any value fits. */
 export interface VrOverlayPlacement {
@@ -57,19 +51,6 @@ export function resolveVrOverlay(i: VrOverlayPathInput, exists: (p: string) => b
   return candidates.find((p) => exists(p)) ?? null;
 }
 
-/** The frame pipe's 16-byte little-endian header: "CVO1", width, height, byteLength (= width * height * 4). */
-export function frameHeader(width: number, height: number): Buffer {
-  for (const [name, v] of [['width', width], ['height', height]] as const) {
-    if (!Number.isInteger(v) || v < 1 || v > VR_OVERLAY_MAX_SIDE) throw new RangeError(`frame ${name} ${v} is outside 1..${VR_OVERLAY_MAX_SIDE}`);
-  }
-  const h = Buffer.alloc(16);
-  h.write(VR_OVERLAY_FRAME_MAGIC, 0, 'latin1');
-  h.writeUInt32LE(width, 4);
-  h.writeUInt32LE(height, 8);
-  h.writeUInt32LE(width * height * 4, 12);
-  return h;
-}
-
 /** The helper's command line for a placement. */
 export function helperArgs(p: VrOverlayPlacement): string[] {
   return ['--width-m', String(p.widthM), '--anchor', p.anchor, '--offset', p.offset.map(String).join(','), '--alpha', String(p.alpha)];
@@ -95,12 +76,7 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
   let restarted = false;
   let stopping = false;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
-  let keepaliveTimer: ReturnType<typeof setTimeout> | null = null;
-  /** The newest frame from the source, and whether the running helper has been sent it. */
-  let latest: PanelFrame | null = null;
-  let latestSent = false;
-  /** The last write returned false: wait for `drain` before writing again. */
-  let blocked = false;
+  const writer = createPanelFrameWriter({ log: opts.log, tag: 'vr-overlay' });
 
   const set = (state: VrOverlayStatus['state'], reason: string | null = null) => {
     if (current.state === state && current.reason === reason) return;
@@ -110,64 +86,25 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
 
   const clearTimers = () => {
     if (restartTimer) clearTimeout(restartTimer);
-    if (keepaliveTimer) clearTimeout(keepaliveTimer);
-    restartTimer = keepaliveTimer = null;
+    restartTimer = null;
   };
 
   /** The helper is gone for good: stop feeding it. */
   const giveUp = (reason: string) => {
     clearTimers();
+    writer.clear();
     unsubscribe?.();
     unsubscribe = null;
     set('unavailable', reason);
   };
 
-  const send = () => {
-    const stdin = child?.stdin;
-    if (!stdin || !stdin.writable || blocked || !latest || latestSent) return;
-    const f = latest;
-    latestSent = true;
-    if (f.bgra.length !== f.width * f.height * 4) {
-      opts.log(`vr-overlay: dropped a ${f.width}x${f.height} frame of ${f.bgra.length} bytes (want ${f.width * f.height * 4})`);
-      return;
-    }
-    let header: Buffer;
-    try {
-      header = frameHeader(f.width, f.height);
-    } catch (e) {
-      opts.log(`vr-overlay: dropped a frame: ${(e as Error).message}`);
-      return;
-    }
-    stdin.write(header);
-    blocked = !stdin.write(f.bgra); // the header shares the same buffer, so the second answer covers both
-    if (keepaliveTimer) clearTimeout(keepaliveTimer);
-    keepaliveTimer = setTimeout(() => {
-      keepaliveTimer = null;
-      latestSent = false;
-      send(); // when blocked, `drain` sends it
-    }, KEEPALIVE_MS);
-  };
-
-  const onFrame = (f: PanelFrame) => {
-    latest = f;
-    latestSent = false;
-    send();
-  };
-
   const launch = () => {
     const c = sp(opts.exePath!, helperArgs(placement), { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     child = c;
-    blocked = false;
-    latestSent = false;
     let lastError: string | null = null;
     let steamVrGone = false;
     set('starting');
     c.stdin?.on('error', () => {}); // EPIPE when the helper exits first; the exit handler reports it
-    c.stdin?.on('drain', () => {
-      if (child !== c) return;
-      blocked = false;
-      send();
-    });
     readLines(c.stdout, (line) => {
       let ev: { event?: unknown; reason?: unknown; detail?: unknown };
       try {
@@ -205,8 +142,7 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
       exited = true;
       if (child !== c) return;
       child = null;
-      if (keepaliveTimer) clearTimeout(keepaliveTimer);
-      keepaliveTimer = null;
+      writer.attach(null); // the last frame stays for a restart
       if (stopping) {
         set('stopped');
         return;
@@ -229,7 +165,7 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
       giveUp(e.code === 'ENOENT' ? 'helper_missing' : `helper_failed:${e.code ?? 'spawn'}`);
     });
     c.on('close', (code: number | null, signal: NodeJS.Signals | null) => onExit(code, code !== null ? `code ${code}` : `signal ${signal ?? 'unknown'}`));
-    send(); // after a restart: the last frame goes up at once, not at the next paint
+    writer.attach(c.stdin ?? null); // after a restart: the last frame goes up at once, not at the next paint
     return c;
   };
 
@@ -238,7 +174,7 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
     clearTimers();
     unsubscribe?.();
     unsubscribe = null;
-    latest = null;
+    writer.clear();
     const c = child;
     if (!c) {
       set('stopped');
@@ -268,8 +204,8 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
       }
       stopping = false;
       restarted = false;
-      latest = null;
-      unsubscribe = source.onFrame(onFrame);
+      writer.clear();
+      unsubscribe = source.onFrame((f) => writer.push(f));
       const c = launch();
       // Settle once the OS has started it (or refused to): a missing exe reports here, SteamVR's absence a moment later.
       await new Promise<void>((done) => {

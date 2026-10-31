@@ -1,0 +1,79 @@
+name: VR OpenXR layer (Windows x64)
+
+# XrApiLayer_castcade_panel.dll (D7.3; vr-layer/README.md): the build of record for the OpenXR API layer.
+# Push or PR touching vr-layer/** (or this file) → build, upload the artifact castcade-vr-layer-win-x64.
+# Tag push `v*` → also zip it as castcade-vr-layer-<tag>-win-x64.zip on that GitHub release, where
+# companion/scripts/fetch-vr-layer.mjs fetches it for packaging. (Path filters do not apply to tag pushes.)
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'vr-layer/**'
+      - '.github/workflows/vr-layer.yml'
+  pull_request:
+    paths:
+      - 'vr-layer/**'
+      - '.github/workflows/vr-layer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vr-layer-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: XrApiLayer_castcade_panel (windows x64, MSVC, Release)
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      # The default generator on the runner is its newest Visual Studio; the OpenXR headers come from the pinned tag (sha256-checked).
+      - name: Configure
+        run: cmake -S vr-layer -B vr-layer/build -A x64
+      - name: Build (Release)
+        run: cmake --build vr-layer/build --config Release
+      - name: The shippable set is all there, and the dll exports the negotiation entry point
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = 'vr-layer/build/Release'
+          'XrApiLayer_castcade_panel.dll', 'XrApiLayer_castcade_panel.json', 'THIRD-PARTY.md' | ForEach-Object { Get-Item (Join-Path $dir $_) | Format-List Name, Length }
+          # The loader finds the layer by this one export; without it the layer is silently skipped.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin.exe not found on the runner' }
+          $exports = & $dumpbin /exports (Join-Path $dir 'XrApiLayer_castcade_panel.dll') | Out-String
+          if ($exports -notmatch '\bxrNegotiateLoaderApiLayerInterface\b') { Write-Output $exports; throw 'xrNegotiateLoaderApiLayerInterface is not exported' }
+          # The manifest must parse and name the dll beside it.
+          $m = Get-Content (Join-Path $dir 'XrApiLayer_castcade_panel.json') -Raw | ConvertFrom-Json
+          if ($m.api_layer.library_path -ne './XrApiLayer_castcade_panel.dll' -or -not $m.api_layer.disable_environment) { throw 'unexpected manifest' }
+      - name: Upload the layer as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: castcade-vr-layer-win-x64
+          if-no-files-found: error
+          path: |
+            vr-layer/build/Release/XrApiLayer_castcade_panel.dll
+            vr-layer/build/Release/XrApiLayer_castcade_panel.json
+            vr-layer/build/Release/THIRD-PARTY.md
+      - name: Zip for the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $files = 'XrApiLayer_castcade_panel.dll', 'XrApiLayer_castcade_panel.json', 'THIRD-PARTY.md' | ForEach-Object { Join-Path vr-layer/build/Release $_ }
+          Compress-Archive -Path $files -DestinationPath "castcade-vr-layer-$env:GITHUB_REF_NAME-win-x64.zip"
+          (Get-FileHash "castcade-vr-layer-$env:GITHUB_REF_NAME-win-x64.zip" -Algorithm SHA256).Hash.ToLower()
+      # release.yml and vr-overlay.yml create the same pre-release on the same tag; whichever workflow gets there first
+      # creates it, the others find it (a lost create race is fine: the view after it must then succeed).
+      - name: Attach the zip to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" "castcade-vr-layer-$GITHUB_REF_NAME-win-x64.zip" --clobber --repo "$GITHUB_REPOSITORY"

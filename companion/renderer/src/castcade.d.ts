@@ -419,7 +419,7 @@ interface MatchStatus {
   vrOverlay: VrOverlayStatus | null;
   rig: 'vr_headset' | 'pc';
   rigReason: string;
-  /** B22: the VR runtime behind `rig: 'vr_headset'`; only `steamvr` gets the in-headset panel. */
+  /** B22: the VR runtime behind `rig: 'vr_headset'`. D7.3: `steamvr` → the SteamVR overlay, any other → the OpenXR layer. */
   vrRuntime: 'steamvr' | 'virtual-desktop' | 'oculus' | 'openxr-other' | null;
   microphones: Array<{ deviceId: string; label: string }>;
   micDeviceId: string | null;

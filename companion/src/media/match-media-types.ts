@@ -97,13 +97,15 @@ export interface PanelFrameSource {
 export interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
   /**
-   * Why `unavailable`: `steamvr_not_running`, `helper_missing`, `helper_failed:<detail>`; `runtime_not_steamvr` (B22,
-   * 2026-10-31) is set by the match host, not the helper: VPX is in VR on another runtime, so the helper is not spawned.
+   * Why. The SteamVR helper: `unavailable` `steamvr_not_running`, `helper_missing`, `helper_failed:<detail>`. The OpenXR
+   * layer (D7.3, 2026-10-31): `unavailable` `layer_missing` / `layer_disabled`, `starting` `restart_vpx` (no answer on
+   * the pipe while VPX runs: VPX predates the registration) / `register_failed`, `hidden` `pipe_closed`.
+   * (`runtime_not_steamvr`, B22, is gone: every runtime has an overlay since D7.3.)
    */
   reason: string | null;
 }
 
-/** The OpenVR overlay helper as the controller sees it (implemented by `media/vr-overlay.ts`, D7). */
+/** The in-headset panel as the controller sees it: the SteamVR helper (`media/vr-overlay.ts`, D7) or the OpenXR layer (`media/vr-layer.ts`, D7.3). */
 export interface VrOverlay {
   start(source: PanelFrameSource): Promise<VrOverlayStatus>;
   stop(): Promise<void>;
