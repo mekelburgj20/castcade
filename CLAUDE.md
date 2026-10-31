@@ -64,7 +64,7 @@ detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing
 
 0. `WORK.md` (`/work`): what is open, claimed, blocked, and what the owner wants next. Then, for the design behind an item:
 1. `docs/design/arcaid-integration-gap-analysis.md` — what ArcAid already has, the owner's rulings, the revised architecture and phases. **Source of truth.**
-2. `docs/decisions/` — ADRs 0001–0007 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker · functionality before ease of setup).
+2. `docs/decisions/` — ADRs 0001–0008 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker · functionality before ease of setup · sanctioned VPX build for Sanctioned play).
 3. `docs/design/fairness-and-table-identity.md` — table identity, playfield fingerprint, script inspection, the honest ceiling, build order F1–F6.
 4. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
 5. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
@@ -85,6 +85,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | Peer-hosted (host player's companion arbitrates and forwards media); ArcAid does signaling + results only. Architecture B (parallel 1-player games). 2–4 players, protocol N-player from day one. | handoff doc | — |
 | Names in code: product *Castcade*; lobby *Throwdown*; roles *host* / *client*; turn token *grant*. | handoff + 0002 | — |
 | **Functionality before ease of setup.** VPX users accept complex setup; never drop a capability (multiplayer streaming, voice, fairness) to save a setup step. Within that, make install and setup as easy as possible: automate it, or walk the user through it. | 2026-10-27 | 0007 |
+| A **sanctioned VPX build** (our fork, Sanctioned mode enforced in-process) is a per-tournament requirement for Sanctioned play; ArcAid trusts its signature and Legends Unchained's (Mox's), no other build. Castcade on stock VPX stays the app for Open play and everything else. | 2026-10-30 | 0008 |
 | Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
 
 ## Repo layout

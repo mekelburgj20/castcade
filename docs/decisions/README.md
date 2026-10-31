@@ -14,8 +14,9 @@ never deleted: a superseded ADR gets a `**Superseded by:**` line and stays in th
 | 0005 | [Two integrity modes on a tournament: Open play and Sanctioned play](0005-open-and-sanctioned-play.md) | Accepted (names provisional) | 2026-10-18 |
 | 0006 | [One live work tracker per repo: `WORK.md`, lanes, claims, a board](0006-one-live-work-tracker.md) | Accepted | 2026-10-21 |
 | 0007 | [Functionality before ease of setup](0007-functionality-before-ease-of-setup.md) | Accepted | 2026-10-27 |
+| 0008 | [A sanctioned VPX build for Sanctioned play; Castcade stays for everything else](0008-sanctioned-vpx-build.md) | Accepted (mechanism open) | 2026-10-30 |
 
-**Next free number: 0008.**
+**Next free number: 0009.**
 
 ## Convention
 

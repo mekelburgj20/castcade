@@ -185,7 +185,10 @@ always whole). Flag only. The runner's baseline, the preflight verdict and remem
 - **Macros and bots.** Not detectable from data with confidence. The answer is the opponent's live
   video in Castcade matches (Phase 4) and, optionally, a recording kept for the ruling.
 - **A modified Castcade.** The ceiling. Signed official builds at GA raise the bar; they do not
-  close it. Sanctioned arenas pair the data checks with live video.
+  close it. Sanctioned arenas pair the data checks with live video. **Owner ruling 2026-10-30 (ADR 0008):** the
+  strict arena gets a *sanctioned VPX build*, a fork whose Sanctioned mode is enforced in-process and whose signed
+  identity ArcAid trusts (with Legends Unchained on cabinets); everything in this document stays the Open-play and
+  stock-VPX answer. Plan: WORK section I.
 
 ## 5a. Accelerometer lifts (owner ask, 2026-10-20)
 
