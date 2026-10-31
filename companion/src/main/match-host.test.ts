@@ -202,6 +202,7 @@ function fakeMedia() {
   let vr = false;
   let attached = false;
   const source = { onFrame: () => () => undefined };
+  const video = { onFrame: () => () => undefined, setWanted: () => undefined };
   const media = {
     async attach(_sig: unknown, peers: string[]) {
       attached = true;
@@ -215,6 +216,7 @@ function fakeMedia() {
     status: () => ({ attached, sending: false, peers: {}, mic: 'open', captureSource: null, lastError: null }),
     onStatus: () => () => undefined,
     frames: () => (attached && vr ? source : null),
+    videoFrames: () => (attached && vr ? video : null),
     showPanel: () => {
       if (!vr) calls.push('showPanel');
     },
@@ -233,16 +235,19 @@ function fakeMedia() {
       calls.push('refreshMicrophones');
     },
   };
-  return { media: media as unknown as MediaOpt, calls, source };
+  return { media: media as unknown as MediaOpt, calls, source, video };
 }
 
 function fakeOverlay() {
   const started: unknown[] = [];
+  const videos: unknown[] = [];
+  const modes: string[] = [];
   let stops = 0;
   let state: 'stopped' | 'showing' = 'stopped';
   const overlay = {
-    async start(src: unknown) {
+    async start(src: unknown, video?: unknown) {
       started.push(src);
+      videos.push(video ?? null);
       state = 'showing';
       return { state, reason: null };
     },
@@ -252,8 +257,9 @@ function fakeOverlay() {
     },
     status: () => ({ state, reason: null }),
     onStatus: () => () => undefined,
+    setMode: (m: string) => void modes.push(m),
   };
-  return { overlay: overlay as unknown as OverlayOpt, started, stops: () => stops };
+  return { overlay: overlay as unknown as OverlayOpt, started, videos, modes, stops: () => stops };
 }
 
 describe('match host: the rig (A6, 2026-10-31)', () => {
@@ -330,6 +336,10 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
     expect(m.calls).toEqual(['setVr true', 'attach vr 0']);
     expect(layer.started).toEqual([m.source]);
+    // D7.4: the layer gets the video source for theater, and the lobby's mode (the panel) once, before it starts.
+    expect(layer.videos).toEqual([m.video]);
+    expect(layer.modes).toEqual(['panel']);
+    expect(lines).toContain('match: headset mode panel');
     expect(o.started).toEqual([]);
     expect(st).toMatchObject({ rig: 'vr_headset', vrRuntime: 'virtual-desktop', vrOverlay: { state: 'showing' } });
     expect(st.rigReason).toBe(`VPX probed now: Virtual Desktop (OpenXR), vrclient not loaded, compositor not running, active OpenXR runtime ${VD_JSON}`);
@@ -346,6 +356,8 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     await until(() => o.started.length === 1);
     expect(layer.stops()).toBe(1);
     expect(o.started).toEqual([m.source]);
+    // D7.4: the new overlay is told the mode too (the SteamVR helper ignores anything but the panel).
+    expect(o.modes).toEqual(['panel']);
     expect(m.calls.slice(2)).toEqual(['setVr true']);
     expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrRuntime: 'steamvr', vrOverlay: { state: 'showing' } });
     await H.mh.leave();

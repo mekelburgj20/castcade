@@ -10,6 +10,18 @@ import { describe, type CastcadeState } from '../useCastcade.js';
 
 const RIG_LABEL: Record<MatchStatus['participants'][number]['rig'], string> = { pc: 'PC', vr_headset: 'VR headset', real_cabinet: 'cabinet' };
 
+/**
+ * D7.4 (2026-10-31): a VR rig sending one eye. VPX's VR preview "Both Eyes" (`[PlayerVR] VRPreview = 3`: the
+ * VRPreviewMode enum in src/core/player.h, combo labels in dialogs/VROptionsDialog.cpp, vpinball v10.8.0-2051-28dd6c3)
+ * draws the left eye in the window's left half and the right eye in its right half (src/core/player.cpp, the
+ * "VR Preview" blit); the other headset shows it in stereo when the picture is 3:1 or wider (panel-page.ts stereoOf).
+ */
+const SBS_MIN_ASPECT = 3;
+function singleEyePreview(st: MatchStatus): boolean {
+  const c = st.media?.captureCrop;
+  return st.rig === 'vr_headset' && !!c && c.height > 0 && c.width / c.height < SBS_MIN_ASPECT;
+}
+
 export function Match({ state }: { state: CastcadeState }) {
   const { bridge } = state;
   const [st, setSt] = useState<MatchStatus | null>(null);
@@ -63,6 +75,9 @@ export function Match({ state }: { state: CastcadeState }) {
       },
       (e: unknown) => setError(describe(e)),
     );
+  };
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate'>>) => {
+    void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
     if (volume !== null && volume !== st.settings.cueVolume) void bridge.match.setSettings({ cueVolume: volume }).then(setSt, (e: unknown) => setError(describe(e)));
@@ -240,6 +255,12 @@ export function Match({ state }: { state: CastcadeState }) {
               {rigLine(st)} <small>{st.rigReason}</small>
             </p>
             <p className="muted">{overlayLine(st.vrOverlay)}</p>
+            {singleEyePreview(st) && (
+              <p>
+                Set VPX's VR preview to "both eyes" so the other player sees your table in stereo: Preferences → VR → Preview: Both Eyes, with the preview window
+                twice as wide as 16:9 (Preview width 2560, height 720).
+              </p>
+            )}
           </div>
         </>
       )}
@@ -268,6 +289,27 @@ export function Match({ state }: { state: CastcadeState }) {
           Pick your headset microphone: in VR the Windows default is often a virtual device.
           {st.microphones.length === 0 ? ' No microphone listed yet: plug one in, then open this tab again.' : ''}
         </small>
+      </div>
+
+      <div className="card">
+        <div className="row">
+          <label className="field">
+            <span>In the headset on your ball</span>
+            <select value={st.settings.theaterDuringMyTurn} onChange={(e) => setView({ theaterDuringMyTurn: e.target.value === 'panel' ? 'panel' : 'hidden' })}>
+              <option value="hidden">Nothing over your table</option>
+              <option value="panel">The match panel, low in view</option>
+            </select>
+            <small>What you see while you play your ball: just your table, or the scores panel below it.</small>
+          </label>
+          <label className="field">
+            <span>In the headset on their ball</span>
+            <select value={st.settings.spectate} onChange={(e) => setView({ spectate: e.target.value === 'panel' ? 'panel' : 'theater' })}>
+              <option value="theater">Their table where yours was (theater)</option>
+              <option value="panel">The match panel, low in view</option>
+            </select>
+            <small>Theater replaces your view with the other player's table on a big screen; it needs the Castcade OpenXR layer (not SteamVR).</small>
+          </label>
+        </div>
       </div>
 
       <div className="card">

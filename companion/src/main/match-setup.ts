@@ -25,9 +25,20 @@ export interface MatchSettings {
   displayName: string | null;
   /** The turn cue's loudness, 0–100. */
   cueVolume: number;
+  /** D7.4 (2026-10-31): the headset on this player's own ball (OpenXR layer rigs): nothing over the table, or the panel. */
+  theaterDuringMyTurn: 'hidden' | 'panel';
+  /** D7.4: the headset while another player is up: their video where the table was (theater), or the panel. */
+  spectate: 'theater' | 'panel';
 }
 
-export const DEFAULT_MATCH_SETTINGS: MatchSettings = { port: DEFAULT_MATCH_PORT, ballsPerGame: 3, displayName: null, cueVolume: 80 };
+export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
+  port: DEFAULT_MATCH_PORT,
+  ballsPerGame: 3,
+  displayName: null,
+  cueVolume: 80,
+  theaterDuringMyTurn: 'hidden',
+  spectate: 'theater',
+};
 
 export function cleanPort(v: unknown): number | null {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
@@ -48,6 +59,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('ballsPerGame' in p) next.ballsPerGame = p.ballsPerGame === 5 ? 5 : p.ballsPerGame === 3 ? 3 : current.ballsPerGame;
   if ('displayName' in p) next.displayName = cleanName(p.displayName);
   if ('cueVolume' in p && typeof p.cueVolume === 'number' && Number.isFinite(p.cueVolume)) next.cueVolume = Math.min(100, Math.max(0, Math.round(p.cueVolume)));
+  if (p.theaterDuringMyTurn === 'hidden' || p.theaterDuringMyTurn === 'panel') next.theaterDuringMyTurn = p.theaterDuringMyTurn;
+  if (p.spectate === 'theater' || p.spectate === 'panel') next.spectate = p.spectate;
   return next;
 }
 

@@ -52,9 +52,19 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100 });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater' });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
+  });
+
+  it('D7.4: the headset settings default to hidden on my ball and theater on theirs; only their values patch; they round-trip', () => {
+    expect(DEFAULT_MATCH_SETTINGS).toMatchObject({ theaterDuringMyTurn: 'hidden', spectate: 'theater' });
+    const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { theaterDuringMyTurn: 'panel', spectate: 'panel' });
+    expect(s).toMatchObject({ theaterDuringMyTurn: 'panel', spectate: 'panel' });
+    expect(patchMatchSettings(s, { theaterDuringMyTurn: 'theater', spectate: 'hidden' })).toEqual(s);
+    expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
+    // A match.json from before D7.4 reads with the defaults.
+    expect(readMatchSettings('{"v":1,"port":27401,"ballsPerGame":3,"displayName":null,"cueVolume":80}')).toEqual(DEFAULT_MATCH_SETTINGS);
   });
 
   it('match keys survive a save and still sign', () => {

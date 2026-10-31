@@ -15,6 +15,14 @@
  * is not in front (D1.9). Nothing here throws out of `attach`: a missing window or microphone leaves the match running
  * without that medium and says so in `lastError`. A window missing at `attach` is looked for every 3 s until one is
  * found, and again after the capture ends (D2, 2026-10-31), so the track is on the connections before this rig's turn.
+ *
+ * VR rigs (2026-10-31, the owner's 0.2.26 log): no cover on focus. In VR the preview window renders whatever has focus,
+ * and the cover fired mid-match for 30 s while a browser, then Castcade itself, were in front: the other player saw
+ * the "Paused" card instead of the playfield. Monitor rigs keep it.
+ *
+ * Theater (D7.4, 2026-10-31): `videoFrames()` hands the OpenXR layer the up player's video. While someone wants it the
+ * page draws the stage <video> into a canvas and sends its pixels (RGBA) on `castcade-panel:video`, one frame in flight
+ * (main acks each), at most 30 a second.
  */
 import { BrowserWindow, desktopCapturer, ipcMain, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -22,9 +30,9 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState } from './match-media-types.js';
+import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
 
@@ -199,14 +207,67 @@ export function createFrameHub(): { source: PanelFrameSource; wanted(): boolean;
   };
 }
 
+/**
+ * D7.4: the up player's video for the headset. `setWanted` is passed to the page (it costs a copy per frame there);
+ * frames are fanned out only while wanted.
+ */
+export function createVideoHub(onWanted: (on: boolean) => void): { source: VideoFrameSource; wanted(): boolean; push(frame: VideoFrame): void } {
+  const listeners = new Set<(f: VideoFrame) => void>();
+  let wanted = false;
+  return {
+    source: {
+      onFrame(cb) {
+        listeners.add(cb);
+        return () => {
+          listeners.delete(cb);
+        };
+      },
+      setWanted(on) {
+        if (on === wanted) return;
+        wanted = on;
+        onWanted(on);
+      },
+    },
+    wanted: () => wanted,
+    push(frame) {
+      if (!wanted) return;
+      for (const cb of [...listeners]) {
+        try {
+          cb(frame);
+        } catch {
+          // a listener's fault is its own
+        }
+      }
+    },
+  };
+}
+
+/** A video frame from the page, checked: whole, RGBA-sized, inside the feed's limits. Null otherwise. */
+export function videoFrameFrom(m: unknown): VideoFrame | null {
+  if (typeof m !== 'object' || m === null) return null;
+  const v = m as { width?: unknown; height?: unknown; rgba?: unknown; stereo?: unknown };
+  const { width, height, rgba } = v;
+  if (typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return null;
+  const stereo = v.stereo === 'sbs' ? 'sbs' : 'mono';
+  const max = stereo === 'sbs' ? VIDEO_FEED_MAX.sbs : VIDEO_FEED_MAX.mono;
+  if (width > max.width || height > max.height) return null;
+  if (!(rgba instanceof Uint8Array) || rgba.length !== width * height * 4) return null;
+  return { width, height, rgba, stereo };
+}
+
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */
-export function mergeStatus(page: PanelPageStatus | null, main: { attached: boolean; sending: boolean; captureLabel: string | null; error: string | null }): MediaStatus {
+export function mergeStatus(
+  page: PanelPageStatus | null,
+  main: { attached: boolean; sending: boolean; captureLabel: string | null; error: string | null; captureCrop?: { width: number; height: number } | null },
+): MediaStatus {
+  const live = main.attached && !!page?.capturing;
   return {
     attached: main.attached,
     sending: main.attached && main.sending,
     peers: main.attached && page ? page.peers : {},
     mic: main.attached && page ? page.mic : 'unavailable',
-    captureSource: main.attached && page?.capturing ? main.captureLabel : null,
+    captureSource: live ? main.captureLabel : null,
+    captureCrop: live && main.captureCrop ? { width: main.captureCrop.width, height: main.captureCrop.height } : null,
     lastError: main.error ?? (main.attached ? (page?.error ?? null) : null),
   };
 }
@@ -261,8 +322,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const statusListeners = new Set<(s: MediaStatus) => void>();
   const micListeners = new Set<(m: MicDevice[]) => void>();
   const hub = createFrameHub();
+  // D7.4: the wish follows the page across re-attaches (`attach` replays it); a latest-wins channel.
+  const videoHub = createVideoHub((on) => {
+    log.info(`media: theater video ${on ? 'wanted from the panel page' : 'no longer wanted'}`);
+    toPage(PANEL_CHANNELS.videoWant, on);
+  });
+  /** VR rigs never cover on focus (see the header); said once per attach. */
+  let coverOffSaid = false;
 
-  const status = (): MediaStatus => mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, error: panelError ?? captureError });
+  const status = (): MediaStatus =>
+    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, error: panelError ?? captureError });
   const emitStatus = (): void => {
     const s = status();
     for (const l of statusListeners) l(s);
@@ -286,7 +355,15 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
   };
   /** Latest-wins channels: an older queued value is useless once a newer one is queued. */
-  const LATEST = new Set<string>([PANEL_CHANNELS.state, PANEL_CHANNELS.sending, PANEL_CHANNELS.muted, PANEL_CHANNELS.capture, PANEL_CHANNELS.cover, PANEL_CHANNELS.microphone]);
+  const LATEST = new Set<string>([
+    PANEL_CHANNELS.state,
+    PANEL_CHANNELS.sending,
+    PANEL_CHANNELS.muted,
+    PANEL_CHANNELS.capture,
+    PANEL_CHANNELS.cover,
+    PANEL_CHANNELS.microphone,
+    PANEL_CHANNELS.videoWant,
+  ]);
   const toPage = (channel: string, payload?: unknown): void => {
     if (win && ready && attachSent) return post(channel, payload);
     if (LATEST.has(channel)) queue = queue.filter(([c]) => c !== channel);
@@ -333,6 +410,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     mics = d.filter((x): x is MicDevice => typeof x === 'object' && x !== null && typeof (x as MicDevice).deviceId === 'string' && typeof (x as MicDevice).label === 'string');
     for (const l of micListeners) l(mics);
   };
+  ipcMain.on(PANEL_CHANNELS.video, (e, m: unknown) => {
+    if (!fromPanel(e)) return;
+    // The ack first: the page sends the next frame only after it, so at most one frame is ever queued on the IPC.
+    post(PANEL_CHANNELS.videoAck);
+    const f = videoFrameFrom(m);
+    if (f) videoHub.push(f);
+  });
   ipcMain.on(PANEL_CHANNELS.devices, (e, d: unknown) => {
     if (!fromPanel(e) || !Array.isArray(d)) return;
     setMics(d);
@@ -520,6 +604,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   }, UNCOVER_MS);
   const startFocus = (): void => {
     if (focus || !opts.watchFocus) return;
+    if (inVr) {
+      if (!coverOffSaid) {
+        coverOffSaid = true;
+        log.info('media: match video cover off (VR rig: the preview renders without focus)');
+      }
+      return;
+    }
     focus = opts.watchFocus(
       (c) => gate.note(isVpxExe(c.exe), c.exe || null),
       (why) => {
@@ -652,6 +743,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     stopLive();
     page = null;
     sending = false;
+    coverOffSaid = false;
     peers.clear();
     lastState = null;
     panelError = null;
@@ -676,6 +768,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       }
     }
     offSignal = sig.onSignal((from, signal) => toPage(PANEL_CHANNELS.signal, { from, signal }));
+    if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -750,6 +843,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       };
     },
     frames: () => (attached && headset ? hub.source : null),
+    videoFrames: () => (attached && headset ? videoHub.source : null),
     showPanel() {
       if (headset || !win || win.isDestroyed()) return;
       // showInactive: focus stays with VPX, whose window takes the player's keys.
@@ -760,6 +854,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       // The capture pick follows the rig at once (the next pick reads it); the window kind needs a re-attach.
       inVr = rig.inVr;
       wantHeadset = rig.headsetPanel;
+      // A rig found to be in VR mid-capture: the focus watch goes, and a cover it put up comes down.
+      if (inVr && focus) {
+        focus.stop();
+        focus = null;
+        gate.note(null);
+        startFocus();
+      }
       if (!attached || rig.headsetPanel === headset) return;
       if (!rig.headsetPanel) {
         log.info('media: the rig reads the monitor now; the panel stays in the headset until the match ends');

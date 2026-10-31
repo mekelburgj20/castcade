@@ -10,7 +10,9 @@
  *   - exit 2 (or SteamVR's quit) → `unavailable steamvr_not_running`; exit 3 (OpenVR error) or 64 (bad arguments) →
  *     `unavailable helper_failed:<code>` at once (a restart would fail the same way); any other exit we did not ask for
  *     → one restart after `RESTART_DELAY_MS`, then `unavailable helper_failed:<code>`;
- *   - `stop()` ends stdin (the helper hides, shuts OpenVR down and exits 0), waits up to `STOP_GRACE_MS`, then kills.
+ *   - `stop()` ends stdin (the helper hides, shuts OpenVR down and exits 0), waits up to `STOP_GRACE_MS`, then kills;
+ *   - D7.4 (2026-10-31): theater mode is the OpenXR layer's only (`vr-layer.ts`): `setMode` is logged once and ignored,
+ *     and the video source is not taken, so a SteamVR rig keeps the panel as before.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -77,6 +79,7 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
   let stopping = false;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   const writer = createPanelFrameWriter({ log: opts.log, tag: 'vr-overlay' });
+  let modeLogged = false;
 
   const set = (state: VrOverlayStatus['state'], reason: string | null = null) => {
     if (current.state === state && current.reason === reason) return;
@@ -217,6 +220,12 @@ export function createVrOverlay(opts: VrOverlayOptions): VrOverlay {
     },
 
     stop,
+
+    setMode(mode) {
+      if (modeLogged || mode === 'panel') return;
+      modeLogged = true;
+      opts.log(`vr-overlay: mode ${mode} asked; the SteamVR helper shows the panel only (theater mode is the OpenXR layer's)`);
+    },
 
     status: () => current,
 

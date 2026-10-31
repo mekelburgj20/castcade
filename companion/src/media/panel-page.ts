@@ -29,15 +29,30 @@ export const PANEL_CHANNELS = {
   cover: 'castcade-panel:cover',
   microphone: 'castcade-panel:microphone',
   detach: 'castcade-panel:detach',
+  /** D7.4: `true` while the headset's theater mode wants the up player's video; the page then sends it on `video`. */
+  videoWant: 'castcade-panel:video-want',
+  /** D7.4: main took a video frame; the page sends the next one only after this (one frame in flight). */
+  videoAck: 'castcade-panel:video-ack',
   // page -> main
   ready: 'castcade-panel:ready',
   send: 'castcade-panel:send',
   status: 'castcade-panel:status',
   devices: 'castcade-panel:devices',
+  /** D7.4: `{ width, height, rgba: Uint8Array, stereo: 'mono' | 'sbs' }`, the stage video's pixels. */
+  video: 'castcade-panel:video',
 } as const;
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
 export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
+
+/**
+ * D7.4 (2026-10-31): the video the headset's theater mode gets, at the received size up to these (a larger one is
+ * scaled down, aspect kept): a mono picture up to 1080p, a side-by-side one up to two 1080p halves. Each frame is a
+ * copy (getImageData, IPC, the pipe), so at most `fps` a second and only when the video has a new frame.
+ */
+export const VIDEO_FEED_MAX = { mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1080 }, fps: 30 } as const;
+/** Two 16:9 eyes side by side are 32:9; no single picture a player sends is 3:1 or wider. */
+export const SBS_MIN_ASPECT = 3;
 
 /**
  * D2.5 (2026-10-31): a screen source and the player window's region of it (`capture-crop.ts`). The page films the
@@ -196,7 +211,23 @@ export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeigh
   return 'crop';
 }
 
-const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame];
+/**
+ * D7.4: whether the up player's picture is VPX's VR preview on "both eyes" (left | right): only a VR sender's, and
+ * only that wide (`SBS_MIN_ASPECT`, inlined: these helpers are embedded in the page by their source).
+ */
+export function stereoOf(rig: string | undefined, videoWidth: number, videoHeight: number): 'mono' | 'sbs' {
+  return rig === 'vr_headset' && videoHeight > 0 && videoWidth / videoHeight >= 3 ? 'sbs' : 'mono';
+}
+
+/** D7.4: the size the theater feed is read at: the video's own, scaled down into the limit for its kind, even sides. */
+export function feedSize(videoWidth: number, videoHeight: number, stereo: 'mono' | 'sbs'): { width: number; height: number } | null {
+  if (!(videoWidth >= 2 && videoHeight >= 2)) return null;
+  const max = stereo === 'sbs' ? { width: 3840, height: 1080 } : { width: 1920, height: 1080 };
+  const k = Math.min(1, max.width / videoWidth, max.height / videoHeight);
+  return { width: Math.max(2, Math.round(videoWidth * k) & ~1), height: Math.max(2, Math.round(videoHeight * k) & ~1) };
+}
+
+const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -240,6 +271,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
 const { ipcRenderer } = require('electron');
 const C = ${JSON.stringify(PANEL_CHANNELS)};
 const VIDEO = ${JSON.stringify(PANEL_VIDEO)};
+const FEED_FPS = ${VIDEO_FEED_MAX.fps};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -699,6 +731,60 @@ ipcRenderer.on(C.cover, (_e, on) => {
 });
 ipcRenderer.on(C.microphone, (_e, id) => void openMic(id));
 ipcRenderer.on(C.detach, () => detach());
+
+/**
+ * D7.4: the theater feed. While main wants it and the stage shows another player's video, each new video frame is
+ * drawn into a canvas at the feed size and its pixels (RGBA) go to main, one frame in flight (main acks each one; a
+ * lost ack is given up after a second). The up player's rig and the picture's aspect say whether it is side by side.
+ */
+let feedWanted = false;
+let feedInFlight = false;
+let feedSentAt = 0;
+let feedLastFrame = -1;
+// Made at the first theater frame: a rig that never spectates in the headset never has it.
+let feedCanvas = null;
+let feedCtx = null;
+function feedTick() {
+  if (!feedWanted || !panel) return;
+  const now = Date.now();
+  if (feedInFlight && now - feedSentAt < 1000) return;
+  const who = videoPeer(panel);
+  if (!who || who === 'self') return;
+  const v = $('video');
+  if (!v.videoWidth || !v.videoHeight || v.readyState < 2) return;
+  // A new decoded frame only (the stage video's own counter, else its clock).
+  const q = typeof v.getVideoPlaybackQuality === 'function' ? v.getVideoPlaybackQuality() : null;
+  const mark = q && q.totalVideoFrames > 0 ? q.totalVideoFrames : v.currentTime;
+  if (mark === feedLastFrame) return;
+  const up = panel.players.find((p) => p.id === who);
+  const stereo = stereoOf(up ? up.rig : undefined, v.videoWidth, v.videoHeight);
+  const size = feedSize(v.videoWidth, v.videoHeight, stereo);
+  if (!size) return;
+  try {
+    if (!feedCtx) {
+      feedCanvas = document.createElement('canvas');
+      feedCtx = feedCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+      if (!feedCtx) return;
+    }
+    if (feedCanvas.width !== size.width) feedCanvas.width = size.width;
+    if (feedCanvas.height !== size.height) feedCanvas.height = size.height;
+    feedCtx.drawImage(v, 0, 0, size.width, size.height);
+    const img = feedCtx.getImageData(0, 0, size.width, size.height);
+    feedLastFrame = mark;
+    feedInFlight = true;
+    feedSentAt = now;
+    ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo });
+  } catch (e) {
+    /* a frame lost; the next tick tries again */
+  }
+}
+setInterval(feedTick, Math.round(1000 / FEED_FPS));
+ipcRenderer.on(C.videoWant, (_e, on) => {
+  feedWanted = !!on;
+  feedInFlight = false;
+  feedLastFrame = -1;
+});
+ipcRenderer.on(C.videoAck, () => { feedInFlight = false; });
 setInterval(report, 2000);
 render();
 ipcRenderer.send(C.ready);

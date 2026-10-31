@@ -387,6 +387,8 @@ interface MediaStatus {
   peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean }>;
   mic: 'open' | 'muted' | 'unavailable';
   captureSource: string | null;
+  /** D7.4: the size of the region sent while the capture is live. */
+  captureCrop?: { width: number; height: number } | null;
   lastError: string | null;
 }
 interface VrOverlayStatus {
@@ -400,6 +402,10 @@ interface MatchSettings {
   ballsPerGame: 3 | 5;
   displayName: string | null;
   cueVolume: number;
+  /** D7.4: the headset on this player's own ball. */
+  theaterDuringMyTurn: 'hidden' | 'panel';
+  /** D7.4: the headset while another player is up. */
+  spectate: 'theater' | 'panel';
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

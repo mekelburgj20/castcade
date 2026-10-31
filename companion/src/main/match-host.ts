@@ -14,10 +14,10 @@ import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
-import { MatchController, mismatchWords, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
-import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus } from '../media/match-media-types.js';
+import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import type { MediaSettingsStore } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import type { RtcHost } from '../media/rtc-host.js';
@@ -165,6 +165,8 @@ interface Active {
   ipSource: 'public' | 'lan' | null;
   /** The overlay started for this match (the SteamVR helper or, D7.3, the OpenXR layer); null until one is. */
   overlay: VrOverlay | null;
+  /** D7.4: the headset mode last given to `overlay` (and to which one), so each change goes out once. */
+  vrMode: { mode: VrViewMode; to: VrOverlay } | null;
   /** A6 (2026-10-31): the rig decided at host / join; `pc` turns into `vr_headset` when the witness reads VR later. */
   rig: Rig;
   rigReason: string;
@@ -346,7 +348,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       lastError,
     };
   };
+  /**
+   * D7.4 (2026-10-31): the headset follows the turn: hidden on this player's ball, theater while another is up, the
+   * panel otherwise (`vrViewMode`, with the Match tab's two settings). Given to the overlay running now, once per change.
+   */
+  const syncVrMode = (a: Active): void => {
+    const to = a.overlay;
+    if (!to) return;
+    const mode = vrViewMode(a.controller.panel(), settings);
+    if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
+    a.vrMode = { mode, to };
+    log.info(`match: headset mode ${mode}`);
+    to.setMode(mode);
+  };
   const emit = (): void => {
+    if (active) syncVrMode(active);
     const s = status();
     for (const l of [...listeners]) l(s);
   };
@@ -423,9 +439,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return;
     }
     a.overlay = overlay;
+    syncVrMode(a);
     const via = usesLayer(a) ? ` via the OpenXR layer (${a.runtime})` : '';
     try {
-      const st = await overlay.start(frames);
+      const st = await overlay.start(frames, media?.videoFrames?.() ?? null);
       log.info(`match: VR overlay ${st.state}${st.reason ? ` (${st.reason})` : ''}${via}`);
     } catch (e) {
       log.warn(`match: the VR overlay${via} did not start: ${describeError(e)}`);
@@ -588,6 +605,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         invite: null,
         ipSource: null,
         overlay: null,
+        vrMode: null,
         ...rigOf(rig),
         witnessRig: rigFrom(witness.status()),
         switching: false,
@@ -678,6 +696,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           invite: null,
           ipSource: null,
           overlay: null,
+          vrMode: null,
           ...rigOf(rig),
           witnessRig: rigFrom(witness.status()),
           switching: false,

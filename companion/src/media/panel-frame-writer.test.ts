@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PanelFrame } from './match-media-types.js';
-import { createPanelFrameWriter, frameHeader, KEEPALIVE_MS } from './panel-frame-writer.js';
+import { CONTROL_MAX_BYTES, controlMessage, createPanelFrameWriter, frameHeader, KEEPALIVE_MS } from './panel-frame-writer.js';
 
 /** A stream under the test's control: `accept = false` makes `write` report a full pipe until `drain()`. */
 class FakeStream extends EventEmitter {
@@ -47,6 +47,12 @@ describe('frameHeader', () => {
     expect(h.length).toBe(16);
     expect([...h]).toEqual([0x43, 0x56, 0x4f, 0x31, 0x00, 0x05, 0, 0, 0xd0, 0x02, 0, 0, 0x00, 0x40, 0x38, 0x00]);
     expect(h.readUInt32LE(12)).toBe(1280 * 720 * 4);
+  });
+
+  it('D7.4: another magic for the video stream, same layout', () => {
+    const h = frameHeader(2, 1, 'CVO2');
+    expect(h.toString('latin1', 0, 4)).toBe('CVO2');
+    expect(h.readUInt32LE(12)).toBe(8);
   });
 
   it('refuses what the helper and the layer would refuse', () => {
@@ -143,5 +149,32 @@ describe('createPanelFrameWriter', () => {
     w.attach(s);
     w.push(frame(1));
     expect(s.chunks).toEqual([]);
+  });
+});
+
+describe('D7.4: the layer control and the video writer', () => {
+  it('controlMessage is "CVC1", u32 byteLength, then the JSON in UTF-8', () => {
+    const m = controlMessage({ mode: 'theater', stereo: 'sbs', panelPos: 'low' });
+    expect(m.toString('latin1', 0, 4)).toBe('CVC1');
+    const n = m.readUInt32LE(4);
+    expect(n).toBe(m.length - 8);
+    expect(JSON.parse(m.toString('utf8', 8))).toEqual({ mode: 'theater', stereo: 'sbs', panelPos: 'low' });
+    expect(() => controlMessage({ pad: 'x'.repeat(CONTROL_MAX_BYTES) })).toThrow(RangeError);
+  });
+
+  it('a writer with magic CVO2 writes RGBA video frames under that magic, with the same drop-when-behind', () => {
+    const w = createPanelFrameWriter({ log: () => undefined, tag: 'video', magic: 'CVO2' });
+    const s = new FakeStream();
+    w.attach(s);
+    s.accept = false;
+    w.push({ width: 2, height: 1, rgba: new Uint8Array(8).fill(9), stereo: 'mono' });
+    w.push({ width: 2, height: 1, rgba: new Uint8Array(8).fill(10), stereo: 'mono' }); // blocked: held, newest wins
+    w.push({ width: 2, height: 1, rgba: new Uint8Array(8).fill(11), stereo: 'sbs' });
+    s.drain();
+    const all = Buffer.concat(s.chunks);
+    expect(all.toString('latin1', 0, 4)).toBe('CVO2');
+    expect(all.length).toBe(2 * 24);
+    expect([all[16], all[24 + 16]]).toEqual([9, 11]);
+    w.clear();
   });
 });
