@@ -32,9 +32,9 @@ VPX took focus on his PC, and nothing showed in the headsets).
 - A6: the lobby refresh only moves a monitor rig into VR; a runtime swap stays with the status listener (the merge of
   the two had told the media layer twice).
 
-### Known
-- `fakeclient/src/ws-reconnect.test.ts` "an unknown log hash is rejected" fails on `main` since one of today's engine
-  merges (A9, fix in progress); the two-player path is unaffected.
+### Tests
+- A9: `fakeclient/src/ws-reconnect.test.ts` "an unknown log hash is rejected" was racy (the test's trace detached when the
+  host finished, ~34 ms before the rejection); it listens on the `HostMatch` now. The engine was correct.
 
 ## [0.2.25] — 2026-10-31
 
