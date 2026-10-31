@@ -39,6 +39,15 @@ base64-encoded.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 
+A player may join before its table is open, so its `HELLO` can say `pc` and a fingerprint of no table (the
+first two-player match, 2026-10-31). While the match is in the lobby a client sends `PARTICIPANT_UPDATE` with
+its rig and/or fingerprint as they are now; the host replaces that participant's roster entry and
+fingerprint, compares the fingerprint against its own again, and sends `HELLO_ACK` again to every accepted
+client, so each one re-reads the roster and re-compares `hostGame` with its own fingerprint (an advisory
+mismatch can appear or clear this way). The host refreshing its own rig or table does the same. A host in
+refusing mode rejects an update whose fingerprint differs with `REJECT` (`unexpected_state`) and keeps the old
+one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and fingerprint in the log are final.
+
 ## Turn rotation (alternating mode)
 
 - Every participant plays their own one-player game of `ballsPerGame` balls (Architecture B). Grants go

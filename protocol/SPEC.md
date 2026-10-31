@@ -43,6 +43,15 @@ base64-encoded.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 
+A player may join before its table is open, so its `HELLO` can say `pc` and a fingerprint of no table (the
+first two-player match, 2026-10-31). While the match is in the lobby a client sends `PARTICIPANT_UPDATE` with
+its rig and/or fingerprint as they are now; the host replaces that participant's roster entry and
+fingerprint, compares the fingerprint against its own again, and sends `HELLO_ACK` again to every accepted
+client, so each one re-reads the roster and re-compares `hostGame` with its own fingerprint (an advisory
+mismatch can appear or clear this way). The host refreshing its own rig or table does the same. A host in
+refusing mode rejects an update whose fingerprint differs with `REJECT` (`unexpected_state`) and keeps the old
+one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and fingerprint in the log are final.
+
 ## Turn rotation (alternating mode)
 
 - Every participant plays their own one-player game of `ballsPerGame` balls (Architecture B). Grants go
@@ -207,7 +216,7 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | Type | Direction | Summary |
 |---|---|---|
 | `HELLO` | client->host | client -> host. First message on a connection. |
-| `HELLO_ACK` | host->client | host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. |
+| `HELLO_ACK` | host->client | host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint. |
 | `REFUSE` | host->client | host -> client. The HELLO was rejected; the host closes the connection after sending. |
 | `MATCH_READY` | host->all | host -> all. The roster is final; grants follow. |
 | `TURN_GRANT` | host->all | host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released. |
@@ -226,13 +235,14 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `RECONNECT` | client->host | client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO. |
 | `RECONNECT_ACK` | host->client | host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection. |
 | `MEDIA_SIGNAL` | any | any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media. |
+| `PARTICIPANT_UPDATE` | client->host | client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final). |
 
 ### Envelope
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `v` | const `2` | yes | Protocol version; peers with a different value refuse each other. |
-| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` \| `"MEDIA_SIGNAL"` | yes |  |
+| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` \| `"MEDIA_SIGNAL"` \| `"PARTICIPANT_UPDATE"` | yes |  |
 | `matchId` | string \| null | yes |  |
 | `seq` | integer | yes | Per-sender, strictly increasing within a connection. |
 | `ts` | integer | yes | Sender's clock, ms since epoch. Informational. |
@@ -257,7 +267,7 @@ client -> host. First message on a connection.
 
 Direction: host->client.
 
-host -> client. The HELLO was accepted; the match is not ready until MATCH_READY.
+host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -513,6 +523,17 @@ any -> `to`, through the host: it forwards the frame to `to` only, `from` preser
 | `kind` | `"offer"` \| `"answer"` \| `"ice"` | yes | An SDP offer or answer, or one ICE candidate. |
 | `sdp` | string | no | The session description; present on offer and answer. |
 | `candidate` | object | no | Present on ice. |
+
+### `PARTICIPANT_UPDATE`
+
+Direction: client->host.
+
+client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `rig` | `"pc"` \| `"vr_headset"` \| `"real_cabinet"` | no | The sender's rig now, when it changed since HELLO. |
+| `game` | object | no | The sender's fingerprint now, when its table changed since HELLO. |
 
 ## Shared objects
 

@@ -78,7 +78,7 @@ vi.mock('electron', () => ({
   desktopCapturer: { getSources: async () => fake.sources.list },
 }));
 
-const { captureLabel, createFrameHub, createRtcHost, frameFromBitmap, matchSource, mergeStatus, pickCaptureWindow } = await import('./rtc-host.js');
+const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, frameFromBitmap, matchSource, mergeStatus, noCaptureReason, pickCaptureWindow } = await import('./rtc-host.js');
 
 const win = (title: string, width: number, height: number, pid = 7): VpxWindow => ({ pid, title, client: { left: 0, top: 0, width, height }, monitor: '1' });
 const PLAYER = win('Visual Pinball Player', 1280, 720);
@@ -104,6 +104,34 @@ describe('capture window choice (D2)', () => {
     const vrWin = win('VPX VR Preview', 1280, 720);
     expect(pickCaptureWindow([EDITOR, DMD, vrWin], true)).toEqual({ window: vrWin, fallback: true });
     expect(pickCaptureWindow([EDITOR, DMD, vrWin], false)).toBeNull();
+  });
+
+  it('D2 (2026-10-31): never a DMD, backglass or PinUP window, nor one under 640x360; every player / DMD / editor combination', () => {
+    // Krobs' rig in the first two-player match: VRPreview off, so VPX showed only the editor and the VPinMAME DMD.
+    const PINMAME = win('Visual PinMAME', 1280, 720);
+    const all = [PLAYER, PINMAME, EDITOR] as const;
+    for (let mask = 0; mask < 8; mask++) {
+      const list = all.filter((_, i) => mask & (1 << i));
+      const hasPlayer = list.includes(PLAYER);
+      for (const vr of [true, false]) {
+        const pick = pickCaptureWindow(list, vr);
+        const label = `${list.map((w) => w.title).join(' + ') || 'none'} (${vr ? 'VR' : 'desktop'})`;
+        expect(pick, label).toEqual(hasPlayer ? { window: PLAYER, fallback: false } : null);
+        if (hasPlayer) continue;
+        const why = noCaptureReason(list, vr);
+        if (!vr) expect(why, label).toBe('no "Visual Pinball Player" window to send: start the table');
+        else if (list.includes(PINMAME)) expect(why, label).toBe(NO_PLAYFIELD_TO_SEND);
+        else expect(why, label).toBe('no VPX window to send: open the table in VR with VRPreview on');
+      }
+    }
+    expect(NO_PLAYFIELD_TO_SEND).toBe('no playfield window to send: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture');
+    // Every excluded title, however large; a small untitled-ish window too; a large other window still goes.
+    for (const title of ['FlexDMD', 'Virtual DMD', 'PUPDMD', 'PinUP Player', 'B2S Backglass Server', 'Backglass', 'PinMAME DMD']) {
+      expect(pickCaptureWindow([EDITOR, win(title, 1920, 1080)], true), title).toBeNull();
+    }
+    expect(pickCaptureWindow([win('Some VPX window', 639, 720), win('Other', 1280, 359)], true)).toBeNull();
+    const preview = win('VPX VR Preview', 640, 360);
+    expect(pickCaptureWindow([EDITOR, PINMAME, DMD, preview], true)).toEqual({ window: preview, fallback: true });
   });
 
   it('labels: title and size; a fallback says so', () => {
@@ -426,6 +454,96 @@ describe('createRtcHost (D2)', () => {
     fromPage(w, PANEL_CHANNELS.ready);
     expect(w.webContents.sent[0]?.[1]).toMatchObject({ capture: { sourceId: 'window:43:0' } });
     expect(logs.some((l) => l.startsWith('media: attach (VR, desktop panel)'))).toBe(true);
+    await host.detach();
+  });
+
+  it('D2 (2026-10-31): no window at attach → a look every 3 s until found; the capture goes to the page before the turn, once; again after it ends', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let windows: VpxWindow[] = [EDITOR];
+      let probes = 0;
+      const probe = async (): Promise<WindowProbe> => {
+        probes++;
+        return { outputs: [], windows };
+      };
+      const host = createRtcHost({ userData: dir, log, probe, settings: store() });
+      await host.attach(signalling('owner').sig, []);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      expect(w.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: null, sending: false })]]);
+      expect(probes).toBe(1);
+
+      vi.advanceTimersByTime(2_999);
+      await settle();
+      expect(probes).toBe(1);
+      vi.advanceTimersByTime(1);
+      await settle();
+      expect(probes).toBe(2);
+      // The reason is said once, not at every look.
+      expect(logs.filter((l) => l.includes('no "Visual Pinball Player" window to send'))).toHaveLength(1);
+
+      // The table starts in the lobby: the next look finds it and the page gets it at once, still not sending.
+      windows = [EDITOR, PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(probes).toBe(3);
+      expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, { sourceId: 'window:42:0', label: 'Visual Pinball Player (1280x720)' }]]);
+      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual(['media: capture Visual Pinball Player (1280x720) ready']);
+      expect(host.status()).toMatchObject({ sending: false, lastError: null });
+
+      // Found: no more looks; the turn only flips the flag.
+      vi.advanceTimersByTime(30_000);
+      await settle();
+      expect(probes).toBe(3);
+      host.setSending(true);
+      await settle();
+      expect(w.webContents.sent.slice(2)).toEqual([[PANEL_CHANNELS.sending, true]]);
+      expect(probes).toBe(3);
+
+      // The page's capture ends (VPX restarted): looking again, and the new window is announced.
+      const st = (capturing: boolean): PanelPageStatus => ({ sending: true, peers: {}, mic: 'open', capturing, error: null });
+      fromPage(w, PANEL_CHANNELS.status, st(true));
+      fromPage(w, PANEL_CHANNELS.status, st(false));
+      expect(logs).toContain('media: the capture of Visual Pinball Player (1280x720) ended; looking for the VPX window again');
+      fake.sources.list = [{ id: 'window:77:0', name: 'Visual Pinball Player' }];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      expect(probes).toBe(4);
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' }]);
+
+      // Detached: no looks.
+      fromPage(w, PANEL_CHANNELS.status, st(true));
+      fromPage(w, PANEL_CHANNELS.status, st(false));
+      await host.detach();
+      vi.advanceTimersByTime(10_000);
+      await settle();
+      expect(probes).toBe(4);
+
+      // Found before the page is ready: it rides in `attach` itself, no separate capture message.
+      windows = [EDITOR];
+      probes = 0;
+      await host.attach(signalling('owner').sig, []);
+      const w2 = fake.FakeWindow.all.at(-1)!;
+      windows = [PLAYER];
+      vi.advanceTimersByTime(3_000);
+      await settle();
+      fromPage(w2, PANEL_CHANNELS.ready);
+      expect(w2.webContents.sent).toEqual([[PANEL_CHANNELS.attach, expect.objectContaining({ capture: { sourceId: 'window:77:0', label: 'Visual Pinball Player (1280x720)' } })]]);
+      await host.detach();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('D2 (2026-10-31): in VR with only the editor and a DMD on the desktop, nothing is sent and the Match tab says to turn VRPreview on', async () => {
+    fake.sources.list = [{ id: 'window:44:0', name: 'FlexDMD' }];
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, win('FlexDMD', 1280, 720)] }), settings: store() });
+    await host.setVr({ inVr: true, headsetPanel: false });
+    await host.attach(signalling('krobs').sig, ['owner']);
+    expect(host.status().lastError).toBe(NO_PLAYFIELD_TO_SEND);
+    fromPage(fake.FakeWindow.all[0]!, PANEL_CHANNELS.ready);
+    expect(fake.FakeWindow.all[0]!.webContents.sent[0]?.[1]).toMatchObject({ capture: null });
+    expect(logs).toContain(`WARN media: ${NO_PLAYFIELD_TO_SEND}`);
     await host.detach();
   });
 

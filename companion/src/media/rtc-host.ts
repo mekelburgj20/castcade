@@ -9,7 +9,8 @@
  * Capture: a `desktopCapturer` window source id handed to the page (the stream-host audio page's pattern, with its own
  * session partition; `setDisplayMediaRequestHandler` answers the page's getDisplayMedia fallback with the same window,
  * no picker). Nothing here throws out of `attach`: a missing window or microphone leaves the match running without
- * that medium and says so in `lastError`.
+ * that medium and says so in `lastError`. A window missing at `attach` is looked for every 3 s until one is found, and
+ * again after the page's capture ends (D2, 2026-10-31), so the track is on the connections before this rig's turn.
  */
 import { BrowserWindow, desktopCapturer, ipcMain, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -63,6 +64,12 @@ export const VR_PANEL_SIZE = { width: 960, height: 640 } as const;
 export const DESKTOP_PANEL_SIZE = { width: 480, height: 720 } as const;
 export const PANEL_FPS = 20;
 const READY_TIMEOUT_MS = 15_000;
+/**
+ * D2 (2026-10-31, the first two-player match): while attached with no capture, the VPX windows are probed this often.
+ * The host pressed Host before its table was up and the capture was looked for again only at its first turn, so the
+ * whole of ball 1 went on acquiring it, adding the track and renegotiating: no picture for the others.
+ */
+export const CAPTURE_RETRY_MS = 3_000;
 const PLAYER_TITLE = 'Visual Pinball Player';
 
 // ---- pure parts ----
@@ -75,21 +82,45 @@ export interface CapturePick {
 
 /** VPX's editor: "Visual Pinball" or "Visual Pinball - [table]" (process-watch.ts title parsing). */
 const EDITOR_TITLE = /^visual pinball(\s*-\s*\[.*\])?\s*\*?$/i;
+/**
+ * D2 (2026-10-31, the first two-player match): windows of the VPX process that are never the playfield. Krobs had
+ * `VRPreview` off, so there was no player window, and the VR fallback sent his VPinMAME / FlexDMD DMD window for the
+ * whole match. DMDs, backglasses (B2S) and PinUP Player screens all belong to the VPX process.
+ */
+const NOT_PLAYFIELD_TITLE = /dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i;
+/** The VR fallback takes no window smaller than this (a DMD or a backglass, whatever its title). */
+export const MIN_FALLBACK_SIZE = { width: 640, height: 360 } as const;
+export const NO_PLAYFIELD_TO_SEND = 'no playfield window to send: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture';
+
+const fallbackCandidate = (w: VpxWindow): boolean => {
+  const t = w.title.trim();
+  return !EDITOR_TITLE.test(t) && !NOT_PLAYFIELD_TITLE.test(t) && w.client.width >= MIN_FALLBACK_SIZE.width && w.client.height >= MIN_FALLBACK_SIZE.height;
+};
 
 /**
  * The window to send. In VPX 10.8 VR with `VRPreview` on, the preview IS the "Visual Pinball Player" window: the D1
  * rig runs 2–5 (2026-10-25, solo-streaming-and-recording.md) captured exactly that window in VR and got the eye image;
  * with `VRPreview = 0` the same window is a black 640x480. So both modes take `pickPlayfield`. In VR only, when no
- * window has that title (another VR build may name it differently), the largest VPX window that is not the editor is
- * taken and flagged; on the desktop the editor-only case sends nothing (rig run 2 filmed the editor that way).
+ * window has that title (another VR build may name it differently), the largest VPX window that is not the editor, a
+ * DMD, a backglass or a PinUP screen, and is at least 640x360, is taken and flagged (D2, 2026-10-31); when only those
+ * exist nothing is sent and `noCaptureReason` says to turn VRPreview on. On the desktop the editor-only case sends
+ * nothing (rig run 2 filmed the editor that way).
  */
 export function pickCaptureWindow(windows: VpxWindow[], vr: boolean): CapturePick | null {
   const player = pickPlayfield(windows);
   if (player) return { window: player, fallback: false };
   if (!vr) return null;
-  const others = windows.filter((w) => !EDITOR_TITLE.test(w.title.trim()));
+  const others = windows.filter(fallbackCandidate);
   const largest = [...others].sort((a, b) => b.client.width * b.client.height - a.client.width * a.client.height)[0];
   return largest ? { window: largest, fallback: true } : null;
+}
+
+/** Why `pickCaptureWindow` found nothing, for `lastError` (the Match tab's media line and the panel's message line). */
+export function noCaptureReason(windows: VpxWindow[], vr: boolean): string {
+  if (!vr) return `no "${PLAYER_TITLE}" window to send: start the table`;
+  // VPX windows besides the editor: the table runs, but only its DMD / backglass is on the desktop (VRPreview off).
+  if (windows.some((w) => !EDITOR_TITLE.test(w.title.trim()))) return NO_PLAYFIELD_TO_SEND;
+  return 'no VPX window to send: open the table in VR with VRPreview on';
 }
 
 /** `MediaStatus.captureSource`: the window title and its size (the runbook wants the VR preview at 1280x720). */
@@ -201,6 +232,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let lastState: PanelState | null = null;
   let capture: PanelCapture | null = null;
   let captureSrc: DesktopCapturerSource | null = null;
+  /** The capture the page was given (in `attach` or on the capture channel): each one is announced once. */
+  let announced: PanelCapture | null = null;
+  let captureTimer: ReturnType<typeof setTimeout> | null = null;
   /** The panel window itself failed (it did not open, load or start, or its renderer died). */
   let panelError: string | null = null;
   /** No window to send, or the capturer does not offer it; cleared by a later pick that finds one. */
@@ -225,6 +259,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     emitStatus();
   };
   const setCaptureError = (msg: string): void => {
+    // The capture is looked for every 3 s until found (D2, 2026-10-31): say each reason once, not at every look.
+    if (captureError === msg) return;
     log.warn(`media: ${msg}`);
     captureError = msg;
     emitStatus();
@@ -269,7 +305,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   ipcMain.on(PANEL_CHANNELS.status, (e, s: PanelPageStatus) => {
     if (!fromPanel(e)) return;
     if (page?.error !== s.error && s.error) log.warn(`media: panel: ${s.error}`);
+    const ended = page?.capturing === true && !s.capturing;
     page = s;
+    // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
+    if (ended && capture && attached) {
+      log.info(`media: the capture of ${capture.label} ended; looking for the VPX window again`);
+      capture = null;
+      captureSrc = null;
+      announced = null;
+      scheduleCapture(generation);
+    }
     emitStatus();
   });
   const setMics = (d: unknown[]): void => {
@@ -407,7 +452,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         const pick = pickCaptureWindow(probe.windows, inVr);
         if (gen !== generation) return;
         if (!pick) {
-          setCaptureError(inVr ?'no VPX window to send: open the table in VR with VRPreview on' : `no "${PLAYER_TITLE}" window to send: start the table`);
+          setCaptureError(noCaptureReason(probe.windows, inVr));
           return;
         }
         const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
@@ -429,6 +474,39 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     })();
     picking = { gen, done };
     return done;
+  };
+
+  /**
+   * D2 (2026-10-31): a capture found after `attach` goes to the page at once, not at this rig's first turn. The page
+   * adds the track to every connection disabled (`enabled = sending`), so the negotiation happens before the turn
+   * and `setSending(true)` only flips the flag. Each capture is announced and logged once.
+   */
+  const announceCapture = (gen: number): void => {
+    if (gen !== generation || !attached || !capture || capture === announced) return;
+    announced = capture;
+    log.info(`media: capture ${capture.label} ready`);
+    if (attachMsg && !attachSent) attachMsg.capture = capture;
+    else toPage(PANEL_CHANNELS.capture, capture);
+    emitStatus();
+  };
+  /** One look now: found → announced; not found → another look in `CAPTURE_RETRY_MS`. */
+  const lookForCapture = (gen: number): Promise<void> =>
+    pickCapture(gen).then(() => {
+      if (gen !== generation || !attached) return;
+      if (capture) announceCapture(gen);
+      else scheduleCapture(gen);
+    });
+  function scheduleCapture(gen: number): void {
+    if (captureTimer || gen !== generation || !attached || capture) return;
+    captureTimer = setTimeout(() => {
+      captureTimer = null;
+      if (gen !== generation || !attached || capture) return;
+      void lookForCapture(gen);
+    }, CAPTURE_RETRY_MS);
+  }
+  const stopCaptureTimer = (): void => {
+    if (captureTimer) clearTimeout(captureTimer);
+    captureTimer = null;
   };
 
   const detach = async (quiet = false): Promise<void> => {
@@ -453,6 +531,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     queue = [];
     capture = null;
     captureSrc = null;
+    announced = null;
+    stopCaptureTimer();
     page = null;
     sending = false;
     peers.clear();
@@ -499,6 +579,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const s = opts.settings.get();
     attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
     log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
+    if (capture) {
+      announced = capture;
+      log.info(`media: capture ${capture.label} ready`);
+    } else scheduleCapture(gen);
     flush();
     emitStatus();
   };
@@ -508,15 +592,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     sending = on;
     if (attachMsg && !attachSent) attachMsg.sending = on;
     toPage(PANEL_CHANNELS.sending, on);
-    // VPX may not have been up at attach: look again when this rig's turn starts.
+    // Still no window at this rig's turn (the 3 s looks found none yet): look once more now, not at the next tick.
     if (on && attached && !capture) {
-      const gen = generation;
-      void pickCapture(gen).then(() => {
-        if (gen !== generation || !capture) return;
-        log.info(`media: capture ${capture.label}`);
-        toPage(PANEL_CHANNELS.capture, capture);
-        emitStatus();
-      });
+      stopCaptureTimer();
+      void lookForCapture(generation);
     }
     emitStatus();
   };

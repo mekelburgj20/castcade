@@ -30,7 +30,8 @@
         "REJECT",
         "RECONNECT",
         "RECONNECT_ACK",
-        "MEDIA_SIGNAL"
+        "MEDIA_SIGNAL",
+        "PARTICIPANT_UPDATE"
       ]
     },
     "matchId": {

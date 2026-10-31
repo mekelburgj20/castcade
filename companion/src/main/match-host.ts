@@ -12,7 +12,7 @@ import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ParticipantInfo, PayloadOf } from '@castcade/protocol';
+import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
 import { MatchController, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
@@ -43,11 +43,13 @@ import {
   rigFromStatus,
   serializeMatchIdentity,
   writeMatchSettings,
+  ZERO_SHA256,
   type MatchIdentity,
   type MatchSettings,
   type Rig,
   type RigDecision,
 } from './match-setup.js';
+import type { WitnessStatus } from '../witness/types.js';
 import type { VrRuntime } from '../witness/vr-detect.js';
 import type { WitnessHost } from './witness-host.js';
 
@@ -163,7 +165,22 @@ interface Active {
   witnessRig: Rig;
   /** A switch to the headset is under way (status events keep coming meanwhile). */
   switching: boolean;
+  /**
+   * A6 (2026-10-31, the first two-player match): the rig and fingerprint the others were last told (HELLO / the
+   * host's own roster entry, then lobby updates), the witness reading they came from (`lobbyKey`), and a refresh
+   * under way. Krobs joined before his table loaded and read "PC · different table file" for the whole match.
+   */
+  sent: { rig: Rig; game: GameFingerprint };
+  lobbyKey: string;
+  refreshing: boolean;
+  refreshAgain: boolean;
   offs: (() => void)[];
+}
+
+/** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
+function lobbyKey(s: WitnessStatus): string {
+  const vr = s.currentAttestation?.vr;
+  return JSON.stringify([gameFingerprintFrom(s, RECIPE_VERSION), vr?.sampledAt ?? null, vr?.inVr ?? null]);
 }
 
 async function ipifyPublicIp(): Promise<string | null> {
@@ -341,6 +358,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   witness.onStatus((s) => {
     const a = active;
     if (!a) return;
+    checkLobby(a, s);
     const d = rigFromStatus(s);
     const now = d.rig;
     const was = a.witnessRig;
@@ -435,6 +453,53 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     return d;
   };
 
+  // ---- A6 (2026-10-31): the lobby refresh of the rig and the table ----
+  // The rig and fingerprint go out once in HELLO (or the host's roster entry). A player who joins or hosts before its
+  // table loads says `pc` and no table; until MATCH_READY, a table load or a new VR sample re-decides both and tells
+  // the others (PARTICIPANT_UPDATE from a client, a re-sent HELLO_ACK from the host). The rig only moves towards the
+  // headset, as the A6 switch does: a monitor reading after a VR one keeps the headset (`switchToVr` is one-way).
+  const inLobby = (a: Active): boolean => active === a && a.engine.state.phase === 'lobby';
+  const checkLobby = (a: Active, s: WitnessStatus): void => {
+    if (!inLobby(a)) return;
+    const k = lobbyKey(s);
+    if (k === a.lobbyKey) return;
+    a.lobbyKey = k;
+    void refreshLobby(a);
+  };
+  const refreshLobby = async (a: Active): Promise<void> => {
+    if (a.refreshing) {
+      a.refreshAgain = true;
+      return;
+    }
+    a.refreshing = true;
+    try {
+      do {
+        a.refreshAgain = false;
+        const d = await decide();
+        if (!inLobby(a)) return;
+        if (d.rig === 'vr_headset') await switchToVr(a, d);
+        if (!inLobby(a)) return;
+        announceLobby(a, a.rig, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
+      } while (a.refreshAgain);
+    } catch (e) {
+      log.warn(`match: the lobby update failed: ${describeError(e)}`);
+    } finally {
+      a.refreshing = false;
+    }
+  };
+  const announceLobby = (a: Active, rig: Rig, game: GameFingerprint): void => {
+    const rigChanged = rig !== a.sent.rig;
+    const gameChanged = JSON.stringify(game) !== JSON.stringify(a.sent.game);
+    if (!rigChanged && !gameChanged) return;
+    const u = { ...(rigChanged ? { rig } : {}), ...(gameChanged ? { game } : {}) };
+    const done = a.engine instanceof HostMatch ? a.engine.updateLocal(u) : a.engine.updateParticipant(u);
+    a.sent = { rig, game };
+    if (!done) return;
+    const what = [rigChanged ? `rig ${rig}` : null, gameChanged ? `table ${game.tableName} (${game.tableHash === ZERO_SHA256 ? 'no hash' : game.tableHash.slice(0, 12)})` : null].filter(Boolean).join(', ');
+    log.info(`match: lobby update: ${what}; ${a.role === 'host' ? 'the players were told' : 'the host was told'}`);
+    emit();
+  };
+
   const participant = (id: string, name: string, rig: Rig): ParticipantInfo => ({
     playerId: id,
     displayName: name,
@@ -472,13 +537,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         return fail(new Error(code === 'EADDRINUSE' ? `Port ${port} is already in use on this PC: pick another port` : `Could not listen on port ${port}: ${describeError(e)}`));
       }
       const code = newMatchCode();
+      const ws = witness.status();
+      const game = gameFingerprintFrom(ws, RECIPE_VERSION);
       const engine = new HostMatch({
         transport,
         keys: matchIdentity().keys,
         matchId: code,
         ballsPerGame,
         hostParticipant: participant(me, name, rig.rig),
-        hostGame: gameFingerprintFrom(witness.status(), RECIPE_VERSION),
+        hostGame: game,
         // §3: a different table file is shown on both panels, never refused (the client learns it from HELLO_ACK).
         fingerprintPolicy: 'advise',
         companionVersion: opts.appVersion.slice(0, 32),
@@ -497,6 +564,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         ...rigOf(rig),
         witnessRig: rigFrom(witness.status()),
         switching: false,
+        sent: { rig: rig.rig, game },
+        lobbyKey: lobbyKey(ws),
+        refreshing: false,
+        refreshAgain: false,
         offs: [],
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
@@ -507,6 +578,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.invite = formatInvite(ip, port, code);
       log.info(`match: hosting ${code} on ${transport.endpoint ?? `port ${port}`} (${ballsPerGame} balls); invite ${a.invite} (${a.ipSource} address)`);
       await openPanel(a);
+      // The table may have loaded while hosting (A6, 2026-10-31).
+      checkLobby(a, witness.status());
       emit();
       return status();
     });
@@ -562,7 +635,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       emit();
       try {
         const rig = await decide();
-        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
+        const ws = witness.status();
+        const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, game);
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
@@ -579,6 +654,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           ...rigOf(rig),
           witnessRig: rigFrom(witness.status()),
           switching: false,
+          sent: { rig: rig.rig, game },
+          lobbyKey: lobbyKey(ws),
+          refreshing: false,
+          refreshAgain: false,
           offs: [],
         };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
@@ -586,6 +665,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         connecting = false;
         log.info(`match: joined ${parsed.code} at ${parsed.url}`);
         await openPanel(a);
+        // The table may have loaded while joining (A6, 2026-10-31).
+        checkLobby(a, witness.status());
         emit();
         return status();
       } catch (e) {

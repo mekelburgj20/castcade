@@ -179,5 +179,5 @@
     "hostGame"
   ],
   "additionalProperties": false,
-  "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY."
+  "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint."
 }

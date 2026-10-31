@@ -1,0 +1,123 @@
+{
+  "$id": "https://castcade.dev/protocol/v2/PARTICIPANT_UPDATE.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "rig": {
+      "description": "The sender's rig now, when it changed since HELLO.",
+      "type": "string",
+      "enum": [
+        "pc",
+        "vr_headset",
+        "real_cabinet"
+      ]
+    },
+    "game": {
+      "description": "The sender's fingerprint now, when its table changed since HELLO.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "vpx",
+            "arcade"
+          ],
+          "description": "Emulator family."
+        },
+        "tableName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Human name of the table or ROM set."
+        },
+        "tableHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the ORIGINAL .vpx (never the patched copy), or of the arcade ROM zip."
+        },
+        "romName": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "PinMAME ROM set name (e.g. mm_109c) or arcade ROM name; null for originals."
+        },
+        "romHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the ROM zip; null for originals."
+        },
+        "physicsHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hash of the physics-relevant table settings; null when not computed."
+        },
+        "recipeVersion": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 32
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Castcade patch recipe version applied to this table (ADR 0004); null for arcade."
+        },
+        "sidecarHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$",
+              "description": "Lower-case hex SHA-256."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SHA-256 of the generated sidecar .vbs; proves both players run the same patch."
+        },
+        "emulatorVersion": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "VPX or RetroArch core version string."
+        }
+      },
+      "required": [
+        "kind",
+        "tableName",
+        "tableHash",
+        "romName",
+        "romHash",
+        "physicsHash",
+        "recipeVersion",
+        "sidecarHash",
+        "emulatorVersion"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "description": "client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final)."
+}

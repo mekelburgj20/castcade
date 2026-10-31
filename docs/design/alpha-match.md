@@ -56,6 +56,11 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **GameFingerprint** from the witness's current identity: `tableName`, `tableHash` = `TableIdentity.sha256` (zeros
   when unknown), `romName`, `romHash: null`, `physicsHash: null`, `recipeVersion` = the loaded recipe version. A
   client whose fingerprint differs from the host's is shown "different table file" on both panels (advisory).
+  Lobby refresh (A6, 2026-10-31; the first two-player match showed a VR tester as "PC · different table file" because
+  he joined before his table loaded): until MATCH_READY, a change of the witness's table fingerprint or VR sample
+  re-runs `decideRig` and rebuilds the fingerprint; a client sends `PARTICIPANT_UPDATE`, the host updates its own
+  entry, and either way the host re-compares and re-sends `HELLO_ACK` to every client, so rosters and flags follow
+  (the roster, not `MATCH_READY`: the lobby has to show it before the start). The rig only moves towards the headset.
 - **Lock**: `lock()` creates `turn.lock` (empty file, `%LOCALAPPDATA%\Castcade\lock\`), `unlock()` deletes it. Locked
   the moment the match starts; unlocked by a verified grant for me; locked again when my `ball_end` is accepted (the
   next grant is someone else's) and at match end (then unlocked when the match closes, so solo play works again).
@@ -90,7 +95,13 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   renegotiation (the handoff's host-forwarding is not needed at 2–4 players; revisit at the SFU step).
 - **Capture**: `desktopCapturer` window source: in VR the VPX VR preview window (title from `probeWindows()`: the
   window of the VPX process that is not "Visual Pinball Player"; the agent confirms the title on the fixtures /
-  comments and falls back to the largest VPX window), else the player window. Microphone from a named device
+  comments and falls back to the largest VPX window), else the player window. The fallback never takes a DMD,
+  backglass or PinUP window (title `/dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i`) or one under 640x360: the first
+  two-player match (2026-10-31) sent a VR player's VPinMAME DMD because his `VRPreview` was off. With only those, nothing
+  is sent and the Match tab says to turn VRPreview on. With no window at attach the VPX windows are probed every 3 s
+  until one is found (and again when the capture ends); the track goes on every connection at once, disabled until
+  `setSending(true)`, so a player's first turn only flips the flag (the first match lost ball 1's picture to a
+  capture looked for only at the turn). Microphone from a named device
   (`micDeviceId` setting; the panel lists devices, and before a match a hidden page in the same partition does when
   the Match tab opens, B22; the Windows default is often a virtual device in VR).
 - **ICE**: STUN `stun:stun.l.google.com:19302` and `stun:stun1.l.google.com:19302`; optional TURN from settings

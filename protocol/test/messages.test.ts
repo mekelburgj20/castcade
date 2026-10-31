@@ -143,6 +143,15 @@ describe('envelope', () => {
     expect(MESSAGE_DIRECTION.MEDIA_SIGNAL).toBe('any');
   });
 
+  it('PARTICIPANT_UPDATE: rig and game both optional, client -> host (A6, 2026-10-31)', () => {
+    const rigOnly = buildMessage('PARTICIPANT_UPDATE', { rig: 'vr_headset' }, { matchId: 'TD-1', seq: 3, from: 'p2', ts: 1 });
+    expect(decodeFrame(encodeFrame(rigOnly))).toEqual(rigOnly);
+    expect(buildMessage('PARTICIPANT_UPDATE', {}, { matchId: 'TD-1', seq: 4, from: 'p2' }).payload).toEqual({});
+    expect(() => buildMessage('PARTICIPANT_UPDATE', { rig: 'quest' as never }, { matchId: 'TD-1', seq: 5, from: 'p2' })).toThrow(ProtocolError);
+    expect(() => buildMessage('PARTICIPANT_UPDATE', { game: { kind: 'vpx' } as never }, { matchId: 'TD-1', seq: 6, from: 'p2' })).toThrow(ProtocolError);
+    expect(MESSAGE_DIRECTION.PARTICIPANT_UPDATE).toBe('client->host');
+  });
+
   it('has a direction for every message type', () => {
     for (const t of MESSAGE_TYPES) expect(MESSAGE_DIRECTION[t]).toBeTruthy();
   });

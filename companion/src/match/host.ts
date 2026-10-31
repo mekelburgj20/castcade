@@ -10,7 +10,7 @@
  * as an echo, and each participant logs the broadcast stream in order. STATE and DMD_FRAME are
  * mirrored to the other participants but never logged. HELLO/HELLO_ACK/REFUSE/REJECT/LOG_SIGN/
  * RESULT/HOST_TRANSFER_ACK are never logged either, nor is MEDIA_SIGNAL, which goes to its `to`
- * only (D2). The log is frozen at the moment the last game ends; LOG_SIGN and RESULT refer to
+ * only (D2), nor PARTICIPANT_UPDATE, a lobby-only correction that MATCH_READY's roster carries (A6). The log is frozen at the moment the last game ends; LOG_SIGN and RESULT refer to
  * that frozen head.
  *
  * Choices where SPEC is silent (listed in the Phase 1 report):
@@ -104,8 +104,14 @@ export interface LogSignRecord {
 export interface HostEvents extends Record<string, unknown> {
   joined: ParticipantInfo;
   refused: { playerId: PlayerId; refuse: PayloadOf<'REFUSE'> };
-  /** `fingerprintPolicy: 'advise'`: a player accepted although its fingerprint differs; raised just before `joined`. */
+  /**
+   * `fingerprintPolicy: 'advise'`: a player accepted although its fingerprint differs; raised just before `joined`.
+   * A6 (2026-10-31): raised again when a lobby update (`PARTICIPANT_UPDATE`, `updateLocal`) changes what differs;
+   * an empty `mismatches` means that player's table agrees now.
+   */
   tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
+  /** A6 (2026-10-31): a lobby participant's rig or fingerprint changed (its PARTICIPANT_UPDATE, or `updateLocal`). */
+  participantUpdated: ParticipantInfo;
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
@@ -152,6 +158,8 @@ export class HostMatch {
   private readonly fingerprintPolicy: 'refuse' | 'advise';
   /** Players accepted with a differing fingerprint (`advise` only), with what differed. */
   private readonly mismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
+  /** Each lobby client's fingerprint (HELLO, then PARTICIPANT_UPDATE), so a change of `hostGame` can re-compare them. */
+  private readonly lobbyGames = new Map<PlayerId, GameFingerprint>();
   private turnMode: 'alternating' | 'simultaneous';
   private ballEndTimer: TimerHandle | null = null;
   private logSignTimer: TimerHandle | null = null;
@@ -267,6 +275,28 @@ export class HostMatch {
       finalHead: this.finalHead,
       signatures: [...this.signatures.values()],
     };
+  }
+
+  /**
+   * A6 (2026-10-31): the host's own rig or table changed while in the lobby (it hosted before its table loaded).
+   * Replaces its roster entry's `rig` and `hostGame`, re-compares every client's fingerprint, and re-sends HELLO_ACK
+   * to every client. False (nothing done) once the match started or when nothing changed.
+   */
+  updateLocal(u: PayloadOf<'PARTICIPANT_UPDATE'>): boolean {
+    this.assertActive();
+    if (this.s.state.phase !== 'lobby') return false;
+    const me = this.lobby[0]!;
+    const rigChanged = u.rig !== undefined && u.rig !== me.rig;
+    const gameChanged = u.game !== undefined && !sameGame(u.game, this.hostGame);
+    if (!rigChanged && !gameChanged) return false;
+    if (rigChanged) this.lobby[0] = { ...me, rig: u.rig! };
+    if (gameChanged) {
+      this.hostGame = { ...u.game! };
+      for (const [id, g] of this.lobbyGames) this.setMismatch(id, compareFingerprints(this.hostGame, g, this.localId));
+    }
+    this.events.emit('participantUpdated', { ...this.lobby[0]! });
+    this.resendAck();
+    return true;
   }
 
   /** Freeze the roster and start the rotation. Needs at least two participants. */
@@ -539,6 +569,9 @@ export class HostMatch {
       case 'MEDIA_SIGNAL':
         this.onMediaSignal(msg);
         return;
+      case 'PARTICIPANT_UPDATE':
+        this.onParticipantUpdate(msg);
+        return;
       case 'BALL_END':
         this.onBallEnd(msg);
         return;
@@ -581,6 +614,7 @@ export class HostMatch {
     const st = this.s.state;
     if (st.phase === 'lobby') {
       this.lobby = this.lobby.filter((p) => p.playerId !== peer);
+      this.lobbyGames.delete(peer);
       this.events.emit('peerLeft', peer);
       return;
     }
@@ -641,11 +675,60 @@ export class HostMatch {
       null,
     );
     this.s.transport.send(msg.from, ack);
+    this.lobbyGames.set(participant.playerId, { ...p.game });
     if (mismatches.length > 0) {
       this.mismatched.set(participant.playerId, mismatches);
       this.events.emit('tableMismatch', { playerId: participant.playerId, mismatches });
     }
     this.events.emit('joined', participant);
+  }
+
+  /**
+   * A6 (2026-10-31): a lobby client's rig or table changed after its HELLO (it joined before its table loaded).
+   * After MATCH_READY it is ignored: the roster and fingerprint in the log are final. A refusing host keeps the old
+   * fingerprint and rejects one that differs, as it would have refused that HELLO.
+   */
+  private onParticipantUpdate(msg: Message<'PARTICIPANT_UPDATE'>): void {
+    if (this.s.state.phase !== 'lobby') return;
+    const i = this.lobby.findIndex((p) => p.playerId === msg.from);
+    if (i <= 0) return;
+    const u = msg.payload;
+    let changed = false;
+    if (u.game !== undefined && !sameGame(u.game, this.lobbyGames.get(msg.from))) {
+      const mismatches = compareFingerprints(this.hostGame, u.game, this.localId);
+      if (mismatches.length > 0 && this.fingerprintPolicy === 'refuse') {
+        this.reject(msg, 'unexpected_state', `game fingerprint differs in: ${mismatches.map((m) => m.field).join(', ')}`);
+        return;
+      }
+      this.lobbyGames.set(msg.from, { ...u.game });
+      this.setMismatch(msg.from, mismatches);
+      changed = true;
+    }
+    if (u.rig !== undefined && u.rig !== this.lobby[i]!.rig) {
+      this.lobby[i] = { ...this.lobby[i]!, rig: u.rig };
+      changed = true;
+    }
+    if (!changed) return;
+    this.events.emit('participantUpdated', { ...this.lobby[i]! });
+    this.resendAck();
+  }
+
+  /** Records what differs for a player and raises `tableMismatch` when that changed (empty: it agrees now). */
+  private setMismatch(id: PlayerId, mismatches: PayloadOf<'REFUSE'>['mismatches']): void {
+    const before = (this.mismatched.get(id) ?? []).map((m) => m.field).join(',');
+    if (mismatches.length > 0) this.mismatched.set(id, mismatches);
+    else this.mismatched.delete(id);
+    if (mismatches.map((m) => m.field).join(',') !== before) this.events.emit('tableMismatch', { playerId: id, mismatches });
+  }
+
+  /** The lobby's HELLO_ACK again, to every accepted client (never 'all': a socket mid-HELLO would take it as its own). */
+  private resendAck(): void {
+    const ack = this.s.build(
+      'HELLO_ACK',
+      { hostPlayerId: this.localId, hostPublicKey: this.publicKey, participants: this.lobby.map((x) => ({ ...x })), hostGame: { ...this.hostGame } },
+      null,
+    );
+    for (const p of this.lobby) if (p.playerId !== this.localId) this.s.transport.send(p.playerId, ack);
   }
 
   // ------------------------------------------------------------------------------------------
@@ -978,6 +1061,10 @@ export class HostMatch {
     const known = p.logLength === 0 ? p.logHash === GENESIS_HASH : this.s.log.at(p.logLength - 1)?.hash === p.logHash;
     return known ? null : 'unknown_log_hash';
   }
+}
+
+function sameGame(a: GameFingerprint, b: GameFingerprint | undefined): boolean {
+  return b !== undefined && compareFingerprints(a, b, 'x').length === 0;
 }
 
 export function compareFingerprints(expected: GameFingerprint, received: GameFingerprint, expectedFrom: PlayerId): PayloadOf<'REFUSE'>['mismatches'] {
