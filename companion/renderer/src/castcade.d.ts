@@ -201,6 +201,7 @@ interface TableIdentity {
   confirmed: boolean;
   tableChoices: Array<{ id: string; label: string }>;
   sha256: string | null;
+  fingerprint: string | null;
   saveRev: number | null;
   tableInfo: VpxTableInfo | null;
   physics: VpxTablePhysics | null;

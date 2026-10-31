@@ -58,6 +58,7 @@ export {
   type RefuseCode,
   type ReconnectCode,
   type LogSignRecord,
+  type OutgoingMediaSignal,
 } from './host.js';
 export {
   ClientMatch,

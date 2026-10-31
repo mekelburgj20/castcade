@@ -664,7 +664,8 @@ export class MatchController {
     }
     if (this.phase === 'playing' && this.holding && this.holding.ballNumber === 1 && this.myScore === null) return 'Press Start on the table to begin your game';
     if (this.phase === 'playing' && this.myGameDone() && this.upPlayer !== this.localId) return 'Your game is over; the others are still playing';
-    return null;
+    // Nothing about the match to say: say what is wrong with video or voice (no window to send, no microphone).
+    return this.opts.media?.status().lastError ?? null;
   }
 
   private push(force = false): void {

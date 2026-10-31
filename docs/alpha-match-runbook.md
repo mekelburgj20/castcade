@@ -25,6 +25,8 @@ Table: ________ (ROM ______)
   "Port forwarding", "Virtual server" or "NAT"; add a rule, TCP, port 27401, to your PC's local address. Know your
   public IP (Castcade shows it in the invite; <https://api.ipify.org> also tells you).
 - [ ] **Client only:** nothing to forward.
+- [ ] **Windows Firewall:** the first time you press **Host**, Windows asks whether Castcade may use the network:
+  allow it (tick **Private**, and **Public** too if Windows calls your network public).
 
 ## 2. Rig checks the owner runs alone first
 

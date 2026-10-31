@@ -31,6 +31,7 @@ class FakeMedia implements MatchMedia {
   sending: boolean[] = [];
   panels: PanelState[] = [];
   detached = false;
+  lastError: string | null = null;
   attach(_s: MediaSignalling, peers: string[]): Promise<void> {
     this.attachedWith = [...peers];
     return Promise.resolve();
@@ -49,7 +50,7 @@ class FakeMedia implements MatchMedia {
   }
   setMuted(): void {}
   status(): MediaStatus {
-    return { attached: this.attachedWith !== null, sending: this.sending[this.sending.length - 1] ?? false, peers: {}, mic: 'open', captureSource: null, lastError: null };
+    return { attached: this.attachedWith !== null, sending: this.sending[this.sending.length - 1] ?? false, peers: {}, mic: 'open', captureSource: null, lastError: this.lastError };
   }
   onStatus(): () => void {
     return () => undefined;
@@ -339,6 +340,23 @@ describe('MatchController', () => {
     expect(client.refused?.code).toBe('fingerprint_mismatch');
     expect(H.ctl.status().tableMismatch).toEqual([]);
     expect(H.ctl.status().participants.map((p) => p.playerId)).toEqual(['h']);
+  });
+
+  it("the media layer's last error fills the panel's message line only when the match has nothing to say", async () => {
+    const { host, H, C } = await rig(3);
+    C.media.lastError = 'no VPX window to send: open the table in VR with VRPreview on';
+    C.ctl.refresh();
+    expect(C.media.panel.message).toBe('Waiting for the host to start');
+    host.start();
+    await flush();
+    expect(C.media.panel.message).toBe('no VPX window to send: open the table in VR with VRPreview on');
+    H.media.lastError = 'the match panel did not start; video and voice are off';
+    H.ctl.refresh();
+    // The host holds ball 1 and has not started its game: that hint wins over the media error.
+    expect(H.media.panel.message).toBe('Press Start on the table to begin your game');
+    C.media.lastError = null;
+    C.ctl.refresh();
+    expect(C.media.panel.message).toBeNull();
   });
 
   it('close() unlocks a locked table and detaches media', async () => {
