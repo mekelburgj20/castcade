@@ -78,7 +78,7 @@ vi.mock('electron', () => ({
   desktopCapturer: { getSources: async () => fake.sources.list },
 }));
 
-const { captureLabel, createFrameHub, createRtcHost, frameFromBitmap, matchSource, mergeStatus, pickCaptureWindow } = await import('./rtc-host.js');
+const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, frameFromBitmap, matchSource, mergeStatus, noCaptureReason, pickCaptureWindow } = await import('./rtc-host.js');
 
 const win = (title: string, width: number, height: number, pid = 7): VpxWindow => ({ pid, title, client: { left: 0, top: 0, width, height }, monitor: '1' });
 const PLAYER = win('Visual Pinball Player', 1280, 720);
@@ -104,6 +104,34 @@ describe('capture window choice (D2)', () => {
     const vrWin = win('VPX VR Preview', 1280, 720);
     expect(pickCaptureWindow([EDITOR, DMD, vrWin], true)).toEqual({ window: vrWin, fallback: true });
     expect(pickCaptureWindow([EDITOR, DMD, vrWin], false)).toBeNull();
+  });
+
+  it('D2 (2026-10-31): never a DMD, backglass or PinUP window, nor one under 640x360; every player / DMD / editor combination', () => {
+    // Krobs' rig in the first two-player match: VRPreview off, so VPX showed only the editor and the VPinMAME DMD.
+    const PINMAME = win('Visual PinMAME', 1280, 720);
+    const all = [PLAYER, PINMAME, EDITOR] as const;
+    for (let mask = 0; mask < 8; mask++) {
+      const list = all.filter((_, i) => mask & (1 << i));
+      const hasPlayer = list.includes(PLAYER);
+      for (const vr of [true, false]) {
+        const pick = pickCaptureWindow(list, vr);
+        const label = `${list.map((w) => w.title).join(' + ') || 'none'} (${vr ? 'VR' : 'desktop'})`;
+        expect(pick, label).toEqual(hasPlayer ? { window: PLAYER, fallback: false } : null);
+        if (hasPlayer) continue;
+        const why = noCaptureReason(list, vr);
+        if (!vr) expect(why, label).toBe('no "Visual Pinball Player" window to send: start the table');
+        else if (list.includes(PINMAME)) expect(why, label).toBe(NO_PLAYFIELD_TO_SEND);
+        else expect(why, label).toBe('no VPX window to send: open the table in VR with VRPreview on');
+      }
+    }
+    expect(NO_PLAYFIELD_TO_SEND).toBe('no playfield window to send: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture');
+    // Every excluded title, however large; a small untitled-ish window too; a large other window still goes.
+    for (const title of ['FlexDMD', 'Virtual DMD', 'PUPDMD', 'PinUP Player', 'B2S Backglass Server', 'Backglass', 'PinMAME DMD']) {
+      expect(pickCaptureWindow([EDITOR, win(title, 1920, 1080)], true), title).toBeNull();
+    }
+    expect(pickCaptureWindow([win('Some VPX window', 639, 720), win('Other', 1280, 359)], true)).toBeNull();
+    const preview = win('VPX VR Preview', 640, 360);
+    expect(pickCaptureWindow([EDITOR, PINMAME, DMD, preview], true)).toEqual({ window: preview, fallback: true });
   });
 
   it('labels: title and size; a fallback says so', () => {
@@ -426,6 +454,18 @@ describe('createRtcHost (D2)', () => {
     fromPage(w, PANEL_CHANNELS.ready);
     expect(w.webContents.sent[0]?.[1]).toMatchObject({ capture: { sourceId: 'window:43:0' } });
     expect(logs.some((l) => l.startsWith('media: attach (VR, desktop panel)'))).toBe(true);
+    await host.detach();
+  });
+
+  it('D2 (2026-10-31): in VR with only the editor and a DMD on the desktop, nothing is sent and the Match tab says to turn VRPreview on', async () => {
+    fake.sources.list = [{ id: 'window:44:0', name: 'FlexDMD' }];
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [EDITOR, win('FlexDMD', 1280, 720)] }), settings: store() });
+    await host.setVr({ inVr: true, headsetPanel: false });
+    await host.attach(signalling('krobs').sig, ['owner']);
+    expect(host.status().lastError).toBe(NO_PLAYFIELD_TO_SEND);
+    fromPage(fake.FakeWindow.all[0]!, PANEL_CHANNELS.ready);
+    expect(fake.FakeWindow.all[0]!.webContents.sent[0]?.[1]).toMatchObject({ capture: null });
+    expect(logs).toContain(`WARN media: ${NO_PLAYFIELD_TO_SEND}`);
     await host.detach();
   });
 

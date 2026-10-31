@@ -75,21 +75,45 @@ export interface CapturePick {
 
 /** VPX's editor: "Visual Pinball" or "Visual Pinball - [table]" (process-watch.ts title parsing). */
 const EDITOR_TITLE = /^visual pinball(\s*-\s*\[.*\])?\s*\*?$/i;
+/**
+ * D2 (2026-10-31, the first two-player match): windows of the VPX process that are never the playfield. Krobs had
+ * `VRPreview` off, so there was no player window, and the VR fallback sent his VPinMAME / FlexDMD DMD window for the
+ * whole match. DMDs, backglasses (B2S) and PinUP Player screens all belong to the VPX process.
+ */
+const NOT_PLAYFIELD_TITLE = /dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i;
+/** The VR fallback takes no window smaller than this (a DMD or a backglass, whatever its title). */
+export const MIN_FALLBACK_SIZE = { width: 640, height: 360 } as const;
+export const NO_PLAYFIELD_TO_SEND = 'no playfield window to send: turn on VRPreview in VPX (Preferences → VR) so there is a window to capture';
+
+const fallbackCandidate = (w: VpxWindow): boolean => {
+  const t = w.title.trim();
+  return !EDITOR_TITLE.test(t) && !NOT_PLAYFIELD_TITLE.test(t) && w.client.width >= MIN_FALLBACK_SIZE.width && w.client.height >= MIN_FALLBACK_SIZE.height;
+};
 
 /**
  * The window to send. In VPX 10.8 VR with `VRPreview` on, the preview IS the "Visual Pinball Player" window: the D1
  * rig runs 2–5 (2026-10-25, solo-streaming-and-recording.md) captured exactly that window in VR and got the eye image;
  * with `VRPreview = 0` the same window is a black 640x480. So both modes take `pickPlayfield`. In VR only, when no
- * window has that title (another VR build may name it differently), the largest VPX window that is not the editor is
- * taken and flagged; on the desktop the editor-only case sends nothing (rig run 2 filmed the editor that way).
+ * window has that title (another VR build may name it differently), the largest VPX window that is not the editor, a
+ * DMD, a backglass or a PinUP screen, and is at least 640x360, is taken and flagged (D2, 2026-10-31); when only those
+ * exist nothing is sent and `noCaptureReason` says to turn VRPreview on. On the desktop the editor-only case sends
+ * nothing (rig run 2 filmed the editor that way).
  */
 export function pickCaptureWindow(windows: VpxWindow[], vr: boolean): CapturePick | null {
   const player = pickPlayfield(windows);
   if (player) return { window: player, fallback: false };
   if (!vr) return null;
-  const others = windows.filter((w) => !EDITOR_TITLE.test(w.title.trim()));
+  const others = windows.filter(fallbackCandidate);
   const largest = [...others].sort((a, b) => b.client.width * b.client.height - a.client.width * a.client.height)[0];
   return largest ? { window: largest, fallback: true } : null;
+}
+
+/** Why `pickCaptureWindow` found nothing, for `lastError` (the Match tab's media line and the panel's message line). */
+export function noCaptureReason(windows: VpxWindow[], vr: boolean): string {
+  if (!vr) return `no "${PLAYER_TITLE}" window to send: start the table`;
+  // VPX windows besides the editor: the table runs, but only its DMD / backglass is on the desktop (VRPreview off).
+  if (windows.some((w) => !EDITOR_TITLE.test(w.title.trim()))) return NO_PLAYFIELD_TO_SEND;
+  return 'no VPX window to send: open the table in VR with VRPreview on';
 }
 
 /** `MediaStatus.captureSource`: the window title and its size (the runbook wants the VR preview at 1280x720). */
@@ -407,7 +431,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         const pick = pickCaptureWindow(probe.windows, inVr);
         if (gen !== generation) return;
         if (!pick) {
-          setCaptureError(inVr ?'no VPX window to send: open the table in VR with VRPreview on' : `no "${PLAYER_TITLE}" window to send: start the table`);
+          setCaptureError(noCaptureReason(probe.windows, inVr));
           return;
         }
         const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });

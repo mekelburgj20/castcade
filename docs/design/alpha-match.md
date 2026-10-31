@@ -90,7 +90,10 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   renegotiation (the handoff's host-forwarding is not needed at 2–4 players; revisit at the SFU step).
 - **Capture**: `desktopCapturer` window source: in VR the VPX VR preview window (title from `probeWindows()`: the
   window of the VPX process that is not "Visual Pinball Player"; the agent confirms the title on the fixtures /
-  comments and falls back to the largest VPX window), else the player window. Microphone from a named device
+  comments and falls back to the largest VPX window), else the player window. The fallback never takes a DMD,
+  backglass or PinUP window (title `/dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i`) or one under 640x360: the first
+  two-player match (2026-10-31) sent a VR player's VPinMAME DMD because his `VRPreview` was off. With only those, nothing
+  is sent and the Match tab says to turn VRPreview on. Microphone from a named device
   (`micDeviceId` setting; the panel lists devices, and before a match a hidden page in the same partition does when
   the Match tab opens, B22; the Windows default is often a virtual device in VR).
 - **ICE**: STUN `stun:stun.l.google.com:19302` and `stun:stun1.l.google.com:19302`; optional TURN from settings
