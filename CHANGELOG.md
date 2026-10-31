@@ -7,6 +7,23 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.24] — 2026-10-31
+
+### Witness
+- B22: the VR probe recognises OpenXR runtimes. The owner's rig runs VPX's OpenVR calls through OpenComposite onto
+  Virtual Desktop's OpenXR runtime with no SteamVR at all, so the old rule (SteamVR client in the process + compositor
+  running) had never once seen VR there and every score went out as `play_device=pc`. The probe now names the runtime
+  (`steamvr`, `virtual-desktop`, `oculus`, `openxr-other`) from the modules in the VPX process plus the active OpenXR
+  runtime in the registry; `play_device=vr_headset` follows. `witness/vr-detect.ts`.
+
+### Match (alpha)
+- A6: the in-headset panel is started only when VPX runs through SteamVR (the OpenVR overlay helper draws into
+  SteamVR's compositor); on any other VR runtime the panel stays as a visible desktop window and the Match tab says
+  so, with what would move it into the headset. The rig line names the runtime.
+- A6: the microphone list fills when the Match tab opens, not only after Host or Join (Krobs saw only "Windows
+  default"); a right-click Cut / Copy / Paste menu app-wide and a Paste button on the Join field and the pairing code
+  (Krobs could not paste the invite).
+
 ## [0.2.23] — 2026-10-31
 
 ### Match (alpha)
