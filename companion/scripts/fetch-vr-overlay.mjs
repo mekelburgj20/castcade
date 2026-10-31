@@ -28,7 +28,7 @@ import { fileURLToPath, URL } from 'node:url';
 const TAG = 'v0.2.22';
 // sha256 pinning starts at the first pinned zip: null means "not pinned yet" (the download is used, with a warning
 // and the hash to pin printed). Set it as soon as the zip exists.
-const SHA256 = null;
+const SHA256 = '7c653a45e791bb101ad80994b34df0fb5593951e1d87c52ce0d17440347699bf';
 const NAME = `castcade-vr-overlay-${TAG}-win-x64`;
 const URL_ = `https://github.com/mekelburgj20/castcade/releases/download/${TAG}/${NAME}.zip`;
 const KEEP = ['castcade-vr-overlay.exe', 'openvr_api.dll', 'THIRD-PARTY.md'];
