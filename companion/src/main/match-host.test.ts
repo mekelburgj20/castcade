@@ -367,3 +367,88 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     make('mics-bare', 'ab'.repeat(32)).mh.refreshMicrophones();
   });
 });
+
+// ---- A6 (2026-10-31): the lobby refresh of the rig and the table (the first two-player match) ----
+
+/** A witness with no table until `load`: then a table (sha) and a VR sample, announced like a `table_loaded` status. */
+function loadingWitness() {
+  const listeners = new Set<(s: WStatus) => void>();
+  let table: { sha: string; vr: Vr | null } | null = null;
+  const status = (): WStatus =>
+    ({
+      paired: false,
+      currentTable: table ? 'Monster Bash' : null,
+      currentIdentity: table ? { sha256: table.sha, tableInfo: null } : null,
+      currentAttestation: table?.vr ? { vr: table.vr } : null,
+    }) as unknown as WStatus;
+  const w = {
+    status,
+    // The live probe reads the running VPX: nothing before the table opens.
+    sampleVr: async () => table?.vr ?? null,
+    onEvent: () => () => undefined,
+    onStatus: (cb: (s: WStatus) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  } as unknown as WitnessHost;
+  return {
+    w,
+    load(sha: string, vr: Vr | null) {
+      table = { sha, vr };
+      for (const l of listeners) l(status());
+    },
+  };
+}
+
+describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
+  const port = (): number => 45000 + Math.floor(Math.random() * 2000);
+  const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
+
+  it('a client whose table loads after joining: the right rig and no false mismatch on both sides; a real mismatch still flags; after the start nothing changes', async () => {
+    const H = make('lobby-host', 'ab'.repeat(32));
+    const krobs = loadingWitness();
+    const C = make('lobby-client', 'ab'.repeat(32), { witness: krobs.w });
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    // As in the match: joined before the table loaded.
+    expect(row(H.mh, 'Krobs')).toMatchObject({ rig: 'pc', tableMatch: false });
+    expect(row(C.mh, 'Krobs')).toMatchObject({ rig: 'pc', tableMatch: false });
+
+    krobs.load('ab'.repeat(32), VR_VD);
+    await until(() => row(H.mh, 'Krobs')?.rig === 'vr_headset' && row(H.mh, 'Krobs')?.tableMatch === true);
+    await until(() => row(C.mh, 'Krobs')?.rig === 'vr_headset' && row(C.mh, 'Krobs')?.tableMatch === true);
+    expect(C.mh.status().rig).toBe('vr_headset');
+    expect(H.mh.status().panel?.message).toBe('Everyone in? Press Start match');
+    expect(C.mh.status().panel?.message).toBe('Waiting for the host to start');
+
+    // A different table file is still a difference.
+    krobs.load('cd'.repeat(32), VR_VD);
+    await until(() => row(H.mh, 'Krobs')?.tableMatch === false && row(C.mh, 'Krobs')?.tableMatch === false);
+    expect(H.mh.status().panel?.message).toBe('different table file: Krobs');
+
+    // After MATCH_READY the roster is final: a table load changes nothing.
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    krobs.load('ab'.repeat(32), VR_VD);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(row(H.mh, 'Krobs')).toMatchObject({ rig: 'vr_headset', tableMatch: false });
+    expect(row(C.mh, 'Krobs')).toMatchObject({ rig: 'vr_headset', tableMatch: false });
+  }, 15_000);
+
+  it("the host's own table loads after hosting: its row and the client's flag follow", async () => {
+    const owner = loadingWitness();
+    const H = make('lobby-host2', 'ab'.repeat(32), { witness: owner.w });
+    const C = make('lobby-client2', 'ab'.repeat(32));
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    expect(row(H.mh, 'Krobs')?.tableMatch).toBe(false);
+    expect(row(C.mh, 'Owner')?.rig).toBe('pc');
+
+    owner.load('ab'.repeat(32), VR_ON);
+    await until(() => row(H.mh, 'Krobs')?.tableMatch === true && row(C.mh, 'Krobs')?.tableMatch === true);
+    await until(() => row(C.mh, 'Owner')?.rig === 'vr_headset');
+    expect(row(H.mh, 'Owner')?.rig).toBe('vr_headset');
+  }, 15_000);
+});

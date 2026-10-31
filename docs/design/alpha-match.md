@@ -56,6 +56,11 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **GameFingerprint** from the witness's current identity: `tableName`, `tableHash` = `TableIdentity.sha256` (zeros
   when unknown), `romName`, `romHash: null`, `physicsHash: null`, `recipeVersion` = the loaded recipe version. A
   client whose fingerprint differs from the host's is shown "different table file" on both panels (advisory).
+  Lobby refresh (A6, 2026-10-31; the first two-player match showed a VR tester as "PC · different table file" because
+  he joined before his table loaded): until MATCH_READY, a change of the witness's table fingerprint or VR sample
+  re-runs `decideRig` and rebuilds the fingerprint; a client sends `PARTICIPANT_UPDATE`, the host updates its own
+  entry, and either way the host re-compares and re-sends `HELLO_ACK` to every client, so rosters and flags follow
+  (the roster, not `MATCH_READY`: the lobby has to show it before the start). The rig only moves towards the headset.
 - **Lock**: `lock()` creates `turn.lock` (empty file, `%LOCALAPPDATA%\Castcade\lock\`), `unlock()` deletes it. Locked
   the moment the match starts; unlocked by a verified grant for me; locked again when my `ball_end` is accepted (the
   next grant is someone else's) and at match end (then unlocked when the match closes, so solo play works again).

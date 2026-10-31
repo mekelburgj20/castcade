@@ -84,8 +84,13 @@ export interface ResultInfo {
 export interface ClientEvents extends Record<string, unknown> {
   joined: PayloadOf<'HELLO_ACK'>;
   refused: PayloadOf<'REFUSE'>;
-  /** HELLO_ACK's `hostGame` differs from this client's own fingerprint (a host in advisory mode); raised before `joined`. */
+  /**
+   * HELLO_ACK's `hostGame` differs from this client's own fingerprint (a host in advisory mode); raised before `joined`.
+   * A6 (2026-10-31): raised again when a re-sent HELLO_ACK changes what differs; an empty `mismatches` means it agrees now.
+   */
   tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
+  /** A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (someone's rig or table changed): the roster now. */
+  roster: PayloadOf<'HELLO_ACK'>;
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   myTurn: GrantBody;
@@ -136,8 +141,11 @@ interface Reconnecting {
 export class ClientMatch {
   readonly events = new Emitter<ClientEvents>();
   private readonly s: Session;
-  private readonly participant: ParticipantInfo;
-  private readonly game: GameFingerprint;
+  /** Not readonly: `updateParticipant` corrects the rig and the fingerprint in the lobby (A6, 2026-10-31). */
+  private participant: ParticipantInfo;
+  private game: GameFingerprint;
+  /** The mismatched fields last raised as `tableMismatch`, so a re-sent HELLO_ACK raises only a change. */
+  private mismatchFields = '';
   private readonly throwdownCode: string;
   private readonly companionVersion: string;
   private readonly explicitHostId: PlayerId | null;
@@ -270,6 +278,24 @@ export class ClientMatch {
       null,
     );
     this.s.transport.send(this.explicitHostId ?? 'all', msg);
+  }
+
+  /**
+   * A6 (2026-10-31): this player's rig or table changed after HELLO (it joined before its table loaded): tell the host
+   * with PARTICIPANT_UPDATE, which answers with a HELLO_ACK to everyone (`roster`, and `tableMismatch` on a change).
+   * Only the fields that changed are sent. False (nothing sent) before the join, after MATCH_READY, or with no change.
+   */
+  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint }): boolean {
+    this.assertActive();
+    if (!this.joined || this.s.state.phase !== 'lobby') return false;
+    const payload: PayloadOf<'PARTICIPANT_UPDATE'> = {};
+    if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
+    if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
+    if (payload.rig === undefined && payload.game === undefined) return false;
+    if (payload.rig !== undefined) this.participant = { ...this.participant, rig: payload.rig };
+    if (payload.game !== undefined) this.game = { ...payload.game };
+    this.sendToHost(this.s.build('PARTICIPANT_UPDATE', payload, this.matchIdForWire()));
+    return true;
   }
 
   /** Answer the held grant. Locks input again. `override` exists so tests can send bad grantSeqs. */
@@ -464,9 +490,7 @@ export class ClientMatch {
         this.ackHostId = msg.payload.hostPlayerId;
         this.ackHostKey = msg.payload.hostPublicKey;
         // Advisory (alpha-match.md §3, 2026-10-30): the host accepted us anyway; say so on this side too.
-        const hostGame = msg.payload.hostGame;
-        const mismatches = hostGame ? compareFingerprints(hostGame, this.game, msg.payload.hostPlayerId) : [];
-        if (mismatches.length > 0) this.events.emit('tableMismatch', { playerId: this.localId, mismatches });
+        this.compareHostGame(msg.payload);
         this.events.emit('joined', msg.payload);
       } else if (msg.type === 'REFUSE') {
         this.refusedWith = msg.payload;
@@ -509,6 +533,13 @@ export class ClientMatch {
         if (msg.from !== this.hostId) return this.drop(msg, 'not_host');
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
         this.events.emit('ready', msg.payload);
+        return;
+      case 'HELLO_ACK':
+        // A6 (2026-10-31): the host re-sends it in the lobby when a rig or a table changed; after MATCH_READY the
+        // roster in the log is final.
+        if (this.s.state.phase !== 'lobby' || msg.payload.hostPlayerId !== this.hostId) return this.drop(msg, 'unexpected');
+        this.compareHostGame(msg.payload);
+        this.events.emit('roster', msg.payload);
         return;
       case 'TURN_GRANT':
         this.onGrant(msg);
@@ -565,6 +596,15 @@ export class ClientMatch {
       default:
         this.drop(msg, 'unexpected');
     }
+  }
+
+  /** `tableMismatch` when what differs from `hostGame` changed since the last HELLO_ACK (first one: only a difference). */
+  private compareHostGame(ack: PayloadOf<'HELLO_ACK'>): void {
+    const mismatches = ack.hostGame ? compareFingerprints(ack.hostGame, this.game, ack.hostPlayerId) : [];
+    const fields = mismatches.map((m) => m.field).join(',');
+    if (fields === this.mismatchFields) return;
+    this.mismatchFields = fields;
+    this.events.emit('tableMismatch', { playerId: this.localId, mismatches });
   }
 
   private onGrant(msg: Message<'TURN_GRANT'>): void {

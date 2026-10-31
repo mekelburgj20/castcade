@@ -88,6 +88,10 @@
     "MEDIA_SIGNAL": {
       "direction": "any",
       "schema": "MEDIA_SIGNAL.schema.json"
+    },
+    "PARTICIPANT_UPDATE": {
+      "direction": "client->host",
+      "schema": "PARTICIPANT_UPDATE.schema.json"
     }
   }
 }

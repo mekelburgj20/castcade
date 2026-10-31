@@ -107,7 +107,18 @@ export const HelloAck = z
       .default(null)
       .describe("The host's fingerprint, so a client the host accepted despite a difference (advisory mode) can show it too. null from a host that does not send it."),
   })
-  .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY.');
+  .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
+
+// A6 (2026-10-31, the first two-player match): a client that joined before its table loaded said `pc` and a blank
+// table hash in HELLO, and nothing corrected them, so its roster row read "PC · different table file" for the match.
+export const ParticipantUpdate = z
+  .object({
+    rig: RigDevice.optional().describe("The sender's rig now, when it changed since HELLO."),
+    game: GameFingerprint.optional().describe("The sender's fingerprint now, when its table changed since HELLO."),
+  })
+  .describe(
+    "client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final).",
+  );
 
 export const Refuse = z
   .object({
@@ -374,6 +385,7 @@ export const payloadSchemas = {
   RECONNECT: Reconnect,
   RECONNECT_ACK: ReconnectAck,
   MEDIA_SIGNAL: MediaSignal,
+  PARTICIPANT_UPDATE: ParticipantUpdate,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -404,4 +416,5 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   RECONNECT: 'client->host',
   RECONNECT_ACK: 'host->client',
   MEDIA_SIGNAL: 'any',
+  PARTICIPANT_UPDATE: 'client->host',
 };

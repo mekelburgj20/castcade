@@ -175,9 +175,13 @@ export class MatchController {
     };
   }
 
-  /** A participant whose fingerprint differed from the host's (`fields`: the GameFingerprint fields). Advisory. */
+  /**
+   * A participant whose fingerprint differed from the host's (`fields`: the GameFingerprint fields). Advisory. No
+   * fields: it agrees now (a lobby update, A6 2026-10-31).
+   */
   noteTableMismatch(player: PlayerId, fields: string[]): void {
-    this.mismatch.set(player, [...fields]);
+    if (fields.length > 0) this.mismatch.set(player, [...fields]);
+    else this.mismatch.delete(player);
     this.push();
   }
 
@@ -282,6 +286,8 @@ export class MatchController {
     this.lobby = h.roster();
     const offs = this.offs;
     offs.push(h.on('joined', () => this.onLobby(h.roster())));
+    // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
+    offs.push(h.on('participantUpdated', () => this.onLobby(h.roster())));
     // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
     offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(h.on('ready', (p) => this.onReady(p)));
@@ -320,6 +326,8 @@ export class MatchController {
         this.onLobby(ack.participants);
       }),
     );
+    // A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (a rig or a table changed).
+    offs.push(c.on('roster', (ack) => this.onLobby(ack.participants)));
     // HELLO_ACK's `hostGame` differs from this player's own: the host accepted it anyway (§3, advisory).
     offs.push(c.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(c.on('ready', (p) => this.onReady(p)));
