@@ -441,9 +441,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (a.rig === 'vr_headset' && !overlayChanges(a, d)) return;
     a.switching = true;
     const was = a.overlay;
-    // The panel kind before this reading: a SteamVR ↔ OpenXR-layer swap keeps the offscreen panel, so the media layer
-    // is told only when the kind changes (merge of D2.4 + D7.3, 2026-10-31: the lobby refresh had made this a repeat).
-    const panelBefore = mediaRig(a);
     a.rig = 'vr_headset';
     a.runtime = d.runtime;
     a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${d.reason}`;
@@ -454,13 +451,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.info(`match: VPX's VR runtime is ${d.runtime ?? 'unknown'} now; the panel moves to ${usesLayer(a) ? 'the OpenXR layer' : 'the SteamVR overlay'}`);
       await was.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
     }
-    const panelNow = mediaRig(a);
-    if (panelNow.inVr !== panelBefore.inVr || panelNow.headsetPanel !== panelBefore.headsetPanel) {
-      try {
-        await opts.media?.setVr?.(panelNow);
-      } catch (e) {
-        log.warn(`match: the panel did not move into the headset: ${describeError(e)}`);
-      }
+    try {
+      await opts.media?.setVr?.(mediaRig(a));
+    } catch (e) {
+      log.warn(`match: the panel did not move into the headset: ${describeError(e)}`);
     }
     a.switching = false;
     if (active !== a) return;
@@ -499,7 +493,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         a.refreshAgain = false;
         const d = await decide();
         if (!inLobby(a)) return;
-        if (d.rig === 'vr_headset') await switchToVr(a, d);
+        // Only the first move into VR: a runtime swap (SteamVR <-> an OpenXR runtime) is the status listener's job, and
+        // re-deciding here could swap it straight back (merge of D2.4 + D7.3, 2026-10-31: the media layer was told twice).
+        if (d.rig === 'vr_headset' && a.rig === 'pc') await switchToVr(a, d);
         if (!inLobby(a)) return;
         announceLobby(a, a.rig, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
       } while (a.refreshAgain);
