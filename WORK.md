@@ -12,6 +12,7 @@ One line per item, IDs never reused. History: `CHANGELOG.md` and `git log -- WOR
 - Decisions made without the owner on 2026-10-30 (revert if wrong): protocol version 2 (new `RECONNECT` messages; v1 peers refused); no microphone control until a capture path exists; the OBS overlay card lives on the Stream page; the GPL offer points at GitHub issues, not an email, and the source-upload step never blocks a release; `docs/witness-games.*` are committed outputs; verified = a `fixtures/nvram/<rom>` folder; the ROM map cache sits in `witness\roms.json`.
 - Owner actions: update the rig and testers to 0.2.21 · void Krobs' three `start not reported` Tron attempts on Arcaid Witness Demo (B19) · void Krobs' `unreported` Walking Dead attempt on Hoser Haven if promised · re-pair the rig from Settings · B9 field gate · record an extra-ball session on a mapped table for C2.2 · B14.1: one Taito and one Bally 35 game decide whether the list or B10.2 is right.
 - ArcAid side owed: F15 (ROM fallback on the start call, Krobs' Tron), F16 (`tournament` on the score answer for D1.7), F12 (blessed fingerprint UI), F13 (Limited-attempts list seeded from B14's JSON).
+- **Alpha match milestone** (owner ask 2026-10-30: owner + Krobs, both in VR, video and voice in the headset, the final build not an interim): design `docs/design/alpha-match.md`; in flight A6 + C3 (match in the app), D2 (WebRTC video + voice, panel), D7 (OpenVR overlay helper), H4 (runbook). Rig checks before the first match are §6 of the design; C3.1 (VR controller lock) first. Out: the ArcAid lobby (F6) and the Throwdown result (A5).
 - New ruling 2026-10-30, ADR 0008: a **sanctioned VPX build** (our fork, Sanctioned mode enforced in-process) becomes a per-tournament requirement for Sanctioned play, trusted alongside Legends Unchained; Castcade on stock VPX stays the app for everything else. Section I holds the plan; I1 (design doc) is ready, the fork repo (I2) waits on it.
 - Multiplayer stream URL (D5, owner request 2026-10-26; Krobs keen) needs D2 and D3; ADR 0007 leans to both an ArcAid watch page and a Twitch push.
 - Cabinet SAM and the AMH ScoreServer gap are ArcAid W46 / W47 / W48; the desktop check is C1.1.1 (needs recipes D/E).
@@ -28,7 +29,7 @@ Lane: `protocol/**`, `companion/src/match/**`, `fakeclient/**`. Phase 1 shipped 
 - **A3** `done 0.2.22` Client reconnect after a drop — `RECONNECT` / `RECONNECT_ACK` resume from the log head, signed; gate `fakeclient/src/ws-reconnect.test.ts` · needs: A2
 - **A4** `idea` Simultaneous mode — exists in the schemas, never exercised; needs a fakeclient scenario before it is called supported
 - **A5** `blocked F6` Post a signed RESULT to ArcAid — waits on the ArcAid roster, relay and ingest (F6)
-- **A6** `idea` Match transport in the app: the main process creates a `WsPeerTransport`, opens the listener, and learns the new host's endpoint (ArcAid signalling, F6); the fakeclient CLI (`host` / `join`) still uses the Phase 1 transports · needs: A2, F6
+- **A6** `claimed` Match in the app (alpha match, §3): `MatchController` (grants → lock + cue, detector events → BALL_END / GAME_OVER / STATE, result), `main/match-host.ts` (keys, `WsPeerTransport`, invite string, IPC), the Match tab, the audio cue, the witness `event` emitter; the ArcAid lobby stays F6 · spec: docs/design/alpha-match.md §3 · needs: A2 · touches: companion/src/witness/witness.ts (event emitter) · owner: fable@main · since: 2026-10-30
 - **A7** `idea` Transfer / reconnect hardening left by A2–A3: no abort when a transfer never reaches a majority; no timeout on a socket waiting for `RECONNECT_ACK`; a client that reconnects to the old host does not follow a `HOST_TRANSFER` it missed; `host_left` over WS has no candidate endpoint; a bad-signature reconnect closes that player's other links · spec: protocol/docs/prose.md "Reconnect", commits 9b6da24 and 3772379
 
 ## B. Witness and fairness
@@ -89,7 +90,8 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 - **C2** `done 0.2.11` Journal tailer + detector in the companion (`journal-detector.ts`, `journal-tail.ts`); the three Phase 0 fixtures replay in vitest to what `fixtures/check.py` asserts; lands in 0.2.11
   - **C2.1** `done 0.2.11` Phase 0 findings absorbed: journal volume (hook 0.3.0 `Castcade_WatchBytes`: watched offsets only, coalesced per 50 ms, one snapshot at hook time — from 89 lines/s to a few per score change), boot-garbage gate and exit mid-game (detector C2); bonus-after-ball_end documented in `detectTransition`
   - **C2.2** `ready` Extra-ball fixture: ball-in-play and player unchanged, detector must not fire
-- **C3** `ready` Turn lock + overlay, companion half — write the lock flag from the match engine's grant, the overlay, analog-plunger fallback (open case, spike §8 0c); the `_KeyDown` wrap itself shipped in hook 0.1.0 (Phase 0c pass 2026-10-17) · needs: C2
+- **C3** `claimed` Turn lock + overlay, companion half — write the lock flag from the match engine's grant, the overlay, analog-plunger fallback (open case, spike §8 0c); the `_KeyDown` wrap itself shipped in hook 0.1.0 (Phase 0c pass 2026-10-17) — built inside A6's controller (`lock()` / `unlock()` on `turn.lock`) · spec: docs/design/alpha-match.md §3 · needs: C2 · owner: fable@main · since: 2026-10-30
+  - **C3.1** `ready` [CHECK] VR controller input under the lock: with a table open in VR, create `%LOCALAPPDATA%\Castcade\lock\turn.lock` by hand; the flippers must go dead; delete it; they return. If VR controller buttons bypass `_KeyDown` the lock needs the plugin path (ADR 0001 deferred producer) · owner: owner · gate: this line · spec: docs/design/alpha-match.md §6
 - **C4** `ready` Fill `HELLO`'s `GameFingerprint` from the import manifest — hash(original `.vpx`) + recipe version + sidecar hash; the fields exist since 0.1.0; readiness shared to ArcAid (item 8 = ArcAid W8.1, Phase 3) · needs: C1 · touches: F6
 - **C5** `idea` Bulk mode: setup-wizard forced choice, `core.vbs` patch, self-heal, chaining guard — slips if Phase 3 runs long; not on the streaming path · needs: C1
 - **C7** `done 0.2.11` Live mode: every game of a session posts its own score (sidecar journal + detector, folder import with dry run and remove-all, three-layer stale-sidecar guard, hook 0.3.0) · spec: docs/design/table-import-and-patching.md
@@ -104,7 +106,7 @@ Lane: `vpx-hook/**`, `companion/src/patcher/**`, `fixtures/**`. ADR 0001 (script
 
 ## D. Media: streaming, recording, voice
 
-Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phase 4 (match spectating, voice, runner stage) waits for real players in the match engine.
+Lane: `companion/src/media/**`, `vr-overlay/**`. Phase 4a (solo) needs nothing from Phase 3; Phase 4 (match spectating, voice, runner stage) waits for real players in the match engine.
 
 - **D1** `ready` Phase 4a solo streaming + recording: VPX window capture, NVENC/AMF/QSV encode (Phase 0d path), score/ball/Witness overlay, direct RTMP to Twitch/YouTube with the player's own key (`safeStorage`, never sent to ArcAid), local MP4 · spec: docs/design/solo-streaming-and-recording.md (owner rulings 2026-10-25: architecture A, ffmpeg bundled, 720p30 default, keep 3 sessions + Sanctioned, mic off) · gate: docs/design/solo-streaming-and-recording.md §1
   - **D1.0** `done 2026-10-27` Spike on the owner's rig: crop, rotation, F11 cost (none at 720p30), live Twitch push, 1080p, the bundled ffmpeg · spec: docs/design/solo-streaming-and-recording.md §5
@@ -121,7 +123,9 @@ Lane: `companion/src/media/**`. Phase 4a (solo) needs nothing from Phase 3; Phas
 
   - **D1.8** `done 0.2.19` Stop ffmpeg cleanly instead of killing it (grab → mux split; a stop no longer loses the last second)
   - **D1.9** `done 0.2.19` Never stream the desktop: cover the picture whenever VPX is not the foreground window
-- **D2** `idea` Phase 4 match streaming: WebRTC through the host, Opus mesh, push-to-talk, DMD + STATE overlay, upload test, STUN + optional TURN · needs: A2, D1
+- **D2** `claimed` Match video and voice (alpha match, §4): `MEDIA_SIGNAL` in the protocol relayed by the host, a WebRTC mesh (video only from the player up, Opus voice open-mic with mute), the VR preview window as the source, STUN + optional TURN settings, the panel page (peer connections + the in-headset UI) implementing `MatchMedia` · spec: docs/design/alpha-match.md §4, companion/src/media/match-media-types.ts · needs: A2, D1 · owner: fable@main · since: 2026-10-30
+  - **D2.1** `idea` Later: push-to-talk, DMD frames on the panel, an SFU / host forwarding past 4 players, a TURN relay of ours
+- **D7** `claimed` VR overlay helper (alpha match, §5): `vr-overlay/` C++ OpenVR overlay fed BGRA frames over stdin, CI build on windows-latest, `fetch-vr-overlay` + extraResources, `media/vr-overlay.ts` implementing `VrOverlay`; draws the panel in the headset over VPX · spec: docs/design/alpha-match.md §5, companion/src/media/match-media-types.ts · owner: fable@main · since: 2026-10-30
 - **D3** `idea` Castcade watch link: any live player's feed in a browser, ArcAid signalling only · needs: D2
 - **D4** `idea` Runner stage, companion half (ArcAid item 13 is the other half) · needs: D3
 - **D5** `idea` A multiplayer Castcade match (Throwdown, `play_mode='castcade'`) has one stream URL so the whole session can be streamed live: the player up's table, every player's score, whose turn it is and the voice mix, shown as one feed. Open: viewers watch on an ArcAid page fed by the host (D3's link, one per match), a Twitch / YouTube push of the host's composite (D1.3's ingest), or both (ADR 0007 leans both); where the URL appears (the Throwdown page, the lobby) · needs: D2, D3 · touches: ArcAid Throwdown page (owner request 2026-10-26)
@@ -187,4 +191,5 @@ Lane: `docs/**`, `.claude/**`, `WORK.md`, `CHANGELOG.md`, `tools/**`, `.github/w
 
 - **H1** `done` Single work tracker + board + `/work` and `/wrap` (ADR 0006), 2026-10-21
 - **H2** `done 0.2.20` `CHANGELOG.md` back-fill detail for 0.2.0–0.2.3 from the release notes on GitHub
+- **H4** `claimed` Alpha match runbook for the two players (`docs/alpha-match-runbook.md`): VRPreview 1280x720, the port forward, host / join, microphone pick, the rig checks of alpha-match.md §6, what to report · spec: docs/design/alpha-match.md · owner: fable@main · since: 2026-10-30
 - **H3** `done 0.2.22` Protocol prose for host transfer over WebSocket and reconnect (`protocol/docs/prose.md`), 2026-10-30
