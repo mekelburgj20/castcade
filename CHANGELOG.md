@@ -7,7 +7,10 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
-Built 2026-10-30 as the 0.2.22 candidate; not tagged until the rig checks in `WORK.md` (Now) pass.
+## [0.2.22] — 2026-10-31
+
+The alpha match build. Released untested on a rig so both players' companions receive it through the updater; the
+checks before the first match are `docs/design/alpha-match.md` §6 and `WORK.md` (Now).
 
 ### Match (alpha): two players, one table, video and voice in the headset
 - A6 + C3: a **Match** tab. Host shows an invite (`castcade:ws://<ip>:<port>#<code>`, default TCP 27401, the public
