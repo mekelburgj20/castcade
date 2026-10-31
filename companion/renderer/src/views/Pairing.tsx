@@ -113,6 +113,18 @@ export function Pairing({ state }: { state: CastcadeState }) {
               disabled={!bridge || busy}
             />
           </label>
+          <button
+            type="button"
+            disabled={!bridge || busy}
+            onClick={() =>
+              void bridge?.app.clipboardText().then(
+                (t) => setCode(t.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 6)),
+                (e: unknown) => setError(describe(e)),
+              )
+            }
+          >
+            Paste
+          </button>{' '}
           <button type="submit" disabled={!bridge || busy || code.length !== 6}>
             {busy ? 'Pairing…' : 'Pair'}
           </button>

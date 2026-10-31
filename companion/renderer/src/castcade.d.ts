@@ -481,6 +481,7 @@ interface CastcadeBridge {
     /** D1.1: the OBS overlay page URL, or null when it is not running. */
     overlayUrl(): Promise<string | null>;
     pickFolder(defaultPath: string | null): Promise<string | null>;
+    clipboardText(): Promise<string>;
   };
 }
 

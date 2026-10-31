@@ -122,6 +122,20 @@ export function Match({ state }: { state: CastcadeState }) {
                 <span>Invite from the host</span>
                 <input type="text" value={invite} placeholder="castcade:ws://203.0.113.7:27401#ABCDEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
+              <button
+                type="button"
+                onClick={() =>
+                  void bridge.app.clipboardText().then((t) => {
+                    const v = t.trim();
+                    if (v.startsWith('castcade:')) {
+                      setError(null);
+                      setInvite(v);
+                    } else setError('The clipboard does not hold a Castcade invite (it starts with castcade:ws://…).');
+                  }, (e: unknown) => setError(describe(e)))
+                }
+              >
+                Paste
+              </button>{' '}
               <button type="button" className="primary" disabled={!invite.trim()} onClick={() => void run(() => bridge.match.join(invite, displayName))}>
                 Join
               </button>

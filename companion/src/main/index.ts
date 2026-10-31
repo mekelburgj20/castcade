@@ -7,7 +7,7 @@
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -119,6 +119,14 @@ function createWindow(): BrowserWindow {
     },
   });
   w.removeMenu();
+  // 2026-10-31 (A6): Electron shows no right-click menu by default, so Krobs could not paste the invite.
+  w.webContents.on('context-menu', (_e, params) => {
+    if (params.isEditable) {
+      Menu.buildFromTemplate([{ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }]).popup();
+    } else if (params.selectionText) {
+      Menu.buildFromTemplate([{ role: 'copy' }]).popup();
+    }
+  });
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   w.webContents.on('will-navigate', (e) => e.preventDefault());
   w.on('close', (e) => {
@@ -293,6 +301,7 @@ function registerIpc(
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
   ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
+  ipcMain.handle(IPC.appClipboardText, () => clipboard.readText());
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;

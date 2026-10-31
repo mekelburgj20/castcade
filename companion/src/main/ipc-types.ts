@@ -29,6 +29,7 @@ export const IPC = {
   appLogPath: 'app:logPath',
   appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
+  appClipboardText: 'app:clipboardText',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -164,6 +165,8 @@ export interface CastcadeApi {
     overlayUrl(): Promise<string | null>;
     /** Native folder picker; resolves to the chosen folder, or null when the player cancelled. */
     pickFolder(defaultPath: string | null): Promise<string | null>;
+    /** A6: the clipboard's text, for the Paste buttons (no right-click menu is needed then). */
+    clipboardText(): Promise<string>;
   };
   /** D1.2 / D1.3: record and / or go live. The key goes in, never comes back out. */
   stream: {

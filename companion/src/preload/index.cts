@@ -27,6 +27,7 @@ const CH = {
   appLogPath: 'app:logPath',
   appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
+  appClipboardText: 'app:clipboardText',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -97,6 +98,7 @@ const castcade: CastcadeApi = {
     logPath: () => ipcRenderer.invoke(CH.appLogPath),
     overlayUrl: () => ipcRenderer.invoke(CH.appOverlayUrl),
     pickFolder: (defaultPath) => ipcRenderer.invoke(CH.appPickFolder, defaultPath),
+    clipboardText: () => ipcRenderer.invoke(CH.appClipboardText),
   },
   stream: {
     status: () => ipcRenderer.invoke(CH.streamStatus),
