@@ -13,6 +13,7 @@ import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
 import type { MediaSignal, MediaSignalling } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
+import { describeVrEvidence, type VrObservation } from '../witness/vr-detect.js';
 
 export const DEFAULT_MATCH_PORT = 27401;
 export const ZERO_SHA256 = '0'.repeat(64);
@@ -169,6 +170,32 @@ export function gameFingerprintFrom(status: WitnessStatus, recipeVersion: string
 
 export function rigFrom(status: WitnessStatus): 'vr_headset' | 'pc' {
   return status.currentAttestation?.vr?.inVr === true ? 'vr_headset' : 'pc';
+}
+
+export type Rig = 'vr_headset' | 'pc';
+
+/** The match host's rig decision and the evidence behind it (the log line and the Match tab say both). */
+export interface RigDecision {
+  rig: Rig;
+  reason: string;
+}
+
+/**
+ * A6 (2026-10-31): the rig at host / join. The running VPX process is probed now when there is one: the witness's
+ * attestation can hold a sample taken before the player started (the owner's first alpha match opened the desktop
+ * panel in VR because of exactly that). With no VPX open, or no answer, the witness's last sample decides.
+ */
+export async function decideRig(w: { status(): WitnessStatus; sampleVr(): Promise<VrObservation | null> }): Promise<RigDecision> {
+  const now = await w.sampleVr().catch(() => null);
+  if (now) return { rig: now.inVr ? 'vr_headset' : 'pc', reason: `VPX probed now: ${describeVrEvidence(now)}` };
+  return rigFromStatus(w.status());
+}
+
+/** The decision from the witness's last sample alone (no VPX to probe, or a later status change). */
+export function rigFromStatus(status: WitnessStatus): RigDecision {
+  const vr = status.currentAttestation?.vr;
+  if (!vr) return { rig: 'pc', reason: 'no VPX table open to probe; monitor assumed' };
+  return { rig: rigFrom(status), reason: `the witness's sample at ${vr.sampledAt}: ${describeVrEvidence(vr)}` };
 }
 
 /** Where the hook looks (vpx-hook/castcade.vbs: %LOCALAPPDATA%, else %TEMP%, else C:\Castcade; then \Castcade\lock). */

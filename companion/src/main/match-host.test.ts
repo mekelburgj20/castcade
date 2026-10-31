@@ -33,6 +33,7 @@ const logger: Logger = { info: () => undefined, warn: () => undefined, error: ()
 function witness(sha: string): WitnessHost {
   return {
     status: () => ({ paired: false, currentTable: 'Monster Bash', currentIdentity: { sha256: sha, tableInfo: null }, currentAttestation: null }),
+    sampleVr: async () => null,
     onEvent: () => () => undefined,
     onStatus: () => () => undefined,
   } as unknown as WitnessHost;
@@ -153,5 +154,157 @@ describe('match host (A6)', () => {
     seen.length = 0;
     (onMics as (() => void) | null)?.();
     expect(seen).toEqual([1]);
+  });
+});
+
+// ---- A6 (2026-10-31): the rig decision at host / join, and the late switch into the headset ----
+
+type MediaOpt = NonNullable<Parameters<typeof createMatchHost>[0]['media']>;
+type OverlayOpt = NonNullable<Parameters<typeof createMatchHost>[0]['vrOverlay']>;
+type WStatus = ReturnType<WitnessHost['status']>;
+
+const VR_ON = { inVr: true, runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:47.000Z' };
+const VR_OFF = { inVr: false, runtimeLoaded: false, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:40.000Z' };
+
+/** A witness whose status the test changes and announces, and whose live probe answers `live`. */
+function liveWitness(live: typeof VR_ON | null, vr: typeof VR_ON | null = VR_OFF) {
+  const listeners = new Set<(s: WStatus) => void>();
+  let attestation: { vr: typeof VR_ON | null } | null = vr ? { vr } : null;
+  const status = (): WStatus => ({ paired: false, currentTable: 'Monster Bash', currentIdentity: { sha256: 'ab'.repeat(32), tableInfo: null }, currentAttestation: attestation }) as unknown as WStatus;
+  const w = {
+    status,
+    sampleVr: async () => live,
+    onEvent: () => () => undefined,
+    onStatus: (cb: (s: WStatus) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  } as unknown as WitnessHost;
+  return {
+    w,
+    /** The witness re-sampled (table_loaded) and emitted its status. */
+    setVr(next: typeof VR_ON | null) {
+      attestation = { vr: next };
+      for (const l of listeners) l(status());
+    },
+  };
+}
+
+/** `RtcHost` as the match host sees it: records calls; frames only from an offscreen (VR) panel. */
+function fakeMedia() {
+  const calls: string[] = [];
+  let vr = false;
+  let attached = false;
+  const source = { onFrame: () => () => undefined };
+  const media = {
+    async attach(_sig: unknown, peers: string[]) {
+      attached = true;
+      calls.push(`attach ${vr ? 'vr' : 'desktop'} ${peers.length}`);
+    },
+    addPeer: () => undefined,
+    removePeer: () => undefined,
+    setSending: () => undefined,
+    setPanelState: () => undefined,
+    setMuted: () => undefined,
+    status: () => ({ attached, sending: false, peers: {}, mic: 'open', captureSource: null, lastError: null }),
+    onStatus: () => () => undefined,
+    frames: () => (attached && vr ? source : null),
+    showPanel: () => {
+      if (!vr) calls.push('showPanel');
+    },
+    async detach() {
+      attached = false;
+      calls.push('detach');
+    },
+    async setVr(on: boolean) {
+      calls.push(`setVr ${on}`);
+      // As RtcHost: VR -> desktop while attached is ignored.
+      if (attached && !on) return;
+      vr = on;
+    },
+  };
+  return { media: media as unknown as MediaOpt, calls, source };
+}
+
+function fakeOverlay() {
+  const started: unknown[] = [];
+  let state: 'stopped' | 'showing' = 'stopped';
+  const overlay = {
+    async start(src: unknown) {
+      started.push(src);
+      state = 'showing';
+      return { state, reason: null };
+    },
+    async stop() {
+      state = 'stopped';
+    },
+    status: () => ({ state, reason: null }),
+    onStatus: () => () => undefined,
+  };
+  return { overlay: overlay as unknown as OverlayOpt, started };
+}
+
+describe('match host: the rig (A6, 2026-10-31)', () => {
+  const port = (): number => 43000 + Math.floor(Math.random() * 2000);
+  const logLines = (): { log: Logger; lines: string[] } => {
+    const lines: string[] = [];
+    const push = (l: string): number => lines.push(l);
+    return { log: { info: push, warn: push, error: push, file: '' } as unknown as Logger, lines };
+  };
+
+  it('host: the running VPX probed now says VR → offscreen panel and the overlay at once, whatever the stale attestation said', async () => {
+    const wit = liveWitness(VR_ON, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const { log, lines } = logLines();
+    const H = make('vr', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
+    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(m.calls).toEqual(['setVr true', 'attach vr 0']);
+    expect(o.started).toEqual([m.source]);
+    expect(st).toMatchObject({ rig: 'vr_headset', rigReason: 'VPX probed now: vrclient loaded, compositor running', vrOverlay: { state: 'showing' } });
+    expect(st.participants[0]?.rig).toBe('vr_headset');
+    expect(lines).toContain('match: rig vr_headset (VPX probed now: vrclient loaded, compositor running)');
+  });
+
+  it('host on the monitor reading, then the witness reads VR (table_loaded): the panel moves into the headset and the overlay starts; the reverse is ignored', async () => {
+    const wit = liveWitness(null, VR_OFF);
+    const m = fakeMedia();
+    const o = fakeOverlay();
+    const { log, lines } = logLines();
+    const H = make('late', 'ab'.repeat(32), { witness: wit.w, media: m.media, vrOverlay: o.overlay, log });
+    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(st).toMatchObject({ rig: 'pc', rigReason: "the witness's sample at 2026-10-31T06:07:40.000Z: vrclient not loaded, compositor running" });
+    expect(m.calls).toEqual(['setVr false', 'attach desktop 0', 'showPanel']);
+    expect(o.started).toEqual([]);
+
+    const seen: string[] = [];
+    H.mh.onStatus((s) => seen.push(s.rig));
+    wit.setVr(VR_ON);
+    await until(() => o.started.length === 1);
+    expect(m.calls.slice(3)).toEqual(['setVr true']);
+    expect(o.started).toEqual([m.source]);
+    expect(H.mh.status()).toMatchObject({ rig: 'vr_headset', vrOverlay: { state: 'showing' } });
+    expect(H.mh.status().rigReason).toMatch(/^switched after hosting: the witness's sample at .*: vrclient loaded, compositor running$/);
+    expect(seen).toContain('vr_headset');
+    expect(lines.some((l) => l.startsWith('match: rig vr_headset (switched after hosting'))).toBe(true);
+
+    // A second VR status: nothing more. VR -> monitor: logged once, the headset panel stays.
+    wit.setVr(VR_ON);
+    wit.setVr(VR_OFF);
+    wit.setVr(VR_OFF);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(o.started).toHaveLength(1);
+    expect(m.calls.slice(3)).toEqual(['setVr true']);
+    expect(H.mh.status().rig).toBe('vr_headset');
+    expect(lines.filter((l) => l.includes('the panel stays in the headset'))).toHaveLength(1);
+  });
+
+  it('no VPX open and no sample: the monitor, said so; no match shows the witness reading', async () => {
+    const wit = liveWitness(null, null);
+    const m = fakeMedia();
+    const H = make('none', 'ab'.repeat(32), { witness: wit.w, media: m.media });
+    expect(H.mh.status()).toMatchObject({ rig: 'pc', rigReason: 'no match; decided again when you host or join (no VPX table open to probe; monitor assumed)' });
+    const st = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(st).toMatchObject({ rig: 'pc', rigReason: 'no VPX table open to probe; monitor assumed' });
   });
 });

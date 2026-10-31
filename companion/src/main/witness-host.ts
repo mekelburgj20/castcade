@@ -7,6 +7,7 @@
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS } from '../witness/index.js';
 import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent } from '../witness/journal-detector.js';
+import type { VrObservation } from '../witness/vr-detect.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
 import { describeError } from './log.js';
@@ -30,6 +31,8 @@ export interface WitnessHost {
   onNotice(listener: (notice: WitnessNotice) => void): () => void;
   /** D1.1: the game on screen (live mode), for the OBS overlay. */
   liveGame(): LiveGame | null;
+  /** A6 (2026-10-31): VR probed on the running VPX process now (null: no VPX open, or no answer). For the match rig. */
+  sampleVr(): Promise<VrObservation | null>;
   onGame(listener: (game: LiveGame | null) => void): () => void;
   /** D1.2: every capture (posted, queued, skipped), so a recording can tie the score to its segment. */
   onCapture(listener: (capture: LastCapture) => void): () => void;
@@ -188,6 +191,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       };
     },
     liveGame: () => witness.liveGame(),
+    sampleVr: () => witness.sampleVr(),
     onGame(listener) {
       gameListeners.add(listener);
       return () => {

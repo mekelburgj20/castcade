@@ -1023,6 +1023,69 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.notices).toHaveLength(1);
   });
 
+  it('A6 (2026-10-31): VR is sampled again at table_loaded (the player started), and the attestation and status follow it', async () => {
+    // The owner's rig: the table-known sample read "monitor" (OpenVR not up yet), the game then ran in the headset.
+    const answers = [
+      { inVr: false, runtimeLoaded: false, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:40.000Z' },
+      { inVr: true, runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:47.000Z' },
+    ];
+    const sampled: number[] = [];
+    const logs: string[] = [];
+    const h = harness({}, {
+      journalDir: '/journal',
+      journalPollMs: 250,
+      log: (l) => logs.push(l),
+      vrProbe: {
+        sample: async (pid) => {
+          sampled.push(pid);
+          return answers[Math.min(sampled.length - 1, answers.length - 1)]!;
+        },
+      },
+    });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    await h.flush();
+    expect(sampled).toEqual([31]);
+    expect(h.witness.status().currentAttestation?.vr).toMatchObject({ inVr: false });
+
+    const before = h.statuses.length;
+    h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","recipe_version":"${RECIPE_VERSION}","rom":"tftc_400","lib":"0.4.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+    await h.poll();
+    await h.flush();
+    expect(sampled).toEqual([31, 31]);
+    expect(h.witness.status().currentAttestation?.vr).toMatchObject({ inVr: true, runtimeLoaded: true });
+    // The status listeners (the match host) heard it.
+    expect(h.statuses.slice(before).some((s) => s.currentAttestation?.vr?.inVr === true)).toBe(true);
+    expect(logs.filter((l) => l.startsWith('witness: play device'))).toEqual(['witness: play device vr_headset (vrclient loaded, compositor running)']);
+
+    // The match host's own probe of the running process.
+    await expect(h.witness.sampleVr()).resolves.toMatchObject({ inVr: true });
+    expect(sampled).toEqual([31, 31, 31]);
+  });
+
+  it('A6 (2026-10-31): an unchanged answer at table_loaded logs nothing; sampleVr is null with no VPX open', async () => {
+    const logs: string[] = [];
+    const h = harness({}, {
+      journalDir: '/journal',
+      journalPollMs: 250,
+      log: (l) => logs.push(l),
+      vrProbe: { sample: async () => ({ inVr: true, runtimeLoaded: true, compositorRunning: true, vrCapableBuild: true, sampledAt: '2026-10-31T06:07:40.000Z' }) },
+    });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.witness.start();
+    await expect(h.witness.sampleVr()).resolves.toBeNull();
+    await h.launch(TFTC_CMD, 31);
+    await h.flush();
+    h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","recipe_version":"${RECIPE_VERSION}","rom":"tftc_400","lib":"0.4.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+    await h.poll();
+    await h.flush();
+    expect(h.witness.status().currentAttestation?.vr).toMatchObject({ inVr: true });
+    expect(logs.filter((l) => l.startsWith('witness: play device'))).toEqual([]);
+  });
+
   it('B15: a table on the current patch shows no note', async () => {
     const h = liveHarness();
     await h.witness.start();

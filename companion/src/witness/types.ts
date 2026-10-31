@@ -9,6 +9,7 @@ import type { Attestation } from './attestation-types.js';
 import type { TableIdentity } from './identity-types.js';
 import type { ScoreTournament } from './arcaid-client.js';
 import type { GameEvent } from './journal-detector.js';
+import type { VrObservation } from './vr-detect.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
 export type {
@@ -219,5 +220,10 @@ export interface Witness {
   status(): WitnessStatus;
   /** D1.1: the game on screen right now (live mode), or null. */
   liveGame(): LiveGame | null;
+  /**
+   * A6 (2026-10-31): probe the running VPX process for VR now (the match host decides the rig at host / join with
+   * it). Null when no VPX process is open or the probe did not answer. Does not change the attestation.
+   */
+  sampleVr(): Promise<VrObservation | null>;
   on<K extends keyof WitnessEvents>(event: K, listener: WitnessEvents[K]): () => void;
 }

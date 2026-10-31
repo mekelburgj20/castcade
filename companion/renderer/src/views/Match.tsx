@@ -221,6 +221,9 @@ export function Match({ state }: { state: CastcadeState }) {
 
           <div className="card">
             <p className="muted">{mediaLine(st.media)}</p>
+            <p className="muted" title={st.rigReason}>
+              {rigLine(st)} <small>{st.rigReason}</small>
+            </p>
             <p className="muted">{overlayLine(st.vrOverlay)}</p>
           </div>
         </>
@@ -298,6 +301,13 @@ function mediaLine(m: MatchStatus['media']): string {
   if (!m.attached) return `Video and voice: not connected${m.lastError ? ` (${m.lastError})` : ''}.`;
   const peers = Object.entries(m.peers).map(([id, p]) => `${id} ${p.ice}`);
   return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
+}
+
+/** A6 (2026-10-31): the panel's place as the match host decided it, so the player sees it without the log. */
+function rigLine(st: MatchStatus): string {
+  if (st.rig === 'pc') return 'Rig: monitor (desktop panel).';
+  const o = st.vrOverlay;
+  return `Rig: VR headset (overlay: ${o ? `${o.state}${o.reason ? `, ${o.reason}` : ''}` : 'no helper in this build'}).`;
 }
 
 function overlayLine(o: MatchStatus['vrOverlay']): string {

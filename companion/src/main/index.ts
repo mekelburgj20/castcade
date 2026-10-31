@@ -36,7 +36,7 @@ import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../me
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
-import { matchSignalling, rigFrom } from './match-setup.js';
+import { matchSignalling } from './match-setup.js';
 import type { VrOverlay } from '../media/match-media-types.js';
 import { createMediaSettingsStore } from '../media/media-settings.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
@@ -382,7 +382,7 @@ async function main(): Promise<void> {
     matchMedia = createRtcHost({
       userData,
       log: logger,
-      vr: () => rigFrom(host.status()) === 'vr_headset',
+      // The panel's kind (desktop or headset) is the match host's decision at host / join (A6, 2026-10-31): `setVr`.
       probe: () => probeWindows(),
       settings: mediaSettings,
     });

@@ -69,7 +69,7 @@ import { adjustmentsReport, decodeAdjustments, describeAdjustments } from './adj
 import { adjustmentsWire, buildWire, iniWire, type Attestation, describeEngine, engineWire } from './attestation-types.js';
 import { describeScorePlausibility, ROM_SCORE_STEP, ScoreTrack, scorePlausibilityWire, type ScorePlausibility } from './score-plausibility.js';
 import { createBuildAttester, describeBuild, vpmCheatFlag } from './build-attestation.js';
-import { NO_VR_PROBE, createPowershellVrProbe, describeVr, playDeviceFor, type VrProbe } from './vr-detect.js';
+import { NO_VR_PROBE, createPowershellVrProbe, describeVr, describeVrEvidence, playDeviceFor, type VrObservation, type VrProbe } from './vr-detect.js';
 import { createIdentityResolver } from './identity-resolver.js';
 import { createIdentityStore } from './identity-store.js';
 import { attemptKey, createPostedGames, postedGameKey } from './posted-games.js';
@@ -704,6 +704,21 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     };
   };
 
+  /**
+   * A6 (2026-10-31): sample VR again when the player has started (`table_loaded`: the hook runs inside the player,
+   * so OpenVR is up by then). The table-known sample can predate it: on the owner's rig the table was known from the
+   * editor's title, the sample said "monitor", and the match host opened the desktop panel while the game ran in the
+   * headset. Updates the attestation the score and the match host read; the caller emits the status.
+   */
+  const resampleVrAtLoad = async (session: OpenSession): Promise<void> => {
+    const vr = await vrProbe.sample(session.launch.pid).catch(() => null);
+    // No answer keeps the earlier sample; no attestation yet means `measureAttestation` runs next and samples itself.
+    if (!vr || !session.attestation) return;
+    const before = session.attestation.vr;
+    session.attestation = { ...session.attestation, vr };
+    if (!before || before.inVr !== vr.inVr) log(`witness: play device ${playDeviceFor(vr)} (${describeVrEvidence(vr)})`);
+  };
+
   // ------------------------------------------------------------------------------ identity --
 
   /**
@@ -1314,6 +1329,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           log(`witness: ${live.tableId}: live score can't be read on this machine (ROM ${ev.rom}, ${support.reason}); at most one score posts, at close`);
         }
       }
+      await resampleVrAtLoad(session);
       setGame({ table: live.tableId, inGame: false, scores: [], player: null, ball: null });
       refreshTableStatus();
       emitStatus();
@@ -1737,6 +1753,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
     liveGame() {
       return liveGame;
+    },
+
+    // A6 (2026-10-31): the match host's fresh rig decision at host / join. Read-only: the attestation keeps its own samples.
+    async sampleVr(): Promise<VrObservation | null> {
+      const session = activeSession();
+      if (!session) return null;
+      return vrProbe.sample(session.launch.pid).catch(() => null);
     },
 
     status() {

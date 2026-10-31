@@ -9,8 +9,10 @@
  * compositor (`vrcompositor.exe`) runs beside it. Both together read as "in VR"; either alone does
  * not (a VR build on a monitor, or SteamVR left open while VPX ran flat).
  *
- * Sampled once the table is known (VR is initialised before the table loads) and again at capture
- * while the process is still there. Sent to ArcAid as `play_device=vr_headset` (ArcAid 2.166.0),
+ * Sampled once the table is known, again when the hook reports `table_loaded` (the player has started,
+ * so OpenVR is up: A6, 2026-10-31, the table-known sample on the owner's rig came from the editor and
+ * read "monitor" while the game ran in the headset), and again at capture while the process is still
+ * there. Sent to ArcAid as `play_device=vr_headset` (ArcAid 2.166.0),
  * which puts the VR headset badge on the score instead of PC. Evidence, same trust as the rest of
  * what the companion reports.
  */
@@ -99,6 +101,15 @@ export function describeVr(vr: VrObservation): string {
   if (vr.inVr) return 'played in a VR headset';
   if (vr.runtimeLoaded) return 'played on the monitor (OpenVR loaded, no SteamVR compositor)';
   return 'played on the monitor';
+}
+
+/**
+ * The two facts behind the decision, for the log and the Match tab's rig line ("vrclient loaded, compositor
+ * running"). A6 (2026-10-31): the owner's first alpha match picked the desktop panel in VR, and the log could not
+ * say why; this wording names which half of the evidence was missing.
+ */
+export function describeVrEvidence(vr: VrObservation): string {
+  return `vrclient ${vr.runtimeLoaded ? 'loaded' : 'not loaded'}, compositor ${vr.compositorRunning ? 'running' : 'not running'}`;
 }
 
 type ExecFileLike = (

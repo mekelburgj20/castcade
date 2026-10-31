@@ -27,6 +27,7 @@ import { describeError } from './log.js';
 import {
   cleanName,
   cleanPort,
+  decideRig,
   formatInvite,
   gameFingerprintFrom,
   isIpv4,
@@ -39,10 +40,13 @@ import {
   pickLanAddress,
   readMatchSettings,
   rigFrom,
+  rigFromStatus,
   serializeMatchIdentity,
   writeMatchSettings,
   type MatchIdentity,
   type MatchSettings,
+  type Rig,
+  type RigDecision,
 } from './match-setup.js';
 import type { WitnessHost } from './witness-host.js';
 
@@ -64,6 +68,12 @@ export interface MatchStatus {
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
+  /**
+   * A6 (2026-10-31): where this rig's panel goes, decided at host / join (and switched to the headset when the witness
+   * later reads VR), with the evidence. With no match, the witness's last sample. The Match tab shows both.
+   */
+  rig: Rig;
+  rigReason: string;
   /** The microphones the panel page lists (empty until a match opens the panel), the saved choice and the mute. */
   microphones: MicDevice[];
   /** Null: the Windows default device. */
@@ -97,8 +107,8 @@ export interface MatchHostOptions {
   witness: WitnessHost;
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
-  /** `RtcHost` (D2) in the app; the microphone picker is optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone'>>;
+  /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   vrOverlay?: VrOverlay;
@@ -112,6 +122,8 @@ export interface MatchHostOptions {
   lockFile?: string;
   /** Test seam: the address the host listens on. Default `0.0.0.0` (the other player comes in through the router). */
   listenAddress?: string;
+  /** Test seam: the rig decision at host / join. Default `decideRig(witness)`: the running VPX probed now (A6, 2026-10-31). */
+  rig?: () => Promise<RigDecision>;
 }
 
 const CUE_CHANNEL = 'castcade-cue:play';
@@ -131,6 +143,13 @@ interface Active {
   invite: string | null;
   ipSource: 'public' | 'lan' | null;
   overlayStarted: boolean;
+  /** A6 (2026-10-31): the rig decided at host / join; `pc` turns into `vr_headset` when the witness reads VR later. */
+  rig: Rig;
+  rigReason: string;
+  /** The witness's own reading at the last status, so a VR -> monitor change is logged once, not at every status. */
+  witnessRig: Rig;
+  /** A switch to the headset is under way (status events keep coming meanwhile). */
+  switching: boolean;
   offs: (() => void)[];
 }
 
@@ -231,6 +250,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
 
   // ---- status ----
+  const idleRig = (): RigDecision => {
+    const d = rigFromStatus(witness.status());
+    return { rig: d.rig, reason: `no match; decided again when you host or join (${d.reason})` };
+  };
+  /** `RigDecision` names it `reason`; the status calls it `rigReason`. */
+  const rigOf = (d: RigDecision): { rig: Rig; rigReason: string } => ({ rig: d.rig, rigReason: d.reason });
   const status = (): MatchStatus => {
     const a = active;
     const c: ControllerStatus | null = a ? a.controller.status() : null;
@@ -254,6 +279,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
       vrOverlay: a && opts.vrOverlay ? opts.vrOverlay.status() : null,
+      ...(a ? { rig: a.rig, rigReason: a.rigReason } : rigOf(idleRig())),
       microphones: opts.media?.microphones?.() ?? [],
       micDeviceId: opts.mediaSettings?.get().micDeviceId ?? null,
       muted: opts.mediaSettings?.get().muted ?? false,
@@ -283,9 +309,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   });
   opts.media?.onMicrophones?.(() => emit());
   witness.onEvent((ev) => active?.controller.feed(ev));
-  // The VR observation is sampled when a table opens: a player who hosted before opening it gets the overlay then.
+  // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
+  // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
+  // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored.
   witness.onStatus((s) => {
-    if (active && !active.overlayStarted && opts.vrOverlay && opts.media?.frames() && rigFrom(s) === 'vr_headset') void startOverlay(active);
+    const a = active;
+    if (!a) return;
+    const now = rigFrom(s);
+    const was = a.witnessRig;
+    a.witnessRig = now;
+    if (now === 'vr_headset') {
+      if (a.rig === 'pc') void switchToVr(a, rigFromStatus(s).reason);
+      else if (!a.overlayStarted && !a.switching && opts.vrOverlay && opts.media?.frames()) void startOverlay(a);
+    } else if (was === 'vr_headset' && a.rig === 'vr_headset') {
+      log.info('match: the witness reads the monitor now; the panel stays in the headset for this match');
+    }
   });
 
   const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number): MatchController => {
@@ -310,7 +348,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const { media, vrOverlay } = opts;
     const frames = media?.frames() ?? null;
     if (!vrOverlay || !frames) {
-      if (rigFrom(witness.status()) === 'vr_headset') log.info(`match: in VR but ${vrOverlay ? 'the panel has no frames yet' : 'no overlay helper'}; showing the desktop panel`);
+      if (a.rig === 'vr_headset') log.info(`match: in VR but ${vrOverlay ? 'the panel has no frames yet' : 'no overlay helper'}; showing the desktop panel`);
       media?.showPanel();
       return;
     }
@@ -324,18 +362,45 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     emit();
   };
 
-  /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts. */
+  /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts, of the kind decided then. */
   const openPanel = async (a: Active): Promise<void> => {
+    await opts.media?.setVr?.(a.rig === 'vr_headset');
     await a.controller.open();
-    if (rigFrom(witness.status()) === 'vr_headset') await startOverlay(a);
+    if (a.rig === 'vr_headset') await startOverlay(a);
     else opts.media?.showPanel();
   };
 
-  const participant = (id: string, name: string): ParticipantInfo => ({
+  /** A6 (2026-10-31): the desktop panel moves into the headset when the witness reads VR after host / join. */
+  const switchToVr = async (a: Active, why: string): Promise<void> => {
+    if (a.switching || a.rig === 'vr_headset') return;
+    a.switching = true;
+    a.rig = 'vr_headset';
+    a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${why}`;
+    log.info(`match: rig vr_headset (${a.rigReason})`);
+    emit();
+    try {
+      await opts.media?.setVr?.(true);
+    } catch (e) {
+      log.warn(`match: the panel did not move into the headset: ${describeError(e)}`);
+    }
+    a.switching = false;
+    if (active !== a) return;
+    await startOverlay(a);
+    emit();
+  };
+
+  /** The rig at host / join, logged with its evidence; a failing probe never stops a match (the monitor is assumed). */
+  const decide = async (): Promise<RigDecision> => {
+    const d = await (opts.rig ?? (() => decideRig(witness)))().catch((e: unknown): RigDecision => ({ rig: 'pc', reason: `the VR probe failed (${describeError(e)}); monitor assumed` }));
+    log.info(`match: rig ${d.rig} (${d.reason})`);
+    return d;
+  };
+
+  const participant = (id: string, name: string, rig: Rig): ParticipantInfo => ({
     playerId: id,
     displayName: name,
     publicKey: matchIdentity().keys.publicKeyB64,
-    rig: rigFrom(witness.status()),
+    rig,
   });
 
   const guard = async (fn: () => Promise<MatchStatus>): Promise<MatchStatus> => {
@@ -358,6 +423,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const name = cleanName(o.displayName) ?? defaultName();
       saveSettings(patchMatchSettings(settings, { port, ballsPerGame, displayName: name }));
       const me = playerId();
+      const rig = await decide();
       const transport = new WsPeerTransport({ localId: me });
       try {
         await transport.listen(port, opts.listenAddress ?? '0.0.0.0');
@@ -372,14 +438,28 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         keys: matchIdentity().keys,
         matchId: code,
         ballsPerGame,
-        hostParticipant: participant(me, name),
+        hostParticipant: participant(me, name, rig.rig),
         hostGame: gameFingerprintFrom(witness.status(), RECIPE_VERSION),
         // §3: a different table file is shown on both panels, never refused (the client learns it from HELLO_ACK).
         fingerprintPolicy: 'advise',
         companionVersion: opts.appVersion.slice(0, 32),
       });
       const controller = makeController(engine, ballsPerGame);
-      const a: Active = { role: 'host', transport, engine, controller, code, port, invite: null, ipSource: null, overlayStarted: false, offs: [] };
+      const a: Active = {
+        role: 'host',
+        transport,
+        engine,
+        controller,
+        code,
+        port,
+        invite: null,
+        ipSource: null,
+        overlayStarted: false,
+        ...rigOf(rig),
+        witnessRig: rigFrom(witness.status()),
+        switching: false,
+        offs: [],
+      };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
       active = a;
       const pub = await (opts.publicIp ?? ipifyPublicIp)().catch(() => null);
@@ -394,9 +474,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   type JoinOutcome = { kind: 'joined'; transport: WsPeerTransport; engine: ClientMatch; controller: MatchController } | { kind: 'refused'; refuse: PayloadOf<'REFUSE'> };
 
-  const tryJoin = async (url: string, code: string, me: string, name: string, game: ReturnType<typeof gameFingerprintFrom>): Promise<JoinOutcome> => {
+  const tryJoin = async (url: string, code: string, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>): Promise<JoinOutcome> => {
     const transport = new WsPeerTransport({ localId: me });
-    const engine = new ClientMatch({ transport, keys: matchIdentity().keys, participant: participant(me, name), game, throwdownCode: code, companionVersion: opts.appVersion.slice(0, 32) });
+    const engine = new ClientMatch({ transport, keys: matchIdentity().keys, participant: participant(me, name, rig), game, throwdownCode: code, companionVersion: opts.appVersion.slice(0, 32) });
     // Built before HELLO so it sees HELLO_ACK's roster.
     const controller = makeController(engine);
     const offs: (() => void)[] = [];
@@ -442,11 +522,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       connecting = true;
       emit();
       try {
-        const out = await tryJoin(parsed.url, parsed.code, me, name, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
+        const rig = await decide();
+        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, gameFingerprintFrom(witness.status(), RECIPE_VERSION));
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
-        const a: Active = { role: 'client', transport: out.transport, engine: out.engine, controller: out.controller, code: parsed.code, port: parsed.port, invite: null, ipSource: null, overlayStarted: false, offs: [] };
+        const a: Active = {
+          role: 'client',
+          transport: out.transport,
+          engine: out.engine,
+          controller: out.controller,
+          code: parsed.code,
+          port: parsed.port,
+          invite: null,
+          ipSource: null,
+          overlayStarted: false,
+          ...rigOf(rig),
+          witnessRig: rigFrom(witness.status()),
+          switching: false,
+          offs: [],
+        };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
         active = a;
         connecting = false;

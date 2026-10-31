@@ -207,7 +207,8 @@ describe('createRtcHost (D2)', () => {
   it('VR: an offscreen window at 20 fps; attach first, then what was said before the page was ready; signals both ways', async () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
     const probe = async (): Promise<WindowProbe> => ({ outputs: [], windows });
-    const host = createRtcHost({ userData: dir, log, vr: () => true, probe, settings: store({ micDeviceId: 'headset' }) });
+    const host = createRtcHost({ userData: dir, log, probe, settings: store({ micDeviceId: 'headset' }) });
+    await host.setVr(true);
     const net = signalling('owner');
     const statuses: MediaStatus[] = [];
     host.onStatus((s) => statuses.push(s));
@@ -288,7 +289,7 @@ describe('createRtcHost (D2)', () => {
 
   it('desktop: always-on-top window shown without focus, closing hides it; no VPX window yet → lastError, found again at my turn', async () => {
     let windows: VpxWindow[] = [EDITOR];
-    const host = createRtcHost({ userData: dir, log, vr: () => false, probe: async () => ({ outputs: [], windows }), settings: store() });
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows }), settings: store() });
     const net = signalling('krobs');
     await host.attach(net.sig, ['owner']);
     const w = fake.FakeWindow.all[0]!;
@@ -327,18 +328,19 @@ describe('createRtcHost (D2)', () => {
     const host = createRtcHost({
       userData: dir,
       log,
-      vr: () => true,
       probe: async () => {
         throw new Error('powershell missing');
       },
       settings: store(),
     });
+    await host.setVr(true);
     await expect(host.attach(signalling('owner').sig, ['krobs'])).resolves.toBeUndefined();
     expect(host.status()).toMatchObject({ attached: true, lastError: 'the VPX window could not be found (powershell missing)' });
     await host.detach();
 
     fake.sources.list = [];
-    const host2 = createRtcHost({ userData: dir, log, vr: () => true, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    const host2 = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host2.setVr(true);
     await host2.attach(signalling('owner').sig, ['krobs']);
     expect(host2.status().lastError).toBe('the window "Visual Pinball Player" is not offered for capture');
     // a second attach replaces the first window
@@ -346,5 +348,61 @@ describe('createRtcHost (D2)', () => {
     expect(fake.FakeWindow.all.filter((x) => !x.destroyed)).toHaveLength(1);
     await host2.detach();
     expect(logs.some((l) => l.includes('v=0'))).toBe(false); // SDP never logged
+  });
+  it('A6 (2026-10-31): a late VR decision moves the desktop panel offscreen with the peers, panel state, sending, mic and mute; frames() then has a source', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store({ micDeviceId: 'headset', muted: true }) });
+    const net = signalling('owner');
+    await host.attach(net.sig, ['krobs']);
+    const desk = fake.FakeWindow.all[0]!;
+    expect(desk.opts).toMatchObject({ alwaysOnTop: true, webPreferences: { offscreen: false } });
+    expect(host.frames()).toBeNull();
+    fromPage(desk, PANEL_CHANNELS.ready);
+    const state = { playerUp: 'owner', myTurn: true, ball: 2, ballsPerGame: 3, players: [], phase: 'playing' as const, result: null, message: null, mic: 'muted' as const };
+    host.setPanelState(state);
+    host.addPeer('third');
+    host.removePeer('krobs');
+    host.addPeer('fourth');
+    host.setSending(true);
+
+    await host.setVr(true);
+    expect(desk.destroyed).toBe(true);
+    const vrWin = fake.FakeWindow.all[1]!;
+    expect(vrWin.opts).toMatchObject({ show: false, width: 960, height: 640, webPreferences: { offscreen: true } });
+    expect(readFileSync(join(dir, 'match-panel.html'), 'utf8')).toContain('<body class="vr">');
+    expect(host.frames()).not.toBeNull();
+    host.showPanel();
+    expect(vrWin.shown).toBe(0); // the overlay helper shows it
+    // Still attached the whole time: the controller never saw a detach.
+    expect(host.status()).toMatchObject({ attached: true, sending: true });
+    expect(logs.filter((l) => l === 'media: detached')).toEqual([]);
+
+    // The new page gets the current peers, sending and the saved mic / mute, then the last panel state.
+    fromPage(vrWin, PANEL_CHANNELS.ready);
+    expect(vrWin.webContents.sent[0]).toEqual([
+      PANEL_CHANNELS.attach,
+      expect.objectContaining({ localId: 'owner', peers: ['third', 'fourth'], micDeviceId: 'headset', muted: true, sending: true }),
+    ]);
+    expect(vrWin.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.state, state]]);
+    // Signals still reach the (new) page; frames reach the overlay.
+    net.deliver('third', { kind: 'offer', sdp: 'v=0 third' });
+    expect(vrWin.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.signal, { from: 'third', signal: { kind: 'offer', sdp: 'v=0 third' } }]);
+    const frames: PanelFrame[] = [];
+    host.frames()?.onFrame((f) => frames.push(f));
+    vrWin.webContents.handlers.get('paint')?.({}, {}, { toBitmap: () => Buffer.alloc(960 * 640 * 4), getSize: () => ({ width: 960, height: 640 }) });
+    expect(frames).toHaveLength(1);
+
+    // VR -> desktop while attached is not supported: logged, the headset panel stays.
+    await host.setVr(false);
+    expect(fake.FakeWindow.all).toHaveLength(2);
+    expect(host.frames()).not.toBeNull();
+    expect(logs).toContain('media: the rig reads the monitor now; the panel stays in the headset until the match ends');
+
+    // detach closes whichever window exists; the next attach opens the kind decided last (the monitor).
+    await host.detach();
+    expect(vrWin.destroyed).toBe(true);
+    expect(host.frames()).toBeNull();
+    await host.attach(net.sig, ['krobs']);
+    expect(fake.FakeWindow.all[2]?.opts).toMatchObject({ alwaysOnTop: true });
+    await host.detach();
   });
 });

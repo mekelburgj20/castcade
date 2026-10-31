@@ -48,7 +48,11 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **Keys**: one Ed25519 pair per companion, `<userData>/match-keys.json` (`match/keys.ts` export/import).
 - **Participant**: `playerId` = a stable per-install id (the pairing device id when paired, else a UUID stored with the
   keys); `displayName` = the pairing username (`WitnessSettings.username`), editable on the Match tab; `rig` =
-  `vr_headset` when the witness's VR observation says `inVr`, else `pc`.
+  `vr_headset` when the witness's VR observation says `inVr`, else `pc`. Built (A6 fix, 2026-10-31): decided at host /
+  join by probing the running VPX process now (the witness's attestation could hold a sample from before the player
+  started; the owner's first match got the desktop panel in VR that way), else the witness's last sample; the witness
+  also re-samples at `table_loaded`, and a match decided `pc` switches to the headset (panel re-attached offscreen,
+  overlay started) when that reads VR. The Match tab shows the decision and its evidence (`MatchStatus.rig`, `rigReason`).
 - **GameFingerprint** from the witness's current identity: `tableName`, `tableHash` = `TableIdentity.sha256` (zeros
   when unknown), `romName`, `romHash: null`, `physicsHash: null`, `recipeVersion` = the loaded recipe version. A
   client whose fingerprint differs from the host's is shown "different table file" on both panels (advisory).

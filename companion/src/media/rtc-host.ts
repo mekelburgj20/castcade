@@ -22,8 +22,6 @@ import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geomet
 export interface RtcHostOptions {
   userData: string;
   log: Pick<Logger, 'info' | 'warn'>;
-  /** Whether this rig plays in VR now (the witness's VR observation); read at each `attach`. */
-  vr: () => boolean;
   probe: () => Promise<WindowProbe>;
   settings: MediaSettingsStore;
 }
@@ -34,6 +32,14 @@ export interface RtcHost extends MatchMedia {
   onMicrophones(cb: (mics: MicDevice[]) => void): () => void;
   /** Saves the choice and, while attached, switches the live microphone (no renegotiation: the sender is kept). */
   setMicrophone(deviceId: string | null): void;
+  /**
+   * A6 (2026-10-31): the rig the match host decided (VR: an offscreen panel for the overlay helper; else a desktop
+   * window). Before `attach` it sets the next panel's kind. While attached on the desktop, `true` moves the panel
+   * offscreen: a new window, re-attached with the current peers, panel state, sending flag, microphone and mute
+   * (the peers renegotiate through the page's offer resend), so `frames()` has a source for the overlay once it
+   * resolves. VR → desktop while attached is not supported: logged and ignored until the match ends.
+   */
+  setVr(on: boolean): Promise<void>;
 }
 
 const PARTITION = 'castcade-panel';
@@ -162,6 +168,9 @@ const errText = (e: unknown): string => (e instanceof Error ? e.message : String
 export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const { log } = opts;
   let win: BrowserWindow | null = null;
+  /** The panel kind the match host decided (`setVr`): the next attach opens this. */
+  let wantVr = false;
+  /** The kind of the panel window open now. */
   let vr = false;
   let ready = false;
   let attached = false;
@@ -171,6 +180,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let signalling: MediaSignalling | null = null;
   let offSignal: (() => void) | null = null;
   let sending = false;
+  /** The peers the page holds (attach's list, then addPeer / removePeer), and the last panel state: a re-attach replays both. */
+  const peers = new Set<MatchPlayerId>();
+  let lastState: PanelState | null = null;
   let capture: PanelCapture | null = null;
   let captureSrc: DesktopCapturerSource | null = null;
   /** The panel window itself failed (it did not open, load or start, or its renderer died). */
@@ -344,7 +356,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     return done;
   };
 
-  const detach = async (): Promise<void> => {
+  const detach = async (quiet = false): Promise<void> => {
     generation++;
     offSignal?.();
     offSignal = null;
@@ -368,72 +380,92 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     captureSrc = null;
     page = null;
     sending = false;
+    peers.clear();
+    lastState = null;
     panelError = null;
     captureError = null;
-    if (was) log.info('media: detached');
+    if (was && !quiet) log.info('media: detached');
     emitStatus();
   };
 
-  return {
-    async attach(sig, peers) {
-      if (attached || win) await detach();
-      const gen = ++generation;
-      attached = true;
-      signalling = sig;
-      vr = opts.vr();
-      offSignal = sig.onSignal((from, signal) => toPage(PANEL_CHANNELS.signal, { from, signal }));
-      try {
-        const file = join(opts.userData, PAGE_FILE);
-        mkdirSync(opts.userData, { recursive: true });
-        writeFileSync(file, panelPageHtml({ vr }));
-        win = createWindow(vr);
-        void win.loadFile(file).catch((e: unknown) => {
-          if (gen === generation) setPanelError(`the match panel did not load (${errText(e)})`);
-        });
-        readyTimer = setTimeout(() => {
-          if (gen === generation && !ready) setPanelError('the match panel did not start; video and voice are off');
-        }, READY_TIMEOUT_MS);
-      } catch (e) {
-        setPanelError(`the match panel could not open (${errText(e)}); video and voice are off`);
-        return;
+  /** `restore`: what a re-attach (`setVr`) carries over, applied before the first await so newer calls win over it. */
+  const attach = async (sig: MediaSignalling, initialPeers: MatchPlayerId[], restore: { state: PanelState | null; sending: boolean } | null = null): Promise<void> => {
+    if (attached || win) await detach(restore !== null);
+    const gen = ++generation;
+    attached = true;
+    signalling = sig;
+    vr = wantVr;
+    for (const p of initialPeers) if (p !== sig.localId) peers.add(p);
+    if (restore) {
+      sending = restore.sending;
+      if (restore.state) {
+        lastState = restore.state;
+        toPage(PANEL_CHANNELS.state, restore.state);
       }
-      await pickCapture(gen);
-      if (gen !== generation) return;
-      const s = opts.settings.get();
-      attachMsg = { localId: sig.localId, peers: peers.filter((p) => p !== sig.localId), ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
-      log.info(`media: attach (${vr ? 'VR, offscreen panel' : 'desktop panel'}), ${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
-      flush();
-      emitStatus();
-    },
+    }
+    offSignal = sig.onSignal((from, signal) => toPage(PANEL_CHANNELS.signal, { from, signal }));
+    try {
+      const file = join(opts.userData, PAGE_FILE);
+      mkdirSync(opts.userData, { recursive: true });
+      writeFileSync(file, panelPageHtml({ vr }));
+      win = createWindow(vr);
+      void win.loadFile(file).catch((e: unknown) => {
+        if (gen === generation) setPanelError(`the match panel did not load (${errText(e)})`);
+      });
+      readyTimer = setTimeout(() => {
+        if (gen === generation && !ready) setPanelError('the match panel did not start; video and voice are off');
+      }, READY_TIMEOUT_MS);
+    } catch (e) {
+      setPanelError(`the match panel could not open (${errText(e)}); video and voice are off`);
+      return;
+    }
+    await pickCapture(gen);
+    if (gen !== generation) return;
+    const s = opts.settings.get();
+    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
+    log.info(`media: attach (${vr ? 'VR, offscreen panel' : 'desktop panel'}), ${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
+    flush();
+    emitStatus();
+  };
+
+  const setSending = (on: boolean): void => {
+    if (sending === on) return;
+    sending = on;
+    if (attachMsg && !attachSent) attachMsg.sending = on;
+    toPage(PANEL_CHANNELS.sending, on);
+    // VPX may not have been up at attach: look again when this rig's turn starts.
+    if (on && attached && !capture) {
+      const gen = generation;
+      void pickCapture(gen).then(() => {
+        if (gen !== generation || !capture) return;
+        log.info(`media: capture ${capture.label}`);
+        toPage(PANEL_CHANNELS.capture, capture);
+        emitStatus();
+      });
+    }
+    emitStatus();
+  };
+
+  const setPanelState = (state: PanelState): void => {
+    if (!attached) return;
+    lastState = state;
+    toPage(PANEL_CHANNELS.state, state);
+  };
+
+  return {
+    attach: (sig, initial) => attach(sig, initial),
     addPeer(peer) {
       if (!attached || !signalling || peer === signalling.localId) return;
+      peers.add(peer);
       toPage(PANEL_CHANNELS.addPeer, peer);
     },
     removePeer(peer) {
       if (!attached) return;
+      peers.delete(peer);
       toPage(PANEL_CHANNELS.removePeer, peer);
     },
-    setSending(on) {
-      if (sending === on) return;
-      sending = on;
-      if (attachMsg && !attachSent) attachMsg.sending = on;
-      toPage(PANEL_CHANNELS.sending, on);
-      // VPX may not have been up at attach: look again when this rig's turn starts.
-      if (on && attached && !capture) {
-        const gen = generation;
-        void pickCapture(gen).then(() => {
-          if (gen !== generation || !capture) return;
-          log.info(`media: capture ${capture.label}`);
-          toPage(PANEL_CHANNELS.capture, capture);
-          emitStatus();
-        });
-      }
-      emitStatus();
-    },
-    setPanelState(state: PanelState) {
-      if (!attached) return;
-      toPage(PANEL_CHANNELS.state, state);
-    },
+    setSending,
+    setPanelState,
     setMuted(muted) {
       opts.settings.patch({ muted });
       if (attached) toPage(PANEL_CHANNELS.muted, muted);
@@ -451,7 +483,22 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       // showInactive: focus stays with VPX, whose window takes the player's keys.
       win.showInactive();
     },
-    detach,
+    detach: () => detach(),
+    async setVr(on) {
+      wantVr = on;
+      if (!attached || on === vr) return;
+      if (!on) {
+        log.info('media: the rig reads the monitor now; the panel stays in the headset until the match ends');
+        return;
+      }
+      const sig = signalling;
+      if (!sig) return;
+      // The page holds the connections and the UI: a new offscreen window gets everything the old one was told
+      // (the microphone and the mute come from media.json, as at any attach).
+      const keep = [...peers];
+      log.info(`media: moving the panel into the headset (offscreen window; ${keep.length} peer(s) reconnect)`);
+      await attach(sig, keep, { state: lastState, sending });
+    },
     microphones: () => mics,
     onMicrophones(cb) {
       micListeners.add(cb);

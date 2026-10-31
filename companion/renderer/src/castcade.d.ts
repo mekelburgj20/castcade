@@ -408,6 +408,8 @@ interface MatchStatus {
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
+  rig: 'vr_headset' | 'pc';
+  rigReason: string;
   microphones: Array<{ deviceId: string; label: string }>;
   micDeviceId: string | null;
   muted: boolean;
