@@ -407,6 +407,9 @@ interface MatchStatus {
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
+  microphones: Array<{ deviceId: string; label: string }>;
+  micDeviceId: string | null;
+  muted: boolean;
   locked: boolean;
   settings: MatchSettings;
   defaultName: string;
@@ -453,6 +456,8 @@ interface CastcadeBridge {
     start(): Promise<MatchStatus>;
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
+    setMicrophone(deviceId: string | null): Promise<MatchStatus>;
+    setMuted(muted: boolean): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   readonly tables: {

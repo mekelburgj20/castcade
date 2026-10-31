@@ -291,6 +291,8 @@ function registerIpc(
   ipcMain.handle(IPC.matchStart, () => mh().start());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
+  ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
+  ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
     if (typeof defaultPath === 'string' && defaultPath.trim() !== '') opts.defaultPath = defaultPath;
@@ -375,13 +377,14 @@ async function main(): Promise<void> {
 
   // D2 + D7 (alpha-match.md §4, §5): the match's video and voice, and the panel in the headset. Each one that fails to
   // set up is logged and left out: the match then runs without it (2026-10-30: media never blocks a match).
+  const mediaSettings = createMediaSettingsStore(join(userData, 'media.json'), (e) => logger.warn(`media: could not save media.json: ${describeError(e)}`));
   try {
     matchMedia = createRtcHost({
       userData,
       log: logger,
       vr: () => rigFrom(host.status()) === 'vr_headset',
       probe: () => probeWindows(),
-      settings: createMediaSettingsStore(join(userData, 'media.json'), (e) => logger.warn(`media: could not save media.json: ${describeError(e)}`)),
+      settings: mediaSettings,
     });
   } catch (e) {
     logger.error(`media: could not set up (${describeError(e)}); matches run without video and voice this run`);
@@ -406,6 +409,7 @@ async function main(): Promise<void> {
         return { deviceId: cur.deviceId, deviceLabel: cur.deviceLabel };
       },
       media: matchMedia ?? undefined,
+      mediaSettings,
       vrOverlay: matchOverlay ?? undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),

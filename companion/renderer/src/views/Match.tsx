@@ -67,6 +67,14 @@ export function Match({ state }: { state: CastcadeState }) {
   const commitVolume = () => {
     if (volume !== null && volume !== st.settings.cueVolume) void bridge.match.setSettings({ cueVolume: volume }).then(setSt, (e: unknown) => setError(describe(e)));
   };
+  const pickMic = (deviceId: string) => {
+    void bridge.match.setMicrophone(deviceId === '' ? null : deviceId).then(setSt, (e: unknown) => setError(describe(e)));
+  };
+  const toggleMute = () => {
+    void bridge.match.setMuted(!st.muted).then(setSt, (e: unknown) => setError(describe(e)));
+  };
+  // The saved choice may not be listed yet: the panel page lists the devices once a match opens it.
+  const savedMicMissing = st.micDeviceId !== null && !st.microphones.some((m) => m.deviceId === st.micDeviceId);
 
   return (
     <section className="view">
@@ -219,6 +227,30 @@ export function Match({ state }: { state: CastcadeState }) {
       )}
 
       {shownError && <p className="error">{shownError}</p>}
+
+      <div className="card">
+        <div className="row">
+          <label className="field">
+            <span>Microphone</span>
+            <select value={st.micDeviceId ?? ''} onChange={(e) => pickMic(e.target.value)}>
+              <option value="">Windows default</option>
+              {savedMicMissing && <option value={st.micDeviceId ?? ''}>The microphone you picked last time</option>}
+              {st.microphones.map((m) => (
+                <option key={m.deviceId} value={m.deviceId}>
+                  {m.label || 'Unnamed microphone'}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="small" onClick={toggleMute}>
+            {st.muted ? 'Unmute' : 'Mute'}
+          </button>
+        </div>
+        <small>
+          Pick your headset microphone: in VR the Windows default is often a virtual device.
+          {st.microphones.length === 0 ? ' The list fills in once you host or join a match.' : ''}
+        </small>
+      </div>
 
       <div className="card">
         <label className="field">

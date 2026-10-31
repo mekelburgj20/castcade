@@ -50,6 +50,8 @@ export const IPC = {
   matchStart: 'match:start',
   matchLeave: 'match:leave',
   matchSettingsSet: 'match:settings:set',
+  matchSetMicrophone: 'match:setMicrophone',
+  matchSetMuted: 'match:setMuted',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
@@ -192,6 +194,9 @@ export interface CastcadeApi {
     start(): Promise<MatchStatus>;
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
+    /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */
+    setMicrophone(deviceId: string | null): Promise<MatchStatus>;
+    setMuted(muted: boolean): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   tables: {

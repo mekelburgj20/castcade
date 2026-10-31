@@ -18,6 +18,9 @@ import { MatchController, type ControllerStatus, type CueKind } from '../match/c
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus } from '../media/match-media-types.js';
+import type { MediaSettingsStore } from '../media/media-settings.js';
+import type { MicDevice } from '../media/panel-page.js';
+import type { RtcHost } from '../media/rtc-host.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
@@ -61,6 +64,11 @@ export interface MatchStatus {
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
+  /** The microphones the panel page lists (empty until a match opens the panel), the saved choice and the mute. */
+  microphones: MicDevice[];
+  /** Null: the Windows default device. */
+  micDeviceId: string | null;
+  muted: boolean;
   locked: boolean;
   settings: MatchSettings;
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
@@ -74,6 +82,9 @@ export interface MatchHost {
   start(): Promise<MatchStatus>;
   leave(): Promise<MatchStatus>;
   setSettings(patch: Partial<MatchSettings>): MatchStatus;
+  /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
+  setMicrophone(deviceId: string | null): MatchStatus;
+  setMuted(muted: boolean): MatchStatus;
   status(): MatchStatus;
   onStatus(cb: (s: MatchStatus) => void): () => void;
   /** On quit: leave any match and close the cue window. */
@@ -86,7 +97,10 @@ export interface MatchHostOptions {
   witness: WitnessHost;
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
-  media?: MatchMedia;
+  /** `RtcHost` (D2) in the app; the microphone picker is optional so tests can pass a bare `MatchMedia`. */
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone'>>;
+  /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
+  mediaSettings?: MediaSettingsStore;
   vrOverlay?: VrOverlay;
   /** MEDIA_SIGNAL over the match transport (D2); absent → the media layer gets a mute signalling. */
   signalling?: (role: HostMatch | ClientMatch, localId: string) => MediaSignalling;
@@ -240,6 +254,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
       vrOverlay: a && opts.vrOverlay ? opts.vrOverlay.status() : null,
+      microphones: opts.media?.microphones?.() ?? [],
+      micDeviceId: opts.mediaSettings?.get().micDeviceId ?? null,
+      muted: opts.mediaSettings?.get().muted ?? false,
       locked,
       settings: { ...settings },
       defaultName: defaultName(),
@@ -264,6 +281,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   opts.vrOverlay?.onStatus(() => {
     if (active) emit();
   });
+  opts.media?.onMicrophones?.(() => emit());
   witness.onEvent((ev) => active?.controller.feed(ev));
   // The VR observation is sampled when a table opens: a player who hosted before opening it gets the overlay then.
   witness.onStatus((s) => {
@@ -482,6 +500,22 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     leave,
     setSettings(patch) {
       saveSettings(patchMatchSettings(settings, patch));
+      emit();
+      return status();
+    },
+    setMicrophone(deviceId) {
+      const id = typeof deviceId === 'string' && deviceId.trim() !== '' ? deviceId : null;
+      // The media layer saves it and switches the live track; without one the choice is still kept for next time.
+      if (opts.media?.setMicrophone) opts.media.setMicrophone(id);
+      else opts.mediaSettings?.patch({ micDeviceId: id });
+      log.info(`match: microphone ${id === null ? 'set to the Windows default' : 'chosen on the Match tab'}`);
+      emit();
+      return status();
+    },
+    setMuted(muted) {
+      if (opts.media) opts.media.setMuted(muted);
+      else opts.mediaSettings?.patch({ muted });
+      active?.controller.refresh();
       emit();
       return status();
     },

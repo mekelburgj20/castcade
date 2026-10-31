@@ -23,6 +23,7 @@ vi.mock('electron', () => {
 });
 
 const { createMatchHost } = await import('./match-host.js');
+const { createMediaSettingsStore } = await import('../media/media-settings.js');
 type MatchHost = ReturnType<typeof createMatchHost>;
 type WitnessHost = Parameters<typeof createMatchHost>[0]['witness'];
 type Logger = Parameters<typeof createMatchHost>[0]['log'];
@@ -44,7 +45,7 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-function make(name: string, sha: string): { mh: MatchHost; lock: string } {
+function make(name: string, sha: string, extra: Partial<Parameters<typeof createMatchHost>[0]> = {}): { mh: MatchHost; lock: string } {
   const dir = mkdtempSync(join(tmpdir(), `castcade-match-${name}-`));
   dirs.push(dir);
   const lock = join(dir, 'lock', 'turn.lock');
@@ -58,6 +59,7 @@ function make(name: string, sha: string): { mh: MatchHost; lock: string } {
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
     listenAddress: '127.0.0.1',
+    ...extra,
   });
   hosts.push(mh);
   return { mh, lock };
@@ -108,4 +110,48 @@ describe('match host (A6)', () => {
     expect(existsSync(C.lock)).toBe(false);
     await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags.includes('disconnected') === true);
   }, 15_000);
+
+  it('microphone and mute: saved in media.json and live on the media layer when there is one (D2)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-match-mic-'));
+    dirs.push(dir);
+    const file = join(dir, 'media.json');
+    const bare = make('bare', 'ab'.repeat(32), { mediaSettings: createMediaSettingsStore(file) });
+    expect(bare.mh.status()).toMatchObject({ microphones: [], micDeviceId: null, muted: false });
+    expect(bare.mh.setMicrophone('headset-1')).toMatchObject({ micDeviceId: 'headset-1' });
+    expect(bare.mh.setMuted(true)).toMatchObject({ muted: true });
+    expect(createMediaSettingsStore(file).get()).toMatchObject({ micDeviceId: 'headset-1', muted: true });
+    expect(bare.mh.setMicrophone(null).micDeviceId).toBeNull();
+
+    const calls: string[] = [];
+    const settings = createMediaSettingsStore(join(dir, 'media2.json'));
+    let onMics: (() => void) | null = null;
+    const media = {
+      microphones: () => [{ deviceId: 'headset-1', label: 'Headset' }],
+      onMicrophones: (cb: () => void) => {
+        onMics = cb;
+        return () => undefined;
+      },
+      setMicrophone: (id: string | null) => {
+        calls.push(`mic ${id}`);
+        settings.patch({ micDeviceId: id });
+      },
+      setMuted: (m: boolean) => {
+        calls.push(`muted ${m}`);
+        settings.patch({ muted: m });
+      },
+      onStatus: () => () => undefined,
+      status: () => null,
+    } as unknown as NonNullable<Parameters<typeof createMatchHost>[0]['media']>;
+    const live = make('live', 'ab'.repeat(32), { media, mediaSettings: settings });
+    const seen: number[] = [];
+    live.mh.onStatus((st) => seen.push(st.microphones.length));
+    expect(live.mh.status().microphones).toEqual([{ deviceId: 'headset-1', label: 'Headset' }]);
+    live.mh.setMicrophone('headset-1');
+    live.mh.setMuted(true);
+    expect(calls).toEqual(['mic headset-1', 'muted true']);
+    expect(live.mh.status()).toMatchObject({ micDeviceId: 'headset-1', muted: true });
+    seen.length = 0;
+    (onMics as (() => void) | null)?.();
+    expect(seen).toEqual([1]);
+  });
 });
