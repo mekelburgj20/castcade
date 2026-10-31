@@ -50,6 +50,9 @@ describe('the display that holds the player window (D2.5)', () => {
     expect(outSize({ width: 800, height: 600 })).toEqual({ width: 800, height: 600 });
     // A portrait playfield (the owner's rotated display): the height is the limit.
     expect(outSize({ width: 1440, height: 2560 })).toEqual({ width: 404, height: 720 });
+    // D7.4: a side-by-side stereo preview (VPX VRPreview = 3, 3:1 or wider) keeps 720 rows per eye.
+    expect(outSize({ width: 2560, height: 720 })).toEqual({ width: 2560, height: 720 });
+    expect(outSize({ width: 3840, height: 1080 })).toEqual({ width: 2560, height: 720 });
     expect(outSize({ width: 2560, height: 1080 })).toEqual({ width: 1280, height: 540 });
   });
 

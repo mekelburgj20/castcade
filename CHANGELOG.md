@@ -7,6 +7,25 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.27] — 2026-10-31
+
+After the third match (0.2.26): the OpenXR layer loaded and drew in both headsets, but the panel sat in the line of
+sight and showed during the player's own turn, and the other player's video went black whenever a browser or Castcade
+was the foreground window on a VR rig.
+
+### Match (alpha)
+- D7.4: **theater mode**. During the other player's turn the layer removes VPX's own view from the frame and shows the
+  opponent's feed on a large fixed screen 2.6 m ahead (re-centred to where you face when it begins), dark all around,
+  in **stereo** when the sender's VPX VR preview is set to both eyes (`[PlayerVR] VRPreview = 3`, side by side) and
+  mono otherwise, with a 150 ms dip to black on each change. During your own turn nothing is drawn; the lobby, pauses
+  and the result show the small panel, now low below the playfield line of sight. Two Match settings: what to show
+  while the other player plays (theater or the panel) and during your own turn (nothing or the panel). The layer's
+  pipe speaks protocol 2 (a hello, a control message, a separate video stream); an old companion still gets the panel,
+  and five seconds without frames hands VPX's view back. Sender side: a side-by-side preview goes out at up to
+  2560x720 (720 rows per eye). `vr-layer/` 0.2.0, `media/vr-layer.ts`, `panel-page.ts`, `match/controller.ts`.
+- D2.5 follow-up: the "Paused" cover never fires on a VR rig (the preview window renders without focus; a browser in
+  front had blacked out the other player's video for 30 s).
+
 ## [0.2.26] — 2026-10-31
 
 After the second two-player match (all three balls each to a signed result; the other player's video froze the moment

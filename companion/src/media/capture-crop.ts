@@ -45,6 +45,12 @@ export interface ScreenTarget {
 
 /** The match video's largest size; the crop keeps its aspect inside it (PANEL_VIDEO is 1280x720, alpha-match.md §4). */
 export const MAX_OUT = { width: 1280, height: 720 } as const;
+/**
+ * D7.4 (2026-10-31): a side-by-side stereo preview (VPX `VRPreview = 3`, both eyes, 3:1 or wider) keeps 720 rows per eye
+ * instead of being squeezed into 1280x360 (640x360 an eye in the headset's theater screen).
+ */
+export const MAX_OUT_SBS = { width: 2560, height: 720 } as const;
+export const SBS_MIN_ASPECT = 3;
 /** Two rects that differ by this much or less are the same display (rounding between DIPs and pixels). */
 const SAME_RECT_PX = 2;
 
@@ -95,6 +101,7 @@ export function pickDisplay(win: VpxWindow, outputs: DxgiOutput[], displays: Scr
 
 /** Fits a crop inside `max` (never upscaled), keeping its aspect; even sizes, as the encoders want. */
 export function outSize(crop: { width: number; height: number }, max: { width: number; height: number } = MAX_OUT): { width: number; height: number } {
+  if (max === MAX_OUT && crop.width / crop.height >= SBS_MIN_ASPECT) max = MAX_OUT_SBS;
   const k = Math.min(1, max.width / crop.width, max.height / crop.height);
   return { width: Math.max(2, Math.round(crop.width * k) & ~1), height: Math.max(2, Math.round(crop.height * k) & ~1) };
 }
