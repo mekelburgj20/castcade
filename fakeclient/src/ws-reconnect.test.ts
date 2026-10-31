@@ -6,7 +6,7 @@
  * fresh HELLO is then refused because the roster is final.
  */
 import { describe, expect, it } from 'vitest';
-import { ClientMatch, generateKeys, WsPeerTransport } from '@castcade/companion';
+import { ClientMatch, generateKeys, HostMatch, WsPeerTransport } from '@castcade/companion';
 import type { PayloadOf } from '@castcade/protocol';
 import { collapseReissues, expectedRotation, runWsScenario, type FakePlayer } from './lib.js';
 import { defaultFingerprint, generateScenario } from './scenario.js';
@@ -84,11 +84,14 @@ describe('A3: client reconnect after a drop', () => {
         reconnect: { delayMs: 50, attempts: 20 },
         players: (list) => {
           fakes = list;
+          // Listen on the host engine itself, not the FakePlayer trace: with p3 forfeited the match
+          // can reach RESULT before p3's first RECONNECT (one delayMs after the drop) lands, and a
+          // finished FakePlayer detaches its listeners, while the host still answers that RECONNECT.
+          const host = list.find((f) => f.playerId === 'p1')?.engine;
+          if (!(host instanceof HostMatch)) throw new Error('p1 is not the host');
+          host.on('reconnectRejected', (payload) => rejectedAtHost.push(payload));
         },
         hooks: {
-          onEvent: (player, event, payload) => {
-            if (player === 'p1' && event === 'reconnectRejected') rejectedAtHost.push(payload);
-          },
           onGrant: (grant) => {
             if (dropped || grant.player !== 'p2' || grant.ballNumber !== 1) return;
             dropped = true;
