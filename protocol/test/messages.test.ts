@@ -126,6 +126,23 @@ describe('envelope', () => {
     if (back.type === 'RECONNECT_ACK') expect(back.payload.entries[0]?.message).toEqual(logged);
   });
 
+  it('MEDIA_SIGNAL: offer and answer carry sdp, ice carries a candidate, any direction (D2)', () => {
+    const offer = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0\r\n' }, { matchId: 'TD-1', seq: 5, from: 'p1', ts: 1 });
+    expect(decodeFrame(encodeFrame(offer))).toEqual(offer);
+    const ice = buildMessage(
+      'MEDIA_SIGNAL',
+      { to: 'p1', kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 2122260223 192.168.1.2 54321 typ host', sdpMid: '0', sdpMLineIndex: 0 } },
+      { matchId: 'TD-1', seq: 6, from: 'p2' },
+    );
+    expect(ice.payload.candidate?.sdpMid).toBe('0');
+    const end = buildMessage('MEDIA_SIGNAL', { to: 'p1', kind: 'ice', candidate: { candidate: '', sdpMid: null, sdpMLineIndex: null } }, { matchId: 'TD-1', seq: 7, from: 'p2' });
+    expect(end.payload.candidate?.candidate).toBe('');
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'answer' }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'ice', sdp: 'v=0' }, { matchId: 'TD-1', seq: 9, from: 'p1' })).toThrow(ProtocolError);
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'not a player id', kind: 'offer', sdp: 'v=0' }, { matchId: 'TD-1', seq: 10, from: 'p1' })).toThrow(ProtocolError);
+    expect(MESSAGE_DIRECTION.MEDIA_SIGNAL).toBe('any');
+  });
+
   it('has a direction for every message type', () => {
     for (const t of MESSAGE_TYPES) expect(MESSAGE_DIRECTION[t]).toBeTruthy();
   });

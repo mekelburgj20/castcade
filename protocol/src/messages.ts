@@ -322,6 +322,30 @@ export const ReconnectAck = z
   })
   .describe('host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection.');
 
+// D2 (2026-10-30): the WebRTC signalling for a match's video and voice rides the match channel; the media itself
+// goes peer to peer, never through the host's match socket or ArcAid.
+export const IceCandidate = z
+  .object({
+    candidate: z.string().max(4096).describe("The browser's candidate line; empty for end-of-candidates."),
+    sdpMid: z.string().max(64).nullable(),
+    sdpMLineIndex: z.number().int().min(0).max(255).nullable(),
+  })
+  .describe('One trickled ICE candidate, as RTCIceCandidate.toJSON() gives it.');
+
+export const MediaSignal = z
+  .object({
+    to: PlayerId.describe('The one participant this signal is for. The host forwards it there and nowhere else.'),
+    kind: z.enum(['offer', 'answer', 'ice']).describe('An SDP offer or answer, or one ICE candidate.'),
+    sdp: z.string().max(65_536).optional().describe('The session description; present on offer and answer.'),
+    candidate: IceCandidate.optional().describe('Present on ice.'),
+  })
+  .refine((s) => (s.kind === 'ice' ? s.candidate !== undefined : s.sdp !== undefined), {
+    message: 'an offer or answer carries sdp; an ice signal carries candidate',
+  })
+  .describe(
+    'any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media.',
+  );
+
 // ---------------------------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------------------------
@@ -346,6 +370,7 @@ export const payloadSchemas = {
   REJECT: Reject,
   RECONNECT: Reconnect,
   RECONNECT_ACK: ReconnectAck,
+  MEDIA_SIGNAL: MediaSignal,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -375,4 +400,5 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   REJECT: 'host->client',
   RECONNECT: 'client->host',
   RECONNECT_ACK: 'host->client',
+  MEDIA_SIGNAL: 'any',
 };

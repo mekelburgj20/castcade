@@ -75,7 +75,8 @@ base64-encoded.
   `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, and one derived `host_transfer` event per
   accepted transfer (below). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the *other*
   participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
-  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`.
+  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`, `MEDIA_SIGNAL` (forwarded to its `to`
+  only, see Media signalling).
 - Each entry is `{index, prevHash, ts, kind, from, message | event}` with
   `hash = sha256(canonicalJson(entry))` and `prevHash` the previous hash (64 zeros before the first
   entry). `ts` is always the message's own `ts`, never a local clock, so hashes agree across machines.
@@ -165,6 +166,22 @@ base64-encoded.
 - A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
   (`host_left`, above).
 
+## Media signalling
+
+- Players see and hear each other over WebRTC, one peer connection per pair of participants (a full
+  mesh at 2–4 players). `MEDIA_SIGNAL` carries only the setup: SDP offers and answers and trickled ICE
+  candidates. It rides the match channel (D2, 2026-10-30): a client sends it to the host, and the host
+  forwards it to the one participant named in `to`, with `from` preserved, and to nobody else. A signal
+  addressed to the host is consumed there; the host sends its own straight to `to`. A signal for a
+  participant who is not connected is dropped.
+- `MEDIA_SIGNAL` is never logged and never changes match state; it is valid in any phase.
+- The media flows peer to peer (STUN, optionally the player's own TURN server). It never crosses ArcAid
+  and never passes through the host's match socket.
+- Voice goes from every participant to every other (open microphone with a mute). Video goes only from
+  the player up: each rig keeps one video sender per connection and enables it only while it holds the
+  grant, so a new grant or a host transfer needs no renegotiation. Who is up comes from `TURN_GRANT`,
+  never from the media.
+
 ## Result
 
 - `RESULT` lists every participant with score, balls played, status and rank (competition ranking: ties
@@ -206,13 +223,14 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `REJECT` | host->client | host -> client. A message was ignored; diagnostic only, never changes match state. |
 | `RECONNECT` | client->host | client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO. |
 | `RECONNECT_ACK` | host->client | host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection. |
+| `MEDIA_SIGNAL` | any | any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media. |
 
 ### Envelope
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `v` | const `2` | yes | Protocol version; peers with a different value refuse each other. |
-| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` | yes |  |
+| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` \| `"MEDIA_SIGNAL"` | yes |  |
 | `matchId` | string \| null | yes |  |
 | `seq` | integer | yes | Per-sender, strictly increasing within a connection. |
 | `ts` | integer | yes | Sender's clock, ms since epoch. Informational. |
@@ -479,6 +497,19 @@ host -> client. Answers RECONNECT. A rejected client must re-join with a fresh H
 | `entries` | array of object | yes | Every log entry after the one the client named, in order; empty when it is current or rejected. |
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | The host's log head after these entries. |
 | `logLength` | integer | yes |  |
+
+### `MEDIA_SIGNAL`
+
+Direction: any.
+
+any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `to` | string (`^[A-Za-z0-9_.:-]+$`) | yes | The one participant this signal is for. The host forwards it there and nowhere else. |
+| `kind` | `"offer"` \| `"answer"` \| `"ice"` | yes | An SDP offer or answer, or one ICE candidate. |
+| `sdp` | string | no | The session description; present on offer and answer. |
+| `candidate` | object | no | Present on ice. |
 
 ## Shared objects
 
