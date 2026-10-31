@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, scoreText, stageText, stripRows, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stereoOf, stripRows, VIDEO_FEED_MAX, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -78,8 +78,12 @@ const CAP = { sourceId: 'screen:0:0', label: 'screen 1, crop 1280x720 of Visual 
 
 function fakeCtx() {
   const calls: Array<[string, ...unknown[]]> = [];
-  const ctx: Paint2D & { calls: typeof calls } = {
+  const ctx: Paint2D & { calls: typeof calls; getImageData(x: number, y: number, w: number, h: number): { data: Uint8ClampedArray } } = {
     calls,
+    getImageData: (x: number, y: number, w: number, h: number) => {
+      calls.push(['getImageData', x, y, w, h]);
+      return { data: new Uint8ClampedArray(w * h * 4) };
+    },
     fillStyle: '',
     font: '',
     textAlign: '',
@@ -427,5 +431,83 @@ describe('panel page script (D2)', () => {
     expect(sender.track.readyState).toBe('ended');
     const st = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { capturing: boolean };
     expect(st.capturing).toBe(false);
+  });
+});
+
+describe('the theater feed (D7.4, 2026-10-31)', () => {
+  it('side by side only from a VR sender and only 3:1 or wider (two 16:9 eyes are 32:9)', () => {
+    expect(SBS_MIN_ASPECT).toBe(3);
+    expect(stereoOf('vr_headset', 2560, 720)).toBe('sbs');
+    expect(stereoOf('vr_headset', 2160, 720)).toBe('sbs');
+    expect(stereoOf('vr_headset', 2150, 720)).toBe('mono');
+    expect(stereoOf('vr_headset', 1280, 720)).toBe('mono');
+    expect(stereoOf('pc', 2560, 720)).toBe('mono'); // a wide monitor picture is one picture
+    expect(stereoOf(undefined, 2560, 720)).toBe('mono');
+    expect(stereoOf('vr_headset', 2560, 0)).toBe('mono');
+  });
+
+  it('the feed is the video at its own size, scaled down into 1920x1080 (a side-by-side one into 3840x1080), even sides', () => {
+    expect(VIDEO_FEED_MAX).toEqual({ mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1080 }, fps: 30 });
+    expect(feedSize(1280, 720, 'mono')).toEqual({ width: 1280, height: 720 });
+    expect(feedSize(2560, 1440, 'mono')).toEqual({ width: 1920, height: 1080 });
+    expect(feedSize(1281, 721, 'mono')).toEqual({ width: 1280, height: 720 });
+    expect(feedSize(2560, 720, 'sbs')).toEqual({ width: 2560, height: 720 });
+    expect(feedSize(5120, 1440, 'sbs')).toEqual({ width: 3840, height: 1080 });
+    expect(feedSize(0, 0, 'mono')).toBeNull();
+  });
+
+  it('wanted: each new frame of the up player\'s stage video goes to main as RGBA, one in flight; never my own picture', async () => {
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    const state = (myTurn: boolean): PanelState => ({
+      playerUp: myTurn ? 'owner' : 'krobs',
+      myTurn,
+      ball: 1,
+      ballsPerGame: 3,
+      players: [
+        { id: 'owner', name: 'Owner', score: null, ballsDone: 0, isUp: myTurn, flags: [], rig: 'vr_headset' },
+        { id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: !myTurn, flags: [], rig: 'vr_headset' },
+      ],
+      phase: 'playing',
+      result: null,
+      message: null,
+      mic: 'open',
+    });
+    p.emit(PANEL_CHANNELS.state, state(false));
+    const feed = p.intervals.filter((i) => i.ms === 33).at(-1)!;
+    const video = p.el('video') as unknown as { videoWidth: number; videoHeight: number; currentTime: number; readyState: number };
+    video.videoWidth = 2560;
+    video.videoHeight = 720;
+    video.readyState = 4;
+    video.currentTime = 1;
+    const frames = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.video).map((s) => s.arg as { width: number; height: number; rgba: Uint8Array; stereo: string });
+    feed.cb();
+    expect(frames()).toHaveLength(0); // not wanted
+    p.emit(PANEL_CHANNELS.videoWant, true);
+    feed.cb();
+    expect(frames()).toHaveLength(1);
+    expect(frames()[0]).toMatchObject({ width: 2560, height: 720, stereo: 'sbs' });
+    expect(frames()[0]!.rgba).toBeInstanceOf(Uint8Array);
+    expect(frames()[0]!.rgba.length).toBe(2560 * 720 * 4);
+    video.currentTime = 2;
+    feed.cb();
+    expect(frames()).toHaveLength(1); // no ack yet
+    p.emit(PANEL_CHANNELS.videoAck);
+    feed.cb();
+    expect(frames()).toHaveLength(2);
+    p.emit(PANEL_CHANNELS.videoAck);
+    feed.cb();
+    expect(frames()).toHaveLength(2); // the same video frame: not sent again
+    // My own ball: the stage shows my preview; nothing goes.
+    p.emit(PANEL_CHANNELS.state, state(true));
+    video.currentTime = 3;
+    feed.cb();
+    expect(frames()).toHaveLength(2);
+    p.emit(PANEL_CHANNELS.state, state(false));
+    p.emit(PANEL_CHANNELS.videoWant, false);
+    video.currentTime = 4;
+    feed.cb();
+    expect(frames()).toHaveLength(2);
   });
 });

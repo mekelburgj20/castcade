@@ -1,18 +1,20 @@
 import { EventEmitter } from 'node:events';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { PanelFrame, PanelFrameSource, VrOverlayStatus } from './match-media-types.js';
+import type { PanelFrame, PanelFrameSource, VideoFrame, VideoFrameSource, VrOverlayStatus } from './match-media-types.js';
 import {
   CONNECT_RETRY_MS,
   createVrLayerOverlay,
   deleteArgs,
   OPENXR_IMPLICIT_LAYERS_KEY,
+  parseHello,
   parseRegQuery,
   registerArgs,
   resolveVrLayer,
   RESTART_VPX_AFTER_MS,
   VR_LAYER_JSON,
   VR_LAYER_PIPE,
+  VR_LAYER_PROTOCOL,
   type Exec,
 } from './vr-layer.js';
 
@@ -310,5 +312,130 @@ describe('createVrLayerOverlay', () => {
     expect(pipes).toHaveLength(2);
     pipes[1]!.answer();
     expect(ov.status().state).toBe('showing');
+  });
+});
+
+// ---- D7.4 (2026-10-31): pipe protocol 2: the hello, the control, the video ----
+
+/** Every message on a fake pipe: frames as [magic, first pixel byte], controls as ['CVC1', json]. */
+function messages(pipe: FakePipe): Array<[string, unknown]> {
+  const all = Buffer.concat(pipe.chunks);
+  const out: Array<[string, unknown]> = [];
+  for (let at = 0; at < all.length; ) {
+    const magic = all.toString('latin1', at, at + 4);
+    if (magic === 'CVC1') {
+      const n = all.readUInt32LE(at + 4);
+      out.push([magic, JSON.parse(all.toString('utf8', at + 8, at + 8 + n))]);
+      at += 8 + n;
+    } else {
+      expect(['CVO1', 'CVO2']).toContain(magic);
+      out.push([magic, all[at + 16]]);
+      at += 16 + all.readUInt32LE(at + 12);
+    }
+  }
+  return out;
+}
+
+const hello = (v: number): Buffer => {
+  const b = Buffer.alloc(8);
+  b.write('CVH1', 0, 'latin1');
+  b.writeUInt32LE(v, 4);
+  return b;
+};
+
+function videoSource() {
+  const cbs = new Set<(f: VideoFrame) => void>();
+  const wanted: boolean[] = [];
+  const src: VideoFrameSource = {
+    onFrame(cb) {
+      cbs.add(cb);
+      return () => void cbs.delete(cb);
+    },
+    setWanted: (on) => void wanted.push(on),
+  };
+  return { src, wanted, listeners: () => cbs.size, push: (f: VideoFrame) => cbs.forEach((cb) => cb(f)) };
+}
+
+const vframe = (tag: number, stereo: VideoFrame['stereo'] = 'mono'): VideoFrame => ({ width: 2, height: 1, rgba: new Uint8Array(8).fill(tag), stereo });
+
+describe('createVrLayerOverlay: modes (D7.4)', () => {
+  it('parseHello: "CVH1" + u32 version; anything shorter or else is no hello', () => {
+    expect(VR_LAYER_PROTOCOL).toBe(2);
+    expect(parseHello(hello(2))).toBe(2);
+    expect(parseHello(hello(7))).toBe(7);
+    expect(parseHello(hello(2).subarray(0, 7))).toBeNull();
+    expect(parseHello(Buffer.from('CVO1abcd', 'latin1'))).toBeNull();
+  });
+
+  it('a protocol-2 layer: the control after its hello, then on every change; video wanted and sent as CVO2 only in theater', async () => {
+    const h = setup();
+    const v = videoSource();
+    await h.ov.start(h.src, v.src);
+    h.ov.setMode('theater'); // before the connection: held
+    h.pipes[0]!.answer();
+    h.push(frame(1));
+    expect(messages(h.pipes[0]!)).toEqual([['CVO1', 1]]);
+    expect(v.wanted).toEqual([false]); // no hello yet: a protocol-1 layer would drop the pipe on CVO2
+    // The hello may come in pieces.
+    h.pipes[0]!.emit('data', hello(2).subarray(0, 3));
+    h.pipes[0]!.emit('data', hello(2).subarray(3));
+    expect(h.log).toContain('vr-layer: the layer speaks pipe protocol 2 (modes, theater)');
+    expect(messages(h.pipes[0]!).slice(1)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low' }]]);
+    expect(v.wanted.at(-1)).toBe(true);
+    v.push(vframe(5));
+    // Side by side now: the control says so before the frame.
+    v.push(vframe(6, 'sbs'));
+    v.push(vframe(7, 'sbs'));
+    expect(messages(h.pipes[0]!).slice(2)).toEqual([
+      ['CVO2', 5],
+      ['CVC1', { mode: 'theater', stereo: 'sbs', panelPos: 'low' }],
+      ['CVO2', 6],
+      ['CVO2', 7],
+    ]);
+    // My ball: hidden; video no longer wanted; frames that still come are not sent.
+    h.ov.setMode('hidden');
+    h.ov.setMode('hidden');
+    expect(v.wanted.at(-1)).toBe(false);
+    v.push(vframe(8, 'sbs'));
+    expect(messages(h.pipes[0]!).slice(6)).toEqual([['CVC1', { mode: 'hidden', stereo: 'sbs', panelPos: 'low' }]]);
+    h.ov.setMode('panel');
+    expect(messages(h.pipes[0]!).slice(7)).toEqual([['CVC1', { mode: 'panel', stereo: 'sbs', panelPos: 'low' }]]);
+    expect(h.log).toContain('vr-layer: mode panel (sbs, panel low)');
+  });
+
+  it('a protocol-1 layer (0.2.26, no hello): panel frames only, never CVC1 / CVO2; the first other mode is logged once', async () => {
+    const h = setup();
+    const v = videoSource();
+    await h.ov.start(h.src, v.src);
+    h.pipes[0]!.answer();
+    h.ov.setMode('theater');
+    h.ov.setMode('hidden');
+    h.push(frame(1));
+    v.push(vframe(2));
+    expect(messages(h.pipes[0]!)).toEqual([['CVO1', 1]]);
+    expect(v.wanted.every((w) => !w)).toBe(true);
+    expect(h.log.filter((l) => l.includes('predates pipe protocol 2'))).toHaveLength(1);
+  });
+
+  it('the pipe closes: video unwanted; the next connection starts on protocol 1 and gets the mode again after its hello', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    const v = videoSource();
+    await h.ov.start(h.src, v.src);
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(2));
+    h.ov.setMode('theater');
+    expect(v.wanted.at(-1)).toBe(true);
+    h.pipes[0]!.hangUp();
+    expect(v.wanted.at(-1)).toBe(false);
+    h.advance(CONNECT_RETRY_MS);
+    h.pipes[1]!.answer();
+    expect(v.wanted.at(-1)).toBe(false);
+    h.pipes[1]!.emit('data', hello(2));
+    expect(messages(h.pipes[1]!)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low' }]]);
+    expect(v.wanted.at(-1)).toBe(true);
+    await h.ov.stop();
+    expect(v.wanted.at(-1)).toBe(false);
+    expect(v.listeners()).toBe(0);
   });
 });

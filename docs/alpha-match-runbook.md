@@ -18,6 +18,12 @@ Table: ________ (ROM ______)
 - [ ] **VPX in VR** with the preview window on. In your `VPinballX.ini`, under `[PlayerVR]`, set
   `VRPreview = 1`, `PreviewWidth = 1280`, `PreviewHeight = 720`. The other player sees this window, so a small
   window means a poor picture.
+- [ ] **Stereo for the other headset (optional, D7.4):** set VPX's VR preview to "both eyes" so the other player sees
+  your table in stereo in theater mode: Preferences → VR → Preview: **Both Eyes**, or in `[PlayerVR]`
+  `VRPreview = 3`, `PreviewWidth = 2560`, `PreviewHeight = 720` (twice as wide as 16:9: each eye gets one half, and
+  the other headset tells stereo from a picture 3:1 or wider). The Match tab says so while your rig sends one eye.
+  Today the match video is at most 1280 wide, so each eye goes at 640x360: sharper in depth, softer in detail than
+  the one-eye picture. Try both and say which you prefer.
 - [ ] **SteamVR running** (the headset panel is drawn through it).
 - [ ] **A headset microphone chosen** on the Castcade **Match** tab. Do not leave it on "default": in VR the Windows
   default is often a virtual device (Steam Streaming Microphone, Virtual Desktop Audio) that records silence.
@@ -61,6 +67,12 @@ Run these a day or more before the match. If one fails, stop and send what is li
    - **Not your turn:** the flippers, plunger, Start and nudge do nothing. The panel in the headset shows who is up,
      their table video, and the scores. You can talk the whole time (open mic; the panel shows the mute state; how
      to toggle it is to confirm on the build).
+   - **Theater (D7.4, Virtual Desktop / Oculus rigs, the Castcade OpenXR layer):** when the other player's ball
+     starts, your view dips to black for a moment and their table appears on a big screen in front of you, where
+     yours was, in the dark. On your ball it dips again and your own table is back with nothing over it. In the lobby
+     and at the end the panel sits low in your view, under the playfield. The Match tab has a setting for each
+     ("In the headset on your ball", "on their ball") if you would rather have the panel. If theater does not
+     appear, the VPX running was started before this Castcade: restart VPX once.
    - **Your turn starts:** two rising tones in the headset, and the panel says `YOUR BALL 1` (then `2`, `3`). The
      lock lifts at that moment.
    - The first time your turn arrives, press **Start** yourself to begin your one-player game, then plunge.

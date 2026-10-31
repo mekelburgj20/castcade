@@ -87,7 +87,7 @@ vi.mock('electron', () => ({
   },
 }));
 
-const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, frameFromBitmap, mergeStatus, noCaptureReason, pickCaptureWindow } = await import('./rtc-host.js');
+const { NO_PLAYFIELD_TO_SEND, captureLabel, createFrameHub, createRtcHost, createVideoHub, frameFromBitmap, mergeStatus, noCaptureReason, pickCaptureWindow, videoFrameFrom } = await import('./rtc-host.js');
 
 const win = (title: string, width: number, height: number, pid = 7): VpxWindow => ({ pid, title, client: { left: 0, top: 0, width, height }, monitor: '1' });
 const PLAYER = win('Visual Pinball Player', 1280, 720);
@@ -195,10 +195,14 @@ describe('status (D2)', () => {
       peers: page.peers,
       mic: 'open',
       captureSource: 'Visual Pinball Player (1280x720)',
+      captureCrop: null,
       lastError: 'page says',
     });
+    // D7.4: the crop's size goes with the label while the capture is live.
+    expect(mergeStatus(page, { attached: true, sending: true, captureLabel: 'x', captureCrop: { width: 2560, height: 720 }, error: null }).captureCrop).toEqual({ width: 2560, height: 720 });
+    expect(mergeStatus({ ...page, capturing: false }, { attached: true, sending: true, captureLabel: 'x', captureCrop: { width: 2560, height: 720 }, error: null }).captureCrop).toBeNull();
     expect(mergeStatus({ ...page, capturing: false }, { attached: true, sending: false, captureLabel: 'x', error: 'main says' })).toMatchObject({ captureSource: null, lastError: 'main says' });
-    expect(mergeStatus(page, { attached: false, sending: true, captureLabel: 'x', error: null })).toEqual({ attached: false, sending: false, peers: {}, mic: 'unavailable', captureSource: null, lastError: null });
+    expect(mergeStatus(page, { attached: false, sending: true, captureLabel: 'x', error: null })).toEqual({ attached: false, sending: false, peers: {}, mic: 'unavailable', captureSource: null, captureCrop: null, lastError: null });
   });
 });
 
@@ -695,5 +699,115 @@ describe('createRtcHost (D2)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('2026-10-31 (the owner\'s 0.2.26 log): a VR rig never covers on focus (the preview renders without it); a monitor rig does', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const watch = { started: 0, stopped: 0, change: (_c: { pid: number; exe: string }) => {} };
+      const watchFocus = (onChange: (c: { pid: number; exe: string }) => void) => {
+        watch.started++;
+        watch.change = onChange;
+        return { stop: () => void watch.stopped++ };
+      };
+      const coverOff = 'media: match video cover off (VR rig: the preview renders without focus)';
+      for (const inVr of [true, false]) {
+        logs.length = 0;
+        watch.started = 0;
+        const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store(), watchFocus });
+        await host.setVr({ inVr, headsetPanel: false });
+        await host.attach(signalling('owner').sig, []);
+        const w = fake.FakeWindow.all.at(-1)!;
+        fromPage(w, PANEL_CHANNELS.ready);
+        const covers = (): unknown[] => w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.cover).map(([, p]) => p);
+        if (inVr) {
+          expect(watch.started, 'VR').toBe(0);
+          expect(logs.filter((l) => l === coverOff), 'VR').toHaveLength(1);
+        } else {
+          expect(watch.started, 'monitor').toBe(1);
+          watch.change({ pid: 9, exe: 'brave' });
+          expect(covers(), 'monitor').toEqual([true]);
+          expect(logs).not.toContain(coverOff);
+        }
+        await host.detach();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a monitor rig found to be in VR while covered: the watch stops and the cover comes down', async () => {
+    const watch = { started: 0, stopped: 0, change: (_c: { pid: number; exe: string }) => {} };
+    const watchFocus = (onChange: (c: { pid: number; exe: string }) => void) => {
+      watch.started++;
+      watch.change = onChange;
+      return { stop: () => void watch.stopped++ };
+    };
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store(), watchFocus });
+    await host.attach(signalling('owner').sig, []);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    watch.change({ pid: 9, exe: 'brave' });
+    await host.setVr({ inVr: true, headsetPanel: false });
+    expect(watch.stopped).toBe(1);
+    expect(w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.cover).map(([, p]) => p)).toEqual([true, false]);
+    expect(logs).toContain('media: match video cover off (VR rig: the preview renders without focus)');
+    await host.detach();
+  });
+
+  it('D7.4: theater video: videoFrames() only for the headset panel; wanting it tells the page; frames are acked and checked', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    await host.attach(signalling('owner').sig, []);
+    const w = fake.FakeWindow.all.at(-1)!;
+    const video = host.videoFrames()!;
+    expect(video).not.toBeNull();
+    const got: unknown[] = [];
+    video.onFrame((f) => got.push(f));
+    video.setWanted(true); // before the page is ready: held, latest wins
+    video.setWanted(false);
+    video.setWanted(true);
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect(w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.videoWant).map(([, p]) => p)).toEqual([true]);
+    const rgba = new Uint8Array(4 * 2 * 4);
+    fromPage(w, PANEL_CHANNELS.video, { width: 4, height: 2, rgba, stereo: 'sbs' });
+    fromPage(w, PANEL_CHANNELS.video, { width: 4, height: 2, rgba: new Uint8Array(5), stereo: 'mono' }); // wrong size: dropped, still acked
+    expect(got).toEqual([{ width: 4, height: 2, rgba, stereo: 'sbs' }]);
+    expect(w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.videoAck)).toHaveLength(2);
+    video.setWanted(false);
+    fromPage(w, PANEL_CHANNELS.video, { width: 4, height: 2, rgba, stereo: 'sbs' }); // not wanted: not passed on
+    expect(got).toHaveLength(1);
+    expect(w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.videoWant).map(([, p]) => p)).toEqual([true, false]);
+    await host.detach();
+    expect(host.videoFrames()).toBeNull();
+  });
+});
+
+describe('theater video, pure parts (D7.4)', () => {
+  it('videoFrameFrom: whole RGBA frames inside the feed limits; anything else is null', () => {
+    const ok = { width: 2, height: 1, rgba: new Uint8Array(8), stereo: 'mono' };
+    expect(videoFrameFrom(ok)).toEqual(ok);
+    expect(videoFrameFrom({ ...ok, stereo: 'weird' })).toEqual(ok);
+    expect(videoFrameFrom({ ...ok, rgba: new Uint8Array(7) })).toBeNull();
+    expect(videoFrameFrom({ ...ok, rgba: [0, 0, 0, 0, 0, 0, 0, 0] })).toBeNull();
+    expect(videoFrameFrom({ ...ok, width: 1.5 })).toBeNull();
+    expect(videoFrameFrom({ width: 2560, height: 720, rgba: new Uint8Array(2560 * 720 * 4), stereo: 'mono' })).toBeNull(); // mono over 1920 wide
+    expect(videoFrameFrom({ width: 2560, height: 720, rgba: new Uint8Array(2560 * 720 * 4), stereo: 'sbs' })).not.toBeNull();
+    expect(videoFrameFrom(null)).toBeNull();
+  });
+
+  it('createVideoHub: the wish is passed on once per change; frames reach listeners only while wanted', () => {
+    const wishes: boolean[] = [];
+    const hub = createVideoHub((on) => wishes.push(on));
+    const got: number[] = [];
+    hub.source.onFrame((f) => got.push(f.width));
+    hub.push({ width: 1, height: 1, rgba: new Uint8Array(4), stereo: 'mono' });
+    hub.source.setWanted(true);
+    hub.source.setWanted(true);
+    hub.push({ width: 2, height: 1, rgba: new Uint8Array(8), stereo: 'mono' });
+    hub.source.setWanted(false);
+    expect(wishes).toEqual([true, false]);
+    expect(got).toEqual([2]);
+    expect(hub.wanted()).toBe(false);
   });
 });

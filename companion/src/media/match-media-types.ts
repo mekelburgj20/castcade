@@ -30,6 +30,11 @@ export interface PanelState {
      * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same.
      */
     flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected'>;
+    /**
+     * D7.4 (2026-10-31): that player's declared rig (HELLO / lobby update). The headset panel reads it to tell a VR
+     * sender's side-by-side preview ("both eyes") from a wide monitor picture. Absent in states made before D7.4.
+     */
+    rig?: 'pc' | 'vr_headset' | 'real_cabinet';
   }>;
   /** `idle` before start, `playing`, `paused` (someone dropped), `over` once RESULT is in. */
   phase: 'idle' | 'playing' | 'paused' | 'over';
@@ -62,6 +67,11 @@ export interface MediaStatus {
   mic: 'open' | 'muted' | 'unavailable';
   /** The capture source in use, for the Match tab: the window title, or null. */
   captureSource: string | null;
+  /**
+   * D7.4 (2026-10-31): the size of the window region sent (the crop), while the capture is live. The Match tab reads its
+   * aspect: a VR rig sending a single-eye preview is told to switch VPX's preview to both eyes. Absent before D7.4.
+   */
+  captureCrop?: { width: number; height: number } | null;
   lastError: string | null;
 }
 
@@ -80,6 +90,8 @@ export interface MatchMedia {
   onStatus(cb: (s: MediaStatus) => void): () => void;
   /** Frames of the panel for the headset (available once attached; null on a desktop rig). */
   frames(): PanelFrameSource | null;
+  /** D7.4: frames of the up player's video for theater mode (available with `frames()`); absent in fakes before D7.4. */
+  videoFrames?(): VideoFrameSource | null;
   /** Shows the desktop panel window (no-op in VR, where the overlay helper shows it). */
   showPanel(): void;
   detach(): Promise<void>;
@@ -97,6 +109,29 @@ export interface PanelFrameSource {
   onFrame(cb: (frame: PanelFrame) => void): () => void;
 }
 
+/**
+ * D7.4 (2026-10-31): one frame of the up player's video for theater mode, RGBA top-down (canvas `getImageData`, so
+ * nobody swaps bytes), `rgba.length === width * height * 4`. `sbs`: the left half is the left eye, the right half the
+ * right eye (VPX's VR preview on "both eyes").
+ */
+export interface VideoFrame {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+  stereo: VrStereo;
+}
+
+export interface VideoFrameSource {
+  /** Frames arrive at up to 30 per second while wanted, only when the video has a new frame. */
+  onFrame(cb: (frame: VideoFrame) => void): () => void;
+  /** The panel page reads the video only while someone wants it (theater mode): it costs a copy per frame. */
+  setWanted(on: boolean): void;
+}
+
+/** D7.4 (2026-10-31): what the OpenXR layer shows (vr-layer/README.md "The pipe"). */
+export type VrViewMode = 'hidden' | 'panel' | 'theater';
+export type VrStereo = 'mono' | 'sbs';
+
 export interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
   /**
@@ -110,7 +145,13 @@ export interface VrOverlayStatus {
 
 /** The in-headset panel as the controller sees it: the SteamVR helper (`media/vr-overlay.ts`, D7) or the OpenXR layer (`media/vr-layer.ts`, D7.3). */
 export interface VrOverlay {
-  start(source: PanelFrameSource): Promise<VrOverlayStatus>;
+  /** `video` (D7.4): the up player's video for theater mode; only the OpenXR layer takes it. */
+  start(source: PanelFrameSource, video?: VideoFrameSource | null): Promise<VrOverlayStatus>;
+  /**
+   * D7.4 (2026-10-31): hidden on this player's own turn, theater while another is up, the panel otherwise (the match
+   * host decides, `vrViewMode` in match/controller.ts). The OpenXR layer only; the SteamVR helper keeps the panel.
+   */
+  setMode(mode: VrViewMode): void;
   stop(): Promise<void>;
   status(): VrOverlayStatus;
   onStatus(cb: (s: VrOverlayStatus) => void): () => void;
@@ -121,3 +162,5 @@ export const VR_OVERLAY_DEFAULTS = { widthM: 0.55, anchor: 'hmd' as const, offse
 
 /** The frame pipe's header, 16 bytes little-endian: "CVO1", width, height, byteLength. */
 export const VR_OVERLAY_FRAME_MAGIC = 'CVO1';
+/** D7.4: the same header for a video frame (RGBA) on the OpenXR layer's pipe. */
+export const VR_LAYER_VIDEO_MAGIC = 'CVO2';

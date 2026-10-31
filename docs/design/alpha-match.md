@@ -137,6 +137,15 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   under `HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit` and feeds the pipe (`panel-frame-writer.ts`, shared with
   the helper). The loader reads the list when VPX starts VR, so a VPX started before the first registration needs a
   restart (`restart_vpx` on the Match tab). CI `vr-layer.yml`; `fetch-vr-layer.mjs`; shipped as `vr-layer`.
+- **Theater mode (D7.4, 2026-10-31; the owner after the first layer run: "I want to see his playfield where my
+  playfield was… not a window popup that I look at while he's playing"):** the layer has three modes the match host
+  sets from the turn (`vrViewMode`, match/controller.ts): *hidden* on this player's ball, *theater* while another is
+  up (VPX's projection layers removed, the up player's video on a 2.4 m screen 2.6 m ahead in LOCAL space, black
+  around it, stereo when the sender's VR preview is on "both eyes"), *panel* in the lobby, a pause and the result
+  (placed low now, below the playfield). Into or out of theater the view dips to black over 300 ms; with no frame
+  for 5 s the layer passes VPX through. Pipe protocol 2 (hello, `CVC1` control, `CVO2` RGBA video frames):
+  `vr-layer/README.md` "The pipe". The panel page reads the stage video into a canvas only while theater wants it.
+  Two Match tab settings (`match.json` `theaterDuringMyTurn`, `spectate`). SteamVR rigs keep the panel.
 
 ## 6. Checks only the rig can answer (run before the first match)
 

@@ -20,7 +20,7 @@
  *   added at MATCH_READY, removed when they leave, re-added when they reconnect. Video only from the player up.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
-import type { MatchMedia, MediaSignal, MediaSignalling, PanelState } from '../media/match-media-types.js';
+import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { ClientMatch } from './client.js';
 import type { HostMatch } from './host.js';
@@ -103,6 +103,29 @@ export function mismatchWords(fields: readonly string[]): { table: string | null
 const DEFAULT_SETTLE_MS = 2000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
 const MAX_SCORE = 1_000_000_000_000;
+
+/**
+ * D7.4 (2026-10-31): what the headset shows when (match.json, the Match tab). The owner: "I want to see his playfield
+ * where my playfield was… not a window popup that I look at while he's playing". `theaterDuringMyTurn` (the name the
+ * work item gave it) is what this player sees on their own ball: nothing over the table (`hidden`) or the panel.
+ * `spectate` is what they see while another player is up: the theater (their video where the table was) or the panel.
+ */
+export interface VrViewSettings {
+  theaterDuringMyTurn: 'hidden' | 'panel';
+  spectate: 'theater' | 'panel';
+}
+
+export const DEFAULT_VR_VIEW: VrViewSettings = { theaterDuringMyTurn: 'hidden', spectate: 'theater' };
+
+/**
+ * D7.4: the headset's mode for a panel state. My ball → `theaterDuringMyTurn`; another player's ball → `spectate`;
+ * the lobby, a pause (someone dropped: the panel says why), the gap between grants and the result → the panel.
+ */
+export function vrViewMode(p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'>, settings: VrViewSettings = DEFAULT_VR_VIEW): VrViewMode {
+  if (p.phase !== 'playing') return 'panel';
+  if (p.myTurn) return settings.theaterDuringMyTurn;
+  return p.playerUp !== null ? settings.spectate : 'panel';
+}
 
 interface PendingBallEnd {
   grant: GrantBody;
@@ -665,6 +688,7 @@ export class MatchController {
         ballsDone: prog?.ballsPlayed ?? 0,
         isUp: this.phase !== 'over' && this.upPlayer === p.playerId,
         flags,
+        rig: p.rig,
       };
     });
     const phase: PanelState['phase'] = this.phase === 'lobby' ? 'idle' : this.phase;

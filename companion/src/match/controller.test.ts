@@ -8,7 +8,7 @@ import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../media/match-media-types.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { isHostRole, MatchController, mismatchWords, type ControllerFeed, type CueKind } from './controller.js';
+import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, vrViewMode, type ControllerFeed, type CueKind } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -405,5 +405,26 @@ describe('MatchController', () => {
     await C.ctl.close();
     expect(C.locks).toEqual(['lock', 'unlock']);
     expect(C.media.detached).toBe(true);
+  });
+});
+
+describe('vrViewMode (D7.4, 2026-10-31)', () => {
+  const at = (phase: PanelState['phase'], myTurn: boolean, playerUp: string | null) => ({ phase, myTurn, playerUp });
+
+  it('defaults: my ball hidden, their ball theater; the lobby, a pause, the gap between grants and the result: the panel', () => {
+    expect(DEFAULT_VR_VIEW).toEqual({ theaterDuringMyTurn: 'hidden', spectate: 'theater' });
+    expect(vrViewMode(at('idle', false, null))).toBe('panel');
+    expect(vrViewMode(at('playing', true, 'me'))).toBe('hidden');
+    expect(vrViewMode(at('playing', false, 'krobs'))).toBe('theater');
+    expect(vrViewMode(at('playing', false, null))).toBe('panel');
+    expect(vrViewMode(at('paused', true, 'me'))).toBe('panel');
+    expect(vrViewMode(at('paused', false, 'krobs'))).toBe('panel');
+    expect(vrViewMode(at('over', false, null))).toBe('panel');
+  });
+
+  it('the two settings: the panel on my ball, the panel on theirs', () => {
+    expect(vrViewMode(at('playing', true, 'me'), { theaterDuringMyTurn: 'panel', spectate: 'theater' })).toBe('panel');
+    expect(vrViewMode(at('playing', false, 'krobs'), { theaterDuringMyTurn: 'hidden', spectate: 'panel' })).toBe('panel');
+    expect(vrViewMode(at('idle', false, null), { theaterDuringMyTurn: 'hidden', spectate: 'theater' })).toBe('panel');
   });
 });
