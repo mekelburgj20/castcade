@@ -7,6 +7,22 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.25] — 2026-10-31
+
+After the first two-player match (owner vs Krobs, Monster Bash, both in VR over Virtual Desktop, on 0.2.24: turns,
+lock, cue, voice and live scores all worked across the two routers on the first try).
+
+### Match (alpha)
+- D2.4: the up player's video was missing for ball 1 and present from ball 2, because the capture started on the first
+  turn when no player window existed at Host; the capture now starts as soon as a player window appears (a 3 s
+  re-probe while attached) with the track added in the lobby, so the first turn only flips it on. The VR fallback
+  never sends a DMD, backglass or PinUP window any more (Krobs' 1x1 VRPreview left the DMD as the largest VPX
+  window); with no playfield window the Match tab and panel say to turn VRPreview on. `media/rtc-host.ts`.
+- D2.4: the lobby refreshes each player's rig and table file when a table loads after Join (new `PARTICIPANT_UPDATE`,
+  client → host, protocol 2; the host re-sends `HELLO_ACK` with the roster), so a player who joined before loading
+  the table no longer stays `PC` / "different table file". A real mismatch still flags. `match/host.ts`, `client.ts`,
+  `main/match-host.ts`.
+
 ## [0.2.24] — 2026-10-31
 
 ### Witness
