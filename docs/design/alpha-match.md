@@ -71,10 +71,10 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **Media hooks**: on `MATCH_READY` → `media.attach(signalling, peerIds)`; on my grant → `media.setSending(true)`; on
   my `ball_end` accepted → `setSending(false)`; every state change → `media.setPanelState(...)`; on leave → `detach()`.
   In VR (`inVr`) the controller also starts `VrOverlay` with the panel's frame source; on the desktop the panel window
-  is simply shown. B22 (2026-10-31): only when the VR runtime is SteamVR (`RigDecision.runtime`); in VR on another
-  runtime (the owner's rig: Virtual Desktop's OpenXR) the panel is a visible desktop window, the helper is not spawned,
-  `VrOverlayStatus` reads `unavailable` / `runtime_not_steamvr`, and the Match tab says how to get the panel in the
-  headset. The rig, `play_device` and the capture pick still follow `inVr`.
+  is simply shown. The VR runtime (`RigDecision.runtime`, B22) picks the overlay (D7.3, 2026-10-31): SteamVR → the
+  OpenVR overlay helper (§5); any OpenXR runtime (the owner's rig: Virtual Desktop's, through OpenComposite) → the
+  Castcade OpenXR layer (§5). A later reading on a runtime that needs the other one swaps them. The rig, `play_device`
+  and the capture pick follow `inVr`.
 
 ## 4. Media (D2)
 
@@ -119,6 +119,13 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   the exe as an artifact, attaches it to the GitHub release on `v*` tags; `companion/scripts/fetch-vr-overlay.mjs`
   downloads it from a pinned release tag into `companion/resources/vr-overlay/` (or `--from <dir>` for a local build);
   `electron-builder.yml` ships that folder as `vr-overlay`.
+- **OpenXR runtimes (D7.3, 2026-10-31):** `vr-layer/` is an implicit OpenXR API layer (`XrApiLayer_castcade_panel.dll`
+  + manifest, OpenXR headers pinned by tag + sha256) that loads inside `VPinballX*.exe` on any runtime and appends the
+  panel as one head-locked `XrCompositionLayerQuad` (same placement as the helper). Frames come over the named pipe
+  `\\.\pipe\castcade-panel` in the helper's stdin format. `companion/src/media/vr-layer.ts` registers the manifest
+  under `HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit` and feeds the pipe (`panel-frame-writer.ts`, shared with
+  the helper). The loader reads the list when VPX starts VR, so a VPX started before the first registration needs a
+  restart (`restart_vpx` on the Match tab). CI `vr-layer.yml`; `fetch-vr-layer.mjs`; shipped as `vr-layer`.
 
 ## 6. Checks only the rig can answer (run before the first match)
 

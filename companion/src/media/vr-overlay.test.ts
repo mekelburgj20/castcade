@@ -2,7 +2,8 @@ import { EventEmitter } from 'node:events';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PanelFrame, PanelFrameSource, VrOverlayStatus } from './match-media-types.js';
-import { createVrOverlay, frameHeader, helperArgs, KEEPALIVE_MS, resolveVrOverlay, RESTART_DELAY_MS, STOP_GRACE_MS, VR_OVERLAY_EXE } from './vr-overlay.js';
+import { KEEPALIVE_MS } from './panel-frame-writer.js';
+import { createVrOverlay, helperArgs, resolveVrOverlay, RESTART_DELAY_MS, STOP_GRACE_MS, VR_OVERLAY_EXE } from './vr-overlay.js';
 
 /** stdin under the test's control: `accept = false` makes `write` report a full pipe until `drain()`. */
 class FakeStdin extends EventEmitter {
@@ -89,22 +90,6 @@ function setup(exePath: string | null = 'C:/x/castcade-vr-overlay.exe') {
 }
 
 afterEach(() => vi.useRealTimers());
-
-describe('frameHeader', () => {
-  it('is "CVO1" then width, height and width*height*4 as u32 little-endian', () => {
-    const h = frameHeader(1280, 720);
-    expect(h.length).toBe(16);
-    expect([...h]).toEqual([0x43, 0x56, 0x4f, 0x31, 0x00, 0x05, 0, 0, 0xd0, 0x02, 0, 0, 0x00, 0x40, 0x38, 0x00]);
-    expect(h.readUInt32LE(12)).toBe(1280 * 720 * 4);
-  });
-
-  it('refuses what the helper would refuse (exit 4)', () => {
-    expect(() => frameHeader(0, 10)).toThrow(RangeError);
-    expect(() => frameHeader(4097, 10)).toThrow(RangeError);
-    expect(() => frameHeader(10.5, 10)).toThrow(RangeError);
-    expect(frameHeader(4096, 4096).readUInt32LE(12)).toBe(4096 * 4096 * 4);
-  });
-});
 
 describe('resolveVrOverlay', () => {
   const at = (...have: string[]) => (p: string) => have.includes(p);

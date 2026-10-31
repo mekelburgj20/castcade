@@ -90,4 +90,4 @@ stderr carries human-readable log lines (the companion copies them to its log).
 ## Try it by hand
 
 With SteamVR running, any program that writes the frame format to the exe's stdin works; the companion's
-`frameHeader()` (`companion/src/media/vr-overlay.ts`) builds the header.
+`frameHeader()` (`companion/src/media/panel-frame-writer.ts`) builds the header.

@@ -3,8 +3,8 @@
  * `WsPeerTransport`, invite by text (no ArcAid lobby yet, F6). Owns the match keys (`<userData>/match-keys.json`),
  * the match settings (`<userData>/match.json`), the turn lock file the hook reads, the audio cue (a hidden window
  * that synthesises three cues with WebAudio, like `stream-host.ts`'s audio page) and the `MatchController`, which it
- * feeds with the witness's detector events. `media` (D2) and `vrOverlay` (D7) are optional: the app runs without
- * them, and the lead wires the real ones. The panel goes up as soon as a player hosts or joins (coordinator
+ * feeds with the witness's detector events. `media` (D2), `vrOverlay` (D7, SteamVR) and `vrLayer` (D7.3, OpenXR
+ * runtimes) are optional: the app runs without them, and the lead wires the real ones. The panel goes up as soon as a player hosts or joins (coordinator
  * 2026-10-30), so the headset overlay can be checked before the match: the media layer is attached then with no
  * peers, and MATCH_READY adds them.
  */
@@ -76,8 +76,9 @@ export interface MatchStatus {
   rig: Rig;
   rigReason: string;
   /**
-   * B22 (2026-10-31): the VR runtime behind `rig: 'vr_headset'`, else null. Not `steamvr`: no in-headset panel (the
-   * OpenVR overlay helper needs SteamVR's compositor); the panel stays on the desktop and the Match tab says why.
+   * B22 (2026-10-31): the VR runtime behind `rig: 'vr_headset'`, else null. D7.3: `steamvr` puts the panel in the
+   * headset through the OpenVR overlay helper, any other runtime through the Castcade OpenXR layer (`vrOverlay` is then
+   * the layer's status).
    */
   vrRuntime: VrRuntime | null;
   /**
@@ -122,7 +123,10 @@ export interface MatchHostOptions {
   media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
+  /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
   vrOverlay?: VrOverlay;
+  /** D7.3 (2026-10-31): the Castcade OpenXR layer (`media/vr-layer.ts`): the panel in the headset on any other runtime. */
+  vrLayer?: VrOverlay;
   /** MEDIA_SIGNAL over the match transport (D2); absent → the media layer gets a mute signalling. */
   signalling?: (role: HostMatch | ClientMatch, localId: string) => MediaSignalling;
   appVersion: string;
@@ -153,11 +157,12 @@ interface Active {
   port: number | null;
   invite: string | null;
   ipSource: 'public' | 'lan' | null;
-  overlayStarted: boolean;
+  /** The overlay started for this match (the SteamVR helper or, D7.3, the OpenXR layer); null until one is. */
+  overlay: VrOverlay | null;
   /** A6 (2026-10-31): the rig decided at host / join; `pc` turns into `vr_headset` when the witness reads VR later. */
   rig: Rig;
   rigReason: string;
-  /** B22 (2026-10-31): the runtime behind a `vr_headset` rig; only `steamvr` puts the panel in the headset. */
+  /** B22 (2026-10-31): the runtime behind a `vr_headset` rig; it picks the overlay (D7.3). */
   runtime: VrRuntime | null;
   /** The witness's own reading at the last status, so a VR -> monitor change is logged once, not at every status. */
   witnessRig: Rig;
@@ -270,12 +275,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /** `RigDecision` names it `reason`; the status calls it `rigReason`. */
   const rigOf = (d: RigDecision): { rig: Rig; rigReason: string; runtime: VrRuntime | null } => ({ rig: d.rig, rigReason: d.reason, runtime: d.runtime });
   /**
-   * B22 (2026-10-31): the panel goes in the headset only on SteamVR, the one runtime whose compositor the OpenVR overlay
-   * helper can draw into. "In VR" for everything else (the rig, play_device, the capture pick) is `rig`.
+   * D7.3 (2026-10-31): in VR the panel goes in the headset on every runtime. SteamVR: the OpenVR overlay helper draws
+   * into its compositor. Any other (Virtual Desktop, Oculus, another OpenXR runtime; B22 told them apart): the Castcade
+   * OpenXR layer draws inside VPX. A VR rig with no runtime is a sample from before B22, which only SteamVR produced.
    */
-  const headsetPanel = (a: Pick<Active, 'rig' | 'runtime'>): boolean => a.rig === 'vr_headset' && a.runtime === 'steamvr';
-  const offSteamVr = (a: Pick<Active, 'rig' | 'runtime'>): boolean => a.rig === 'vr_headset' && a.runtime !== 'steamvr';
-  const RUNTIME_NOT_STEAMVR: VrOverlayStatus = { state: 'unavailable', reason: 'runtime_not_steamvr' };
+  type RigRuntime = Pick<Active, 'rig' | 'runtime'>;
+  const usesLayer = (a: RigRuntime): boolean => a.rig === 'vr_headset' && a.runtime !== null && a.runtime !== 'steamvr';
+  const overlayFor = (a: RigRuntime): VrOverlay | undefined => (usesLayer(a) ? opts.vrLayer : opts.vrOverlay);
+  const headsetPanel = (a: RigRuntime): boolean => a.rig === 'vr_headset';
   const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a) });
   const status = (): MatchStatus => {
     const a = active;
@@ -300,7 +307,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       })),
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
-      vrOverlay: a && offSteamVr(a) ? { ...RUNTIME_NOT_STEAMVR } : a && opts.vrOverlay ? opts.vrOverlay.status() : null,
+      vrOverlay: a ? ((a.overlay ?? overlayFor(a))?.status() ?? null) : null,
       rig: r.rig,
       rigReason: r.rigReason,
       vrRuntime: r.runtime,
@@ -331,13 +338,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   opts.vrOverlay?.onStatus(() => {
     if (active) emit();
   });
+  opts.vrLayer?.onStatus(() => {
+    if (active) emit();
+  });
   opts.media?.onMicrophones?.(() => emit());
   witness.onEvent((ev) => active?.controller.feed(ev));
   // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
   // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
-  // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. B22
-  // (2026-10-31): a VR reading on another runtime than SteamVR switches the rig but keeps the desktop panel; a later
-  // SteamVR reading then moves the panel into the headset.
+  // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. D7.3
+  // (2026-10-31): a VR reading whose runtime needs the other overlay (SteamVR <-> an OpenXR runtime: VPX restarted on
+  // another runtime) stops the one running and starts the other.
   witness.onStatus((s) => {
     const a = active;
     if (!a) return;
@@ -346,8 +356,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const was = a.witnessRig;
     a.witnessRig = now;
     if (now === 'vr_headset') {
-      if (a.rig === 'pc' || (!headsetPanel(a) && d.runtime === 'steamvr')) void switchToVr(a, d);
-      else if (headsetPanel(a) && !a.overlayStarted && !a.switching && opts.vrOverlay && opts.media?.frames()) void startOverlay(a);
+      if (a.rig === 'pc' || overlayChanges(a, d)) void switchToVr(a, d);
+      else if (headsetPanel(a) && !a.overlay && !a.switching && overlayFor(a) && opts.media?.frames()) void startOverlay(a);
     } else if (was === 'vr_headset' && a.rig === 'vr_headset') {
       log.info('match: the witness reads the monitor now; the panel stays in the headset for this match');
     }
@@ -371,20 +381,27 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     return controller;
   };
 
+  /** D7.3: the overlay the panel needs is not the one this rig has been using (VPX moved between SteamVR and OpenXR). */
+  const overlayChanges = (a: Active, d: RigDecision): boolean =>
+    a.rig === 'vr_headset' && d.runtime !== null && usesLayer({ rig: 'vr_headset', runtime: d.runtime }) !== usesLayer(a);
+
   const startOverlay = async (a: Active): Promise<void> => {
-    const { media, vrOverlay } = opts;
+    const { media } = opts;
+    const overlay = overlayFor(a);
     const frames = media?.frames() ?? null;
-    if (!vrOverlay || !frames) {
-      if (a.rig === 'vr_headset') log.info(`match: in VR but ${vrOverlay ? 'the panel has no frames yet' : 'no overlay helper'}; showing the desktop panel`);
+    if (!overlay || !frames) {
+      const none = usesLayer(a) ? 'no OpenXR layer' : 'no overlay helper';
+      if (a.rig === 'vr_headset') log.info(`match: in VR but ${overlay ? 'the panel has no frames yet' : none}; showing the desktop panel`);
       media?.showPanel();
       return;
     }
-    a.overlayStarted = true;
+    a.overlay = overlay;
+    const via = usesLayer(a) ? ` via the OpenXR layer (${a.runtime})` : '';
     try {
-      const st = await vrOverlay.start(frames);
-      log.info(`match: VR overlay ${st.state}${st.reason ? ` (${st.reason})` : ''}`);
+      const st = await overlay.start(frames);
+      log.info(`match: VR overlay ${st.state}${st.reason ? ` (${st.reason})` : ''}${via}`);
     } catch (e) {
-      log.warn(`match: the VR overlay did not start: ${describeError(e)}`);
+      log.warn(`match: the VR overlay${via} did not start: ${describeError(e)}`);
     }
     emit();
   };
@@ -394,28 +411,28 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     await opts.media?.setVr?.(mediaRig(a));
     await a.controller.open();
     if (headsetPanel(a)) await startOverlay(a);
-    else showDesktopPanel(a);
-  };
-
-  /** B22 (2026-10-31): in VR off SteamVR the panel is a visible desktop window, and the log says why. */
-  const showDesktopPanel = (a: Active): void => {
-    if (offSteamVr(a)) log.info(`match: in VR via ${a.runtime ?? 'an unknown runtime'}; the in-headset panel needs SteamVR, so the panel shows on the desktop (overlay unavailable: runtime_not_steamvr)`);
-    opts.media?.showPanel();
+    else opts.media?.showPanel();
   };
 
   /**
-   * A6 (2026-10-31): the desktop panel moves into the headset when the witness reads VR after host / join. B22: only a
-   * SteamVR reading moves it; another runtime switches the rig (and the capture pick) and keeps the desktop panel.
+   * A6 (2026-10-31): the desktop panel moves into the headset when the witness reads VR after host / join. D7.3: on any
+   * runtime (the OpenXR layer off SteamVR), and a later reading on a runtime that needs the other overlay swaps them.
    */
   const switchToVr = async (a: Active, d: RigDecision): Promise<void> => {
     if (a.switching) return;
-    if (a.rig === 'vr_headset' && (headsetPanel(a) || d.runtime !== 'steamvr')) return;
+    if (a.rig === 'vr_headset' && !overlayChanges(a, d)) return;
     a.switching = true;
+    const was = a.overlay;
     a.rig = 'vr_headset';
     a.runtime = d.runtime;
     a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${d.reason}`;
     log.info(`match: rig vr_headset (${a.rigReason})`);
     emit();
+    if (was) {
+      a.overlay = null;
+      log.info(`match: VPX's VR runtime is ${d.runtime ?? 'unknown'} now; the panel moves to ${usesLayer(a) ? 'the OpenXR layer' : 'the SteamVR overlay'}`);
+      await was.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
+    }
     try {
       await opts.media?.setVr?.(mediaRig(a));
     } catch (e) {
@@ -423,8 +440,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     a.switching = false;
     if (active !== a) return;
-    if (headsetPanel(a)) await startOverlay(a);
-    else showDesktopPanel(a);
+    await startOverlay(a);
     emit();
   };
 
@@ -493,7 +509,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         port,
         invite: null,
         ipSource: null,
-        overlayStarted: false,
+        overlay: null,
         ...rigOf(rig),
         witnessRig: rigFrom(witness.status()),
         switching: false,
@@ -575,7 +591,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           port: parsed.port,
           invite: null,
           ipSource: null,
-          overlayStarted: false,
+          overlay: null,
           ...rigOf(rig),
           witnessRig: rigFrom(witness.status()),
           switching: false,
@@ -602,7 +618,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
       active = null;
       for (const off of a.offs) off();
-      if (a.overlayStarted) await opts.vrOverlay?.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
+      if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
       const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
       await a.controller.close();
       for (const r of roles) r.close();

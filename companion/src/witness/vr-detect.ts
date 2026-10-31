@@ -27,7 +27,7 @@ import { execFile } from 'node:child_process';
 
 /**
  * The VR runtime VPX rendered through. Only `steamvr` has a compositor the OpenVR overlay helper (D7) can draw
- * into; the others put the game in the headset with no place for the panel there (B22, 2026-10-31).
+ * into (B22, 2026-10-31); on the others the panel goes in through the Castcade OpenXR layer inside VPX (D7.3).
  */
 export type VrRuntime = 'steamvr' | 'virtual-desktop' | 'oculus' | 'openxr-other';
 

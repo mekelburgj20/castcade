@@ -330,18 +330,15 @@ function rigLine(st: MatchStatus): string {
   if (st.rig === 'pc') return 'Rig: monitor (desktop panel).';
   const o = st.vrOverlay;
   const rt = st.vrRuntime ?? 'steamvr';
-  if (rt === 'steamvr') return `Rig: VR headset via SteamVR (overlay: ${o ? `${o.state}${o.reason ? `, ${o.reason}` : ''}` : 'no helper in this build'}).`;
-  // B22 (2026-10-31): the OpenVR overlay helper draws into SteamVR's compositor; on any other runtime there is none.
-  // Owner's rig 2026-10-31: VPX's openvr_api64.dll was OpenComposite (OpenVR → the active OpenXR runtime), so launching
-  // SteamVR alone changes nothing; Valve's loader must be back beside the exe (or SteamVR made the active OpenXR runtime).
-  const how =
-    rt === 'virtual-desktop'
-      ? "put Valve's openvr_api64.dll back beside VPinballX (OpenComposite replaces it), make SteamVR the active OpenXR runtime in SteamVR settings, then Virtual Desktop → Launch SteamVR and VPX"
-      : "start SteamVR first (with Valve's openvr_api64.dll beside VPinballX, not OpenComposite), then VPX's OpenVR mode";
-  return (
-    `Rig: VR headset via ${RUNTIME_LABEL[rt]}. The in-headset panel needs SteamVR as VPX's VR runtime; on this runtime the panel stays on the desktop ` +
-    `(voice, the turn cue and the lock work the same). To get the panel in the headset, run VPX through SteamVR (${how}).`
-  );
+  const state = o ? `${o.state}${o.reason ? `, ${o.reason}` : ''}` : 'not in this build';
+  if (rt === 'steamvr') return `Rig: VR headset via SteamVR (overlay: ${o ? state : 'no helper in this build'}).`;
+  // D7.3 (2026-10-31): off SteamVR the Castcade OpenXR layer draws the panel inside VPX. The loader reads the layer list
+  // when VPX starts VR, so a VPX started before Castcade first registered the layer has to be restarted once.
+  const restart =
+    o?.reason === 'restart_vpx'
+      ? ' VPX was started before Castcade registered its layer: close VPX and start the table again, and the panel appears in the headset.'
+      : '';
+  return `Rig: VR headset via ${RUNTIME_LABEL[rt]}. In-headset panel: via the Castcade OpenXR layer (${state}).${restart}`;
 }
 
 function overlayLine(o: MatchStatus['vrOverlay']): string {

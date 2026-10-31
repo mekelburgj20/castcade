@@ -49,6 +49,7 @@ python fixtures/check.py       # replay the recorded journals through the Phase 
 npm run fetch-maps -w companion   # fetch the pinned pinmame-nvram-maps corpus into companion/resources/maps (gitignored; needed to package)
 npm run fetch-ffmpeg -w companion # fetch the pinned ffmpeg build (sha256-checked) into companion/resources/ffmpeg (gitignored; needed to package, D1.6)
 npm run fetch-vr-overlay -w companion # fetch the OpenVR overlay helper zip from the pinned release into companion/resources/vr-overlay (gitignored; `--from vr-overlay/build/Release` for a local build; D7)
+npm run fetch-vr-layer -w companion   # fetch the OpenXR panel layer zip (dll + json) into companion/resources/vr-layer (gitignored; `--from vr-layer/build/Release` for a local build; D7.3)
 npm run ffmpeg-source -w companion # download the GPL Corresponding Source of the bundled ffmpeg into companion/release (release.yml uploads it; E5, docs/ffmpeg-source.md)
 npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run playfield-tags -w companion -- "<table.vpx>"   # re-record fixtures/playfield/tags.json (B4.1) after a VPX update: tag names and counts only
@@ -97,6 +98,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | `companion/` | Electron + TS app: modules `patcher`, `witness`, `match`, `media`, `launch` | 2+ |
 | `vpx-hook/` | `castcade.vbs` shared library (0.4.0), `spike/` Phase 0 tooling, patch recipes, optional `core.vbs` bulk patch | 0, 3 |
 | `vr-overlay/` | `castcade-vr-overlay.exe`: C++17/CMake/MSVC OpenVR overlay helper that draws the match panel in the headset (stdin frame pipe; OpenVR SDK pinned by tag + sha256; CI `vr-overlay.yml` is the build of record) | alpha (D7) |
+| `vr-layer/` | `XrApiLayer_castcade_panel.dll` + manifest: C++17/CMake/MSVC implicit OpenXR API layer that appends the match panel as a quad inside VPinballX on non-SteamVR runtimes (frames over `\\.\pipe\castcade-panel`, same format as the helper's stdin; OpenXR headers pinned by tag + sha256; CI `vr-layer.yml` is the build of record) | alpha (D7.3) |
 | `fakeclient/` | scripted protocol player, no emulator, for CI | 1 |
 | `arcade/` | RetroArch launch profiles, core allowlist, ROM memory maps | 6 |
 | `fixtures/` | recorded NVRAM journals + script-event logs for detector replay in CI | 2–3 |

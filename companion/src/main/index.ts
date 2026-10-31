@@ -40,6 +40,7 @@ import { matchSignalling } from './match-setup.js';
 import type { VrOverlay } from '../media/match-media-types.js';
 import { createMediaSettingsStore } from '../media/media-settings.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
+import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { probeWindows } from '../media/window-geometry.js';
 
@@ -60,9 +61,10 @@ let overlay: OverlayServer | null = null;
 let stream: StreamHost | null = null;
 /** A6: the match (host or join by invite); null when it could not be set up this run. */
 let match: MatchHost | null = null;
-/** D2 / D7: the match's video and voice, and the headset panel; null when they could not be set up this run. */
+/** D2 / D7 / D7.3: the match's video and voice, and the headset panel (SteamVR helper, OpenXR layer); null when they could not be set up this run. */
 let matchMedia: RtcHost | null = null;
 let matchOverlay: VrOverlay | null = null;
+let matchLayer: VrOverlay | null = null;
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -176,6 +178,7 @@ async function quit(host: WitnessHost): Promise<void> {
   await match?.stop().catch(() => undefined); // forfeits a match in progress and removes the turn lock
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
+  await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
   await host.stop();
   log?.info('quit');
   app.quit();
@@ -409,6 +412,14 @@ async function main(): Promise<void> {
   } catch (e) {
     logger.error(`vr-overlay: could not set up (${describeError(e)}); the match panel shows on the desktop this run`);
   }
+  // D7.3: off SteamVR (Virtual Desktop, Oculus, other OpenXR runtimes) the panel goes in through the OpenXR layer.
+  try {
+    const jsonPath = resolveVrLayer({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    if (!jsonPath) logger.info('vr-layer: no OpenXR layer in this build; on OpenXR rigs the headset panel is unavailable');
+    matchLayer = createVrLayerOverlay({ jsonPath, log: (line) => logger.info(line), vpxRunning: () => host.status().running });
+  } catch (e) {
+    logger.error(`vr-layer: could not set up (${describeError(e)}); no headset panel on OpenXR rigs this run`);
+  }
 
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
@@ -424,6 +435,7 @@ async function main(): Promise<void> {
       media: matchMedia ?? undefined,
       mediaSettings,
       vrOverlay: matchOverlay ?? undefined,
+      vrLayer: matchLayer ?? undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),
       appVersion,
