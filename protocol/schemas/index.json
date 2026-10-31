@@ -84,6 +84,10 @@
     "RECONNECT_ACK": {
       "direction": "host->client",
       "schema": "RECONNECT_ACK.schema.json"
+    },
+    "MEDIA_SIGNAL": {
+      "direction": "any",
+      "schema": "MEDIA_SIGNAL.schema.json"
     }
   }
 }

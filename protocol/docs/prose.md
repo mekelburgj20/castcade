@@ -71,7 +71,8 @@ base64-encoded.
   `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, and one derived `host_transfer` event per
   accepted transfer (below). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the *other*
   participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
-  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`.
+  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`, `MEDIA_SIGNAL` (forwarded to its `to`
+  only, see Media signalling).
 - Each entry is `{index, prevHash, ts, kind, from, message | event}` with
   `hash = sha256(canonicalJson(entry))` and `prevHash` the previous hash (64 zeros before the first
   entry). `ts` is always the message's own `ts`, never a local clock, so hashes agree across machines.
@@ -160,6 +161,22 @@ base64-encoded.
   already sent it.
 - A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
   (`host_left`, above).
+
+## Media signalling
+
+- Players see and hear each other over WebRTC, one peer connection per pair of participants (a full
+  mesh at 2–4 players). `MEDIA_SIGNAL` carries only the setup: SDP offers and answers and trickled ICE
+  candidates. It rides the match channel (D2, 2026-10-30): a client sends it to the host, and the host
+  forwards it to the one participant named in `to`, with `from` preserved, and to nobody else. A signal
+  addressed to the host is consumed there; the host sends its own straight to `to`. A signal for a
+  participant who is not connected is dropped.
+- `MEDIA_SIGNAL` is never logged and never changes match state; it is valid in any phase.
+- The media flows peer to peer (STUN, optionally the player's own TURN server). It never crosses ArcAid
+  and never passes through the host's match socket.
+- Voice goes from every participant to every other (open microphone with a mute). Video goes only from
+  the player up: each rig keeps one video sender per connection and enables it only while it holds the
+  grant, so a new grant or a host transfer needs no renegotiation. Who is up comes from `TURN_GRANT`,
+  never from the media.
 
 ## Result
 

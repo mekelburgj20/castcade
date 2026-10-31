@@ -1,0 +1,74 @@
+{
+  "$id": "https://castcade.dev/protocol/v2/MEDIA_SIGNAL.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "to": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The one participant this signal is for. The host forwards it there and nowhere else."
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "offer",
+        "answer",
+        "ice"
+      ],
+      "description": "An SDP offer or answer, or one ICE candidate."
+    },
+    "sdp": {
+      "description": "The session description; present on offer and answer.",
+      "type": "string",
+      "maxLength": 65536
+    },
+    "candidate": {
+      "description": "Present on ice.",
+      "type": "object",
+      "properties": {
+        "candidate": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "The browser's candidate line; empty for end-of-candidates."
+        },
+        "sdpMid": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sdpMLineIndex": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "candidate",
+        "sdpMid",
+        "sdpMLineIndex"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "to",
+    "kind"
+  ],
+  "additionalProperties": false,
+  "description": "any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media."
+}

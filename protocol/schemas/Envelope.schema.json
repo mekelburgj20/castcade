@@ -29,7 +29,8 @@
         "FORFEIT",
         "REJECT",
         "RECONNECT",
-        "RECONNECT_ACK"
+        "RECONNECT_ACK",
+        "MEDIA_SIGNAL"
       ]
     },
     "matchId": {

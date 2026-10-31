@@ -9,8 +9,9 @@
  * message the host accepts is broadcast verbatim to *every* participant, including the sender
  * as an echo, and each participant logs the broadcast stream in order. STATE and DMD_FRAME are
  * mirrored to the other participants but never logged. HELLO/HELLO_ACK/REFUSE/REJECT/LOG_SIGN/
- * RESULT/HOST_TRANSFER_ACK are never logged either. The log is frozen at the moment the last
- * game ends; LOG_SIGN and RESULT refer to that frozen head.
+ * RESULT/HOST_TRANSFER_ACK are never logged either, nor is MEDIA_SIGNAL, which goes to its `to`
+ * only (D2). The log is frozen at the moment the last game ends; LOG_SIGN and RESULT refer to
+ * that frozen head.
  *
  * Choices where SPEC is silent (listed in the Phase 1 report):
  * - TURN_GRANT is broadcast to all, not only the holder, so everyone logs it and knows whose turn it is.
@@ -117,13 +118,18 @@ export interface HostEvents extends Record<string, unknown> {
   /** A RECONNECT was accepted; `entries` is how many log entries it was sent. */
   reconnected: { playerId: PlayerId; entries: number };
   reconnectRejected: { playerId: PlayerId; code: ReconnectCode };
+  /** A MEDIA_SIGNAL addressed to this host's own player (D2); signals for anyone else are only forwarded. */
+  mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
 }
+
+/** What the media layer hands over to send; the engine adds `to` and the envelope (D2). */
+export type OutgoingMediaSignal = Omit<PayloadOf<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT']);
-/** Frames a host passes on with `from` preserved on a star transport. */
-const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK']);
+/** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
+const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL']);
 
 export class HostMatch {
   readonly events = new Emitter<HostEvents>();
@@ -305,6 +311,22 @@ export class HostMatch {
     this.events.emit('state', msg);
   }
 
+  /**
+   * D2: the host's own WebRTC signal, straight to `to`. Never throws and never logs: ICE callbacks fire late (after a
+   * step-down, or for a peer that just dropped), and a lost signal costs a renegotiation, not the match. False when
+   * nothing was sent.
+   */
+  sendMediaSignal(to: PlayerId, signal: OutgoingMediaSignal): boolean {
+    if (this.detached || to === this.localId) return false;
+    let msg: Message<'MEDIA_SIGNAL'>;
+    try {
+      msg = this.s.build('MEDIA_SIGNAL', { ...signal, to }, this.matchId);
+    } catch {
+      return false; // not a valid MEDIA_SIGNAL (an oversized SDP, a bad id): the schema refused it
+    }
+    return this.forwardMediaSignal(msg);
+  }
+
   localDmd(frame: PayloadOf<'DMD_FRAME'>): void {
     this.assertActive();
     const msg = this.s.build('DMD_FRAME', frame, this.matchId);
@@ -411,6 +433,27 @@ export class HostMatch {
     }
   }
 
+  /** MEDIA_SIGNAL (D2): to `payload.to` and nobody else, `from` preserved, never logged. A peer that is gone is skipped. */
+  private forwardMediaSignal(msg: Message<'MEDIA_SIGNAL'>): boolean {
+    const to = msg.payload.to;
+    if (to === msg.from || to === this.localId || !this.isParticipant(to) || this.gone.has(to)) return false;
+    this.s.transport.send(to, msg);
+    return true;
+  }
+
+  private onMediaSignal(msg: Message<'MEDIA_SIGNAL'>): void {
+    const to = msg.payload.to;
+    if (to === this.localId) {
+      this.events.emit('mediaSignal', { from: msg.from, signal: msg.payload });
+      return;
+    }
+    if (!this.isParticipant(to)) {
+      this.reject(msg, 'unknown_player', `MEDIA_SIGNAL for ${to}, who has not joined this match`);
+      return;
+    }
+    this.forwardMediaSignal(msg);
+  }
+
   private reject(ref: AnyMessage, code: RejectCode, message: string): void {
     const payload: PayloadOf<'REJECT'> = { refSeq: ref.seq, refType: ref.type, code, message };
     this.events.emit('reject', { to: ref.from, ...payload });
@@ -475,6 +518,9 @@ export class HostMatch {
       case 'DMD_FRAME':
         this.mirror(msg);
         this.events.emit('dmd', msg);
+        return;
+      case 'MEDIA_SIGNAL':
+        this.onMediaSignal(msg);
         return;
       case 'BALL_END':
         this.onBallEnd(msg);

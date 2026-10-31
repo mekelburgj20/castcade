@@ -25,7 +25,7 @@ import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, Part
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
-import { HostMatch, type ReconnectCode } from './host.js';
+import { HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
 import { logSignBody, reconnectSignBody } from './result.js';
@@ -111,6 +111,8 @@ export interface ClientEvents extends Record<string, unknown> {
   reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
   /** One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. */
   reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number };
+  /** A MEDIA_SIGNAL for this player, forwarded by the host (or sent by it); `from` is the original sender (D2). */
+  mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT']);
@@ -295,6 +297,23 @@ export class ClientMatch {
   reportState(state: Omit<PayloadOf<'STATE'>, 'extraBalls'> & { extraBalls?: number }): void {
     this.assertActive();
     this.sendToHost(this.s.build('STATE', state, this.matchIdForWire()));
+  }
+
+  /**
+   * D2: a WebRTC signal for `to`, through the host (it forwards it to `to` only, or consumes it when `to` is the host).
+   * Never throws: ICE callbacks fire late, after a step-up or a drop, and a lost signal costs a renegotiation, not the
+   * match. False when nothing was sent.
+   */
+  sendMediaSignal(to: PlayerId, signal: OutgoingMediaSignal): boolean {
+    if (this.detached || to === this.localId) return false;
+    let msg: Message<'MEDIA_SIGNAL'>;
+    try {
+      msg = this.s.build('MEDIA_SIGNAL', { ...signal, to }, this.matchIdForWire());
+    } catch {
+      return false; // not a valid MEDIA_SIGNAL (an oversized SDP, a bad id): the schema refused it
+    }
+    this.sendToHost(msg);
+    return true;
   }
 
   reportDmd(frame: PayloadOf<'DMD_FRAME'>): void {
@@ -525,6 +544,11 @@ export class ClientMatch {
         return;
       case 'DMD_FRAME':
         this.events.emit('dmd', msg);
+        return;
+      case 'MEDIA_SIGNAL':
+        // The host forwards a signal to its `to` only (D2); anything else reaching here is a host bug, not ours to use.
+        if (msg.payload.to !== this.localId) return this.drop(msg, 'unexpected');
+        this.events.emit('mediaSignal', { from: msg.from, signal: msg.payload });
         return;
       case 'REJECT':
         this.events.emit('reject', msg.payload);
