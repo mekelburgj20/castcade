@@ -93,7 +93,7 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   enabled only while that peer is the player up (`setSending`), 1280x720 at 30 fps, `maxBitrate` 2.5 Mbps; receivers
   show the up player's track. This bounds upload to one video stream per rig and survives a host transfer without
   renegotiation (the handoff's host-forwarding is not needed at 2–4 players; revisit at the SFU step).
-- **Capture**: `desktopCapturer` window source: in VR the VPX VR preview window (title from `probeWindows()`: the
+- **Capture** (built as a window capture, then changed by D2.5 on 2026-10-31: Chromium's window capture freezes once VPX has focus in VR, so the page now captures the SCREEN and crops to the player window, covered while VPX is not in front, `media/capture-crop.ts`): originally `desktopCapturer` window source: in VR the VPX VR preview window (title from `probeWindows()`: the
   window of the VPX process that is not "Visual Pinball Player"; the agent confirms the title on the fixtures /
   comments and falls back to the largest VPX window), else the player window. The fallback never takes a DMD,
   backglass or PinUP window (title `/dmd|pinmame|flexdmd|backglass|b2s|pup|pinup/i`) or one under 640x360: the first

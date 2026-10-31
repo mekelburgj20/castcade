@@ -7,6 +7,35 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.26] — 2026-10-31
+
+After the second two-player match (all three balls each to a signed result; the other player's video froze the moment
+VPX took focus on his PC, and nothing showed in the headsets).
+
+### Match (alpha)
+- D2.5: the match video films the **screen** and crops to the player window (the same Desktop Duplication path the
+  solo stream engine uses) instead of Chromium's window capture, which freezes once VPX has focus in VR; the picture
+  is covered ("Paused: back in a moment") while VPX is not the window in front (D1.9), re-cropped when the window
+  moves, and the desktop panel is kept out of the capture. The roster wording follows what differs: `different table
+  file`, `same table, different file (a re-save or another download)` when only the hash differs, and a separate muted
+  `different VPX build` (the two rigs run Panasony 2078 and 2058). `media/capture-crop.ts`, `rtc-host.ts`,
+  `panel-page.ts`, `match/controller.ts`.
+- D7.3: the **in-headset panel on OpenXR rigs**: `vr-layer/`, an implicit OpenXR API layer (`XrApiLayer_castcade_panel`,
+  C++, OpenXR-SDK release-1.1.65 headers, CI-built) that loads inside `VPinballX*.exe` on any runtime (Virtual Desktop,
+  Oculus, SteamVR), takes the panel frames over a named pipe from the companion and appends them to every frame as
+  an `XrCompositionLayerQuad` 0.55 m wide below the line of sight; OpenGL and D3D11 sessions; inert without a client;
+  `XR_DISABLE_CASTCADE_PANEL=1` turns it off. The companion registers the layer for the current user when a match
+  opens in VR on a non-SteamVR runtime, so **VPX must be started after Castcade has hosted or joined once**; the Match
+  tab says `restart_vpx` until then. The SteamVR helper (D7) stays for SteamVR rigs. `media/vr-layer.ts`,
+  `media/panel-frame-writer.ts`, `main/match-host.ts`; built by `.github/workflows/vr-layer.yml`, fetched by
+  `npm run fetch-vr-layer -w companion`.
+- A6: the lobby refresh only moves a monitor rig into VR; a runtime swap stays with the status listener (the merge of
+  the two had told the media layer twice).
+
+### Known
+- `fakeclient/src/ws-reconnect.test.ts` "an unknown log hash is rejected" fails on `main` since one of today's engine
+  merges (A9, fix in progress); the two-player path is unaffected.
+
 ## [0.2.25] — 2026-10-31
 
 After the first two-player match (owner vs Krobs, Monster Bash, both in VR over Virtual Desktop, on 0.2.24: turns,
