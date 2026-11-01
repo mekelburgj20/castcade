@@ -241,7 +241,7 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `RECONNECT` | client->host | client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO. |
 | `RECONNECT_ACK` | host->client | host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection. |
 | `MEDIA_SIGNAL` | any | any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media. |
-| `PARTICIPANT_UPDATE` | client->host | client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final). |
+| `PARTICIPANT_UPDATE` | client->host | client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. |
 
 ### Envelope
 
@@ -527,15 +527,16 @@ any -> `to`, through the host: it forwards the frame to `to` only, `from` preser
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `to` | string (`^[A-Za-z0-9_.:-]+$`) | yes | The one participant this signal is for. The host forwards it there and nowhere else. |
-| `kind` | `"offer"` \| `"answer"` \| `"ice"` | yes | An SDP offer or answer, or one ICE candidate. |
+| `kind` | `"offer"` \| `"answer"` \| `"ice"` \| `"reset"` \| `"stereo"` | yes | An SDP offer or answer, or one ICE candidate. `reset`: the sender's connections to `to` are new (its panel was rebuilt); close yours and negotiate afresh. `stereo`: what the sender's video is (VPX's VR preview on one eye or both). |
 | `sdp` | string | no | The session description; present on offer and answer. |
 | `candidate` | object | no | Present on ice. |
+| `stereo` | `"mono"` \| `"sbs"` \| null | no | Present on stereo: `sbs` = left eye \| right eye side by side, `mono` = one picture, null = the sender does not know (the receiver guesses from the picture's shape). |
 
 ### `PARTICIPANT_UPDATE`
 
 Direction: client->host.
 
-client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final).
+client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.
 
 | Field | Type | Required | Description |
 |---|---|---|---|

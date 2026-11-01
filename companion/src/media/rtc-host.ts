@@ -30,11 +30,12 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource } from './match-media-types.js';
+import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { UNCOVER_MS } from './stream-engine.js';
+import { declaredStereo, type PreviewStereoSetting } from './preview-stereo.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
 
 export interface RtcHostOptions {
@@ -52,6 +53,11 @@ export interface RtcHostOptions {
    * panel is placed beside them, never over them. Absent (tests), the panel goes to the display's right edge.
    */
   mainBounds?: () => Rect | null;
+  /**
+   * D7.4.3 (2026-11-01): `[PlayerVR] VRPreview` of the running VPX's active ini (`preview-stereo.ts` readIniStereo),
+   * read at each capture pick of a VR rig whose setting is `auto`. Absent (tests), not known.
+   */
+  iniStereo?: () => Promise<VrStereo | null>;
 }
 
 /** `MatchMedia` plus the microphone picker the Match tab needs (the panel page lists the devices). */
@@ -83,6 +89,11 @@ export interface RtcHost extends MatchMedia {
    * does); both are no-ops for the headset panel.
    */
   hidePanel(): void;
+  /**
+   * D7.4.3 (2026-11-01): the Match tab's preview setting (match settings `previewStereo`). Read at each capture pick;
+   * while a capture is live the next look (at once) tells the page, which tells the peers.
+   */
+  setPreviewStereo(setting: PreviewStereoSetting): void;
 }
 
 const PARTITION = 'castcade-panel';
@@ -268,6 +279,22 @@ export function videoFrameFrom(m: unknown): VideoFrame | null {
   return { width, height, rgba, stereo };
 }
 
+/**
+ * D2.7 (2026-11-01): one line per peer whose connection changed (ICE state, signalling state, or a reopen), for
+ * companion.log: the page reports every 2 s, and an unchanged peer says nothing. Empty when nothing changed.
+ */
+export function peerChanges(before: PanelPageStatus['peers'] | null | undefined, after: PanelPageStatus['peers']): string[] {
+  const out: string[] = [];
+  for (const [id, p] of Object.entries(after)) {
+    const b = before?.[id];
+    if (b && b.ice === p.ice && b.signaling === p.signaling && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
+    const reopened = (p.reopens ?? 0) > (b?.reopens ?? 0) ? `, connection replaced (${p.reopens} so far)` : '';
+    out.push(`media: peer ${id}: ice ${p.ice}, signalling ${p.signaling ?? '?'}${reopened}`);
+  }
+  for (const id of Object.keys(before ?? {})) if (!(id in after)) out.push(`media: peer ${id}: connection closed`);
+  return out;
+}
+
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */
 export function mergeStatus(
   page: PanelPageStatus | null,
@@ -278,9 +305,11 @@ export function mergeStatus(
     error: string | null;
     captureCrop?: { width: number; height: number } | null;
     panelWindow?: { visible: boolean; side: PanelSide } | null;
+    captureStereo?: VrStereo | null;
   },
 ): MediaStatus {
   const live = main.attached && !!page?.capturing;
+  const stereo = live && main.captureStereo !== undefined ? { captureStereo: main.captureStereo } : {};
   return {
     ...(main.attached && main.panelWindow ? { panelWindow: main.panelWindow } : {}),
     attached: main.attached,
@@ -289,6 +318,7 @@ export function mergeStatus(
     mic: main.attached && page ? page.mic : 'unavailable',
     captureSource: live ? main.captureLabel : null,
     captureCrop: live && main.captureCrop ? { width: main.captureCrop.width, height: main.captureCrop.height } : null,
+    ...stereo,
     lastError: main.error ?? (main.attached ? (page?.error ?? null) : null),
   };
 }
@@ -296,10 +326,14 @@ export function mergeStatus(
 function isSignal(v: unknown): v is { to: MatchPlayerId; signal: MediaSignal } {
   if (typeof v !== 'object' || v === null) return false;
   const m = v as { to?: unknown; signal?: { kind?: unknown } };
-  return typeof m.to === 'string' && typeof m.signal === 'object' && m.signal !== null && (m.signal.kind === 'offer' || m.signal.kind === 'answer' || m.signal.kind === 'ice');
+  return typeof m.to === 'string' && typeof m.signal === 'object' && m.signal !== null && ['offer', 'answer', 'ice', 'reset', 'stereo'].includes(String(m.signal.kind));
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** D7.4.3: the declared stereo for the log. */
+export const stereoWords = (s: VrStereo | null | undefined): string =>
+  s === 'sbs' ? 'both eyes side by side' : s === 'mono' ? 'one picture' : 'stereo not known (the others guess from its shape)';
 
 // ---- the Electron side ----
 
@@ -350,6 +384,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   });
   /** VR rigs never cover on focus (see the header); said once per attach. */
   let coverOffSaid = false;
+  /** D7.4.3: the Match tab's preview setting (`setPreviewStereo`). */
+  let previewSetting: PreviewStereoSetting = 'auto';
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -359,7 +395,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
     !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
-    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, error: panelError ?? captureError, panelWindow: panelWindow() });
+    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, captureStereo: capture ? (capture.stereo ?? null) : undefined, error: panelError ?? captureError, panelWindow: panelWindow() });
   const emitStatus = (): void => {
     const s = status();
     for (const l of statusListeners) l(s);
@@ -424,6 +460,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   ipcMain.on(PANEL_CHANNELS.status, (e, s: PanelPageStatus) => {
     if (!fromPanel(e)) return;
     if (page?.error !== s.error && s.error) log.warn(`media: panel: ${s.error}`);
+    for (const line of peerChanges(page?.peers, s.peers ?? {})) log.info(line);
     const ended = page?.capturing === true && !s.capturing;
     // D7.4.4: counters, said once per report of theirs (the page repeats the last one in every report).
     if (s.stats && s.stats.seq !== page?.stats?.seq) {
@@ -655,7 +692,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: 0, height: 0 } });
     const src = matchScreenSource(sources, target.display.id);
     if (!src) return { error: `screen ${target.index + 1}, which shows "${pick.window.title}", is not offered for capture` };
-    return { capture: { sourceId: src.id, label: captureLabel(pick, target), screen: target.screen, crop: target.crop, out: target.out }, src, pick };
+    // D7.4.3: what the picture is, declared to the peers (the ini is read only for a VR rig on `auto`).
+    const ini = inVr && previewSetting === 'auto' && opts.iniStereo ? await opts.iniStereo().catch(() => null) : null;
+    const stereo = declaredStereo(previewSetting, inVr, ini);
+    return { capture: { sourceId: src.id, label: captureLabel(pick, target), screen: target.screen, crop: target.crop, out: target.out, stereo }, src, pick };
   };
 
   /** Finds the window to send and its capturer source; never throws. A newer attach or detach discards the result. */
@@ -750,10 +790,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       emitStatus();
       return;
     }
-    if (r.capture.sourceId !== cur.sourceId || !sameCrop(r.capture.crop, cur.crop) || r.capture.label !== cur.label) {
+    const moved = r.capture.sourceId !== cur.sourceId || !sameCrop(r.capture.crop, cur.crop) || r.capture.label !== cur.label;
+    const restereo = (r.capture.stereo ?? null) !== (cur.stereo ?? null);
+    if (moved || restereo) {
       // Logged once per change: an unchanged window says nothing.
       const c = r.capture.crop;
-      log.info(`media: the VPX window moved or resized: ${r.capture.label} at ${c.x},${c.y}`);
+      if (moved) log.info(`media: the VPX window moved or resized: ${r.capture.label} at ${c.x},${c.y}`);
+      if (restereo) log.info(`media: the match video is ${stereoWords(r.capture.stereo)} now (${previewSetting === 'auto' ? "VPX's VR preview setting" : 'the Match tab'})`);
       captureSrc = r.src;
       capture = r.capture;
       announced = capture;
@@ -776,7 +819,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const announceCapture = (gen: number): void => {
     if (gen !== generation || !attached || !capture || capture === announced) return;
     announced = capture;
-    log.info(`media: capture ${capture.label} ready`);
+    log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
     if (attachMsg && !attachSent) attachMsg.capture = capture;
     else toPage(PANEL_CHANNELS.capture, capture);
     captureLive(gen);
@@ -875,11 +918,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     await pickCapture(gen);
     if (gen !== generation) return;
     const s = opts.settings.get();
-    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
+    // D2.7 (2026-11-01): a re-attach (`setVr`) replaces a page whose connections still stand on the peers' side.
+    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending, reset: restore !== null };
     log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
     if (capture) {
       announced = capture;
-      log.info(`media: capture ${capture.label} ready`);
+      log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
       captureLive(gen);
     } else scheduleCapture(gen);
     flush();
@@ -967,7 +1011,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       // The page holds the connections and the UI: a new offscreen window gets everything the old one was told
       // (the microphone and the mute come from media.json, as at any attach).
       const keep = [...peers];
-      log.info(`media: moving the panel into the headset (offscreen window; ${keep.length} peer(s) reconnect)`);
+      log.info(`media: moving the panel into the headset (offscreen window; ${keep.length} peer(s) reset and reconnect)`);
       await attach(sig, keep, { state: lastState, sending });
     },
     microphones: () => mics,
@@ -981,6 +1025,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     setMicrophone(deviceId) {
       opts.settings.patch({ micDeviceId: deviceId });
       if (attached) toPage(PANEL_CHANNELS.microphone, deviceId);
+    },
+    setPreviewStereo(setting) {
+      if (setting === previewSetting) return;
+      previewSetting = setting;
+      // A live capture is looked at again now: a changed declaration reaches the page (and the peers) at once.
+      if (attached && capture) void recrop(generation);
     },
   };
 }

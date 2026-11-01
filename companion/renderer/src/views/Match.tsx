@@ -10,17 +10,13 @@ import { describe, type CastcadeState } from '../useCastcade.js';
 
 const RIG_LABEL: Record<MatchStatus['participants'][number]['rig'], string> = { pc: 'PC', vr_headset: 'VR headset', real_cabinet: 'cabinet' };
 
-/**
- * D7.4 (2026-10-31): a VR rig sending one eye. VPX's VR preview "Both Eyes" (`[PlayerVR] VRPreview = 3`: the
- * VRPreviewMode enum in src/core/player.h, combo labels in dialogs/VROptionsDialog.cpp, vpinball v10.8.0-2051-28dd6c3)
- * draws the left eye in the window's left half and the right eye in its right half (src/core/player.cpp, the
- * "VR Preview" blit); the other headset shows it in stereo when the picture is 3:1 or wider (panel-page.ts stereoOf).
+/*
+ * D7.4 (2026-10-31): VPX's VR preview "Both Eyes" (`[PlayerVR] VRPreview = 3`: the VRPreviewMode enum in
+ * src/core/player.h, combo labels in dialogs/VROptionsDialog.cpp, vpinball v10.8.0-2051-28dd6c3) draws the left eye in
+ * the window's left half and the right eye in its right half, each centre-cropped to its half's aspect. D7.4.3
+ * (2026-11-01): this rig declares it to the others (media/preview-stereo.ts) and main words the advice
+ * (`previewAdvice`: both eyes in a 16:9 window, one eye only); the "Your preview" setting overrides the ini.
  */
-const SBS_MIN_ASPECT = 3;
-function singleEyePreview(st: MatchStatus): boolean {
-  const c = st.media?.captureCrop;
-  return st.rig === 'vr_headset' && !!c && c.height > 0 && c.width / c.height < SBS_MIN_ASPECT;
-}
 
 export function Match({ state }: { state: CastcadeState }) {
   const { bridge } = state;
@@ -76,7 +72,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -275,12 +271,7 @@ export function Match({ state }: { state: CastcadeState }) {
               {rigLine(st)} <small>{st.rigReason}</small>
             </p>
             <p className="muted">{overlayLine(st.vrOverlay)}</p>
-            {singleEyePreview(st) && (
-              <p>
-                Set VPX's VR preview to "both eyes" so the other player sees your table in stereo: Preferences → VR → Preview: Both Eyes, with the preview window
-                twice as wide as 16:9 (Preview width 2560, height 720).
-              </p>
-            )}
+            {st.previewAdvice && <p>{st.previewAdvice}</p>}
           </div>
         </>
       )}
@@ -328,6 +319,21 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="panel">The match panel, low in view</option>
             </select>
             <small>Theater replaces your view with the other player's table on a big screen; it needs the Castcade OpenXR layer (not SteamVR).</small>
+          </label>
+          <label className="field">
+            <span>Your preview</span>
+            <select
+              value={st.settings.previewStereo}
+              onChange={(e) => setView({ previewStereo: e.target.value === 'mono' ? 'mono' : e.target.value === 'sbs' ? 'sbs' : 'auto' })}
+            >
+              <option value="auto">As VPX is set (VR preview setting)</option>
+              <option value="mono">One eye</option>
+              <option value="sbs">Both eyes</option>
+            </select>
+            <small>
+              What your VR preview window shows, told to the other player's headset. Both eyes in a window as tall as your monitor and about as wide (1080x1080 on
+              1080p) shows them your table in stereo, tall like pinball.
+            </small>
           </label>
         </div>
       </div>

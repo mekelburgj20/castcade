@@ -165,6 +165,11 @@ export class MatchController {
   private phase: ControllerPhase = 'lobby';
   private locked = false;
   private lobby: ParticipantInfo[] = [];
+  /**
+   * A6.1 (2026-11-01): rigs that changed after MATCH_READY (`rigUpdated`), laid over the log's roster wherever this
+   * controller shows a participant (the Match tab, the panel's `rig`, which the headset's stereo guess reads).
+   */
+  private readonly liveRigs = new Map<PlayerId, ParticipantInfo['rig']>();
   private hostId: PlayerId | null = null;
   /** The grant this player is playing, from its arrival until the ball end is reported. */
   private holding: GrantBody | null = null;
@@ -348,6 +353,7 @@ export class MatchController {
     offs.push(h.on('joined', () => this.onLobby(h.roster())));
     // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
     offs.push(h.on('participantUpdated', () => this.onLobby(h.roster())));
+    offs.push(h.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
     offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(h.on('ready', (p) => this.onReady(p)));
@@ -389,6 +395,7 @@ export class MatchController {
     );
     // A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (a rig or a table changed).
     offs.push(c.on('roster', (ack) => this.onLobby(ack.participants)));
+    offs.push(c.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     // HELLO_ACK's `hostGame` differs from this player's own: the host accepted it anyway (§3, advisory).
     offs.push(c.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(c.on('ready', (p) => this.onReady(p)));
@@ -434,6 +441,13 @@ export class MatchController {
 
   private onLobby(participants: ParticipantInfo[]): void {
     this.lobby = participants.map((p) => ({ ...p }));
+    this.push();
+  }
+
+  private onRigUpdated(id: PlayerId, rig: ParticipantInfo['rig']): void {
+    if (this.liveRigs.get(id) === rig) return;
+    this.liveRigs.set(id, rig);
+    this.opts.log(`match: ${this.nameOf(id)}'s rig is ${rig} now`);
     this.push();
   }
 
@@ -701,7 +715,12 @@ export class MatchController {
 
   private participants(): ParticipantInfo[] {
     const st = this.role.state;
-    return st.phase === 'lobby' ? this.lobby : st.participants;
+    if (st.phase === 'lobby') return this.lobby;
+    if (this.liveRigs.size === 0) return st.participants;
+    return st.participants.map((p) => {
+      const rig = this.liveRigs.get(p.playerId);
+      return rig && rig !== p.rig ? { ...p, rig } : p;
+    });
   }
 
   private nameOf(id: PlayerId | null): string {

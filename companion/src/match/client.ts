@@ -123,6 +123,11 @@ export interface ClientEvents extends Record<string, unknown> {
   reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number };
   /** A MEDIA_SIGNAL for this player, forwarded by the host (or sent by it); `from` is the original sender (D2). */
   mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
+  /**
+   * A6.1 (2026-11-01): a participant's rig changed after MATCH_READY (the host passed on its PARTICIPANT_UPDATE, or
+   * sent its own), or this player's own (`updateParticipant`). The roster in the log keeps what MATCH_READY said.
+   */
+  rigUpdated: { playerId: PlayerId; rig: ParticipantInfo['rig'] };
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT']);
@@ -306,11 +311,19 @@ export class ClientMatch {
   /**
    * A6 (2026-10-31): this player's rig or table changed after HELLO (it joined before its table loaded): tell the host
    * with PARTICIPANT_UPDATE, which answers with a HELLO_ACK to everyone (`roster`, and `tableMismatch` on a change).
-   * Only the fields that changed are sent. False (nothing sent) before the join, after MATCH_READY, or with no change.
+   * Only the fields that changed are sent. False (nothing sent) before the join or with no change. A6.1 (2026-11-01):
+   * after MATCH_READY only the rig is sent (the host passes it on to the others); a table change then is not.
    */
   updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint }): boolean {
     this.assertActive();
-    if (!this.joined || this.s.state.phase !== 'lobby') return false;
+    if (!this.joined) return false;
+    if (this.s.state.phase !== 'lobby') {
+      if (u.rig === undefined || u.rig === this.participant.rig) return false;
+      this.participant = { ...this.participant, rig: u.rig };
+      this.sendToHost(this.s.build('PARTICIPANT_UPDATE', { rig: u.rig }, this.matchIdForWire()));
+      this.events.emit('rigUpdated', { playerId: this.localId, rig: u.rig });
+      return true;
+    }
     const payload: PayloadOf<'PARTICIPANT_UPDATE'> = {};
     if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
     if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
@@ -612,6 +625,11 @@ export class ClientMatch {
         return;
       case 'REJECT':
         this.events.emit('reject', msg.payload);
+        return;
+      case 'PARTICIPANT_UPDATE':
+        // A6.1 (2026-11-01): another player's rig (or the host's own) after MATCH_READY; in the lobby HELLO_ACK says it.
+        if (this.s.state.phase === 'lobby' || msg.payload.rig === undefined || msg.from === this.localId) return this.drop(msg, 'unexpected');
+        this.events.emit('rigUpdated', { playerId: msg.from, rig: msg.payload.rig });
         return;
       case 'RESULT':
         this.onResult(msg);

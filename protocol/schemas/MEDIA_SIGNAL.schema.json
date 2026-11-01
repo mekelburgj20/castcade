@@ -15,9 +15,11 @@
       "enum": [
         "offer",
         "answer",
-        "ice"
+        "ice",
+        "reset",
+        "stereo"
       ],
-      "description": "An SDP offer or answer, or one ICE candidate."
+      "description": "An SDP offer or answer, or one ICE candidate. `reset`: the sender's connections to `to` are new (its panel was rebuilt); close yours and negotiate afresh. `stereo`: what the sender's video is (VPX's VR preview on one eye or both)."
     },
     "sdp": {
       "description": "The session description; present on offer and answer.",
@@ -63,6 +65,21 @@
         "sdpMLineIndex"
       ],
       "additionalProperties": false
+    },
+    "stereo": {
+      "description": "Present on stereo: `sbs` = left eye | right eye side by side, `mono` = one picture, null = the sender does not know (the receiver guesses from the picture's shape).",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "mono",
+            "sbs"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

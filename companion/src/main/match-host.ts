@@ -24,6 +24,7 @@ import { WsPeerTransport } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import type { MediaSettingsStore } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
+import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
 import type { Logger } from './log.js';
@@ -80,6 +81,11 @@ export interface MatchStatus {
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   panel: PanelState | null;
   media: MediaStatus | null;
+  /**
+   * D7.4.3 (2026-11-01): one line for a VR player about the picture sent (`preview-stereo.ts` previewAdvice): both eyes
+   * in a 16:9 window, one eye only, or a setting Castcade could not read. Null when there is nothing to say.
+   */
+  previewAdvice: string | null;
   vrOverlay: VrOverlayStatus | null;
   /**
    * A6 (2026-10-31): where this rig's panel goes, decided at host / join (and switched to the headset when the witness
@@ -137,7 +143,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -236,6 +242,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const { log, witness } = opts;
   const listeners = new Set<(s: MatchStatus) => void>();
   let settings = readMatchSettings(readText(opts.file));
+  // D7.4.3 (2026-11-01): the media layer declares the preview's stereo from this setting (and the ini on `auto`).
+  opts.media?.setPreviewStereo?.(settings.previewStereo);
   let active: Active | null = null;
   let connecting = false;
   let lastError: string | null = null;
@@ -324,6 +332,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const c: ControllerStatus | null = a ? a.controller.status() : null;
     const phase: MatchPhase = connecting ? 'connecting' : c ? c.phase : 'none';
     const r = a ? { rig: a.rig, rigReason: a.rigReason, runtime: a.runtime } : rigOf(idleRig());
+    const media = a && opts.media ? opts.media.status() : null;
     return {
       role: a ? a.role : 'none',
       phase,
@@ -353,7 +362,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           }
         : null,
       panel: c?.panel ?? null,
-      media: a && opts.media ? opts.media.status() : null,
+      media,
+      previewAdvice: previewAdvice({ inVr: r.rig === 'vr_headset', declared: media?.captureStereo, crop: media?.captureCrop }),
       vrOverlay: a ? ((a.overlay ?? overlayFor(a))?.status() ?? null) : null,
       rig: r.rig,
       rigReason: r.rigReason,
@@ -490,6 +500,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.runtime = d.runtime;
     a.rigReason = `switched after ${a.role === 'host' ? 'hosting' : 'joining'}: ${d.reason}`;
     log.info(`match: rig vr_headset (${a.rigReason})`);
+    // A6.1 (2026-11-01): the others are told in any phase, before the panel moves (the owner's rig read VR 7 s after
+    // Start, and the roster said pc all match). The table is the lobby refresh's to announce, not this.
+    if (active === a) announceLobby(a, a.rig, a.sent.game);
     emit();
     if (was) {
       a.overlay = null;
@@ -550,16 +563,29 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.refreshing = false;
     }
   };
+  /**
+   * Tells the others what changed since they were last told. A6.1 (2026-11-01): in any phase; after MATCH_READY the
+   * engines carry only the rig (a table change then is not sent, and `sent.game` keeps what was). The role in charge
+   * now (`currentRole`): after a host transfer `a.engine` is the role that stepped down.
+   */
   const announceLobby = (a: Active, rig: Rig, game: GameFingerprint): void => {
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    const lobby = role.state.phase === 'lobby';
     const rigChanged = rig !== a.sent.rig;
-    const gameChanged = JSON.stringify(game) !== JSON.stringify(a.sent.game);
+    const gameChanged = lobby && JSON.stringify(game) !== JSON.stringify(a.sent.game);
     if (!rigChanged && !gameChanged) return;
     const u = { ...(rigChanged ? { rig } : {}), ...(gameChanged ? { game } : {}) };
-    const done = a.engine instanceof HostMatch ? a.engine.updateLocal(u) : a.engine.updateParticipant(u);
-    a.sent = { rig, game };
+    let done: boolean;
+    try {
+      done = role instanceof HostMatch ? role.updateLocal(u) : role.updateParticipant(u);
+    } catch (e) {
+      log.warn(`match: the rig update did not go out: ${describeError(e)}`);
+      return;
+    }
+    a.sent = { rig, game: gameChanged ? game : a.sent.game };
     if (!done) return;
     const what = [rigChanged ? `rig ${rig}` : null, gameChanged ? `table ${game.tableName} (${game.tableHash === ZERO_SHA256 ? 'no hash' : game.tableHash.slice(0, 12)})` : null].filter(Boolean).join(', ');
-    log.info(`match: lobby update: ${what}; ${a.role === 'host' ? 'the players were told' : 'the host was told'}`);
+    log.info(`match: ${lobby ? 'lobby' : 'match'} update: ${what}; ${role instanceof HostMatch ? 'the players were told' : 'the host was told'}`);
     emit();
   };
 
@@ -801,7 +827,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     leave,
     setSettings(patch) {
+      const before = settings.previewStereo;
       saveSettings(patchMatchSettings(settings, patch));
+      if (settings.previewStereo !== before) {
+        opts.media?.setPreviewStereo?.(settings.previewStereo);
+        log.info(`match: preview stereo set to ${settings.previewStereo} on the Match tab`);
+      }
       emit();
       return status();
     },

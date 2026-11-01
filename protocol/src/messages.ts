@@ -135,7 +135,7 @@ export const ParticipantUpdate = z
     game: GameFingerprint.optional().describe("The sender's fingerprint now, when its table changed since HELLO."),
   })
   .describe(
-    "client -> host, in the lobby only. Replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. Ignored once MATCH_READY went out (the roster in the log is final).",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
   );
 
 export const Refuse = z
@@ -360,12 +360,23 @@ export const IceCandidate = z
 export const MediaSignal = z
   .object({
     to: PlayerId.describe('The one participant this signal is for. The host forwards it there and nowhere else.'),
-    kind: z.enum(['offer', 'answer', 'ice']).describe('An SDP offer or answer, or one ICE candidate.'),
+    // D2.7 + D7.4.3 (2026-11-01): `reset` and `stereo` are additive (MEDIA_SIGNAL is never logged; a companion that
+    // does not know them drops the frame as undecodable, which only costs the feature), so the version stays 2.
+    kind: z
+      .enum(['offer', 'answer', 'ice', 'reset', 'stereo'])
+      .describe(
+        "An SDP offer or answer, or one ICE candidate. `reset`: the sender's connections to `to` are new (its panel was rebuilt); close yours and negotiate afresh. `stereo`: what the sender's video is (VPX's VR preview on one eye or both).",
+      ),
     sdp: z.string().max(65_536).optional().describe('The session description; present on offer and answer.'),
     candidate: IceCandidate.optional().describe('Present on ice.'),
+    stereo: z
+      .enum(['mono', 'sbs'])
+      .nullable()
+      .optional()
+      .describe("Present on stereo: `sbs` = left eye | right eye side by side, `mono` = one picture, null = the sender does not know (the receiver guesses from the picture's shape)."),
   })
-  .refine((s) => (s.kind === 'ice' ? s.candidate !== undefined : s.sdp !== undefined), {
-    message: 'an offer or answer carries sdp; an ice signal carries candidate',
+  .refine((s) => (s.kind === 'ice' ? s.candidate !== undefined : s.kind === 'reset' ? true : s.kind === 'stereo' ? s.stereo !== undefined : s.sdp !== undefined), {
+    message: 'an offer or answer carries sdp; an ice signal carries candidate; a stereo signal carries stereo',
   })
   .describe(
     'any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media.',

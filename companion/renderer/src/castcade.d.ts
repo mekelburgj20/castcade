@@ -393,13 +393,15 @@ interface PanelState {
 interface MediaStatus {
   attached: boolean;
   sending: boolean;
-  peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean }>;
+  peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number }>;
   mic: 'open' | 'muted' | 'unavailable';
   captureSource: string | null;
   /** D7.4: the size of the region sent while the capture is live. */
   captureCrop?: { width: number; height: number } | null;
   /** D2.6: the desktop panel window, when there is one. */
   panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
+  /** D7.4.3: what this rig tells the others its picture is, while the capture is live. */
+  captureStereo?: 'mono' | 'sbs' | null;
   lastError: string | null;
 }
 interface VrOverlayStatus {
@@ -417,6 +419,8 @@ interface MatchSettings {
   theaterDuringMyTurn: 'hidden' | 'panel';
   /** D7.4: the headset while another player is up. */
   spectate: 'theater' | 'panel';
+  /** D7.4.3: what this rig's VR preview sends: `auto` (VPX's setting), one eye, both eyes. */
+  previewStereo: 'auto' | 'mono' | 'sbs';
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
@@ -435,6 +439,8 @@ interface MatchStatus {
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   panel: PanelState | null;
   media: MediaStatus | null;
+  /** D7.4.3: one line for a VR player about the picture sent, or null. */
+  previewAdvice: string | null;
   vrOverlay: VrOverlayStatus | null;
   rig: 'vr_headset' | 'pc';
   rigReason: string;

@@ -45,11 +45,17 @@ export interface PanelState {
   mic: 'open' | 'muted' | 'unavailable';
 }
 
-/** One signalling envelope; the media layer never sees the protocol message around it. */
+/**
+ * One signalling envelope; the media layer never sees the protocol message around it. D2.7 (2026-11-01): `reset` says
+ * the sender's connections are new (its panel page was rebuilt), so the receiver reopens its own before the sender's
+ * fresh offer lands. D7.4.3 (2026-11-01): `stereo` is what the sender's video is, declared by the sender (`stereo`).
+ */
 export interface MediaSignal {
-  kind: 'offer' | 'answer' | 'ice';
+  kind: 'offer' | 'answer' | 'ice' | 'reset' | 'stereo';
   sdp?: string;
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null };
+  /** On `stereo`: `sbs` (VPX's VR preview on both eyes), `mono`, or null (the sender does not know). */
+  stereo?: VrStereo | null;
 }
 
 /** How the media layer reaches the other players: the controller wraps the match transport (MEDIA_SIGNAL). */
@@ -62,8 +68,12 @@ export interface MediaSignalling {
 export interface MediaStatus {
   attached: boolean;
   sending: boolean;
-  /** Per peer: ICE connection state as the browser names it (`new`, `checking`, `connected`, `failed`, …). */
-  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean }>;
+  /**
+   * Per peer: ICE connection state as the browser names it (`new`, `checking`, `connected`, `failed`, …). D2.7
+   * (2026-11-01): `signaling` (the connection's signalling state) and `reopens` (how often the page replaced that
+   * connection after a `reset` or a stale offer), so a dead connection shows in companion.log. Absent before D2.7.
+   */
+  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number }>;
   mic: 'open' | 'muted' | 'unavailable';
   /** The capture source in use, for the Match tab: the window title, or null. */
   captureSource: string | null;
@@ -78,6 +88,11 @@ export interface MediaStatus {
    * watching through Virtual Desktop: it is excluded from screen capture).
    */
   panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
+  /**
+   * D7.4.3 (2026-11-01): what this rig tells the others its picture is (the capture's `stereo`), while the capture is
+   * live: `sbs` both eyes, `mono` one picture, null not known. Absent before D7.4.3.
+   */
+  captureStereo?: VrStereo | null;
   lastError: string | null;
 }
 

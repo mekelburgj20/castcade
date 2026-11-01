@@ -127,7 +127,9 @@ back to that default when the companion disconnects.
     0.55 m at `0, -0.28, -0.9`. Blended by the source alpha as premultiplied.
   - *theater*: the app's `XrCompositionLayerProjection` layers removed (OpenComposite submits VPX's two eyes as one;
     any other layer type the app submits stays), then a head-locked opaque black quad (30 m at 3 m) and the screen: a
-    quad 2.4 m wide, 2.6 m ahead, in `LOCAL` space, so it stays put when the head turns. It is placed when theater
+    quad 2.6 m ahead whose longer side is 2.4 m (D7.4.3, 2026-11-01: 2.4 m wide for a landscape eye, 2.4 m tall for a
+    portrait one, the other side from the eye's aspect; VPX's "both eyes" preview in a window about as wide as it is
+    tall gives two portrait eyes), in `LOCAL` space, so it stays put when the head turns. It is placed when theater
     begins: in front of where the head points then (its yaw only, upright, at eye height; `xrLocateSpace` of `VIEW` in
     `LOCAL` at the frame's display time). `stereo: sbs` splits the video frame into left | right halves: one swapchain,
     two quads at the same pose with `imageRect` halves and `eyeVisibility` LEFT / RIGHT. Mono: one quad for both eyes.

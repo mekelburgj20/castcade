@@ -110,7 +110,8 @@ const EDITOR = win('Visual Pinball - [Monster Bash (Williams 1998)]', 1920, 1040
 const DMD = win('PUPDMD', 512, 128);
 /** D2.5: what the page gets for PLAYER on the fake 1920x1080 display: its screen, and the window's crop of it. */
 const LABEL = 'screen 1, crop 1280x720 of Visual Pinball Player';
-const CAPTURE = { sourceId: 'screen:0:0', label: LABEL, screen: { width: 1920, height: 1080 }, crop: { x: 0, y: 0, width: 1280, height: 720 }, out: { width: 1280, height: 720 } };
+/** D7.4.3: a monitor rig declares one picture. */
+const CAPTURE = { sourceId: 'screen:0:0', label: LABEL, screen: { width: 1920, height: 1080 }, crop: { x: 0, y: 0, width: 1280, height: 720 }, out: { width: 1280, height: 720 }, stereo: 'mono' as const };
 
 /** In VR on SteamVR: the offscreen panel for the overlay helper. */
 const VR_STEAM = { inVr: true, headsetPanel: true } as const;
@@ -282,10 +283,12 @@ describe('createRtcHost (D2)', () => {
       localId: 'owner',
       peers: ['krobs'],
       ice: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-      capture: CAPTURE,
+      // D7.4.3: a VR rig on `auto` with no ini reader: not known
+      capture: { ...CAPTURE, stereo: null },
       micDeviceId: 'headset',
       muted: false,
       sending: false,
+      reset: false,
     });
     expect(w.webContents.sent[2]?.[1]).toEqual({ from: 'krobs', signal: { kind: 'offer', sdp: 'v=0 krobs' } });
 
@@ -293,11 +296,30 @@ describe('createRtcHost (D2)', () => {
     fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'answer', sdp: 'v=0 owner' } });
     fake.ipc.get(PANEL_CHANNELS.send)?.({ sender: {} }, { to: 'krobs', signal: { kind: 'answer', sdp: 'x' } });
     fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'bogus' } });
-    expect(net.sent).toEqual([['krobs', { kind: 'answer', sdp: 'v=0 owner' }]]);
+    fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'reset' } });
+    expect(net.sent).toEqual([
+      ['krobs', { kind: 'answer', sdp: 'v=0 owner' }],
+      ['krobs', { kind: 'reset' }],
+    ]);
 
     // status: from the page, with main's capture label
     fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(host.status()).toMatchObject({ attached: true, mic: 'open', captureSource: LABEL, lastError: null, peers: { krobs: { ice: 'connected' } } });
+    // D2.7: one log line per peer whose connection changed, not one per report
+    logs.length = 0;
+    const report = (ice: string, signaling: string, reopens: number) =>
+      fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice, receivingVideo: false, receivingAudio: true, signaling, reopens } }, mic: 'open', capturing: true, error: null });
+    report('connected', 'stable', 0);
+    report('connected', 'stable', 0);
+    report('checking', 'stable', 1);
+    report('checking', 'stable', 1);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: {}, mic: 'open', capturing: true, error: null });
+    expect(logs).toEqual([
+      'media: peer krobs: ice connected, signalling stable',
+      'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
+      'media: peer krobs: connection closed',
+    ]);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(statuses.length).toBeGreaterThan(0);
 
     // frames: paint -> PanelFrame
@@ -435,7 +457,8 @@ describe('createRtcHost (D2)', () => {
     fromPage(vrWin, PANEL_CHANNELS.ready);
     expect(vrWin.webContents.sent[0]).toEqual([
       PANEL_CHANNELS.attach,
-      expect.objectContaining({ localId: 'owner', peers: ['third', 'fourth'], micDeviceId: 'headset', muted: true, sending: true }),
+      // D2.7: `reset`: the peers' connections to the old page still stand; the new page tells them to reopen first.
+      expect.objectContaining({ localId: 'owner', peers: ['third', 'fourth'], micDeviceId: 'headset', muted: true, sending: true, reset: true }),
     ]);
     expect(vrWin.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.state, state]]);
     // Signals still reach the (new) page; frames reach the overlay.
@@ -511,7 +534,7 @@ describe('createRtcHost (D2)', () => {
       await settle();
       expect(probes).toBe(3);
       expect(w.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.capture, CAPTURE]]);
-      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual([`media: capture ${LABEL} ready`]);
+      expect(logs.filter((l) => l.startsWith('media: capture '))).toEqual([`media: capture ${LABEL} ready, one picture`]);
       expect(host.status()).toMatchObject({ sending: false, lastError: null });
 
       // Found: no more 3 s looks, only the 5 s re-probe (D2.5), which says nothing while the window stays put.
@@ -611,6 +634,48 @@ describe('createRtcHost (D2)', () => {
     await host.refreshMicrophones();
     expect(fake.FakeWindow.all).toHaveLength(before);
     await host.detach();
+  });
+
+  it('D7.4.3 (2026-11-01): a VR rig declares what its ini says; the Match-tab setting overrides it and reaches a live capture at once', async () => {
+    let ini: 'mono' | 'sbs' | null = 'sbs';
+    let reads = 0;
+    const iniStereo = async () => {
+      reads++;
+      return ini;
+    };
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store(), iniStereo });
+    await host.setVr({ inVr: true, headsetPanel: false });
+    await host.attach(signalling('owner').sig, []);
+    const w = fake.FakeWindow.all[0]!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect(w.webContents.sent[0]).toEqual([PANEL_CHANNELS.attach, expect.objectContaining({ capture: { ...CAPTURE, stereo: 'sbs' } })]);
+    expect(logs).toContain(`media: capture ${LABEL} ready, both eyes side by side`);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: {}, mic: 'open', capturing: true, error: null });
+    expect(host.status()).toMatchObject({ captureStereo: 'sbs', captureCrop: { width: 1280, height: 720 } });
+
+    host.setPreviewStereo('mono');
+    await settle();
+    expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { ...CAPTURE, stereo: 'mono' }]);
+    expect(logs).toContain('media: the match video is one picture now (the Match tab)');
+    const before = reads;
+    host.setPreviewStereo('mono'); // the same: nothing
+    await settle();
+    expect(reads).toBe(before);
+    host.setPreviewStereo('auto');
+    ini = null;
+    await settle();
+    expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { ...CAPTURE, stereo: null }]);
+    expect(host.status().captureStereo).toBeNull();
+    await host.detach();
+
+    // A monitor rig on `auto` sends one picture and never reads the ini.
+    reads = 0;
+    const desk = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store(), iniStereo });
+    await desk.attach(signalling('owner').sig, []);
+    fromPage(fake.FakeWindow.all.at(-1)!, PANEL_CHANNELS.ready);
+    expect(fake.FakeWindow.all.at(-1)!.webContents.sent[0]).toEqual([PANEL_CHANNELS.attach, expect.objectContaining({ capture: CAPTURE })]);
+    expect(reads).toBe(0);
+    await desk.detach();
   });
 
   it('D2.5: while the capture is live the window is re-probed every 5 s: moved → a new crop once; probe failure → kept; gone → stopped, looked for again', async () => {

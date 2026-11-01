@@ -193,8 +193,13 @@ class FakePeerConnection {
   onicecandidate: unknown = null;
   senders: { track: FakeTrack; params: { encodings: { maxBitrate?: number; maxFramerate?: number }[] } }[] = [];
   closed = false;
+  candidates: unknown[] = [];
   constructor(readonly config: unknown) {
     FakePeerConnection.all.push(this);
+  }
+  /** D2.7: the remote connection a description came from (`session:<x>` in the fake SDP), as Chromium tells them apart. */
+  static session(sdp: string | undefined): string | null {
+    return /session:(\w+)/.exec(sdp ?? '')?.[1] ?? null;
   }
   addEventListener(): void {}
   addTrack(track: FakeTrack) {
@@ -212,15 +217,38 @@ class FakePeerConnection {
     this.senders.push(s);
     return s;
   }
-  async setLocalDescription(): Promise<void> {
+  async setLocalDescription(d?: { type: string }): Promise<void> {
+    if (d?.type === 'rollback') {
+      this.signalingState = 'stable';
+      return;
+    }
+    if (this.signalingState === 'have-remote-offer') {
+      this.localDescription = { type: 'answer', sdp: 'answer-sdp' };
+      this.signalingState = 'stable';
+      this.iceConnectionState = 'connected';
+      return;
+    }
     this.localDescription = { type: 'offer', sdp: 'offer-sdp' };
     this.signalingState = 'have-local-offer';
   }
   async setRemoteDescription(d: { type: string; sdp: string }): Promise<void> {
+    if (d.type === 'offer') {
+      // D2.7: what the owner's rig logged when a rebuilt page's fresh connection offered onto this one.
+      const had = FakePeerConnection.session(this.remoteDescription?.sdp);
+      if (had !== null && had !== FakePeerConnection.session(d.sdp)) {
+        throw new Error("Failed to set remote offer sdp: The order of m-lines in subsequent offer doesn't match order from previous offer/answer.");
+      }
+      this.remoteDescription = d;
+      this.signalingState = 'have-remote-offer';
+      return;
+    }
     this.remoteDescription = d;
     this.signalingState = 'stable';
+    this.iceConnectionState = 'connected';
   }
-  async addIceCandidate(): Promise<void> {}
+  async addIceCandidate(c: unknown): Promise<void> {
+    this.candidates.push(c);
+  }
   restartIce(): void {}
   close(): void {
     this.closed = true;
@@ -361,6 +389,79 @@ describe('panel page script (D2)', () => {
     expect(FakePeerConnection.all.every((x) => x.closed)).toBe(true);
   });
 
+  it('D2.7: a fresh offer onto an established connection (the peer rebuilt its page) reopens it and ends connected', async () => {
+    const p = loadPage({ mic: true, capture: false });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    const first = FakePeerConnection.all[0]!;
+    first.onnegotiationneeded?.();
+    await settle();
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'answer session:k1' } });
+    await settle();
+    expect(first.iceConnectionState).toBe('connected');
+
+    // Krobs's panel moved into the headset (an older companion: no reset): his fresh connection offers, then its ICE.
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'offer', sdp: 'offer session:k2' } });
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'ice', candidate: { candidate: 'candidate:9 1 udp 1 10.0.0.9 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 } } });
+    await settle();
+    expect(first.closed).toBe(true);
+    expect(FakePeerConnection.all).toHaveLength(2);
+    const fresh = FakePeerConnection.all[1]!;
+    expect(fresh.remoteDescription).toEqual({ type: 'offer', sdp: 'offer session:k2' });
+    expect(fresh.candidates).toHaveLength(1);
+    expect(fresh.iceConnectionState).toBe('connected');
+    expect(fresh.senders.map((s) => s.track.kind)).toEqual(['audio']);
+    const sent = p.sent.filter((s) => s.channel === PANEL_CHANNELS.send).map((s) => s.arg);
+    expect(sent.at(-1)).toEqual({ to: 'krobs', signal: { kind: 'answer', sdp: 'answer-sdp' } });
+    // the report names the connection's state and the reopen; no error line
+    p.intervals.find((i) => i.ms === 2000)!.cb();
+    const st = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { error: string | null; peers: Record<string, { ice: string; signaling: string; reopens: number }> };
+    expect(st.peers['krobs']).toMatchObject({ ice: 'connected', signaling: 'stable', reopens: 1 });
+    expect(st.error).toBeNull();
+  });
+
+  it('D2.7: a reset reopens the connection before the offer; a rebuilt page sends reset to every peer first', async () => {
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    const first = FakePeerConnection.all[0]!;
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'offer', sdp: 'offer session:k1' } });
+    await settle();
+    expect(first.iceConnectionState).toBe('connected');
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'reset' } });
+    expect(first.closed).toBe(true);
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'offer', sdp: 'offer session:k2' } });
+    await settle();
+    expect(FakePeerConnection.all.at(-1)?.iceConnectionState).toBe('connected');
+    p.intervals.find((i) => i.ms === 2000)!.cb();
+    const st = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { error: string | null; peers: Record<string, { reopens: number }> };
+    expect(st.peers['krobs']?.reopens).toBe(1);
+    expect(st.error).toBeNull();
+
+    // The mover's side: a re-attach with `reset` says so to each peer before its connections offer; its stereo follows.
+    const m = loadPage({ mic: true, capture: true });
+    m.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'third'], ice: [], capture: { ...CAP, stereo: 'sbs' }, micDeviceId: null, muted: false, sending: false, reset: true });
+    await settle();
+    for (const pc of FakePeerConnection.all) pc.onnegotiationneeded?.();
+    await settle();
+    const kinds = m.sent.filter((s) => s.channel === PANEL_CHANNELS.send).map((s) => s.arg as { to: string; signal: { kind: string; stereo?: string } });
+    expect(kinds.slice(0, 2)).toEqual([
+      { to: 'krobs', signal: { kind: 'reset' } },
+      { to: 'third', signal: { kind: 'reset' } },
+    ]);
+    expect(kinds.filter((k) => k.signal.kind === 'stereo')).toEqual([
+      { to: 'krobs', signal: { kind: 'stereo', stereo: 'sbs' } },
+      { to: 'third', signal: { kind: 'stereo', stereo: 'sbs' } },
+    ]);
+    expect(kinds.filter((k) => k.signal.kind === 'offer')).toHaveLength(2);
+    // a later capture that says one eye goes to every peer once
+    m.emit(PANEL_CHANNELS.capture, { ...CAP, stereo: 'mono' });
+    m.emit(PANEL_CHANNELS.capture, { ...CAP, stereo: 'mono' });
+    await settle();
+    const later = m.sent.filter((s) => s.channel === PANEL_CHANNELS.send).map((s) => s.arg as { signal: { kind: string; stereo?: string } });
+    expect(later.filter((k) => k.signal.kind === 'stereo' && k.signal.stereo === 'mono')).toHaveLength(2);
+  });
+
   it('no microphone and no capture: the mesh still opens (receive only) and the status says why', async () => {
     const p = loadPage({ mic: false, capture: false });
     p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: false });
@@ -435,15 +536,59 @@ describe('panel page script (D2)', () => {
 });
 
 describe('the theater feed (D7.4, 2026-10-31)', () => {
-  it('side by side only from a VR sender and only 3:1 or wider (two 16:9 eyes are 32:9)', () => {
+  it('a sender that declared nothing: side by side only from a VR sender and only 3:1 or wider (the D7.4 guess)', () => {
     expect(SBS_MIN_ASPECT).toBe(3);
-    expect(stereoOf('vr_headset', 2560, 720)).toBe('sbs');
-    expect(stereoOf('vr_headset', 2160, 720)).toBe('sbs');
-    expect(stereoOf('vr_headset', 2150, 720)).toBe('mono');
-    expect(stereoOf('vr_headset', 1280, 720)).toBe('mono');
-    expect(stereoOf('pc', 2560, 720)).toBe('mono'); // a wide monitor picture is one picture
-    expect(stereoOf(undefined, 2560, 720)).toBe('mono');
-    expect(stereoOf('vr_headset', 2560, 0)).toBe('mono');
+    expect(stereoOf(undefined, 'vr_headset', 2560, 720)).toBe('sbs');
+    expect(stereoOf(null, 'vr_headset', 2160, 720)).toBe('sbs');
+    expect(stereoOf(undefined, 'vr_headset', 2150, 720)).toBe('mono');
+    expect(stereoOf(undefined, 'vr_headset', 1280, 720)).toBe('mono');
+    expect(stereoOf(undefined, 'pc', 2560, 720)).toBe('mono'); // a wide monitor picture is one picture
+    expect(stereoOf(undefined, undefined, 2560, 720)).toBe('mono');
+    expect(stereoOf(undefined, 'vr_headset', 2560, 0)).toBe('mono');
+  });
+
+  it('D7.4.3: the sender\'s declaration wins whatever the shape and the rig (both eyes in a 16:9 or a square window)', () => {
+    expect(stereoOf('sbs', 'vr_headset', 1920, 1080)).toBe('sbs'); // Krobs, BCBSLU
+    expect(stereoOf('sbs', 'vr_headset', 1440, 1392)).toBe('sbs'); // the owner's window
+    expect(stereoOf('sbs', 'pc', 1080, 1080)).toBe('sbs'); // a roster that still says pc (A6.1)
+    expect(stereoOf('mono', 'vr_headset', 2560, 720)).toBe('mono');
+    expect(stereoOf('tab', 'vr_headset', 2560, 720)).toBe('sbs'); // unknown word: the guess
+  });
+
+  it('D7.4.3: the up player\'s stereo signal decides the feed; it is kept for a peer not added yet', async () => {
+    const p = loadPage({ mic: false, capture: false });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    // before the peers are added (the page waits for its microphone and capture first)
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'stereo', stereo: 'sbs' } });
+    await settle();
+    p.emit(PANEL_CHANNELS.state, {
+      playerUp: 'krobs',
+      myTurn: false,
+      ball: 1,
+      ballsPerGame: 3,
+      players: [
+        { id: 'owner', name: 'Owner', score: null, ballsDone: 0, isUp: false, flags: [], rig: 'vr_headset' },
+        { id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: true, flags: [], rig: 'pc' },
+      ],
+      phase: 'playing',
+      result: null,
+      message: null,
+      mic: 'open',
+    } satisfies PanelState);
+    const feed = p.intervals.filter((i) => i.ms === 33).at(-1)!;
+    const video = p.el('video') as unknown as { videoWidth: number; videoHeight: number; currentTime: number; readyState: number };
+    Object.assign(video, { videoWidth: 1440, videoHeight: 1392, readyState: 4, currentTime: 1 });
+    p.emit(PANEL_CHANNELS.videoWant, true);
+    feed.cb();
+    const frames = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.video).map((s) => s.arg as { stereo: string });
+    expect(frames().at(-1)?.stereo).toBe('sbs');
+    p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'stereo', stereo: 'mono' } });
+    p.emit(PANEL_CHANNELS.videoAck);
+    video.currentTime = 2;
+    feed.cb();
+    expect(frames().at(-1)?.stereo).toBe('mono');
+    // never handed to the negotiation: no connection saw it
+    expect(FakePeerConnection.all[0]?.remoteDescription).toBeNull();
   });
 
   it('the feed is the video at its own size, scaled down into 1920x1080 (a side-by-side one into 3840x1080), even sides', () => {

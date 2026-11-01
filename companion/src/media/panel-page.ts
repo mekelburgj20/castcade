@@ -72,6 +72,12 @@ export interface PanelCapture {
   out: { width: number; height: number };
   /** D7.4.4 (2026-11-01): open the capture afresh even when `sourceId` is the live one's (a stalled capture re-picked). */
   restart?: boolean;
+  /**
+   * D7.4.3 (2026-11-01): what this picture is, declared by this rig (`preview-stereo.ts`): `sbs` = VPX's VR preview on
+   * both eyes (left | right), `mono` = one picture, null = not known (the receivers guess from its shape). The page
+   * tells every peer on a `stereo` signal. Absent before D7.4.3 (treated as null).
+   */
+  stereo?: 'mono' | 'sbs' | null;
 }
 
 export interface PanelAttach {
@@ -82,6 +88,11 @@ export interface PanelAttach {
   micDeviceId: string | null;
   muted: boolean;
   sending: boolean;
+  /**
+   * D2.7 (2026-11-01): this page replaces one whose connections to `peers` still stand on their side (the panel moved
+   * into the headset): it sends each a `reset` before anything else, so they reopen before its fresh offer lands.
+   */
+  reset?: boolean;
 }
 
 /** What the page reports; `rtc-host.ts` adds `attached` and `captureSource`. */
@@ -247,10 +258,15 @@ export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeigh
 }
 
 /**
- * D7.4: whether the up player's picture is VPX's VR preview on "both eyes" (left | right): only a VR sender's, and
- * only that wide (`SBS_MIN_ASPECT`, inlined: these helpers are embedded in the page by their source).
+ * D7.4: whether the up player's picture is VPX's VR preview on "both eyes" (left | right). D7.4.3 (2026-11-01): the
+ * sender says so (`declared`, its `stereo` signal), and that is trusted whatever the picture's shape and whatever its
+ * rig: VPX centre-crops each eye to its half of the window, so both eyes in a 16:9 or a square window are two portrait
+ * eyes, not a 3:1 picture. Only a sender that declared nothing (an older companion, or one that could not read its
+ * ini) falls back to the D7.4 guess: a VR sender's picture 3:1 or wider (`SBS_MIN_ASPECT`, inlined: these helpers are
+ * embedded in the page by their source).
  */
-export function stereoOf(rig: string | undefined, videoWidth: number, videoHeight: number): 'mono' | 'sbs' {
+export function stereoOf(declared: string | null | undefined, rig: string | undefined, videoWidth: number, videoHeight: number): 'mono' | 'sbs' {
+  if (declared === 'sbs' || declared === 'mono') return declared;
   return rig === 'vr_headset' && videoHeight > 0 && videoWidth / videoHeight >= 3 ? 'sbs' : 'mono';
 }
 
@@ -389,6 +405,11 @@ let localError = null;
 let stageKey = null;
 const localStream = new MediaStream();
 const remote = new Map();
+// D2.7: how often each peer's connection was replaced (a reset, or an offer the old one refused); kept across reopens.
+const reopens = new Map();
+// D7.4.3: this rig's declared stereo (undefined until a capture says; null = not known) and each peer's.
+let myStereo = undefined;
+const peerStereo = new Map();
 const $ = (id) => document.getElementById(id);
 const errText = (e) => (e && e.message ? e.message : String(e));
 
@@ -401,6 +422,8 @@ function report() {
       ice: r.pc.iceConnectionState,
       receivingVideo: !!v && v.readyState === 'live' && !v.muted,
       receivingAudio: !!a && a.readyState === 'live' && !a.muted,
+      signaling: r.pc.signalingState,
+      reopens: reopens.get(id) || 0,
     };
   }
   ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: localError, captureStalled: stalled, stats: stats });
@@ -552,11 +575,25 @@ function dropCapture() {
  * size so the crop stays sharp; getDisplayMedia, which main answers with the same source, if that fails), drawn cropped
  * onto the canvas. The canvas track outlives a change of display: the peers keep their sender and nothing renegotiates.
  */
+/** D7.4.3: a new declared stereo goes to every peer (a new connection gets it from openPeer); none given, nothing said. */
+function noteStereo(s) {
+  if (s === undefined) return;
+  const v = s === 'sbs' || s === 'mono' ? s : null;
+  if (v === myStereo) return;
+  myStereo = v;
+  if (mesh) for (const id of remote.keys()) sendStereo(id);
+}
+function sendStereo(peer) {
+  if (myStereo === undefined) return;
+  ipcRenderer.send(C.send, { to: peer, signal: { kind: 'stereo', stereo: myStereo } });
+}
+
 async function openCapture(c) {
   if (!c) {
     if (srcTrack || videoTrack) dropCapture();
     return;
   }
+  noteStereo(c.stereo);
   if (!c.restart && cap && srcTrack && srcTrack.readyState === 'live' && cap.sourceId === c.sourceId) {
     setCrop(c);
     return;
@@ -750,6 +787,7 @@ function openPeer(peer) {
   });
   pc.addEventListener('signalingstatechange', () => {
     if (pc.signalingState === 'stable') void applyBitrate(r);
+    report();
   });
   remote.set(peer, r);
   attachAudio(r);
@@ -760,6 +798,7 @@ function openPeer(peer) {
     const st = pc.iceConnectionState;
     if (n && n.pc === pc && st !== 'connected' && st !== 'completed') n.resendOffer();
   }, 5000);
+  sendStereo(peer);
   return pc;
 }
 
@@ -778,6 +817,14 @@ async function attach(a) {
     (to, signal) => ipcRenderer.send(C.send, { to: to, signal: signal }),
     (peer, e, where) => { localError = 'Media with ' + peer + ' (' + where + '): ' + errText(e); report(); },
   );
+  // D2.7: openPeer has already replaced the connection; count it, so the report (and companion.log) shows it.
+  mesh.onReopen = (peer) => {
+    reopens.set(peer, (reopens.get(peer) || 0) + 1);
+    report();
+    render();
+  };
+  // D2.7: this page replaces one whose connections still stand on the peers' side: they reopen first.
+  if (a.reset) for (const p of a.peers) ipcRenderer.send(C.send, { to: p, signal: { kind: 'reset' } });
   const m = mesh;
   await Promise.all([openMic(a.micDeviceId), openCapture(a.capture)]);
   if (mesh !== m) return;
@@ -805,12 +852,22 @@ function detach() {
   micState = 'unavailable';
   sending = false;
   stageKey = null;
+  myStereo = undefined;
+  peerStereo.clear();
+  reopens.clear();
   report();
   render();
 }
 
 ipcRenderer.on(C.attach, (_e, a) => void attach(a));
-ipcRenderer.on(C.signal, (_e, m) => { if (mesh) void mesh.receive(m.from, m.signal); });
+ipcRenderer.on(C.signal, (_e, m) => {
+  // D7.4.3: a peer's declared stereo is the page's, not the connection's; kept whether or not the peer is added yet.
+  if (m.signal && m.signal.kind === 'stereo') {
+    peerStereo.set(m.from, m.signal.stereo === 'sbs' || m.signal.stereo === 'mono' ? m.signal.stereo : null);
+    return;
+  }
+  if (mesh) void mesh.receive(m.from, m.signal);
+});
 ipcRenderer.on(C.addPeer, (_e, p) => { if (mesh) mesh.add(p); report(); });
 ipcRenderer.on(C.removePeer, (_e, p) => {
   if (mesh) mesh.remove(p);
@@ -845,7 +902,8 @@ ipcRenderer.on(C.detach, () => detach());
 /**
  * D7.4: the theater feed. While main wants it and the stage shows another player's video, each new video frame is
  * drawn into a canvas at the feed size and its pixels (RGBA) go to main, one frame in flight (main acks each one; a
- * lost ack is given up after a second). The up player's rig and the picture's aspect say whether it is side by side.
+ * lost ack is given up after a second). The up player's declared stereo says whether it is side by side (D7.4.3); only
+ * a player who declared nothing is judged by its rig and the picture's aspect.
  */
 let feedWanted = false;
 let feedInFlight = false;
@@ -867,7 +925,7 @@ function feedTick() {
   const mark = q && q.totalVideoFrames > 0 ? q.totalVideoFrames : v.currentTime;
   if (mark === feedLastFrame) return;
   const up = panel.players.find((p) => p.id === who);
-  const stereo = stereoOf(up ? up.rig : undefined, v.videoWidth, v.videoHeight);
+  const stereo = stereoOf(peerStereo.get(who), up ? up.rig : undefined, v.videoWidth, v.videoHeight);
   const size = feedSize(v.videoWidth, v.videoHeight, stereo);
   if (!size) return;
   try {

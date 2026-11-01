@@ -2,7 +2,8 @@
  * A6 (2026-10-31, the first two-player match): a client that joined before its table loaded said `pc` and no table in
  * HELLO. PARTICIPANT_UPDATE corrects both in the lobby: the host re-compares the fingerprint, re-sends HELLO_ACK to
  * every client, and both sides' flags follow. The host's own correction (`updateLocal`) does the same. After
- * MATCH_READY nothing changes, and none of it is logged.
+ * MATCH_READY the roster and the fingerprints in the log never change; A6.1 (2026-11-01): a rig change still reaches
+ * every participant (`rigUpdated`), and none of it is logged.
  */
 import { describe, expect, it } from 'vitest';
 import type { GameFingerprint, PayloadOf, PlayerId, ParticipantInfo } from '@castcade/protocol';
@@ -129,15 +130,15 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(r.clients['krobs']!.state.game).toEqual(MB);
   });
 
-  it('after MATCH_READY: the client sends nothing, the host ignores one sent anyway, the host keeps its own', async () => {
+  it('after MATCH_READY: a table change is not sent and one sent anyway is ignored; the log and roster stay as started', async () => {
     const r = await lobby({ clients: [{ id: 'krobs', game: NO_TABLE }] });
     const krobs = r.clients['krobs']!;
     r.host.start();
     await flush();
     const before = { roster: r.host.roster(), mismatch: r.host.tableMismatches(), log: r.host.log.length, events: r.hostSeen.mismatch.length };
-    expect(krobs.updateParticipant({ rig: 'vr_headset', game: MB })).toBe(false);
+    expect(krobs.updateParticipant({ game: MB })).toBe(false);
     // A client that sends it anyway (an older or a racing one).
-    krobs.session.transport.send('h', krobs.session.build('PARTICIPANT_UPDATE', { rig: 'vr_headset', game: MB }, 'M'));
+    krobs.session.transport.send('h', krobs.session.build('PARTICIPANT_UPDATE', { game: MB }, 'M'));
     await flush();
     expect(r.host.roster()).toEqual(before.roster);
     expect(r.host.tableMismatches()).toEqual(before.mismatch);
@@ -146,7 +147,33 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(r.updated).toEqual([]);
     expect(r.rejects).toEqual([]);
     expect(r.seen['krobs']!.rosters).toEqual([]);
+    expect(r.host.updateLocal({ rig: 'pc' })).toBe(false); // the rig it started with
+  });
+
+  it('A6.1: a rig change after MATCH_READY reaches every participant; the roster in the log keeps what MATCH_READY said', async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: MB }, { id: 'third', game: MB }] });
+    const krobs = r.clients['krobs']!;
+    const rigs: Record<string, string[]> = { h: [], krobs: [], third: [] };
+    r.host.on('rigUpdated', (u) => rigs['h']!.push(`${u.playerId}=${u.rig}`));
+    for (const id of ['krobs', 'third']) r.clients[id]!.on('rigUpdated', (u) => rigs[id]!.push(`${u.playerId}=${u.rig}`));
+    r.host.start();
+    await flush();
+    const log = r.host.log.length;
+
+    // Krobs's table finished loading in VR after Start.
+    expect(krobs.updateParticipant({ rig: 'vr_headset', game: OTHER })).toBe(true);
+    expect(krobs.updateParticipant({ rig: 'vr_headset' })).toBe(false); // told already
+    await flush();
+    // The host's own rig, the owner's case (7 s after Start).
+    expect(r.host.updateLocal({ rig: 'vr_headset' })).toBe(true);
     expect(r.host.updateLocal({ rig: 'vr_headset' })).toBe(false);
+    await flush();
+    expect(rigs).toEqual({ h: ['krobs=vr_headset', 'h=vr_headset'], krobs: ['krobs=vr_headset', 'h=vr_headset'], third: ['krobs=vr_headset', 'h=vr_headset'] });
+    expect(r.host.log.length).toBe(log);
+    expect(r.host.state.participants.map((p) => p.rig)).toEqual(['pc', 'pc', 'pc']);
+    expect(r.host.tableMismatches()).toEqual({});
+    expect(r.rejects).toEqual([]);
+    expect(r.updated).toEqual([]);
   });
 
   it('a refusing host rejects an update whose fingerprint differs and keeps the old one; a rig-only update goes through', async () => {

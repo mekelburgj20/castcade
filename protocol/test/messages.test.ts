@@ -143,6 +143,16 @@ describe('envelope', () => {
     expect(MESSAGE_DIRECTION.MEDIA_SIGNAL).toBe('any');
   });
 
+  it('MEDIA_SIGNAL: reset carries nothing, stereo carries the flag (D2.7, D7.4.3, 2026-11-01)', () => {
+    const reset = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'reset' }, { matchId: 'TD-1', seq: 5, from: 'p1', ts: 1 });
+    expect(decodeFrame(encodeFrame(reset))).toEqual(reset);
+    const sbs = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs' }, { matchId: 'TD-1', seq: 6, from: 'p1', ts: 1 });
+    expect(decodeFrame(encodeFrame(sbs)).payload).toEqual({ to: 'p2', kind: 'stereo', stereo: 'sbs' });
+    expect(buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: null }, { matchId: 'TD-1', seq: 7, from: 'p1' }).payload.stereo).toBeNull();
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo' }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'tab' as never }, { matchId: 'TD-1', seq: 9, from: 'p1' })).toThrow(ProtocolError);
+  });
+
   it('PARTICIPANT_UPDATE: rig and game both optional, client -> host (A6, 2026-10-31)', () => {
     const rigOnly = buildMessage('PARTICIPANT_UPDATE', { rig: 'vr_headset' }, { matchId: 'TD-1', seq: 3, from: 'p2', ts: 1 });
     expect(decodeFrame(encodeFrame(rigOnly))).toEqual(rigOnly);
