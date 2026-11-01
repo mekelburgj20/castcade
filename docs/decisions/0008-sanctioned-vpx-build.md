@@ -10,7 +10,7 @@ reopened without asking.
 **Builds on:** ADR 0001 (script hook on stock VPX 10.8.0), ADR 0003 (one desktop app), ADR 0005 (Open / Sanctioned
 play), ADR 0007 (functionality before ease of setup); ArcAid ADR 0027 (integrity mode)
 **Design:** `docs/design/fairness-and-table-identity.md` §5 (the honest ceiling), §6 (build hashes); the build's own
-design doc is WORK item I1
+design doc is `docs/design/sanctioned-vpx-build.md` (WORK item I1)
 
 ## Context
 
