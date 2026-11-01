@@ -381,6 +381,7 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
     sidecarSha256: rendered.sha256,
     anchors: rendered.anchors,
     warnings: rendered.warnings,
+    ...(rendered.partial && rendered.partial.length > 0 ? { partial: rendered.partial } : {}),
     renderedAt: new Date(now()).toISOString(),
     verified: null,
   };

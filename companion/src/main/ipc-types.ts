@@ -34,6 +34,7 @@ export const IPC = {
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
+  tablesPatchNow: 'tables:patchNow',
   tablesProgressEvent: 'tables:progress',
   streamStatus: 'stream:status',
   streamStart: 'stream:start',
@@ -100,6 +101,12 @@ export interface TablesProgress {
   done: number;
   total: number;
   tableId: string;
+}
+
+/** C11: the answer to Patch now, as Status shows it (`ok` false = the table is still unpatched). */
+export interface TablesPatchNowResult {
+  ok: boolean;
+  text: string;
 }
 
 export interface TablesRemoveResult {
@@ -215,5 +222,7 @@ export interface CastcadeApi {
     onProgress(cb: (p: TablesProgress) => void): () => void;
     /** Deletes every Castcade sidecar (and manifest) under the folder; foreign `.vbs` files stay. */
     removeAll(dir: string | null): Promise<TablesRemoveResult>;
+    /** C11: patch the one table Status offers (`status.patchNow` / `status.lastClose.vpxPath`); others are refused. */
+    patchNow(vpxPath: string): Promise<TablesPatchNowResult>;
   };
 }

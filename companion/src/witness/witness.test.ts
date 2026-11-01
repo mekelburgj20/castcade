@@ -1755,3 +1755,95 @@ describe('the served ROM map (B8)', () => {
     expect(logs.filter((l) => l.startsWith('witness: ROM map'))).toEqual([`witness: ROM map ${await vpsIndex.version()} (seed) — not paired, no fetch`]);
   });
 });
+
+describe('C11: every close-time read names its rung (capture detail, Status, log)', () => {
+  const ROM_VPX = (script: string) => buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(script)), record('ENDB', new Uint8Array(0))) });
+
+  it('(f1) a sidecar beside the table and no table_loaded: the hook never reported in', async () => {
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    expect(h.witness.status().captureMode).toBe('live');
+    await h.playFor(60_000);
+    h.fs.put('/nv/tftc_400.nv', mmAfter);
+    await h.exit();
+    await h.settle(8000);
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]?.detail).toMatch(/^(exit_sample|no score): sidecar present but the hook never reported in \(VPX ran the table's own script\?\)/);
+    expect(h.witness.status().lastClose).toMatchObject({ table: TFTC_TABLE, rung: 'f1', kind: 'hook_silent', vpxPath: null });
+    expect(h.witness.status().lastClose?.text).toMatch(/Open the table from the folder Castcade patched/);
+    expect(logs).toContain(`witness: ${TFTC_TABLE}: live mode produced no capture (f1: sidecar present but the hook never reported in (VPX ran the table's own script?))`);
+  });
+
+  it('(f2) table_loaded, nvram_full and deltas without a game: the counts and the last state', async () => {
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/tftc_400.nv', mmBefore);
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    // The fixture's journal cut before its game starts: the hook reported in, the NVRAM moved, no game was journaled.
+    const lines = tftcJournalAt(h.clock.now() + 4000).text.trimEnd().split('\n');
+    const d = new JournalDetector({ mapFor: (rom) => (rom === 'tftc_400' ? tftcMap : null) });
+    const cut = lines.findIndex((l) => d.feed(l).some((ev) => ev.kind === 'game_start'));
+    if (cut < 0) throw new Error('fixture has no game start');
+    const head = lines.slice(0, cut);
+    const deltas = head.filter((l) => l.includes('"event":"nvram_delta"')).length;
+    const fulls = head.filter((l) => l.includes('"event":"nvram_full"')).length;
+    h.fs.put(TFTC_JOURNAL, head.join('\n') + '\n');
+    await h.poll();
+    await h.flush();
+    await h.playFor(60_000);
+    h.fs.put('/nv/tftc_400.nv', mmAfter);
+    await h.exit();
+    await h.settle(8000);
+    expect(h.captures).toHaveLength(1);
+    const want = new RegExp(
+      `^(exit_sample|no score): live mode followed the journal \\(hook [\\d.?]+, recipe A[\\d. ]*, ${fulls} nvram_full, ${deltas} nvram_delta, \\d+ orphan; game_start seen: no; last state scores \\[[\\d,?]+\\] ball [\\d?]+ player [\\d?]+ (game over|in game|game over unknown)\\) and saw no game end`,
+    );
+    expect(h.captures[0]?.detail).toMatch(want);
+    expect(h.witness.status().lastClose).toMatchObject({ rung: 'f2', kind: 'no_game_end' });
+    expect(logs.some((l) => l.startsWith(`witness: ${TFTC_TABLE}: live mode produced no capture (f2: live mode followed the journal`))).toBe(true);
+  });
+
+  it('(a) no sidecar and a patchable class-A script: the import would patch it, and Patch now is offered', async () => {
+    const h = harness({}, { journalDir: '/journal' });
+    h.fs.put(MM_PATH, ROM_VPX(crlf(VPM_SCRIPT)));
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    await h.witness.start();
+    await h.launch();
+    expect(h.notices[0]).toMatchObject({ kind: 'unpatched', patchable: true, vpxPath: MM_PATH });
+    expect(h.notices[0]?.message).toMatch(/Press Patch now/);
+    expect(h.witness.status().patchNow).toEqual({ table: MM_TABLE, vpxPath: MM_PATH });
+    await h.playFor(60_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures[0]?.detail).toMatch(/^exit_sample: table not patched \(new file; the import would patch it: VPM \/ ROM table, ROM mb_106b\)/);
+    expect(h.witness.status()).toMatchObject({ patchNow: null, lastClose: { table: MM_TABLE, rung: 'a', kind: 'not_patched', vpxPath: MM_PATH } });
+    expect(h.witness.status().lastClose?.text).toMatch(/Press Patch now, then reopen the table/);
+  });
+
+  it('(b) an unreadable ROM (no map): named, and nothing to patch', async () => {
+    const h = harness({}, { journalDir: '/journal' });
+    h.fs.put(MM_PATH, ROM_VPX(crlf(VPM_SCRIPT).replace(/cGameName = "[^"]+"/, 'cGameName = "zz_999"')));
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    await h.witness.start();
+    await h.launch();
+    expect(h.witness.status().patchNow).toBeNull();
+    await h.playFor(60_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures[0]?.detail).toMatch(/^exit_sample: no map for ROM zz_999/);
+    expect(h.witness.status().lastClose).toMatchObject({ rung: 'b', kind: 'no_map', vpxPath: null });
+    expect(h.witness.status().lastClose?.text).toMatch(/Nothing to do yet/);
+  });
+});

@@ -33,7 +33,14 @@ export interface TablesHost {
    * C10: one table whose own script carries Castcade's patch (the VPX editor saved a sidecar into the `.vpx`):
    * render a fresh sidecar over it from the script underneath, under the folder lock.
    */
-  repair(vpxPath: string): Promise<{ result: 'patched' | 'skipped' | 'failed'; detail: string }>;
+  repair(vpxPath: string): Promise<TablePatchResult>;
+  /**
+   * C11 "Patch now": patch one table that has no current Castcade patch, from the balloon or the Status button. The same
+   * plan + apply as `repair`; `already` when the table is patched already (the folder watch got there first).
+   */
+  patchTable(vpxPath: string): Promise<TablePatchResult>;
+  /** B12: can live mode read this ROM's machine (`liveSupport` over its map); the import and the folder watch ask it. */
+  liveSupportFor(rom: string): Promise<{ readable: boolean; reason: string }>;
   /** The folder a null `dir` means right now, or null when nothing is known yet. */
   resolveTablesDir(dir: string | null): string | null;
   scriptsDir(): string | null;
@@ -46,6 +53,8 @@ export interface TablesHost {
   exclusive<T>(fn: () => Promise<T>): Promise<T>;
   readonly manifestDir: string;
 }
+
+export type TablePatchResult = { result: 'patched' | 'already' | 'skipped' | 'failed'; detail: string };
 
 function dirnameOf(p: string): string {
   const i = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
@@ -126,11 +135,32 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
     return run;
   };
 
+  /** One table, planned and applied under the folder lock: C10's repair and C11's Patch now. */
+  const patchOne = (vpxPath: string, why: 'repair' | 'patch_now'): Promise<TablePatchResult> =>
+    exclusive(async (): Promise<TablePatchResult> => {
+      const vpxScriptsDir = await resolveScriptsDir(resolveTablesDir(null) ?? dirnameOf(vpxPath));
+      if (!vpxScriptsDir) return { result: 'failed', detail: 'the VPX scripts folder is not known yet' };
+      const plan = await planImport(fs, { paths: [vpxPath], manifestDir, liveSupportFor });
+      const item = plan.items[0];
+      if (item?.action === 'already') return { result: 'already', detail: item.reason };
+      if (!item || (item.action !== 'patch' && item.action !== 'repatch')) return { result: 'skipped', detail: item ? `${item.action}: ${item.reason}` : 'not a .vpx' };
+      const applied = await applyImport(fs, plan, { manifestDir, vpxScriptsDir, libSource, watchOffsetsFor });
+      const failed = applied.failed[0];
+      if (failed) return { result: 'failed', detail: failed.error };
+      log.info(
+        why === 'repair'
+          ? `tables: repaired ${item.tableId}: a fresh sidecar over the patch the VPX editor saved into the table (library ${applied.libInstalled})`
+          : `tables: patched ${item.tableId} from Patch now (${item.reason}; library ${applied.libInstalled})`,
+      );
+      return { result: 'patched', detail: item.reason };
+    });
+
   return {
     manifestDir,
     resolveTablesDir,
     scriptsDir,
     watchOffsetsFor,
+    liveSupportFor,
     exclusive,
 
     async defaults() {
@@ -190,20 +220,8 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
       });
     },
 
-    repair(vpxPath) {
-      return exclusive(async () => {
-        const vpxScriptsDir = await resolveScriptsDir(resolveTablesDir(null) ?? dirnameOf(vpxPath));
-        if (!vpxScriptsDir) return { result: 'failed', detail: 'the VPX scripts folder is not known yet' };
-        const plan = await planImport(fs, { paths: [vpxPath], manifestDir, liveSupportFor });
-        const item = plan.items[0];
-        if (!item || (item.action !== 'patch' && item.action !== 'repatch')) return { result: 'skipped', detail: item ? `${item.action}: ${item.reason}` : 'not a .vpx' };
-        const applied = await applyImport(fs, plan, { manifestDir, vpxScriptsDir, libSource, watchOffsetsFor });
-        const failed = applied.failed[0];
-        if (failed) return { result: 'failed', detail: failed.error };
-        log.info(`tables: repaired ${item.tableId}: a fresh sidecar over the patch the VPX editor saved into the table (library ${applied.libInstalled})`);
-        return { result: 'patched', detail: item.reason };
-      });
-    },
+    repair: (vpxPath) => patchOne(vpxPath, 'repair'),
+    patchTable: (vpxPath) => patchOne(vpxPath, 'patch_now'),
 
     removeAll(dir) {
       const tablesDir = need(dir);

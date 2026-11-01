@@ -23,7 +23,8 @@ export interface TrayActions {
 
 export interface TrayHandle {
   refresh(status: WitnessStatus): void;
-  notify(title: string, content: string): void;
+  /** A balloon; `onClick` (C11: Patch now) runs when the player clicks this balloon, never a later one's click. */
+  notify(title: string, content: string, onClick?: () => void): void;
   destroy(): void;
 }
 
@@ -46,6 +47,16 @@ export function createTray(iconPath: string, actions: TrayActions, initial: Witn
   const tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   tray.on('click', () => actions.open());
   tray.on('double-click', () => actions.open());
+  // One balloon shows at a time; a new one replaces the click action of the last.
+  let balloonClick: (() => void) | null = null;
+  tray.on('balloon-click', () => {
+    const fn = balloonClick;
+    balloonClick = null;
+    fn?.();
+  });
+  tray.on('balloon-closed', () => {
+    balloonClick = null;
+  });
 
   const build = (status: WitnessStatus): void => {
     const paused = actions.isPaused();
@@ -84,8 +95,10 @@ export function createTray(iconPath: string, actions: TrayActions, initial: Witn
 
   return {
     refresh: build,
-    notify(title, content) {
-      if (process.platform === 'win32') tray.displayBalloon({ title, content, iconType: 'info' });
+    notify(title, content, onClick) {
+      if (process.platform !== 'win32') return;
+      balloonClick = onClick ?? null;
+      tray.displayBalloon({ title, content, iconType: 'info' });
     },
     destroy: () => tray.destroy(),
   };

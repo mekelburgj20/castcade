@@ -32,6 +32,7 @@ const CH = {
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
   tablesRemoveAll: 'tables:removeAll',
+  tablesPatchNow: 'tables:patchNow',
   tablesProgressEvent: 'tables:progress',
   streamStatus: 'stream:status',
   streamStart: 'stream:start',
@@ -152,6 +153,7 @@ const castcade: CastcadeApi = {
     plan: (dir) => ipcRenderer.invoke(CH.tablesPlan, dir),
     apply: (dir) => ipcRenderer.invoke(CH.tablesApply, dir),
     removeAll: (dir) => ipcRenderer.invoke(CH.tablesRemoveAll, dir),
+    patchNow: (vpxPath) => ipcRenderer.invoke(CH.tablesPatchNow, vpxPath),
     onProgress(cb) {
       const listener = (_e: Electron.IpcRendererEvent, p: TablesProgress): void => cb(p);
       ipcRenderer.on(CH.tablesProgressEvent, listener);

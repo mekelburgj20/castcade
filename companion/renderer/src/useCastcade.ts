@@ -16,6 +16,8 @@ export interface CastcadeState {
   setSettings(patch: SettingsPatch): Promise<void>;
   setLoginItem(on: boolean): Promise<void>;
   applyStatus(status: WitnessStatus): void;
+  /** C11: Patch now for the table Status offers; resolves to the sentence Status shows. */
+  patchNow(vpxPath: string): Promise<TablesPatchNowResult>;
 }
 
 export function useCastcade(): CastcadeState {
@@ -54,6 +56,14 @@ export function useCastcade(): CastcadeState {
     [bridge],
   );
 
+  const patchNow = useCallback(
+    async (vpxPath: string): Promise<TablesPatchNowResult> => {
+      if (!bridge) return { ok: false, text: 'not available in this preview' };
+      return bridge.tables.patchNow(vpxPath);
+    },
+    [bridge],
+  );
+
   const setLoginItem = useCallback(
     async (on: boolean) => {
       if (bridge) setLoginItemState(await bridge.app.loginItem.set(on));
@@ -72,6 +82,7 @@ export function useCastcade(): CastcadeState {
     setSettings,
     setLoginItem,
     applyStatus: setStatus,
+    patchNow,
   };
 }
 

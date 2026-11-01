@@ -238,6 +238,15 @@ interface WitnessStatus {
   attempt: AttemptStatus | null;
   /** B21: the last Start attempts press and ArcAid's answer, as one line. */
   attemptStart: { at: string; status: string; text: string } | null;
+  /** C11: the open table is in basic mode and the import would patch it (Patch now). */
+  patchNow?: { table: string; vpxPath: string } | null;
+  /** C11: why the last closed table's score was read only at close; `vpxPath` set when Patch now fixes it. */
+  lastClose?: { table: string; at: string; rung: string; kind: string; text: string; vpxPath: string | null } | null;
+}
+
+interface TablesPatchNowResult {
+  ok: boolean;
+  text: string;
 }
 
 interface RedactedSettings {
@@ -490,6 +499,7 @@ interface CastcadeBridge {
     apply(dir: string | null): Promise<TablesApplyResult>;
     onProgress(cb: (p: TablesProgress) => void): () => void;
     removeAll(dir: string | null): Promise<TablesRemoveResult>;
+    patchNow(vpxPath: string): Promise<TablesPatchNowResult>;
   };
   readonly app: {
     openExternal(url: string): Promise<boolean>;

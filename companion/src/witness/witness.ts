@@ -50,6 +50,7 @@ import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { newestJournalSince, parseSessionStamp } from './journal-scan.js';
 import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, recipeFor, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
+import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
@@ -165,6 +166,10 @@ interface OpenSession {
   liveRead: Set<string>;
   /** Basic mode on a table the import could patch (or not): the sentence Status shows under "Capture". */
   unpatchedNote: string | null;
+  /** C11: what `noticeUnpatched` learned (class, ROM, readability), kept so the close-time capture can name its rung. */
+  unpatched: UnpatchedFacts | null;
+  /** C11: the table file `noticeUnpatched` looked at, when the import would patch it (Patch now). */
+  patchablePath: string | null;
   /** F5 (B5.2): the script that ran against the table's embedded one, read at launch; null when not inspected. */
   scriptDiff: ScriptDiffReport | null;
   /** B18: the journals were searched for this player-up's table (once per player-up, reset when it goes down). */
@@ -268,6 +273,13 @@ interface LiveSession {
    * `table_loaded`), e.g. one opened while the sidecar watch was still re-making patches after an update. Null when current.
    */
   oldPatchNote: string | null;
+  /** C11: the patch is the table's own script (C10), not a sidecar beside it. */
+  embedded: boolean;
+  /** C11: the hook's `lib` and `recipe_version` from `table_loaded`, for the close-time rung. */
+  lib: string | null;
+  recipeVersion: string | null;
+  /** C11: the map attached to the detector (recipe A), so the close can decode where the game stood. */
+  map: CompiledMap | null;
 }
 
 /** Where the patcher keeps import manifests: beside the witness module's own files. The shell uses the same rule. */
@@ -435,6 +447,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     captureMode: null,
     attempt: null,
     attemptStart: null,
+    patchNow: null,
+    lastClose: null,
   };
 
   const sessions = new Map<number, OpenSession>();
@@ -662,6 +676,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.captureMode = active ? (following ? 'live' : 'basic') : null;
     status.attempt = active?.live?.attempt ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : active && !following ? active.unpatchedNote : (active?.live?.oldPatchNote ?? null);
+    // C11: the open table is in basic mode and the import would patch it: Status offers Patch now.
+    status.patchNow = active && !active.live && active.patchablePath && active.launch.table ? { table: active.launch.table, vpxPath: active.patchablePath } : null;
   };
 
   // --------------------------------------------------------------------------- attestation --
@@ -736,6 +752,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const target = path ?? launch.table;
     if (!target || session.identityFor === target) return;
     session.identityFor = target;
+    session.unpatched = null;
+    session.patchablePath = null;
     if (session.live && (!path || tableBaseName(path) !== session.live.tableId)) await switchTable(session);
     if (path) await startLive(session, path);
     if (path && !session.live) await noticeUnpatched(session, path);
@@ -864,6 +882,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     engine?: EngineAttestation | null;
     /** B6.1: how the score moved during this game (live mode); a flag, never a gate. */
     plausibility?: ScorePlausibility | null;
+    /** C11: why this score was read only at close (`<reason>: <rung detail>`); leads the detail. */
+    lead?: string | null;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -976,6 +996,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       if (posted.state === 'rejected' && posted.error.kind === 'auth') fail(posted.error.message);
     }
 
+    if (p.lead) details.unshift(p.lead);
     result.detail = details.join('; ');
     if (!live) {
       session.lastCaptureAt = ended;
@@ -1020,7 +1041,38 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
     details.push(trigger === 'player' ? 'captured when the player closed' : 'captured at VPX exit');
     const decision = decideCapture({ table: session.launch.table ?? UNKNOWN_TABLE, rom, map, before, after: afterState, launchedAtMs: started, exitedAtMs: ended });
-    await publish({ session, rom, map, nvBytes, started, ended, decision, details, live: false });
+    // C11: why it came to a close-time read, in the rung vocabulary of `exit-rung.ts`; also what Status says after the close.
+    const rung = exitRungOf(session);
+    if (rung) {
+      status.lastClose = { table: session.live?.tableId ?? session.launch.table ?? UNKNOWN_TABLE, at: iso(ended), rung: rung.rung, kind: rung.kind, text: rung.note, vpxPath: rung.patchable ? session.patchablePath : null };
+    }
+    const lead = rung ? `${decision.kind === 'score' ? decision.reason : 'no score'}: ${rung.detail}` : null;
+    await publish({ session, rom, map, nvBytes, started, ended, decision, details, live: false, lead });
+  };
+
+  /** C11: the rung a close-time read fell on, from what the session knew; null when no table was ever named. */
+  const exitRungOf = (session: OpenSession): ExitRung | null => {
+    const live = session.live;
+    const table = live?.tableId ?? session.launch.table;
+    if (!table) return null;
+    let facts: LiveFacts | null = null;
+    if (live) {
+      const shadow = live.detector.shadow;
+      facts = {
+        sidecar: !live.embedded,
+        loaded: live.accepted,
+        lib: live.lib,
+        recipe: live.recipe,
+        recipeVersion: live.recipeVersion,
+        rom: live.rom,
+        unreadable: live.unreadable,
+        noMap: live.recipe === 'A' && live.rom !== null && live.map === null,
+        partial: live.manifest?.partial ?? [],
+        summary: live.accepted ? live.detector.summary() : null,
+        state: live.accepted && live.map && shadow ? decodeGameState(live.map, shadow) : null,
+      };
+    }
+    return exitRungFor({ table, live: facts, unpatched: session.unpatched });
   };
 
   // ---------------------------------------------------------------------------- live mode --
@@ -1136,14 +1188,19 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       .catch(() => null);
     // B12: the import will not patch a machine whose live score the hook cannot see, so do not send the player there.
     const rom = cls?.cls === 'A' ? cls.facts.rom ?? null : null;
-    const support = rom ? liveSupport(await corpus.mapFor(rom).catch(() => null)) : null;
+    const map = rom ? await corpus.mapFor(rom).catch(() => null) : null;
+    const support = rom ? liveSupport(map) : null;
     // C1.1: originals of class B, C and D have a recipe too; class E (generic) still has none.
     const patchable = cls !== null && recipeFor(cls.cls) !== null && (cls.cls !== 'A' || support === null || support.readable);
     // An original (no ROM) leaves no NVRAM, so basic mode posts nothing at all for it: say so (TNA, rig 2026-10-28).
     // Classes B–E only: X (unclassified, e.g. no _KeyDown) says nothing about a ROM.
     const original = cls !== null && ['B', 'C', 'D', 'E'].includes(cls.cls);
+    // C11: kept on the session so the close-time capture names its rung without reading the script again.
+    const hadManifest = (await readManifest(fs, manifestPathFor(manifestDir, table)).catch(() => null)) !== null;
+    session.unpatched = { cls: cls?.cls ?? null, clsReason: cls?.facts.reason ?? null, rom, patchable, support: support ? { readable: support.readable, reason: support.reason } : null, noMap: rom !== null && map === null, hadManifest };
+    session.patchablePath = patchable ? vpxPath : null;
     const message = patchable
-      ? `${table} is not patched: only the last game of this session will post. Settings → Import tables → Patch my tables, then relaunch the table.`
+      ? `${table} is not patched: only the last game of this session will post. Press Patch now (or Settings → Import tables → Patch my tables), then relaunch the table.`
       : support && !support.readable
         ? unreadableNote(table, support.reason)
         : original
@@ -1153,12 +1210,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     refreshTableStatus();
     if (noticedUnpatched.has(vpxPath)) return;
     noticedUnpatched.add(vpxPath);
-    emitter.emit('notice', { kind: 'unpatched', table, patchable, title: patchable ? 'Castcade: table not patched' : original ? 'Castcade: score not read' : 'Castcade: basic mode', message });
+    emitter.emit('notice', { kind: 'unpatched', table, patchable, vpxPath, title: patchable ? 'Castcade: table not patched' : original ? 'Castcade: score not read' : 'Castcade: basic mode', message });
   };
 
   const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {
     if (session.live || !journalRoot) return;
-    if (!(await hasSidecar(vpxPath).catch(() => false))) {
+    const embedded = !(await hasSidecar(vpxPath).catch(() => false));
+    if (embedded) {
       // C10: no sidecar, but the table's own script is Castcade's patch (the VPX editor saved it there): it journals
       // like a sidecar, so live mode arms; the player is told once and the shell renders a fresh sidecar over it.
       if (!(await hasEmbeddedPatch(vpxPath))) return;
@@ -1191,8 +1249,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       scoreTrack: new ScoreTrack(),
       unreadable: null,
       oldPatchNote: null,
+      embedded,
+      lib: null,
+      recipeVersion: null,
+      map: null,
     };
     session.live = live;
+    // C11: live mode replaces basic mode for this table: no Patch now, no unpatched rung.
+    session.unpatched = null;
+    session.patchablePath = null;
     live.tail.on('line', (line) => {
       live.lines.push(line);
       if (!live.pumpScheduled) {
@@ -1219,6 +1284,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     await stopLive(session);
     session.live = null;
     session.unpatchedNote = null;
+    session.unpatched = null;
+    session.patchablePath = null;
     session.scriptDiff = null;
     log(`witness: ${old.tableId}: another table loaded in the same VPX process; stopped following its journal`);
     if (old.captures > 0) {
@@ -1306,6 +1373,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.scoreTrack = new ScoreTrack(ev.recipe === 'A' ? ROM_SCORE_STEP : null);
       live.recipe = ev.recipe;
       live.rom = ev.rom;
+      live.lib = ev.lib ?? null;
+      live.recipeVersion = ev.recipeVersion ?? null;
+      live.map = null;
       log(`witness: live mode: ${ev.table ?? live.tableId} loaded (recipe ${ev.recipe ?? '?'}, rom ${ev.rom ?? '-'}, hook ${ev.lib ?? '?'})`);
       await pinIdentityByRom(session, ev.rom);
       // B15: the patch VPX loaded predates this build (the re-make after an update had not reached it yet).
@@ -1322,6 +1392,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       if (ev.recipe === 'A' && ev.rom) {
         const map = await corpus.mapFor(ev.rom);
         live.detector.setMap(map);
+        live.map = map;
         if (!map) fail(`live mode: no map for ROM ${ev.rom}; games on ${live.tableId} will be captured at close only`);
         const support = liveSupport(map);
         live.unreadable = support.readable ? null : support.reason;
@@ -1563,6 +1634,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live: null,
       liveRead: new Set(),
       unpatchedNote: null,
+      unpatched: null,
+      patchablePath: null,
       scriptDiff: null,
       journalLooked: false,
       journalPath: null,
@@ -1607,6 +1680,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitter.emit('exit', { table: launch.table, at: iso(exitedAt), durationSec });
 
     if (session) await stopLive(session);
+    if (session?.live && session.live.captures === 0) {
+      // C11: live mode was armed and posted nothing: say why in one line, so a tester's companion.log alone answers it.
+      const rung = exitRungOf(session);
+      if (rung) log(`witness: ${session.live.tableId}: live mode produced no capture (${rung.rung}: ${rung.detail})`);
+    }
     if (session?.live && session.live.captures > 0) {
       // Every game went out from the journal. Let VPinMAME's close-time write land so the baseline
       // is current, close the session in ArcAid, and post nothing more.
