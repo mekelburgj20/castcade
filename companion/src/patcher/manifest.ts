@@ -6,6 +6,7 @@
  */
 import { isNotFound, type WitnessFs } from '../witness/fs.js';
 import type { ScriptClass } from './classify.js';
+import { isRecipe, type Recipe } from './render.js';
 
 export interface ManifestVerification {
   at: string;
@@ -23,7 +24,8 @@ export interface Manifest {
   /** sha256 of the extracted script bytes. */
   scriptSha256: string;
   class: ScriptClass;
-  recipe: 'A';
+  /** The recipe the sidecar was rendered with (B/C/D since C1.1; older builds read only an `A` manifest). */
+  recipe: Recipe;
   recipeVersion: string;
   libVersion: string;
   rom: string | null;
@@ -50,7 +52,8 @@ export function isManifest(v: unknown): v is Manifest {
     typeof v['vpxMtimeMs'] === 'number' &&
     typeof v['scriptSha256'] === 'string' &&
     typeof v['class'] === 'string' &&
-    v['recipe'] === 'A' &&
+    typeof v['recipe'] === 'string' &&
+    isRecipe(v['recipe']) &&
     typeof v['recipeVersion'] === 'string' &&
     typeof v['libVersion'] === 'string' &&
     (typeof v['rom'] === 'string' || v['rom'] === null) &&

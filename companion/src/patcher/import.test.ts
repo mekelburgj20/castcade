@@ -6,7 +6,20 @@ import { applyImport, checkSidecar, disableSidecar, installLibrary, listVpxFiles
 import { readManifest, writeManifest } from './manifest.js';
 import { manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor } from './paths.js';
 import { LIB_VERSION, RECIPE_VERSION, formatLocalStamp } from './render.js';
-import { NO_KEYDOWN_SCRIPT, ORIGINAL_B_SCRIPT, PATCHED_VPM_SCRIPT, VPM_DECLARED_SCRIPT, VPM_SCRIPT, crlf, lf } from './test-scripts.test-support.js';
+import {
+  JPSALAS_B_SCRIPT,
+  NO_KEYDOWN_SCRIPT,
+  ORIGINAL_B_SCRIPT,
+  ORIGINAL_E_SCRIPT,
+  PATCHED_VPM_SCRIPT,
+  SCORBIT_C_SCRIPT,
+  SCORESERVER_D_SCRIPT,
+  SCORESERVER_D_UNKNOWN_SCRIPT,
+  VPM_DECLARED_SCRIPT,
+  VPM_SCRIPT,
+  crlf,
+  lf,
+} from './test-scripts.test-support.js';
 
 const LIB = readFileSync(new URL('../../../vpx-hook/castcade.vbs', import.meta.url));
 
@@ -18,6 +31,7 @@ const LIB_SRC = 'C:/app/resources/hook/castcade.vbs';
 const MB = `${TABLES}/Monster Bash (Williams 1998) VPW 1.0.vpx`;
 const AFM = `${TABLES}/Attack from Mars (Midway 1995).vpx`;
 const IRON = `${TABLES}/Iron Maiden (Original 2022).vpx`;
+const GENERIC = `${TABLES}/Generic Original (2024).vpx`;
 const FOREIGN = `${TABLES}/Foreign Table (Bally 1980).vpx`;
 const NOKEYS = `${TABLES}/Test Table.vpx`;
 const BROKEN = `${TABLES}/broken.vpx`;
@@ -50,6 +64,7 @@ beforeEach(() => {
   fs.put(MB, vpxWithScript(crlf(VPM_SCRIPT)), T0 - 86_400_000);
   fs.put(AFM, vpxWithScript(lf(VPM_DECLARED_SCRIPT)), T0 - 3_600_000);
   fs.put(IRON, vpxWithScript(crlf(ORIGINAL_B_SCRIPT)));
+  fs.put(GENERIC, vpxWithScript(crlf(ORIGINAL_E_SCRIPT)));
   fs.put(FOREIGN, vpxWithScript(crlf(VPM_SCRIPT)));
   fs.put(sidecarPathFor(FOREIGN), "' somebody else's external script\r\nSub Table1_KeyDown(ByVal k)\r\nEnd Sub\r\n");
   fs.put(NOKEYS, vpxWithScript(lf(NO_KEYDOWN_SCRIPT)));
@@ -63,15 +78,18 @@ describe('planImport (dry run)', () => {
   it('classifies the folder, counts per action and writes nothing', async () => {
     const before = [...(await fs.readdir(TABLES))];
     const plan = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
-    expect(plan.counts).toEqual({ patch: 2, repatch: 0, already: 1, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
+    expect(plan.counts).toEqual({ patch: 3, repatch: 0, already: 1, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
     expect(plan.items.map((i) => i.vpxPath)).toEqual([...plan.items.map((i) => i.vpxPath)].sort());
 
     const mb = byPath(plan.items, MB);
     expect(mb).toMatchObject({ action: 'patch', cls: 'A', rom: 'mb_106b', tableId: 'Monster Bash (Williams 1998) VPW 1.0' });
     expect(byPath(plan.items, AFM)).toMatchObject({ action: 'patch', cls: 'A', rom: 'afm_113b' });
     const iron = byPath(plan.items, IRON);
-    expect(iron).toMatchObject({ action: 'skip', cls: 'B', rom: null });
-    expect(iron.reason).toBe('original table (JPSalas pattern) (class B): recipe B/C not built yet');
+    expect(iron).toMatchObject({ action: 'patch', cls: 'B', rom: null });
+    expect(iron.reason).toBe('original table (JPSalas pattern), recipe B');
+    const generic = byPath(plan.items, GENERIC);
+    expect(generic).toMatchObject({ action: 'skip', cls: 'E', rom: null });
+    expect(generic.reason).toBe('original table (generic) (class E): recipe E needs a guided pick of the scoring Sub, not built yet');
     const foreign = byPath(plan.items, FOREIGN);
     expect(foreign).toMatchObject({ action: 'foreign', cls: null });
     expect(foreign.reason).toMatch(/not Castcade's; left alone/);
@@ -96,18 +114,19 @@ describe('planImport (dry run)', () => {
 });
 
 describe('applyImport', () => {
-  it('writes sidecar + manifest for recipe-A items, installs the library once, then reports already', async () => {
+  it('writes sidecar + manifest for recipe-A and original items, installs the library once, then reports already', async () => {
     const plan = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
     const progress: [number, number, string][] = [];
     now = T0 + 5000;
     const res = await applyImport(fs, plan, { ...applyOpts, onProgress: (d, t, it) => progress.push([d, t, it.tableId]) });
     expect(res.libInstalled).toBe('installed');
-    expect(res.patched.sort()).toEqual([AFM, MB].sort());
+    expect(res.patched.sort()).toEqual([AFM, IRON, MB].sort());
     expect(res.failed).toEqual([]);
     expect(res.skipped.map((i) => i.action).sort()).toEqual(['already', 'foreign', 'skip', 'unsupported', 'unsupported']);
     expect(progress.map(([d, t]) => [d, t])).toEqual([
-      [1, 2],
-      [2, 2],
+      [1, 3],
+      [2, 3],
+      [3, 3],
     ]);
     expect(await fs.readFile(`${SCRIPTS}/castcade.vbs`)).toEqual(new Uint8Array(LIB));
 
@@ -117,7 +136,9 @@ describe('applyImport', () => {
     expect(sidecar).toContain('Castcade_Init "Monster Bash (Williams 1998) VPW 1.0", "A"');
     expect(sidecar?.includes('\r\n')).toBe(true);
     expect(fs.text(sidecarPathFor(FOREIGN))).toMatch(/^' somebody else's/);
-    expect(fs.has(sidecarPathFor(IRON))).toBe(false);
+    expect(fs.text(sidecarPathFor(IRON))).toContain('Castcade_Init "Iron Maiden (Original 2022)", "B", "0.1.0", ""');
+    expect(fs.has(sidecarPathFor(GENERIC))).toBe(false);
+    expect(await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(IRON)))).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.1.0', libVersion: LIB_VERSION, rom: null });
     // the .vpx files were not touched
     expect(await fs.stat(MB)).toEqual({ size: (await fs.stat(MB)).size, mtimeMs: T0 - 86_400_000 });
 
@@ -145,7 +166,8 @@ describe('applyImport', () => {
 
     // second pass: nothing to do
     const plan2 = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
-    expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 3, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
+    expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 4, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
+    expect(byPath(plan2.items, IRON).reason).toBe(`sidecar current (recipe 0.1.0, lib ${LIB_VERSION})`);
     expect(byPath(plan2.items, MB).reason).toBe(`sidecar current (recipe ${RECIPE_VERSION}, lib ${LIB_VERSION})`);
     const res2 = await applyImport(fs, plan2, applyOpts);
     expect(res2).toMatchObject({ patched: [], failed: [], libInstalled: 'unchanged' });
@@ -431,5 +453,75 @@ describe("C10: the VPX editor saved Castcade's patch into the table's own script
     const plan = await planImport(fs, { paths: [PATCHED], manifestDir: MANIFESTS });
     expect(byPath(plan.items, PATCHED)).toMatchObject({ action: 'already', reason: 'the embedded script already contains Castcade_Init' });
     expect(byPath(plan.items, PATCHED).embeddedPatch).toBeUndefined();
+  });
+});
+
+describe('C1.1: originals get recipes B / C / D', () => {
+  const TNA = `${TABLES}/Total Nuclear Annihilation (Spooky 2017) VPW v2.3.vpx`;
+  const TERR = `${TABLES}/Scorbit Original (2024).vpx`;
+  const SS = `${TABLES}/ScoreServer Original (2025).vpx`;
+  const SSX = `${TABLES}/ScoreServer Odd (2025).vpx`;
+  beforeEach(() => {
+    fs.put(TNA, vpxWithScript(crlf(JPSALAS_B_SCRIPT)));
+    fs.put(TERR, vpxWithScript(crlf(SCORBIT_C_SCRIPT)));
+    fs.put(SS, vpxWithScript(crlf(SCORESERVER_D_SCRIPT)));
+    fs.put(SSX, vpxWithScript(lf(SCORESERVER_D_UNKNOWN_SCRIPT)));
+  });
+
+  it('plans each with its recipe (a table skipped before C1.1 has no sidecar, so it is a plain patch), naming a partial one', async () => {
+    const plan = await planImport(fs, { paths: [TNA, TERR, SS, SSX], manifestDir: MANIFESTS });
+    expect(plan.items.map((i) => [i.action, i.cls, i.reason])).toEqual([
+      ['patch', 'C', 'original table (Scorbit-anchored), recipe C'],
+      [
+        'patch',
+        'D',
+        expect.stringMatching(
+          /^original table \(ScoreServer-integrated\), recipe D \(partial: ScoreServer left unredirected, the shim could stop the table: ScoreServer\.SetHighScoresArray \(line 6\) passes 2 arguments/,
+        ),
+      ],
+      ['patch', 'D', 'original table (ScoreServer-integrated), recipe D'],
+      ['patch', 'B', 'original table (JPSalas pattern), recipe B'],
+    ]);
+    const res = await applyImport(fs, plan, applyOpts);
+    expect(res.patched.sort()).toEqual([SSX, SS, TERR, TNA].sort());
+    for (const [p, recipe] of [
+      [TNA, 'B'],
+      [TERR, 'C'],
+      [SS, 'D'],
+    ] as const) {
+      const m = await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(p)));
+      expect(m).toMatchObject({ class: recipe, recipe, recipeVersion: '0.1.0', warnings: expect.any(Array) });
+      expect(fs.text(sidecarPathFor(p))).toContain(`' --- end Castcade recipe ${recipe} ---`);
+    }
+    expect((await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(TNA))))?.anchors).toMatchObject({ gameEnd: 'end of Sub EndOfGame (line 48)' });
+    expect(await checkSidecar(fs, TNA, MANIFESTS)).toMatchObject({ state: 'ok' });
+  });
+
+  it('a recipe-B version change re-makes the B sidecar only; a recipe-A sidecar stays current', async () => {
+    await applyImport(fs, await planImport(fs, { paths: [MB, TNA], manifestDir: MANIFESTS }), applyOpts);
+    const path = manifestPathFor(MANIFESTS, tableIdFor(TNA));
+    const m = await readManifest(fs, path);
+    if (!m) throw new Error('no manifest');
+    await writeManifest(fs, path, { ...m, recipeVersion: '0.0.9' });
+    expect(await checkSidecar(fs, TNA, MANIFESTS)).toMatchObject({
+      state: 'stale',
+      kind: 'version',
+      why: `rendered with recipe 0.0.9 / lib ${LIB_VERSION}; this build is 0.1.0 / ${LIB_VERSION}`,
+    });
+    expect(await checkSidecar(fs, MB, MANIFESTS)).toMatchObject({ state: 'ok' });
+  });
+
+  it('an editor-saved recipe-B patch is undone exactly and patched again from the script underneath', async () => {
+    await applyImport(fs, await planImport(fs, { paths: [TNA], manifestDir: MANIFESTS }), applyOpts);
+    const sidecar = Buffer.from(await fs.readFile(sidecarPathFor(TNA))).toString('latin1');
+    now += 600_000;
+    fs.put(TNA, vpxWithScript(sidecar, 2048));
+    const plan = await planImport(fs, { paths: [TNA], manifestDir: MANIFESTS });
+    expect(byPath(plan.items, TNA)).toMatchObject({ action: 'repatch', cls: 'B', embeddedPatch: true });
+    await applyImport(fs, plan, applyOpts);
+    const fresh = Buffer.from(await fs.readFile(sidecarPathFor(TNA))).toString('latin1');
+    expect(fresh.match(/Castcade_Init /g)).toHaveLength(1);
+    expect(fresh.match(/Castcade_B_Scores : Exit Sub/g)).toHaveLength(1);
+    expect(fresh.replace(/^Castcade_Guard .*$/m, '')).toBe(sidecar.replace(/^Castcade_Guard .*$/m, ''));
   });
 });

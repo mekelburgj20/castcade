@@ -106,6 +106,20 @@ sidecar over such a table (importer `patchSource`, witness notice → `TablesHos
 runs until the next launch. No recipe change; the lib bump makes the folder watch re-make every sidecar on its first look.
 Checked with a `cscript` harness: an existing original and a missing sidecar journal `embedded_patch` and no `MsgBox`.
 
+### 0.5.0 — originals: `Castcade_PlayerScores` and the ScoreServer shim (C1.1)
+
+Recipes B, C and D (`companion/src/patcher/render-originals.ts`, design §5 "As built") journal original tables from
+their own variables through the existing `game_start` / `current_scores` / `ball_end` / `game_end`; no new kind the
+detector needs. New in the library: `Castcade_PlayerScores(arr, base, players)` (a table's 0- or 1-based score
+array → one entry per player) and `Castcade_ScoreServer()`, a `VPinball.ScoreServer`-compatible object (`SetGameName`,
+`SetGameState`, `SetScoresArray`, `SetHighScoresArray`, `AwardBadge`, `ClearState`) that journals what a class-D table
+reports and forwards every call to the real object when `CreateObject` finds one (LU's cabinet build). State 3 is
+held until the next `SetScoresArray` / `ClearState` / `SetGameState` / table exit so `game_end` carries the final
+scores. One informational line, `score_server` (`call` + `real` | `name` | `players, player, ball, state`), records the
+calls (C1.1.1 evidence: whether a table ever says game over). Recipe A is unchanged; the lib bump re-makes every
+sidecar on the folder watch's first look (B15: a script read each, no re-hash). Checked with a `cscript` harness over
+synthetic B/C/D scripts: one game each journals start → scores → ball ends → end, with and without the library.
+
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)

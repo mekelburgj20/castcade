@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.4.1
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.0
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
@@ -9,6 +9,13 @@
 '      Castcade_WatchBytes Array(<nvram offsets the map's game_state reads>)
 '  (Castcade_Guard is new in 0.2.0, Castcade_WatchBytes in 0.3.0; older sidecars do not call them and
 '   keep working — without a watch list every changed byte is journaled, the 0.1.0 behaviour.)
+'
+'  0.5.0 originals (recipes B, C, D; WORK C1.1): the sidecar's own Castcade_<recipe>_* subs call
+'  Castcade_GameStart / Castcade_Scores / Castcade_BallEnd / Castcade_GameEnd with the table's own
+'  variables; Castcade_PlayerScores turns a table's score array into one entry per player; and
+'  Castcade_ScoreServer returns a VPinball.ScoreServer-compatible object (class D) that journals what
+'  the table reports and forwards every call to the real object when one exists (the Legends
+'  Unchained launcher provides it on cabinets; a desktop rig normally has none).
 '
 '  0.3.0 journal volume: with a watch list, Castcade_NVRAM keeps only the watched offsets of each
 '  ChangedNVRAM batch, coalesces them (latest value per offset, the first old value) and writes at
@@ -35,6 +42,9 @@
 '    current_scores scores[], player, ball        (originals; player and ball are 1-based)
 '    ball_end       player, ball, extra_balls     (originals)
 '    game_end       scores[], players             (originals)
+'    score_server   call, + real | name | players, player, ball, state
+'                                                 (0.5.0, class D: the shim connected, SetGameName and
+'                                                 SetGameState as the table called them; informational)
 '    lock           locked                        (lock state seen at a key press changed)
 '    key_blocked    key                           (a play key was swallowed while locked)
 '    warn           msg, err
@@ -46,7 +56,7 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.4.1"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.0"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -55,6 +65,7 @@ Dim Castcade_Watch, Castcade_WatchOn, Castcade_Pending, Castcade_LastDeltaT, Cas
 Dim Castcade_PlayKeys, Castcade_PlayKeysReady, Castcade_ExtraKeyNames, Castcade_Swallowed, Castcade_LastLocked
 Dim Castcade_LastScores, Castcade_Blocked
 Dim Castcade_EngineLast, Castcade_Dec
+Dim Castcade_SS
 
 Castcade_EngineLast = ""
 Castcade_Dec = "."
@@ -69,6 +80,7 @@ Castcade_Lines = 0
 Castcade_WatchOn = False
 Castcade_LastDeltaT = -1
 Castcade_Filtered = 0
+Set Castcade_SS = Nothing
 
 ' ---------------------------------------------------------------- init / exit ----------
 
@@ -106,6 +118,7 @@ End Sub
 
 Sub Castcade_Exit()
     On Error Resume Next
+    If Not Castcade_SS Is Nothing Then Castcade_SS.Castcade_Flush
     If Castcade_WatchOn Then
         If Castcade_Pending.Count > 0 Then Castcade_FlushPending
     End If
@@ -405,11 +418,135 @@ Sub Castcade_GameEnd(scores, players)
     Castcade_Emit "game_end", """scores"":" & Castcade_NumArray(scores) & ",""players"":" & Castcade_Num(players)
 End Sub
 
+' 0.5.0: Array(score of player 1, player 2, ...) from a table's own score array.  base = the index of
+' player 1 in arr (0 or 1; the renderer reads it from the table); players = how many are in the game,
+' clamped to 1 .. what the array holds.
+Function Castcade_PlayerScores(arr, base, players)
+    On Error Resume Next
+    Dim n, i, r
+    Castcade_PlayerScores = Array()
+    If Not IsArray(arr) Then Exit Function
+    n = 1
+    If IsNumeric(players) Then n = CLng(players)
+    If n < 1 Then n = 1
+    If n > UBound(arr) - base + 1 Then n = UBound(arr) - base + 1
+    If n < 1 Then Exit Function
+    ReDim r(n - 1)
+    For i = 0 To n - 1
+        r(i) = arr(base + i)
+    Next
+    Castcade_PlayerScores = r
+End Function
+
 ' Free-form event for recipe-specific anchors.  extraJson is the inside of the object, no braces.
 Sub Castcade_Event(name, extraJson)
     On Error Resume Next
     Castcade_Emit name, extraJson
 End Sub
+
+' ---------------------------------------------------------------- ScoreServer shim (0.5.0) ------
+' Class D tables report through superhac's VPinball.ScoreServer API (Legends Unchained ships it in its
+' VPX build; LU's Deadpool script is the model): SetGameName at init; SetGameState players, current,
+' ball, state (1 = start, 2 = playing, 3 = end); SetScoresArray "Player 1|Player 2", "123|456";
+' SetHighScoresArray; AwardBadge; ClearState.  Recipe D replaces the table's
+' CreateObject("VPinball.ScoreServer") with a call that ends here, so the table talks to this object.
+' Each call is journaled as the events the originals use and forwarded to the real object when
+' CreateObject found one.  State 3 becomes game_end at the next SetScoresArray (tables send the
+' final scores right after it), ClearState, SetGameState or table exit, whichever comes first, so
+' game_end carries the final scores.  No decoding here: the scores are the table's own strings and
+' Castcade_Num turns them into digits.
+Function Castcade_ScoreServer()
+    On Error Resume Next
+    If Castcade_SS Is Nothing Then
+        Set Castcade_SS = New Castcade_ScoreServerShim
+        Castcade_SS.Castcade_Connect
+    End If
+    Set Castcade_ScoreServer = Castcade_SS
+End Function
+
+Class Castcade_ScoreServerShim
+    Private real, scores, players, current, ball, endPending
+
+    Private Sub Class_Initialize()
+        Set real = Nothing
+        scores = Array()
+        players = 0 : current = 0 : ball = 0
+        endPending = False
+    End Sub
+
+    Public Sub Castcade_Connect()
+        On Error Resume Next
+        Dim found
+        Err.Clear
+        Set real = CreateObject("VPinball.ScoreServer")
+        If Err.Number <> 0 Then Set real = Nothing
+        Err.Clear
+        found = False
+        If Not real Is Nothing Then found = True
+        Castcade_Emit "score_server", """call"":""connect"",""real"":" & Castcade_Bool(found)
+    End Sub
+
+    ' The pending game end, journaled with the scores known now.
+    Public Sub Castcade_Flush()
+        On Error Resume Next
+        If Not endPending Then Exit Sub
+        endPending = False
+        Castcade_GameEnd scores, players
+    End Sub
+
+    Public Sub SetGameName(name)
+        On Error Resume Next
+        Castcade_Emit "score_server", """call"":""SetGameName"",""name"":" & Castcade_Q(name)
+        If Not real Is Nothing Then real.SetGameName name
+    End Sub
+
+    Public Sub SetGameState(playerCount, currentPlayer, currentBall, gameState)
+        On Error Resume Next
+        Dim st
+        Castcade_Flush
+        players = playerCount : current = currentPlayer : ball = currentBall
+        Castcade_Emit "score_server", """call"":""SetGameState"",""players"":" & Castcade_Num(playerCount) & _
+            ",""player"":" & Castcade_Num(currentPlayer) & ",""ball"":" & Castcade_Num(currentBall) & ",""state"":" & Castcade_Num(gameState)
+        ' Select Case on an expression that can fail would run the first Case under Resume Next.
+        st = -1
+        If IsNumeric(gameState) Then st = CLng(gameState)
+        Select Case st
+            Case 1
+                scores = Array()
+                Castcade_GameStart playerCount
+            Case 2
+                If UBound(scores) >= 0 Then Castcade_Scores scores, current, ball
+            Case 3
+                endPending = True
+        End Select
+        If Not real Is Nothing Then real.SetGameState playerCount, currentPlayer, currentBall, gameState
+    End Sub
+
+    Public Sub SetScoresArray(playerNames, scoreValues)
+        On Error Resume Next
+        scores = Split(CStr(scoreValues), "|")
+        If UBound(scores) + 1 > players Then players = UBound(scores) + 1
+        If UBound(scores) >= 0 Then Castcade_Scores scores, current, ball
+        Castcade_Flush
+        If Not real Is Nothing Then real.SetScoresArray playerNames, scoreValues
+    End Sub
+
+    Public Sub SetHighScoresArray(labels, initials, values)
+        On Error Resume Next
+        If Not real Is Nothing Then real.SetHighScoresArray labels, initials, values
+    End Sub
+
+    Public Sub AwardBadge(player, name, description)
+        On Error Resume Next
+        If Not real Is Nothing Then real.AwardBadge player, name, description
+    End Sub
+
+    Public Sub ClearState()
+        On Error Resume Next
+        Castcade_Flush
+        If Not real Is Nothing Then real.ClearState
+    End Sub
+End Class
 
 ' ---------------------------------------------------------------- engine attestation (0.4.0) --
 ' What VPX has IN FORCE right now, read through the script API (`ActiveTable` and the global

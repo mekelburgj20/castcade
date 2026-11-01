@@ -2,7 +2,8 @@
  * Import a tables folder (WORK C7, owner ruling 2026-10-21): plan (dry run) → apply. For every `.vpx`
  * the script is extracted and classified; recipe A (VPM / ROM tables) gets a same-basename sidecar
  * and a manifest, unless its machine's live score is out of the hook's reach (`unreadable`, B12);
- * originals are skipped with the reason until recipes B/C exist; a `.vbs` that is
+ * originals of class B/C/D get recipes B/C/D (C1.1; the plan names the recipe and says when it is
+ * partial), class E is skipped with the reason until its guided pick exists; a `.vbs` that is
  * not ours is never touched. The shared library `castcade.vbs` is installed into the VPX `scripts\`
  * folder once per apply. Nothing here ever writes to a `.vpx`.
  *
@@ -19,7 +20,8 @@ import { readVpxScript, sha256File } from '../witness/vpx-file.js';
 import { classifyScript, describeClass, type ClassifyResult, type ScriptClass } from './classify.js';
 import { readManifest, writeManifest, type Manifest } from './manifest.js';
 import { basenameOf, isVpxName, joinPath, manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor, vpxPathForSidecar } from './paths.js';
-import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, RECIPE_VERSION, isOurSidecar, renderRecipeA, unpatchRecipeA } from './render.js';
+import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, isOurSidecar, recipeVersionFor, unpatchSidecar } from './render.js';
+import { recipeFor, renderSidecar } from './render-originals.js';
 import { decodeScript } from './script-text.js';
 
 export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
@@ -154,8 +156,10 @@ export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: 
 
   const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableIdFor(vpxPath)));
   if (!manifest) return { state: 'stale', manifest: null, why: 'no manifest for this sidecar', kind: 'changed' };
-  if (manifest.recipeVersion !== RECIPE_VERSION || manifest.libVersion !== LIB_VERSION) {
-    return { state: 'stale', manifest, why: `rendered with recipe ${manifest.recipeVersion} / lib ${manifest.libVersion}; this build is ${RECIPE_VERSION} / ${LIB_VERSION}`, kind: 'version' };
+  // Each recipe carries its own version (C1.1), so a recipe-B change does not re-make the recipe-A sidecars.
+  const recipeVersion = recipeVersionFor(manifest.recipe);
+  if (manifest.recipeVersion !== recipeVersion || manifest.libVersion !== LIB_VERSION) {
+    return { state: 'stale', manifest, why: `rendered with recipe ${manifest.recipeVersion} / lib ${manifest.libVersion}; this build is ${recipeVersion ?? '(none)'} / ${LIB_VERSION}`, kind: 'version' };
   }
   const sidecarSha = createHash('sha256').update(Buffer.from(text, 'latin1')).digest('hex');
   if (sidecarSha !== manifest.sidecarSha256) return { state: 'stale', manifest, why: 'sidecar bytes differ from the manifest (edited by hand?)', kind: 'changed' };
@@ -183,8 +187,21 @@ export async function checkSidecar(fs: WitnessFs, vpxPath: string, manifestDir: 
  */
 export function patchSource(text: string): { text: string; embeddedPatch: boolean } {
   if (!isOurSidecar(text)) return { text, embeddedPatch: false };
-  const underneath = unpatchRecipeA(text);
+  const underneath = unpatchSidecar(text);
   return underneath === null ? { text, embeddedPatch: false } : { text: underneath, embeddedPatch: true };
+}
+
+/** Stand-in render options: the plan renders an original only to learn which anchors its recipe finds. */
+const PREVIEW_OPTS = { tableId: 'preview', rom: null, originalPath: '', originalSize: 0, originalMtimeMs: 0, sidecarPath: '' };
+
+/** `` (partial: ...)`` when the recipe cannot journal a whole game on this script (C1.1), else empty. */
+function partialNote(text: string, cls: ClassifyResult): string {
+  try {
+    const partial = renderSidecar(text, cls, PREVIEW_OPTS).partial ?? [];
+    return partial.length > 0 ? ` (partial: ${partial.join('; ')})` : '';
+  } catch {
+    return '';
+  }
 }
 
 async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promise<PlanItem> {
@@ -204,11 +221,13 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   if (!script) return item('unsupported', null, null, 'no script in the table (no GameStg/GameData/CODE record)');
 
   const source = patchSource(decodeScript(script.bytes));
-  const { cls, facts } = classifyScript(source.text);
+  const classified = classifyScript(source.text);
+  const { cls, facts } = classified;
   const rom = facts.rom ?? null;
   const sidecarNote = check.state === 'none' || check.state === 'disabled' ? '' : '; an existing Castcade sidecar remains (remove-all deletes it)';
   if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'}${sidecarNote}`);
-  if (cls !== 'A') return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe B/C not built yet${sidecarNote}`);
+  const recipe = recipeFor(cls);
+  if (recipe === null) return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe E needs a guided pick of the scoring Sub, not built yet${sidecarNote}`);
   if (facts.alreadyPatched) return item('already', cls, rom, 'the embedded script already contains Castcade_Init');
   // B12: a patch on a machine whose live score the hook cannot see would read as ready and post nothing live.
   // A table with no ROM name is still patched: the hook reports the ROM it really runs.
@@ -226,6 +245,7 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   const planned = ((): PlanItem => {
     switch (check.state) {
       case 'none':
+        if (recipe !== 'A') return item('patch', cls, rom, `${describeClass(cls)}, recipe ${recipe}${partialNote(source.text, classified)}${underneath}`);
         return item('patch', cls, rom, `${describeClass(cls)}${rom ? `, ROM ${rom}` : ', no cGameName'}${underneath}`);
       case 'disabled':
         return item('patch', cls, rom, `previous sidecar was disabled as stale (${basenameOf(check.stalePath)}); re-render${underneath}`);
@@ -326,9 +346,11 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
   const text = patchSource(decodeScript(script.bytes)).text;
   const cls: ClassifyResult = classifyScript(text);
   const sidecarPath = sidecarPathFor(item.vpxPath);
+  const recipe = recipeFor(cls.cls);
+  if (recipe === null) throw new Error(`class ${cls.cls} has no recipe`);
   const rom = cls.facts.rom ?? null;
-  const watchOffsets = opts.watchOffsetsFor && rom ? await opts.watchOffsetsFor(rom) : undefined;
-  const rendered = renderRecipeA(text, cls, {
+  const watchOffsets = opts.watchOffsetsFor && rom && recipe === 'A' ? await opts.watchOffsetsFor(rom) : undefined;
+  const rendered = renderSidecar(text, cls, {
     tableId: item.tableId,
     rom,
     originalPath: item.vpxPath,
@@ -351,8 +373,8 @@ async function patchOne(fs: WitnessFs, item: PlanItem, opts: ApplyOptions, now: 
     vpxMtimeMs: script.mtimeMs,
     scriptSha256: script.sha256,
     class: cls.cls,
-    recipe: 'A',
-    recipeVersion: RECIPE_VERSION,
+    recipe,
+    recipeVersion: recipeVersionFor(recipe) ?? '',
     libVersion: LIB_VERSION,
     rom: cls.facts.rom ?? null,
     sidecarPath,

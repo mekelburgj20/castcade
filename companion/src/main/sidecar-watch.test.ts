@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from '../match/clock.js';
 import { LIB_VERSION, applyImport, planImport, sidecarPathFor, stalePathFor, readManifest, writeManifest, manifestPathFor, tableIdFor } from '../patcher/index.js';
-import { ORIGINAL_B_SCRIPT, VPM_SCRIPT, crlf } from '../patcher/test-scripts.test-support.js';
+import { ORIGINAL_E_SCRIPT, VPM_SCRIPT, crlf } from '../patcher/test-scripts.test-support.js';
 import { MemoryFs } from '../witness/fs.js';
 import { ascii, buildVpx, codeRecord, concat, floatRecord, record, u32le } from '../witness/synth-vpx.test-support.js';
 import { SidecarWatch } from './sidecar-watch.js';
@@ -88,7 +88,7 @@ describe('SidecarWatch', () => {
     const h = await harness();
     await h.watch.tick();
     h.clock.advance(60_000);
-    h.fs.put(MB, vpx(crlf(ORIGINAL_B_SCRIPT)));
+    h.fs.put(MB, vpx(crlf(ORIGINAL_E_SCRIPT))); // class E: still no recipe since C1.1 gave B/C/D theirs
     const out = await h.watch.tick();
     expect(out).toEqual([{ vpxPath: MB, result: 'disabled', detail: expect.stringContaining('Re-import') }]);
     expect(h.fs.has(sidecarPathFor(MB))).toBe(false);

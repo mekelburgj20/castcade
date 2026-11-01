@@ -4,15 +4,32 @@
  * `Castcade_RegisterNVRAM` after it, and the `_KeyDown` / `_KeyUp` / `_Exit` wrappers (block L).
  * Port of `block0()`, `wrappers()`, `rename_handler()` and the recipe-A branch of `render()` in
  * `vpx-hook/spike/render-sidecar.py`. Pure: text in, bytes out; everything inserted is ASCII.
+ * Block 0, the wrappers and the exact undo are shared with the originals' recipes B/C/D (`render-originals.ts`).
  */
 import { createHash } from 'node:crypto';
 import type { ClassifyResult } from './classify.js';
 import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } from './script-text.js';
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
-export const LIB_VERSION = '0.4.1';
-/** 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes every sidecar at the next look. */
+export const LIB_VERSION = '0.5.0';
+/**
+ * Recipe A's version. 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes
+ * every recipe-A sidecar at the next look. The originals' recipes carry their own (`RECIPE_VERSIONS`, C1.1).
+ */
 export const RECIPE_VERSION = '0.3.1';
+
+/** Each recipe's version, written into its sidecar's marker and `Castcade_Init`; a bump re-makes only that recipe's sidecars. */
+export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.1.0', C: '0.1.0', D: '0.1.0' } as const;
+export type Recipe = keyof typeof RECIPE_VERSIONS;
+
+export function isRecipe(r: string): r is Recipe {
+  return Object.prototype.hasOwnProperty.call(RECIPE_VERSIONS, r);
+}
+
+/** The version this build renders `recipe` at, or `null` for a recipe it does not render. */
+export function recipeVersionFor(recipe: string): string | null {
+  return isRecipe(recipe) ? RECIPE_VERSIONS[recipe] : null;
+}
 
 /** `Castcade_Guard`'s mtime tolerance in seconds: DST and FILETIME conversions shift it by a whole hour. */
 export const GUARD_MTIME_TOLERANCE_SEC = 3601;
@@ -43,6 +60,11 @@ export interface Rendered {
   warnings: string[];
   /** Where each block went, in terms of the ORIGINAL script's 1-based line numbers. */
   anchors: Record<string, string>;
+  /**
+   * C1.1: the warnings that mean a game cannot be journaled whole (no scores, no game start or no game end
+   * anchor); the import report shows the recipe as partial with these. Recipe A leaves it out.
+   */
+  partial?: string[];
 }
 
 /** The marker on the sidecar's first block-0 line; `isOurSidecar` looks for it. */
@@ -86,8 +108,9 @@ export const STUB =
 
 export function block0(recipe: string, opts: RenderOptions): string[] {
   const id = vbStringLiteral(opts.tableId);
+  const version = recipeVersionFor(recipe) ?? RECIPE_VERSION;
   const b = [
-    `' --- Castcade (recipe ${recipe} v${RECIPE_VERSION}, lib ${LIB_VERSION}) --- do not edit; delete this .vbs to revert to the embedded script`,
+    `' --- Castcade (recipe ${recipe} v${version}, lib ${LIB_VERSION}) --- do not edit; delete this .vbs to revert to the embedded script`,
     'On Error Resume Next',
     'ExecuteGlobal GetTextFile("castcade.vbs")',
     'Dim Castcade_Probe : Castcade_Probe = Empty : Err.Clear : Castcade_Probe = Eval("Castcade_LibVersion")',
@@ -96,7 +119,7 @@ export function block0(recipe: string, opts: RenderOptions): string[] {
     `    ExecuteGlobal "${STUB}"`,
     `    CreateObject("Scripting.FileSystemObject").OpenTextFile(CreateObject("WScript.Shell").ExpandEnvironmentStrings("%TEMP%") & "\\castcade-sidecar-ran-but-no-library.txt", 8, True).WriteLine Now & "  " & ${id}`,
     'End If',
-    `Castcade_Init ${id}, "${recipe}", "${RECIPE_VERSION}", ${vbStringLiteral(opts.rom ?? '')}`,
+    `Castcade_Init ${id}, "${recipe}", "${version}", ${vbStringLiteral(opts.rom ?? '')}`,
     // The stale guard: original path, byte size and local mtime as they are now; the lib renames the
     // sidecar .stale and tells the player when they no longer match (lib 0.2.0; a 0.1.0 lib lacks
     // the sub and this line is a silent no-op under On Error Resume Next).
@@ -134,7 +157,7 @@ export function wrappers(tableObject: string, haveKeyUp: boolean, haveExit: bool
 }
 
 /** Rename `Sub <T>_<suffix>(...)` on line `idx` to `Sub Castcade_Orig_<suffix>(...)`. */
-function renameHandler(lines: string[], tableObject: string, suffix: string, idx: number): void {
+export function renameHandler(lines: string[], tableObject: string, suffix: string, idx: number): void {
   const rx = new RegExp(`(\\bSub\\s+)${escapeRegExp(tableObject)}_${suffix}\\b`, 'i');
   const line = lines[idx];
   if (line !== undefined) lines[idx] = line.replace(rx, `$1Castcade_Orig_${suffix}`);
@@ -213,13 +236,32 @@ const RECIPE_A_LINE_INSERTS = [
 ];
 
 /**
- * Undo a recipe-A sidecar exactly: drop block 0 and the wrapper tail by their markers, drop the two `LoadVPM`
- * lines by their templates, rename `Castcade_Orig_<handler>` back to `<table>_<handler>`. What is left is the
- * table's own script plus anything a person changed in the sidecar, so a diff against the embedded script shows
- * only their edits (F5: Castcade's own patch is exempt by content, not by name). Null when `text` is not ours.
+ * What recipes B/C/D put into the table's own lines (`render-originals.ts`): the single line inserted at an anchor
+ * (always this indent and this comment), the call put in front of an early `Exit Sub`, and recipe D's replacement
+ * for the ScoreServer `CreateObject`. The undo below takes out exactly these.
  */
-export function unpatchRecipeA(text: string): string | null {
-  if (!isOurSidecar(text)) return null;
+export const ORIGINAL_LINE_INSERT = /^ {4}Castcade_[BCD]_[A-Za-z]+ {3}' Castcade: /;
+export const ORIGINAL_EXIT_INSERT = /Castcade_[BCD]_[A-Za-z]+ : (?=Exit\s+(Sub|Function)\b)/gi;
+export const SCORE_SERVER_CREATE = 'CreateObject("VPinball.ScoreServer")';
+export const SCORE_SERVER_SHIM_CALL = 'Castcade_D_ScoreServer()';
+/** The first and last line of the block recipes B/C/D append after the wrappers. */
+export const originalsBlockStart = (recipe: string): string =>
+  `' --- Castcade recipe ${recipe} anchors (the table's own variables; called from the lines marked ' Castcade: in its subs) ---`;
+export const originalsBlockEnd = (recipe: string): string => `' --- end Castcade recipe ${recipe} ---`;
+
+/**
+ * Undo a Castcade sidecar of any recipe this build renders (A–D) exactly: drop block 0, the wrapper tail and the
+ * originals' anchor block by their markers, drop the lines inserted at anchors by their templates (recipe A's two
+ * `LoadVPM` lines, B/C/D's anchor calls), take out the calls put in front of an early `Exit Sub`, put back recipe D's
+ * `CreateObject("VPinball.ScoreServer")`, and rename `Castcade_Orig_<handler>` back to `<table>_<handler>`. What is
+ * left is the table's own script plus anything a person changed in the sidecar, so a diff against the embedded
+ * script shows only their edits (F5: Castcade's own patch is exempt by content, not by name). Null when `text` is
+ * not ours, or is a recipe this build does not render (it refuses rather than guess).
+ */
+export function unpatchSidecar(text: string): string | null {
+  const marker = parseSidecarMarker(text);
+  if (!marker || !isRecipe(marker.recipe)) return null;
+  const recipe = marker.recipe;
   const split = splitScript(text);
   const lines = split.lines;
   const start0 = lines.findIndex((l) => SIDECAR_MARKER.test(l));
@@ -241,11 +283,23 @@ export function unpatchRecipeA(text: string): string | null {
     const from = wrapStart > 0 && lines[wrapStart - 1] === '' ? wrapStart - 1 : wrapStart;
     for (let i = from; i <= wrapEnd; i++) drop.add(i);
   }
+  if (recipe !== 'A') {
+    const startB = lines.indexOf(originalsBlockStart(recipe));
+    const endB = lines.findIndex((l, i) => i > startB && l === originalsBlockEnd(recipe));
+    if (startB < 0 || endB < 0) return null;
+    // `renderOriginal` puts one blank line before it.
+    const from = startB > 0 && lines[startB - 1] === '' && !drop.has(startB - 1) ? startB - 1 : startB;
+    for (let i = from; i <= endB; i++) drop.add(i);
+  }
   lines.forEach((l, i) => {
-    if (RECIPE_A_LINE_INSERTS.some((rx) => rx.test(l))) drop.add(i);
+    if (recipe === 'A' ? RECIPE_A_LINE_INSERTS.some((rx) => rx.test(l)) : ORIGINAL_LINE_INSERT.test(l)) drop.add(i);
   });
   const kept = lines
     .filter((_, i) => !drop.has(i))
-    .map((l) => (tableObject ? l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, `$1${tableObject}_$2`) : l));
+    .map((l) => (tableObject ? l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, `$1${tableObject}_$2`) : l))
+    .map((l) => (recipe === 'A' ? l : l.replace(ORIGINAL_EXIT_INSERT, '').split(SCORE_SERVER_SHIM_CALL).join(SCORE_SERVER_CREATE)));
   return joinScript({ lines: kept, newline: split.newline, trailingNewline: split.trailingNewline });
 }
+
+/** The historical name (recipe A was the only recipe): undoes every recipe now, see `unpatchSidecar`. */
+export const unpatchRecipeA = unpatchSidecar;
