@@ -311,6 +311,7 @@ function registerIpc(
   });
   ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => mh().join(str(invite, 'invite'), typeof displayName === 'string' ? displayName : ''));
   ipcMain.handle(IPC.matchStart, () => mh().start());
+  ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));

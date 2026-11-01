@@ -35,7 +35,13 @@ base64-encoded.
    plus `sidecarHash` (ADR 0004).
 3. Accepted clients receive `HELLO_ACK` with the host's public key and the roster so far.
    A host in advisory mode (the alpha match, 2026-10-30) accepts a differing fingerprint instead, and
-   `HELLO_ACK.hostGame` carries the host's fingerprint so the client flags the difference too.
+   `HELLO_ACK.hostGame` carries the host's fingerprint so the client flags the difference too, and
+   `HELLO_ACK.tableMismatches` lists every accepted participant that differs and how (A8, 2026-10-31), so
+   with three or four players each client flags the others as well. The host sends `HELLO_ACK` again to every
+   accepted client whenever the lobby roster changes (a join, a leave, an update below), so the last one a
+   client holds before `MATCH_READY` is the final roster's. The list is deliberately not in `MATCH_READY`:
+   that message is logged verbatim, and a peer that does not know a field drops it (or adds its default) when
+   it parses, so the two sides would hash different logs.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 

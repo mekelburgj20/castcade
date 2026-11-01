@@ -88,6 +88,13 @@ export type GrantBody = z.infer<typeof GrantBody>;
 // Payloads, one per message type
 // ---------------------------------------------------------------------------------------------
 
+export const FingerprintMismatch = z.object({
+  field: z.string().describe('GameFingerprint field name.'),
+  expected: z.string().nullable(),
+  received: z.string().nullable(),
+  expectedFrom: PlayerId.describe('Which participant the host compared against.'),
+});
+
 export const Hello = z
   .object({
     protocolVersion: z.literal(PROTOCOL_VERSION),
@@ -106,6 +113,17 @@ export const HelloAck = z
     hostGame: GameFingerprint.nullable()
       .default(null)
       .describe("The host's fingerprint, so a client the host accepted despite a difference (advisory mode) can show it too. null from a host that does not send it."),
+    tableMismatches: z
+      .array(
+        z.object({
+          playerId: PlayerId,
+          mismatches: z.array(FingerprintMismatch).min(1),
+        }),
+      )
+      .default([])
+      .describe(
+        "A8 (2026-10-31): every accepted participant whose fingerprint differs from the host's (advisory mode), with what differs, so each client can flag the others too, not only itself. Additive and defaulted, so still protocol 2: a host that does not send it reads as no differences. Not in MATCH_READY: that message is logged, and a peer that strips or defaults an unknown field would hash a different log.",
+      ),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 
@@ -125,14 +143,7 @@ export const Refuse = z
     code: z.enum(['protocol_version', 'fingerprint_mismatch', 'match_full', 'unknown_throwdown', 'duplicate_player', 'match_started', 'other']),
     message: z.string().max(500),
     mismatches: z
-      .array(
-        z.object({
-          field: z.string().describe('GameFingerprint field name.'),
-          expected: z.string().nullable(),
-          received: z.string().nullable(),
-          expectedFrom: PlayerId.describe('Which participant the host compared against.'),
-        }),
-      )
+      .array(FingerprintMismatch)
       .default([])
       .describe('Populated for fingerprint_mismatch so the UI can say exactly which side differs.'),
   })

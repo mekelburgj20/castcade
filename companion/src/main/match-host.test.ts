@@ -4,6 +4,7 @@
  * HELLO_ACK's hostGame), start, the turn lock file on each rig, leave.
  */
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -488,5 +489,87 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     await until(() => row(H.mh, 'Krobs')?.tableMatch === true && row(C.mh, 'Krobs')?.tableMatch === true);
     await until(() => row(C.mh, 'Owner')?.rig === 'vr_headset');
     expect(row(H.mh, 'Owner')?.rig).toBe('vr_headset');
+  }, 15_000);
+});
+
+describe('match host: A8 (2026-10-31)', () => {
+  const port = (): number => 47000 + Math.floor(Math.random() * 2000);
+  const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
+  /** Resolves when a TCP connection to the port opens, rejects when it is refused. */
+  const probe = (p: number): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const s = createConnection({ host: '127.0.0.1', port: p });
+      s.once('connect', () => {
+        s.destroy();
+        resolve();
+      });
+      s.once('error', reject);
+    });
+
+  it('the listener opens only after the panel is up and the public-IP lookup answered; the invite comes with it', async () => {
+    let answer: (ip: string | null) => void = () => undefined;
+    const ip = new Promise<string | null>((r) => (answer = r));
+    const shown: string[] = [];
+    const media = {
+      attach: () => Promise.resolve(),
+      addPeer: () => undefined,
+      removePeer: () => undefined,
+      setSending: () => undefined,
+      setPanelState: () => undefined,
+      setMuted: () => undefined,
+      status: () => ({ attached: true, sending: false, peers: {}, mic: 'open' as const, captureSource: null, lastError: null }),
+      onStatus: () => () => undefined,
+      frames: () => null,
+      showPanel: () => shown.push('panel'),
+      detach: () => Promise.resolve(),
+    };
+    const H = make('order-host', 'ab'.repeat(32), { publicIp: () => ip, media });
+    const p = port();
+    const hosting = H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' });
+    await new Promise((r) => setTimeout(r, 50));
+    // Still waiting for the address: nobody can connect, no invite, no panel yet.
+    await expect(probe(p)).rejects.toThrow();
+    expect(H.mh.status().invite).toBeNull();
+    expect(shown).toEqual([]);
+    answer(null);
+    const hs = await hosting;
+    expect(shown).toEqual(['panel']);
+    expect(hs.ipSource).toBe('lan');
+    expect(hs.invite).toMatch(new RegExp(`:${p}#[A-Z]{6}$`));
+    await probe(p);
+  }, 15_000);
+
+  it('a port already in use: the half-built match is torn down, and hosting again works', async () => {
+    const blocker = createServer();
+    const p = port();
+    await new Promise<void>((r) => blocker.listen(p, '127.0.0.1', () => r()));
+    try {
+      const H = make('busy-host', 'ab'.repeat(32));
+      await expect(H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' })).rejects.toThrow(/already in use/);
+      expect(H.mh.status()).toMatchObject({ role: 'none', phase: 'none', invite: null, locked: false });
+      const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+      expect(hs.role).toBe('host');
+    } finally {
+      blocker.close();
+    }
+  }, 15_000);
+
+  it('3 players: the client with the same table sees the other client flagged "different table file"', async () => {
+    const H = make('three-host', 'ab'.repeat(32));
+    const A = make('three-a', 'cd'.repeat(32));
+    const B = make('three-b', 'ab'.repeat(32));
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await B.mh.join(hs.invite!, 'Third');
+    await until(() => B.mh.status().participants.length === 3 && A.mh.status().participants.length === 3);
+    expect(row(B.mh, 'Krobs')).toMatchObject({ tableMatch: false, tableNote: 'same table, different file (a re-save or another download)' });
+    expect(row(B.mh, 'Third')?.tableMatch).toBe(true);
+    expect(row(A.mh, 'Krobs')?.tableMatch).toBe(false);
+    expect(row(A.mh, 'Third')?.tableMatch).toBe(true);
+    expect(row(H.mh, 'Krobs')?.tableMatch).toBe(false);
+    expect(H.mh.status().transfer).toBeNull();
+    // Resume is the host's, and only for a pause.
+    await expect(B.mh.resume()).rejects.toThrow(/Only the host/);
+    await expect(H.mh.resume()).rejects.toThrow(/not paused/);
   }, 15_000);
 });

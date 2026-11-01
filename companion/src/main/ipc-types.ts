@@ -49,6 +49,7 @@ export const IPC = {
   matchHost: 'match:host',
   matchJoin: 'match:join',
   matchStart: 'match:start',
+  matchResume: 'match:resume',
   matchLeave: 'match:leave',
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
@@ -195,6 +196,8 @@ export interface CastcadeApi {
     join(invite: string, displayName: string): Promise<MatchStatus>;
     /** Host only: freeze the roster (two or more players) and issue the first grant. */
     start(): Promise<MatchStatus>;
+    /** A8 (2026-10-31): host only: end a pause nobody resumed. */
+    resume(): Promise<MatchStatus>;
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */

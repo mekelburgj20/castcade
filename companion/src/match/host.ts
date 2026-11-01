@@ -21,7 +21,11 @@
  * - GAME_OVER from a player whose game already ended is rejected (`unexpected_state`).
  * - A3 (2026-10-30): an accepted RECONNECT puts the player back on a link but does not RESUME; the
  *   pause its drop caused waits for a RESUME from anyone (the fake client sends its own). A
- *   participant that reconnects after RESULT went out is sent RESULT again.
+ *   participant that reconnects after RESULT went out is sent RESULT again. A8 (2026-10-31): in the companion that
+ *   RESUME comes from the reconnecting player's own controller, or from the host's Match tab.
+ * - A8 (2026-10-31): every lobby roster change (a join, a leave, a PARTICIPANT_UPDATE) re-sends HELLO_ACK to every
+ *   accepted client, with `tableMismatches` (who differs from this host's fingerprint and how). The list survives a
+ *   transfer through `ResumeOptions.tableMismatches` / `AdoptOptions.tableMismatches`; it is never logged.
  */
 import {
   PROTOCOL_VERSION,
@@ -87,6 +91,11 @@ export interface ResumeOptions {
   logSignTimeoutMs?: number;
   /** Peers already known to have dropped (the departed host, for one). */
   gone?: Iterable<PlayerId>;
+  /**
+   * A8 (2026-10-31): who differs from the match's fingerprint and how, as this player knew it as a client (the last
+   * HELLO_ACK's `tableMismatches`, its own entry from its own comparison): the log does not carry it.
+   */
+  tableMismatches?: Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']>;
 }
 
 export interface RejectInfo extends PayloadOf<'REJECT'> {
@@ -224,6 +233,7 @@ export class HostMatch {
       session,
     );
     for (const id of opts.gone ?? []) host.gone.add(id);
+    for (const [id, m] of Object.entries(opts.tableMismatches ?? {})) if (m.length > 0) host.mismatched.set(id, m.map((x) => ({ ...x })));
     return host;
   }
 
@@ -613,9 +623,13 @@ export class HostMatch {
     if (this.detached) return;
     const st = this.s.state;
     if (st.phase === 'lobby') {
+      const wasIn = this.lobby.some((p) => p.playerId === peer);
       this.lobby = this.lobby.filter((p) => p.playerId !== peer);
       this.lobbyGames.delete(peer);
+      if (wasIn) this.setMismatch(peer, []);
       this.events.emit('peerLeft', peer);
+      // A8 (2026-10-31): the others' rosters drop the leaver too.
+      if (wasIn) this.resendAck();
       return;
     }
     const p = st.players[peer];
@@ -669,17 +683,14 @@ export class HostMatch {
     }
     const participant: ParticipantInfo = { ...p.participant };
     this.lobby.push(participant);
-    const ack = this.s.build(
-      'HELLO_ACK',
-      { hostPlayerId: hostId, hostPublicKey: this.publicKey, participants: this.lobby.map((x) => ({ ...x })), hostGame: { ...this.hostGame } },
-      null,
-    );
-    this.s.transport.send(msg.from, ack);
     this.lobbyGames.set(participant.playerId, { ...p.game });
     if (mismatches.length > 0) {
       this.mismatched.set(participant.playerId, mismatches);
       this.events.emit('tableMismatch', { playerId: participant.playerId, mismatches });
     }
+    // The newcomer's answer, and (A8, 2026-10-31) the roster again for everyone already in: with 3-4 players each
+    // client sees who else joined, and whose table differs, before MATCH_READY.
+    this.resendAck();
     this.events.emit('joined', participant);
   }
 
@@ -721,11 +732,20 @@ export class HostMatch {
     if (mismatches.map((m) => m.field).join(',') !== before) this.events.emit('tableMismatch', { playerId: id, mismatches });
   }
 
-  /** The lobby's HELLO_ACK again, to every accepted client (never 'all': a socket mid-HELLO would take it as its own). */
+  /**
+   * The lobby's HELLO_ACK, to every accepted client (never 'all': a socket mid-HELLO would take it as its own).
+   * A8 (2026-10-31): with every participant that differs, so each client can flag the others.
+   */
   private resendAck(): void {
     const ack = this.s.build(
       'HELLO_ACK',
-      { hostPlayerId: this.localId, hostPublicKey: this.publicKey, participants: this.lobby.map((x) => ({ ...x })), hostGame: { ...this.hostGame } },
+      {
+        hostPlayerId: this.localId,
+        hostPublicKey: this.publicKey,
+        participants: this.lobby.map((x) => ({ ...x })),
+        hostGame: { ...this.hostGame },
+        tableMismatches: [...this.mismatched].map(([playerId, mismatches]) => ({ playerId, mismatches: mismatches.map((x) => ({ ...x })) })),
+      },
       null,
     );
     for (const p of this.lobby) if (p.playerId !== this.localId) this.s.transport.send(p.playerId, ack);
@@ -1015,6 +1035,7 @@ export class HostMatch {
       throwdownCode: this.matchId,
       companionVersion: this.companionVersion,
       gone: this.gone,
+      tableMismatches: this.tableMismatches(),
     });
     this.events.emit('hostTransfer', { from, to: pt.newHost, client });
     if (trigger && linkFrom !== null) client.handle(linkFrom, trigger, { seqChecked: true });

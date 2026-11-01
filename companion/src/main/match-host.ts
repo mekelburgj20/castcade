@@ -7,6 +7,10 @@
  * runtimes) are optional: the app runs without them, and the lead wires the real ones. The panel goes up as soon as a player hosts or joins (coordinator
  * 2026-10-30), so the headset overlay can be checked before the match: the media layer is attached then with no
  * peers, and MATCH_READY adds them.
+ *
+ * A8 (2026-10-31): hosting opens the listener LAST, once the panel is up and the public-IP lookup has answered (or
+ * failed), so the first client to connect meets a host that can show it and an invite that exists; the invite is
+ * published only once the listener is up. A listener that cannot open tears the half-built match down again.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -72,6 +76,8 @@ export interface MatchStatus {
    * not; `buildMatch`: false when their VPX build differs (shown muted; the table may still be the same).
    */
   participants: Array<{ id: string; name: string; rig: ParticipantInfo['rig']; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
+  /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
+  transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
@@ -106,6 +112,8 @@ export interface MatchHost {
   host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
   join(invite: string, displayName: string): Promise<MatchStatus>;
   start(): Promise<MatchStatus>;
+  /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
+  resume(): Promise<MatchStatus>;
   leave(): Promise<MatchStatus>;
   setSettings(patch: Partial<MatchSettings>): MatchStatus;
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
@@ -307,6 +315,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const overlayFor = (a: RigRuntime): VrOverlay | undefined => (usesLayer(a) ? opts.vrLayer : opts.vrOverlay);
   const headsetPanel = (a: RigRuntime): boolean => a.rig === 'vr_headset';
   const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a) });
+  const nameIn = (c: ControllerStatus, id: string): string => c.participants.find((p) => p.playerId === id)?.displayName ?? id;
   const status = (): MatchStatus => {
     const a = active;
     const c: ControllerStatus | null = a ? a.controller.status() : null;
@@ -333,6 +342,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           buildMatch: words ? words.build === null : null,
         };
       }),
+      transfer: c?.transfer
+        ? {
+            proposer: nameIn(c, c.transfer.proposer),
+            newHost: c.transfer.newHost === null ? null : nameIn(c, c.transfer.newHost),
+            reason: c.transfer.reason,
+          }
+        : null,
       panel: c?.panel ?? null,
       media: a && opts.media ? opts.media.status() : null,
       vrOverlay: a ? ((a.overlay ?? overlayFor(a))?.status() ?? null) : null,
@@ -571,15 +587,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const name = cleanName(o.displayName) ?? defaultName();
       saveSettings(patchMatchSettings(settings, { port, ballsPerGame, displayName: name }));
       const me = playerId();
-      const rig = await decide();
+      // A8 (2026-10-31): the rig and the public address first, the listener last (module header).
+      const [rig, pub] = await Promise.all([decide(), (opts.publicIp ?? ipifyPublicIp)().catch(() => null)]);
       const transport = new WsPeerTransport({ localId: me });
-      try {
-        await transport.listen(port, opts.listenAddress ?? '0.0.0.0');
-      } catch (e) {
-        transport.close();
-        const code = (e as NodeJS.ErrnoException).code;
-        return fail(new Error(code === 'EADDRINUSE' ? `Port ${port} is already in use on this PC: pick another port` : `Could not listen on port ${port}: ${describeError(e)}`));
-      }
       const code = newMatchCode();
       const ws = witness.status();
       const game = gameFingerprintFrom(ws, RECIPE_VERSION);
@@ -617,12 +627,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
       active = a;
-      const pub = await (opts.publicIp ?? ipifyPublicIp)().catch(() => null);
+      await openPanel(a);
+      try {
+        await transport.listen(port, opts.listenAddress ?? '0.0.0.0');
+      } catch (e) {
+        await teardown(a);
+        const errno = (e as NodeJS.ErrnoException).code;
+        return fail(new Error(errno === 'EADDRINUSE' ? `Port ${port} is already in use on this PC: pick another port` : `Could not listen on port ${port}: ${describeError(e)}`));
+      }
       const ip = pub ?? pickLanAddress(networkInterfaces()) ?? '127.0.0.1';
       a.ipSource = pub ? 'public' : 'lan';
       a.invite = formatInvite(ip, port, code);
       log.info(`match: hosting ${code} on ${transport.endpoint ?? `port ${port}`} (${ballsPerGame} balls); invite ${a.invite} (${a.ipSource} address)`);
-      await openPanel(a);
       // The table may have loaded while hosting (A6, 2026-10-31).
       checkLobby(a, witness.status());
       emit();
@@ -721,19 +737,24 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
     });
 
+  /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. */
+  const teardown = async (a: Active): Promise<void> => {
+    if (active === a) active = null;
+    for (const off of a.offs) off();
+    if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
+    const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
+    await a.controller.close();
+    for (const r of roles) r.close();
+    a.transport.close();
+  };
+
   const leave = (): Promise<MatchStatus> =>
     guard(async () => {
       const a = active;
       if (!a) return status();
       a.controller.leave('left the match');
       await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
-      active = null;
-      for (const off of a.offs) off();
-      if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
-      const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
-      await a.controller.close();
-      for (const r of roles) r.close();
-      a.transport.close();
+      await teardown(a);
       lastError = null;
       log.info(`match: left ${a.code}`);
       emit();
@@ -755,6 +776,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
       lastError = null;
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
+      emit();
+      return status();
+    },
+    async resume() {
+      const a = active;
+      if (!a) return fail(new Error('No match'));
+      const r = a.controller.currentRole;
+      if (!(r instanceof HostMatch)) return fail(new Error('Only the host resumes a pause from here'));
+      if (r.state.phase !== 'running' || !r.state.paused) return fail(new Error('The match is not paused'));
+      if (r.state.pendingTransfer) return fail(new Error('A host transfer is under way: wait for it to finish'));
+      try {
+        r.resume();
+      } catch (e) {
+        return fail(e);
+      }
+      lastError = null;
+      log.info(`match: ${a.code} resumed from the Match tab`);
       emit();
       return status();
     },

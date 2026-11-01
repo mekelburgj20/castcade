@@ -98,7 +98,11 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(r.host.tableMismatches()['a']?.map((m) => m.field)).toEqual(['tableHash']);
     expect(r.seen['a']!.mismatch.at(-1)).toEqual({ playerId: 'a', fields: ['tableHash'] });
     expect(r.seen['b']!.rosters).toHaveLength(1);
-    expect(r.seen['b']!.mismatch).toEqual([]);
+    // A8 (2026-10-31): b sees a's difference too (HELLO_ACK.tableMismatches): first from its own join, then the update.
+    expect(r.seen['b']!.mismatch).toEqual([
+      { playerId: 'a', fields: ['tableName', 'tableHash'] },
+      { playerId: 'a', fields: ['tableHash'] },
+    ]);
 
     a.updateParticipant({ game: MB });
     await flush();
