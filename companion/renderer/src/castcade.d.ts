@@ -398,6 +398,8 @@ interface MediaStatus {
   captureSource: string | null;
   /** D7.4: the size of the region sent while the capture is live. */
   captureCrop?: { width: number; height: number } | null;
+  /** D2.6: the desktop panel window, when there is one. */
+  panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
   lastError: string | null;
 }
 interface VrOverlayStatus {

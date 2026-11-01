@@ -72,6 +72,12 @@ export interface MediaStatus {
    * aspect: a VR rig sending a single-eye preview is told to switch VPX's preview to both eyes. Absent before D7.4.
    */
   captureCrop?: { width: number; height: number } | null;
+  /**
+   * D2.6 (2026-11-01): the desktop panel window (absent for the headset panel): whether it is up and where it sits
+   * relative to the main window. The Match tab names it, since it is a separate window (and invisible to anyone
+   * watching through Virtual Desktop: it is excluded from screen capture).
+   */
+  panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
   lastError: string | null;
 }
 
@@ -94,6 +100,8 @@ export interface MatchMedia {
   videoFrames?(): VideoFrameSource | null;
   /** Shows the desktop panel window (no-op in VR, where the overlay helper shows it). */
   showPanel(): void;
+  /** D2.6 (2026-11-01): hides the desktop panel window without ending anything (the Match tab's Hide panel). */
+  hidePanel?(): void;
   detach(): Promise<void>;
 }
 

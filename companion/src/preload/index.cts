@@ -53,6 +53,8 @@ const CH = {
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
+  matchShowPanel: 'match:showPanel',
+  matchHidePanel: 'match:hidePanel',
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
@@ -140,6 +142,8 @@ const castcade: CastcadeApi = {
     setSettings: (patch) => ipcRenderer.invoke(CH.matchSettingsSet, patch),
     setMicrophone: (deviceId) => ipcRenderer.invoke(CH.matchSetMicrophone, deviceId),
     setMuted: (muted) => ipcRenderer.invoke(CH.matchSetMuted, muted),
+    showPanel: () => ipcRenderer.invoke(CH.matchShowPanel),
+    hidePanel: () => ipcRenderer.invoke(CH.matchHidePanel),
     onStatus(cb) {
       const listener = (_e: Electron.IpcRendererEvent, s: MatchStatus): void => cb(s);
       ipcRenderer.on(CH.matchStatusEvent, listener);

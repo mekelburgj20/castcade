@@ -24,7 +24,7 @@ describe('media settings (D2)', () => {
   });
 
   it('round-trips and drops invalid fields to the default', () => {
-    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'] };
+    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'], mainBounds: { x: 10, y: 20, width: 420, height: 640 } };
     expect(readMediaSettings(writeMediaSettings(s))).toEqual(s);
     const bad = readMediaSettings(JSON.stringify({ version: 1, micDeviceId: 7, muted: 'yes', turn: { url: 'http://x', username: 'u', credential: 'c' }, stun: 'stun:x' }));
     expect(bad).toEqual(DEFAULT_MEDIA_SETTINGS);
@@ -79,5 +79,18 @@ describe('media settings (D2)', () => {
       expect(broken.get().muted).toBe(true);
       expect(errors).toHaveLength(1);
     });
+  });
+});
+
+describe('main window bounds (D2.6, 2026-11-01)', () => {
+  it('remembered with the media settings: rounded, patched without touching the rest, junk falls back to what was there', () => {
+    expect(DEFAULT_MEDIA_SETTINGS.mainBounds).toBeNull();
+    const b = readMediaSettings(JSON.stringify({ version: 1, mainBounds: { x: 10.4, y: -20, width: 420, height: 640 } }));
+    expect(b.mainBounds).toEqual({ x: 10, y: -20, width: 420, height: 640 });
+    const patched = patchMediaSettings(b, { mainBounds: { x: 5, y: 6, width: 500, height: 700 } });
+    expect(patched).toMatchObject({ mainBounds: { x: 5, y: 6, width: 500, height: 700 }, micDeviceId: null, muted: false });
+    expect(patchMediaSettings(patched, { mainBounds: null }).mainBounds).toBeNull();
+    expect(readMediaSettings(JSON.stringify({ version: 1, mainBounds: { x: 'a', y: 0, width: 4, height: 4 } })).mainBounds).toBeNull();
+    expect(patchMediaSettings(patched, { mainBounds: 'x' as never }).mainBounds).toEqual({ x: 5, y: 6, width: 500, height: 700 });
   });
 });

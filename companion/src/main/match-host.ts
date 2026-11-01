@@ -119,6 +119,9 @@ export interface MatchHost {
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
   setMicrophone(deviceId: string | null): MatchStatus;
   setMuted(muted: boolean): MatchStatus;
+  /** D2.6 (2026-11-01): the Match tab's Show panel / Hide panel for the desktop panel window; a no-op without one. */
+  showPanel(): MatchStatus;
+  hidePanel(): MatchStatus;
   /** B22 (2026-10-31): the Match tab opened: list the microphones if no match lists them; a status follows. Never throws. */
   refreshMicrophones(): void;
   status(): MatchStatus;
@@ -815,6 +818,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (opts.media) opts.media.setMuted(muted);
       else opts.mediaSettings?.patch({ muted });
       active?.controller.refresh();
+      emit();
+      return status();
+    },
+    showPanel() {
+      opts.media?.showPanel();
+      emit();
+      return status();
+    },
+    hidePanel() {
+      opts.media?.hidePanel?.();
       emit();
       return status();
     },
