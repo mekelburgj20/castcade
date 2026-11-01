@@ -161,7 +161,22 @@ function sameScores(a: (number | null)[], b: (number | null)[]): boolean {
  * Bonus is counted after the drain on both platforms (finding 3), so a ball's final score is
  * never the score at its `ball_end`; take it at the next event.
  */
-export function detectTransition(prev: GameState | null, cur: GameState, t: number): GameEvent[] {
+/** The last (player, ball) seen in play while a game was open: what ends when game over arrives with the ball byte already cleared. */
+export interface LastInPlay {
+  player: number | null;
+  ball: number | null;
+  extraBalls: number | null;
+}
+
+/**
+ * `lastInPlay` (optional): Gottlieb System 3 clears the ball byte about 3.5 s BEFORE it clears the player count
+ * the map reads as game over (owner's rig, Cue Ball Wizard, 2026-11-01, `fixtures/nvram/cueball`), so at the game-over
+ * step `prev` already shows ball 0 and the old rule ("a ball in play in `prev`") derived neither the last ball end nor
+ * the game end; the game then ended as `game_abandoned` at table exit and posted at close (Krobs' Freddy, 2026-10-31).
+ * With the caller's last ball in play the end is derived from it. WPC keeps the ball byte at 3 across game over and
+ * Data East clears both in one step, so neither path changes for them.
+ */
+export function detectTransition(prev: GameState | null, cur: GameState, t: number, lastInPlay: LastInPlay | null = null): GameEvent[] {
   const ev: GameEvent[] = [];
   if (!prev || !plausible(cur)) return ev;
   const pgo = prev.gameOver;
@@ -179,6 +194,10 @@ export function detectTransition(prev: GameState | null, cur: GameState, t: numb
     }
     if (cgo === true && hadBall) {
       ev.push(ballEnd());
+      ev.push({ kind: 'game_end', t, scores: cur.scores, players: prev.playerCount });
+    } else if (cgo === true && lastInPlay && lastInPlay.ball !== null && lastInPlay.ball >= 1) {
+      // The ball byte was cleared before game over (System 3): the last ball in play is the one that ended.
+      ev.push({ kind: 'ball_end', t, player: lastInPlay.player, ball: lastInPlay.ball, extraBalls: lastInPlay.extraBalls });
       ev.push({ kind: 'game_end', t, scores: cur.scores, players: prev.playerCount });
     }
   }
@@ -319,6 +338,8 @@ interface Session {
   finals: (number | null)[];
   /** Bally / Stern M100: the last-game scores when the open game started (the previous game's). */
   finalsAtStart: (number | null)[] | null;
+  /** Recipe A: the last plausible in-game state with a ball in play (`detectTransition`'s `lastInPlay`); null between games. */
+  lastInPlay: LastInPlay | null;
 }
 
 export interface JournalDetectorOptions {
@@ -457,7 +478,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null, lastInPlay: null };
     return [
       {
         kind: 'table_loaded',
@@ -489,6 +510,7 @@ export class JournalDetector {
       s.samCount = this.counterValue(s);
       s.finals = this.finalsValue(s);
       s.summary.scores = cur.scores;
+      this.noteInPlay(s, cur);
     }
     return events;
   }
@@ -515,7 +537,15 @@ export class JournalDetector {
     s.samCount = this.counterValue(s);
     s.finals = this.finalsValue(s);
     s.summary.scores = cur.scores;
+    this.noteInPlay(s, cur);
     return events;
+  }
+
+  /** Remember the ball in play while the game is open, so a game over that arrives after the ball byte was cleared still ends it. */
+  private noteInPlay(s: Session, cur: GameState): void {
+    if (s.started && cur.gameOver === false && cur.currentBall !== null && cur.currentBall >= 1) {
+      s.lastInPlay = { player: cur.currentPlayer, ball: cur.currentBall, extraBalls: cur.extraBalls };
+    }
   }
 
   /**
@@ -524,7 +554,7 @@ export class JournalDetector {
    * `game_start` would fire on every attract flicker).
    */
   private transition(s: Session, prev: GameState, cur: GameState, t: number): GameEvent[] {
-    const generic = detectTransition(prev, cur, t);
+    const generic = detectTransition(prev, cur, t, s.lastInPlay);
     if (s.bally) {
       const finals = this.finalsValue(s);
       const ev = ballyTransition({ state: prev, finals: s.finals }, { state: cur, finals }, s.started, s.finalsAtStart, t);
@@ -553,8 +583,14 @@ export class JournalDetector {
     const out: GameEvent[] = [];
     for (const ev of events) {
       if ((ev.kind === 'ball_end' || ev.kind === 'game_end') && !s.started) continue;
-      if (ev.kind === 'game_start') s.started = true;
-      if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') s.started = false;
+      if (ev.kind === 'game_start') {
+        s.started = true;
+        s.lastInPlay = null;
+      }
+      if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') {
+        s.started = false;
+        s.lastInPlay = null;
+      }
       out.push(ev);
     }
     return out;

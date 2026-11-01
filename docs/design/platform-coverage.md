@@ -96,12 +96,23 @@ key, so the lamp and the last-game scores are journaled with no change to the ho
 landing in `fixtures/nvram/stars/`. **(Bally AS-2518-17)**, optional, the same on *Eight Ball (Bally 1977)*,
 ROM `eightbll` (`system-rom-20`), in `fixtures/nvram/eightbll/`.
 
-## Gottlieb System 3 — readable, ball decode fixed
+## Gottlieb System 3 — verified (2026-11-01), game end re-derived, ball decode masked
 
 **Where the fields sit.** All of them in the 8 KB NVRAM at 0x0000: scores at 0x001…, ball at 0x0015 (or 0x0B
-on some maps), player 0x200, player count and game over 0x201. Readable via `game_state`; nothing to build.
+on some maps), player 0x200, player count and game over 0x201. Readable via `game_state`.
 
-**Finding (2026-10-31, the owner's `.nv` files, not committed).** The `.nv` is 8238 bytes and the map offsets
+**The finding that mattered (owner's rig, Cue Ball Wizard on 0.2.27, 2026-11-01; `fixtures/nvram/cueball/2026-11-01-1`).**
+System 3 clears the ball byte (0x15: 0x03 → 0x00 at t=206.5, then the idle bit 0x80 at t=206.9) about 3.5 s BEFORE
+it clears the player count (0x201 → 0 at t=210.1), which the map reads inverted as game over. `detectTransition`'s
+game-over rule needed a ball in play in the previous state, so it derived neither the last ball end nor the game end;
+the game ran on as open and became `game_abandoned` at table exit ("abandoned on ball 0", posted at close). That is
+what Krobs' patched Freddy did on 2026-10-31. WPC keeps the ball byte at 3 across game over (the `mm_109c` fixtures)
+and Data East clears ball and game over in one step (`tftc_400`), which is why no earlier fixture showed it. The
+detector now keeps the last ball in play (`lastInPlay`) while a game is open and ends the game from it when game over
+arrives with the ball already cleared; the fixture replays as game_start, ball_end 1–3, game_end 100,273,890. The
+family is **verified** by that fixture (Tee'd Off below is optional, a second map of the family).
+
+**The second finding (2026-10-31, the owner's `.nv` files, not committed).** The `.nv` is 8238 bytes and the map offsets
 decode sensibly, but the ball byte carries flags in its high nibble: Cue Ball Wizard's 0x15 held 0x70 and
 Rescue 911's 0x90, which unmasked BCD reads as ball 70 / 90. `plausible()` rejects the whole state (correctly:
 the Medieval Madness 0x55/0xAA boot pattern relies on it), so the detector kept no state and a whole game
@@ -111,17 +122,11 @@ posted only at close. The corpus knows the pattern on siblings (`teedoff` masks 
 **Rule.** On `gottlieb-system3` and `gottlieb-system3-32K`, `compileMap` gives `current_ball` and
 `current_player` a default `mask 0x0F` when the descriptor has none (a ball or player number is 0–9). The corpus
 files are not changed; a map's own mask wins (Tee'd Off keeps 0x7F). 0x70 → 0, 0x90 → 0, 0x83 → 3, 0x31 → 1.
-This is probably the Freddy rung: high-nibble flags on that byte during play would silence every unmasked
-System 3 map. Unverified until recorded.
+The recording showed the byte at 0x01–0x03 during play and 0x80 only after the last drain, so during a game the
+mask is not what decides; it keeps the idle 0x80 from reading as ball 80 between games.
 
-**Recording recipe**, owner's rig (both tables have sidecars there):
-
-1. *Cue Ball Wizard (Gottlieb 1992)*, ROM `cueball`: one 1-player game to game over.
-2. *Tee'd Off (Gottlieb 1993)*, ROM `teedoff3`: one 1-player game to game over.
-3. Send both journals and `companion.log`, with the final scores.
-4. Lands as `fixtures/nvram/cueball/<date>-1.jsonl.gz` and `fixtures/nvram/teedoff3/<date>-1.jsonl.gz` +
-   `.meta.json`; expected game_start, one ball_end per ball, game_end with the score. That makes the family
-   verified.
+**Optional second recording**, owner's rig: *Tee'd Off (Gottlieb 1993)*, ROM `teedoff3` (its map masks the ball
+0x7F itself), one 1-player game to game over, to `fixtures/nvram/teedoff3/<date>-1.jsonl.gz` + `.meta.json`.
 
 ## Taito — readable by the map, doubted (B14.1)
 

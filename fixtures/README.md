@@ -4,7 +4,9 @@
 `script/iron-maiden-lotb`; a fourth, `nvram/mb_106b/2026-10-23-1` (hook 0.3.0, three table loads, five games: the C7
 live-mode gate), recorded 2026-10-23; a fifth, `nvram/mm_109c/2026-10-25-1` (hook 0.4.0 on real VPX, two games, the
 first `engine` line), recorded 2026-10-25; two Stern SAM sessions, `nvram/acd_170h/2026-10-25-1` and
-`nvram/twd_160h/2026-10-26-1` (every NVRAM byte journaled, B10), recorded 2026-10-25/26. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
+`nvram/twd_160h/2026-10-26-1` (every NVRAM byte journaled, B10), recorded 2026-10-25/26; one Gottlieb System 3 session,
+`nvram/cueball/2026-11-01-1` (hook 0.4.1, one game; the ball byte is cleared 3.5 s before game over, the finding behind
+"System 3 posts at close"), recorded 2026-11-01. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
 exit) is archived locally only, 18.7 MB gzipped is too large for git; see `docs/phase-0-spike.md` §8 "Owner's hands-on pass". Journals are written by the hook to
 `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below. NVRAM journals are large
 (the 0.1.0 hook writes every changed byte: 37 MB for two games of Medieval Madness) so they are stored **gzipped**

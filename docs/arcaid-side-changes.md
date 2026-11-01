@@ -477,6 +477,24 @@ companion cannot tell a Sanctioned recording from any other.
 that session while `closesAt` is in the future or `null`, and prunes it by the normal rules afterwards. Badge, never
 gate: nothing on the board changes.
 
+(Item 19, the Sanctioned "trusted build" rule, is Castcade F17 and waits on the sanctioned-build design, I1/I4.)
+
+## 20. A known `vps_game` must not lose to a name match (Castcade F22)
+
+**What happened (owner's rig, 2026-11-01T07:15Z).** One Freddy – A Nightmare on Elm Street game (ROM `freddy`, score
+159,846,020, read at close) went to `GET /api/witness/score` with `vps_game: "SrcagQN8"` (the VPS game, resolved by the
+companion from the ROM and the file) and `rom: "freddy"`. ArcAid answered: *no open game or catalogue entry matched this
+table: "Freddy A Nightmare on Elm Street (Gottlieb 1994)" matches 2 catalogue games*, and the score was skipped. The
+catalogue holds two rows that answer to that name (a duplicate import, or the 1994 Gottlieb game beside the 2025
+original "Freddy's Nightmares"), and the name fallback refused to choose, although the VPS id and the ROM both name
+one game.
+
+**What to do.** In `VpxScoreIngestService.match` (and the start call, item 17), resolve in this order and stop at the
+first hit: the catalogue game whose `vps_id` equals `vps_game`; the ROM's catalogue game (`global_game_roms`); the
+device-name match. A name match that finds several rows must not override an earlier unique hit, and when two
+catalogue rows share one `vps_id` the admin UI should show them as a duplicate to merge. Answer the miss with the
+reason, as today. Badge, never gate: this widens matching, it refuses nothing.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

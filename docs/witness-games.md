@@ -6,7 +6,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## Versions
 
-- Generated: 2026-11-01T06:03:39.057Z
+- Generated: 2026-11-01T07:22:42.492Z
 - VPS database (vps-db commit): `cce9160b30110ee174786239fdfb30a6e4caaab7`
 - NVRAM maps (pinmame-nvram-maps commit): `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`
 - Castcade companion: 0.2.27
@@ -22,7 +22,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | stern-sam | 8 | 25 | 0 | 33 |
 | dataeast | 1 | 31 | 0 | 32 |
 | williams-wpc-12K | 2 | 30 | 0 | 32 |
-| gottlieb-system3 | 0 | 25 | 0 | 25 |
+| gottlieb-system3 | 1 | 24 | 0 | 25 |
 | williams-wpc-8K | 0 | 23 | 0 | 23 |
 | williams-system9-12K | 0 | 20 | 0 | 20 |
 | bally-35-6K | 0 | 19 | 0 | 19 |
@@ -54,7 +54,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | zaccaria-gen1 | 0 | 0 | 3 | 3 |
 | zaccaria-gen2 | 0 | 0 | 8 | 8 |
 | no map | 0 | 0 | 1677 | 1677 |
-| **All** | **11** | **447** | **1907** | **2365** |
+| **All** | **12** | **446** | **1907** | **2365** |
 
 77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 2 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
 
@@ -465,15 +465,15 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## gottlieb-system3
 
-0 verified, 25 supported, 0 unsupported.
+1 verified, 24 supported, 0 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
+| Cue Ball Wizard | Gottlieb | 1992 | cueball verified, cueball1 supported, cueball2 supported, cueball3 supported | verified | ROM from pinmame-nvram-maps (VPS lists none) |
 | Barb Wire | Gottlieb | 1996 | barbwire | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Cactus Jack's | Gottlieb | 1991 | cactjack | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Car Hop | Gottlieb | 1991 | carhop | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Class of 1812 | Gottlieb | 1991 | clas1812 | supported |  |
-| Cue Ball Wizard | Gottlieb | 1992 | cueball, cueball1, cueball2, cueball3 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Deadly Weapon | Gottlieb | 1990 | deadweap | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Freddy - A Nightmare on Elm Street | Gottlieb | 1994 | freddy, freddy4 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Gladiators | Gottlieb | 1993 | gladiatr | supported | ROM from pinmame-nvram-maps (VPS lists none) |
