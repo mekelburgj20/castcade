@@ -15,6 +15,7 @@ import {
   romFromNvName,
   sameGame,
   samEndCounter,
+  ballyLiveInputs,
   liveSupport,
   stripRomVersion,
   toInt,
@@ -318,5 +319,72 @@ describe('liveSupport (B12)', () => {
     expect(s).toMatchObject({ readable: false, absent: ['current_ball'] });
     expect(s.reason).toMatch(/no current_ball in the map/);
     expect(liveSupport(null)).toMatchObject({ readable: false, reason: 'no NVRAM map for this ROM' });
+  });
+});
+
+describe('liveSupport: the families B10.2 / B10.3 looked at (vendored maps, fixtures/maps)', () => {
+  it('Bally AS-2518-35 (Eight Ball Deluxe) and Stern M100: readable via the game-over lamp and the last-game scores', async () => {
+    for (const [rom, platform] of [['eballdlx', 'bally-35-8K'], ['stingray', 'stern-m100']] as const) {
+      const map = (await corpus.mapFor(rom))!;
+      expect(map.platform.name).toBe(platform);
+      const s = liveSupport(map);
+      expect(s).toMatchObject({ readable: true, via: 'bally_lamp', absent: [] });
+      expect(s.outside).toEqual(['current_ball', 'current_player']);
+      expect(s.reason).toBe(`${platform}: scores, the game-over lamp and the last-game scores in NVRAM (unverified)`);
+      expect(ballyLiveInputs(map)?.finalScores).toHaveLength(map.gameState['scores']!.length);
+    }
+  });
+
+  it('the Bally detector needs the lamp and one last-game score per score, all in NVRAM', async () => {
+    const map = (await corpus.mapFor('eballdlx'))!;
+    const { game_over: _go, ...noLamp } = map.gameState;
+    expect(liveSupport({ ...map, gameState: noLamp })).toMatchObject({ readable: false, via: null });
+    expect(liveSupport({ ...map, gameState: { ...map.gameState, final_scores: map.gameState['final_scores']!.slice(0, 2) } }).readable).toBe(false);
+    expect(liveSupport({ ...map, gameState: { ...map.gameState, game_over: [{ ...map.gameState['game_over']![0]!, start: '0x0C' }] } }).readable).toBe(false);
+    // Another platform with the same fields is not this family (the rules are the Bally MPU's).
+    expect(ballyLiveInputs({ ...map, platform: { ...map.platform, name: 'stern-m200' } })).toBeNull();
+  });
+
+  it('Eight Ball Deluxe: the hook watches the lamp, the displays and the last-game scores, nothing in CPU RAM', async () => {
+    const map = (await corpus.mapFor('eballdlx'))!;
+    const offs = gameStateOffsets(map);
+    // Lamp 0x20C, player 1's display 0x21E..0x224, player 4's last-game score ends at 0x263; NVRAM starts at 0x200.
+    for (const b of [0x0c, 0x1e, 0x24, 0x48, 0x63]) expect(offs).toContain(b);
+    expect(offs.every((o) => o >= 0 && o < 0x100)).toBe(true);
+  });
+
+  it('Zaccaria gen 2, Gottlieb System 80 and Stern M200 stay unsupported, each with its reason', async () => {
+    expect(liveSupport(await corpus.mapFor('dvlrider'))).toMatchObject({ readable: false, via: null, absent: ['game_over', 'current_ball', 'current_player'], outside: [] });
+    const s80 = liveSupport(await corpus.mapFor('spirit'));
+    expect(s80).toMatchObject({ readable: false, via: null, outside: ['scores', 'game_over', 'current_ball', 'current_player'] });
+    expect(s80.reason).toBe('gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM');
+    // M200 has its last-game scores in NVRAM, but the displays, the lamp, ball and player are CPU RAM.
+    expect(liveSupport(await corpus.mapFor('cheetah'))).toMatchObject({ readable: false, via: null, outside: ['scores', 'game_over', 'current_ball', 'current_player'] });
+  });
+});
+
+describe('Gottlieb System 3: current_ball and current_player read the low nibble unless the map masks them', () => {
+  const ballFrom = async (rom: string, byte: number) => {
+    const map = (await corpus.mapFor(rom))!;
+    const nv = new Uint8Array(8238); // the size of a System 3 .nv on the owner's rig
+    nv[0x15] = byte;
+    return decodeGameState(map, nv).currentBall;
+  };
+
+  it('freddy and cueball (no mask in the map): 0x70 → 0, 0x90 → 0, 0x03 → 3, 0x31 → 1, 0x83 → 3', async () => {
+    for (const rom of ['freddy', 'cueball']) {
+      const got: (number | null)[] = [];
+      for (const b of [0x70, 0x90, 0x03, 0x31, 0x83]) got.push(await ballFrom(rom, b));
+      expect(got).toEqual([0, 0, 3, 1, 3]);
+      const map = (await corpus.mapFor(rom))!;
+      expect(map.gameState['current_ball']![0]!['mask']).toBe('0x0F');
+      expect(liveSupport(map)).toMatchObject({ readable: true, via: 'game_state' });
+    }
+  });
+
+  it("a map's own mask wins (Tee'd Off masks the ball 0x7F); other platforms are untouched", async () => {
+    expect((await corpus.mapFor('teedoff3'))!.gameState['current_ball']![0]!['mask']).toBe('0x7F');
+    expect(await ballFrom('teedoff3', 0x83)).toBe(3);
+    expect((await corpus.mapFor('mm_109c'))!.gameState['current_ball']![0]!['mask']).toBeUndefined();
   });
 });

@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { readJournalLines } from './journal-replay.js';
-import { detectTransition, JournalDetector, plausible, replayDetector, samTransition, type GameEvent, type JournalEvent } from './journal-detector.js';
-import { createMapCorpus, gameStateOffsets, type CompiledMap, type GameState } from './maps.js';
+import { ballyTransition, detectTransition, JournalDetector, plausible, replayDetector, samTransition, type GameEvent, type JournalEvent } from './journal-detector.js';
+import { ballyLiveInputs, createMapCorpus, decodeFinalScores, decodeGameState, descriptorOffsets, gameStateOffsets, type CompiledMap, type GameState, type JsonObject } from './maps.js';
 import { engineSlope } from './attestation-types.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
@@ -355,4 +355,288 @@ describe('hook events the detector passes through', () => {
     expect(d.feed('{"event":"embedded_patch","t":0.512,"original":"C:\\\\Tables\\\\MB.vpx"}')).toEqual([{ kind: 'embedded_patch', t: 0.512, original: 'C:\\Tables\\MB.vpx' }]);
     expect(d.feed('{"event":"stale_sidecar","t":0.6,"detail":"size 1 vs 2","original":"x"}')).toEqual([{ kind: 'stale_sidecar', t: 0.6, detail: 'size 1 vs 2' }]);
   });
+});
+
+// ------------------------------------------------------------- B10.2: Bally / Stern M100 and Gottlieb System 3 --
+
+/** NVRAM region base of a compiled map (journal offsets count from it). */
+const nvBase = (map: CompiledMap) => map.platform.layout.find((r) => r.type === 'nvram')?.address ?? 0;
+
+/**
+ * Write a BCD score the way the machine shows it: on a nibble platform (Bally / Stern M100: one digit per
+ * byte in the high nibble, little-endian) at least `00` with blank (0xF) leading digits; null blanks the
+ * whole display. On a byte platform (System 3) packed BCD, big-endian.
+ */
+function putScore(map: CompiledMap, buf: Uint8Array, entry: JsonObject, value: number | null): void {
+  const offs = descriptorOffsets(entry).map((a) => a - nvBase(map));
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const nibble = region?.nibble ?? 'both';
+  const little = map.platform.endian === 'little';
+  const order = little ? offs : [...offs].reverse(); // least significant first
+  if (nibble === 'both') {
+    let v = value ?? 0;
+    for (const o of order) {
+      buf[o] = ((Math.floor(v / 10) % 10) << 4) | (v % 10);
+      v = Math.floor(v / 100);
+    }
+    return;
+  }
+  const digits = value === null ? 0 : Math.max(2, String(value).length);
+  order.forEach((o, i) => {
+    const d = i < digits ? Math.floor((value ?? 0) / 10 ** i) % 10 : 0xf;
+    buf[o] = nibble === 'high' ? (d << 4) | (buf[o]! & 0x0f) : (buf[o]! & 0xf0) | d;
+  });
+}
+
+/** Set a `bool` lamp descriptor so it decodes as `on` (honours `mask`, `invert` and the high nibble). */
+function putBool(map: CompiledMap, buf: Uint8Array, entry: JsonObject, on: boolean): void {
+  const o = (descriptorOffsets(entry)[0] as number) - nvBase(map);
+  const nibble = map.platform.layout.find((r) => r.type === 'nvram')?.nibble ?? 'both';
+  let bit = Number(entry['mask'] ?? 0xff);
+  if (nibble === 'high') bit <<= 4;
+  const raw = entry['invert'] === true ? !on : on;
+  buf[o] = raw ? buf[o]! | bit : buf[o]! & ~bit;
+}
+
+/** A synthetic recipe-A journal: one baseline snapshot, then one delta line per changed buffer. */
+class Journal {
+  readonly lines: string[] = [];
+  private last: Uint8Array;
+  private t = 1;
+  constructor(rom: string, readonly buf: Uint8Array) {
+    this.lines.push(JSON.stringify({ event: 'table_loaded', t: 0, table: rom, recipe: 'A', rom, lib: '0.5.0', session: 's', locked: false }));
+    this.lines.push(JSON.stringify({ event: 'nvram_full', t: 0.5, bytes: [...buf] }));
+    this.last = Uint8Array.from(buf);
+  }
+  /** Journal what changed since the last line (the hook's `nvram_delta` triples: index, new, old). */
+  step(): this {
+    const d: [number, number, number][] = [];
+    for (let i = 0; i < this.buf.length; i++) if (this.buf[i] !== this.last[i]) d.push([i, this.buf[i]!, this.last[i]!]);
+    if (d.length) this.lines.push(JSON.stringify({ event: 'nvram_delta', t: this.t++, n: d.length, d }));
+    this.last = Uint8Array.from(this.buf);
+    return this;
+  }
+  exit(): string[] {
+    return [...this.lines, JSON.stringify({ event: 'table_exit', t: this.t++, lines: this.lines.length, nvram_callbacks: 1, blocked_keys: 0 })];
+  }
+}
+
+const kinds = (events: JournalEvent[]) => games(events).filter((e) => e.kind !== 'current_scores').map((e) => e.kind);
+
+describe('Bally AS-2518-35 and Stern M100: games from the lamp and the last-game scores (B10.2, synthetic)', () => {
+  const lookup = async (rom: string) => {
+    const map = await corpus.mapFor(rom);
+    if (!map) throw new Error(`no map for ${rom}`);
+    return map;
+  };
+
+  /** A machine in attract after a game of `last` points: GAME OVER lit, displays and last-game scores alike. */
+  const machine = (map: CompiledMap, last: number[]) => {
+    const inputs = ballyLiveInputs(map);
+    if (!inputs) throw new Error('not a Bally family map');
+    const buf = new Uint8Array(0x100);
+    const scores = map.gameState['scores']!;
+    const show = (vals: (number | null)[], entries: JsonObject[]) => entries.forEach((e, i) => putScore(map, buf, e, vals[i] ?? null));
+    const pad = (vals: number[]) => scores.map((_, i) => (i < vals.length ? vals[i]! : null));
+    show(pad(last), scores);
+    show(pad(last), inputs.finalScores);
+    putBool(map, buf, inputs.lamp, true);
+    return {
+      buf,
+      lamp: (on: boolean) => putBool(map, buf, inputs.lamp, on),
+      displays: (vals: number[]) => show(pad(vals), scores),
+      finals: (vals: number[]) => show(pad(vals), inputs.finalScores),
+      /** The ROM's game-over copy spread over two callbacks: the low digits of player 1's last-game score, then the rest. */
+      finalsInParts: (vals: number[], j: Journal) => {
+        const done = Uint8Array.from(buf);
+        pad(vals).forEach((v, i) => putScore(map, done, inputs.finalScores[i]!, v));
+        const base = nvBase(map);
+        for (const a of descriptorOffsets(inputs.finalScores[0]!).slice(0, 3)) buf[a - base] = done[a - base]!;
+        j.step();
+        buf.set(done);
+        j.step();
+      },
+    };
+  };
+
+  for (const rom of ['eballdlx', 'stingray']) {
+    it(`${rom}: the synthetic NVRAM decodes as intended (lamp, displays, last-game scores)`, async () => {
+      const map = await lookup(rom);
+      const m = machine(map, [734560]);
+      let st = decodeGameState(map, m.buf);
+      expect(st.gameOver).toBe(true);
+      expect(st.scores).toEqual([734560, 0, 0, 0]);
+      expect(st.currentBall).toBeNull(); // CPU RAM
+      expect(plausible(st)).toBe(true);
+      m.lamp(false);
+      m.displays([0]);
+      st = decodeGameState(map, m.buf);
+      expect(st.gameOver).toBe(false);
+      expect(st.scores).toEqual([0, 0, 0, 0]);
+      expect(decodeFinalScores(map, m.buf)).toEqual([734560, 0, 0, 0]);
+    });
+
+    it(`${rom}: a 1-player game is start then end, with the last-game scores; a copy in parts ends it once`, async () => {
+      const map = await lookup(rom);
+      const m = machine(map, [734560]);
+      const j = new Journal(rom, m.buf);
+      m.lamp(false);
+      j.step(); // the lamp first: the displays still show the last game, no start yet
+      m.displays([0]);
+      j.step(); // now a start
+      m.displays([12000]);
+      j.step();
+      m.displays([87650]);
+      j.step();
+      m.lamp(true);
+      j.step(); // GAME OVER lit, the last-game record not yet written
+      m.finalsInParts([87650], j);
+      const { events, detector } = replayDetector(j.exit(), { mapFor: (r) => (r === rom ? map : null) });
+      expect(kinds(events)).toEqual(['game_start', 'game_end']);
+      const end = ofKind(events, 'game_end')[0]!;
+      expect(end).toMatchObject({ scores: [87650, 0, 0, 0], players: 1, t: 7 });
+      expect(ofKind(events, 'current_scores').map((e) => e.scores[0])).toEqual([0, 12000, 87650]);
+      expect(detector.summary()).toMatchObject({ inGame: false, counts: { ball_end: 0, game_abandoned: 0 } });
+    });
+
+    it(`${rom}: a 2-player game ends with both scores and 2 players; the displays clearing first also starts`, async () => {
+      const map = await lookup(rom);
+      const m = machine(map, [500000]);
+      const j = new Journal(rom, m.buf);
+      m.displays([0]);
+      j.step(); // displays cleared with the lamp still lit: not yet
+      m.lamp(false);
+      j.step(); // start
+      m.displays([0, 0]);
+      j.step(); // player 2 added
+      m.displays([31000, 64000]);
+      j.step();
+      m.lamp(true);
+      j.step(); // the lamp first this time: the end waits for the last-game scores
+      m.finals([31000, 64000]);
+      j.step();
+      const { events } = replayDetector(j.exit(), { mapFor: () => map });
+      expect(kinds(events)).toEqual(['game_start', 'game_end']);
+      expect(ofKind(events, 'game_end')[0]).toMatchObject({ scores: [31000, 64000, 0, 0], players: 2 });
+    });
+
+    it(`${rom}: a reset and new game mid-game abandons the first; table_exit abandons the second`, async () => {
+      const map = await lookup(rom);
+      const m = machine(map, [500000]);
+      const j = new Journal(rom, m.buf);
+      m.lamp(false);
+      m.displays([0]);
+      j.step();
+      m.displays([3000]);
+      j.step();
+      m.lamp(true); // F3: the machine reboots into attract, the displays still show 3,000
+      j.step();
+      m.lamp(false);
+      m.displays([0]);
+      j.step();
+      m.displays([40]);
+      j.step();
+      const { events } = replayDetector(j.exit(), { mapFor: () => map });
+      expect(kinds(events)).toEqual(['game_start', 'game_abandoned', 'game_start', 'game_abandoned']);
+      expect(ofKind(events, 'game_abandoned').map((e) => e.scores[0])).toEqual([3000, 40]);
+      expect(ofKind(events, 'game_end')).toHaveLength(0);
+    });
+
+    it(`${rom}: an attract lamp flicker over the last game's scores starts nothing; the old record never re-posts`, async () => {
+      const map = await lookup(rom);
+      const m = machine(map, [734560]);
+      const j = new Journal(rom, m.buf);
+      for (let i = 0; i < 3; i++) {
+        m.lamp(false);
+        j.step();
+        m.lamp(true);
+        j.step();
+      }
+      m.displays([999990]); // the high score to date in the displays
+      j.step();
+      m.displays([734560]);
+      j.step();
+      const { events } = replayDetector(j.exit(), { mapFor: () => map });
+      expect(kinds(events)).toEqual([]);
+    });
+  }
+
+  it('ballyTransition (pure): displays at 0 mid-game with the lamp off are not a restart; the start\'s own record is not an end', () => {
+    const f = (scores: number[], gameOver: boolean, finals: number[]) => ({ state: state({ scores, gameOver, currentBall: null, currentPlayer: null, playerCount: null }), finals });
+    expect(ballyTransition(f([5000, 0, 0, 0], false, [100, 0, 0, 0]), f([0, 0, 0, 0], false, [100, 0, 0, 0]), true, [100, 0, 0, 0], 1)).toEqual([]);
+    expect(ballyTransition(f([100, 0, 0, 0], false, [100, 0, 0, 0]), f([100, 0, 0, 0], true, [100, 0, 0, 0]), true, [100, 0, 0, 0], 1)).toEqual([]);
+    expect(ballyTransition(f([100, 0, 0, 0], false, [100, 0, 0, 0]), f([100, 0, 0, 0], true, [100, 0, 0, 0]), true, [7, 0, 0, 0], 1).map((e) => e.kind)).toEqual(['game_end']);
+    // A score past seven BCD digits cannot be a display: the state is rejected and nothing fires.
+    expect(ballyTransition(f([0, 0, 0, 0], true, [1, 0, 0, 0]), f([1.5, 0, 0, 0], false, [1, 0, 0, 0]), false, null, 1)).toEqual([]);
+  });
+
+  it('the watched offsets (what an imported table journals) give the same game', async () => {
+    const map = await lookup('eballdlx');
+    const watch = new Set(gameStateOffsets(map));
+    const m = machine(map, [734560]);
+    const j = new Journal('eballdlx', m.buf);
+    m.buf[0x80] = 0x55; // an audit byte nobody watches
+    m.lamp(false);
+    m.displays([0]);
+    j.step();
+    m.displays([87650]);
+    j.step();
+    m.finals([87650]);
+    m.lamp(true);
+    j.step();
+    const filtered = j.exit().flatMap((l) => {
+      if (!l.includes('"nvram_delta"')) return [l];
+      const e = JSON.parse(l) as { t: number; d: [number, number, number][] };
+      const d = e.d.filter(([o]) => watch.has(o));
+      return d.length ? [JSON.stringify({ event: 'nvram_delta', t: e.t, n: d.length, d })] : [];
+    });
+    const { events } = replayDetector(filtered, { mapFor: () => map });
+    expect(kinds(events)).toEqual(['game_start', 'game_end']);
+    expect(ofKind(events, 'game_end')[0]?.scores[0]).toBe(87650);
+  });
+});
+
+describe('Gottlieb System 3: the ball byte carries flags in its high nibble (masked 0x0F by default)', () => {
+  /** Freddy / Cue Ball Wizard NVRAM (8 KB at 0x0000): ball byte 0x15, player 0x200, player count + game over 0x201, balls per game 0xD5F. */
+  const run = (map: CompiledMap, rom: string) => {
+    const buf = new Uint8Array(0x2000);
+    buf[0xd5f] = 0x03;
+    buf[0x15] = 0x70; // attract: ball 0 with the flag bits the owner's .nv files showed
+    const p1 = map.gameState['scores']![0]!;
+    putScore(map, buf, p1, 36898150);
+    const j = new Journal(rom, buf);
+    buf[0x201] = 1; // one player: game over goes off
+    buf[0x15] = 0x71;
+    putScore(map, buf, p1, 0);
+    j.step();
+    putScore(map, buf, p1, 120000);
+    j.step();
+    buf[0x15] = 0x72;
+    j.step();
+    putScore(map, buf, p1, 450000);
+    buf[0x15] = 0x73;
+    j.step();
+    putScore(map, buf, p1, 910000);
+    buf[0x201] = 0; // game over
+    buf[0x15] = 0x70;
+    j.step();
+    return replayDetector(j.exit(), { mapFor: () => map });
+  };
+
+  for (const rom of ['freddy', 'cueball']) {
+    it(`${rom}: a 3-ball game with the ball at 0x71..0x73 then 0x70 is start, three ball ends, end`, async () => {
+      const map = (await corpus.mapFor(rom))!;
+      const { events } = run(map, rom);
+      expect(kinds(events)).toEqual(['game_start', 'ball_end', 'ball_end', 'ball_end', 'game_end']);
+      expect(ofKind(events, 'ball_end').map((e) => e.ball)).toEqual([1, 2, 3]);
+      expect(ofKind(events, 'game_end')[0]).toMatchObject({ scores: [910000, 0, 0, 0], players: 1 });
+    });
+
+    it(`${rom}: without the default mask the same journal is implausible throughout and fires nothing (the bug)`, async () => {
+      const map = (await corpus.mapFor(rom))!;
+      const unmasked: CompiledMap = { ...map, gameState: { ...map.gameState, current_ball: map.gameState['current_ball']!.map(({ mask: _m, ...e }) => e) } };
+      const { events } = run(unmasked, rom);
+      expect(kinds(events)).toEqual([]);
+    });
+  }
 });

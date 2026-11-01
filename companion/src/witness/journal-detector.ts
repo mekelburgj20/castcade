@@ -18,6 +18,9 @@
  *   `ChangedNVRAM` never reports. `samTransition` derives the game from what NVRAM does hold: the
  *   scores resetting to 0 starts a game, the last-game record's counter (`samEndCounter`) ends it,
  *   and there are no ball ends.
+ * - **Bally AS-2518-17/-35 and Stern M100 (recipe A, ball and player in CPU RAM).** `ballyTransition`
+ *   reads the game-over lamp and the last-game scores the ROM writes into NVRAM at game over
+ *   (`ballyLiveInputs`); no ball ends either (B10.2, inferred from the map notes, unverified on a rig).
  *
  * Either way `table_exit` while a game is open becomes `game_abandoned` (finding 8: a match or a
  * live capture must never wait on a player who quit the table).
@@ -26,7 +29,7 @@
  * attached by the owner (`setMap`), because the corpus loads lazily and asynchronously; deltas
  * that arrive before the map still patch the shadow buffer, decoding starts when the map lands.
  */
-import { decodeGameState, samEndCounter, type CompiledMap, type GameState } from './maps.js';
+import { ballyLiveInputs, decodeFinalScores, decodeGameState, samEndCounter, type CompiledMap, type GameState } from './maps.js';
 
 /** Events every consumer understands, whichever recipe produced them. */
 export type GameEvent =
@@ -219,6 +222,55 @@ export function samTransition(prev: GameState, cur: GameState, prevCount: number
   return ev;
 }
 
+/** One Bally / Stern M100 sample: the decoded state (scores = the displays, game over = the lamp) and the last-game scores. */
+export interface BallyFrame {
+  state: GameState;
+  finals: (number | null)[];
+}
+
+/**
+ * Bally AS-2518-17/-35 and Stern M100 events from `prev` to `cur` (pure; B10.2). Ball, player and player
+ * count are CPU RAM there, so the rules use what NVRAM holds: the GAME OVER lamp (`state.gameOver`), the
+ * score displays (`state.scores`) and the last-game scores the ROM keeps for attract (`finals`).
+ *
+ * - **Start**: the lamp is off and every display reads 0 (a new game shows `00` for player 1 and blanks,
+ *   which decode as 0, for the rest), and the step got there from the lamp on or from a game's scores.
+ *   The two writes may land in either order. A lamp that flickers off during an attract show while the
+ *   displays still show the last game, or the high score, starts nothing: the score context is required.
+ * - **End**, with a game open: the lamp is on, the last-game scores equal the displays, at least one is
+ *   above 0, and they differ from the last-game scores at the start (`finalsAtStart`), first true in this
+ *   step. The equality waits out a copy spread over several callbacks; the difference keeps a reset machine
+ *   showing the previous game in attract from posting that game again. `players` = final scores above 0
+ *   (a player who scored 0 is not counted; there is no player count in reach).
+ * - **Quit**: with a game open, the lamp goes off with every display at 0 again (the machine was reset and
+ *   a new game started): `game_abandoned` with the last scores, then `game_start`. With the lamp off all
+ *   along, displays at 0 mid-game are not a restart (a blanked display must not end a game); leaving the
+ *   table is the usual quit and `table_exit` abandons the game.
+ *
+ * If a ROM never satisfies the end rule, live mode posts nothing for the game and the `.nv` at close does, as
+ * before B10.2.
+ */
+export function ballyTransition(prev: BallyFrame, cur: BallyFrame, open: boolean, finalsAtStart: (number | null)[] | null, t: number): GameEvent[] {
+  const ev: GameEvent[] = [];
+  if (!plausible(cur.state)) return ev;
+  const ended = (f: BallyFrame): boolean =>
+    f.state.gameOver === true && anyAboveZero(f.finals) && sameScores(f.finals, f.state.scores) && (finalsAtStart === null || !sameScores(f.finals, finalsAtStart));
+  if (open && ended(cur) && !ended(prev)) {
+    const players = Math.max(1, cur.finals.filter((x) => x !== null && x > 0).length);
+    ev.push({ kind: 'game_end', t, scores: cur.finals, players });
+    open = false;
+  }
+  if (cur.state.gameOver === false && allZero(cur.state.scores)) {
+    if (open && prev.state.gameOver === true) {
+      ev.push({ kind: 'game_abandoned', t, scores: prev.state.scores, player: null, ball: null });
+      ev.push({ kind: 'game_start', t, players: cur.state.playerCount });
+    } else if (!open && (prev.state.gameOver === true || anyAboveZero(prev.state.scores))) {
+      ev.push({ kind: 'game_start', t, players: cur.state.playerCount });
+    }
+  }
+  return ev;
+}
+
 // ---------------------------------------------------------------------------------- detector --
 
 interface RawLine {
@@ -261,6 +313,12 @@ interface Session {
   samCounter: number | null;
   /** Stern SAM: the counter's value in the last plausible state. */
   samCount: number | null;
+  /** Bally / Stern M100: the map feeds `ballyTransition` (`ballyLiveInputs`); false on every other platform. */
+  bally: boolean;
+  /** Bally / Stern M100: the last-game scores in the last plausible state. */
+  finals: (number | null)[];
+  /** Bally / Stern M100: the last-game scores when the open game started (the previous game's). */
+  finalsAtStart: (number | null)[] | null;
 }
 
 export interface JournalDetectorOptions {
@@ -294,8 +352,10 @@ export class JournalDetector {
     if (!s) return;
     s.map = map;
     s.samCounter = map ? samEndCounter(map) : null;
+    s.bally = map ? ballyLiveInputs(map) !== null : false;
     if (map && s.shadow) {
       s.samCount = this.counterValue(s);
+      s.finals = this.finalsValue(s);
       const st = decodeGameState(map, s.shadow);
       s.state = plausible(st) ? st : null;
       s.summary.scores = s.state ? s.state.scores : null;
@@ -397,7 +457,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null };
     return [
       {
         kind: 'table_loaded',
@@ -427,6 +487,7 @@ export class JournalDetector {
     if (plausible(cur)) {
       s.state = cur;
       s.samCount = this.counterValue(s);
+      s.finals = this.finalsValue(s);
       s.summary.scores = cur.scores;
     }
     return events;
@@ -452,13 +513,24 @@ export class JournalDetector {
     if (cur.currentBall !== null && cur.currentBall > s.summary.maxBall) s.summary.maxBall = cur.currentBall;
     s.state = cur;
     s.samCount = this.counterValue(s);
+    s.finals = this.finalsValue(s);
     s.summary.scores = cur.scores;
     return events;
   }
 
-  /** Recipe A events from one state to the next: the shared rules, and on Stern SAM the NVRAM-only ones first. */
+  /**
+   * Recipe A events from one state to the next: the shared rules; on Stern SAM the NVRAM-only ones first; on
+   * Bally / Stern M100 the lamp rules, with only `current_scores` kept from the shared ones (their lamp-driven
+   * `game_start` would fire on every attract flicker).
+   */
   private transition(s: Session, prev: GameState, cur: GameState, t: number): GameEvent[] {
     const generic = detectTransition(prev, cur, t);
+    if (s.bally) {
+      const finals = this.finalsValue(s);
+      const ev = ballyTransition({ state: prev, finals: s.finals }, { state: cur, finals }, s.started, s.finalsAtStart, t);
+      if (ev.some((e) => e.kind === 'game_start')) s.finalsAtStart = finals;
+      return [...ev, ...generic.filter((e) => e.kind === 'current_scores')];
+    }
     if (s.samCounter === null) return generic;
     return [...samTransition(prev, cur, s.samCount, this.counterValue(s), s.started, t), ...generic];
   }
@@ -469,6 +541,11 @@ export class JournalDetector {
     const b = s.shadow;
     if (o === null || !b || o + 4 > b.length) return null;
     return ((b[o] as number) | ((b[o + 1] as number) << 8) | ((b[o + 2] as number) << 16) | ((b[o + 3] as number) << 24)) >>> 0;
+  }
+
+  /** Bally / Stern M100: the last-game scores from the shadow, or none. */
+  private finalsValue(s: Session): (number | null)[] {
+    return s.bally && s.map && s.shadow ? (decodeFinalScores(s.map, s.shadow) ?? []) : [];
   }
 
   /** Recipe A: drop a ball or game end from a game whose start this session never saw (see `Session.started`). */
