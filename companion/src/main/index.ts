@@ -171,7 +171,8 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
   return loginItemState();
 }
 
-async function quit(host: WitnessHost): Promise<void> {
+/** The orderly shutdown; `install` swaps the final app.quit() for the updater's quit-and-install (E6). */
+async function quit(host: WitnessHost, install = false): Promise<void> {
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();
@@ -181,7 +182,12 @@ async function quit(host: WitnessHost): Promise<void> {
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
   await host.stop();
-  log?.info('quit');
+  if (install && updater?.pendingVersion()) {
+    log?.info('quit: restarting to install the update');
+    updater.quitAndInstall(); // quits the app itself; no app.quit() on this path
+    return;
+  }
+  log?.info(install ? 'quit: restart to update requested but no update is pending; quitting' : 'quit');
   app.quit();
 }
 
@@ -479,10 +485,7 @@ async function main(): Promise<void> {
       tray?.refresh(host.status());
     },
     pendingUpdate: () => updater?.pendingVersion() ?? null,
-    restartToUpdate: () => {
-      quitting = true;
-      updater?.quitAndInstall();
-    },
+    restartToUpdate: () => void quit(host, true),
     quit: () => void quit(host),
     streamState: () => {
       if (!stream) return null;
