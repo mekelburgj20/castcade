@@ -34,6 +34,17 @@ const fake = vi.hoisted(() => {
     shown = 0;
     hidden = 0;
     contentProtected = false;
+    visible = false;
+    position: [number, number] | null = null;
+    setPosition(x: number, y: number): void {
+      this.position = [x, y];
+    }
+    getBounds(): { x: number; y: number; width: number; height: number } {
+      return { x: this.position?.[0] ?? 0, y: this.position?.[1] ?? 0, width: 480, height: 720 };
+    }
+    isVisible(): boolean {
+      return this.visible;
+    }
     setContentProtection(on: boolean): void {
       this.contentProtected = on;
     }
@@ -54,9 +65,11 @@ const fake = vi.hoisted(() => {
     }
     showInactive(): void {
       this.shown++;
+      this.visible = true;
     }
     hide(): void {
       this.hidden++;
+      this.visible = false;
     }
   }
   const ipc = new Map<string, (e: { sender: unknown }, arg?: unknown) => void>();
@@ -83,6 +96,8 @@ vi.mock('electron', () => ({
   desktopCapturer: { getSources: async () => fake.sources.list },
   screen: {
     getAllDisplays: () => fake.displays.list,
+    getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
+    getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1040 } }),
     dipToScreenRect: (_w: unknown, r: { x: number; y: number; width: number; height: number }) => r,
   },
 }));
@@ -753,6 +768,125 @@ describe('createRtcHost (D2)', () => {
     expect(w.webContents.sent.filter(([c]) => c === PANEL_CHANNELS.cover).map(([, p]) => p)).toEqual([true, false]);
     expect(logs).toContain('media: match video cover off (VR rig: the preview renders without focus)');
     await host.detach();
+  });
+
+  it('D2.6 (2026-11-01): the desktop panel opens beside the main window, again at each showPanel; Hide panel keeps it for later; the status names it', async () => {
+    let main: { x: number; y: number; width: number; height: number } | null = { x: 750, y: 200, width: 420, height: 640 };
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store(), mainBounds: () => main });
+    const seen: MediaStatus[] = [];
+    host.onStatus((s) => seen.push(s));
+    await host.attach(signalling('krobs').sig, ['owner']);
+    const w = fake.FakeWindow.all[0]!;
+    // 750 + 420 + 8 = 1178; the 480-wide panel fits to the right on a 1920 work area, level with the main window.
+    expect(w.position).toEqual([1178, 200]);
+    host.showPanel();
+    expect(w.shown).toBe(1);
+    expect(host.status().panelWindow).toEqual({ visible: true, side: 'right' });
+    // The main window moved to the right edge: the panel goes to its left on the next show.
+    main = { x: 1450, y: 100, width: 420, height: 640 };
+    host.showPanel();
+    expect(w.position).toEqual([962, 100]);
+    expect(host.status().panelWindow).toEqual({ visible: true, side: 'left' });
+    // No main window (hidden to the tray): the work area's right edge.
+    main = null;
+    host.showPanel();
+    expect(w.position).toEqual([1440, 0]);
+    expect(host.status().panelWindow).toEqual({ visible: true, side: 'edge' });
+    // Hide panel: hidden, still attached; the status says so and a status was pushed.
+    seen.length = 0;
+    host.hidePanel();
+    expect(w.hidden).toBe(1);
+    expect(host.status()).toMatchObject({ attached: true, panelWindow: { visible: false } });
+    expect(seen.at(-1)?.panelWindow?.visible).toBe(false);
+    await host.detach();
+    expect(host.status().panelWindow).toBeUndefined();
+  });
+
+  it('D2.6: the headset panel has no window to show or hide', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    await host.attach(signalling('krobs').sig, ['owner']);
+    const w = fake.FakeWindow.all[0]!;
+    host.showPanel();
+    host.hidePanel();
+    expect(w.shown + w.hidden).toBe(0);
+    expect(host.status().panelWindow).toBeUndefined();
+    await host.detach();
+  });
+
+  it('D7.4.4 (2026-11-01): a stalled capture is logged once, re-picked and handed to the page afresh; not again within 10 s; counters are logged once each', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+      await host.attach(signalling('owner').sig, ['krobs']);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      const base: PanelPageStatus = { sending: true, peers: {}, mic: 'open', capturing: true, error: null };
+      fromPage(w, PANEL_CHANNELS.status, base);
+      await settle();
+      const sentBefore = w.webContents.sent.length;
+      // The page reports a stall (every 2 s while it lasts).
+      vi.advanceTimersByTime(2_000);
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(logs.filter((l) => l.includes('capture stalled'))).toEqual(['media: capture stalled (no new frame for 3 s); re-picking']);
+      expect(w.webContents.sent.slice(sentBefore)).toEqual([[PANEL_CHANNELS.capture, { ...CAPTURE, restart: true }]]);
+      // Still stalled 2 s later: not logged again, not re-picked inside the throttle.
+      vi.advanceTimersByTime(2_000);
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(logs.filter((l) => l.includes('capture stalled'))).toHaveLength(1);
+      expect(w.webContents.sent).toHaveLength(sentBefore + 1);
+      // Past the throttle and still stalled: picked again, still the one log line.
+      vi.advanceTimersByTime(10_000);
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(w.webContents.sent).toHaveLength(sentBefore + 2);
+      expect(logs.filter((l) => l.includes('capture stalled'))).toHaveLength(1);
+
+      // The window is gone at the re-pick: the capture is dropped and looked for again.
+      // (Counters.) Each new seq is one line; the repeated report adds none.
+      const stats = { seq: 1, capture: 288, decoded: null, toLayer: null };
+      fromPage(w, PANEL_CHANNELS.status, { ...base, stats });
+      fromPage(w, PANEL_CHANNELS.status, { ...base, stats });
+      fromPage(w, PANEL_CHANNELS.status, { ...base, stats: { seq: 2, capture: null, decoded: 290, toLayer: 270 } });
+      expect(logs.filter((l) => l.includes('frames'))).toEqual(['media: capture: 288 frames in 10 s', 'media: theater: 290 frames decoded, 270 sent to the layer in 10 s']);
+      // Frames came back: the next stall is a new episode with its own line.
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(logs.filter((l) => l.includes('capture stalled'))).toHaveLength(2);
+      await host.detach();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('D7.4.4: a stall with no window to re-pick drops the capture and looks again; a report while detached or without a capture does nothing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      let windows: VpxWindow[] = [PLAYER];
+      const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows }), settings: store() });
+      await host.attach(signalling('owner').sig, ['krobs']);
+      const w = fake.FakeWindow.all[0]!;
+      fromPage(w, PANEL_CHANNELS.ready);
+      const base: PanelPageStatus = { sending: true, peers: {}, mic: 'open', capturing: true, error: null };
+      windows = [EDITOR];
+      vi.advanceTimersByTime(1_000);
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, null]);
+      expect(host.status().lastError).toContain('no "Visual Pinball Player" window');
+      const n = w.webContents.sent.length;
+      // No capture now: a stalled report is ignored.
+      vi.advanceTimersByTime(20_000);
+      fromPage(w, PANEL_CHANNELS.status, { ...base, captureStalled: true });
+      await settle();
+      expect(logs.filter((l) => l.includes('capture stalled'))).toHaveLength(1);
+      expect(w.webContents.sent.length).toBeGreaterThanOrEqual(n);
+      await host.detach();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('D7.4: theater video: videoFrames() only for the headset panel; wanting it tells the page; frames are acked and checked', async () => {

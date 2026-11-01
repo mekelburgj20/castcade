@@ -55,6 +55,8 @@ export const IPC = {
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
+  matchShowPanel: 'match:showPanel',
+  matchHidePanel: 'match:hidePanel',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
@@ -210,6 +212,9 @@ export interface CastcadeApi {
     /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
     setMuted(muted: boolean): Promise<MatchStatus>;
+    /** D2.6: show or hide the desktop match panel window (a separate window beside this one). */
+    showPanel(): Promise<MatchStatus>;
+    hidePanel(): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   tables: {

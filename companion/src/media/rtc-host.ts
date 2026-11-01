@@ -32,6 +32,7 @@ import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDispl
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
+import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
@@ -46,6 +47,11 @@ export interface RtcHostOptions {
    * in front. Absent (tests), nothing is covered.
    */
   watchFocus?: (onChange: (c: FocusChange) => void, onEnd: (why: string) => void) => FocusWatch;
+  /**
+   * D2.6 (2026-11-01): the main window's bounds while it is on screen (null: hidden, minimized or gone). The desktop
+   * panel is placed beside them, never over them. Absent (tests), the panel goes to the display's right edge.
+   */
+  mainBounds?: () => Rect | null;
 }
 
 /** `MatchMedia` plus the microphone picker the Match tab needs (the panel page lists the devices). */
@@ -72,6 +78,11 @@ export interface RtcHost extends MatchMedia {
    * (the panel page keeps the list current) and while a listing runs.
    */
   refreshMicrophones(): Promise<void>;
+  /**
+   * D2.6 (2026-11-01): the Match tab's Show panel / Hide panel. Hiding keeps the connections (as closing the window
+   * does); both are no-ops for the headset panel.
+   */
+  hidePanel(): void;
 }
 
 const PARTITION = 'castcade-panel';
@@ -92,6 +103,8 @@ const READY_TIMEOUT_MS = 15_000;
 export const CAPTURE_RETRY_MS = 3_000;
 /** D2.5: while the capture is live, the window is probed this often: a move or a resize re-crops, a closed window stops it. */
 export const RECROP_MS = 5_000;
+/** D7.4.4: a stalled capture is re-picked at most this often (the page reports every 2 s while it stays stalled). */
+export const REPICK_MIN_MS = 10_000;
 const PLAYER_TITLE = 'Visual Pinball Player';
 
 // ---- pure parts ----
@@ -258,10 +271,18 @@ export function videoFrameFrom(m: unknown): VideoFrame | null {
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */
 export function mergeStatus(
   page: PanelPageStatus | null,
-  main: { attached: boolean; sending: boolean; captureLabel: string | null; error: string | null; captureCrop?: { width: number; height: number } | null },
+  main: {
+    attached: boolean;
+    sending: boolean;
+    captureLabel: string | null;
+    error: string | null;
+    captureCrop?: { width: number; height: number } | null;
+    panelWindow?: { visible: boolean; side: PanelSide } | null;
+  },
 ): MediaStatus {
   const live = main.attached && !!page?.capturing;
   return {
+    ...(main.attached && main.panelWindow ? { panelWindow: main.panelWindow } : {}),
     attached: main.attached,
     sending: main.attached && main.sending,
     peers: main.attached && page ? page.peers : {},
@@ -330,8 +351,15 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** VR rigs never cover on focus (see the header); said once per attach. */
   let coverOffSaid = false;
 
+  /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
+  let panelSide: PanelSide = 'edge';
+  /** D7.4.4: one log line per stall episode, and the re-pick throttle. */
+  let stallLogged = false;
+  let lastRepickAt = 0;
+  const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
+    !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
-    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, error: panelError ?? captureError });
+    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, error: panelError ?? captureError, panelWindow: panelWindow() });
   const emitStatus = (): void => {
     const s = status();
     for (const l of statusListeners) l(s);
@@ -397,7 +425,15 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!fromPanel(e)) return;
     if (page?.error !== s.error && s.error) log.warn(`media: panel: ${s.error}`);
     const ended = page?.capturing === true && !s.capturing;
+    // D7.4.4: counters, said once per report of theirs (the page repeats the last one in every report).
+    if (s.stats && s.stats.seq !== page?.stats?.seq) {
+      const st = s.stats;
+      if (st.capture !== null) log.info(`media: capture: ${st.capture} frames in 10 s`);
+      if (st.decoded !== null) log.info(`media: theater: ${st.decoded} frames decoded, ${st.toLayer ?? 0} sent to the layer in 10 s`);
+      if ((st.capture ?? 0) > 0) stallLogged = false;
+    }
     page = s;
+    if (s.captureStalled === true && capture && attached) stalledCapture(generation);
     // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
     if (ended && capture && attached) {
       log.info(`media: the capture of ${capture.label} ended; looking for the VPX window again`);
@@ -406,6 +442,35 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     }
     emitStatus();
   });
+  /**
+   * D7.4.4 (2026-11-01): the page's capture delivered no new frame for 3 s while this rig was sending (the screen
+   * capture of the player window stalls once VPX has focus under Virtual Desktop). Logged once per episode; the
+   * capture is picked again and handed to the page afresh (`restart`: same screen, a new stream), at most every
+   * `REPICK_MIN_MS`. The page has already taken its track off the connections.
+   */
+  function stalledCapture(gen: number): void {
+    if (!stallLogged) {
+      stallLogged = true;
+      log.info('media: capture stalled (no new frame for 3 s); re-picking');
+    }
+    const now = Date.now();
+    if (now - lastRepickAt < REPICK_MIN_MS) return;
+    lastRepickAt = now;
+    void repick(gen);
+  }
+  async function repick(gen: number): Promise<void> {
+    await pickCapture(gen);
+    if (gen !== generation || !attached) return;
+    // A failed pick leaves the old capture in place with `captureError` set: the window is gone.
+    if (capture && !captureError) {
+      announced = capture;
+      toPage(PANEL_CHANNELS.capture, { ...capture, restart: true });
+    } else {
+      dropCapture(true);
+      scheduleCapture(gen);
+    }
+    emitStatus();
+  }
   const setMics = (d: unknown[]): void => {
     mics = d.filter((x): x is MicDevice => typeof x === 'object' && x !== null && typeof (x as MicDevice).deviceId === 'string' && typeof (x as MicDevice).label === 'string');
     for (const l of micListeners) l(mics);
@@ -494,6 +559,23 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     return ses;
   };
 
+  /**
+   * D2.6 (2026-11-01): beside the main window (right, else left, else below), on its display's work area; the
+   * display's right edge when there is no main window. Run at creation and at every `showPanel`.
+   */
+  const placeDesktopPanel = (w: BrowserWindow): void => {
+    try {
+      const main = opts.mainBounds?.() ?? null;
+      const display = main ? screen.getDisplayMatching(main) : screen.getPrimaryDisplay();
+      const size = w.getBounds();
+      const p = placePanel(main, { width: size.width, height: size.height }, display.workArea);
+      panelSide = p.side;
+      w.setPosition(Math.round(p.x), Math.round(p.y));
+    } catch (e) {
+      log.warn(`media: could not place the match panel (${errText(e)}); it opens where the system puts it`);
+    }
+  };
+
   const createWindow = (offscreen: boolean): BrowserWindow => {
     panelSession();
     const webPreferences = {
@@ -538,6 +620,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         e.preventDefault();
         w.hide();
       });
+      // D2.6: the Match tab says whether the panel is up.
+      w.on('show', () => emitStatus());
+      w.on('hide', () => emitStatus());
+      placeDesktopPanel(w);
     }
     return w;
   };
@@ -748,6 +834,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     lastState = null;
     panelError = null;
     captureError = null;
+    stallLogged = false;
+    lastRepickAt = 0;
     if (was && !quiet) log.info('media: detached');
     emitStatus();
   };
@@ -846,8 +934,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     videoFrames: () => (attached && headset ? videoHub.source : null),
     showPanel() {
       if (headset || !win || win.isDestroyed()) return;
+      // D2.6: placed again each time, beside the main window as it is now (it may have moved since).
+      placeDesktopPanel(win);
       // showInactive: focus stays with VPX, whose window takes the player's keys.
       win.showInactive();
+      emitStatus();
+    },
+    hidePanel() {
+      if (headset || !win || win.isDestroyed()) return;
+      win.hide();
+      emitStatus();
     },
     detach: () => detach(),
     async setVr(rig) {

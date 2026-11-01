@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stereoOf, stripRows, VIDEO_FEED_MAX, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -509,5 +509,157 @@ describe('the theater feed (D7.4, 2026-10-31)', () => {
     video.currentTime = 4;
     feed.cb();
     expect(frames()).toHaveLength(2);
+  });
+});
+
+describe('a stalled capture and the counters (D7.4.4, 2026-11-01)', () => {
+  it('stallStep: stalled only while sending, after the limit with no movement; movement clears it; not sending keeps the clock moving', () => {
+    expect(CAPTURE_STALL_MS).toBe(3000);
+    expect(STATS_MS).toBe(10_000);
+    const w = { mark: 10, at: 1000 };
+    expect(stallStep(w, 10, 3999, true, 3000)).toEqual({ mark: 10, at: 1000, stalled: false, moved: false });
+    expect(stallStep(w, 10, 4000, true, 3000)).toEqual({ mark: 10, at: 1000, stalled: true, moved: false });
+    expect(stallStep(w, 11, 9000, true, 3000)).toEqual({ mark: 11, at: 9000, stalled: false, moved: true });
+    // Not sending: a still screen is no fault, and the clock restarts so sending begins with a full 3 s.
+    expect(stallStep(w, 10, 9000, false, 3000)).toEqual({ mark: 10, at: 9000, stalled: false, moved: false });
+  });
+
+  type Stats = { seq: number; capture: number | null; decoded: number | null; toLayer: number | null };
+
+  async function sendingPage() {
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: true });
+    await settle();
+    const src = p.el('src') as unknown as { currentTime: number };
+    const watch = p.intervals.find((i) => i.ms === 400)!;
+    const stats = p.intervals.find((i) => i.ms === STATS_MS)!;
+    const sender = FakePeerConnection.all[0]!.senders.find((s) => s.track.kind === 'video')!;
+    const canvasTrack = sender.track;
+    const status = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { captureStalled: boolean; stats: Stats | null };
+    return { p, src, watch, stats, sender, canvasTrack, status };
+  }
+
+  it('no new frame from the capture for 3 s while sending: reported stalled, the track comes off the connections; frames back: it returns', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { p, src, watch, sender, canvasTrack, status } = await sendingPage();
+      expect(canvasTrack.enabled).toBe(true);
+      src.currentTime = 1;
+      watch.cb();
+      vi.advanceTimersByTime(2_800);
+      watch.cb();
+      expect(status().captureStalled).toBe(false);
+      vi.advanceTimersByTime(400);
+      watch.cb();
+      expect(status().captureStalled).toBe(true);
+      expect(canvasTrack.enabled).toBe(false);
+      await settle();
+      expect(sender.track).toBeNull(); // the receivers' video mutes: "waiting for <name>'s table"
+      // A new frame: back on, enabled, reported.
+      src.currentTime = 2;
+      watch.cb();
+      await settle();
+      expect(status().captureStalled).toBe(false);
+      expect(canvasTrack.enabled).toBe(true);
+      expect(sender.track).toBe(canvasTrack);
+      expect(p.canvas.streams).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('not sending: a still screen is no stall; a restart capture from main opens a fresh stream and clears a stall', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { p, src, watch, sender, canvasTrack, status } = await sendingPage();
+      p.emit(PANEL_CHANNELS.sending, false);
+      src.currentTime = 1;
+      watch.cb();
+      vi.advanceTimersByTime(10_000);
+      watch.cb();
+      expect(status().captureStalled).toBe(false);
+      p.emit(PANEL_CHANNELS.sending, true);
+      vi.advanceTimersByTime(3_100);
+      watch.cb();
+      expect(status().captureStalled).toBe(true);
+      // Main re-picked the same screen: without `restart` this would only move the crop.
+      p.emit(PANEL_CHANNELS.capture, CAP);
+      await settle();
+      expect(p.captures).toHaveLength(1);
+      p.emit(PANEL_CHANNELS.capture, { ...CAP, restart: true });
+      await settle();
+      expect(p.captures).toHaveLength(2);
+      expect(p.captures[0]?.track.readyState).toBe('ended');
+      expect(status().captureStalled).toBe(false);
+      expect(sender.track).toBe(canvasTrack);
+      expect(canvasTrack.enabled).toBe(true);
+      expect(p.canvas.streams).toHaveLength(1); // the same canvas track: nothing renegotiates
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('every 10 s while sending: how many frames the capture delivered; nothing when not sending', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { src, watch, stats, p, status } = await sendingPage();
+      for (let i = 1; i <= 5; i++) {
+        src.currentTime = i;
+        watch.cb();
+      }
+      stats.cb();
+      expect(status().stats).toEqual({ seq: 1, capture: 5, decoded: null, toLayer: null });
+      stats.cb(); // the next window had no frames: 0 is a count too
+      expect(status().stats).toEqual({ seq: 2, capture: 0, decoded: null, toLayer: null });
+      p.emit(PANEL_CHANNELS.sending, false);
+      stats.cb();
+      expect(status().stats?.seq).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('every 10 s in theater: frames decoded by the stage video and frames sent to the layer; nothing when theater is not wanted', async () => {
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    const st: PanelState = {
+      playerUp: 'krobs',
+      myTurn: false,
+      ball: 1,
+      ballsPerGame: 3,
+      players: [
+        { id: 'owner', name: 'Owner', score: null, ballsDone: 0, isUp: false, flags: [], rig: 'vr_headset' },
+        { id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: true, flags: [], rig: 'vr_headset' },
+      ],
+      phase: 'playing',
+      result: null,
+      message: null,
+      mic: 'open',
+    };
+    p.emit(PANEL_CHANNELS.state, st);
+    const stats = p.intervals.find((i) => i.ms === STATS_MS)!;
+    const feed = p.intervals.filter((i) => i.ms === 33).at(-1)!;
+    const video = p.el('video') as unknown as { videoWidth: number; videoHeight: number; readyState: number; total: number; getVideoPlaybackQuality(): { totalVideoFrames: number } };
+    video.videoWidth = 1280;
+    video.videoHeight = 720;
+    video.readyState = 4;
+    video.total = 0;
+    video.getVideoPlaybackQuality = () => ({ totalVideoFrames: video.total });
+    const last = () => (p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { stats: Stats | null }).stats;
+    stats.cb();
+    expect(last()).toBeNull(); // theater not wanted: not relevant, nothing reported
+    p.emit(PANEL_CHANNELS.videoWant, true);
+    for (let i = 1; i <= 4; i++) {
+      video.total = i * 7;
+      feed.cb();
+      p.emit(PANEL_CHANNELS.videoAck);
+    }
+    stats.cb();
+    expect(last()).toEqual({ seq: 1, capture: null, decoded: 28, toLayer: 4 });
+    video.total = 35;
+    feed.cb();
+    stats.cb();
+    expect(last()).toEqual({ seq: 2, capture: null, decoded: 7, toLayer: 1 });
   });
 });
