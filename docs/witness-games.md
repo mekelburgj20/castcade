@@ -6,29 +6,30 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## Versions
 
-- Generated: 2026-10-30T20:15:52.590Z
+- Generated: 2026-11-01T05:51:02.453Z
 - VPS database (vps-db commit): `cce9160b30110ee174786239fdfb30a6e4caaab7`
 - NVRAM maps (pinmame-nvram-maps commit): `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`
-- Castcade companion: 0.2.21
+- Castcade companion: 0.2.27
 
 ## Counts
 
 | Platform | Verified | Supported | Unsupported | Games |
 |---|---:|---:|---:|---:|
 | taito | 0 | 66 | 0 | 66 |
-| whitestar | 0 | 43 | 0 | 43 |
+| whitestar | 0 | 44 | 0 | 44 |
 | williams-system11-48K | 0 | 43 | 0 | 43 |
 | stern-sam | 10 | 23 | 0 | 33 |
 | dataeast | 1 | 31 | 0 | 32 |
 | williams-wpc-12K | 2 | 30 | 0 | 32 |
+| gottlieb-system3 | 0 | 25 | 0 | 25 |
 | williams-wpc-8K | 0 | 23 | 0 | 23 |
 | williams-system9-12K | 0 | 20 | 0 | 20 |
-| gottlieb-system3 | 0 | 4 | 0 | 4 |
 | williams-system11-40K | 0 | 4 | 0 | 4 |
 | taito-1979 | 0 | 3 | 0 | 3 |
 | williams-system9-16K | 0 | 3 | 1 | 4 |
 | dataeast-v1 | 0 | 2 | 0 | 2 |
 | capcom | 0 | 1 | 4 | 5 |
+| gottlieb-system3-32K | 0 | 1 | 0 | 1 |
 | rowamet | 0 | 1 | 0 | 1 |
 | alving | 0 | 0 | 1 | 1 |
 | atari-gen1 | 0 | 0 | 4 | 4 |
@@ -37,12 +38,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | bally-17-4K | 0 | 0 | 10 | 10 |
 | bally-35-6K | 0 | 0 | 19 | 19 |
 | bally-35-8K | 0 | 0 | 78 | 78 |
-| gottlieb-system1 | 0 | 0 | 8 | 8 |
-| gottlieb-system80-1prom | 0 | 0 | 11 | 11 |
-| gottlieb-system80-2prom | 0 | 0 | 2 | 2 |
-| gottlieb-system80b-10K | 0 | 0 | 5 | 5 |
-| gottlieb-system80b-12K | 0 | 0 | 1 | 1 |
-| gottlieb-system80b-8K | 0 | 0 | 1 | 1 |
+| gottlieb-system1 | 0 | 0 | 18 | 18 |
+| gottlieb-system80-1prom | 0 | 0 | 34 | 34 |
+| gottlieb-system80-2prom | 0 | 0 | 4 | 4 |
+| gottlieb-system80b-10K | 0 | 0 | 15 | 15 |
+| gottlieb-system80b-12K | 0 | 0 | 6 | 6 |
+| gottlieb-system80b-8K | 0 | 0 | 5 | 5 |
 | stern-m100 | 0 | 0 | 17 | 17 |
 | stern-m200 | 0 | 0 | 45 | 45 |
 | williams-system4-2prom | 0 | 0 | 9 | 9 |
@@ -52,39 +53,41 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | williams-system7-12K | 0 | 0 | 5 | 5 |
 | zaccaria-gen1 | 0 | 0 | 3 | 3 |
 | zaccaria-gen2 | 0 | 0 | 8 | 8 |
-| no map | 0 | 0 | 1754 | 1754 |
-| **All** | **13** | **297** | **2055** | **2365** |
+| no map | 0 | 0 | 1677 | 1677 |
+| **All** | **13** | **320** | **2032** | **2365** |
+
+77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 7 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
 
 ### Why unsupported
 
 | Reason | Games |
 |---|---:|
-| no ROM (original table: needs recipe B–E, C1.1) | 1537 |
+| no ROM (original table: needs recipe B–E, C1.1) | 1460 |
 | no map in pinmame-nvram-maps | 217 |
 | bally-35-8K: current_ball, current_player in CPU RAM | 74 |
 | stern-m200: scores, game_over, current_ball, current_player in CPU RAM | 44 |
 | williams-system7-10K: scores, game_over, current_ball, current_player in CPU RAM | 42 |
+| gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM | 34 |
 | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM | 22 |
 | bally-35-6K: current_ball, current_player in CPU RAM | 19 |
+| gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM | 18 |
 | stern-m100: current_ball, current_player in CPU RAM | 17 |
-| gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM | 11 |
+| gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM | 15 |
 | bally-17-4K: current_ball, current_player in CPU RAM | 10 |
 | williams-system4-2prom: scores, game_over, current_ball, current_player in CPU RAM | 9 |
-| gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM | 8 |
 | zaccaria-gen2: no game_over, current_ball, current_player in the map | 8 |
-| gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM | 5 |
+| gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM | 6 |
+| gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM | 5 |
 | williams-system7-12K: scores, game_over, current_ball, current_player in CPU RAM | 5 |
 | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM | 4 |
 | capcom: no scores, game_over, current_ball, current_player in the map | 4 |
+| gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM | 4 |
 | bally-35-8K: current_player in CPU RAM; no current_ball in the map | 3 |
 | zaccaria-gen1: no game_over, current_ball, current_player in the map | 3 |
 | atari-gen2: game_over, current_ball, current_player in CPU RAM | 2 |
 | bally-17-3K: current_ball, current_player in CPU RAM | 2 |
-| gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM | 2 |
 | alving: no scores, game_over, current_ball, current_player in the map | 1 |
 | bally-35-8K: no game_over, current_ball, current_player in the map | 1 |
-| gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM | 1 |
-| gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM | 1 |
 | stern-m200: no scores, game_over, current_ball, current_player in the map | 1 |
 | williams-system4-3prom: scores, game_over, current_ball, current_player in CPU RAM | 1 |
 | williams-system9-16K: no game_over, current_ball, current_player in the map | 1 |
@@ -164,7 +167,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## whitestar
 
-0 verified, 43 supported, 0 unsupported.
+0 verified, 44 supported, 0 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
@@ -177,6 +180,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Godzilla | Sega | 1998 | godzilla | supported |  |
 | Godzilla Remix (Limited Edition) | Original | 2021 | godzilla | supported |  |
 | Goldeneye | Sega | 1996 | gldneye | supported |  |
+| Grand Prix | Stern | 2005 | gpr301, gpr301f, gpr301g, gpr301i, gpr301l, gpr340, gpr340f, gpr340g, gpr340i, gpr340l, gpr350, gpr350f, gpr350g, gpr350i, gpr350l, gpr352, gpr352f, gpr352g, gpr352i, gpr352l, gpr400, gpr400f, gpr400g, gpr400i, gpr400l, gprix, gprixf, gprixg, gprixi, gprixl | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 | Grease | Original | 2020 | elvis | supported |  |
 | Harley-Davidson | Sega | 1999 | harl_a30, harl_a13 | supported |  |
 | High Roller Casino | Stern | 2001 | hirolcas | supported |  |
@@ -380,6 +384,38 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | WHO dunnit | Bally | 1995 | wd_12 | supported |  |
 | World Cup Soccer | Bally | 1994 | wcs_la1, wcs_l2 | supported |  |
 
+## gottlieb-system3
+
+0 verified, 25 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Barb Wire | Gottlieb | 1996 | barbwire | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Cactus Jack's | Gottlieb | 1991 | cactjack | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Car Hop | Gottlieb | 1991 | carhop | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Class of 1812 | Gottlieb | 1991 | clas1812 | supported |  |
+| Cue Ball Wizard | Gottlieb | 1992 | cueball, cueball1, cueball2, cueball3 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Deadly Weapon | Gottlieb | 1990 | deadweap | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Freddy - A Nightmare on Elm Street | Gottlieb | 1994 | freddy, freddy4 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Gladiators | Gottlieb | 1993 | gladiatr | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Hoops | Gottlieb | 1991 | hoops | supported |  |
+| Mario Andretti | Gottlieb | 1995 | andrett4, andretti | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Operation Thunder | Gottlieb | 1992 | opthund | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Rescue 911 | Gottlieb | 1994 | rescu911 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Shaq Attaq | Gottlieb | 1995 | shaqatt2, shaqattq | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Silver Slugger | Gottlieb | 1990 | silvslug | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Stargate | Gottlieb | 1995 | stargat1, stargat2, stargat3, stargat4, stargat5, stargate | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Street Fighter II | Gottlieb | 1993 | sfight2, sfight2a, sfight2b | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Super Mario Bros. | Gottlieb | 1992 | smb3 | supported |  |
+| Super Mario Bros. Mushroom World | Gottlieb | 1992 | smbmush | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Surf 'n Safari | Gottlieb | 1991 | surfnsaf | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Tee'd Off | Gottlieb | 1993 | teedoff3, teedoff | supported |  |
+| Title Fight | Gottlieb | 1990 | tfight | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Vegas | Gottlieb | 1990 | vegas | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Waterworld | Gottlieb | 1995 | waterwl2, waterwl5, waterwld | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| Wipe Out | Gottlieb | 1993 | wipeout, wipeouta | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+| World Challenge Soccer | Gottlieb | 1994 | wcsoccd2, wcsoccer | supported | ROM from pinmame-nvram-maps (VPS lists none) |
+
 ## williams-wpc-8K
 
 0 verified, 23 supported, 0 unsupported.
@@ -437,17 +473,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Van Halen | Original | 2025 | sorcr_l1 | supported |  |
 | ZZ Top | Original | 2025 | sorcr_l1 | supported |  |
 
-## gottlieb-system3
-
-0 verified, 4 supported, 0 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Class of 1812 | Gottlieb | 1991 | clas1812 | supported |  |
-| Hoops | Gottlieb | 1991 | hoops | supported |  |
-| Super Mario Bros. | Gottlieb | 1992 | smb3 | supported |  |
-| Tee'd Off | Gottlieb | 1993 | teedoff3, teedoff | supported |  |
-
 ## williams-system11-40K
 
 0 verified, 4 supported, 0 unsupported.
@@ -500,6 +525,14 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Breakshot | Capcom | 1996 | bsv103 | unsupported | capcom: no scores, game_over, current_ball, current_player in the map |
 | Kingpin | Capcom | 1996 | kpv106 | unsupported | capcom: no scores, game_over, current_ball, current_player in the map |
 | The Untouchables | Original | 2023 | kpv106 | unsupported | capcom: no scores, game_over, current_ball, current_player in the map |
+
+## gottlieb-system3-32K
+
+0 verified, 1 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Lights...Camera...Action! | Gottlieb | 1989 | lca, lca2 | supported | ROM from pinmame-nvram-maps (VPS lists none) |
 
 ## rowamet
 
@@ -676,73 +709,127 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## gottlieb-system1
 
-0 verified, 0 supported, 8 unsupported.
+0 verified, 0 supported, 18 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
+| Asteroid Annie and the Aliens | Gottlieb | 1980 | astannie | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Babylon 5 | Original | 2022 | genie | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
 | Buck Rogers | Gottlieb | 1980 | buckrgrs | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
+| Cleopatra (SS) | Gottlieb | 1977 | cleoptra | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Close Encounters of the Third Kind | Gottlieb | 1978 | closeenc | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
+| Count-Down | Gottlieb | 1979 | countdwn | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | CowBoy Bebop | Original | 2024 | genie | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
+| Genie | Gottlieb | 1979 | genie | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | John Carpenter's Christine | Original | 2019 | dragon | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
 | Joker Poker (SS) | Gottlieb | 1978 | jokrpokr | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
+| Pinball Pool | Gottlieb | 1979 | pinpool | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Roller Disco | Gottlieb | 1980 | roldisco | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Sinbad | Gottlieb | 1978 | sinbad, sinbadn | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Solar Ride | Gottlieb | 1979 | solaride | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Sultan | Taito do Brasil | 1979 | sinbadn | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
 | The Way of the Dragon | Original | 2020 | sinbadn | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM |
+| Torch | Gottlieb | 1980 | torch | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Totem | Gottlieb | 1979 | totem | unsupported | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 
 ## gottlieb-system80-1prom
 
-0 verified, 0 supported, 11 unsupported.
+0 verified, 0 supported, 34 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
 | Alien Star | Gottlieb | 1984 | alienstr | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Amazon Hunt | Gottlieb | 1983 | amazonh, amazonha | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Black Hole | Gottlieb | 1981 | blckhole | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Devil's Dare | Gottlieb | 1982 | dvlsdre, dvlsdre2, dvlsdrea | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Eclipse | Gottlieb | 1982 | eclipse, eclipse7 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | El Bueno el Feo y el Malo | Original | 2015 | eldorado | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
 | El Dorado | Gottlieb | 1975 | eldorado | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| El Dorado City of Gold | Gottlieb | 1984 | eldorado | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Force II | Gottlieb | 1981 | forceii, forceii7 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Ghosts 'n Goblins | Original | 2018 | pnkpnthr | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Goin' Nuts | Gottlieb | 1983 | goinnuts | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Haunted House | Gottlieb | 1982 | hh, hh7, hh_1, hh_3, hh_3a, hh_3b, hh_4, hh_4a, hh_4b | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Ice Fever | Gottlieb | 1985 | icefever | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Jacks to Open | Gottlieb | 1984 | jack2opn | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | James Bond 007 | Gottlieb | 1980 | jamesb | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Krull | Gottlieb | 1983 | krull | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Mars God of War | Gottlieb | 1981 | mars, mars7, mars_2, marsf, marsp | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Missing in Action | Original | 2018 | eldorado | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Panthera | Gottlieb | 1980 | panther7, panthera | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Pink Panther | Gottlieb | 1981 | pnkpnthr | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Punk! | Gottlieb | 1982 | punk | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Q-Bert's Quest | Gottlieb | 1983 | qbquest | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Rack 'Em Up! | Gottlieb | 1983 | rackemup | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Ready...Aim...Fire! | Gottlieb | 1983 | raimfire | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Rocky | Gottlieb | 1982 | rocky, rockyf | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Royal Flush Deluxe | Gottlieb | 1983 | rflshdlx, rflshdlx1 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Spirit | Gottlieb | 1982 | spirit, spirit0, spirit3 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Striker | Gottlieb | 1982 | striker, strikerf, strikerg | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Sublime | Original | 2025 | alienstr | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
 | Super Orbit | Gottlieb | 1983 | sorbit | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Time Line | Gottlieb | 1980 | timelin7, timeline | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Touchdown | Gottlieb | 1984 | touchdn | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | TRON Classic | Original | 2018 | panther7 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Volcano | Gottlieb | 1981 | vlcno_1a, vlcno_1b, vlcno_1c, vlcno_a7, vlcno_ax, vlcno_b7 | unsupported | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 
 ## gottlieb-system80-2prom
 
-0 verified, 0 supported, 2 unsupported.
+0 verified, 0 supported, 4 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
+| Circus | Gottlieb | 1980 | circus, circus7 | unsupported | gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Counterforce | Gottlieb | 1980 | cntforce, cntforc7 | unsupported | gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM |
+| Star Race | Gottlieb | 1980 | starrac7, starrace | unsupported | gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | The Amazing Spider-Man | Gottlieb | 1980 | spiderm7, spidermn | unsupported | gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM |
 
 ## gottlieb-system80b-10K
+
+0 verified, 0 supported, 15 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Arena | Gottlieb | 1987 | arena, arena_fp, arenaa, arenaafp, arenaffp, arenagfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Diamond Lady | Gottlieb | 1988 | diamnffp, diamngfp, diamond, diamonfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Genesis | Gottlieb | 1986 | genesffp, genesgfp, genesifp, genesis | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Gold Wings | Gottlieb | 1986 | gldwgffp, gldwggfp, goldwgfp, goldwing | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Harley Quinn | Original | 2017 | diamond | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
+| Hollywood Heat | Gottlieb | 1986 | hlywoodh | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
+| Monte Carlo | Gottlieb | 1987 | mntcr2fp, mntcrafp, mntcrffp, mntcrfmfp, mntcrgfp, mntcrgmfp, mntcrmfp, mntecrfp, mntecrlo | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Predator | Original | 2026 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
+| Rambo | Original | 2019 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
+| Raven | Gottlieb | 1986 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
+| Robo-War | Gottlieb | 1988 | robowars, robowffp, robowrfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Spring Break | Gottlieb | 1987 | sprbrafp, sprbreak, sprbrffp, sprbrgfp, sprbrkfp, sprbrsfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Tag-Team Pinball | Gottlieb | 1985 | tagteam, tagteam2, tagtem2f, tagtemfp, tagtmgfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| TX-Sector | Gottlieb | 1988 | txsecffp, txsecgfp, txsectfp, txsector | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Victory | Gottlieb | 1987 | victory, victr101, victr11, victr12, victr13, victrffp, victrgfp, victryfp | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+
+## gottlieb-system80b-12K
+
+0 verified, 0 supported, 6 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Bad Girls | Gottlieb | 1988 | badgirls, badgrffp, badgrgfp, badgrlfp | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Big House | Gottlieb | 1989 | bighosfp, bighouse, bighsffp, bighsgfp | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Bone Busters Inc. | Gottlieb | 1989 | bonebffp, bonebgfp, bonebsfp, bonebstr | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Excalibur | Gottlieb | 1988 | excalbfp, excalffp, excalgfp, excaliba, excalibr | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Hot Shots | Gottlieb | 1989 | hotshffp, hotshgfp, hotshots, hotshtfp | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Night Moves | International Concepts | 1989 | nmoves | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM |
+
+## gottlieb-system80b-8K
 
 0 verified, 0 supported, 5 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
-| Harley Quinn | Original | 2017 | diamond | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
-| Hollywood Heat | Gottlieb | 1986 | hlywoodh | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
-| Predator | Original | 2026 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
-| Rambo | Original | 2019 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
-| Raven | Gottlieb | 1986 | raven | unsupported | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM |
-
-## gottlieb-system80b-12K
-
-0 verified, 0 supported, 1 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Night Moves | International Concepts | 1989 | nmoves | unsupported | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM |
-
-## gottlieb-system80b-8K
-
-0 verified, 0 supported, 1 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
+| Bounty Hunter | Gottlieb | 1985 | bountgfp, bounthfp, bountyh | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Chicago Cubs 'Triple Play' | Gottlieb | 1985 | triplay, triplgfp, triplyf1, triplyfp | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Disney Vaiana | Original | 2021 | rock | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM |
+| Rock | Gottlieb | 1985 | rock, rockfp, rockgfp | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
+| Rock Encore | Gottlieb | 1986 | rock_efp, rock_enc, rockegfp | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 
 ## stern-m100
 
@@ -961,7 +1048,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## No map (no ROM, or no map for its ROMs)
 
-0 verified, 0 supported, 1754 unsupported.
+0 verified, 0 supported, 1677 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
@@ -1022,7 +1109,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Aloha | Gottlieb | 1961 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Alvin and the Chipmunks | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Amazon | LTD do Brasil | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Amazon Hunt | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | America 1492 | Juegos Populares | 1986 | america | unsupported | no map in pinmame-nvram-maps |
 | America's Most Haunted | Spooky Pinball | 2014 | amh_022, amh_023 | unsupported | no map in pinmame-nvram-maps |
 | American Country | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1041,14 +1127,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Aqualand | Juegos Populares | 1986 | aqualand | unsupported | no map in pinmame-nvram-maps |
 | Aquaman | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Aquarius | Gottlieb | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Arena | Gottlieb | 1987 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Argosy | Williams | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Aristocrat | Williams | 1979 | arist_l1 | unsupported | no map in pinmame-nvram-maps |
 | Arizona | LTD do Brasil | 1977 | arizona | unsupported | no map in pinmame-nvram-maps |
 | Army of the Dead | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Aspen | Brunswick | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Asterix the Twelve Tasks | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Asteroid Annie and the Aliens | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Asteroids | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Astral Defender | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Astro | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1074,7 +1158,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Back to the Future Trilogy | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bad | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bad Cats In Space | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Bad Girls | Gottlieb | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bad Lieutenant | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bad Santa 2 Pinball XL | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bad Santa Pinball | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1085,7 +1168,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Bank Shot | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bank-A-Ball | J.F. Linck | 1932 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bank-A-Ball | Gottlieb | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Barb Wire | Gottlieb | 1996 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Barbarella | Automaticos | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Barnstorming | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Barry Manilow | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1127,7 +1209,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Big Game | Rock-ola | 1935 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Big Hit | Gottlieb | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Big Horse | Maresa | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Big House | Gottlieb | 1989 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Big Indian | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Big Injun | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Big Shot | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1171,13 +1252,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Bonanza | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bond 60th | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bond 60th (Limited Edition) | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Bone Busters Inc. | Gottlieb | 1989 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Boomerang | Bally | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Boop-A-Doop | Pace | 1932 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Border Town | Gottlieb | 1940 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Borderlands | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Boston | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Bounty Hunter | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bow and Arrow (EM) | Bally | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Bow and Arrow (SS) | Bally | 1974 | bowarrow | unsupported | no map in pinmame-nvram-maps |
 | Bowie Star Man | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1211,7 +1290,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Caballeros del Zodiaco | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cabaret | Williams | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cactus Canyon Continued | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Cactus Jack's | Gottlieb | 1991 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Caddie | Playmatic | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Camel Lights | Game Plan | 1978 | camlight | unsupported | no map in pinmame-nvram-maps |
 | Camelot | Bally | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1225,7 +1303,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Capt. Fantastic and the Brown Dirt Cowboy | Bally | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Captain NEMO Dives Again | Quetzal Pinball | 2015 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Captain Spaulding's Museum of Monsters and Madmen | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Car Hop | Gottlieb | 1991 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Carcariass Pinball Chaos | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Card King | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Card Trix | Gottlieb | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1266,7 +1343,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Cheese Squad 2 | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Chef-ball | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cherry Coke | Original | 2020 | skatebrd | unsupported | no map in pinmame-nvram-maps |
-| Chicago Cubs 'Triple Play' | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Child's Play | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Child's Play | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Chime Speed Test Table | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1278,13 +1354,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Circa 1933 | Allied Leisure | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Circus | Bally | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Circus | Zaccaria | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Circus | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Circus | Brunswick | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | City Hunter | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | City on the Moon - Murray Leinster | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | City Ship | J. Esteban | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | City Slicker | Bally | 1987 | cityslck | unsupported | no map in pinmame-nvram-maps |
-| Cleopatra (SS) | Gottlieb | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Clever & Smart | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Clock of Eternal Fog | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Clockwork Orange | Original | 2022 | lortium | unsupported | no map in pinmame-nvram-maps |
@@ -1316,7 +1390,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Cosmic Carnival | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cosmic Lady | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cosmic Venus | Tilt Movie | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Count-Down | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Courage The Cowardly Dog Pinball | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cow Poke | Gottlieb | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cowboy Bebop Pinball | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1334,7 +1407,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Crystal Palace Hotel | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Crystal-Ball | Automaticos | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cue | Stern | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Cue Ball Wizard | Gottlieb | 1992 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cuphead | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Cuphead Pro (Perdition Edition) | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Curling | Rally | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1353,7 +1425,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Darling | Williams | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Daughtry | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Days of Thunder | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Deadly Weapon | Gottlieb | 1990 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Dealer's Choice | Williams | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Death Note | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Def Leppard | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1365,13 +1436,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Depeche Mode Pinball | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Derby Day | Gottlieb | 1956 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Desert City | Fipermatic | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Devil's Dare | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Dexter | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Diablo 2 | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Diablo Pinball | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Diadem | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Diamond Jack | Gottlieb | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Diamond Lady | Gottlieb | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Diana | Rowamet | 1981 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Die Hard Trilogy | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Dimension | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1435,11 +1504,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Dutch Pool | A.B.T. | 1931 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Eager Beaver | Williams | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Earth Wind Fire | Zaccaria | 1981 | ewf | unsupported | no map in pinmame-nvram-maps |
-| Eclipse | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Eddie | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Egg Head | Gottlieb | 1961 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Eight Ball Champ | Bally | 1985 | eballchp | unsupported | no map in pinmame-nvram-maps |
-| El Dorado City of Gold | Gottlieb | 1984 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | El Duderino | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | El Toro | Bally | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Electra-Pool | Gottlieb | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1463,7 +1530,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Evil Dead 2 | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Evil Dead 3 Army of Darkness | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Evil Fight | Playmatic | 1980 | evlfight.zip | unsupported | no map in pinmame-nvram-maps |
-| Excalibur | Gottlieb | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Experiments of Alchemical Chaos | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Expressway | Bally | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Extremoduro Pinball | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1517,7 +1583,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Foo Fighters | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Football | Taito do Brasil | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Force | LTD do Brasil | 1979 | force | unsupported | no map in pinmame-nvram-maps |
-| Force II | Gottlieb | 1981 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Foreigner | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Forge | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Forrest Gump | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1526,7 +1591,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Four Seasons | Gottlieb | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Foxy Lady | Game Plan | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Frank Thomas' Big Hurt | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Freddy - A Nightmare on Elm Street | Gottlieb | 1994 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Freddy's Nightmares | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Free Fall | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Friday the 13th | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1561,23 +1625,18 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | GEEGA | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gemini | Gottlieb | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Genesis | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Genesis | Gottlieb | 1986 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Genie | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | George Michael - Faith | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Get Smart | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ghost Ramps and DMD Test | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ghost Toys VPX Model Pack | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ghostbusters (Limited Edition) | Stern | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gigi | Gottlieb | 1963 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Gladiators | Gottlieb | 1993 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gnome Slayer Yuki | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Godzilla vs. Kong | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Goin' Nuts | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gold Crown | Pierce | 1932 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gold Rush | Williams | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gold Star | Gottlieb | 1954 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Gold Strike | Gottlieb | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Gold Wings | Gottlieb | 1986 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Golden Arrow | Gottlieb | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Golden Axe | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Golden Birds | Original | 2015 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1589,7 +1648,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Grand Casino | J.P. Seeburg | 1934 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Grand Prix | LTD do Brasil | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Grand Prix | Williams | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Grand Prix | Stern | 2005 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Grand Slam | Gottlieb | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Grand Tour | Bally | 1964 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Grande Domino | Gottlieb | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1635,7 +1693,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Harry Potter and the Prisoner of Azkaban | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Harvest Frenzy | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Haunted Hotel | LTD do Brasil | 1983 | hhotel | unsupported | no map in pinmame-nvram-maps |
-| Haunted House | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Hayburners | Williams | 1951 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Headless Horseman | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Hearts and Spades | Gottlieb | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1676,7 +1733,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Hot Chicken | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Hot Line | Williams | 1966 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Hot Shot | Gottlieb | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Hot Shots | Gottlieb | 1989 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Hot Wheels | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Houdini | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Humpty Dumpty | Gottlieb | 1947 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1686,7 +1742,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | I.G.F. Interstellar Ground Force | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ice Age - A Mammoth Xmas Pinball | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ice Cold Beer | Taito | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Ice Fever | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Impacto | Recreativos Franco | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Impractical Jokers | Original | 2015 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Indiana Jones | Stern | 2008 | ij4_210 | unsupported | no map in pinmame-nvram-maps |
@@ -1711,7 +1766,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Jack Sparrow | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Jackpot | Williams | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Jacks Open | Gottlieb | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Jacks to Open | Gottlieb | 1984 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Jake Mate | Recel | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Jalisco | Recreativos Franco | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Jalopy | Williams | 1951 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1811,7 +1865,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Knight Rider | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Knock Out | Gottlieb | 1950 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Kratos - God of War | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Krull | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Kung Fu | LTD do Brasil | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Kung Fu Hustle | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Kusogrande | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1841,7 +1894,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Liberty Bell | Williams | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Life Is But a Dream - Avenged Sevenfold | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Lightning Ball | Gottlieb | 1959 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Lights...Camera...Action! | Gottlieb | 1989 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Line Drive | Williams | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Linkin Park | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Linkin Park | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -1882,11 +1934,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Marble Queen | Gottlieb | 1953 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Marilyn Manson | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Mariner | Bally | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Mario Andretti | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Mario Kart Pinball | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Maroon 5 | Original | 2021 | ewf | unsupported | no map in pinmame-nvram-maps |
 | Married with Children | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Mars God of War | Gottlieb | 1981 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Mars Trek | Sonic | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Marsupilami | Original | 2022 | skatebrd | unsupported | no map in pinmame-nvram-maps |
 | Martian Queen | LTD do Brasil | 1981 | marqueen | unsupported | no map in pinmame-nvram-maps |
@@ -1933,7 +1983,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Monaco | Segasa | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Monsters | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Monsters of Rock | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Monte Carlo | Gottlieb | 1987 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Monte Carlo | Bally | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Moon Light | Inder | 1987 | moonlght | unsupported | no map in pinmame-nvram-maps |
 | Moon Shot | Chicago Coin | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2010,7 +2059,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | One Punch Man Pinball | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Op-Pop-Pop | Bally | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Operation Highjump | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Operation Thunder | Gottlieb | 1992 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Orbit | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Out of Sight | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Outer Space | Gottlieb | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2019,7 +2067,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Paddock | Williams | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pain | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Palace Guard | Gottlieb | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Panthera | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Paolo NUTINI | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Paradise | Gottlieb | 1965 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Party Animal | Bally | 1987 | prtyanim | unsupported | no map in pinmame-nvram-maps |
@@ -2050,7 +2097,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Pinball Domes | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pinball Lizard | Game Plan | 1980 | lizard | unsupported | no map in pinmame-nvram-maps |
 | Pinball Magic | Capcom | 1995 | pmv112 | unsupported | no map in pinmame-nvram-maps |
-| Pinball Pool | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pinball Solitaire | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pinball Squared | Gottlieb | 1984 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pinball Squared | Gottlieb | 1984 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2109,11 +2155,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Punchy the Clown | Alvin G. | 1993 | punchy | unsupported | no map in pinmame-nvram-maps |
 | Punchy The Cow | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Punk Park | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Punk! | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Puscifer Pinball | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Putin Vodka Mania | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Pyramid | Gottlieb | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Q-Bert's Quest | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Queen | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Queen - The Game | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Queen - The Show Must Go On | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2123,7 +2167,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Quijote | Juegos Populares | 1987 | pimbal, r_quijote | unsupported | no map in pinmame-nvram-maps |
 | R.E.M | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | R2D2 | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Rack 'Em Up! | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rack-A-Ball | Gottlieb | 1962 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Radiohead | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rails | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2139,14 +2182,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Raygun Runner | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Re-Animator | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ready Player One | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Ready...Aim...Fire! | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Real | Game Plan | 1978 | real | unsupported | no map in pinmame-nvram-maps |
 | Red Baron | Chicago Coin | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Red Electric Rhapsody | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Red Hot Chili Peppers | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Red Hot Pinball | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Ren & Stimpy Space Madness | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Rescue 911 | Gottlieb | 1994 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Resident Alien | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Resident Evil | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Retro King | Original | 2004 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2165,14 +2206,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Road Runner | Atari | 1979 | roadrunr | unsupported | no map in pinmame-nvram-maps |
 | Road Train | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rob Zombie's Spookshow International | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Robo-War | Gottlieb | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Robocop 3 | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Robotech: The Macross Saga | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Robots Invasion | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Rock | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rock 2500 | Playmatic | 1985 | rock2500 | unsupported | no map in pinmame-nvram-maps |
 | Rock and Roll | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Rock Encore | Gottlieb | 1986 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rock in Rio | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rock Music | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rock N Roll Diner | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2182,7 +2220,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Rocket III | Bally | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | RockMakers | Bally | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rocky | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Rocky | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rocky Balboa | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rocky Legends | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rocky TKO | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2190,7 +2227,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Rod Stewart | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Roller Coaster | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Roller Derby | Bally | 1960 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Roller Disco | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Rollet | Barok Co | 1931 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Roman Victory | Taito do Brasil | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Route 66 | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2198,7 +2234,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Roy Orbison | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Royal Blood | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Royal Flush | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Royal Flush Deluxe | Gottlieb | 1983 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Royal Guard | Gottlieb | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Royal Pair | Gottlieb | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Running Horse | Inder | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2241,7 +2276,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Seven Winner | Inder | 1973 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Shamrock | Inder | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Shangri-La | Williams | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Shaq Attaq | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Shark | Hankin | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Sharp Shooter II | Game Plan | 1983 | sshootr2 | unsupported | no map in pinmame-nvram-maps |
 | Sharpshooter | Game Plan | 1979 | sshooter | unsupported | no map in pinmame-nvram-maps |
@@ -2261,8 +2295,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Silent Night Deadly Night | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Silver Cup | Genco | 1933 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Silver Line | Bill Port | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Silver Slugger | Gottlieb | 1990 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Sinbad | Gottlieb | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Sing Along | Gottlieb | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Sir Lancelot | Peyper | 1994 | lancelot | unsupported | no map in pinmame-nvram-maps |
 | Sittin' Pretty | Gottlieb | 1958 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2295,7 +2327,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Solar City | Gottlieb | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Solar Ride | Rowamet | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Solar Ride | Electromatic | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Solar Ride | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Solar Sailor | Original | 2016 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Solar Wars | Sonic | 1986 | solarwar | unsupported | no map in pinmame-nvram-maps |
 | Solids N Stripes | Williams | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2339,7 +2370,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Spin Wheel | Gottlieb | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Spin-A-Card | Gottlieb | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Spinning Wheel | Automaticos | 1970 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Spirit | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Spirit of 76 | Gottlieb | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Splatter Blast Studio | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Splatterhouse | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2348,7 +2378,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Spooky Wednesday | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Spot a Card | Gottlieb | 1960 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Spot Pool | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Spring Break | Gottlieb | 1987 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Squid Game | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stabby The Unicorn | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stampede | Stern | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2358,7 +2387,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Star Knights | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star Mission | Durham | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star Pool | Williams | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Star Race | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star Ship | Bally | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star Trek | Gottlieb | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star Trek - Voyager - Seven of Nine (Borg Edition) | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2373,7 +2401,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Star Wars Redux | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Star-Jet | Bally | 1963 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stardust | Williams | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Stargate | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Steel Panther 1987 | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stellar Airship | Geiger | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Steve Miller Band | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2386,19 +2413,16 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Stranger Things | Original | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stranger Things - Stranger Edition | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Strato-Flite | Williams | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Street Fighter II | Gottlieb | 1993 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Streets of Rage | Original | 2018 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Strike | Zaccaria | 1978 | strike.zip | unsupported | no map in pinmame-nvram-maps |
 | Strike Master | Williams | 1991 | strik_l4 | unsupported | no map in pinmame-nvram-maps |
 | Strike Zone | Williams | 1984 | szone_l5 | unsupported | no map in pinmame-nvram-maps |
-| Striker | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Strikes N' Spares | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Strip Joker Poker | Gottlieb | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Stripping Funny | Inder | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Student Prince | Williams | 1968 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Summer Time | Williams | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Sunset Riders Pinball | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Super Mario Bros. Mushroom World | Gottlieb | 1992 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Super Mario Galaxy Pinball | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Super Nova | Game Plan | 1980 | suprnova | unsupported | no map in pinmame-nvram-maps |
 | Super Score | Gottlieb | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2412,7 +2436,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Superman and The Justice League | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Supreme Dance Mix | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Sure Shot | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Surf 'n Safari | Gottlieb | 1991 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Surf Champ | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Surf Side | Gottlieb | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Surfer | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2429,7 +2452,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | T-Rex | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | T.K.O. | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Table Starter | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Tag-Team Pinball | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Take Five | Allied Leisure | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Talk Talk | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Talking Word Clock | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2572,7 +2594,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Tiki Bob's Swingin' Holiday Soiree | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Tiki Time | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | TikiSurfPunch | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Time Line | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Time Lord | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Time Machine | LTD do Brasil | 1984 | tmacltd4 | unsupported | no map in pinmame-nvram-maps |
 | Time Traveler | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2581,7 +2602,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Tiro's | Maresa | 1969 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Titan | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Titan | Gottlieb | 1982 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Title Fight | Gottlieb | 1990 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | TMNT | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Toledo | Williams | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Tom & Jerry | Original | 2018 | tomjerry | unsupported | no map in pinmame-nvram-maps |
@@ -2596,12 +2616,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Top of the Pops Xmas Pinball | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Top Score | Gottlieb | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Topaz | Inder | 1979 | tpazi | unsupported | no map in pinmame-nvram-maps |
-| Torch | Gottlieb | 1980 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Tornado Rally | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Torpedo!! | Petaco | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Total Nuclear Annihilation | Spooky Pinball | 2017 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Totem | Gottlieb | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Touchdown | Gottlieb | 1984 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Touchdown | Williams | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Toy Story 90s Pinball | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Trade Winds | Williams | 1962 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2626,7 +2643,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Twin Peaks | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Twinky | Chicago Coin | 1967 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Twisted Metal | Original | 2024 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| TX-Sector | Gottlieb | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Tyrannosaurus | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Tyrannosaurus | Gottlieb | 1985 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | U-Boat 65 | Nuova Bell Games | 1988 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2648,13 +2664,10 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Vasco da Gama | Original | 2020 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Vector Pinball (Field One) | Dozing Cat Software | 2010 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Vegas | Game Plan | 1979 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Vegas | Gottlieb | 1990 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | VeggieTales | Original | 2026 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Verne's World | Spinball S.A.L. | 1996 | vrnwrld | unsupported | no map in pinmame-nvram-maps |
-| Victory | Gottlieb | 1987 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Viking King | LTD do Brasil | 1979 | vikngkng | unsupported | no map in pinmame-nvram-maps |
 | Vikings | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Volcano | Gottlieb | 1981 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Volkan Steel and Metal | Original | 2023 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Volley | Gottlieb | 1976 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Voodoo Ranger | Original | 2025 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2673,7 +2686,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Wallace And Gromit | Original | 2006 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Warrior Sea | Electromatic | 1977 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Watchmen | Original | 2019 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Waterworld | Gottlieb | 1995 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wheel | Maresa | 1974 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wheel of Fortune | Stern | 2007 | wof_500 | unsupported | no map in pinmame-nvram-maps |
 | Whirl-Wind | Gottlieb | 1958 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
@@ -2690,13 +2702,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Willy's Wonderland | Original | 2021 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wimbledon | Electromatic | 1978 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Winner | Williams | 1971 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| Wipe Out | Gottlieb | 1993 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wizard! | Bally | 1975 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wolf Man | Peyper | 1987 | wolfman | unsupported | no map in pinmame-nvram-maps |
 | Wolfenstein 3D | Original | 2015 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Wonderland | Williams | 1955 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | Woody Woodpecker | Original | 2022 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
-| World Challenge Soccer | Gottlieb | 1994 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | World Poker Tour | Stern | 2006 | wpt_140a | unsupported | no map in pinmame-nvram-maps |
 | World Series | Gottlieb | 1972 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |
 | World's Fair Jig-Saw | Rock-ola | 1933 |  | unsupported | no ROM (original table: needs recipe B–E, C1.1) |

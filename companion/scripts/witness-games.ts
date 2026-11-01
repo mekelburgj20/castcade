@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { VpsIndexFile } from '../src/witness/identity-types.js';
 import { createMapCorpus } from '../src/witness/maps.js';
-import { buildSupportList, NO_PLATFORM, preloadMaps, type GameSupport, type SupportList, type SupportStatus } from '../src/witness/support-list.js';
+import { buildSupportList, CORPUS_ROM_NOTE, NO_PLATFORM, preloadMaps, type GameSupport, type SupportList, type SupportStatus } from '../src/witness/support-list.js';
 
 const JSON_URL = 'https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json';
 
@@ -76,6 +76,10 @@ function markdown(list: SupportList): string {
     lines.push(`| ${name === NO_PLATFORM ? 'no map' : name} | ${c.verified} | ${c.supported} | ${c.unsupported} | ${c.verified + c.supported + c.unsupported} |`);
   }
   lines.push(`| **All** | **${counts.verified}** | **${counts.supported}** | **${counts.unsupported}** | **${counts.games}** |`, '');
+  lines.push(
+    `${counts.romsFromCorpus} games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). ${counts.romsAmbiguous} more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.`,
+    '',
+  );
   lines.push('### Why unsupported', '', '| Reason | Games |', '|---|---:|');
   for (const [reason, n] of Object.entries(counts.byReason).sort(([a, x], [b, y]) => y - x || a.localeCompare(b, 'en'))) {
     lines.push(`| ${cell(reason)} | ${n} |`);
@@ -93,7 +97,7 @@ function markdown(list: SupportList): string {
     lines.push(`## ${title}`, '', `${c.verified} verified, ${c.supported} supported, ${c.unsupported} unsupported.`, '');
     lines.push('| Game | Manufacturer | Year | ROMs | Status | Reason |', '|---|---|---:|---|---|---|');
     for (const g of games) {
-      lines.push(`| ${cell(g.name)} | ${cell(g.manufacturer)} | ${cell(g.year)} | ${cell(g.roms.map((r) => r.rom).join(', '))} | ${g.status} | ${cell(g.reason)} |`);
+      lines.push(`| ${cell(g.name)} | ${cell(g.manufacturer)} | ${cell(g.year)} | ${cell(g.roms.map((r) => r.rom).join(', '))} | ${g.status} | ${cell([g.reason, g.romSource === 'corpus' ? CORPUS_ROM_NOTE : null].filter(Boolean).join('; '))} |`);
     }
     lines.push('');
   }
@@ -103,7 +107,7 @@ function markdown(list: SupportList): string {
 const opts = parseArgs(process.argv.slice(2));
 const vps = JSON.parse(readFileSync(opts.vps, 'utf8')) as VpsIndexFile;
 const corpus = createMapCorpus(opts.maps);
-const { mapFor, mapFile } = await preloadMaps(corpus, vps.games);
+const { mapFor, mapFile, corpusRoms } = await preloadMaps(corpus, vps.games);
 const verifiedRoms = new Set(
   readdirSync(opts.fixtures, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -115,10 +119,10 @@ const versions = {
   maps: firstLine(join(opts.maps, 'VERSION')) ?? 'unknown',
   app,
 };
-const list = buildSupportList({ vps, mapFor, mapFile, verifiedRoms, versions, generatedAt: new Date().toISOString() });
+const list = buildSupportList({ vps, mapFor, mapFile, corpusRoms, verifiedRoms, versions, generatedAt: new Date().toISOString() });
 
 mkdirSync(opts.out, { recursive: true });
 writeFileSync(join(opts.out, 'witness-games.json'), JSON.stringify(list, null, 2) + '\n');
 writeFileSync(join(opts.out, 'witness-games.md'), markdown(list));
 const { counts } = list;
-console.log(`wrote ${join(opts.out, 'witness-games.json')} and witness-games.md: ${counts.games} games, ${counts.verified} verified, ${counts.supported} supported, ${counts.unsupported} unsupported`);
+console.log(`wrote ${join(opts.out, 'witness-games.json')} and witness-games.md: ${counts.games} games, ${counts.verified} verified, ${counts.supported} supported, ${counts.unsupported} unsupported, ${counts.romsFromCorpus} with ROMs from the corpus (VPS lists none), ${counts.romsAmbiguous} ambiguous`);

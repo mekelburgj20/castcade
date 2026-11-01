@@ -13,7 +13,8 @@
  */
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import type { VpsGameEntry, VpsIndexFile } from './identity-types.js';
-import { isObject, liveSupport, romFromNvName, type CompiledMap, type Json, type MapCorpus } from './maps.js';
+import { isObject, liveSupport, romFromNvName, stripRomVersion, type CompiledMap, type Json, type MapCorpus } from './maps.js';
+import { normalizeVpsName } from './vps-index.js';
 
 export type SupportStatus = 'verified' | 'supported' | 'unsupported';
 
@@ -36,6 +37,21 @@ export interface RomSupport {
   live: { scores: boolean; game_over: boolean; current_ball: boolean; current_player: boolean };
 }
 
+/** Where a game's ROMs came from: the VPS index, or (VPS lists none) the maps corpus by name + manufacturer. */
+export type RomSource = 'vps' | 'corpus';
+
+/** Note for a game whose ROMs came from the corpus fallback. */
+export const CORPUS_ROM_NOTE = 'ROM from pinmame-nvram-maps (VPS lists none)';
+
+/** One ROM of the maps corpus, for the fallback: its `romnames.json` name (version stripped) and map folder. */
+export interface CorpusRom {
+  rom: string;
+  /** `romnames.json` name without the trailing version parenthetical, e.g. `Freddy: A Nightmare on Elm Street`. */
+  name: string;
+  /** The manufacturer folder of its map (`maps/gottlieb/system3/x.map.json` -> `gottlieb`); null when unknown. */
+  manufacturer: string | null;
+}
+
 export interface GameSupport {
   vpsId: string;
   name: string;
@@ -46,6 +62,8 @@ export interface GameSupport {
   status: SupportStatus;
   reason: string | null;
   roms: RomSupport[];
+  /** `corpus` when VPS lists no ROM and the ROMs were found in the maps corpus by name + manufacturer. */
+  romSource: RomSource;
 }
 
 export interface StatusCounts {
@@ -59,6 +77,10 @@ export interface SupportList {
   versions: { vps: string; maps: string; app: string };
   counts: StatusCounts & {
     games: number;
+    /** Games whose ROMs came from the corpus fallback (VPS lists none). */
+    romsFromCorpus: number;
+    /** No-ROM games the fallback left alone because two VPS games share the name and manufacturer. */
+    romsAmbiguous: number;
     /** Unsupported games by reason; sums to `unsupported`. */
     byReason: Record<string, number>;
     /** Games by their platform (`none` for no mapped ROM); each row sums to its games. */
@@ -75,6 +97,8 @@ export interface SupportListInput {
   mapFile?: (rom: string) => string | null;
   /** ROMs with a recorded game that replays in CI (the folder names under `fixtures/nvram`). */
   verifiedRoms: Set<string>;
+  /** Every ROM of the corpus with its name and manufacturer (`preloadMaps` builds it); omitted = no fallback. */
+  corpusRoms?: CorpusRom[];
   versions: { vps: string; maps: string; app: string };
   generatedAt: string;
 }
@@ -105,8 +129,63 @@ function bestRom(roms: RomSupport[]): RomSupport | null {
   return best;
 }
 
-function gameSupport(game: VpsGameEntry, input: SupportListInput): GameSupport {
-  const roms = [...new Set(game.roms)].map((rom) => {
+/** Manufacturer groups that share corpus folders or brand names; matching is loose inside a group, never across. */
+const MANUFACTURER_GROUPS: string[][] = [['bally', 'midway', 'williams'], ['gottlieb', 'premier'], ['dataeast', 'sega']];
+
+function mfrKey(name: string | null): string {
+  const k = normalizeVpsName(name ?? '').replace(/ /g, '');
+  const group = MANUFACTURER_GROUPS.find((g) => g.some((m) => k.includes(m)));
+  return group ? (group[0] as string) : k;
+}
+
+const sameMfr = (a: string | null, b: string | null): boolean => {
+  const x = mfrKey(a);
+  const y = mfrKey(b);
+  return x !== '' && y !== '' && (x === y || x.includes(y) || y.includes(x));
+};
+
+interface Fallback {
+  /** Normalised ROM name -> corpus ROMs of that name. */
+  byName: Map<string, CorpusRom[]>;
+  /** `name|manufacturer` -> how many VPX VPS games carry it. */
+  vpsCount: Map<string, number>;
+}
+
+function fallbackTables(input: SupportListInput, vpxGames: VpsGameEntry[]): Fallback {
+  const byName = new Map<string, CorpusRom[]>();
+  for (const r of input.corpusRoms ?? []) {
+    const key = normalizeVpsName(r.name);
+    if (key) byName.set(key, [...(byName.get(key) ?? []), r]);
+  }
+  const vpsCount = new Map<string, number>();
+  for (const g of vpxGames) {
+    const key = normalizeVpsName(g.name) + '|' + mfrKey(g.manufacturer);
+    vpsCount.set(key, (vpsCount.get(key) ?? 0) + 1);
+  }
+  return { byName, vpsCount };
+}
+
+/** The corpus ROMs for a game VPS lists none for; 'ambiguous' when a second VPS game has the same name and manufacturer. */
+function corpusRomsFor(game: VpsGameEntry, fb: Fallback): string[] | 'ambiguous' | null {
+  const found = (fb.byName.get(normalizeVpsName(game.name)) ?? []).filter((r) => sameMfr(r.manufacturer, game.manufacturer));
+  if (found.length === 0) return null;
+  // The corpus has no years, so a same-named pair of one manufacturer cannot be told apart: no guess.
+  if ((fb.vpsCount.get(normalizeVpsName(game.name) + '|' + mfrKey(game.manufacturer)) ?? 0) > 1) return 'ambiguous';
+  return found.map((r) => r.rom);
+}
+
+function gameSupport(game: VpsGameEntry, input: SupportListInput, fb: Fallback, tally: { ambiguous: number }): GameSupport {
+  let romIds = [...new Set(game.roms)];
+  let romSource: RomSource = 'vps';
+  if (romIds.length === 0) {
+    const found = corpusRomsFor(game, fb);
+    if (found === 'ambiguous') tally.ambiguous++;
+    else if (found) {
+      romIds = found;
+      romSource = 'corpus';
+    }
+  }
+  const roms = romIds.map((rom) => {
     const map = input.mapFor(rom);
     return romSupport(rom, map, input.verifiedRoms, map ? (input.mapFile?.(rom) ?? null) : null);
   });
@@ -120,6 +199,7 @@ function gameSupport(game: VpsGameEntry, input: SupportListInput): GameSupport {
     status: best?.status ?? 'unsupported',
     reason: best ? best.reason : NO_ROM_REASON,
     roms,
+    romSource,
   };
 }
 
@@ -135,9 +215,11 @@ function sortedRecord<T>(entries: Map<string, T>): Record<string, T> {
  * list is about the desktop companion scoring VPX tables. Games sort by name, then VPS id.
  */
 export function buildSupportList(input: SupportListInput): SupportList {
-  const games = input.vps.games
-    .filter((g) => g.tables.some((t) => t.format === 'VPX'))
-    .map((g) => gameSupport(g, input))
+  const vpxGames = input.vps.games.filter((g) => g.tables.some((t) => t.format === 'VPX'));
+  const fb = fallbackTables(input, vpxGames);
+  const tally = { ambiguous: 0 };
+  const games = vpxGames
+    .map((g) => gameSupport(g, input, fb, tally))
     .sort((a, b) => a.name.localeCompare(b.name, 'en') || (a.vpsId < b.vpsId ? -1 : a.vpsId > b.vpsId ? 1 : 0));
   const totals: StatusCounts = { verified: 0, supported: 0, unsupported: 0 };
   const byReason = new Map<string, number>();
@@ -153,7 +235,7 @@ export function buildSupportList(input: SupportListInput): SupportList {
   return {
     generatedAt: input.generatedAt,
     versions: input.versions,
-    counts: { games: games.length, ...totals, byReason: sortedRecord(byReason), byPlatform: sortedRecord(byPlatform) },
+    counts: { games: games.length, ...totals, romsFromCorpus: games.filter((g) => g.romSource === 'corpus').length, romsAmbiguous: tally.ambiguous, byReason: sortedRecord(byReason), byPlatform: sortedRecord(byPlatform) },
     games,
   };
 }
@@ -165,9 +247,9 @@ export function buildSupportList(input: SupportListInput): SupportList {
  */
 export async function preloadMaps(
   corpus: MapCorpus,
-  games: Pick<VpsGameEntry, 'roms'>[],
+  games: (Pick<VpsGameEntry, 'roms'> & Partial<Pick<VpsGameEntry, 'name'>>)[],
   fs: WitnessFs = nodeFs,
-): Promise<{ mapFor: (rom: string) => CompiledMap | null; mapFile: (rom: string) => string | null }> {
+): Promise<{ mapFor: (rom: string) => CompiledMap | null; mapFile: (rom: string) => string | null; corpusRoms: CorpusRom[] }> {
   const maps = new Map<string, CompiledMap | null>();
   for (const game of games) {
     for (const rom of game.roms) {
@@ -191,11 +273,30 @@ export async function preloadMaps(
     }
     return null;
   };
-  return {
-    mapFor: (rom) => maps.get(rom) ?? null,
-    mapFile: (rom) => {
-      const nv = romFromNvName(rom);
-      return fileOf(rom) ?? fileOf(rom.toLowerCase()) ?? fileOf(nv) ?? fileOf(nv.toLowerCase());
-    },
+  const mapFile = (rom: string): string | null => {
+    const nv = romFromNvName(rom);
+    return fileOf(rom) ?? fileOf(rom.toLowerCase()) ?? fileOf(nv) ?? fileOf(nv.toLowerCase());
   };
+  // The fallback table: every corpus ROM with a romnames.json name, its manufacturer from the map path.
+  let names: Json = null;
+  try {
+    names = JSON.parse(new TextDecoder().decode(await fs.readFile(corpus.dir.replace(/[\\/]+$/, '') + sep + 'romnames.json'))) as Json;
+  } catch (err) {
+    if (!isNotFound(err)) throw err;
+  }
+  const corpusRoms: CorpusRom[] = [];
+  if (isObject(names)) {
+    for (const [rom, raw] of Object.entries(names)) {
+      if (typeof raw !== 'string' || rom.startsWith('_')) continue;
+      const file = mapFile(rom);
+      if (!file) continue;
+      corpusRoms.push({ rom, name: stripRomVersion(raw), manufacturer: /^maps\/([^/]+)\//.exec(file)?.[1] ?? null });
+    }
+  }
+  // Load the maps the fallback could pick, for the games VPS lists no ROM for.
+  const wanted = new Set(games.filter((g) => g.roms.length === 0 && g.name).map((g) => normalizeVpsName(g.name as string)));
+  for (const r of corpusRoms) {
+    if (wanted.has(normalizeVpsName(r.name)) && !maps.has(r.rom)) maps.set(r.rom, await corpus.mapFor(r.rom).catch(() => null));
+  }
+  return { mapFor: (rom) => maps.get(rom) ?? null, mapFile, corpusRoms };
 }

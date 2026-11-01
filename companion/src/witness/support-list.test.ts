@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { VpsGameEntry, VpsIndexFile } from './identity-types.js';
 import { createMapCorpus, type CompiledMap } from './maps.js';
-import { buildSupportList, NO_MAP_REASON, NO_PLATFORM, NO_ROM_REASON, preloadMaps, type SupportList } from './support-list.js';
+import { buildSupportList, type CorpusRom, NO_MAP_REASON, NO_PLATFORM, NO_ROM_REASON, preloadMaps, type SupportList } from './support-list.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
@@ -122,5 +122,50 @@ describe('buildSupportList (B14)', () => {
 
   it('is byte-stable for the same input', async () => {
     expect(JSON.stringify(await build())).toBe(JSON.stringify(await build()));
+  });
+});
+
+describe('corpus ROM fallback for games VPS lists no ROM for (B23)', () => {
+  const corpusRoms: CorpusRom[] = [
+    { rom: 'mm_109c', name: 'Medieval Madness', manufacturer: 'williams' },
+    { rom: 'twin_1', name: 'Twin Peaks', manufacturer: 'bally' },
+  ];
+  const noRom = (id: string, name: string, manufacturer: string, over: Partial<VpsGameEntry> = {}) => game({ id, name, manufacturer, year: 1999, roms: [], ...over });
+
+  async function run(vpsGames: VpsGameEntry[]): Promise<SupportList> {
+    const loaded = await preloadMaps(corpus, games);
+    return buildSupportList({
+      vps: { games: vpsGames },
+      mapFor: (rom) => (rom === 'mm_109c' || rom === 'twin_1' ? loaded.mapFor('mm_109c') : null),
+      corpusRoms,
+      verifiedRoms: new Set(),
+      versions: { vps: 'x', maps: 'y', app: '0.0.0' },
+      generatedAt: '2026-10-31T00:00:00.000Z',
+    });
+  }
+
+  it('takes the corpus ROM of the same normalised name and manufacturer, and says where the ROM came from', async () => {
+    const list = await run([noRom('a', 'Medieval Madness', 'Williams')]);
+    expect(find(list, 'a')).toMatchObject({ status: 'supported', romSource: 'corpus', reason: null });
+    expect(find(list, 'a').roms.map((r) => r.rom)).toEqual(['mm_109c']);
+    expect(list.counts).toMatchObject({ romsFromCorpus: 1, romsAmbiguous: 0 });
+  });
+
+  it('matches loosely inside a manufacturer group (Midway for a Williams folder) but never across manufacturers', async () => {
+    const list = await run([noRom('mid', 'Medieval Madness', 'Midway'), noRom('other', 'Medieval Madness', 'Stern')]);
+    expect(find(list, 'mid').romSource).toBe('corpus');
+    expect(find(list, 'other')).toMatchObject({ romSource: 'vps', status: 'unsupported', reason: NO_ROM_REASON, roms: [] });
+  });
+
+  it('leaves a same-name, same-manufacturer pair as no ROM and counts it ambiguous', async () => {
+    const list = await run([noRom('p1', 'Twin Peaks', 'Bally', { year: 1990 }), noRom('p2', 'Twin Peaks', 'Bally', { year: 2016 })]);
+    expect(list.games.map((g) => [g.romSource, g.reason])).toEqual([['vps', NO_ROM_REASON], ['vps', NO_ROM_REASON]]);
+    expect(list.counts).toMatchObject({ romsFromCorpus: 0, romsAmbiguous: 2 });
+  });
+
+  it('does not touch a game that lists ROMs', async () => {
+    const list = await run([noRom('c', 'Medieval Madness', 'Williams', { roms: ['mm_10'] })]);
+    expect(find(list, 'c')).toMatchObject({ romSource: 'vps', status: 'unsupported', reason: NO_MAP_REASON });
+    expect(find(list, 'c').roms.map((r) => r.rom)).toEqual(['mm_10']);
   });
 });
