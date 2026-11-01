@@ -38,7 +38,10 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
    table (the `.vpx` files are never changed; **Remove all Castcade patches** reverts). Without this step only the
    last game of a session posts, and Castcade tells you so when you open a table. From 0.2.17 it skips machines whose
    live score it can't read yet and lists them as "not patched" (0.2.18 also removes an earlier Castcade patch from
-   those tables).
+   those tables). From the build after 0.2.27 you press it once: tables you add to the folder later are patched by
+   Castcade on its own (one balloon within 30 s), the "table not patched" balloon and Status offer **Patch now**, and
+   when a score still posts only as the table closes, Status's "Last close" line and `companion.log` say why (not
+   patched, this machine's live score can't be read, no recipe, or live mode saw no game end): send that log.
 6. **Play one game, one player, to the end** on a ROM table. Let the last ball drain, wait for game over,
    then **quit the player** (Escape → Quit, or your frontend's exit). Do not kill VPX from Task Manager.
 7. **Check.** Open Castcade → **Status**: **Capture: live** while a patched table is open, *Watching*, *Paired*, your VPX exe, the NVRAM folder, **Sending

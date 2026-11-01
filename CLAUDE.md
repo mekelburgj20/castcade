@@ -101,7 +101,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | `vr-layer/` | `XrApiLayer_castcade_panel.dll` + manifest: C++17/CMake/MSVC implicit OpenXR API layer that appends the match panel as a quad inside VPinballX on non-SteamVR runtimes (frames over `\\.\pipe\castcade-panel`, same format as the helper's stdin; OpenXR headers pinned by tag + sha256; CI `vr-layer.yml` is the build of record) | alpha (D7.3) |
 | `fakeclient/` | scripted protocol player, no emulator, for CI | 1 |
 | `arcade/` | RetroArch launch profiles, core allowlist, ROM memory maps | 6 |
-| `fixtures/` | recorded NVRAM journals + script-event logs for detector replay in CI | 2–3 |
+| `fixtures/` | recorded NVRAM journals + script-event logs for detector replay in CI; `fixtures/maps` is the vendored subset of the maps corpus the tests read (CI has no full corpus) | 2–3 |
 | `docs/` | design docs, ADRs, ArcAid work list | — |
 | `tmp/` | scratch, gitignored | — |
 

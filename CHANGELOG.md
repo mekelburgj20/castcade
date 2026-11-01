@@ -11,6 +11,16 @@ On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel age
 then (2026-10-31, night) by the table-coverage lane: four more agents after Krobs' Freddy posted only at VPX exit.
 
 ### Table coverage: every table posts each game live (C11, B23, B14.2, B10.2)
+- **New tables get patched without a trip to Settings (C11, C1.1.3).** The folder watch now plans every `.vpx` that has
+  no sidecar and patches it in the same batch as the re-makes, with one notice per look; it does this only in a folder
+  that was imported once (a fresh install still presses Patch my tables once). Tables an older build skipped for lack
+  of a recipe (originals of class B/C/D) are picked up on the first look; unpatchable ones are remembered until the file
+  changes. **Patch now:** the "table not patched" balloon and Status both patch the table in one click (the IPC accepts
+  only the file the witness offered). **Every score read only at close now says why** (`exit-rung.ts`): the capture
+  detail, Status ("Last close") and the log name the rung: not patched, live score not readable or no map, no recipe,
+  partial recipe (the manifest now records `partial`), the hook never reported in, or live mode saw no game end (with the
+  journal counts and the last decoded state). A tester's `companion.log` alone answers a Freddy-style report. Ladder:
+  `docs/design/table-import-and-patching.md` §6a.
 - **Bally and Stern M100 tables score live (unverified); the Gottlieb System 3 ball decode is fixed (B10.2, B10.3).**
   Bally AS-2518-17/-35 and Stern M100 keep ball and player in CPU RAM, out of the hook's reach. Their NVRAM holds the
   GAME OVER lamp, the score displays and the last game's scores, so a new detector (`ballyTransition`, `liveSupport` via

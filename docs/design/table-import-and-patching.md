@@ -214,6 +214,38 @@ press is journaled as `key_blocked`, which is how the verification run proves th
   whose only fault is version drift (a newer companion with a newer recipe or library) is re-made quietly, all such
   tables in one import run with one notification, because that is maintenance the player did not cause.
 
+## 6a. The "posted at exit" ladder (C11, 2026-10-31)
+
+A game that posts once, when the table closes (`reason=exit_sample`, no attempt key, no live events), fell off live
+mode on one of these rungs. Since C11 the capture detail (`witness: capture …` in the log), the close log line
+(`witness: <table>: live mode produced no capture (<rung>: <detail>)`), Status ("Last close", with Patch now where it
+applies) and the balloon name the rung in the same words (`companion/src/witness/exit-rung.ts`), so a tester's
+`companion.log` alone says which.
+
+| Rung | `kind` | What happened | Detail text | What to do |
+|---|---|---|---|---|
+| (a) | `not_patched` | The `.vpx` has no sidecar: it arrived after the last **Patch my tables**, or an older build skipped it for lack of a recipe (C1.1.3). VPX ran the table's own script; nothing was journaled. | `table not patched (new file; the import would patch it: VPM / ROM table, ROM freddy)` (`its earlier patch is gone` when a manifest exists) | Since C11 the folder watch patches it on its next look, once the folder was imported once; the balloon and Status offer **Patch now**. |
+| (b) | `unreadable` / `no_map` | Patched or not, the machine's live fields are not in NVRAM (`liveSupport`), or the ROM has no map. The hook journals nothing useful. | `live score not readable on gottlieb-system80 (scores in CPU RAM)` / `no map for ROM xyz` | Nothing on the rig. The platform needs an NVRAM-only detector (B10.2, `docs/design/platform-coverage.md`) or the live-memory producer (B10.3). |
+| (c) | `no_recipe` | An original of class E (generic) or X: no anchors to patch. | `not patched; no recipe for this script (class E)` | C1.3 (guided anchor pick). |
+| (d) | `partial` | The recipe rendered without one anchor; the manifest now records `partial`. | `the Castcade patch is partial on this script (<warnings>)` | Report the table; the recipe needs the missing anchor. |
+| (e) | — | The game posted but ArcAid matched it to nothing (ROM / VPS not pinned). Not an exit-posting cause; listed because testers report it the same way. | `witness: identity unresolved …`, ArcAid's `not counted` reason | F15 (ROM fallback on the start call). |
+| (f1) | `hook_silent` | A sidecar sits beside the table but no `table_loaded` arrived: VPX ran another copy of the file, or the sidecar was not picked up. | `sidecar present but the hook never reported in (VPX ran the table's own script?)` | Open the table from the folder Castcade patched, not a copy elsewhere. |
+| (f2) | `no_game_end` | `table_loaded` arrived, the map was attached, the journal was followed, and the detector produced no `game_end`. | `live mode followed the journal (hook 0.5.0, recipe A 0.3.1, 1 nvram_full, 312 nvram_delta, 0 orphan; game_start seen: no; last state scores [0,0,0,0] ball 0 player 1 game over) and saw no game end` | Send the journal (`%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`) and `companion.log`: a decoder or platform finding, never something the player can fix. |
+
+Two more kinds cover the companion's own blind spots: `no_table_file` (the table file was not found, so its patch could
+not be checked) and `script_unread` (the script could not be read).
+
+**Freddy – A Nightmare on Elm Street, Krobs, 2026-10-31 (the case that made the ladder).** Posted at close. Offline:
+the corpus maps `freddy` / `freddy4` (`maps/gottlieb/system3/freddy.map.json`) with scores, game over, current ball
+and current player all inside the 8 KB NVRAM at 0x0000; `liveSupport` says readable; the importer plans the table as
+`patch`; a synthetic System 3 game through `decodeGameState` + `JournalDetector` yields game_start, ball ends and
+game_end. Krobs' log up to 2026-10-31T08:05Z shows a Freddy sidecar made on 2026-10-23 and re-made on 10-24, 10-26 and
+10-30. So the rung is (a) only if the file he played on 10-31 was a new one, else (f2): on the owner's rig the System 3
+`.nv` files of Cue Ball Wizard and Rescue 911 hold 0x70 / 0x90 in the ball byte, which the unmasked maps decode as ball
+70 / 90; `plausible()` then rejects every state and the detector stays silent for the whole game (B10.2 gives System 3
+maps a default low-nibble mask). The next run on a build with this section's instrumentation answers it from the log
+alone; B14.3 (Cue Ball Wizard and Tee'd Off on the owner's rig) tests the theory without Krobs.
+
 ## 7. Verification run
 
 After rendering: launch `VPinballX64.exe -Play "<path>"` (or the copy), wait for `table_loaded` in the journal
