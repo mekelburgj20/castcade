@@ -240,11 +240,17 @@ the corpus maps `freddy` / `freddy4` (`maps/gottlieb/system3/freddy.map.json`) w
 and current player all inside the 8 KB NVRAM at 0x0000; `liveSupport` says readable; the importer plans the table as
 `patch`; a synthetic System 3 game through `decodeGameState` + `JournalDetector` yields game_start, ball ends and
 game_end. Krobs' log up to 2026-10-31T08:05Z shows a Freddy sidecar made on 2026-10-23 and re-made on 10-24, 10-26 and
-10-30. So the rung is (a) only if the file he played on 10-31 was a new one, else (f2): on the owner's rig the System 3
-`.nv` files of Cue Ball Wizard and Rescue 911 hold 0x70 / 0x90 in the ball byte, which the unmasked maps decode as ball
-70 / 90; `plausible()` then rejects every state and the detector stays silent for the whole game (B10.2 gives System 3
-maps a default low-nibble mask). The next run on a build with this section's instrumentation answers it from the log
-alone; B14.3 (Cue Ball Wizard and Tee'd Off on the owner's rig) tests the theory without Krobs.
+10-30. **Settled on the owner's rig, 2026-11-01, two tables on 0.2.27:**
+- Cue Ball Wizard (patched, System 3) armed live mode, saw `game_start` and balls 1 and 2 end, then posted at close as
+  "abandoned on ball 0": rung (f2). Its journal (`fixtures/nvram/cueball/2026-11-01-1`) shows System 3 clearing the ball
+  byte (0x03 → 0x00, then the idle bit 0x80) 3.5 s before it clears the player count the map reads as game over, so at
+  the game-over step `prev` had no ball in play and the old rule derived neither the last ball end nor the game end.
+  WPC keeps the ball byte at 3 across game over and Data East clears both in one step, which is why the fixtures never
+  showed it. The detector now remembers the last ball in play (`lastInPlay`) and ends the game from it; the fixture
+  replays as one game with three ball ends. This is what Krobs' patched Freddy did on 2026-10-31.
+- A freshly downloaded Freddy (v.2.4) on the same rig was rung (a) exactly: "not patched" notice, one score at close,
+  and ArcAid then skipped it because "Freddy A Nightmare on Elm Street (Gottlieb 1994)" matches two catalogue games
+  (rung e, ArcAid F22). C11's folder watch removes (a); F22 is ArcAid's.
 
 ## 7. Verification run
 

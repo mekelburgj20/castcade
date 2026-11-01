@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-01T06:03:39.057Z",
+  "generatedAt": "2026-11-01T07:22:42.492Z",
   "versions": {
     "vps": "cce9160b30110ee174786239fdfb30a6e4caaab7",
     "maps": "f0c422099f0b50b69bfdf6d071a6653a8b25a6fd",
@@ -7,8 +7,8 @@
   },
   "counts": {
     "games": 2365,
-    "verified": 11,
-    "supported": 447,
+    "verified": 12,
+    "supported": 446,
     "unsupported": 1907,
     "romsFromCorpus": 77,
     "romsAmbiguous": 2,
@@ -98,8 +98,8 @@
         "unsupported": 18
       },
       "gottlieb-system3": {
-        "verified": 0,
-        "supported": 25,
+        "verified": 1,
+        "supported": 24,
         "unsupported": 0
       },
       "gottlieb-system3-32K": {
@@ -7581,14 +7581,14 @@
       "manufacturer": "Gottlieb",
       "year": 1992,
       "platform": "gottlieb-system3",
-      "status": "supported",
+      "status": "verified",
       "reason": null,
       "romSource": "corpus",
-      "romsDiffer": false,
+      "romsDiffer": true,
       "roms": [
         {
           "rom": "cueball",
-          "status": "supported",
+          "status": "verified",
           "reason": null,
           "platform": "gottlieb-system3"
         },

@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0 (VPinballX_GL64.exe, build 10.8.0.2078.Panasony, the owner's VR community build)",
+  "vpinmame_version": "3.7.0.222 (nightly build)",
+  "recorded": "2026-11-01",
+  "rig": "owner's rig, Windows 11, played in a VR headset via Virtual Desktop (OpenXR)",
+  "companion_version": "0.2.27",
+  "lib_version": "0.4.1",
+  "recipe": "A",
+  "recipe_version": "0.3.1",
+  "rom": "cueball",
+  "platform": "gottlieb-system3",
+  "table_file": "Cue Ball Wizard (Gottlieb 1992) v1.2.4.vpx",
+  "table_id": "Cue Ball Wizard (Gottlieb 1992) v1.2.4",
+  "journal_sha256": "3a581c3edb021b2a878e8db9aecafd3981f5be7dfca5e951052f34b6c63227fa",
+  "journal_file": "2026-11-01-1.jsonl.gz",
+  "played_by": "the owner by hand, one table load (session 2026-10-31T23:59:08 local, UTC-7): one 1-player game to game over, then the table closed about 17 s later",
+  "games": 1,
+  "oracle": false,
+  "expected": "one game_start (t=17.0), ball_end 1 (t=37.3), 2 (t=115.3) and 3 (at game over, t=210.1), one game_end with 100273890; no game_abandoned. The watch list (recipe 0.3.1) keeps only the game_state offsets, 159 nvram_delta lines in all.",
+  "notes": "The first Gottlieb System 3 recording, and the one that explains why System 3 games posted only at close (Krobs' Freddy, 2026-10-31; this table on 0.2.27 posted 'abandoned on ball 0' at exit). System 3 clears the ball byte (0x15: 0x03 -> 0x00 at t=206.5, then 0x80 at t=206.9, the idle bit) about 3.5 s BEFORE it clears player_count (0x201, which the map reads inverted as game_over, t=210.1). The detector's game-over rule needed a ball in play in the previous state, so the last ball and the game end were never derived; the fix remembers the last ball in play. WPC keeps the ball byte at 3 across game over (mm_109c fixtures) and Data East clears both in one step (tftc_400), which is why neither showed it."
+}

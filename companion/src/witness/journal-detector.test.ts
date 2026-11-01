@@ -20,11 +20,13 @@ const FIXTURES = [
   'fixtures/nvram/mm_109c/2026-10-17-1',
   'fixtures/nvram/tftc_400/2026-10-17-1',
   'fixtures/script/iron-maiden-lotb/2026-10-17-1',
+  // Gottlieb System 3 (owner's rig, 2026-11-01): the ball byte is cleared 3.5 s before game over; `lastInPlay` ends the game.
+  'fixtures/nvram/cueball/2026-11-01-1',
 ];
 
 async function mapLookup(): Promise<(rom: string) => CompiledMap | null> {
   const maps = new Map<string, CompiledMap | null>();
-  for (const rom of ['mm_109c', 'tftc_400', 'mb_106b']) maps.set(rom, await corpus.mapFor(rom));
+  for (const rom of ['mm_109c', 'tftc_400', 'mb_106b', 'cueball']) maps.set(rom, await corpus.mapFor(rom));
   return (rom) => maps.get(rom) ?? null;
 }
 
@@ -52,7 +54,7 @@ describe('engine line (hook 0.4.0)', () => {
   });
 });
 
-describe('the three Phase 0 fixtures replay like the Python oracle', () => {
+describe('the recorded fixtures replay like the Python oracle (and the System 3 one the oracle has no rules for)', () => {
   for (const base of FIXTURES) {
     it(base, async () => {
       const { lines, meta } = loadFixture(base);

@@ -26,10 +26,15 @@ then (2026-10-31, night) by the table-coverage lane: four more agents after Krob
   GAME OVER lamp, the score displays and the last game's scores, so a new detector (`ballyTransition`, `liveSupport` via
   `bally_lamp`) starts a game on the lamp going off with blank displays and ends it when the last-game scores match the
   displays. About 125 more games are listed as readable, marked unverified until a rig recording lands; a wrong guess
-  only costs the live post, since the `.nv` still posts at close. On Gottlieb System 3, the owner's own `.nv` files for
-  Cue Ball Wizard and Rescue 911 carry flag bits in the ball byte (0x70, 0x90): decoded as BCD that is ball 70 / 90,
-  `plausible()` rejects every such state and the detector fires nothing; the companion now reads the low nibble on that
-  platform when the map gives no mask (a map's own mask wins; the corpus files are unchanged).
+  only costs the live post, since the `.nv` still posts at close. **Gottlieb System 3 games now end live** (the cause of
+  "Freddy posted only when VPX closed", found on the owner's rig 2026-11-01 with Cue Ball Wizard, the first System 3
+  recording, `fixtures/nvram/cueball/2026-11-01-1`): System 3 clears the ball byte about 3.5 s before it clears the
+  player count the map reads as game over, so at the game-over step the detector saw no ball in play, derived neither
+  the last ball end nor the game end, and the game surfaced only as `game_abandoned` at table exit ("abandoned on ball
+  0"). The detector now remembers the last ball in play (`lastInPlay`) and ends the game from it; WPC and Data East
+  are unchanged (their fixtures replay the same). The idle bit that System 3 then sets in the ball byte (0x80; the
+  owner's `.nv` files also show 0x70 / 0x90 at rest) is masked: the companion reads the low nibble on that platform when
+  the map gives no mask (a map's own mask wins; the corpus files are unchanged).
   `docs/design/platform-coverage.md` records why Stern M200, Williams System 4–7, Gottlieb System 80/80B/1, Atari gen 1,
   Zaccaria and Capcom stay unsupported, with the recording recipe per family. Test maps vendored under `fixtures/maps`.
 - **The witness-games list no longer calls ROM games originals (B23).** For a solid-state game VPS lists no ROM for
