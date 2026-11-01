@@ -1,3 +1,4 @@
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { captureArgs, coverCommand, ddagrabRegion, ffplayPreviewArgs, filterValue, outputSize, PRESETS, redactRtmp, videoFilter } from './ffmpeg-args.js';
 import { ffmpegDir, resolveFfmpeg } from './ffmpeg-path.js';
@@ -160,7 +161,10 @@ describe('stream preview (owner ask 2026-10-27: check the framing before going l
 });
 
 describe('ffmpeg location (D1.6)', () => {
-  const dev = { packaged: false, resourcesPath: 'R', companionDir: 'C:/repo/companion' };
+  // `ffmpegDir` resolves the dev dir with the platform's `path`, so an absolute path is made the same way (CI runs on
+  // ubuntu, where 'C:/repo' is a relative path and the test failed since D1.6).
+  const devDir = resolve('C:/repo/companion');
+  const dev = { packaged: false, resourcesPath: 'R', companionDir: devDir };
   const pkg = { packaged: true, resourcesPath: 'C:/Program Files/Castcade/resources', companionDir: 'x' };
   const slash = (p: string): string => p.replace(/[\\]/g, '/');
 
@@ -172,7 +176,7 @@ describe('ffmpeg location (D1.6)', () => {
   });
 
   it('a dev checkout without a fetched build falls back to PATH; a missing VERSION still counts as bundled', () => {
-    expect(slash(ffmpegDir(dev))).toBe('C:/repo/companion/resources/ffmpeg');
+    expect(slash(ffmpegDir(dev))).toBe(slash(join(devDir, 'resources', 'ffmpeg')));
     expect(resolveFfmpeg(dev, () => false)).toEqual({ ffmpeg: 'ffmpeg', ffplay: 'ffplay', source: 'path', build: null });
     expect(resolveFfmpeg(dev, (p) => !p.endsWith('ffplay.exe'))).toMatchObject({ source: 'path' });
     const noStamp = resolveFfmpeg(dev, () => true, () => {
