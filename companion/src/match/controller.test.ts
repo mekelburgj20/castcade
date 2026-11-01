@@ -12,6 +12,7 @@ import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, vrViewMode
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
+import { WsPeerTransport } from './transport-ws.js';
 
 const flush = async (n = 12): Promise<void> => {
   for (let i = 0; i < n; i++) await new Promise<void>((r) => setTimeout(r, 0));
@@ -405,6 +406,112 @@ describe('MatchController', () => {
     await C.ctl.close();
     expect(C.locks).toEqual(['lock', 'unlock']);
     expect(C.media.detached).toBe(true);
+  });
+});
+
+describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
+  it("3 players, one with another table file: the OTHER client's controller flags it too (HELLO_ACK.tableMismatches)", async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const H = seat(host, clock, 3);
+    await H.ctl.open();
+    const mk = (id: string, g: GameFingerprint): Seat => {
+      const k = generateKeys();
+      const p = { ...participant(id, k), displayName: id };
+      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: p, game: g, throwdownCode: 'M', hostId: 'h', clock });
+      const s = seat(c, clock);
+      c.join();
+      return s;
+    };
+    const A = mk('a', { ...game, tableName: 'Another Table' });
+    await flush();
+    const B = mk('b', game);
+    await flush();
+    for (const s of [H, A, B]) expect(s.ctl.status().tableMismatch).toEqual(['a']);
+    expect(B.ctl.status().participants.map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    // a's own controller saw b join before MATCH_READY (the roster re-sent on every join).
+    expect(A.ctl.status().participants.map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    expect(B.media.panel.message).toBe('different table file: a');
+    expect(B.media.panel.players.find((p) => p.id === 'a')?.flags).toEqual(['table_mismatch']);
+    expect(B.media.panel.players.find((p) => p.id === 'b')?.flags).toEqual([]);
+    host.start();
+    await flush();
+    // The final roster keeps the flags (they are not in MATCH_READY, so nothing clears them).
+    expect(B.ctl.status().tableMismatch).toEqual(['a']);
+  });
+
+  it('a pending host transfer shows in status().transfer until it commits', async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const H = seat(host, clock, 3);
+    const seats: Seat[] = [];
+    const statuses: Array<ReturnType<MatchController['status']>['transfer']> = [];
+    for (const id of ['a', 'b']) {
+      const k = generateKeys();
+      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+      const s = seat(c, clock);
+      seats.push(s);
+      c.join();
+    }
+    await flush();
+    host.start();
+    await flush();
+    seats[0]!.ctl.onChange((s) => statuses.push(s.transfer));
+    expect(H.ctl.status().transfer).toBeNull();
+    host.transferHost('a');
+    await flush();
+    expect(statuses[0]).toEqual({ proposer: 'h', newHost: 'a', reason: 'host_requested' });
+    expect(seats[0]!.ctl.status().transfer).toBeNull();
+    expect(statuses.at(-1)).toBeNull();
+  });
+
+  it('a client whose link dropped mid-match sends RESUME itself once its RECONNECT is accepted (real WebSockets)', async () => {
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const ht = new WsPeerTransport({ localId: 'h' });
+    const url = await ht.listen(0, '127.0.0.1');
+    const host = new HostMatch({ transport: ht, keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game });
+    const H = seat(host, clock, 3);
+    const ct = new WsPeerTransport({ localId: 'c' });
+    const client = new ClientMatch({ transport: ct, keys: ck, participant: participant('c', ck), game, throwdownCode: 'M', reconnect: { delayMs: 50, attempts: 20 } });
+    const C = seat(client, clock);
+    const until = async (cond: () => boolean, ms = 5000): Promise<void> => {
+      const end = Date.now() + ms;
+      while (!cond()) {
+        if (Date.now() > end) throw new Error('timed out');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    try {
+      await ct.connect(url);
+      client.join();
+      await until(() => host.roster().length === 2);
+      host.start();
+      await until(() => client.state.phase === 'running' && C.ctl.status().phase === 'playing');
+      // The host plays ball 1; the client's socket dies.
+      ct.dropLinks('h');
+      await until(() => host.state.paused !== null);
+      expect(host.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
+      expect(H.ctl.status().phase).toBe('paused');
+      await until(() => host.state.paused === null);
+      const types = host.log.entries().map((e) => (e.message ? `${e.message.type}:${e.message.from}` : e.event?.type));
+      // The pause, the client's own RESUME right after it, then the re-issued grant.
+      const at = types.indexOf('PAUSE:h');
+      expect(types.slice(at, at + 3)).toEqual(['PAUSE:h', 'RESUME:c', 'TURN_GRANT:h']);
+      await until(() => C.ctl.status().phase === 'playing' && H.ctl.status().phase === 'playing');
+      expect(C.logs).toContain('match: back after a drop; resuming the match');
+      expect(client.log.head()).toEqual(host.log.head());
+    } finally {
+      client.close();
+      host.close();
+      ct.close();
+      ht.close();
+    }
   });
 });
 

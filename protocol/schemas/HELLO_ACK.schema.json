@@ -170,13 +170,75 @@
           "type": "null"
         }
       ]
+    },
+    "tableMismatches": {
+      "default": [],
+      "description": "A8 (2026-10-31): every accepted participant whose fingerprint differs from the host's (advisory mode), with what differs, so each client can flag the others too, not only itself. Additive and defaulted, so still protocol 2: a host that does not send it reads as no differences. Not in MATCH_READY: that message is logged, and a peer that strips or defaults an unknown field would hash a different log.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "mismatches": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "description": "GameFingerprint field name."
+                },
+                "expected": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "received": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "expectedFrom": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[A-Za-z0-9_.:-]+$",
+                  "description": "Which participant the host compared against."
+                }
+              },
+              "required": [
+                "field",
+                "expected",
+                "received",
+                "expectedFrom"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "playerId",
+          "mismatches"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
     "hostPlayerId",
     "hostPublicKey",
     "participants",
-    "hostGame"
+    "hostGame",
+    "tableMismatches"
   ],
   "additionalProperties": false,
   "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint."

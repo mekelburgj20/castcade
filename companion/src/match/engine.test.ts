@@ -472,3 +472,98 @@ describe('desync detection', () => {
     expect(verifyCanonical(logSignBody('M', sa?.logHash ?? '', sa?.logLength ?? 0), sa?.signature ?? '', r.keys['a']?.publicKeyB64 ?? '')).toBe(true);
   });
 });
+
+describe('A8 (2026-10-31): every client sees whose table differs, and a transfer keeps it', () => {
+  const other: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
+  /** h hosts in `advise` mode; a has another file of the table, everyone else the host's. */
+  async function lobby(ids: string[]) {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const clients: Record<string, ClientMatch> = {};
+    const flags: Record<string, Array<{ playerId: string; fields: string[] }>> = {};
+    const rosters: Record<string, string[][]> = {};
+    for (const id of ids) {
+      const k = generateKeys();
+      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game: id === 'a' ? other : game, throwdownCode: 'M', hostId: 'h', clock });
+      const f: Array<{ playerId: string; fields: string[] }> = [];
+      const ro: string[][] = [];
+      c.on('tableMismatch', (m) => f.push({ playerId: m.playerId, fields: m.mismatches.map((x) => x.field) }));
+      c.on('roster', (ack) => ro.push(ack.participants.map((p) => p.playerId)));
+      flags[id] = f;
+      rosters[id] = ro;
+      clients[id] = c;
+      c.join();
+      await flush();
+    }
+    return { bus, clock, host, clients, flags, rosters };
+  }
+
+  it('a 3-player lobby: b learns that a differs (HELLO_ACK.tableMismatches), a only of itself; a later join and a leave re-send the roster', async () => {
+    const r = await lobby(['a', 'b']);
+    expect(Object.keys(r.host.tableMismatches())).toEqual(['a']);
+    // a: its own comparison, nothing about anyone else.
+    expect(r.flags['a']).toEqual([{ playerId: 'a', fields: ['tableHash'] }]);
+    // b: a's difference from the host's list, and nothing about itself.
+    expect(r.flags['b']).toEqual([{ playerId: 'a', fields: ['tableHash'] }]);
+    expect(r.clients['b']!.tableMismatches()['a']?.[0]).toMatchObject({ field: 'tableHash', expected: game.tableHash, received: other.tableHash, expectedFrom: 'h' });
+    expect(Object.keys(r.clients['a']!.tableMismatches())).toEqual(['a']);
+    // b's join re-sent the roster to a, so a sees b before MATCH_READY.
+    expect(r.rosters['a']).toEqual([['h', 'a', 'b']]);
+
+    // a leaves the lobby: b's roster drops it and its flag clears.
+    r.bus.disconnect('a');
+    await flush();
+    expect(r.host.tableMismatches()).toEqual({});
+    expect(r.rosters['b']).toEqual([['h', 'b']]);
+    expect(r.flags['b']!.at(-1)).toEqual({ playerId: 'a', fields: [] });
+    expect(r.clients['b']!.tableMismatches()).toEqual({});
+  });
+
+  it('a HELLO_ACK from a host before A8 (no tableMismatches) parses as []', () => {
+    const ack = buildMessage('HELLO_ACK', { hostPlayerId: 'h', hostPublicKey: generateKeys().publicKeyB64, participants: [], hostGame: game }, { matchId: null, seq: 1, from: 'h' });
+    expect(ack.payload.tableMismatches).toEqual([]);
+  });
+
+  it('MATCH_READY is unchanged (it is logged: a field a 0.2.27 peer does not know would fork the hash)', async () => {
+    const r = await lobby(['a', 'b']);
+    r.host.start();
+    await flush();
+    const ready = r.host.log.at(0)?.message;
+    expect(ready?.type).toBe('MATCH_READY');
+    expect(Object.keys(ready?.payload ?? {}).sort()).toEqual(['ballsPerGame', 'game', 'hostPlayerId', 'hostPublicKey', 'matchId', 'participants', 'playerOrder', 'seed', 'turnMode']);
+    for (const c of Object.values(r.clients)) expect(c.log.head()).toEqual(r.host.log.head());
+  });
+
+  it("a transfer to b (resumeFromLog) keeps a's mismatch on the new host, and the old host (now a client) keeps it too", async () => {
+    const r = await lobby(['a', 'b']);
+    r.host.start();
+    await flush();
+    const b = r.clients['b']!;
+    const became: HostMatch[] = [];
+    b.on('becameHost', (h) => became.push(h));
+    const stepped: ClientMatch[] = [];
+    r.host.on('hostTransfer', (t) => stepped.push(t.client));
+    r.host.transferHost('b');
+    await flush();
+    expect(became).toHaveLength(1);
+    expect(became[0]!.tableMismatches()['a']?.map((m) => m.field)).toEqual(['tableHash']);
+    expect(Object.keys(became[0]!.tableMismatches())).toEqual(['a']);
+    expect(Object.keys(stepped[0]!.tableMismatches())).toEqual(['a']);
+  });
+
+  it('resumeFromLog takes tableMismatches; without them the resumed host flags nobody (the log does not carry them)', async () => {
+    const r = await lobby(['a', 'b']);
+    r.host.start();
+    await flush();
+    const json = JSON.parse(JSON.stringify(r.host.log.toJSON())) as ReturnType<MatchLog['toJSON']>;
+    const resume = (list: ReturnType<HostMatch['tableMismatches']> | undefined): HostMatch => {
+      const log = MatchLog.fromJSON(json);
+      const session = new Session({ transport: new MemoryBus().transport('h'), keys: generateKeys(), log });
+      return HostMatch.resumeFromLog(log, { transport: session.transport, keys: session.keys, session, tableMismatches: list });
+    };
+    expect(Object.keys(resume(r.host.tableMismatches()).tableMismatches())).toEqual(['a']);
+    expect(resume(undefined).tableMismatches()).toEqual({});
+  });
+});

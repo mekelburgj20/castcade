@@ -18,6 +18,10 @@
  *   BALL_END synchronously, so the next grant (a shoot-again one for this player) arrives inside that call.
  * - Media: attached at `open()` (host / join time) with no peers so the panel can show before the match; peers are
  *   added at MATCH_READY, removed when they leave, re-added when they reconnect. Video only from the player up.
+ * - A8 (2026-10-31): a client whose RECONNECT is accepted while the match is paused for ITS OWN drop sends RESUME
+ *   (what the fake client does; the host never resumes on its own, A3). A pause nobody resumes is the host's Match
+ *   tab's Resume button (`main/match-host.ts`). A host transfer under way is shown (`status().transfer`); the engine
+ *   acks it by itself (accept = the same log head), so there is nothing for the player to decide.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
@@ -29,7 +33,7 @@ import type { MatchState } from './state.js';
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<HostMatch, 'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit'>;
 /** What a client-side role must offer (structurally a ClientMatch). */
-export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit'>;
+export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume'>;
 export type MatchRole = HostRole | ClientRole;
 
 /** A HostMatch plays through `local*`; a ClientMatch through `report*` (host.ts / client.ts). */
@@ -59,6 +63,8 @@ export interface ControllerStatus {
   tableMismatch: PlayerId[];
   /** The GameFingerprint fields that differ from the host's, per player (none: agrees); `mismatchWords` words them. */
   mismatches: Record<PlayerId, string[]>;
+  /** A8 (2026-10-31): a HOST_TRANSFER proposed and not committed yet (the log's `pendingTransfer`), else null. */
+  transfer: { proposer: PlayerId; newHost: PlayerId | null; reason: 'host_left' | 'host_requested' } | null;
   panel: PanelState;
 }
 
@@ -180,6 +186,7 @@ export class MatchController {
   private stateTimer: unknown = null;
   private attached: Promise<void> | null = null;
   private lastPanel: string | null = null;
+  private lastTransfer = 'null';
   private closed = false;
 
   constructor(opts: MatchControllerOptions) {
@@ -211,8 +218,14 @@ export class MatchController {
       hostId: this.hostId,
       tableMismatch: [...this.mismatch].filter(([, f]) => mismatchWords(f).table !== null).map(([id]) => id),
       mismatches: Object.fromEntries([...this.mismatch].map(([id, f]) => [id, [...f]])),
+      transfer: this.transfer(),
       panel: this.panel(),
     };
+  }
+
+  private transfer(): ControllerStatus['transfer'] {
+    const pt = this.role.state.pendingTransfer;
+    return pt ? { proposer: pt.proposer, newHost: pt.newHost, reason: pt.reason } : null;
   }
 
   onChange(cb: (s: ControllerStatus) => void): () => void {
@@ -353,6 +366,7 @@ export class MatchController {
     offs.push(h.on('peerLeft', (id) => this.onPeerLeft(id)));
     offs.push(h.on('reconnected', (r) => this.onPeerBack(r.playerId)));
     offs.push(h.on('result', (r) => this.onResult(r.result)));
+    offs.push(h.on('transferProposed', () => this.push()));
     offs.push(
       h.on('hostTransfer', (t) => {
         this.opts.log(`match: host handed over to ${t.to}; continuing as a client`);
@@ -393,7 +407,14 @@ export class MatchController {
     offs.push(c.on('resume', () => this.onResume()));
     offs.push(c.on('reject', (r) => this.onReject(r)));
     offs.push(c.on('peerLeft', (id) => this.onPeerLeft(id)));
-    offs.push(c.on('reconnected', (r) => this.onPeerBack(r.host)));
+    offs.push(
+      c.on('reconnected', (r) => {
+        this.onPeerBack(r.host);
+        this.resumeAfterMyDrop(c);
+      }),
+    );
+    offs.push(c.on('transferProposed', () => this.push()));
+    offs.push(c.on('transferAck', () => this.push()));
     offs.push(
       c.on('hostChanged', (h) => {
         this.hostId = h.to;
@@ -499,6 +520,22 @@ export class MatchController {
     this.left.delete(id);
     if (this.phase !== 'lobby') this.opts.media?.addPeer(id);
     this.push();
+  }
+
+  /**
+   * A8 (2026-10-31): back on a link after a drop. The host paused the match for it and waits for a RESUME from
+   * anyone (A3); the player who dropped is the one who knows it is back, so it sends it. Only for its own drop: a
+   * pause for someone else stays theirs (or the host's Resume button).
+   */
+  private resumeAfterMyDrop(c: ClientRole): void {
+    const p = c.state.paused;
+    if (c.state.phase !== 'running' || !p || p.reason !== 'disconnect' || p.player !== this.localId || c.state.pendingTransfer) return;
+    this.opts.log('match: back after a drop; resuming the match');
+    try {
+      c.resume();
+    } catch (e) {
+      this.opts.log(`match: could not resume: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private onResult(r: PayloadOf<'RESULT'>): void {
@@ -732,9 +769,12 @@ export class MatchController {
     if (this.closed && !force) return;
     const panel = this.panel();
     const text = JSON.stringify(panel);
-    if (!force && text === this.lastPanel) return;
+    // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same.
+    const transfer = JSON.stringify(this.transfer());
+    if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
+    this.lastTransfer = transfer;
+    if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);
     this.lastPanel = text;
-    this.opts.media?.setPanelState(panel);
     const s = this.status();
     for (const l of [...this.listeners]) l(s);
   }

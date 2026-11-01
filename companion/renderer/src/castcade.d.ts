@@ -420,6 +420,8 @@ interface MatchStatus {
   localId: string | null;
   hostId: string | null;
   participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
+  /** A8: a host transfer under way (names), else null. */
+  transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   panel: PanelState | null;
   media: MediaStatus | null;
   vrOverlay: VrOverlayStatus | null;
@@ -474,6 +476,8 @@ interface CastcadeBridge {
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
     start(): Promise<MatchStatus>;
+    /** A8: host only: end a pause nobody resumed. */
+    resume(): Promise<MatchStatus>;
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;

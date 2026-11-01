@@ -185,6 +185,7 @@ export function Match({ state }: { state: CastcadeState }) {
 
           <div className="card">
             <p className={panel?.myTurn ? 'turn-line mine' : 'turn-line'}>{turnLine(st)}</p>
+            {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
             {panel?.message && <p className={panel.message.startsWith('different') ? 'warn' : 'muted'}>{panel.message}</p>}
             <table className="match-table">
               <thead>
@@ -222,6 +223,11 @@ export function Match({ state }: { state: CastcadeState }) {
               {st.role === 'host' && st.phase === 'lobby' && (
                 <button type="button" className="primary" disabled={busy || st.participants.length < 2} onClick={() => void run(() => bridge.match.start())}>
                   Start match
+                </button>
+              )}
+              {st.role === 'host' && st.phase === 'paused' && !st.transfer && (
+                <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.resume())}>
+                  Resume
                 </button>
               )}
               <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.leave())}>
@@ -351,6 +357,12 @@ function turnLine(st: MatchStatus): string {
     default:
       return '';
   }
+}
+
+/** A8 (2026-10-31): the companions agree to a transfer by themselves (same log, they ack); the player only sees it. */
+function transferLine(t: NonNullable<MatchStatus['transfer']>): string {
+  const to = t.newHost ?? 'another player';
+  return t.reason === 'host_left' ? `The host left: ${to} is taking over as host…` : `${t.proposer} is handing the host over to ${to}…`;
 }
 
 function mediaLine(m: MatchStatus['media']): string {

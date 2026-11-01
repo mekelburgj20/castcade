@@ -58,6 +58,8 @@ export interface AdoptOptions {
   throwdownCode: string;
   companionVersion?: string;
   gone?: Iterable<PlayerId>;
+  /** A8 (2026-10-31): the stepping-down host's `tableMismatches()`, so a later transfer back carries them on. */
+  tableMismatches?: Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']>;
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
   reconnect?: { attempts?: number; delayMs?: number };
 }
@@ -87,6 +89,7 @@ export interface ClientEvents extends Record<string, unknown> {
   /**
    * HELLO_ACK's `hostGame` differs from this client's own fingerprint (a host in advisory mode); raised before `joined`.
    * A6 (2026-10-31): raised again when a re-sent HELLO_ACK changes what differs; an empty `mismatches` means it agrees now.
+   * A8 (2026-10-31): also for every OTHER participant the host's `HELLO_ACK.tableMismatches` names (or stops naming).
    */
   tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
   /** A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (someone's rig or table changed): the roster now. */
@@ -146,6 +149,10 @@ export class ClientMatch {
   private game: GameFingerprint;
   /** The mismatched fields last raised as `tableMismatch`, so a re-sent HELLO_ACK raises only a change. */
   private mismatchFields = '';
+  /** The host's fingerprint from the last HELLO_ACK: what this client's own entry in `tableMismatches()` compares with. */
+  private ackHostGame: GameFingerprint | null = null;
+  /** A8 (2026-10-31): the OTHER participants the host found different, from the last HELLO_ACK (or a step-down). */
+  private readonly othersMismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
   private readonly throwdownCode: string;
   private readonly companionVersion: string;
   private readonly explicitHostId: PlayerId | null;
@@ -202,6 +209,9 @@ export class ClientMatch {
     );
     client.joined = true;
     for (const id of opts.gone ?? []) client.gone.add(id);
+    for (const [id, m] of Object.entries(opts.tableMismatches ?? {})) {
+      if (id !== client.localId && m.length > 0) client.othersMismatched.set(id, m.map((x) => ({ ...x })));
+    }
     return client;
   }
 
@@ -255,6 +265,19 @@ export class ClientMatch {
 
   on<K extends keyof ClientEvents>(name: K, cb: (payload: ClientEvents[K]) => void): () => void {
     return this.events.on(name, cb);
+  }
+
+  /**
+   * A8 (2026-10-31): who differs from the host's fingerprint and how, like `HostMatch.tableMismatches()`: the others
+   * as the host last said (HELLO_ACK), this player from its own comparison. Carried into `resumeFromLog` on a transfer.
+   */
+  tableMismatches(): Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']> {
+    const out: Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']> = {};
+    for (const [id, m] of this.othersMismatched) out[id] = m.map((x) => ({ ...x }));
+    const ref = this.s.state.game ?? this.ackHostGame;
+    const mine = ref ? compareFingerprints(ref, this.game, this.hostId ?? this.localId) : [];
+    if (mine.length > 0) out[this.localId] = mine;
+    return out;
   }
 
   snapshot(): { role: 'client'; state: MatchState; log: LogHead; inputUnlocked: boolean; myGrant: GrantBody | null; hostId: PlayerId | null; signed: boolean } {
@@ -600,11 +623,23 @@ export class ClientMatch {
 
   /** `tableMismatch` when what differs from `hostGame` changed since the last HELLO_ACK (first one: only a difference). */
   private compareHostGame(ack: PayloadOf<'HELLO_ACK'>): void {
+    this.ackHostGame = ack.hostGame ? { ...ack.hostGame } : null;
     const mismatches = ack.hostGame ? compareFingerprints(ack.hostGame, this.game, ack.hostPlayerId) : [];
     const fields = mismatches.map((m) => m.field).join(',');
-    if (fields === this.mismatchFields) return;
-    this.mismatchFields = fields;
-    this.events.emit('tableMismatch', { playerId: this.localId, mismatches });
+    if (fields !== this.mismatchFields) {
+      this.mismatchFields = fields;
+      this.events.emit('tableMismatch', { playerId: this.localId, mismatches });
+    }
+    // A8 (2026-10-31): the others, from the host's list (this player's own entry stays its own comparison above). A
+    // host before A8 sends none: nobody else is flagged, as before.
+    const now = new Map(ack.tableMismatches.filter((t) => t.playerId !== this.localId).map((t) => [t.playerId, t.mismatches] as const));
+    for (const id of new Set([...this.othersMismatched.keys(), ...now.keys()])) {
+      const next = now.get(id) ?? [];
+      const before = (this.othersMismatched.get(id) ?? []).map((m) => m.field).join(',');
+      if (next.length > 0) this.othersMismatched.set(id, next.map((x) => ({ ...x })));
+      else this.othersMismatched.delete(id);
+      if (next.map((m) => m.field).join(',') !== before) this.events.emit('tableMismatch', { playerId: id, mismatches: next.map((x) => ({ ...x })) });
+    }
   }
 
   private onGrant(msg: Message<'TURN_GRANT'>): void {
@@ -923,6 +958,7 @@ export class ClientMatch {
       clock: this.s.clock,
       session: this.s,
       gone: this.gone,
+      tableMismatches: this.tableMismatches(),
       ...this.hostTimeouts,
     });
     this.events.emit('hostChanged', { from: done.oldHost, to: done.newHost });
