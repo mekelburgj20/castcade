@@ -29,6 +29,11 @@ export interface MatchSettings {
   theaterDuringMyTurn: 'hidden' | 'panel';
   /** D7.4: the headset while another player is up: their video where the table was (theater), or the panel. */
   spectate: 'theater' | 'panel';
+  /**
+   * D7.4.3 (2026-11-01): what this rig's VR preview sends, as told to the others: `auto` reads `[PlayerVR] VRPreview`
+   * from VPX's ini (media/preview-stereo.ts), `mono` one eye, `sbs` both eyes side by side.
+   */
+  previewStereo: 'auto' | 'mono' | 'sbs';
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -38,6 +43,7 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   cueVolume: 80,
   theaterDuringMyTurn: 'hidden',
   spectate: 'theater',
+  previewStereo: 'auto',
 };
 
 export function cleanPort(v: unknown): number | null {
@@ -61,6 +67,7 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('cueVolume' in p && typeof p.cueVolume === 'number' && Number.isFinite(p.cueVolume)) next.cueVolume = Math.min(100, Math.max(0, Math.round(p.cueVolume)));
   if (p.theaterDuringMyTurn === 'hidden' || p.theaterDuringMyTurn === 'panel') next.theaterDuringMyTurn = p.theaterDuringMyTurn;
   if (p.spectate === 'theater' || p.spectate === 'panel') next.spectate = p.spectate;
+  if (p.previewStereo === 'auto' || p.previewStereo === 'mono' || p.previewStereo === 'sbs') next.previewStereo = p.previewStereo;
   return next;
 }
 

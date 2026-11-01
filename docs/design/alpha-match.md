@@ -140,12 +140,32 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 - **Theater mode (D7.4, 2026-10-31; the owner after the first layer run: "I want to see his playfield where my
   playfield was… not a window popup that I look at while he's playing"):** the layer has three modes the match host
   sets from the turn (`vrViewMode`, match/controller.ts): *hidden* on this player's ball, *theater* while another is
-  up (VPX's projection layers removed, the up player's video on a 2.4 m screen 2.6 m ahead in LOCAL space, black
-  around it, stereo when the sender's VR preview is on "both eyes"), *panel* in the lobby, a pause and the result
+  up (VPX's projection layers removed, the up player's video on a screen 2.6 m ahead in LOCAL space whose longer side
+  is 2.4 m, black around it, stereo when the sender's VR preview is on "both eyes"), *panel* in the lobby, a pause and
+  the result
   (placed low now, below the playfield). Into or out of theater the view dips to black over 300 ms; with no frame
   for 5 s the layer passes VPX through. Pipe protocol 2 (hello, `CVC1` control, `CVO2` RGBA video frames):
   `vr-layer/README.md` "The pipe". The panel page reads the stage video into a canvas only while theater wants it.
   Two Match tab settings (`match.json` `theaterDuringMyTurn`, `spectate`). SteamVR rigs keep the panel.
+- **Stereo is the sender's word (D7.4.3, 2026-11-01; rig test BCBSLU / LBWNUP):** the receivers used to guess "both
+  eyes" from the picture (3:1 or wider, VR senders only), and both eyes in a 16:9 or a square window were shown flat.
+  VPX 10.8.0 (`Player::PrepareVideoBuffers`, v10.8.0-2051) centre-crops each eye to its half of the window, never
+  stretches it, and clamps the window to the monitor, so the recommended both-eyes window is as tall as the monitor
+  and about as wide (1080x1080 on 1080p: two 540x1080 portrait eyes; the owner's 1440x1392), not 2560x720. The sender
+  declares it (`media/preview-stereo.ts`): the Match tab's **Your preview** (`match.json` `previewStereo`: auto / one
+  eye / both eyes), on auto `[PlayerVR] VRPreview` (3 = both eyes) from the active `VPinballX.ini`, read at each
+  capture pick; a monitor rig sends one picture. The page tells every peer on a `MEDIA_SIGNAL` of kind `stereo` (not
+  logged, so protocol 2), and the receiver trusts it whatever the shape and the rig; only a sender that declared
+  nothing (an older companion, no ini found) is still judged by the 3:1 rule. The layer sizes a portrait eye
+  height-led (2.4 m tall). The Match tab says "both eyes is on but the window is 16:9" when it is.
+- **A panel move keeps the media (D2.7, 2026-11-01):** a rig whose VPX loads after host / join moves its panel into
+  the headset, which rebuilds the panel page and its connections. The new page sends each peer a `reset` signal
+  first (they reopen their connection), and an offer that an established connection refuses (Chromium: "The order
+  of m-lines in subsequent offer doesn't match") reopens that peer and is applied to the fresh connection, its ICE
+  following. Each peer's ICE and signalling state is one companion.log line per change.
+- **A rig switch after Start is told (A6.1, 2026-11-01):** PARTICIPANT_UPDATE carries a rig in any phase; after
+  MATCH_READY the host passes it on to the others (the log's roster stays as it started) and the Match tab and panel
+  show the rig each player has now.
 
 ## 6. Checks only the rig can answer (run before the first match)
 

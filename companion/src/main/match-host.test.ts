@@ -318,6 +318,32 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     expect(lines.filter((l) => l.includes('the panel stays in the headset'))).toHaveLength(1);
   });
 
+  it('D7.4.3 (2026-11-01): the preview setting reaches the media layer at start and on change; the advice reads the declared stereo', async () => {
+    const wit = liveWitness(VR_VD, VR_VD);
+    const m = fakeMedia();
+    const told: string[] = [];
+    let media = { captureCrop: { width: 1920, height: 1080 }, captureStereo: 'sbs' as 'sbs' | 'mono' | null };
+    const base = m.media as unknown as Record<string, unknown> & { status: () => Record<string, unknown> };
+    const withStereo = {
+      ...base,
+      status: () => ({ ...base.status(), ...media }),
+      setPreviewStereo: (s: string) => void told.push(s),
+    } as unknown as MediaOpt;
+    const H = make('stereo', 'ab'.repeat(32), { witness: wit.w, media: withStereo });
+    expect(told).toEqual(['auto']);
+    expect(H.mh.status().previewAdvice).toBeNull(); // no match: no picture sent
+    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(H.mh.status().previewAdvice).toMatch(/^Both eyes is on but the window is 16:9 \(1920x1080\)/);
+    media = { captureCrop: { width: 1440, height: 1392 }, captureStereo: 'sbs' };
+    expect(H.mh.status().previewAdvice).toBeNull();
+    media = { captureCrop: { width: 1280, height: 720 }, captureStereo: 'mono' };
+    expect(H.mh.status().previewAdvice).toMatch(/^You are sending one eye/);
+    H.mh.setSettings({ previewStereo: 'sbs' });
+    H.mh.setSettings({ previewStereo: 'sbs' });
+    expect(told).toEqual(['auto', 'sbs']);
+    expect(H.mh.status().settings.previewStereo).toBe('sbs');
+  });
+
   it('no VPX open and no sample: the monitor, said so; no match shows the witness reading', async () => {
     const wit = liveWitness(null, null);
     const m = fakeMedia();

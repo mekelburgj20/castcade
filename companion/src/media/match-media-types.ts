@@ -82,6 +82,11 @@ export interface MediaStatus {
    * aspect: a VR rig sending a single-eye preview is told to switch VPX's preview to both eyes. Absent before D7.4.
    */
   captureCrop?: { width: number; height: number } | null;
+  /**
+   * D7.4.3 (2026-11-01): what this rig tells the others its picture is (the capture's `stereo`), while the capture is
+   * live: `sbs` both eyes, `mono` one picture, null not known. Absent before D7.4.3.
+   */
+  captureStereo?: VrStereo | null;
   lastError: string | null;
 }
 

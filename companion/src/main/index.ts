@@ -39,6 +39,8 @@ import { createMatchHost, type MatchHost } from './match-host.js';
 import { matchSignalling } from './match-setup.js';
 import type { VrOverlay } from '../media/match-media-types.js';
 import { createMediaSettingsStore } from '../media/media-settings.js';
+import { readIniStereo } from '../media/preview-stereo.js';
+import { nodeFs } from '../witness/fs.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
@@ -434,6 +436,8 @@ async function main(): Promise<void> {
       // D2.5: the match video is covered while VPX is not in front (it films the screen now).
       watchFocus,
       settings: mediaSettings,
+      // D7.4.3 (2026-11-01): the sender declares both eyes from VPX's own setting, `[PlayerVR] VRPreview` in its ini.
+      iniStereo: async () => (await readIniStereo({ fs: nodeFs, exe: host.status().vpxExe })).stereo,
     });
   } catch (e) {
     logger.error(`media: could not set up (${describeError(e)}); matches run without video and voice this run`);

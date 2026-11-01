@@ -64,8 +64,12 @@ constexpr float kPanelCentreOffset[3] = {0.0f, -0.28f, -0.9f};
 
 // Theater (D7.4): "I want to see his playfield where my playfield was". A 2.4 m screen 2.6 m ahead (~50° wide, about
 // what a playfield fills in the headset), fixed in LOCAL space so it stays put when the head turns, placed in front of
-// wherever the player faces when theater begins.
+// wherever the player faces when theater begins. D7.4.3 (2026-11-01): 2.4 m is the screen's LONGER side. VPX's "both
+// eyes" preview centre-crops each eye to its half of the window, so a window about as wide as it is tall gives two
+// portrait eyes (540x1080 on a 1080p monitor): width-led sizing made that a 4.8 m tall screen; a portrait eye is now
+// height-led, 2.4 m tall and as wide as its aspect says.
 constexpr float kScreenWidthM = 2.4f;
+constexpr float kScreenHeightM = 2.4f;
 constexpr float kScreenDistanceM = 2.6f;
 // The black around it: a head-locked opaque quad far larger than any field of view (30 m at 3 m: ±78°), submitted
 // first so the screen is drawn over it. Runtimes may already show black where no layer covers; this makes it sure.
@@ -680,7 +684,9 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
       const bool sbs = videoUp && c.sbs && pic.width >= 2;
       const int32_t half = w(pic) / 2;
       const float eyeW = static_cast<float>(sbs ? half : w(pic));
-      const XrExtent2Df size{kScreenWidthM, kScreenWidthM * static_cast<float>(pic.height) / eyeW};
+      const float eyeH = static_cast<float>(pic.height > 0 ? pic.height : 1);
+      // D7.4.3: landscape (or square) eyes are width-led as before; portrait eyes height-led (see kScreenHeightM).
+      const XrExtent2Df size = eyeW >= eyeH ? XrExtent2Df{kScreenWidthM, kScreenWidthM * eyeH / eyeW} : XrExtent2Df{kScreenHeightM * eyeW / eyeH, kScreenHeightM};
       if (sbs) {
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.screenPose, size, false));
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.screenPose, size, false));

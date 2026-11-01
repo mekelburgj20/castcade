@@ -18,12 +18,17 @@ Table: ________ (ROM ______)
 - [ ] **VPX in VR** with the preview window on. In your `VPinballX.ini`, under `[PlayerVR]`, set
   `VRPreview = 1`, `PreviewWidth = 1280`, `PreviewHeight = 720`. The other player sees this window, so a small
   window means a poor picture.
-- [ ] **Stereo for the other headset (optional, D7.4):** set VPX's VR preview to "both eyes" so the other player sees
-  your table in stereo in theater mode: Preferences → VR → Preview: **Both Eyes**, or in `[PlayerVR]`
-  `VRPreview = 3`, `PreviewWidth = 2560`, `PreviewHeight = 720` (twice as wide as 16:9: each eye gets one half, and
-  the other headset tells stereo from a picture 3:1 or wider). The Match tab says so while your rig sends one eye.
-  Today the match video is at most 1280 wide, so each eye goes at 640x360: sharper in depth, softer in detail than
-  the one-eye picture. Try both and say which you prefer.
+- [ ] **Stereo for the other headset (optional, D7.4.3):** set VPX's VR preview to "both eyes" so the other player
+  sees your table in stereo in theater mode: Preferences → VR → Preview: **Both Eyes**, or in `[PlayerVR]`
+  `VRPreview = 3`, with the preview window **as tall as your monitor and about as wide**: `PreviewWidth = 1080`,
+  `PreviewHeight = 1080` on a 1080p monitor (1440x1392 works on 1440p). VPX cuts each eye from its half of the
+  window without stretching it, so that window gives two tall eyes (540x1080 each), the view pinball wants; a
+  16:9 window gives two narrow slices, and a 2560x720 one does not fit a 1080p monitor. Castcade reads
+  `VRPreview` from your `VPinballX.ini` (the one beside VPX's exe, else `%APPDATA%\VPinballX`) and tells the
+  other player's headset; if it cannot, or you start VPX with `-Ini <another file>`, pick it on the Match tab under
+  **Your preview** (one eye / both eyes). The Match tab says when your rig sends one eye, or both eyes in a 16:9
+  window. Today the match video is at most 1280x720, so a 1080x1080 window goes at 720x720 (360x720 an eye):
+  sharper in depth, softer in detail than the one-eye picture. Try both and say which you prefer.
 - [ ] **SteamVR running** (the headset panel is drawn through it).
 - [ ] **A headset microphone chosen** on the Castcade **Match** tab. Do not leave it on "default": in VR the Windows
   default is often a virtual device (Steam Streaming Microphone, Virtual Desktop Audio) that records silence.
