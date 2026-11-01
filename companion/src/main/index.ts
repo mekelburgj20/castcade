@@ -7,7 +7,7 @@
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -38,7 +38,8 @@ import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
 import { matchSignalling } from './match-setup.js';
 import type { VrOverlay } from '../media/match-media-types.js';
-import { createMediaSettingsStore } from '../media/media-settings.js';
+import { createMediaSettingsStore, type MediaSettingsStore } from '../media/media-settings.js';
+import { usableBounds } from '../media/panel-placement.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
@@ -64,6 +65,8 @@ let stream: StreamHost | null = null;
 let match: MatchHost | null = null;
 /** D2 / D7 / D7.3: the match's video and voice, and the headset panel (SteamVR helper, OpenXR layer); null when they could not be set up this run. */
 let matchMedia: RtcHost | null = null;
+/** D2.6: media.json, which also remembers the main window's bounds; set up in `main`, read by `createWindow`. */
+let mediaSettingsStore: MediaSettingsStore | null = null;
 let matchOverlay: VrOverlay | null = null;
 let matchLayer: VrOverlay | null = null;
 
@@ -97,10 +100,19 @@ function showWindow(): void {
   win.focus();
 }
 
+/** D2.6 (2026-11-01): the main window's bounds while it is on screen; the match panel is placed beside them. */
+function mainWindowBounds(): { x: number; y: number; width: number; height: number } | null {
+  if (!win || win.isDestroyed() || !win.isVisible() || win.isMinimized()) return null;
+  return win.getBounds();
+}
+
 function createWindow(): BrowserWindow {
+  // D2.6: where it was last run, if that is still on a display (a monitor may have gone); else centred as before.
+  const saved = usableBounds(mediaSettingsStore?.get().mainBounds, screen.getAllDisplays().map((d) => d.workArea));
   const w = new BrowserWindow({
-    width: 420,
-    height: 640,
+    width: saved?.width ?? 420,
+    height: saved?.height ?? 640,
+    ...(saved ? { x: saved.x, y: saved.y } : {}),
     minWidth: 380,
     minHeight: 520,
     title: 'Castcade',
@@ -132,7 +144,18 @@ function createWindow(): BrowserWindow {
   });
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   w.webContents.on('will-navigate', (e) => e.preventDefault());
+  // D2.6: remember where the window is (after a move or resize settles, and on hide / quit).
+  const remember = (): void => {
+    if (w.isDestroyed() || w.isMinimized() || w.isFullScreen()) return;
+    const b = w.getNormalBounds();
+    const cur = mediaSettingsStore?.get().mainBounds;
+    if (cur && cur.x === b.x && cur.y === b.y && cur.width === b.width && cur.height === b.height) return;
+    mediaSettingsStore?.patch({ mainBounds: { x: b.x, y: b.y, width: b.width, height: b.height } });
+  };
+  w.on('moved', remember);
+  w.on('resized', remember);
   w.on('close', (e) => {
+    remember();
     if (quitting) return;
     e.preventDefault();
     w.hide();
@@ -338,6 +361,8 @@ function registerIpc(
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
   ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
+  ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
+  ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
   ipcMain.handle(IPC.appClipboardText, () => clipboard.readText());
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
@@ -425,6 +450,7 @@ async function main(): Promise<void> {
   // D2 + D7 (alpha-match.md §4, §5): the match's video and voice, and the panel in the headset. Each one that fails to
   // set up is logged and left out: the match then runs without it (2026-10-30: media never blocks a match).
   const mediaSettings = createMediaSettingsStore(join(userData, 'media.json'), (e) => logger.warn(`media: could not save media.json: ${describeError(e)}`));
+  mediaSettingsStore = mediaSettings;
   try {
     matchMedia = createRtcHost({
       userData,
@@ -434,6 +460,8 @@ async function main(): Promise<void> {
       // D2.5: the match video is covered while VPX is not in front (it films the screen now).
       watchFocus,
       settings: mediaSettings,
+      // D2.6: the desktop panel opens beside the main window, never over it.
+      mainBounds: mainWindowBounds,
     });
   } catch (e) {
     logger.error(`media: could not set up (${describeError(e)}); matches run without video and voice this run`);

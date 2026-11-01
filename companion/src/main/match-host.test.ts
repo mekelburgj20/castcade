@@ -158,6 +158,28 @@ describe('match host (A6)', () => {
     (onMics as (() => void) | null)?.();
     expect(seen).toEqual([1]);
   });
+
+  it('D2.6 (2026-11-01): Show panel / Hide panel reach the media layer and push a status; without a media layer or a hide hook they are no-ops', () => {
+    const calls: string[] = [];
+    const media = {
+      showPanel: () => calls.push('show'),
+      hidePanel: () => calls.push('hide'),
+      onStatus: () => () => undefined,
+      status: () => null,
+    } as unknown as NonNullable<Parameters<typeof createMatchHost>[0]['media']>;
+    const live = make('panel', 'ab'.repeat(32), { media });
+    let pushed = 0;
+    live.mh.onStatus(() => pushed++);
+    expect(live.mh.showPanel()).toMatchObject({ role: 'none' });
+    expect(live.mh.hidePanel()).toMatchObject({ role: 'none' });
+    expect(calls).toEqual(['show', 'hide']);
+    expect(pushed).toBe(2);
+    const bare = make('panel-bare', 'ab'.repeat(32));
+    expect(() => bare.mh.showPanel()).not.toThrow();
+    expect(() => bare.mh.hidePanel()).not.toThrow();
+    const noHide = make('panel-nohide', 'ab'.repeat(32), { media: { ...media, hidePanel: undefined } as unknown as typeof media });
+    expect(() => noHide.mh.hidePanel()).not.toThrow();
+  });
 });
 
 // ---- A6 (2026-10-31): the rig decision at host / join, and the late switch into the headset ----

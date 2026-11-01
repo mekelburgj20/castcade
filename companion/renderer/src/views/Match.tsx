@@ -85,6 +85,12 @@ export function Match({ state }: { state: CastcadeState }) {
   const pickMic = (deviceId: string) => {
     void bridge.match.setMicrophone(deviceId === '' ? null : deviceId).then(setSt, (e: unknown) => setError(describe(e)));
   };
+  // D2.6 (2026-11-01): the desktop panel is its own window; the button brings it back (or puts it away) at any time.
+  const panelWin = st.media?.attached ? (st.media.panelWindow ?? null) : null;
+  const togglePanel = () => {
+    const call = panelWin?.visible ? bridge.match.hidePanel() : bridge.match.showPanel();
+    void call.then(setSt, (e: unknown) => setError(describe(e)));
+  };
   const toggleMute = () => {
     void bridge.match.setMuted(!st.muted).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -257,6 +263,14 @@ export function Match({ state }: { state: CastcadeState }) {
 
           <div className="card">
             <p className="muted">{mediaLine(st.media)}</p>
+            {panelWin && (
+              <div className="row">
+                <p className="muted">{panelLine(panelWin)}</p>
+                <button type="button" className="small" onClick={togglePanel}>
+                  {panelWin.visible ? 'Hide panel' : 'Show panel'}
+                </button>
+              </div>
+            )}
             <p className="muted" title={st.rigReason}>
               {rigLine(st)} <small>{st.rigReason}</small>
             </p>
@@ -370,6 +384,13 @@ function mediaLine(m: MatchStatus['media']): string {
   if (!m.attached) return `Video and voice: not connected${m.lastError ? ` (${m.lastError})` : ''}.`;
   const peers = Object.entries(m.peers).map(([id, p]) => `${id} ${p.ice}`);
   return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
+}
+
+/** D2.6 (2026-11-01): the match panel is a second window; say so, and where it is. */
+function panelLine(p: NonNullable<NonNullable<MatchStatus['media']>['panelWindow']>): string {
+  if (!p.visible) return 'The match panel is a separate window ("Castcade match"), hidden now.';
+  const where = { right: 'to the right of this window', left: 'to the left of this window', below: 'below this window', edge: "at the screen's right edge, over part of this window" }[p.side];
+  return `The match panel is a separate window ("Castcade match"), ${where}. It is not in the picture you send.`;
 }
 
 /** B22 (mirrors witness/vr-detect.ts VR_RUNTIME_LABEL). */

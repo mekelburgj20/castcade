@@ -24,11 +24,17 @@ export interface MediaSettings {
   turn: TurnServer | null;
   /** `stun:` URLs. An empty list is allowed (a LAN match needs none). */
   stun: string[];
+  /**
+   * D2.6 (2026-11-01): where the main window was last (DIPs), restored at the next run when it is still on a display;
+   * null = never moved, centred as before. Lives here because media.json is the small settings file the shell already
+   * patches and saves; the match panel is placed beside this window.
+   */
+  mainBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 export const DEFAULT_STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
 
-export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN] };
+export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN], mainBounds: null };
 
 /** `RTCIceServer` without the DOM lib. */
 export interface IceServer {
@@ -81,7 +87,16 @@ function sanitize(o: Record<string, unknown>, d: MediaSettings): MediaSettings {
     muted: typeof o.muted === 'boolean' ? o.muted : d.muted,
     turn: o.turn === null ? null : (readTurn(o.turn) ?? d.turn),
     stun: Array.isArray(o.stun) ? readStun(o.stun) : [...d.stun],
+    mainBounds: o.mainBounds === null ? null : (readBounds(o.mainBounds) ?? d.mainBounds),
   };
+}
+
+function readBounds(v: unknown): MediaSettings['mainBounds'] {
+  if (typeof v !== 'object' || v === null) return null;
+  const b = v as Record<string, unknown>;
+  const n = [b.x, b.y, b.width, b.height];
+  if (!n.every((x) => typeof x === 'number' && Number.isFinite(x) && Math.abs(x) <= 100_000)) return null;
+  return { x: Math.round(b.x as number), y: Math.round(b.y as number), width: Math.round(b.width as number), height: Math.round(b.height as number) };
 }
 
 function readStun(v: unknown[]): string[] {
