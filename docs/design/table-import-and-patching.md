@@ -118,6 +118,36 @@ companion alongside `core.vbs`; it is a new file, so nothing existing is touched
 
 **Recipe D (ScoreServer-integrated):** block 0 only + `_KeyDown` wrap; the library's `VPinball.ScoreServer` shim turns `SetScoresArray` / `SetGameState` into journal events.
 
+**As built (WORK C1.1, recipes B/C/D 0.1.0, hook 0.5.0; `companion/src/patcher/render-originals.ts`).** Where it
+departs from the sketch above, the code is right:
+- Each anchor is ONE line, `    Castcade_<R>_<Event>   ' Castcade: <what>`, calling a sub in a block appended after the
+  wrappers (`' --- Castcade recipe <R> anchors ...` / `' --- end Castcade recipe <R> ---`). Those subs hold the table's
+  own expressions under `On Error Resume Next` and call `Castcade_GameStart` / `Castcade_Scores` / `Castcade_BallEnd`
+  / `Castcade_GameEnd`; `Castcade_PlayerScores(arr, base, players)` (lib) turns the table's score array into one
+  entry per player. The player count is kept from the last time it was above 0 (some tables zero it at game over).
+- **B:** scores = `Score()`, its base read from `CurrentPlayer = 0|1` (in `ResetForNewGame` first: GotG, Iron Maiden
+  and The Matrix count from 0, most from 1); ball = the table's `Balls` function/variable, else `BallsPerGame -
+  BallsRemaining(CurrentPlayer) + 1`; game start at the end of `ResetForNewGame`; scores at the end of `AddScore`
+  **and in front of each of its early `Exit Sub`** (a repeat is dropped by the library); **ball end at the TOP of
+  `EndOfBall`** (the drained ball's player and number, before anything advances; JPSalas' `EndOfBall` hands over to
+  a timer and `EndOfBall2`), else before the `BallsRemaining(CurrentPlayer)` decrement; game end at the end of
+  `EndOfGame`. An early `Exit Sub` in a start/end anchor sub is a warning, not new control flow (GoT's `EndOfGame`
+  re-entry guard is exactly a path that must not journal).
+- **C:** the 7 arguments of a `Scorbit.SendUpdate` call (P1–P4, ball, 1-based player, players) are the expressions;
+  `StopSession`'s scores are not used (VPW tables pass `Score(0..3)` there even when they count from 1, and
+  Terrifier passes a different array). Start / end go at the end of the sub calling `StartSession` / `StopSession`,
+  outside its Scorbit guard; a call inside a Scorbit-named helper (`StopScorbit`) moves one level up to its caller;
+  a call inside a Class or an event handler (`Table1_KeyUp`) is not an anchor. Scores ride `AddScore` when present.
+- **D:** every `CreateObject("VPinball.ScoreServer")` becomes `Castcade_D_ScoreServer()` (the shim, else the real
+  object, else the error CreateObject would have raised, so the table's own guard behaves as before). Refused, and
+  partial, when the table calls a method the shim lacks or with another arity. No ball end (the API has none); state
+  3 is journaled as `game_end` with the scores the table sends next (C1.1.1: a table that never sends state 3 still
+  ends as `table_exit` → `game_abandoned`).
+- Partial (the plan reason says `(partial: ...)`): no scores, no game start or no game end anchor.
+- Undo (`unpatchSidecar`, formerly `unpatchRecipeA`) is exact for A–D and refuses another recipe. Each recipe has its
+  own version (`RECIPE_VERSIONS`), so a B change does not re-make the A sidecars.
+- Not built: recipe E (needs the guided pick in the app).
+
 **Recipe E (generic original):** block 0 + `_KeyDown` wrap + whatever anchor the guided pick supplied. Marked *partial* in the registry until verified.
 
 **Block L — turn lock (all recipes):**

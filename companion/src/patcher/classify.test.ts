@@ -3,10 +3,15 @@ import { classifyScript } from './classify.js';
 import { decodeScript, encodeScript, splitScript, stripComment, vbStringLiteral } from './script-text.js';
 import {
   COMMENTED_LOADVPM_SCRIPT,
+  JPSALAS_B_SCRIPT,
   NO_KEYDOWN_SCRIPT,
   ORIGINAL_B_SCRIPT,
   ORIGINAL_C_SCRIPT,
+  ORIGINAL_E_SCRIPT,
   PATCHED_VPM_SCRIPT,
+  SCORBIT_C_SCRIPT,
+  SCORESERVER_D_SCRIPT,
+  SCORESERVER_D_UNKNOWN_SCRIPT,
   VPM_DECLARED_SCRIPT,
   VPM_NO_LOADVPM_SCRIPT,
   VPM_SCRIPT,
@@ -88,6 +93,21 @@ describe('classifyScript', () => {
     const r = classifyScript(lf(NO_KEYDOWN_SCRIPT));
     expect(r.cls).toBe('X');
     expect(r.facts.reason).toBe('no _KeyDown handler');
+  });
+
+  it("classifies the recipe tests' synthetic originals as their recipes expect (C1.1)", () => {
+    const b = classifyScript(crlf(JPSALAS_B_SCRIPT));
+    expect(b.cls).toBe('B');
+    expect(b.facts.subs).toEqual({ AddScore: 30, ResetForNewGame: 18, EndOfGame: 45, EndOfBall: 35 });
+    expect(b.facts.scoreArray).toBe(true);
+    const c = classifyScript(crlf(SCORBIT_C_SCRIPT));
+    expect(c.cls).toBe('C');
+    expect(c.facts.scorbitAnchors).toEqual({ StartSession: 13, SendUpdate: 51, StopSession: 39 });
+    const d = classifyScript(crlf(SCORESERVER_D_SCRIPT));
+    expect(d.cls).toBe('D');
+    expect(d.facts.scoreServer).toBe(true);
+    expect(classifyScript(lf(SCORESERVER_D_UNKNOWN_SCRIPT)).cls).toBe('D');
+    expect(classifyScript(lf(ORIGINAL_E_SCRIPT)).cls).toBe('E');
   });
 
   it('a commented-out LoadVPM does not count', () => {

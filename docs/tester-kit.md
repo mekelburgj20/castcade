@@ -14,8 +14,10 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
   Popper, Pinball X/Y, Baller Installer, or just the editor).
 - A **ROM table** with a *last game* map. Known good: **Monster Bash** (`mb_106b`), **Medieval Madness**
   (`mm_109c`), **Tales from the Crypt** (`tftc_400`). Classic Williams/Bally WPC, Data East and
-  Sega/Whitestar tables are safe bets. Modern Stern (SAM/SPIKE) and original (non-ROM) tables post nothing
-  in this build.
+  Sega/Whitestar tables are safe bets. Modern Stern (SAM/SPIKE) tables post nothing in this build. Original
+  (non-ROM) tables post nothing before hook 0.5.0 (WORK C1.1); from it, **Patch my tables** also patches the
+  JPSalas-style, Scorbit-anchored and ScoreServer originals (recipes B, C, D) and they post live; other
+  originals are listed as skipped.
 - An **ArcAid account** at <https://arcaid.app> that is a **member of the test game room, Flippin Fear Fest**
   (<https://arcaid.app/arcaid_flippin_fear_fest_26/>); join it there first if you are not in it yet.
 
