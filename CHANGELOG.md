@@ -7,8 +7,20 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
-On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel agents while the 0.2.27 headset test waited,
-then (2026-10-31, night) by the table-coverage lane: four more agents after Krobs' Freddy posted only at VPX exit.
+## [0.2.28] — 2026-11-01
+
+Everything since 0.2.27 (2026-10-31 evening to 2026-11-01 night): four agents' match and shell work while the headset
+test waited, the table-coverage lane (four more agents after Krobs' Freddy posted only at VPX exit, then the Gottlieb
+System 3 game-end fix from the owner's own rig), and the fixes for what the 2026-11-01 headset test found (five
+two-player VR matches, owner vs Krobs). Untested on a rig as a whole: the D7.4.1 checklist runs again on this build.
+
+- **Wire / journal:** protocol stays 2. Additive, defaulted fields only: `HELLO_ACK.tableMismatches` (A8), MEDIA_SIGNAL
+  kinds `reset` and `stereo` with an optional `stereo` field (D2.7, D7.4.3; unlogged, so the match log hash is
+  unchanged; a 0.2.27 peer drops them with a transport line). PARTICIPANT_UPDATE may now carry a rig after MATCH_READY
+  (A6.1). The journal gains an informational `score_server` line with `castcade.vbs` 0.5.0 (C1.1; the decoder ignores
+  lines it does not know; the three Phase 0 fixtures replay unchanged). New detector fixture
+  `fixtures/nvram/cueball/2026-11-01-1` (Gottlieb System 3). The OpenXR layer's pipe protocol stays 2; the layer dll is
+  rebuilt from this tag by `release.yml` (height-led theater screen, D7.4.3).
 
 ### Match in VR: what the 2026-11-01 headset test found (D2.6, D2.7, A6.1, D7.4.3, D7.4.4)
 - **Voice and video no longer die when a player's VPX loads after host / join (D2.7).** The panel's move into the
