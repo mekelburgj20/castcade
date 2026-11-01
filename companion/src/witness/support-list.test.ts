@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { VpsGameEntry, VpsIndexFile } from './identity-types.js';
 import { createMapCorpus, type CompiledMap } from './maps.js';
-import { buildSupportList, type CorpusRom, NO_MAP_REASON, NO_PLATFORM, NO_ROM_REASON, preloadMaps, type SupportList } from './support-list.js';
+import { buildSupportList, compactJson, type CorpusRom, NO_MAP_REASON, NO_PLATFORM, NO_ROM_REASON, preloadMaps, renderMarkdown, type SupportList } from './support-list.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
@@ -173,5 +173,48 @@ describe('corpus ROM fallback for games VPS lists no ROM for (B23)', () => {
     const list = await run([noRom('c', 'Medieval Madness', 'Williams', { roms: ['mm_10'] })]);
     expect(find(list, 'c')).toMatchObject({ romSource: 'vps', status: 'unsupported', reason: NO_MAP_REASON });
     expect(find(list, 'c').roms.map((r) => r.rom)).toEqual(['mm_10']);
+  });
+});
+
+describe('B14.2: differing ROMs, verified only on the original machine, compact JSON', () => {
+  const corpusRoms: CorpusRom[] = [{ rom: 'mm_109c', name: 'Medieval Madness', manufacturer: 'williams' }];
+  async function run(vpsGames: VpsGameEntry[]): Promise<SupportList> {
+    const loaded = await preloadMaps(corpus, games);
+    return buildSupportList({
+      vps: { games: vpsGames },
+      mapFor: (rom) => (rom === 'mm_109c' ? loaded.mapFor('mm_109c') : null),
+      corpusRoms,
+      verifiedRoms: new Set(['mm_109c']),
+      versions: { vps: 'x', maps: 'y', app: '0.0.0' },
+      generatedAt: '2026-10-31T00:00:00.000Z',
+    });
+  }
+  const mm = (id: string, name: string, manufacturer: string, roms: string[]) => game({ id, name, manufacturer, year: 1999, roms });
+
+  it('flags a game whose ROMs differ and renders each ROM; a game whose ROMs agree keeps its plain row', async () => {
+    const list = await run([mm('a', 'Medieval Madness', 'Williams', ['mm_109c', 'mm_10']), mm('b', 'Other', 'Williams', ['zz_1', 'zz_2'])]);
+    expect(find(list, 'a').romsDiffer).toBe(true);
+    expect(find(list, 'b').romsDiffer).toBe(false);
+    const md = renderMarkdown(list);
+    expect(md).toContain(`mm_109c verified, mm_10 unsupported (${NO_MAP_REASON})`);
+    expect(md).toContain('| zz_1, zz_2 |');
+  });
+
+  it('an Original game on a verified ROM is supported with the reason; the real machine stays verified', async () => {
+    const list = await run([mm('real', 'Medieval Madness', 'Williams', ['mm_109c']), mm('orig', 'My Castle', 'Original', ['mm_109c']), mm('re', 'Castle Retheme', 'Williams', ['mm_109c'])]);
+    expect(find(list, 'real')).toMatchObject({ status: 'verified', reason: null });
+    expect(find(list, 'orig')).toMatchObject({ status: 'supported', reason: 'verified on Medieval Madness; this game is another table on that ROM' });
+    expect(find(list, 're').status).toBe('verified');
+    expect(list.counts).toMatchObject({ verified: 2, supported: 1 });
+  });
+
+  it('the compact JSON carries no live or map key and a stable key order', async () => {
+    const list = await run([mm('a', 'Medieval Madness', 'Williams', ['mm_109c', 'mm_10'])]);
+    const compact = compactJson(list) as { games: { roms: object[] }[] };
+    const text = JSON.stringify(compact);
+    expect(text).not.toContain('"live"');
+    expect(text).not.toContain('"map"');
+    expect(Object.keys(compact.games[0]!)).toEqual(['vpsId', 'name', 'manufacturer', 'year', 'platform', 'status', 'reason', 'romSource', 'romsDiffer', 'roms']);
+    expect(Object.keys(compact.games[0]!.roms[0]!)).toEqual(['rom', 'status', 'reason', 'platform']);
   });
 });

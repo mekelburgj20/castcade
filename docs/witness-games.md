@@ -2,11 +2,11 @@
 
 Which VPX tables the Castcade desktop companion can score for Arcaid Witness on its own. A game is **supported** when the companion reads its machine's live score, game over, current ball and current player from NVRAM (a Stern SAM machine: its scores and the end-of-game record it writes), so every game played on it posts by itself as it ends. **Verified** means supported, and a real game was recorded on that ROM and replays in CI. **Unsupported** means the companion cannot follow a game on it, and the Reason column says why: no ROM (an original or electro-mechanical table, which needs a table-script recipe), no map for the ROM in pinmame-nvram-maps, or which live fields the map leaves out or keeps in CPU RAM, where the companion cannot see them.
 
-This list is about Witness scoring of VPX tables by the desktop companion, not Castcade matches. Each row is one game of the Virtual Pinball Spreadsheet that has a VPX table; its status is the best of the ROMs VPS lists for it, so a table that runs another ROM revision can differ. The JSON next to this page is the same list for ArcAid: https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json. Regenerate both with `npm run witness-games -w companion` (WORK item B14).
+This list is about Witness scoring of VPX tables by the desktop companion, not Castcade matches. Each row is one game of the Virtual Pinball Spreadsheet that has a VPX table; its status is the best of the ROMs VPS lists for it, so a table that runs another ROM revision can differ (a game whose ROMs differ lists each ROM's status in the ROMs column). **Verified** is claimed only for the machine the recording was made on: an original or retheme table that reuses a verified ROM is listed as supported. The JSON next to this page is the same list for ArcAid: https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json. Regenerate both with `npm run witness-games -w companion` (WORK item B14).
 
 ## Versions
 
-- Generated: 2026-11-01T05:55:10.694Z
+- Generated: 2026-11-01T06:00:01.256Z
 - VPS database (vps-db commit): `cce9160b30110ee174786239fdfb30a6e4caaab7`
 - NVRAM maps (pinmame-nvram-maps commit): `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`
 - Castcade companion: 0.2.27
@@ -18,7 +18,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | taito | 0 | 66 | 0 | 66 |
 | whitestar | 0 | 44 | 0 | 44 |
 | williams-system11-48K | 0 | 43 | 0 | 43 |
-| stern-sam | 10 | 23 | 0 | 33 |
+| stern-sam | 8 | 25 | 0 | 33 |
 | dataeast | 1 | 31 | 0 | 32 |
 | williams-wpc-12K | 2 | 30 | 0 | 32 |
 | gottlieb-system3 | 0 | 25 | 0 | 25 |
@@ -54,7 +54,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | zaccaria-gen1 | 0 | 0 | 3 | 3 |
 | zaccaria-gen2 | 0 | 0 | 8 | 8 |
 | no map | 0 | 0 | 1677 | 1677 |
-| **All** | **13** | **320** | **2032** | **2365** |
+| **All** | **11** | **322** | **2032** | **2365** |
 
 77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 2 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
 
@@ -223,7 +223,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
 | Ace of Speed | Original | 2019 | mousn_l4 | supported |  |
-| Bad Cats | Williams | 1989 | bcats_f1, bcats_tcm13, bcats_tcm12, bcats_tcm, bcats_g4, bcats_l5 | supported |  |
+| Bad Cats | Williams | 1989 | bcats_f1 unsupported (no map in pinmame-nvram-maps), bcats_tcm13 unsupported (no map in pinmame-nvram-maps), bcats_tcm12 unsupported (no map in pinmame-nvram-maps), bcats_tcm unsupported (no map in pinmame-nvram-maps), bcats_g4 unsupported (no map in pinmame-nvram-maps), bcats_l5 supported | supported |  |
 | Banzai Run | Williams | 1988 | bnzai_l3 | supported |  |
 | Big Guns | Williams | 1987 | bguns_l8 | supported |  |
 | Black Knight 2000 | Williams | 1989 | bk2k_l4 | supported |  |
@@ -232,7 +232,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Cyclone | Williams | 1988 | cycln_l5 | supported |  |
 | Death Proof | Original | 2021 | mousn_l4 | supported |  |
 | Deep Purple - Smoke on the Water | Original | 2024 | fire_l3 | supported |  |
-| Diner | Williams | 1990 | diner_l4fr, diner_l4 | supported |  |
+| Diner | Williams | 1990 | diner_l4fr unsupported (no map in pinmame-nvram-maps), diner_l4 supported | supported |  |
 | Dr. Dude and His Excellent Ray | Bally | 1990 | dd_l2 | supported |  |
 | Earthshaker | Williams | 1989 | esha_la3 | supported |  |
 | Elvira and the Party Monsters | Bally | 1989 | eatpm_l4 | supported |  |
@@ -247,28 +247,28 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Mega Man | Original | 2023 | radcl_l1 | supported |  |
 | Millionaire | Williams | 1987 | milln_l3 | supported |  |
 | Mousin' Around! | Bally | 1989 | mousn_l4 | supported |  |
-| PIN-BOT | Williams | 1986 | pb_j5, pb_l5 | supported |  |
+| PIN-BOT | Williams | 1986 | pb_j5 unsupported (no map in pinmame-nvram-maps), pb_l5 supported | supported |  |
 | Pink Floyd | Original | 2022 | esha_la3 | supported |  |
-| Police Force | Williams | 1989 | polic_lx5pi, polic_lx5, polic_l4 | supported |  |
+| Police Force | Williams | 1989 | polic_lx5pi unsupported (no map in pinmame-nvram-maps), polic_lx5 unsupported (no map in pinmame-nvram-maps), polic_l4 supported | supported |  |
 | Pool Sharks | Bally | 1990 | pool_l7 | supported |  |
-| Radical! | Bally | 1990 | radcl_l1c, radcl_l1 | supported |  |
-| Radical! (prototype) | Bally | 1990 | radcl_l1, radcl_l1c | supported |  |
+| Radical! | Bally | 1990 | radcl_l1c unsupported (no map in pinmame-nvram-maps), radcl_l1 supported | supported |  |
+| Radical! (prototype) | Bally | 1990 | radcl_l1 supported, radcl_l1c unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Riverboat Gambler | Williams | 1990 | rvrbt_l3 | supported |  |
 | Road Kings | Williams | 1986 | rdkng_l4 | supported |  |
-| Rollergames | Williams | 1990 | rollr_ta2, rollr_l2 | supported |  |
+| Rollergames | Williams | 1990 | rollr_ta2 unsupported (no map in pinmame-nvram-maps), rollr_l2 supported | supported |  |
 | Space Oddity | Original | 2022 | spstn_l5 | supported |  |
 | Space Station | Williams | 1987 | spstn_l5 | supported |  |
-| Swords of Fury | Williams | 1988 | swrds_rr1, swrds_rr1b, swrds_l2 | supported |  |
+| Swords of Fury | Williams | 1988 | swrds_rr1 unsupported (no map in pinmame-nvram-maps), swrds_rr1b unsupported (no map in pinmame-nvram-maps), swrds_l2 supported | supported |  |
 | Taxi | Williams | 1988 | taxi_l4 | supported |  |
-| The Bally Game Show | Bally | 1990 | gs_lu4, gs_l4 | supported |  |
-| Transporter the Rescue | Bally | 1989 | tsptr_lx4, tsptr_lx4b, tsptr_l3fj, tsptr_l3 | supported |  |
+| The Bally Game Show | Bally | 1990 | gs_lu4 supported, gs_l4 unsupported (no map in pinmame-nvram-maps) | supported |  |
+| Transporter the Rescue | Bally | 1989 | tsptr_lx4 unsupported (no map in pinmame-nvram-maps), tsptr_lx4b unsupported (no map in pinmame-nvram-maps), tsptr_l3fj unsupported (no map in pinmame-nvram-maps), tsptr_l3 supported | supported |  |
 | Wayne's World | Original | 2020 | radcl_l1 | supported |  |
 | Whirlwind | Williams | 1990 | whirl_l3 | supported |  |
 | Who Framed Roger Rabbit | Original | 2021 | bk2k_l4 | supported |  |
 
 ## stern-sam
 
-10 verified, 23 supported, 0 unsupported.
+8 verified, 25 supported, 0 unsupported.
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
@@ -279,8 +279,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | AC/DC (Pro Vault Edition) | Stern | 2017 | acd_170h | verified |  |
 | AC/DC (Pro) | Stern | 2012 | acd_170h | verified |  |
 | AC/DC Back In Black (Limited Edition) | Stern | 2012 | acd_170h | verified |  |
-| JP's The Walking Dead | Original | 2021 | twd_160h | verified |  |
-| The Return Of The Living Dead | Original | 2024 | twd_160h | verified |  |
 | The Walking Dead (Limited Edition) | Stern | 2014 | twd_160h | verified |  |
 | 24 | Stern | 2009 | twenty4_150 | supported |  |
 | Batman | Stern | 2008 | bdk_294 | supported |  |
@@ -288,20 +286,22 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | CSI | Stern | 2008 | csi_240 | supported |  |
 | Disney TRON Legacy (Limited Edition) | Stern | 2011 | trn_174h | supported |  |
 | Family Guy | Stern | 2007 | fg_1200af | supported |  |
-| Iron Man | Stern | 2010 | im_185ve, im_183 | supported |  |
+| Iron Man | Stern | 2010 | im_185ve supported, im_183 unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Iron Man (Pro Vault Edition) | Stern | 2014 | im_185ve | supported |  |
-| James Cameron's Avatar | Stern | 2010 | avr_110, avr_200 | supported |  |
+| James Cameron's Avatar | Stern | 2010 | avr_110 unsupported (no map in pinmame-nvram-maps), avr_200 supported | supported |  |
 | JP's Metallica Pro | Stern | 2013 | mtl_180 | supported |  |
 | JP's Spider-Man | Original | 2018 | smanve_101 | supported |  |
 | JP's Star Trek (Enterprise Limited Edition) | Original | 2020 | st_162h | supported |  |
+| JP's The Walking Dead | Original | 2021 | twd_160h | supported | verified on Walking Dead, The Limited Edition; this game is another table on that ROM |
 | JP's Transformers | Original | 2018 | tf_180 | supported |  |
 | Metallica - Master of Puppets | Original | 2020 | mtl_170h | supported |  |
-| Metallica (Premium Monsters) | Stern | 2013 | mtl_170h, mtl180le.bin | supported |  |
+| Metallica (Premium Monsters) | Stern | 2013 | mtl_170h supported, mtl180le.bin unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Metallica Remastered | Original | 2026 | mtl_180 | supported |  |
 | NBA | Stern | 2009 | nba_802 | supported |  |
 | Spider-Man (Vault Edition) | Stern | 2016 | smanve_101 | supported |  |
 | Star Trek (Enterprise Limited Edition) | Stern | 2013 | st_161h, st_162h | supported |  |
-| The Avengers (Pro) | Stern | 2012 | avs_170, avs_170h | supported |  |
+| The Avengers (Pro) | Stern | 2012 | avs_170 supported, avs_170h unsupported (no map in pinmame-nvram-maps) | supported |  |
+| The Return Of The Living Dead | Original | 2024 | twd_160h | supported | verified on Walking Dead, The Limited Edition; this game is another table on that ROM |
 | Transformers (Pro) | Stern | 2011 | tf_180 | supported |  |
 | X-Men Magneto LE | Stern | 2012 | xmn_151h | supported |  |
 | X-Men Wolverine LE | Stern | 2012 | xmn_151h | supported |  |
@@ -312,13 +312,13 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
-| Tales from the Crypt | Data East | 1993 | tftc_400, tftc_303 | verified |  |
+| Tales from the Crypt | Data East | 1993 | tftc_400 verified, tftc_303 supported | verified |  |
 | Aaron Spelling | Data East | 1992 | aar_101 | supported |  |
-| Adventures of Rocky and Bullwinkle and Friends | Data East | 1993 | rab_110be, rab_103it, rab_320 | supported |  |
+| Adventures of Rocky and Bullwinkle and Friends | Data East | 1993 | rab_110be unsupported (no map in pinmame-nvram-maps), rab_103it unsupported (no map in pinmame-nvram-maps), rab_320 supported | supported |  |
 | Back to the Future | Data East | 1990 | bttf_a28, bttf_a27 | supported |  |
 | Batman | Data East | 1991 | btmn_106 | supported |  |
-| Batman Forever | Sega | 1995 | batmanf501, bmf_it3, bmf_it2, bmf_nl302, batmanf5, batmanf | supported |  |
-| Baywatch | Sega | 1995 | bay_402, baywatch | supported |  |
+| Batman Forever | Sega | 1995 | batmanf501 supported, bmf_it3 supported, bmf_it2 supported, bmf_nl302 unsupported (no map in pinmame-nvram-maps), batmanf5 supported, batmanf supported | supported |  |
+| Baywatch | Sega | 1995 | bay_402 unsupported (no map in pinmame-nvram-maps), baywatch supported | supported |  |
 | Boxster Pinball | Original | 2010 | ckpt_a17 | supported |  |
 | Checkpoint | Data East | 1991 | ckpt_a17 | supported |  |
 | Ghost | Original | 2023 | poto_a32 | supported |  |
@@ -328,7 +328,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Last Action Hero | Data East | 1993 | lah_113, lah_112 | supported |  |
 | Lethal Weapon 3 | Data East | 1992 | lw3_208 | supported |  |
 | Mary Shelley's Frankenstein | Sega | 1995 | frankst | supported |  |
-| Maverick | Data East | 1994 | mav_404g, mav_402 | supported |  |
+| Maverick | Data East | 1994 | mav_404g unsupported (no map in pinmame-nvram-maps), mav_402 supported | supported |  |
 | Michael Jordan | Data East | 1992 | mj_130 | supported |  |
 | Monday Night Football | Data East | 1989 | mnfb_c27 | supported |  |
 | Pantera | Original | 2020 | gnr_300 | supported |  |
@@ -336,9 +336,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Playboy 35th Anniversary | Data East | 1989 | play_a24 | supported |  |
 | Robocop | Data East | 1989 | robo_a34 | supported |  |
 | Secret Service | Data East | 1988 | ssvc_a26 | supported |  |
-| Star Trek | Data East | 1991 | trek_201, trek_301 | supported |  |
+| Star Trek | Data East | 1991 | trek_201 supported, trek_301 unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Star Wars | Data East | 1992 | stwr_107, stwr_106, stwr_104, stwr_a14 | supported |  |
-| Teenage Mutant Ninja Turtles | Data East | 1991 | tmnt_200.zip, tmnt_104 | supported |  |
+| Teenage Mutant Ninja Turtles | Data East | 1991 | tmnt_200.zip unsupported (no map in pinmame-nvram-maps), tmnt_104 supported | supported |  |
 | The Simpsons | Data East | 1990 | simp_a27 | supported |  |
 | The Who's Tommy Pinball Wizard | Data East | 1994 | tomy_500 | supported |  |
 | Time Machine | Data East | 1988 | tmac_a24 | supported |  |
@@ -351,7 +351,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
-| Medieval Madness | Williams | 1997 | mm_109c, mm_109b, mm_10 | verified |  |
+| Medieval Madness | Williams | 1997 | mm_109c verified, mm_109b supported, mm_10 supported | verified |  |
 | Monster Bash | Williams | 1998 | mb_106b | verified |  |
 | Attack & Revenge from Mars | Original | 2015 | afm_113 | supported |  |
 | Attack from Mars | Bally | 1995 | afm_113b | supported |  |
@@ -373,9 +373,9 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | No Good Gofers | Williams | 1997 | ngg_13 | supported |  |
 | Popeye Saves the Earth | Bally | 1994 | pop_lx5 | supported |  |
 | Red & Ted's Road Show | Williams | 1994 | rs_l6 | supported |  |
-| Safe Cracker | Bally | 1996 | sc_18n11, sc_18s11, sc_091, sc_18 | supported |  |
+| Safe Cracker | Bally | 1996 | sc_18n11 supported, sc_18s11 supported, sc_091 supported, sc_18 unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Scared Stiff | Bally | 1996 | ss_15 | supported |  |
-| Star Trek - The Next Generation | Williams | 1993 | sttng_x9, sttng_l7, 7 | supported |  |
+| Star Trek - The Next Generation | Williams | 1993 | sttng_x9 unsupported (no map in pinmame-nvram-maps), sttng_l7 supported, 7 unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Tales of the Arabian Nights | Williams | 1996 | totan_14 | supported |  |
 | The Champion Pub | Bally | 1998 | cp_16 | supported |  |
 | The Flintstones | Williams | 1994 | fs_lx5 | supported |  |
@@ -430,7 +430,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Doctor Who | Bally | 1992 | dw_l2, dw_l1, dw_p5 | supported |  |
 | Fast and Furious | Original | 2022 | gw_l5 | supported |  |
 | Fish Tales | Williams | 1992 | ft_l5p, ft_l5 | supported |  |
-| Funhouse | Williams | 1990 | fh_905h, fh_l9, fh_905hbs, fh_907h | supported |  |
+| Funhouse | Williams | 1990 | fh_905h supported, fh_l9 supported, fh_905hbs unsupported (no map in pinmame-nvram-maps), fh_907h unsupported (no map in pinmame-nvram-maps) | supported |  |
 | Gilligan's Island | Bally | 1991 | gi_l9 | supported |  |
 | Harley-Davidson | Bally | 1991 | hd_l3 | supported |  |
 | Hurricane | Williams | 1991 | hurr_l2 | supported |  |
@@ -480,7 +480,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
 | Grand Lizard | Williams | 1986 | grand_l4 | supported |  |
-| High Speed | Williams | 1986 | hs_p4g, hs_l4 | supported |  |
+| High Speed | Williams | 1986 | hs_p4g unsupported (no map in pinmame-nvram-maps), hs_l4 supported | supported |  |
 | Monster Rancher | Original | 2019 | hs_l4 | supported |  |
 | The Dukes of Hazzard | Original | 2022 | hs_l4 | supported |  |
 
@@ -558,8 +558,8 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 |---|---|---:|---|---|---|
 | Airborne Avenger | Atari | 1977 | aavenger | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
 | Middle Earth | Atari | 1978 | midearth | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
-| Space Riders | Atari | 1978 | spcridef.zip, spcrider.zip, spcrider | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
-| The Atarians | Atari | 1976 | atarians, atarianb, atarians, atarianb | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
+| Space Riders | Atari | 1978 | spcridef.zip unsupported (no map in pinmame-nvram-maps), spcrider.zip unsupported (no map in pinmame-nvram-maps), spcrider unsupported (atari-gen1: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
+| The Atarians | Atari | 1976 | atarians, atarianb unsupported (no map in pinmame-nvram-maps), atarians unsupported (atari-gen1: scores, game_over, current_ball, current_player in CPU RAM), atarianb unsupported (no map in pinmame-nvram-maps) | unsupported | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM |
 
 ## atari-gen2
 
@@ -589,7 +589,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Bobby Orr Power Play | Bally | 1978 | pwerplay | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
 | Eight Ball | Bally | 1977 | eightbll | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
 | Evel Knievel | Bally | 1977 | evelknie | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Hot Ball | Taito do Brasil | 1979 | eightbll, eightblo | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
+| Hot Ball | Taito do Brasil | 1979 | eightbll unsupported (bally-17-4K: current_ball, current_player in CPU RAM), eightblo unsupported (no map in pinmame-nvram-maps) | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
 | Mata Hari | Bally | 1978 | matahari | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
 | Night Rider | Bally | 1976 | nightrdr | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
 | Silver Bullet | Original | 2025 | matahari | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
@@ -619,7 +619,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Red Sonja | Original | 2019 | ngndshkr | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
 | Sandra - The 80's Pop Star | Original | 2025 | futurspa | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
 | Sexy Girl | Arkon | 1980 | playboy | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Space Invaders | Bally | 1980 | spaceinv, spaceinb | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
+| Space Invaders | Bally | 1980 | spaceinv unsupported (bally-35-6K: current_ball, current_player in CPU RAM), spaceinb unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
 | Voltan Escapes Cosmic Doom | Bally | 1979 | voltan | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
 
 ## bally-35-8K
@@ -635,12 +635,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Black Pyramid | Bally | 1984 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Bloom - Lunar Howl 5 | Original | 2026 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | BMX | Bally | 1983 | bmx | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Centaur | Bally | 1981 | centauri, centaur | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Centaur | Bally | 1981 | centauri unsupported (no map in pinmame-nvram-maps), centaur unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Conan | Rowamet | 1983 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Conan the Barbarian | Original | 2026 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Cybernaut | Bally | 1985 | cybrnaut | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Disney Pixar Onward | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Dolly Parton | Bally | 1979 | dollyptb, dollyptn | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Dolly Parton | Bally | 1979 | dollyptb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), dollyptn unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Donald Duck Phantomias | Original | 2022 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Dr. Jekyll and Mr. Hyde | Original | 2022 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Duke Nukem 3D | Original | 2020 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
@@ -652,7 +652,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Fireball II | Bally | 1981 | fball_ii | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Flash Gordon | Bally | 1981 | flashgdn | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Frontier | Bally | 1980 | frontier | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Gold Ball | Bally | 1983 | goldball, goldbalc | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Gold Ball | Bally | 1983 | goldball unsupported (bally-35-8K: current_ball, current_player in CPU RAM), goldbalc unsupported (no map in pinmame-nvram-maps) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Grand Slam | Bally | 1983 | gransla4 | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Greedo's Cantina Pinball | Original | 2019 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Halloween 1978-1981 | Original | 2022 | medusa | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
@@ -661,7 +661,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Iron Eagle | Original | 2025 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Judas Priest | Original | 2019 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Kings of Steel | Bally | 1984 | kosteel | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| KISS | Bally | 1979 | kisse, kissc, kiss | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| KISS | Bally | 1979 | kisse unsupported (bally-35-8K: current_ball, current_player in CPU RAM), kissc unsupported (bally-35-8K: current_ball, current_player in CPU RAM), kiss unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Labyrinth | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Labyrinth | Original | 2023 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Lilo & Stitch | Original | 2025 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
@@ -672,15 +672,15 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Mr. & Mrs. Pac-Man Pinball | Bally | 1982 | m_mpac | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Mystic | Bally | 1980 | mysticb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | New Wave | Bell Games | 1985 | newwave | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Nitro Ground Shaker | Bally | 1980 | ngndshkm, ngndshkb, ngndshkr | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Nitro Ground Shaker | Bally | 1980 | ngndshkm unsupported (no map in pinmame-nvram-maps), ngndshkb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), ngndshkr unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Peaky Blinders | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Playboy | Bally | 1978 | playboyb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Predator | Original | 2019 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Predator | Original | 2023 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Rapid Fire | Bally | 1982 | rapidfir | unsupported | bally-35-8K: no game_over, current_ball, current_player in the map |
-| Rolling Stones | Bally | 1980 | rollst21, rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Rolling Stones | Bally | 1980 | rollst21 unsupported (no map in pinmame-nvram-maps), rollstob unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Scooby-Doo! and KISS - Rock 'n Roll Mystery | Original | 2015 | kissb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Silverball Mania | Bally | 1980 | slbmanib, slbmania | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Silverball Mania | Bally | 1980 | slbmanib unsupported (bally-35-8K: current_ball, current_player in CPU RAM), slbmania unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Sin City | Original | 2022 | elektraa, elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Skateball | Bally | 1980 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Speakeasy | Bally | 1982 | speakesy | unsupported | bally-35-8K: current_player in CPU RAM; no current_ball in the map |
@@ -690,14 +690,14 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Spy Hunter | Bally | 1984 | spyhuntr | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Star Trek | Bally | 1979 | startreb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Star Trek - Spock Tribute | Original | 2022 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Star Trek - The Mirror Universe | Original | 2014 | startreb, startrek | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Star Trek - The Mirror Universe | Original | 2014 | startreb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), startrek unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Stray Cats | Original | 2025 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Super Bowl | Bell Games | 1984 | suprbowl | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Supersonic | Bally | 1979 | sstb, sst | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| Supersonic | Bally | 1979 | sstb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), sst unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | The Beastmaster | Original | 2021 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | The Delta Force | Original | 2019 | dollyptb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | The Mandalorian | Original | 2020 | cybrnaut | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| The Six Million Dollar Man | Bally | 1978 | smmanc, smman | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
+| The Six Million Dollar Man | Bally | 1978 | smmanc unsupported (bally-35-8K: current_ball, current_player in CPU RAM), smman unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Tiger King | Original | 2020 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Toxic Tattoo | Original | 2020 | mysticb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 | Vector | Bally | 1982 | vector | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
@@ -849,11 +849,11 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Nugent | Stern | 1978 | nugent | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 | Pinball (EM) | Stern | 1977 | pinball | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 | Pinball (SS) | Stern | 1977 | pinball | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Stars | Stern | 1978 | starsb7, starsb, stars | unsupported | stern-m100: current_ball, current_player in CPU RAM |
+| Stars | Stern | 1978 | starsb7 unsupported (no map in pinmame-nvram-maps), starsb unsupported (no map in pinmame-nvram-maps), stars unsupported (stern-m100: current_ball, current_player in CPU RAM) | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 | Stephen King's Pet Sematary | Original | 2019 | dracula | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 | Stingray | Stern | 1977 | stingray | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 | Trident | Stern | 1979 | trident | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Wild Fyre | Stern | 1978 | wildfyrc, wildfyre | unsupported | stern-m100: current_ball, current_player in CPU RAM |
+| Wild Fyre | Stern | 1978 | wildfyrc unsupported (no map in pinmame-nvram-maps), wildfyre unsupported (stern-m100: current_ball, current_player in CPU RAM) | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 
 ## stern-m200
 
@@ -861,41 +861,41 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 | Game | Manufacturer | Year | ROMs | Status | Reason |
 |---|---|---:|---|---|---|
-| Ali | Stern | 1980 | alic, ali | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Ali | Stern | 1980 | alic unsupported (no map in pinmame-nvram-maps), ali unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Annabelle | Original | 2020 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Attack of the Killer Tomatoes | Original | 2023 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Bad Girls from Space | Original | 2026 | flight2k | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Beetlejuice | Original | 2023 | ironmaid | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Biene Maja | Original | 2022 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Big Game | Stern | 1980 | biggamef, biggame | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Big Game | Stern | 1980 | biggamef unsupported (no map in pinmame-nvram-maps), biggame unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Catacomb | Stern | 1981 | catacomb | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Cheetah | Stern | 1980 | cheetah84, cheetahb2, cheetah, cheetah2 | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Cheetah | Stern | 1980 | cheetah84 unsupported (no map in pinmame-nvram-maps), cheetahb2 unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM), cheetah unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM), cheetah2 unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Class of 1984 | Original | 2024 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Disney Aladdin | Original | 2020 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Disney Hotel Transylvania | Original | 2021 | viper | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Dragonfist | Stern | 1981 | dragfis17, dragfis16, dragfis15, dragfist | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Dragonfist | Stern | 1981 | dragfis17 unsupported (no map in pinmame-nvram-maps), dragfis16 unsupported (no map in pinmame-nvram-maps), dragfis15 unsupported (no map in pinmame-nvram-maps), dragfist unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Evil Dead 2 | Original | 2019 | ironmaid | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Flight 2000 | Stern | 1980 | flight2k | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Freefall | Stern | 1981 | freefall | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Frozen Butterfly | Original | 2026 | biggamef, biggame | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Frozen Butterfly | Original | 2026 | biggamef unsupported (no map in pinmame-nvram-maps), biggame unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Galaxy | Stern | 1980 | galaxy | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Gamatron | Sonic | 1986 | flight2m | unsupported | stern-m200: no scores, game_over, current_ball, current_player in the map |
 | Gollum - The Rings of Power Edition | Original | 2023 | lightnin | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Howl Against The Chains - Lunar Howl 2 | Original | 2025 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Iron Maiden | Stern | 1982 | ironmaid | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | John Carpenter's The Thing | Original | 2019 | ali | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| JP's Seawitch | Stern | 1980 | seawitchf, seawitche, seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| JP's Seawitch | Stern | 1980 | seawitchf unsupported (no map in pinmame-nvram-maps), seawitche unsupported (no map in pinmame-nvram-maps), seawitch unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Killzone | Original | 2019 | freefall | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Lightning | Stern | 1981 | lightnid, lightnin | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Lightning | Stern | 1981 | lightnid unsupported (no map in pinmame-nvram-maps), lightnin unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Magnum P.I.nBall | Original | 2020 | quicksil | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Meteor | Stern | 1979 | meteor, meteorb.zip | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Meteor | Stern | 1979 | meteor unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM), meteorb.zip unsupported (no map in pinmame-nvram-maps) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Midnight Resistance | Original | 2020 | lightnin | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Nine Ball | Stern | 1980 | nineball | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Oasis Knebworth | Original | 2023 | seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Orbitor 1 | Stern | 1982 | orbitor1 | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Quick! Silver! - A Rush For Riches | Original | 2025 | quicksil | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Quicksilver | Stern | 1980 | quicksic, quicksil | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
-| Seawitch | Stern | 1980 | seawitchf, seawitche, seawitch | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Quicksilver | Stern | 1980 | quicksic unsupported (no map in pinmame-nvram-maps), quicksil unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
+| Seawitch | Stern | 1980 | seawitchf unsupported (no map in pinmame-nvram-maps), seawitche unsupported (no map in pinmame-nvram-maps), seawitch unsupported (stern-m200: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Split Second | Stern | 1981 | splitsec | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Star Gazer | Stern | 1980 | stargzr | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
 | Stephen King's The Running Man | Original | 2019 | cheetah | unsupported | stern-m200: scores, game_over, current_ball, current_player in CPU RAM |
@@ -946,7 +946,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Cobra | Original | 2022 | blkou_l1 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
 | Disney The Lion King | Original | 2020 | alpok_l6 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
 | Flash | Williams | 1979 | flash_l1 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
-| Gorgar | Williams | 1979 | grgar_l2, grgar_l1 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
+| Gorgar | Williams | 1979 | grgar_l2 unsupported (no map in pinmame-nvram-maps), grgar_l1 unsupported (williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM) | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
 | Laser Ball | Williams | 1979 | lzbal_l2 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
 | Manowar | Original | 2019 | alpok_l6 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
 | Marilyn Monroe Tribute | Original | 2022 | flash_l1 | unsupported | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM |
@@ -1029,7 +1029,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 |---|---|---:|---|---|---|
 | House of Diamonds | Zaccaria | 1978 | hod | unsupported | zaccaria-gen1: no game_over, current_ball, current_player in the map |
 | Shooting the Rapids | Zaccaria | 1979 | strapids | unsupported | zaccaria-gen1: no game_over, current_ball, current_player in the map |
-| Star God | Zaccaria | 1980 | stargoda, stargodb, stargod | unsupported | zaccaria-gen1: no game_over, current_ball, current_player in the map |
+| Star God | Zaccaria | 1980 | stargoda unsupported (zaccaria-gen1: no game_over, current_ball, current_player in the map), stargodb unsupported (no map in pinmame-nvram-maps), stargod unsupported (no map in pinmame-nvram-maps) | unsupported | zaccaria-gen1: no game_over, current_ball, current_player in the map |
 
 ## zaccaria-gen2
 
@@ -1042,7 +1042,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Magic Castle | Zaccaria | 1984 | mcastle | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
 | Pinball Champ '82 | Zaccaria | 1982 | pinchamp | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
 | Robot | Zaccaria | 1985 | robot | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
-| Soccer Kings | Zaccaria | 1982 | socrkin2, socrking | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
+| Soccer Kings | Zaccaria | 1982 | socrkin2 unsupported (no map in pinmame-nvram-maps), socrking unsupported (zaccaria-gen2: no game_over, current_ball, current_player in the map) | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
 | The Grinch's How to Steal Christmas | Original | 2025 | robot | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
 | Time Machine | Zaccaria | 1983 | tmachzac | unsupported | zaccaria-gen2: no game_over, current_ball, current_player in the map |
 

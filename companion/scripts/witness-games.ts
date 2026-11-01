@@ -13,9 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { VpsIndexFile } from '../src/witness/identity-types.js';
 import { createMapCorpus } from '../src/witness/maps.js';
-import { buildSupportList, CORPUS_ROM_NOTE, NO_PLATFORM, preloadMaps, type GameSupport, type SupportList, type SupportStatus } from '../src/witness/support-list.js';
-
-const JSON_URL = 'https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json';
+import { buildSupportList, compactJson, preloadMaps, renderMarkdown } from '../src/witness/support-list.js';
 
 const companionDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoDir = resolve(companionDir, '..');
@@ -44,66 +42,6 @@ function parseArgs(argv: string[]): { vps: string; maps: string; fixtures: strin
 
 const firstLine = (path: string): string | null => (existsSync(path) ? (readFileSync(path, 'utf8').split(/\r?\n/)[0]?.trim() ?? '') || null : null);
 
-const STATUS_ORDER: Record<SupportStatus, number> = { verified: 0, supported: 1, unsupported: 2 };
-const cell = (v: string | number | null): string => (v === null ? '' : String(v).replace(/\|/g, '\\|'));
-const readable = (c: { verified: number; supported: number }): number => c.verified + c.supported;
-
-function markdown(list: SupportList): string {
-  const { counts, versions } = list;
-  const lines: string[] = [
-    '# Witness-supported games',
-    '',
-    'Which VPX tables the Castcade desktop companion can score for Arcaid Witness on its own. A game is **supported** when the companion reads its machine\'s live score, game over, current ball and current player from NVRAM (a Stern SAM machine: its scores and the end-of-game record it writes), so every game played on it posts by itself as it ends. **Verified** means supported, and a real game was recorded on that ROM and replays in CI. **Unsupported** means the companion cannot follow a game on it, and the Reason column says why: no ROM (an original or electro-mechanical table, which needs a table-script recipe), no map for the ROM in pinmame-nvram-maps, or which live fields the map leaves out or keeps in CPU RAM, where the companion cannot see them.',
-    '',
-    `This list is about Witness scoring of VPX tables by the desktop companion, not Castcade matches. Each row is one game of the Virtual Pinball Spreadsheet that has a VPX table; its status is the best of the ROMs VPS lists for it, so a table that runs another ROM revision can differ. The JSON next to this page is the same list for ArcAid: ${JSON_URL}. Regenerate both with \`npm run witness-games -w companion\` (WORK item B14).`,
-    '',
-    '## Versions',
-    '',
-    `- Generated: ${list.generatedAt}`,
-    `- VPS database (vps-db commit): \`${versions.vps}\``,
-    `- NVRAM maps (pinmame-nvram-maps commit): \`${versions.maps}\``,
-    `- Castcade companion: ${versions.app}`,
-    '',
-    '## Counts',
-    '',
-    '| Platform | Verified | Supported | Unsupported | Games |',
-    '|---|---:|---:|---:|---:|',
-  ];
-  const platforms = Object.entries(counts.byPlatform).sort(
-    ([a, x], [b, y]) => Number(a === NO_PLATFORM) - Number(b === NO_PLATFORM) || readable(y) - readable(x) || a.localeCompare(b, 'en'),
-  );
-  for (const [name, c] of platforms) {
-    lines.push(`| ${name === NO_PLATFORM ? 'no map' : name} | ${c.verified} | ${c.supported} | ${c.unsupported} | ${c.verified + c.supported + c.unsupported} |`);
-  }
-  lines.push(`| **All** | **${counts.verified}** | **${counts.supported}** | **${counts.unsupported}** | **${counts.games}** |`, '');
-  lines.push(
-    `${counts.romsFromCorpus} games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). ${counts.romsAmbiguous} more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.`,
-    '',
-  );
-  lines.push('### Why unsupported', '', '| Reason | Games |', '|---|---:|');
-  for (const [reason, n] of Object.entries(counts.byReason).sort(([a, x], [b, y]) => y - x || a.localeCompare(b, 'en'))) {
-    lines.push(`| ${cell(reason)} | ${n} |`);
-  }
-  lines.push('');
-
-  const byPlatform = new Map<string, GameSupport[]>();
-  for (const g of list.games) {
-    const key = g.platform ?? NO_PLATFORM;
-    byPlatform.set(key, [...(byPlatform.get(key) ?? []), g]);
-  }
-  for (const [name, c] of platforms) {
-    const games = [...(byPlatform.get(name) ?? [])].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
-    const title = name === NO_PLATFORM ? 'No map (no ROM, or no map for its ROMs)' : name;
-    lines.push(`## ${title}`, '', `${c.verified} verified, ${c.supported} supported, ${c.unsupported} unsupported.`, '');
-    lines.push('| Game | Manufacturer | Year | ROMs | Status | Reason |', '|---|---|---:|---|---|---|');
-    for (const g of games) {
-      lines.push(`| ${cell(g.name)} | ${cell(g.manufacturer)} | ${cell(g.year)} | ${cell(g.roms.map((r) => r.rom).join(', '))} | ${g.status} | ${cell([g.reason, g.romSource === 'corpus' ? CORPUS_ROM_NOTE : null].filter(Boolean).join('; '))} |`);
-    }
-    lines.push('');
-  }
-  return lines.join('\n');
-}
-
 const opts = parseArgs(process.argv.slice(2));
 const vps = JSON.parse(readFileSync(opts.vps, 'utf8')) as VpsIndexFile;
 const corpus = createMapCorpus(opts.maps);
@@ -122,8 +60,8 @@ const versions = {
 const list = buildSupportList({ vps, mapFor, mapFile, corpusRoms, verifiedRoms, versions, generatedAt: new Date().toISOString() });
 
 mkdirSync(opts.out, { recursive: true });
-writeFileSync(join(opts.out, 'witness-games.json'), JSON.stringify(list, null, 2) + '\n');
-writeFileSync(join(opts.out, 'witness-games.md'), markdown(list));
+writeFileSync(join(opts.out, 'witness-games.json'), JSON.stringify(compactJson(list), null, 2) + '\n');
+writeFileSync(join(opts.out, 'witness-games.md'), renderMarkdown(list));
 const { counts } = list;
 console.log(`wrote ${join(opts.out, 'witness-games.json')} and witness-games.md: ${counts.games} games, ${counts.verified} verified, ${counts.supported} supported, ${counts.unsupported} unsupported, ${counts.romsFromCorpus} with ROMs from the corpus (VPS lists none), ${counts.romsAmbiguous} ambiguous`);
 for (const n of counts.romsAmbiguousGames) console.log(`ambiguous (left as no ROM): ${n}`);

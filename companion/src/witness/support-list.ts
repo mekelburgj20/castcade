@@ -64,6 +64,8 @@ export interface GameSupport {
   roms: RomSupport[];
   /** `corpus` when VPS lists no ROM and the ROMs were found in the maps corpus by name + manufacturer. */
   romSource: RomSource;
+  /** True when the game's ROMs do not all share one status and reason (a revision can differ from the best one). */
+  romsDiffer: boolean;
 }
 
 export interface StatusCounts {
@@ -178,6 +180,17 @@ function corpusRomsFor(game: VpsGameEntry, fb: Fallback): string[] | 'ambiguous'
   return found.map((r) => r.rom);
 }
 
+const namesCache = new WeakMap<SupportListInput, Map<string, string>>();
+/** Lower-case ROM -> `romnames.json` name (version stripped), from `corpusRoms`. */
+function corpusNames(input: SupportListInput): Map<string, string> {
+  let m = namesCache.get(input);
+  if (!m) {
+    m = new Map((input.corpusRoms ?? []).map((r) => [r.rom.toLowerCase(), r.name]));
+    namesCache.set(input, m);
+  }
+  return m;
+}
+
 function gameSupport(game: VpsGameEntry, input: SupportListInput, fb: Fallback, tally: { ambiguous: string[] }): GameSupport {
   let romIds = [...new Set(game.roms)];
   let romSource: RomSource = 'vps';
@@ -194,16 +207,34 @@ function gameSupport(game: VpsGameEntry, input: SupportListInput, fb: Fallback, 
     return romSupport(rom, map, input.verifiedRoms, map ? (input.mapFile?.(rom) ?? null) : null);
   });
   const best = bestRom(roms);
+  let status: SupportStatus = best?.status ?? 'unsupported';
+  let reason = best ? best.reason : NO_ROM_REASON;
+  if (best && status === 'verified') {
+    // A recording is of the real machine's table: only that game, or a VPS non-Original game on the ROM, is verified by it.
+    const ownName = normalizeVpsName(game.name);
+    const nameOf = (rom: string): string | null => corpusNames(input).get(rom.toLowerCase()) ?? null;
+    const owned = roms.some((r) => {
+      if (r.status !== 'verified') return false;
+      const n = nameOf(r.rom);
+      return (n !== null && normalizeVpsName(n) === ownName) || (romSource === 'vps' && normalizeVpsName(game.manufacturer ?? '') !== 'original');
+    });
+    if (!owned) {
+      const v = roms.find((r) => r.status === 'verified') as RomSupport;
+      status = 'supported';
+      reason = `verified on ${nameOf(v.rom) ?? v.rom}; this game is another table on that ROM`;
+    }
+  }
   return {
     vpsId: game.id,
     name: game.name,
     manufacturer: game.manufacturer,
     year: game.year,
     platform: best?.platform ?? null,
-    status: best?.status ?? 'unsupported',
-    reason: best ? best.reason : NO_ROM_REASON,
+    status,
+    reason,
     roms,
     romSource,
+    romsDiffer: roms.length > 1 && roms.some((r) => r.status !== roms[0]!.status || r.reason !== roms[0]!.reason),
   };
 }
 
@@ -304,3 +335,92 @@ export async function preloadMaps(
   }
   return { mapFor: (rom) => maps.get(rom) ?? null, mapFile, corpusRoms };
 }
+
+/** The compact list for ArcAid: no per-ROM `live` or `map`; keys in a fixed order so runs diff cleanly. */
+export function compactJson(list: SupportList): unknown {
+  return {
+    generatedAt: list.generatedAt,
+    versions: list.versions,
+    counts: list.counts,
+    games: list.games.map((g) => ({
+      vpsId: g.vpsId,
+      name: g.name,
+      manufacturer: g.manufacturer,
+      year: g.year,
+      platform: g.platform,
+      status: g.status,
+      reason: g.reason,
+      romSource: g.romSource,
+      romsDiffer: g.romsDiffer,
+      roms: g.roms.map((r) => ({ rom: r.rom, status: r.status, reason: r.reason, platform: r.platform })),
+    })),
+  };
+}
+
+const JSON_URL = 'https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json';
+const STATUS_ORDER: Record<SupportStatus, number> = { verified: 0, supported: 1, unsupported: 2 };
+const cell = (v: string | number | null): string => (v === null ? '' : String(v).replace(/\|/g, '\\|'));
+const readable = (c: { verified: number; supported: number }): number => c.verified + c.supported;
+
+/** The ROMs cell: plain ids when the ROMs agree, else `rom status (reason)` per ROM. */
+function romsCell(g: GameSupport): string {
+  if (!g.romsDiffer) return cell(g.roms.map((r) => r.rom).join(', '));
+  return cell(g.roms.map((r) => `${r.rom} ${r.status}${r.reason ? ` (${r.reason})` : ''}`).join(', '));
+}
+
+export function renderMarkdown(list: SupportList): string {
+  const { counts, versions } = list;
+  const lines: string[] = [
+    '# Witness-supported games',
+    '',
+    'Which VPX tables the Castcade desktop companion can score for Arcaid Witness on its own. A game is **supported** when the companion reads its machine\'s live score, game over, current ball and current player from NVRAM (a Stern SAM machine: its scores and the end-of-game record it writes), so every game played on it posts by itself as it ends. **Verified** means supported, and a real game was recorded on that ROM and replays in CI. **Unsupported** means the companion cannot follow a game on it, and the Reason column says why: no ROM (an original or electro-mechanical table, which needs a table-script recipe), no map for the ROM in pinmame-nvram-maps, or which live fields the map leaves out or keeps in CPU RAM, where the companion cannot see them.',
+    '',
+    `This list is about Witness scoring of VPX tables by the desktop companion, not Castcade matches. Each row is one game of the Virtual Pinball Spreadsheet that has a VPX table; its status is the best of the ROMs VPS lists for it, so a table that runs another ROM revision can differ (a game whose ROMs differ lists each ROM's status in the ROMs column). **Verified** is claimed only for the machine the recording was made on: an original or retheme table that reuses a verified ROM is listed as supported. The JSON next to this page is the same list for ArcAid: ${JSON_URL}. Regenerate both with \`npm run witness-games -w companion\` (WORK item B14).`,
+    '',
+    '## Versions',
+    '',
+    `- Generated: ${list.generatedAt}`,
+    `- VPS database (vps-db commit): \`${versions.vps}\``,
+    `- NVRAM maps (pinmame-nvram-maps commit): \`${versions.maps}\``,
+    `- Castcade companion: ${versions.app}`,
+    '',
+    '## Counts',
+    '',
+    '| Platform | Verified | Supported | Unsupported | Games |',
+    '|---|---:|---:|---:|---:|',
+  ];
+  const platforms = Object.entries(counts.byPlatform).sort(
+    ([a, x], [b, y]) => Number(a === NO_PLATFORM) - Number(b === NO_PLATFORM) || readable(y) - readable(x) || a.localeCompare(b, 'en'),
+  );
+  for (const [name, c] of platforms) {
+    lines.push(`| ${name === NO_PLATFORM ? 'no map' : name} | ${c.verified} | ${c.supported} | ${c.unsupported} | ${c.verified + c.supported + c.unsupported} |`);
+  }
+  lines.push(`| **All** | **${counts.verified}** | **${counts.supported}** | **${counts.unsupported}** | **${counts.games}** |`, '');
+  lines.push(
+    `${counts.romsFromCorpus} games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). ${counts.romsAmbiguous} more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.`,
+    '',
+  );
+  lines.push('### Why unsupported', '', '| Reason | Games |', '|---|---:|');
+  for (const [reason, n] of Object.entries(counts.byReason).sort(([a, x], [b, y]) => y - x || a.localeCompare(b, 'en'))) {
+    lines.push(`| ${cell(reason)} | ${n} |`);
+  }
+  lines.push('');
+
+  const byPlatform = new Map<string, GameSupport[]>();
+  for (const g of list.games) {
+    const key = g.platform ?? NO_PLATFORM;
+    byPlatform.set(key, [...(byPlatform.get(key) ?? []), g]);
+  }
+  for (const [name, c] of platforms) {
+    const games = [...(byPlatform.get(name) ?? [])].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+    const title = name === NO_PLATFORM ? 'No map (no ROM, or no map for its ROMs)' : name;
+    lines.push(`## ${title}`, '', `${c.verified} verified, ${c.supported} supported, ${c.unsupported} unsupported.`, '');
+    lines.push('| Game | Manufacturer | Year | ROMs | Status | Reason |', '|---|---|---:|---|---|---|');
+    for (const g of games) {
+      lines.push(`| ${cell(g.name)} | ${cell(g.manufacturer)} | ${cell(g.year)} | ${romsCell(g)} | ${g.status} | ${cell([g.reason, g.romSource === 'corpus' ? CORPUS_ROM_NOTE : null].filter(Boolean).join('; '))} |`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
