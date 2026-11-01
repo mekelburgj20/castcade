@@ -10,6 +10,36 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel agents while the 0.2.27 headset test waited,
 then (2026-10-31, night) by the table-coverage lane: four more agents after Krobs' Freddy posted only at VPX exit.
 
+### Match in VR: what the 2026-11-01 headset test found (D2.6, D2.7, A6.1, D7.4.3, D7.4.4)
+- **Voice and video no longer die when a player's VPX loads after host / join (D2.7).** The panel's move into the
+  headset rebuilds its page and its connections; the fresh offer landed on peers whose connection to that player still
+  stood and was refused ("the order of m-lines in subsequent offer doesn't match"), ending voice and video both ways. The
+  mover now sends a `reset` signal first, a peer reopens that connection, and an offer that still fails on a connection
+  with a remote description reopens it and re-applies. Per-peer ICE / signalling state goes to the log on change.
+  `media/rtc-signaling.ts`, `media/panel-page.ts`, `media/rtc-host.ts`. Wire: MEDIA_SIGNAL gains the kinds `reset` and
+  `stereo` (unlogged, protocol stays 2; an older companion drops them with a transport line).
+- **A rig that reads VR after Start is told to the others (A6.1).** PARTICIPANT_UPDATE carries a rig in any phase; the
+  roster and the log stay as MATCH_READY said, the Match tab and the panel show the latest rig. Before, both players read
+  PC for the whole match when the table loaded after Start. `main/match-host.ts`, `match/host.ts`, `match/client.ts`.
+- **The sender declares a both-eyes preview; portrait eyes (D7.4.3).** The receiver guessed stereo from the picture's
+  shape (3:1 or wider), so a both-eyes window of 1920x1080 or 1440x1392 was drawn flat, two tables side by side. Now the
+  sender reads `[PlayerVR] VRPreview` from VPX's active ini (a Match-tab override: auto / one eye / both eyes) and tells
+  the peers on a `stereo` signal; the receiver trusts it whatever the shape or rig. VPX 10.8.0 centre-crops each eye to
+  its half of the window, so a both-eyes window as tall as the monitor and about as wide (1080x1080 on 1080p) sends two
+  portrait eyes: the table-only view; the theater screen's longer side is 2.4 m, so a portrait eye is height-led
+  (`vr-layer/src/layer.cpp`). The runbook and the Match-tab hint say so (2560x720 is gone: it never fit a 1080p
+  monitor). `media/preview-stereo.ts` (new), `renderer/views/Match.tsx`, `docs/alpha-match-runbook.md`.
+- **The desktop match panel opens beside the main window, never over it (D2.6).** It is excluded from screen capture
+  (so the match video never films it), which also makes it invisible through Virtual Desktop; centred on the display it
+  sat exactly over the main window and took every click. Placed right / left / below the main window, clamped to the
+  work area; the main window's bounds are remembered; Show panel / Hide panel on the Match tab, which names the window.
+  `media/panel-placement.ts` (new), `media/rtc-host.ts`, `main/index.ts`.
+- **A stalled capture is noticed and re-picked (D7.4.4).** The canvas track kept producing frames whatever the screen
+  capture did, so a frozen capture looked alive to the receivers. The page watches the capture's own frame counter: no
+  new frame for 3 s while sending → the video track is pulled (the receivers show "waiting for <name>'s table"), main
+  logs `capture stalled`, re-picks the capture at most every 10 s, and the track comes back on the next frame. Counters
+  every 10 s in the log: `capture: N frames` on the sender, `theater: N decoded, M sent to the layer` on a receiver.
+
 ### Table coverage: every table posts each game live (C11, B23, B14.2, B10.2)
 - **New tables get patched without a trip to Settings (C11, C1.1.3).** The folder watch now plans every `.vpx` that has
   no sidecar and patches it in the same batch as the re-makes, with one notice per look; it does this only in a folder
