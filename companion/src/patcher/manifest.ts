@@ -33,6 +33,12 @@ export interface Manifest {
   sidecarSha256: string;
   anchors: Record<string, string>;
   warnings: string[];
+  /**
+   * C11: of `warnings`, the ones that mean a game cannot be journaled whole (recipes B/C/D: no scores, no game start
+   * or no game end anchor); absent on recipe A and in manifests written before C11. The witness names it when such a
+   * table still posts at close.
+   */
+  partial?: string[];
   /** ISO 8601. */
   renderedAt: string;
   /** The verification launch (§7); `null` until a table verifies on first play. */
@@ -61,6 +67,7 @@ export function isManifest(v: unknown): v is Manifest {
     typeof v['sidecarSha256'] === 'string' &&
     isRecord(v['anchors']) &&
     Array.isArray(v['warnings']) &&
+    (v['partial'] === undefined || Array.isArray(v['partial'])) &&
     typeof v['renderedAt'] === 'string' &&
     (v['verified'] === null || isRecord(v['verified']))
   );

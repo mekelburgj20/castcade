@@ -8,15 +8,43 @@
  * (a newer hook library or recipe) makes every sidecar stale at once: those are re-made as one
  * batch with one notification, not a hundred.
  *
+ * C11 (2026-10-31): a `.vpx` with no sidecar is planned too, on every look, and its `patch` item is applied in
+ * the same batch as the re-makes: a table added to the folder after the last "Patch my tables" (Krobs' Freddy
+ * posted only at VPX exit), or one an older build skipped for lack of a recipe (C1.1.3: originals of class
+ * B/C/D have one now), gets its patch without the player going back to Settings. What the plan declines
+ * (`skip`, `unsupported`, `unreadable`, `foreign`, `already`) or what failed to render is remembered in memory
+ * by path + size + mtime and planned again only when the file changes (or after a reset / restart), so a
+ * folder of a hundred unpatchable tables is not re-read every 30 s.
+ *
+ * Guard (orchestrator's decision, C11): new tables are patched only in a folder the player has imported
+ * once already, i.e. the manifest dir holds at least one manifest or the folder holds at least one Castcade
+ * sidecar. On a never-imported folder the watch patches nothing; the witness's "table not patched" notice
+ * (with its Patch now action) does the asking.
+ *
  * Every look runs under the tables host's lock (`exclusive`), so it never interleaves with an
  * import or a remove-all the player started from the Settings card (2026-10-22: both re-patched
  * the same folder at the same time and the card reported a nonsense count).
  *
- * Polling, not `fs.watch`: a folder of a hundred tables is a hundred stats every interval, which is
+ * Polling, not `fs.watch`: a folder of a hundred tables is a few hundred stats every interval, which is
  * nothing, and Windows change notifications miss in-place rewrites by some downloaders.
  */
 import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
-import { LIB_VERSION, applyImport, checkSidecar, disableSidecar, listVpxFiles, planImport, sidecarPathFor, tableIdFor } from '../patcher/index.js';
+import {
+  LIB_VERSION,
+  applyImport,
+  checkSidecar,
+  countActions,
+  decodeScript,
+  disableSidecar,
+  isOurSidecar,
+  listVpxFiles,
+  planImport,
+  recipeFor,
+  sidecarPathFor,
+  stalePathFor,
+  tableIdFor,
+  type PlanItem,
+} from '../patcher/index.js';
 import { isNotFound, nodeFs, type WitnessFs } from '../witness/fs.js';
 
 export const DEFAULT_SIDECAR_WATCH_MS = 30_000;
@@ -35,6 +63,11 @@ export interface SidecarWatchOptions {
   libSource: string;
   /** The hook's watch list for a ROM (see `TablesHost.watchOffsetsFor`); omitted = no watch list rendered. */
   watchOffsetsFor?: (rom: string) => Promise<number[]>;
+  /**
+   * B12: can live mode read this ROM's machine (`TablesHost.liveSupportFor`)? Asked when a table with no sidecar is
+   * planned (C11), so a machine the import refuses is not patched here either. Omitted = every ROM is taken as readable.
+   */
+  liveSupportFor?: (rom: string) => Promise<{ readable: boolean; reason: string }>;
   /** The lock shared with the import / remove-all actions (`TablesHost.exclusive`); omitted = unlocked (tests). */
   exclusive?: Exclusive;
   log: (line: string) => void;
@@ -42,11 +75,23 @@ export interface SidecarWatchOptions {
   notify?: (title: string, body: string) => void;
 }
 
-export type SidecarWatchOutcome = { vpxPath: string; result: 'repatched' | 'disabled' | 'ok' | 'error'; detail: string };
+/**
+ * `patched`: a table with no sidecar got one (C11); `declined`: the plan would not patch it (the detail says why),
+ * remembered until the file changes.
+ */
+export type SidecarWatchOutcome = { vpxPath: string; result: 'repatched' | 'patched' | 'declined' | 'disabled' | 'ok' | 'error'; detail: string };
 
 interface Seen {
   size: number;
   mtimeMs: number;
+}
+
+/** C11: a table with no sidecar, to plan. `disabled`: a `.stale` copy sits beside it (an earlier patch was disabled). */
+interface Fresh {
+  vpxPath: string;
+  tableId: string;
+  st: Seen;
+  disabled: boolean;
 }
 
 interface Stale {
@@ -57,6 +102,7 @@ interface Stale {
 }
 
 const unlocked: Exclusive = (fn) => fn();
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export class SidecarWatch {
   private readonly fs: WitnessFs;
@@ -64,6 +110,10 @@ export class SidecarWatch {
   private readonly intervalMs: number;
   private readonly exclusive: Exclusive;
   private seen = new Map<string, Seen>();
+  /** C11: tables with no sidecar the plan declined (or that failed to render), at the size + mtime it was decided for. */
+  private declined = new Map<string, Seen>();
+  /** C11: the folder was found imported once (the guard); only a reset forgets it. */
+  private imported = false;
   private primed = false;
   private timer: TimerHandle | null = null;
   private running = false;
@@ -91,6 +141,8 @@ export class SidecarWatch {
   /** After an import or a remove-all the folder is as the player wants it: forget what changed. */
   reset(): void {
     this.seen.clear();
+    this.declined.clear();
+    this.imported = false;
     this.primed = false;
   }
 
@@ -108,7 +160,7 @@ export class SidecarWatch {
     this.timer = this.clock.setTimeout(() => {
       this.timer = null;
       void this.tick()
-        .catch((err: unknown) => this.opts.log(`sidecar watch: ${err instanceof Error ? err.message : String(err)}`))
+        .catch((err: unknown) => this.opts.log(`sidecar watch: ${errorText(err)}`))
         .then(() => this.schedule(this.intervalMs));
     }, ms);
   }
@@ -125,6 +177,9 @@ export class SidecarWatch {
     }
     const next = new Map<string, Seen>();
     const changed: string[] = [];
+    /** C11: tables with no sidecar that were not already declined at this size + mtime. */
+    const unpatched: { vpxPath: string; st: Seen }[] = [];
+    const withSidecar: string[] = [];
     for (const path of files) {
       let st: Seen;
       try {
@@ -135,16 +190,19 @@ export class SidecarWatch {
       }
       next.set(path, st);
       const prev = this.seen.get(path);
-      if (!this.primed) {
-        // First look: every table that has a sidecar beside it is checked once.
-        if (await this.hasSidecar(path)) changed.push(path);
-      } else if (!prev || prev.size !== st.size || prev.mtimeMs !== st.mtimeMs) {
-        changed.push(path);
+      const sidecar = await this.exists(sidecarPathFor(path));
+      if (sidecar) {
+        withSidecar.push(path);
+        // First look: every table that has a sidecar beside it is checked once; later, only one that moved.
+        if (!this.primed || !prev || prev.size !== st.size || prev.mtimeMs !== st.mtimeMs) changed.push(path);
+      } else {
+        const d = this.declined.get(path);
+        if (!d || d.size !== st.size || d.mtimeMs !== st.mtimeMs) unpatched.push({ vpxPath: path, st });
       }
     }
     this.seen = next;
     this.primed = true;
-    if (changed.length === 0) return [];
+    for (const p of [...this.declined.keys()]) if (!next.has(p)) this.declined.delete(p);
 
     const outcomes: SidecarWatchOutcome[] = [];
     const stale: Stale[] = [];
@@ -154,49 +212,112 @@ export class SidecarWatch {
         const check = await checkSidecar(this.fs, vpxPath, this.opts.manifestDir);
         if (check.state === 'stale') stale.push({ vpxPath, tableId, kind: check.kind, why: check.why });
       } catch (err) {
-        outcomes.push({ vpxPath, result: 'error', detail: err instanceof Error ? err.message : String(err) });
+        outcomes.push({ vpxPath, result: 'error', detail: errorText(err) });
       }
     }
-    if (stale.length > 0) outcomes.push(...(await this.fix(stale)));
+    // C11: new tables are patched only where the player has imported once, and only when VPX's scripts folder is known.
+    const fresh: Fresh[] = [];
+    if (unpatched.length > 0 && this.opts.scriptsDir() !== null && (await this.isImported(withSidecar))) {
+      for (const u of unpatched) fresh.push({ vpxPath: u.vpxPath, tableId: tableIdFor(u.vpxPath), st: u.st, disabled: await this.exists(stalePathFor(u.vpxPath)) });
+    }
+    if (stale.length > 0 || fresh.length > 0) outcomes.push(...(await this.fix(stale, fresh)));
     return outcomes;
   }
 
-  private async hasSidecar(vpxPath: string): Promise<boolean> {
+  /** The C11 guard: a manifest in the manifest dir, or a Castcade sidecar beside one of the tables. */
+  private async isImported(withSidecar: string[]): Promise<boolean> {
+    if (this.imported) return true;
+    const manifests = await this.fs.readdir(this.opts.manifestDir).catch(() => [] as string[]);
+    let found = manifests.some((n) => n.toLowerCase().endsWith('.json'));
+    for (const p of withSidecar) {
+      if (found) break;
+      const text = await this.fs
+        .readFile(sidecarPathFor(p))
+        .then((b) => decodeScript(b))
+        .catch(() => null);
+      found = text !== null && isOurSidecar(text);
+    }
+    this.imported = found;
+    return found;
+  }
+
+  private async exists(path: string): Promise<boolean> {
     try {
-      await this.fs.stat(sidecarPathFor(vpxPath));
+      await this.fs.stat(path);
       return true;
     } catch {
       return false;
     }
   }
 
-  /** Re-make every stale sidecar in one import run (library installed once), disable what no longer fits, tell the player once. */
-  private async fix(stale: Stale[]): Promise<SidecarWatchOutcome[]> {
+  /**
+   * Re-make every stale sidecar and patch every new table in one import run (library installed once), disable
+   * what no longer fits, tell the player once.
+   */
+  private async fix(stale: Stale[], fresh: Fresh[]): Promise<SidecarWatchOutcome[]> {
     for (const s of stale) this.opts.log(`sidecar watch: ${s.tableId} is stale (${s.why})`);
     const scriptsDir = this.opts.scriptsDir();
     const remade = new Set<string>();
+    const failed = new Map<string, string>();
+    /** C11: the fresh tables the plan would patch, by path. */
+    const toPatch = new Map<string, PlanItem>();
+    const outcomes: SidecarWatchOutcome[] = [];
     if (scriptsDir) {
       try {
-        const plan = await planImport(this.fs, { paths: stale.map((s) => s.vpxPath), manifestDir: this.opts.manifestDir });
-        const applied = await applyImport(this.fs, plan, {
+        const stalePlan = stale.length > 0 ? await planImport(this.fs, { paths: stale.map((s) => s.vpxPath), manifestDir: this.opts.manifestDir }) : null;
+        const freshPlan =
+          fresh.length > 0
+            ? await planImport(this.fs, { paths: fresh.map((f) => f.vpxPath), manifestDir: this.opts.manifestDir, ...(this.opts.liveSupportFor ? { liveSupportFor: this.opts.liveSupportFor } : {}) })
+            : null;
+        for (const item of freshPlan?.items ?? []) if (item.action === 'patch' || item.action === 'repatch') toPatch.set(item.vpxPath, item);
+        // Only the `patch` items of the fresh plan are applied: a declined table is never touched here.
+        const items = [...(stalePlan?.items ?? []), ...toPatch.values()];
+        const applied = await applyImport(this.fs, { items, counts: countActions(items) }, {
           manifestDir: this.opts.manifestDir,
           vpxScriptsDir: scriptsDir,
           libSource: this.opts.libSource,
           ...(this.opts.watchOffsetsFor ? { watchOffsetsFor: this.opts.watchOffsetsFor } : {}),
-          onProgress: (done, total, item) => this.opts.log(`sidecar watch: ${done}/${total} ${item.tableId} re-made`),
+          onProgress: (done, total, item) => this.opts.log(`sidecar watch: ${done}/${total} ${item.tableId} ${toPatch.has(item.vpxPath) ? 'patched' : 're-made'}`),
         });
         for (const p of applied.patched) remade.add(p);
-        for (const f of applied.failed) this.opts.log(`sidecar watch: re-patch of ${f.item.tableId} failed: ${f.error}`);
+        for (const f of applied.failed) {
+          failed.set(f.item.vpxPath, f.error);
+          this.opts.log(`sidecar watch: ${toPatch.has(f.item.vpxPath) ? 'patch' : 're-patch'} of ${f.item.tableId} failed: ${f.error}`);
+        }
         if (applied.libInstalled !== 'unchanged') this.opts.log(`sidecar watch: library ${applied.libInstalled} in ${scriptsDir}`);
+        // What the plan declined is remembered at this size + mtime and not read again until the file changes.
+        for (const item of freshPlan?.items ?? []) {
+          if (toPatch.has(item.vpxPath)) continue;
+          const f = fresh.find((x) => x.vpxPath === item.vpxPath);
+          if (f) this.declined.set(f.vpxPath, f.st);
+          const detail = `${item.tableId} not patched (${item.action}: ${item.reason})`;
+          this.opts.log(`sidecar watch: ${detail}`);
+          outcomes.push({ vpxPath: item.vpxPath, result: 'declined', detail });
+        }
       } catch (err) {
-        // Nothing was re-made and nothing is disabled: the sidecars stay as they were and the next look tries again.
-        const detail = err instanceof Error ? err.message : String(err);
+        // Nothing was re-made, patched or disabled: the folder stays as it was and the next look tries again.
+        const detail = errorText(err);
         this.opts.log(`sidecar watch: re-patch failed before any table was touched: ${detail}`);
-        return stale.map((s) => ({ vpxPath: s.vpxPath, result: 'error', detail }));
+        return [...stale, ...fresh].map((s) => ({ vpxPath: s.vpxPath, result: 'error', detail }));
       }
     }
 
-    const outcomes: SidecarWatchOutcome[] = [];
+    const patched: Fresh[] = [];
+    for (const f of fresh) {
+      const item = toPatch.get(f.vpxPath);
+      if (!item) continue;
+      if (remade.has(f.vpxPath)) {
+        const recipe = item.cls ? recipeFor(item.cls) : null;
+        patched.push(f);
+        this.opts.log(`sidecar watch: ${f.tableId} patched (${f.disabled ? 'its earlier patch was disabled' : 'new table'}, recipe ${recipe ?? '?'})`);
+        outcomes.push({ vpxPath: f.vpxPath, result: 'patched', detail: `${f.tableId} is patched (recipe ${recipe ?? '?'}): every game on it posts live from its next launch.` });
+      } else {
+        // A render failure on one table: remembered like a decline so it is not retried (and logged) every look.
+        this.declined.set(f.vpxPath, f.st);
+        outcomes.push({ vpxPath: f.vpxPath, result: 'error', detail: failed.get(f.vpxPath) ?? 'not patched' });
+      }
+    }
+
     const repatched: Stale[] = [];
     const disabled: Stale[] = [];
     for (const s of stale) {
@@ -213,33 +334,43 @@ export class SidecarWatch {
         this.opts.log(`sidecar watch: ${detail}`);
         outcomes.push({ vpxPath: s.vpxPath, result: 'disabled', detail });
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
+        const detail = errorText(err);
         this.opts.log(`sidecar watch: ${s.tableId}: ${detail}`);
         outcomes.push({ vpxPath: s.vpxPath, result: 'error', detail });
       }
     }
-    this.announce(repatched, disabled, outcomes);
+    this.announce(repatched, disabled, patched, outcomes);
     return outcomes;
   }
 
-  /** One notification per kind per look, never one per table. */
-  private announce(repatched: Stale[], disabled: Stale[], outcomes: SidecarWatchOutcome[]): void {
-    const detailOf = (s: Stale): string => outcomes.find((o) => o.vpxPath === s.vpxPath)?.detail ?? s.tableId;
+  /** One notification per look for what was made or re-made, one for what was disabled; never one per table. */
+  private announce(repatched: Stale[], disabled: Stale[], patched: Fresh[], outcomes: SidecarWatchOutcome[]): void {
+    const detailOf = (s: { vpxPath: string; tableId: string }): string => outcomes.find((o) => o.vpxPath === s.vpxPath)?.detail ?? s.tableId;
     const n = (k: number, word: string): string => `${k} ${word}${k === 1 ? '' : 's'}`;
+    let made: { title: string; line: string } | null = null;
     if (repatched.length > 0) {
       const changed = repatched.filter((s) => s.kind === 'changed');
       if (changed.length === 0) {
-        const line = `${repatched.length} table ${repatched.length === 1 ? 'patch' : 'patches'} re-made for hook ${LIB_VERSION}; nothing to do.`;
-        this.opts.log(`sidecar watch: ${line}`);
-        this.opts.notify?.('Castcade updated its table patches', line);
+        made = { title: 'Castcade updated its table patches', line: `${repatched.length} table ${repatched.length === 1 ? 'patch' : 'patches'} re-made for hook ${LIB_VERSION}; nothing to do.` };
       } else if (repatched.length === 1 && changed[0]) {
-        this.opts.log(`sidecar watch: ${detailOf(changed[0])}`);
-        this.opts.notify?.('Castcade re-patched a table', detailOf(changed[0]));
+        made = { title: 'Castcade re-patched a table', line: detailOf(changed[0]) };
       } else {
-        const line = `${n(changed.length, 'table')} changed on disk${repatched.length > changed.length ? ` (and ${repatched.length - changed.length} re-made for hook ${LIB_VERSION})` : ''}; the Castcade patches were re-made.`;
-        this.opts.log(`sidecar watch: ${line}`);
-        this.opts.notify?.('Castcade re-patched tables', line);
+        made = {
+          title: 'Castcade re-patched tables',
+          line: `${n(changed.length, 'table')} changed on disk${repatched.length > changed.length ? ` (and ${repatched.length - changed.length} re-made for hook ${LIB_VERSION})` : ''}; the Castcade patches were re-made.`,
+        };
       }
+    }
+    if (patched.length > 0) {
+      // C11: new tables share this look's one notice with the re-makes.
+      const only = patched[0];
+      const line = patched.length === 1 && only ? detailOf(only) : `Castcade patched ${n(patched.length, 'new table')}: every game on them posts live from their next launch.`;
+      const title = patched.length === 1 ? 'Castcade patched a new table' : 'Castcade patched new tables';
+      made = made ? { title: 'Castcade patched tables', line: `${line} ${made.line}` } : { title, line };
+    }
+    if (made) {
+      this.opts.log(`sidecar watch: ${made.line}`);
+      this.opts.notify?.(made.title, made.line);
     }
     if (disabled.length > 0) {
       const only = disabled[0];

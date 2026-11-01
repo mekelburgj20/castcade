@@ -149,6 +149,13 @@ export interface WitnessStatus {
    * ("Start attempts pressed for …", else ArcAid's reason). Null until pressed in this run.
    */
   attemptStart: { at: string; status: string; text: string } | null;
+  /** C11: the open table is in basic mode and the import would patch it; Status offers Patch now for this file. */
+  patchNow?: { table: string; vpxPath: string } | null;
+  /**
+   * C11: why the last score of a closed table was read only at close (the rung of `exit-rung.ts`): `text` is the
+   * player's sentence, `vpxPath` is set when Patch now would fix it. Null until a close-time capture in this run.
+   */
+  lastClose?: { table: string; at: string; rung: string; kind: string; text: string; vpxPath: string | null } | null;
 }
 
 export interface WitnessEvents {
@@ -192,6 +199,8 @@ export type WitnessNotice =
       table: string;
       /** True when the import would patch this table (recipe A); false when its script type has no recipe yet. */
       patchable: boolean;
+      /** C11: the table file; when `patchable`, the balloon's Patch now patches it. */
+      vpxPath: string;
       title: string;
       message: string;
     }

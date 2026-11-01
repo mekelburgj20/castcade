@@ -16,6 +16,36 @@ export function Status({ state }: { state: CastcadeState }) {
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** C11: Patch now in flight, and its answer per table file. */
+  const [patching, setPatching] = useState(false);
+  const [patched, setPatched] = useState<Record<string, TablesPatchNowResult>>({});
+
+  async function patchNow(vpxPath: string) {
+    setPatching(true);
+    setError(null);
+    try {
+      const r = await state.patchNow(vpxPath);
+      setPatched((p) => ({ ...p, [vpxPath]: r }));
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setPatching(false);
+    }
+  }
+
+  /** The Patch now button, or what it answered. */
+  function patchAction(vpxPath: string) {
+    const r = patched[vpxPath];
+    if (r) return <span className={r.ok ? 'ok' : 'error'}> {r.text}</span>;
+    return (
+      <>
+        {' '}
+        <button type="button" className="small" onClick={() => void patchNow(vpxPath)} disabled={!bridge || patching}>
+          Patch now
+        </button>
+      </>
+    );
+  }
 
   async function togglePaused() {
     if (!bridge || !status) return;
@@ -81,6 +111,16 @@ export function Status({ state }: { state: CastcadeState }) {
               {status.captureMode === 'live'
                 ? status.note ?? 'live — every game, from the Castcade patch inside the table'
                 : status.note ?? 'basic — one score when the table closes (Settings → Import tables → Patch my tables for every game)'}
+              {status.captureMode === 'basic' && status.patchNow && patchAction(status.patchNow.vpxPath)}
+            </dd>
+          </>
+        )}
+        {!status.currentTable && status.lastClose && (
+          <>
+            <dt>Last close</dt>
+            <dd className="warn" title={`rung ${status.lastClose.rung} (${status.lastClose.kind}) · ${formatTime(status.lastClose.at)}`}>
+              {status.lastClose.text}
+              {status.lastClose.vpxPath && patchAction(status.lastClose.vpxPath)}
             </dd>
           </>
         )}

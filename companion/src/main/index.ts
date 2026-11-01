@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
-import { IPC, type AppVersions, type LoginItemState } from './ipc-types.js';
+import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
 import {
   DEFAULT_ARCAID_BASE_URL,
@@ -29,7 +29,7 @@ import {
 import { createTray, type TrayHandle } from './tray.js';
 import { startUpdater, type UpdaterHandle } from './updater.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
-import { createTablesHost, type TablesHost } from './tables-host.js';
+import { createTablesHost, type TablePatchResult, type TablesHost } from './tables-host.js';
 import { SidecarWatch } from './sidecar-watch.js';
 import { manifestDirFor } from '../witness/witness.js';
 import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../media/overlay-server.js';
@@ -191,6 +191,21 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   app.quit();
 }
 
+/** C11: the player's sentence for a Patch now answer (Status and the follow-up balloon say the same). */
+function patchNowResult(r: TablePatchResult, logger: Logger): TablesPatchNowResult {
+  if (r.result === 'failed' || r.result === 'skipped') logger.warn(`tables: Patch now ${r.result}: ${r.detail}`);
+  switch (r.result) {
+    case 'patched':
+      return { ok: true, text: 'patched; reopen the table so every game posts live' };
+    case 'already':
+      return { ok: true, text: 'already patched; reopen the table so every game posts live' };
+    case 'skipped':
+      return { ok: false, text: `not patched: ${r.detail}` };
+    case 'failed':
+      return { ok: false, text: `could not patch it: ${r.detail}. Settings → Import tables → Patch my tables.` };
+  }
+}
+
 function registerIpc(
   store: SettingsStore,
   host: WitnessHost,
@@ -257,6 +272,13 @@ function registerIpc(
     } finally {
       watch.reset();
     }
+  });
+  // C11: Patch now from Status. Only a table file the witness itself offered (the open table, or the last close's).
+  ipcMain.handle(IPC.tablesPatchNow, async (_e, vpxPath: unknown) => {
+    const path = str(vpxPath, 'table file');
+    const st = host.status();
+    if (path !== st.patchNow?.vpxPath && path !== st.lastClose?.vpxPath) throw new Error('Castcade did not offer to patch that table');
+    return patchNowResult(await tables.patchTable(path), logger);
   });
   ipcMain.handle(IPC.appOpenExternal, async (_e, url: unknown) => {
     const target = str(url, 'url');
@@ -365,6 +387,7 @@ async function main(): Promise<void> {
     manifestDir,
     libSource,
     watchOffsetsFor: (rom) => tables.watchOffsetsFor(rom),
+    liveSupportFor: (rom) => tables.liveSupportFor(rom),
     exclusive: (fn) => tables.exclusive(fn),
     log: (line) => logger.info(line),
     notify: (title, body) => tray?.notify(title, body),
@@ -461,6 +484,17 @@ async function main(): Promise<void> {
 
   registerIpc(store, host, tables, watch, logger, streamHost, matchHost);
   host.onNotice((n) => {
+    // C11: a table the import would patch: clicking the balloon is Patch now.
+    if (n.kind === 'unpatched' && n.patchable) {
+      tray?.notify(n.title, `${n.message} Click here to patch it now.`, () => {
+        void tables
+          .patchTable(n.vpxPath)
+          .then((r) => patchNowResult(r, logger))
+          .catch((e: unknown): TablesPatchNowResult => ({ ok: false, text: `could not patch it: ${describeError(e)}` }))
+          .then((r) => tray?.notify(r.ok ? 'Castcade patched the table' : 'Castcade could not patch the table', `${n.table}: ${r.text}.`));
+      });
+      return;
+    }
     tray?.notify(n.title, n.message);
     // C10: a patch the VPX editor saved into a table gets a fresh sidecar over it, so the next launch runs one Castcade can keep current.
     if (n.kind === 'embedded_patch') {
