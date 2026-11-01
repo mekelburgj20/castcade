@@ -41,6 +41,6 @@ CI player · `arcade/` RetroArch profiles and ROM maps · `fixtures/` recorded j
 
 ## License
 
-GPLv3. Castcade never bundles Visual Pinball, VPinMAME, RetroArch, FBNeo, ROMs or table files; it finds the
+GPLv3 (the full text is in [LICENSE](LICENSE)). Castcade never bundles Visual Pinball, VPinMAME, RetroArch, FBNeo, ROMs or table files; it finds the
 copies you already have, hashes them, and launches them. The bundled ffmpeg is a GPLv3 build; its Corresponding
 Source and our written offer are in [docs/ffmpeg-source.md](docs/ffmpeg-source.md).
