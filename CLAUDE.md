@@ -96,7 +96,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 |---|---|---|
 | `protocol/` | JSON schemas for every match message, version constant, generated spec | 1 |
 | `companion/` | Electron + TS app: modules `patcher`, `witness`, `match`, `media`, `launch` | 2+ |
-| `vpx-hook/` | `castcade.vbs` shared library (0.4.0), `spike/` Phase 0 tooling, patch recipes, optional `core.vbs` bulk patch | 0, 3 |
+| `vpx-hook/` | `castcade.vbs` shared library (0.5.0: NVRAM chaining, script-event subs for originals, the `VPinball.ScoreServer` shim), `spike/` Phase 0 tooling, patch recipes, optional `core.vbs` bulk patch | 0, 3 |
 | `vr-overlay/` | `castcade-vr-overlay.exe`: C++17/CMake/MSVC OpenVR overlay helper that draws the match panel in the headset (stdin frame pipe; OpenVR SDK pinned by tag + sha256; CI `vr-overlay.yml` is the build of record) | alpha (D7) |
 | `vr-layer/` | `XrApiLayer_castcade_panel.dll` + manifest: C++17/CMake/MSVC implicit OpenXR API layer that appends the match panel as a quad inside VPinballX on non-SteamVR runtimes (frames over `\\.\pipe\castcade-panel`, same format as the helper's stdin; OpenXR headers pinned by tag + sha256; CI `vr-layer.yml` is the build of record) | alpha (D7.3) |
 | `fakeclient/` | scripted protocol player, no emulator, for CI | 1 |

@@ -7,6 +7,38 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel agents while the 0.2.27 headset test waited.
+
+### Table import: original tables post (C1.1)
+- Recipes **B** (JPSalas-pattern originals: `ResetForNewGame`, `AddScore`, top of `EndOfBall`, `EndOfGame`), **C**
+  (Scorbit-anchored: the seven arguments of `Scorbit.SendUpdate`, start/stop one call site up) and **D** (ScoreServer:
+  `CreateObject("VPinball.ScoreServer")` becomes the library's shim, which journals `SetGameState` / `SetScoresArray` as
+  the usual events and forwards every call to the real object when one exists). Class E (generic) is still skipped with
+  its reason. The import plans and applies B–D, manifests accept them, the undo is exact for A–D, and the unpatched-table
+  notice sends B/C/D players to Patch my tables. `castcade.vbs` 0.5.0 (`Castcade_PlayerScores`, the shim, an
+  informational `score_server` journal line); recipe versions are per recipe (`RECIPE_VERSIONS`, A 0.3.1, B/C/D 0.1.0),
+  so a later B bump no longer re-makes A sidecars. The lib bump re-makes every existing sidecar on the first look (B15).
+  A table an older build skipped needs one press of Patch my tables. `companion/src/patcher/render-originals.ts`,
+  `render.ts`, `import.ts`, `vpx-hook/castcade.vbs`; design §5 "As built".
+- Rig survey (C1.2): 140 tables, A 102, B 24, C 1, E 9, X 3, 1 unreadable; all 25 B/C render without a partial.
+
+### Match (alpha, A8)
+- Every client sees which participant's table differs, not only its own: `HELLO_ACK.tableMismatches` (additive,
+  defaulted, still protocol 2; re-sent to everyone on each lobby change; not in MATCH_READY, which is hashed into the log).
+- The mismatch list survives a host transfer (`resumeFromLog` / adopt options).
+- After a drop, the reconnecting companion sends RESUME itself; the host's Match tab has a Resume button for a pause
+  nobody resumes; a pending host transfer shows on the Match tab (no accept/decline: the engine acks by log agreement).
+- The host's listener opens only after the panel is up and the public-IP lookup has settled; a port in use tears the
+  half-built match down. `protocol/src/messages.ts`, `companion/src/match/{host,client,controller}.ts`, `main/match-host.ts`.
+
+### Shell
+- E6: Restart to update runs the orderly shutdown (capture, match, overlays, host) before the updater installs, so a
+  running capture's ffmpeg pair is no longer orphaned. `companion/src/main/index.ts`.
+
+### Docs
+- I1: `docs/design/sanctioned-vpx-build.md`, the design of the sanctioned VPX build (ADR 0008), a draft for the owner.
+- H5: `LICENSE` (GPLv3) at the repo root.
+
 ## [0.2.27] — 2026-10-31
 
 After the third match (0.2.26): the OpenXR layer loaded and drew in both headsets, but the panel sat in the line of
