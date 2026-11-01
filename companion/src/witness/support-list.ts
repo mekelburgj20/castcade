@@ -81,6 +81,8 @@ export interface SupportList {
     romsFromCorpus: number;
     /** No-ROM games the fallback left alone because two VPS games share the name and manufacturer. */
     romsAmbiguous: number;
+    /** Their names (name, manufacturer, year), sorted. */
+    romsAmbiguousGames: string[];
     /** Unsupported games by reason; sums to `unsupported`. */
     byReason: Record<string, number>;
     /** Games by their platform (`none` for no mapped ROM); each row sums to its games. */
@@ -167,6 +169,8 @@ function fallbackTables(input: SupportListInput, vpxGames: VpsGameEntry[]): Fall
 
 /** The corpus ROMs for a game VPS lists none for; 'ambiguous' when a second VPS game has the same name and manufacturer. */
 function corpusRomsFor(game: VpsGameEntry, fb: Fallback): string[] | 'ambiguous' | null {
+  // An EM or purely mechanical table never runs a PinMAME ROM; only solid state (type SS, or unknown) can.
+  if (game.type !== null && game.type.toUpperCase() !== 'SS') return null;
   const found = (fb.byName.get(normalizeVpsName(game.name)) ?? []).filter((r) => sameMfr(r.manufacturer, game.manufacturer));
   if (found.length === 0) return null;
   // The corpus has no years, so a same-named pair of one manufacturer cannot be told apart: no guess.
@@ -174,12 +178,12 @@ function corpusRomsFor(game: VpsGameEntry, fb: Fallback): string[] | 'ambiguous'
   return found.map((r) => r.rom);
 }
 
-function gameSupport(game: VpsGameEntry, input: SupportListInput, fb: Fallback, tally: { ambiguous: number }): GameSupport {
+function gameSupport(game: VpsGameEntry, input: SupportListInput, fb: Fallback, tally: { ambiguous: string[] }): GameSupport {
   let romIds = [...new Set(game.roms)];
   let romSource: RomSource = 'vps';
   if (romIds.length === 0) {
     const found = corpusRomsFor(game, fb);
-    if (found === 'ambiguous') tally.ambiguous++;
+    if (found === 'ambiguous') tally.ambiguous.push(`${game.name} (${game.manufacturer ?? '?'}, ${game.year ?? '?'})`);
     else if (found) {
       romIds = found;
       romSource = 'corpus';
@@ -217,7 +221,7 @@ function sortedRecord<T>(entries: Map<string, T>): Record<string, T> {
 export function buildSupportList(input: SupportListInput): SupportList {
   const vpxGames = input.vps.games.filter((g) => g.tables.some((t) => t.format === 'VPX'));
   const fb = fallbackTables(input, vpxGames);
-  const tally = { ambiguous: 0 };
+  const tally = { ambiguous: [] as string[] };
   const games = vpxGames
     .map((g) => gameSupport(g, input, fb, tally))
     .sort((a, b) => a.name.localeCompare(b.name, 'en') || (a.vpsId < b.vpsId ? -1 : a.vpsId > b.vpsId ? 1 : 0));
@@ -235,7 +239,7 @@ export function buildSupportList(input: SupportListInput): SupportList {
   return {
     generatedAt: input.generatedAt,
     versions: input.versions,
-    counts: { games: games.length, ...totals, romsFromCorpus: games.filter((g) => g.romSource === 'corpus').length, romsAmbiguous: tally.ambiguous, byReason: sortedRecord(byReason), byPlatform: sortedRecord(byPlatform) },
+    counts: { games: games.length, ...totals, romsFromCorpus: games.filter((g) => g.romSource === 'corpus').length, romsAmbiguous: tally.ambiguous.length, romsAmbiguousGames: tally.ambiguous.sort(), byReason: sortedRecord(byReason), byPlatform: sortedRecord(byPlatform) },
     games,
   };
 }

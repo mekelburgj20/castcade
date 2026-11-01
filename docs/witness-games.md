@@ -6,7 +6,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 ## Versions
 
-- Generated: 2026-11-01T05:51:02.453Z
+- Generated: 2026-11-01T05:55:10.694Z
 - VPS database (vps-db commit): `cce9160b30110ee174786239fdfb30a6e4caaab7`
 - NVRAM maps (pinmame-nvram-maps commit): `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`
 - Castcade companion: 0.2.27
@@ -56,7 +56,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | no map | 0 | 0 | 1677 | 1677 |
 | **All** | **13** | **320** | **2032** | **2365** |
 
-77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 7 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
+77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 2 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
 
 ### Why unsupported
 

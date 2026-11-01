@@ -126,3 +126,4 @@ writeFileSync(join(opts.out, 'witness-games.json'), JSON.stringify(list, null, 2
 writeFileSync(join(opts.out, 'witness-games.md'), markdown(list));
 const { counts } = list;
 console.log(`wrote ${join(opts.out, 'witness-games.json')} and witness-games.md: ${counts.games} games, ${counts.verified} verified, ${counts.supported} supported, ${counts.unsupported} unsupported, ${counts.romsFromCorpus} with ROMs from the corpus (VPS lists none), ${counts.romsAmbiguous} ambiguous`);
+for (const n of counts.romsAmbiguousGames) console.log(`ambiguous (left as no ROM): ${n}`);

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-01T05:51:02.453Z",
+  "generatedAt": "2026-11-01T05:55:10.694Z",
   "versions": {
     "vps": "cce9160b30110ee174786239fdfb30a6e4caaab7",
     "maps": "f0c422099f0b50b69bfdf6d071a6653a8b25a6fd",
@@ -11,7 +11,11 @@
     "supported": 320,
     "unsupported": 2032,
     "romsFromCorpus": 77,
-    "romsAmbiguous": 7,
+    "romsAmbiguous": 2,
+    "romsAmbiguousGames": [
+      "Charlie's Angels (Gottlieb, 1978)",
+      "Dragon (SS) (Gottlieb, 1978)"
+    ],
     "byReason": {
       "alving: no scores, game_over, current_ball, current_player in the map": 1,
       "atari-gen1: scores, game_over, current_ball, current_player in CPU RAM": 4,

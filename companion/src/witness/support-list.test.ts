@@ -163,6 +163,12 @@ describe('corpus ROM fallback for games VPS lists no ROM for (B23)', () => {
     expect(list.counts).toMatchObject({ romsFromCorpus: 0, romsAmbiguous: 2 });
   });
 
+  it('takes no corpus ROM for an EM or pure-mechanical game, but treats an unknown type as solid state', async () => {
+    const list = await run([noRom('em', 'Twin Peaks', 'Bally', { type: 'EM' }), noRom('nul', 'Medieval Madness', 'Midway', { type: null })]);
+    expect(find(list, 'em')).toMatchObject({ romSource: 'vps', reason: NO_ROM_REASON, roms: [] });
+    expect(find(list, 'nul').romSource).toBe('corpus');
+  });
+
   it('does not touch a game that lists ROMs', async () => {
     const list = await run([noRom('c', 'Medieval Madness', 'Williams', { roms: ['mm_10'] })]);
     expect(find(list, 'c')).toMatchObject({ romSource: 'vps', status: 'unsupported', reason: NO_MAP_REASON });
