@@ -244,6 +244,7 @@ export function matchSignalling(role: HostMatch | ClientMatch, localId: string, 
     const signal: MediaSignal = { kind: p.kind };
     if (p.sdp !== undefined) signal.sdp = p.sdp;
     if (p.candidate !== undefined) signal.candidate = { ...p.candidate };
+    if (p.stereo !== undefined) signal.stereo = p.stereo;
     if (listener) return listener(from, signal);
     held.push([from, signal]);
     if (held.length > max) held.shift();

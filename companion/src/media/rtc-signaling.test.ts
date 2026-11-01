@@ -10,9 +10,15 @@ const settle = async (n = 20): Promise<void> => {
 /**
  * A strict stand-in for RTCPeerConnection's signalling state machine: it throws where the browser would throw
  * (a remote offer over a local one, an answer with no offer, a candidate before the remote description), so the
- * negotiator's explicit rollback and its ICE queue are what make the tests pass.
+ * negotiator's explicit rollback and its ICE queue are what make the tests pass. D2.7 (2026-11-01): each description
+ * names the connection that made it (`pc<n>`), and a remote offer from another connection than the one this one already
+ * negotiated with is refused the way Chromium refused it on the owner's rig (m-lines in another order).
  */
+const pcTag = (sdp: string | undefined): string => /\bpc\d+\b/.exec(sdp ?? '')?.[0] ?? '';
+const MLINE_ERROR = "Failed to set remote offer sdp: The order of m-lines in subsequent offer doesn't match order from previous offer/answer.";
 class FakePc implements NegotiablePc {
+  private static serial = 0;
+  readonly tag = `pc${++FakePc.serial}`;
   signalingState: 'stable' | 'have-local-offer' | 'have-remote-offer' | 'closed' = 'stable';
   localDescription: { type: string; sdp: string } | null = null;
   remoteDescription: { type: string; sdp: string } | null = null;
@@ -38,12 +44,12 @@ class FakePc implements NegotiablePc {
       return;
     }
     if (this.signalingState === 'have-remote-offer') {
-      this.localDescription = { type: 'answer', sdp: `answer ${this.owner}->${this.peer} #${++this.n}` };
+      this.localDescription = { type: 'answer', sdp: `answer ${this.owner}->${this.peer} ${this.tag} #${++this.n}` };
       this.stableLocal = this.localDescription;
       this.signalingState = 'stable';
       return;
     }
-    this.localDescription = { type: 'offer', sdp: `offer ${this.owner}->${this.peer} #${++this.n}` };
+    this.localDescription = { type: 'offer', sdp: `offer ${this.owner}->${this.peer} ${this.tag} #${++this.n}` };
     this.signalingState = 'have-local-offer';
   }
 
@@ -51,6 +57,7 @@ class FakePc implements NegotiablePc {
     await tick();
     if (d.type === 'offer') {
       if (this.signalingState !== 'stable') throw this.fail(`remote offer in ${this.signalingState}`);
+      if (this.remoteDescription && pcTag(this.remoteDescription.sdp) !== pcTag(d.sdp)) throw this.fail(MLINE_ERROR);
       this.remoteDescription = { type: 'offer', sdp: d.sdp ?? '' };
       this.signalingState = 'have-remote-offer';
       return;
@@ -94,18 +101,6 @@ function network(ids: string[]) {
   const pcs: FakePc[] = [];
   const errors: string[] = [];
   const meshes: Record<string, SignalingMesh> = {};
-  for (const id of ids) {
-    meshes[id] = new SignalingMesh(
-      id,
-      (peer) => {
-        const pc = new FakePc(id, peer);
-        pcs.push(pc);
-        return pc;
-      },
-      (to, signal) => queue.push({ from: id, to, signal }),
-      (peer, e, where) => errors.push(`${id}/${peer} ${where}: ${String(e)}`),
-    );
-  }
   const deliver = async (pick: (w: Wire) => boolean = () => true): Promise<number> => {
     let n = 0;
     for (let i = 0; i < queue.length; ) {
@@ -130,8 +125,30 @@ function network(ids: string[]) {
       }
     }
   };
+  const reopens: string[] = [];
+  const mesh = (id: string): SignalingMesh => {
+    const m = new SignalingMesh(
+      id,
+      (peer) => {
+        const pc = new FakePc(id, peer);
+        pcs.push(pc);
+        return pc;
+      },
+      (to, signal) => queue.push({ from: id, to, signal }),
+      (peer, e, where) => errors.push(`${id}/${peer} ${where}: ${String(e)}`),
+    );
+    m.onReopen = (peer, why) => reopens.push(`${id}/${peer} ${why}`);
+    return m;
+  };
+  for (const id of ids) meshes[id] = mesh(id);
+  /** D2.7: `id` rebuilt its panel page: a new mesh with no connections (the old page and its connections are gone). */
+  const rebuild = (id: string): SignalingMesh => {
+    meshes[id]?.close();
+    meshes[id] = mesh(id);
+    return meshes[id];
+  };
   const pc = (owner: string, peer: string): FakePc => pcs.filter((p) => p.owner === owner && p.peer === peer).pop()!;
-  return { queue, pcs, errors, meshes, deliver, run, pc };
+  return { queue, pcs, errors, meshes, deliver, run, pc, rebuild, reopens };
 }
 
 const paired = (a: FakePc, b: FakePc): boolean =>
@@ -208,13 +225,17 @@ describe('perfect negotiation (D2)', () => {
     const oldA = net.pc('a', 'b');
     expect(paired(oldA, net.pc('b', 'a'))).toBe(true);
 
-    // Only a noticed the drop: a re-opens, b's existing connection takes the new offer as a renegotiation.
+    // Only a noticed the drop: a re-opens; b's existing connection refuses the new connection's offer (D2.7), so b
+    // re-opens too and the fresh one takes it.
+    const oldB = net.pc('b', 'a');
     net.meshes['a']?.add('b');
     expect(oldA.signalingState).toBe('closed');
     const newA = net.pc('a', 'b');
     expect(newA).not.toBe(oldA);
     newA.onnegotiationneeded?.();
     await net.run();
+    expect(net.pc('b', 'a')).not.toBe(oldB);
+    expect(oldB.signalingState).toBe('closed');
     expect(paired(newA, net.pc('b', 'a'))).toBe(true);
 
     // Both noticed: both re-open and both offer (glare on fresh connections).
@@ -227,10 +248,80 @@ describe('perfect negotiation (D2)', () => {
     expect(net.errors).toEqual([]);
   });
 
+  it('D2.7: a fresh offer onto an established connection (the peer rebuilt its page) reopens, and the pair ends connected', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await net.run();
+    const oldB = net.pc('b', 'a');
+    expect(paired(net.pc('a', 'b'), oldB)).toBe(true);
+
+    // a's panel moved into the headset: a new page, a new connection, an offer and its ICE, no reset (an old companion).
+    net.rebuild('a').add('b');
+    const freshA = net.pc('a', 'b');
+    freshA.onnegotiationneeded?.();
+    await settle();
+    freshA.gather(7);
+    await net.run();
+    expect(oldB.errors).toEqual([MLINE_ERROR]);
+    expect(oldB.signalingState).toBe('closed');
+    const freshB = net.pc('b', 'a');
+    expect(freshB).not.toBe(oldB);
+    expect(paired(freshA, freshB)).toBe(true);
+    // the candidate queued behind the refused offer followed it to the fresh connection
+    expect(freshB.added.map((c) => c.candidate)).toEqual([expect.stringContaining('10.0.0.7 ')]);
+    expect(net.reopens).toEqual(['b/a stale_offer']);
+    expect(net.errors).toEqual([]);
+  });
+
+  it('D2.7: a reset before the fresh offer reopens first: nothing is refused, crossing offers settle, the pair connects', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const oldB = net.pc('b', 'a');
+
+    // the rebuilt side says reset first (the page does, `PanelAttach.reset`), then offers
+    net.queue.push({ from: 'a', to: 'b', signal: { kind: 'reset' } });
+    net.rebuild('a').add('b');
+    const freshA = net.pc('a', 'b');
+    freshA.onnegotiationneeded?.();
+    await settle();
+    await net.deliver((w) => w.signal.kind === 'reset');
+    expect(oldB.signalingState).toBe('closed');
+    // b's fresh connection offers too (its tracks): glare on fresh connections, resolved as usual
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    expect(oldB.errors).toEqual([]);
+    expect(paired(freshA, net.pc('b', 'a'))).toBe(true);
+    expect(net.reopens).toEqual(['b/a reset']);
+    expect(net.errors).toEqual([]);
+  });
+
+  it('D2.7: a reset from a peer not added yet drops what it sent before; stereo signals never touch the connection', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await settle();
+    await net.deliver();
+    expect(net.meshes['b']?.early.get('a')).toHaveLength(1);
+    await net.meshes['b']?.receive('a', { kind: 'reset' });
+    expect(net.meshes['b']?.early.has('a')).toBe(false);
+    expect(net.reopens).toEqual([]);
+    const pc = new FakePc('a', 'b');
+    const n = new PeerNegotiator(pc, true, () => undefined);
+    await n.receive({ kind: 'stereo', stereo: 'sbs' });
+    await n.receive({ kind: 'reset' });
+    expect(pc.signalingState).toBe('stable');
+    expect(pc.errors).toEqual([]);
+  });
+
   it('a stale answer (for an offer that was rolled back or belongs to an old connection) is ignored', async () => {
     const pc = new FakePc('a', 'b');
     const n = new PeerNegotiator(pc, true, () => undefined);
-    await n.receive({ kind: 'answer', sdp: 'answer b->a #1' });
+    await n.receive({ kind: 'answer', sdp: 'answer b->a pc0 #1' });
     expect(pc.errors).toEqual([]);
     expect(pc.remoteDescription).toBeNull();
   });

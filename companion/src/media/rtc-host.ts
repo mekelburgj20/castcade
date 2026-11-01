@@ -255,6 +255,22 @@ export function videoFrameFrom(m: unknown): VideoFrame | null {
   return { width, height, rgba, stereo };
 }
 
+/**
+ * D2.7 (2026-11-01): one line per peer whose connection changed (ICE state, signalling state, or a reopen), for
+ * companion.log: the page reports every 2 s, and an unchanged peer says nothing. Empty when nothing changed.
+ */
+export function peerChanges(before: PanelPageStatus['peers'] | null | undefined, after: PanelPageStatus['peers']): string[] {
+  const out: string[] = [];
+  for (const [id, p] of Object.entries(after)) {
+    const b = before?.[id];
+    if (b && b.ice === p.ice && b.signaling === p.signaling && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
+    const reopened = (p.reopens ?? 0) > (b?.reopens ?? 0) ? `, connection replaced (${p.reopens} so far)` : '';
+    out.push(`media: peer ${id}: ice ${p.ice}, signalling ${p.signaling ?? '?'}${reopened}`);
+  }
+  for (const id of Object.keys(before ?? {})) if (!(id in after)) out.push(`media: peer ${id}: connection closed`);
+  return out;
+}
+
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */
 export function mergeStatus(
   page: PanelPageStatus | null,
@@ -275,7 +291,7 @@ export function mergeStatus(
 function isSignal(v: unknown): v is { to: MatchPlayerId; signal: MediaSignal } {
   if (typeof v !== 'object' || v === null) return false;
   const m = v as { to?: unknown; signal?: { kind?: unknown } };
-  return typeof m.to === 'string' && typeof m.signal === 'object' && m.signal !== null && (m.signal.kind === 'offer' || m.signal.kind === 'answer' || m.signal.kind === 'ice');
+  return typeof m.to === 'string' && typeof m.signal === 'object' && m.signal !== null && ['offer', 'answer', 'ice', 'reset', 'stereo'].includes(String(m.signal.kind));
 }
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -396,6 +412,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   ipcMain.on(PANEL_CHANNELS.status, (e, s: PanelPageStatus) => {
     if (!fromPanel(e)) return;
     if (page?.error !== s.error && s.error) log.warn(`media: panel: ${s.error}`);
+    for (const line of peerChanges(page?.peers, s.peers ?? {})) log.info(line);
     const ended = page?.capturing === true && !s.capturing;
     page = s;
     // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
@@ -787,7 +804,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     await pickCapture(gen);
     if (gen !== generation) return;
     const s = opts.settings.get();
-    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending };
+    // D2.7 (2026-11-01): a re-attach (`setVr`) replaces a page whose connections still stand on the peers' side.
+    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending, reset: restore !== null };
     log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
     if (capture) {
       announced = capture;
@@ -871,7 +889,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       // The page holds the connections and the UI: a new offscreen window gets everything the old one was told
       // (the microphone and the mute come from media.json, as at any attach).
       const keep = [...peers];
-      log.info(`media: moving the panel into the headset (offscreen window; ${keep.length} peer(s) reconnect)`);
+      log.info(`media: moving the panel into the headset (offscreen window; ${keep.length} peer(s) reset and reconnect)`);
       await attach(sig, keep, { state: lastState, sending });
     },
     microphones: () => mics,

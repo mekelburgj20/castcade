@@ -271,6 +271,7 @@ describe('createRtcHost (D2)', () => {
       micDeviceId: 'headset',
       muted: false,
       sending: false,
+      reset: false,
     });
     expect(w.webContents.sent[2]?.[1]).toEqual({ from: 'krobs', signal: { kind: 'offer', sdp: 'v=0 krobs' } });
 
@@ -278,11 +279,30 @@ describe('createRtcHost (D2)', () => {
     fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'answer', sdp: 'v=0 owner' } });
     fake.ipc.get(PANEL_CHANNELS.send)?.({ sender: {} }, { to: 'krobs', signal: { kind: 'answer', sdp: 'x' } });
     fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'bogus' } });
-    expect(net.sent).toEqual([['krobs', { kind: 'answer', sdp: 'v=0 owner' }]]);
+    fromPage(w, PANEL_CHANNELS.send, { to: 'krobs', signal: { kind: 'reset' } });
+    expect(net.sent).toEqual([
+      ['krobs', { kind: 'answer', sdp: 'v=0 owner' }],
+      ['krobs', { kind: 'reset' }],
+    ]);
 
     // status: from the page, with main's capture label
     fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(host.status()).toMatchObject({ attached: true, mic: 'open', captureSource: LABEL, lastError: null, peers: { krobs: { ice: 'connected' } } });
+    // D2.7: one log line per peer whose connection changed, not one per report
+    logs.length = 0;
+    const report = (ice: string, signaling: string, reopens: number) =>
+      fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice, receivingVideo: false, receivingAudio: true, signaling, reopens } }, mic: 'open', capturing: true, error: null });
+    report('connected', 'stable', 0);
+    report('connected', 'stable', 0);
+    report('checking', 'stable', 1);
+    report('checking', 'stable', 1);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: {}, mic: 'open', capturing: true, error: null });
+    expect(logs).toEqual([
+      'media: peer krobs: ice connected, signalling stable',
+      'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
+      'media: peer krobs: connection closed',
+    ]);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(statuses.length).toBeGreaterThan(0);
 
     // frames: paint -> PanelFrame
@@ -420,7 +440,8 @@ describe('createRtcHost (D2)', () => {
     fromPage(vrWin, PANEL_CHANNELS.ready);
     expect(vrWin.webContents.sent[0]).toEqual([
       PANEL_CHANNELS.attach,
-      expect.objectContaining({ localId: 'owner', peers: ['third', 'fourth'], micDeviceId: 'headset', muted: true, sending: true }),
+      // D2.7: `reset`: the peers' connections to the old page still stand; the new page tells them to reopen first.
+      expect.objectContaining({ localId: 'owner', peers: ['third', 'fourth'], micDeviceId: 'headset', muted: true, sending: true, reset: true }),
     ]);
     expect(vrWin.webContents.sent.slice(1)).toEqual([[PANEL_CHANNELS.state, state]]);
     // Signals still reach the (new) page; frames reach the overlay.

@@ -9,6 +9,13 @@
  * negotiation is needed; when two offers cross, the polite peer (the lexically smaller player id) rolls its own back
  * and answers, the impolite one ignores the other's offer. Signals of one peer are applied strictly in arrival order;
  * ICE candidates that arrive before the remote description wait for it.
+ *
+ * D2.7 (2026-11-01, the owner's log): perfect negotiation assumes both connections persist. When one side rebuilds its
+ * panel page (its panel moved into the headset), its fresh connection offers onto the other side's established one,
+ * which refuses it ("The order of m-lines in subsequent offer doesn't match order from previous offer/answer") and
+ * voice and video die both ways. Two halves: an offer that fails to apply on a connection that already had a remote
+ * description reopens that peer through the mesh's factory and applies the offer (and every signal queued behind it)
+ * to the fresh connection; and the rebuilt side sends `reset` first, so the other side reopens before the offer lands.
  */
 import type { MatchPlayerId, MediaSignal } from './match-media-types.js';
 
@@ -54,12 +61,23 @@ export class PeerNegotiator {
   polite: boolean;
   send: (s: MediaSignal) => void;
   onError: (e: unknown, where: string) => void;
+  /** D2.7: an offer this connection cannot take (it belongs to a newer remote connection); the mesh reopens the peer. */
+  onStale: ((offer: MediaSignal) => void) | null;
+  /** D2.7: set when the mesh replaced this negotiator after a stale offer: signals still queued here go to the new one. */
+  forward: ((s: MediaSignal) => Promise<void>) | null = null;
 
-  constructor(pc: NegotiablePc, polite: boolean, send: (s: MediaSignal) => void, onError?: (e: unknown, where: string) => void) {
+  constructor(
+    pc: NegotiablePc,
+    polite: boolean,
+    send: (s: MediaSignal) => void,
+    onError?: (e: unknown, where: string) => void,
+    onStale?: (offer: MediaSignal) => void,
+  ) {
     this.pc = pc;
     this.polite = polite;
     this.send = send;
     this.onError = onError ?? (() => undefined);
+    this.onStale = onStale ?? null;
     pc.onnegotiationneeded = () => void this.negotiationNeeded();
     pc.onicecandidate = (ev) => this.localCandidate(ev.candidate);
   }
@@ -87,7 +105,7 @@ export class PeerNegotiator {
 
   /** A signal from the remote peer. Applied after every earlier one; the promise never rejects. */
   receive(signal: MediaSignal): Promise<void> {
-    const run = this.chain.then(() => this.apply(signal));
+    const run = this.chain.then(() => (this.closed && this.forward ? this.forward(signal) : this.apply(signal)));
     this.chain = run.catch(() => undefined);
     return this.chain;
   }
@@ -113,6 +131,8 @@ export class PeerNegotiator {
 
   async apply(signal: MediaSignal): Promise<void> {
     if (this.closed) return;
+    // `reset` is the mesh's (it replaces this negotiator); `stereo` is the page's. Neither touches the connection.
+    if (signal.kind === 'reset' || signal.kind === 'stereo') return;
     if (signal.kind === 'ice') {
       const c = signal.candidate;
       if (!c) return;
@@ -134,6 +154,8 @@ export class PeerNegotiator {
     if (this.ignoreOffer) return;
     // An answer with no offer of ours outstanding is stale: one for an offer we rolled back, or an old connection's.
     if (signal.kind === 'answer' && this.pc.signalingState !== 'have-local-offer') return;
+    // D2.7: an offer onto a connection that was already negotiated, which it refuses, comes from a new remote connection.
+    const negotiated = this.pc.remoteDescription !== null;
     try {
       if (offerCollision) await this.pc.setLocalDescription({ type: 'rollback' });
       await this.pc.setRemoteDescription({ type: signal.kind, sdp: signal.sdp });
@@ -144,6 +166,11 @@ export class PeerNegotiator {
         if (!this.closed && d && d.type === 'answer') this.send({ kind: 'answer', sdp: d.sdp });
       }
     } catch (e) {
+      if (this.closed) return;
+      if (signal.kind === 'offer' && negotiated && this.onStale) {
+        this.onStale(signal);
+        return;
+      }
       this.onError(e, signal.kind);
     }
   }
@@ -170,6 +197,8 @@ export class SignalingMesh {
   open: (peer: MatchPlayerId) => NegotiablePc;
   sendTo: (to: MatchPlayerId, s: MediaSignal) => void;
   onError: (peer: MatchPlayerId, e: unknown, where: string) => void;
+  /** D2.7: the connection to `peer` was replaced: `why` is `reset` (the peer said so) or `stale_offer` (its offer failed). */
+  onReopen: (peer: MatchPlayerId, why: 'reset' | 'stale_offer') => void = () => undefined;
   peers: Map<MatchPlayerId, PeerNegotiator> = new Map();
   early: Map<MatchPlayerId, MediaSignal[]> = new Map();
 
@@ -195,10 +224,25 @@ export class SignalingMesh {
       isPolite(this.localId, peer),
       (s) => this.sendTo(peer, s),
       (e, where) => this.onError(peer, e, where),
+      (offer) => this.reopen(peer, n, offer),
     );
     this.peers.set(peer, n);
     for (const s of held) void n.receive(s);
     return n;
+  }
+
+  /**
+   * D2.7: `stale`'s connection refused `offer` (the peer's connection is newer): a fresh connection takes the offer, and
+   * the signals already queued on the old one (that offer's ICE) follow it there in order. Only the current negotiator
+   * reopens; a fresh connection has no remote description, so it never reopens itself in a loop.
+   */
+  reopen(peer: MatchPlayerId, stale: PeerNegotiator, offer: MediaSignal): void {
+    if (this.peers.get(peer) !== stale) return;
+    const n = this.add(peer);
+    if (!n) return;
+    stale.forward = (s) => n.receive(s);
+    void n.receive(offer);
+    this.onReopen(peer, 'stale_offer');
   }
 
   remove(peer: MatchPlayerId): boolean {
@@ -216,9 +260,18 @@ export class SignalingMesh {
   }
 
   receive(from: MatchPlayerId, signal: MediaSignal): Promise<void> {
+    if (from === this.localId) return Promise.resolve();
+    if (signal.kind === 'reset') {
+      // D2.7: the peer's connections are new. Everything it sent before belongs to its old one: dropped, not forwarded.
+      this.early.delete(from);
+      if (this.peers.has(from)) {
+        this.add(from);
+        this.onReopen(from, 'reset');
+      }
+      return Promise.resolve();
+    }
     const n = this.peers.get(from);
     if (n) return n.receive(signal);
-    if (from === this.localId) return Promise.resolve();
     const held = this.early.get(from) ?? [];
     if (held.length < SignalingMesh.MAX_EARLY_SIGNALS) held.push(signal);
     this.early.set(from, held);

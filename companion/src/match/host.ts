@@ -121,6 +121,11 @@ export interface HostEvents extends Record<string, unknown> {
   tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
   /** A6 (2026-10-31): a lobby participant's rig or fingerprint changed (its PARTICIPANT_UPDATE, or `updateLocal`). */
   participantUpdated: ParticipantInfo;
+  /**
+   * A6.1 (2026-11-01): a participant's rig changed after MATCH_READY (its PARTICIPANT_UPDATE, or `updateLocal`). The
+   * roster in the log keeps what MATCH_READY said; this is the rig now.
+   */
+  rigUpdated: { playerId: PlayerId; rig: ParticipantInfo['rig'] };
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
@@ -152,7 +157,7 @@ const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT']);
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
-const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL']);
+const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL', 'PARTICIPANT_UPDATE']);
 
 export class HostMatch {
   readonly events = new Emitter<HostEvents>();
@@ -169,6 +174,8 @@ export class HostMatch {
   private readonly mismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
   /** Each lobby client's fingerprint (HELLO, then PARTICIPANT_UPDATE), so a change of `hostGame` can re-compare them. */
   private readonly lobbyGames = new Map<PlayerId, GameFingerprint>();
+  /** A6.1 (2026-11-01): rigs changed after MATCH_READY, by player (the log's roster keeps the ones it started with). */
+  private readonly liveRigs = new Map<PlayerId, ParticipantInfo['rig']>();
   private turnMode: 'alternating' | 'simultaneous';
   private ballEndTimer: TimerHandle | null = null;
   private logSignTimer: TimerHandle | null = null;
@@ -290,11 +297,17 @@ export class HostMatch {
   /**
    * A6 (2026-10-31): the host's own rig or table changed while in the lobby (it hosted before its table loaded).
    * Replaces its roster entry's `rig` and `hostGame`, re-compares every client's fingerprint, and re-sends HELLO_ACK
-   * to every client. False (nothing done) once the match started or when nothing changed.
+   * to every client. False (nothing done) when nothing changed. A6.1 (2026-11-01): after MATCH_READY only the rig
+   * counts (the owner's rig read VR 7 s after Start): it goes to every client as this host's PARTICIPANT_UPDATE.
    */
   updateLocal(u: PayloadOf<'PARTICIPANT_UPDATE'>): boolean {
     this.assertActive();
-    if (this.s.state.phase !== 'lobby') return false;
+    if (this.s.state.phase !== 'lobby') {
+      if (u.rig === undefined || !this.noteLiveRig(this.localId, u.rig)) return false;
+      const msg = this.s.build('PARTICIPANT_UPDATE', { rig: u.rig }, this.matchId);
+      for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
+      return true;
+    }
     const me = this.lobby[0]!;
     const rigChanged = u.rig !== undefined && u.rig !== me.rig;
     const gameChanged = u.game !== undefined && !sameGame(u.game, this.hostGame);
@@ -696,11 +709,15 @@ export class HostMatch {
 
   /**
    * A6 (2026-10-31): a lobby client's rig or table changed after its HELLO (it joined before its table loaded).
-   * After MATCH_READY it is ignored: the roster and fingerprint in the log are final. A refusing host keeps the old
-   * fingerprint and rejects one that differs, as it would have refused that HELLO.
+   * After MATCH_READY the roster and fingerprint in the log are final; A6.1 (2026-11-01): a new rig is still noted and
+   * passed on to the other participants (`from` preserved), so their Match tab and panel know it. A refusing host keeps
+   * the old fingerprint and rejects one that differs, as it would have refused that HELLO.
    */
   private onParticipantUpdate(msg: Message<'PARTICIPANT_UPDATE'>): void {
-    if (this.s.state.phase !== 'lobby') return;
+    if (this.s.state.phase !== 'lobby') {
+      if (msg.payload.rig !== undefined && this.noteLiveRig(msg.from, msg.payload.rig)) this.mirror(msg);
+      return;
+    }
     const i = this.lobby.findIndex((p) => p.playerId === msg.from);
     if (i <= 0) return;
     const u = msg.payload;
@@ -722,6 +739,15 @@ export class HostMatch {
     if (!changed) return;
     this.events.emit('participantUpdated', { ...this.lobby[i]! });
     this.resendAck();
+  }
+
+  /** A6.1: a rig after MATCH_READY; false when it is the one already known (the roster's, or the last update's). */
+  private noteLiveRig(id: PlayerId, rig: ParticipantInfo['rig']): boolean {
+    const known = this.liveRigs.get(id) ?? this.s.state.participants.find((p) => p.playerId === id)?.rig;
+    if (known === rig) return false;
+    this.liveRigs.set(id, rig);
+    this.events.emit('rigUpdated', { playerId: id, rig });
+    return true;
   }
 
   /** Records what differs for a player and raises `tableMismatch` when that changed (empty: it agrees now). */

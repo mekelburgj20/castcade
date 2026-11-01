@@ -490,6 +490,33 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     await until(() => row(C.mh, 'Owner')?.rig === 'vr_headset');
     expect(row(H.mh, 'Owner')?.rig).toBe('vr_headset');
   }, 15_000);
+
+  it('A6.1 (2026-11-01): a rig that reads VR only after Start is told to the others (the host\'s own and a client\'s); the table is not', async () => {
+    const owner = loadingWitness();
+    const krobs = loadingWitness();
+    const H = make('late-host', 'ab'.repeat(32), { witness: owner.w });
+    const C = make('late-client', 'ab'.repeat(32), { witness: krobs.w });
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    expect(row(C.mh, 'Owner')?.rig).toBe('pc');
+
+    // The owner's table finished loading in the headset 7 s after Start (TLBHMU).
+    owner.load('ab'.repeat(32), VR_VD);
+    await until(() => row(C.mh, 'Owner')?.rig === 'vr_headset');
+    expect(row(H.mh, 'Owner')?.rig).toBe('vr_headset');
+    expect(H.mh.status().panel?.players.find((p) => p.name === 'Owner')?.rig).toBe('vr_headset');
+    expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')?.rig).toBe('vr_headset');
+
+    // And a client's, on another table file: the rig goes, the fingerprint in the log stays.
+    const flag = row(H.mh, 'Krobs')?.tableMatch;
+    krobs.load('cd'.repeat(32), VR_VD);
+    await until(() => row(H.mh, 'Krobs')?.rig === 'vr_headset');
+    await until(() => row(C.mh, 'Krobs')?.rig === 'vr_headset');
+    expect(row(H.mh, 'Krobs')?.tableMatch).toBe(flag); // as MATCH_READY said
+  }, 15_000);
 });
 
 describe('match host: A8 (2026-10-31)', () => {
