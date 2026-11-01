@@ -193,6 +193,28 @@ export function flattenAdjustments(adjustments: Json | undefined): AdjustmentDes
   return out;
 }
 
+/** Gottlieb System 3 platforms, whose ball and player bytes carry flags in the high nibble. */
+const SYSTEM3_PLATFORMS = new Set(['gottlieb-system3', 'gottlieb-system3-32K']);
+
+/**
+ * Gottlieb System 3: `current_ball` and `current_player` read the low nibble (`mask 0x0F`) when the map
+ * gives no mask of its own. A compile-time default; the corpus files stay as they are.
+ *
+ * The owner's VPinMAME `.nv` files (read on the rig 2026-10-31, not committed) show why: Cue Ball Wizard's
+ * ball byte 0x15 held 0x70 and Rescue 911's 0x90 after a game, which unmasked BCD reads as ball 70 / 90;
+ * `plausible()` then rejects the whole state and the live detector fires nothing for the table. The corpus
+ * knows the pattern on sibling maps (`teedoff` masks the ball 0x7F, "bit 7 is sometimes set"; `clas1812`
+ * masks it 0x0F, an ASCII '1'-'5'; every `current_player` is masked 0x0F), but `freddy` and the maps based
+ * on it (`cueball`, `andretti`, ...) leave the ball unmasked. A ball or player number is 0-9, so the low
+ * nibble loses nothing. A map's own mask (Tee'd Off's 0x7F) wins.
+ */
+function applySystem3Masks(gameState: Record<string, JsonObject[]>): void {
+  for (const key of ['current_ball', 'current_player']) {
+    const entries = gameState[key];
+    if (entries) gameState[key] = entries.map((e) => (e['mask'] === undefined ? { ...e, mask: '0x0F' } : e));
+  }
+}
+
 /**
  * Compile a map file. `loadPlatform` resolves `_metadata.platform` to the platform JSON (null
  * when the corpus does not have it, in which case the synthetic single-region platform is used).
@@ -232,6 +254,8 @@ export function compileMap(mapJson: Json, loadPlatform: (name: string) => Json |
     score: isObject(e['score']) ? e['score'] : null,
     initials: isObject(e['initials']) ? e['initials'] : null,
   }));
+
+  if (platformName && SYSTEM3_PLATFORMS.has(platformName)) applySystem3Masks(gameState);
 
   const romsJson = metadata['roms'];
   const roms = Array.isArray(romsJson) ? romsJson.filter((r): r is string => typeof r === 'string') : [];
@@ -506,6 +530,8 @@ export function hasScores(map: CompiledMap): boolean {
 /**
  * Every NVRAM offset `decodeGameState` reads: the `game_state` descriptors (and `last_game` when it
  * stands in for the scores), plus Stern SAM's end-of-game counter (`samEndCounter`), sorted, unique.
+ * Every `game_state` key counts, so the Bally / Stern M100 detector's lamp (`game_over`) and last-game
+ * scores (`final_scores`) are watched with no extra rule (B10.2).
  * What the in-VPX hook (0.3.0) is told to journal, so a WPC table's ~200 changed bytes per second
  * shrink to the handful that describe the game.
  *
@@ -556,14 +582,68 @@ export function samEndCounter(map: CompiledMap): number | null {
   return off >= 0 && (!region || region.size <= 0 || off + 4 <= region.size) ? off : null;
 }
 
+/** True when every byte of the descriptor sits inside the platform's NVRAM region (what the hook can see). */
+function nvramTest(map: CompiledMap): (entry: JsonObject) => boolean {
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const base = region?.address ?? 0;
+  const end = region && region.size > 0 ? base + region.size : Number.POSITIVE_INFINITY;
+  return (entry) => {
+    const offs = descriptorOffsets(entry);
+    return offs.length > 0 && offs.every((a) => a >= base && a < end);
+  };
+}
+
+/** Bally AS-2518-17 / -35 and Stern M100: one MPU lineage, one NVRAM layout (5101 RAM at 0x200-0x2FF). */
+const BALLY_FAMILY = /^(bally-(17|35)-|stern-m100$)/;
+
+/** What the Bally / Stern M100 detector reads (B10.2): the game-over lamp and the last-game scores. */
+export interface BallyLiveInputs {
+  /** `game_state.game_over`: a `bool` over a lamp bit (0x20C mask 0x4 on most maps, 0x200 mask 0x8 on Gold Ball). */
+  lamp: JsonObject;
+  /** `game_state.final_scores`, one per entry of `scores` ("during attract, last game scores"). */
+  finalScores: JsonObject[];
+}
+
+/**
+ * The Bally AS-2518-17/-35 and Stern M100 detector's inputs, or null when this map cannot feed it.
+ *
+ * Those MPUs keep ball, player and player count in the 6810 CPU RAM (0x0B-0x15 in the maps), out of the
+ * hook's reach, but the 5101 NVRAM at 0x200 holds three things the detector can use: the lamp matrix (the
+ * maps read the backbox GAME OVER lamp as `game_over`), the score displays (`scores`, "display memory,
+ * active in game") and the last game's scores (`final_scores`, "during attract, last game scores"). The map
+ * qualifies only when the lamp is a `bool`, there is one final score per score, and all of it sits in the
+ * NVRAM region. Inferred from the map notes, not yet recorded on a rig (`docs/design/platform-coverage.md`).
+ */
+export function ballyLiveInputs(map: CompiledMap): BallyLiveInputs | null {
+  if (!BALLY_FAMILY.test(map.platform.name)) return null;
+  const scores = map.gameState['scores'] ?? [];
+  const finalScores = map.gameState['final_scores'] ?? [];
+  const lamp = map.gameState['game_over']?.[0];
+  if (!lamp || lamp['encoding'] !== 'bool') return null;
+  if (scores.length === 0 || finalScores.length !== scores.length) return null;
+  const inNvram = nvramTest(map);
+  return [lamp, ...scores, ...finalScores].every(inNvram) ? { lamp, finalScores } : null;
+}
+
+/** The `final_scores` block decoded from NVRAM bytes, in player order; null when the map has none. */
+export function decodeFinalScores(map: CompiledMap, nv: Uint8Array): (number | null)[] | null {
+  const entries = map.gameState['final_scores'];
+  if (!entries || entries.length === 0) return null;
+  const mem = new NvMemory(map.platform, nv);
+  return entries.map((e) => descriptorValue(mem, e, map.platform));
+}
+
 /** The `game_state` fields live mode needs on every platform but Stern SAM (`detectTransition`). */
 export const LIVE_FIELDS = ['scores', 'game_over', 'current_ball', 'current_player'] as const;
 
 export interface LiveSupport {
   /** Live mode can follow a game on this machine: every game posts as it ends. */
   readable: boolean;
-  /** How: the four live fields, or Stern SAM's scores and end-of-game record (B10.1). Null when not readable. */
-  via: 'game_state' | 'sam_end_counter' | null;
+  /**
+   * How: the four live fields, Stern SAM's scores and end-of-game record (B10.1), or the Bally / Stern M100
+   * game-over lamp and last-game scores (B10.2, `ballyLiveInputs`). Null when not readable.
+   */
+  via: 'game_state' | 'sam_end_counter' | 'bally_lamp' | null;
   /** Live fields the map does not describe at all. */
   absent: string[];
   /** Live fields the map puts outside the NVRAM region, where the hook never sees them (CPU RAM). */
@@ -576,18 +656,14 @@ export interface LiveSupport {
  * Can live mode read a game on this machine (B12)? The hook only sees the NVRAM region (`ChangedNVRAM`),
  * so every live field must be described AND sit inside it: scores, game over, current ball and current
  * player. Stern SAM keeps ball, player and game over in CPU RAM but qualifies through its end-of-game
- * record (`samEndCounter`), which needs player 1's score in NVRAM. A field counts by its first
+ * record (`samEndCounter`), which needs player 1's score in NVRAM. Bally AS-2518-17/-35 and Stern M100 keep
+ * ball and player in CPU RAM but qualify through the game-over lamp and the last-game scores
+ * (`ballyLiveInputs`). A field counts by its first
  * descriptor (player 1's score for `scores`). `null` = no map for the ROM.
  */
 export function liveSupport(map: CompiledMap | null): LiveSupport {
   if (!map) return { readable: false, via: null, absent: [...LIVE_FIELDS], outside: [], reason: 'no NVRAM map for this ROM' };
-  const region = map.platform.layout.find((r) => r.type === 'nvram');
-  const base = region?.address ?? 0;
-  const end = region && region.size > 0 ? base + region.size : Number.POSITIVE_INFINITY;
-  const inNvram = (entry: JsonObject): boolean => {
-    const offs = descriptorOffsets(entry);
-    return offs.length > 0 && offs.every((a) => a >= base && a < end);
-  };
+  const inNvram = nvramTest(map);
   const absent: string[] = [];
   const outside: string[] = [];
   for (const field of LIVE_FIELDS) {
@@ -598,6 +674,9 @@ export function liveSupport(map: CompiledMap | null): LiveSupport {
   if (absent.length === 0 && outside.length === 0) return { readable: true, via: 'game_state', absent, outside, reason: 'live fields in NVRAM' };
   if (map.platform.name === 'stern-sam' && !absent.includes('scores') && !outside.includes('scores') && samEndCounter(map) !== null) {
     return { readable: true, via: 'sam_end_counter', absent, outside, reason: 'Stern SAM: scores and the end-of-game record in NVRAM' };
+  }
+  if (ballyLiveInputs(map) !== null) {
+    return { readable: true, via: 'bally_lamp', absent, outside, reason: `${map.platform.name}: scores, the game-over lamp and the last-game scores in NVRAM (unverified)` };
   }
   const parts: string[] = [];
   if (outside.length > 0) parts.push(`${outside.join(', ')} in CPU RAM`);

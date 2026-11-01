@@ -3,7 +3,7 @@
 A **subset** of the [Pinball Memory Maps](https://github.com/tomlogic/pinmame-nvram-maps) corpus
 (formerly `pinmame-nvram-maps`) by Tom Collins, vendored so the companion's witness tests run with
 nothing outside this repository: only the maps and platform files the recorded journals in
-`fixtures/nvram/` need.
+`fixtures/nvram/` need, plus the family maps the detector and `liveSupport` tests decode synthetic bytes with.
 
 - Source: `https://github.com/tomlogic/pinmame-nvram-maps`
 - Commit: `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd` (the pin in `.github/workflows/ci.yml`; also in `VERSION`)
@@ -18,6 +18,10 @@ nothing outside this repository: only the maps and platform files the recorded j
 | `acd_170h` | `maps/stern/sam/acd_170h.map.json` | `platforms/stern-sam.json` |
 | `twd_160h` | `maps/stern/sam/twd_160h.map.json` | `platforms/stern-sam.json` |
 | `afm_113`, `afm_113b` | `maps/williams/wpc/afm_113.map.json` (has an `adjustments` block; used by `adjustments.test.ts` with synthetic bytes, no recording) | `platforms/williams-wpc-12K.json` |
+| `eballd14`, `eballdld`, `eballdlx` | `maps/bally/as-2518-35/eballdlx.map.json` (B10.2 Bally detector, synthetic bytes, no recording yet) | `platforms/bally-35-8K.json` |
+| the 13 Stern M100 ROMs (`stars`, `stingray`, `trident`, …) | `maps/stern/m100/generic.map.json` (B10.2, synthetic bytes) | `platforms/stern-m100.json` |
+| `freddy`, `freddy4` · `cueball`, `cueball1`–`3` · `teedoff`, `teedoff1`, `teedoff3` | `maps/gottlieb/system3/{freddy,cueball,teedoff}.map.json` (the System 3 ball-nibble mask, synthetic bytes) | `platforms/gottlieb-system3.json` |
+| `dvlrider` · the 30 System 80 ROMs of `generic` (`spirit`, …) · the 9 M200 ROMs of `m200-7digit-A` (`cheetah`, …) | `maps/zaccaria/gen2/dvlrider.map.json` · `maps/gottlieb/system80a/generic.map.json` · `maps/stern/m200/m200-7digit-A.map.json` (`liveSupport` negatives, B10.3) | `platforms/zaccaria-gen2.json` · `platforms/gottlieb-system80-1prom.json` · `platforms/stern-m200.json` |
 
 ## Licence and attribution
 
