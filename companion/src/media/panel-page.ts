@@ -70,6 +70,8 @@ export interface PanelCapture {
   crop: { x: number; y: number; width: number; height: number };
   /** The size the crop is drawn at and sent: at most 1280x720, the crop's aspect. */
   out: { width: number; height: number };
+  /** D7.4.4 (2026-11-01): open the capture afresh even when `sourceId` is the live one's (a stalled capture re-picked). */
+  restart?: boolean;
 }
 
 export interface PanelAttach {
@@ -89,6 +91,23 @@ export interface PanelPageStatus {
   mic: MediaStatus['mic'];
   capturing: boolean;
   error: string | null;
+  /**
+   * D7.4.4 (2026-11-01): the screen capture delivered no new frame for `CAPTURE_STALL_MS` while this rig was sending.
+   * Main re-picks the capture; the page has already taken its track off the connections so the receivers see
+   * "waiting for <name>'s table" rather than a frozen picture.
+   */
+  captureStalled?: boolean;
+  /** D7.4.4: the last 10 s counters (`seq` changes with each); absent until the first one. */
+  stats?: PanelStats | null;
+}
+
+export interface PanelStats {
+  seq: number;
+  /** Frames the screen capture delivered in the window, while this rig was sending; else null. */
+  capture: number | null;
+  /** Frames the stage video decoded, and how many of them went to the layer, while theater wanted the feed; else null. */
+  decoded: number | null;
+  toLayer: number | null;
 }
 
 export interface MicDevice {
@@ -175,6 +194,22 @@ export function videoCropRect(cap: Pick<PanelCapture, 'screen' | 'crop'>, videoW
   return sw >= 2 && sh >= 2 ? { sx, sy, sw, sh } : null;
 }
 
+/** D7.4.4 (2026-11-01): no new frame from the screen capture for this long, while sending, is a stall. */
+export const CAPTURE_STALL_MS = 3000;
+/** D7.4.4: the counters are reported every this often. */
+export const STATS_MS = 10_000;
+
+/**
+ * D7.4.4: one look at the capture's frame counter (`mark`: the hidden video's decoded-frame count, else its clock).
+ * `at` is when the counter last moved; it follows `now` while this rig is not sending (a still screen is no fault
+ * then). Stalled = sending and no movement for `limitMs`; a moved counter clears it at once.
+ */
+export function stallStep(w: { mark: number; at: number }, mark: number, now: number, sending: boolean, limitMs: number): { mark: number; at: number; stalled: boolean; moved: boolean } {
+  const moved = mark !== w.mark;
+  const at = moved || !sending ? now : w.at;
+  return { mark, at, stalled: !moved && sending && now - at >= limitMs, moved };
+}
+
 /** The canvas calls `paintFrame` makes (a 2D context has them all). */
 export interface Paint2D {
   fillStyle: string;
@@ -227,7 +262,7 @@ export function feedSize(videoWidth: number, videoHeight: number, stereo: 'mono'
   return { width: Math.max(2, Math.round(videoWidth * k) & ~1), height: Math.max(2, Math.round(videoHeight * k) & ~1) };
 }
 
-const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize];
+const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -272,6 +307,8 @@ const { ipcRenderer } = require('electron');
 const C = ${JSON.stringify(PANEL_CHANNELS)};
 const VIDEO = ${JSON.stringify(PANEL_VIDEO)};
 const FEED_FPS = ${VIDEO_FEED_MAX.fps};
+const STALL_MS = ${CAPTURE_STALL_MS};
+const STATS_MS = ${STATS_MS};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -339,6 +376,12 @@ let videoTrack = null;
 let srcTrack = null;
 let cap = null;
 let covered = false;
+// D7.4.4: the capture watch (see srcTick) and the 10 s counters (see statsTick).
+let watch = { mark: -1, at: Date.now() };
+let stalled = false;
+let capFrames = 0;
+let statsSeq = 0;
+let stats = null;
 const canvas = document.createElement('canvas');
 const ctx = canvas.getContext('2d', { alpha: false });
 let panel = null;
@@ -360,7 +403,7 @@ function report() {
       receivingAudio: !!a && a.readyState === 'live' && !a.muted,
     };
   }
-  ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: localError });
+  ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: localError, captureStalled: stalled, stats: stats });
 }
 
 function fail(msg) {
@@ -493,6 +536,7 @@ function dropCapture() {
   srcTrack = null;
   videoTrack = null;
   cap = null;
+  stalled = false;
   $('src').srcObject = null;
   if (src) src.stop();
   if (out) {
@@ -513,7 +557,7 @@ async function openCapture(c) {
     if (srcTrack || videoTrack) dropCapture();
     return;
   }
-  if (cap && srcTrack && srcTrack.readyState === 'live' && cap.sourceId === c.sourceId) {
+  if (!c.restart && cap && srcTrack && srcTrack.readyState === 'live' && cap.sourceId === c.sourceId) {
     setCrop(c);
     return;
   }
@@ -542,6 +586,9 @@ async function openCapture(c) {
   const v = $('src');
   v.srcObject = new MediaStream([t]);
   void Promise.resolve(v.play()).catch(() => undefined);
+  // D7.4.4: a fresh track starts a fresh watch; the senders get the canvas track back if a stall had taken it off.
+  watch = { mark: -1, at: Date.now() };
+  applyStall(false);
   setCrop(c);
   t.addEventListener('ended', () => {
     if (srcTrack !== t) return;
@@ -556,7 +603,7 @@ async function openCapture(c) {
     }
     // Pinball is motion: keep the frame rate, give up sharpness first under a thin uplink.
     try { out.contentHint = 'motion'; } catch (e) { /* older engines */ }
-    out.enabled = sending;
+    out.enabled = sending && !stalled;
     videoTrack = out;
     localStream.addTrack(out);
     for (const r of remote.values()) attachVideo(r);
@@ -579,6 +626,67 @@ setInterval(() => {
   if (!sending && tick % VIDEO.fps !== 0) return;
   paint();
 }, Math.round(1000 / VIDEO.fps));
+
+/**
+ * D7.4.4 (2026-11-01): the draw loop above keeps the canvas track producing frames whatever the screen does, so a
+ * capture that stopped delivering (the owner's theater showed a still picture while frames kept arriving; Krobs' feed
+ * froze once VPX had focus) looks alive to the receivers. This watches the hidden video's own frame counter instead.
+ * Stalled while sending: the canvas track comes off the connections (the receivers' video mutes: "waiting for <name>'s
+ * table", not a frozen frame) and main is told through the report to re-pick the capture.
+ */
+function applyStall(on) {
+  if (stalled === on) return;
+  stalled = on;
+  if (videoTrack) videoTrack.enabled = sending && !stalled;
+  for (const r of remote.values()) {
+    if (r.videoSender && videoTrack) void Promise.resolve(r.videoSender.replaceTrack(on ? null : videoTrack)).catch(() => undefined);
+  }
+  report();
+  render();
+}
+function srcTick() {
+  if (!srcTrack) {
+    watch = { mark: -1, at: Date.now() };
+    applyStall(false);
+    return;
+  }
+  const v = $('src');
+  const q = typeof v.getVideoPlaybackQuality === 'function' ? v.getVideoPlaybackQuality() : null;
+  const counted = !!q && q.totalVideoFrames > 0;
+  const mark = counted ? q.totalVideoFrames : typeof v.currentTime === 'number' ? v.currentTime : -1;
+  const w = stallStep(watch, mark, Date.now(), sending, STALL_MS);
+  if (w.moved) capFrames += counted && watch.mark >= 0 ? Math.max(1, mark - watch.mark) : 1;
+  watch = { mark: w.mark, at: w.at };
+  applyStall(w.stalled);
+}
+setInterval(srcTick, 400);
+
+/** D7.4.4: every 10 s, while relevant: what the capture delivered (sending) and what theater decoded / sent on. */
+let decodedLast = -1;
+let feedSent = 0;
+function statsTick() {
+  let capture = null;
+  let decoded = null;
+  let toLayer = null;
+  if (sending && srcTrack) capture = capFrames;
+  capFrames = 0;
+  const who = panel ? videoPeer(panel) : null;
+  if (feedWanted && who && who !== 'self') {
+    const v = $('video');
+    const q = typeof v.getVideoPlaybackQuality === 'function' ? v.getVideoPlaybackQuality() : null;
+    if (q) {
+      decoded = decodedLast >= 0 && q.totalVideoFrames >= decodedLast ? q.totalVideoFrames - decodedLast : q.totalVideoFrames;
+      decodedLast = q.totalVideoFrames;
+    } else decoded = feedSent;
+    toLayer = feedSent;
+  } else decodedLast = -1;
+  feedSent = 0;
+  if (capture === null && decoded === null) return;
+  statsSeq++;
+  stats = { seq: statsSeq, capture: capture, decoded: decoded, toLayer: toLayer };
+  report();
+}
+setInterval(statsTick, STATS_MS);
 
 function attachAudio(r) {
   if (!micTrack) return;
@@ -691,6 +799,8 @@ function detach() {
   srcTrack = null;
   cap = null;
   covered = false;
+  stalled = false;
+  stats = null;
   $('src').srcObject = null;
   micState = 'unavailable';
   sending = false;
@@ -710,7 +820,7 @@ ipcRenderer.on(C.removePeer, (_e, p) => {
 });
 ipcRenderer.on(C.sending, (_e, on) => {
   sending = !!on;
-  if (videoTrack) videoTrack.enabled = sending;
+  if (videoTrack) videoTrack.enabled = sending && !stalled;
   report();
   render();
 });
@@ -771,6 +881,7 @@ function feedTick() {
     feedCtx.drawImage(v, 0, 0, size.width, size.height);
     const img = feedCtx.getImageData(0, 0, size.width, size.height);
     feedLastFrame = mark;
+    feedSent++;
     feedInFlight = true;
     feedSentAt = now;
     ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo });
