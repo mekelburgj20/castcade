@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-01T06:00:01.256Z",
+  "generatedAt": "2026-11-01T06:03:39.057Z",
   "versions": {
     "vps": "cce9160b30110ee174786239fdfb30a6e4caaab7",
     "maps": "f0c422099f0b50b69bfdf6d071a6653a8b25a6fd",
@@ -8,8 +8,8 @@
   "counts": {
     "games": 2365,
     "verified": 11,
-    "supported": 322,
-    "unsupported": 2032,
+    "supported": 447,
+    "unsupported": 1907,
     "romsFromCorpus": 77,
     "romsAmbiguous": 2,
     "romsAmbiguousGames": [
@@ -20,11 +20,6 @@
       "alving: no scores, game_over, current_ball, current_player in the map": 1,
       "atari-gen1: scores, game_over, current_ball, current_player in CPU RAM": 4,
       "atari-gen2: game_over, current_ball, current_player in CPU RAM": 2,
-      "bally-17-3K: current_ball, current_player in CPU RAM": 2,
-      "bally-17-4K: current_ball, current_player in CPU RAM": 10,
-      "bally-35-6K: current_ball, current_player in CPU RAM": 19,
-      "bally-35-8K: current_ball, current_player in CPU RAM": 74,
-      "bally-35-8K: current_player in CPU RAM; no current_ball in the map": 3,
       "bally-35-8K: no game_over, current_ball, current_player in the map": 1,
       "capcom: no scores, game_over, current_ball, current_player in the map": 4,
       "gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM": 18,
@@ -35,7 +30,6 @@
       "gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM": 5,
       "no ROM (original table: needs recipe B–E, C1.1)": 1460,
       "no map in pinmame-nvram-maps": 217,
-      "stern-m100: current_ball, current_player in CPU RAM": 17,
       "stern-m200: no scores, game_over, current_ball, current_player in the map": 1,
       "stern-m200: scores, game_over, current_ball, current_player in CPU RAM": 44,
       "williams-system4-2prom: scores, game_over, current_ball, current_player in CPU RAM": 9,
@@ -65,23 +59,23 @@
       },
       "bally-17-3K": {
         "verified": 0,
-        "supported": 0,
-        "unsupported": 2
+        "supported": 2,
+        "unsupported": 0
       },
       "bally-17-4K": {
         "verified": 0,
-        "supported": 0,
-        "unsupported": 10
+        "supported": 10,
+        "unsupported": 0
       },
       "bally-35-6K": {
         "verified": 0,
-        "supported": 0,
-        "unsupported": 19
+        "supported": 19,
+        "unsupported": 0
       },
       "bally-35-8K": {
         "verified": 0,
-        "supported": 0,
-        "unsupported": 78
+        "supported": 77,
+        "unsupported": 1
       },
       "capcom": {
         "verified": 0,
@@ -150,8 +144,8 @@
       },
       "stern-m100": {
         "verified": 0,
-        "supported": 0,
-        "unsupported": 17
+        "supported": 17,
+        "unsupported": 0
       },
       "stern-m200": {
         "verified": 0,
@@ -526,15 +520,15 @@
       "manufacturer": "Original",
       "year": 2017,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboyb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -1333,15 +1327,15 @@
       "manufacturer": "Original",
       "year": 2026,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -1364,15 +1358,15 @@
       "manufacturer": "Original",
       "year": 2026,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -1395,15 +1389,15 @@
       "manufacturer": "Original",
       "year": 2023,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "startreb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -4054,15 +4048,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blackjck",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -4142,15 +4136,15 @@
       "manufacturer": "Bally",
       "year": 1984,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blakpyra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -4397,15 +4391,15 @@
       "manufacturer": "Original",
       "year": 2026,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fathom",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -4476,15 +4470,15 @@
       "manufacturer": "Bally",
       "year": 1983,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "bmx",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -4557,15 +4551,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "pwerplay",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -5818,8 +5812,8 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
@@ -5831,8 +5825,8 @@
         },
         {
           "rom": "centaur",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -6300,15 +6294,15 @@
       "manufacturer": "Original",
       "year": 2018,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboy",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -6343,15 +6337,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "lostwrld",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -6903,15 +6897,15 @@
       "manufacturer": "Rowamet",
       "year": 1983,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "rollstob",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -6922,15 +6916,15 @@
       "manufacturer": "Original",
       "year": 2026,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "rollstob",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -7051,15 +7045,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "princess",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -7225,15 +7219,15 @@
       "manufacturer": "Stern",
       "year": 1979,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "princess",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -7672,15 +7666,15 @@
       "manufacturer": "Bally",
       "year": 1985,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "cybrnaut",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -7870,15 +7864,15 @@
       "manufacturer": "Geiger",
       "year": 1984,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "startrek",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -8056,15 +8050,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "lostwrld",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -8777,15 +8771,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -9011,21 +9005,21 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "dollyptb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "dollyptn",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -9084,15 +9078,15 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blakpyra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -9213,15 +9207,15 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -9244,21 +9238,21 @@
       "manufacturer": "Stern",
       "year": 1979,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "dracula",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         },
         {
           "rom": "draculfp",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -9565,15 +9559,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -9750,15 +9744,15 @@
       "manufacturer": "Bally",
       "year": 1977,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "eightbll",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -9788,15 +9782,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "eballdlx",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -9912,15 +9906,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -10048,21 +10042,21 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "embryond",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "embryon",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -10176,15 +10170,15 @@
       "manufacturer": "Bally",
       "year": 1977,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "evelknie",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -10711,15 +10705,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fathom",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -10871,15 +10865,15 @@
       "manufacturer": "Bally",
       "year": 1985,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fbclass",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -10890,15 +10884,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fball_ii",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -11137,15 +11131,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "flashgdn",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -11565,15 +11559,15 @@
       "manufacturer": "Bally",
       "year": 1976,
       "platform": "bally-17-3K",
-      "status": "unsupported",
-      "reason": "bally-17-3K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "freedom",
-          "status": "unsupported",
-          "reason": "bally-17-3K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-3K"
         }
       ]
@@ -11584,15 +11578,15 @@
       "manufacturer": "Bally",
       "year": 1976,
       "platform": "bally-17-3K",
-      "status": "unsupported",
-      "reason": "bally-17-3K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "freedom",
-          "status": "unsupported",
-          "reason": "bally-17-3K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-3K"
         }
       ]
@@ -11677,15 +11671,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "frontier",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -11897,15 +11891,15 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "futurspa",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -12507,15 +12501,15 @@
       "manufacturer": "Bally",
       "year": 1983,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
         {
           "rom": "goldball",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
@@ -13081,15 +13075,15 @@
       "manufacturer": "Bally",
       "year": 1983,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "gransla4",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -13186,15 +13180,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -13392,15 +13386,15 @@
       "manufacturer": "Original",
       "year": 2023,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "lostwrld",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -13539,15 +13533,15 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "medusa",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -13685,15 +13679,15 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "hglbtrtb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -14073,15 +14067,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "ngndshkr",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -14481,15 +14475,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "wildfyre",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -14586,15 +14580,15 @@
       "manufacturer": "Taito do Brasil",
       "year": 1979,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
         {
           "rom": "eightbll",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         },
         {
@@ -14623,15 +14617,15 @@
       "manufacturer": "Stern",
       "year": 1979,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "hothand",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -14753,15 +14747,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "hotdoggn",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -14932,15 +14926,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -15266,15 +15260,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fathom",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -16812,15 +16806,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -17540,15 +17534,15 @@
       "manufacturer": "Bally",
       "year": 1984,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "kosteel",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -17571,27 +17565,27 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "kisse",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "kissc",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "kiss",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -17774,15 +17768,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -17793,15 +17787,15 @@
       "manufacturer": "Original",
       "year": 2023,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -18085,15 +18079,15 @@
       "manufacturer": "Stern",
       "year": 1978,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "lectrono",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -18219,15 +18213,15 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "sst",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -18343,15 +18337,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -18539,15 +18533,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "lostwrld",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -18673,15 +18667,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -18862,15 +18856,15 @@
       "manufacturer": "Stern",
       "year": 1979,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "magic",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -18881,15 +18875,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blakpyra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -19422,15 +19416,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "matahari",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -19540,15 +19534,15 @@
       "manufacturer": "Bally",
       "year": 1981,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "medusa",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -19602,15 +19596,15 @@
       "manufacturer": "Stern",
       "year": 1978,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "memlane",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -20077,15 +20071,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -20648,15 +20642,15 @@
       "manufacturer": "Bally",
       "year": 1982,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "m_mpac",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -20893,15 +20887,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "mysticb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -21016,15 +21010,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboy",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -21123,15 +21117,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "dracula",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -21233,15 +21227,15 @@
       "manufacturer": "Bell Games",
       "year": 1985,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "newwave",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -21350,15 +21344,15 @@
       "manufacturer": "Bally",
       "year": 1976,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "nightrdr",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -21460,8 +21454,8 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
@@ -21473,14 +21467,14 @@
         },
         {
           "rom": "ngndshkb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "ngndshkr",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -21637,15 +21631,15 @@
       "manufacturer": "Stern",
       "year": 1978,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "nugent",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -22036,15 +22030,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "sst",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -22245,15 +22239,15 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "paragon",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -22343,15 +22337,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -22726,15 +22720,15 @@
       "manufacturer": "Stern",
       "year": 1977,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "pinball",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -22745,15 +22739,15 @@
       "manufacturer": "Stern",
       "year": 1977,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "pinball",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -22974,15 +22968,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboy",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -23242,15 +23236,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboyb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -23619,15 +23613,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blakpyra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -23638,15 +23632,15 @@
       "manufacturer": "Original",
       "year": 2023,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -24663,15 +24657,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "ngndshkr",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -25552,8 +25546,8 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
@@ -25565,8 +25559,8 @@
         },
         {
           "rom": "rollstob",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -25867,15 +25861,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "futurspa",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -26101,15 +26095,15 @@
       "manufacturer": "Original",
       "year": 2015,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "kissb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -26419,15 +26413,15 @@
       "manufacturer": "Arkon",
       "year": 1980,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboy",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -26795,15 +26789,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "matahari",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -26857,21 +26851,21 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "slbmanib",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "slbmania",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -26901,21 +26895,21 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "elektraa",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "elektra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -27025,15 +27019,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -27778,21 +27772,21 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "spaceinv",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         },
         {
           "rom": "spaceinb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28197,15 +28191,15 @@
       "manufacturer": "Bally",
       "year": 1982,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "speakesy",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28228,15 +28222,15 @@
       "manufacturer": "Bally",
       "year": 1982,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "speakes4",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28278,15 +28272,15 @@
       "manufacturer": "Bally",
       "year": 1982,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "spectru4",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_player in CPU RAM; no current_ball in the map",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28512,15 +28506,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "fathom",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28640,15 +28634,15 @@
       "manufacturer": "Bally",
       "year": 1984,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "spyhuntr",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28936,15 +28930,15 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "startreb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28980,15 +28974,15 @@
       "manufacturer": "Original",
       "year": 2022,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "skatebll",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -28999,21 +28993,21 @@
       "manufacturer": "Original",
       "year": 2014,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "startreb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "startrek",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -29383,8 +29377,8 @@
       "manufacturer": "Stern",
       "year": 1978,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
@@ -29402,8 +29396,8 @@
         },
         {
           "rom": "stars",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -29501,15 +29495,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "dracula",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -29601,15 +29595,15 @@
       "manufacturer": "Stern",
       "year": 1977,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "stingray",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -29711,15 +29705,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "rollstob",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -29880,15 +29874,15 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "stk_sprs",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -30009,15 +30003,15 @@
       "manufacturer": "Bell Games",
       "year": 1984,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "suprbowl",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -30243,21 +30237,21 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "sstb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "sst",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -31380,15 +31374,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "blakpyra",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -31605,15 +31599,15 @@
       "manufacturer": "Original",
       "year": 2019,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "dollyptb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -31636,15 +31630,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-17-4K",
-      "status": "unsupported",
-      "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "stk_sprs",
-          "status": "unsupported",
-          "reason": "bally-17-4K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-17-4K"
         }
       ]
@@ -32304,15 +32298,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "cybrnaut",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -32882,21 +32876,21 @@
       "manufacturer": "Bally",
       "year": 1978,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
-      "romsDiffer": true,
+      "romsDiffer": false,
       "roms": [
         {
           "rom": "smmanc",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "smman",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -33435,15 +33429,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "rollstob",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -34114,15 +34108,15 @@
       "manufacturer": "Original",
       "year": 2020,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "mysticb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -34378,15 +34372,15 @@
       "manufacturer": "Stern",
       "year": 1979,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "trident",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -35010,15 +35004,15 @@
       "manufacturer": "Bally",
       "year": 1982,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "vector",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -35183,15 +35177,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "vikingb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -35363,15 +35357,15 @@
       "manufacturer": "Bally",
       "year": 1979,
       "platform": "bally-35-6K",
-      "status": "unsupported",
-      "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "voltan",
-          "status": "unsupported",
-          "reason": "bally-35-6K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-6K"
         }
       ]
@@ -35919,8 +35913,8 @@
       "manufacturer": "Stern",
       "year": 1978,
       "platform": "stern-m100",
-      "status": "unsupported",
-      "reason": "stern-m100: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": true,
       "roms": [
@@ -35932,8 +35926,8 @@
         },
         {
           "rom": "wildfyre",
-          "status": "unsupported",
-          "reason": "stern-m100: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "stern-m100"
         }
       ]
@@ -36331,21 +36325,21 @@
       "manufacturer": "Bally",
       "year": 1984,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "xsandos",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         },
         {
           "rom": "xsandosa",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -36356,15 +36350,15 @@
       "manufacturer": "Bally",
       "year": 1980,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "xenon",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -36478,15 +36472,15 @@
       "manufacturer": "Original",
       "year": 2025,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "playboyb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]
@@ -36657,15 +36651,15 @@
       "manufacturer": "Original",
       "year": 2021,
       "platform": "bally-35-8K",
-      "status": "unsupported",
-      "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+      "status": "supported",
+      "reason": null,
       "romSource": "vps",
       "romsDiffer": false,
       "roms": [
         {
           "rom": "startreb",
-          "status": "unsupported",
-          "reason": "bally-35-8K: current_ball, current_player in CPU RAM",
+          "status": "supported",
+          "reason": null,
           "platform": "bally-35-8K"
         }
       ]

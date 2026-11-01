@@ -1,12 +1,12 @@
 # Witness-supported games
 
-Which VPX tables the Castcade desktop companion can score for Arcaid Witness on its own. A game is **supported** when the companion reads its machine's live score, game over, current ball and current player from NVRAM (a Stern SAM machine: its scores and the end-of-game record it writes), so every game played on it posts by itself as it ends. **Verified** means supported, and a real game was recorded on that ROM and replays in CI. **Unsupported** means the companion cannot follow a game on it, and the Reason column says why: no ROM (an original or electro-mechanical table, which needs a table-script recipe), no map for the ROM in pinmame-nvram-maps, or which live fields the map leaves out or keeps in CPU RAM, where the companion cannot see them.
+Which VPX tables the Castcade desktop companion can score for Arcaid Witness on its own. A game is **supported** when the companion reads its machine's live score, game over, current ball and current player from NVRAM (a Stern SAM machine: its scores and the end-of-game record it writes; a Bally AS-2518-17/-35 or Stern M100 machine: its score displays, the GAME OVER lamp and the last game's scores), so every game played on it posts by itself as it ends. **Verified** means supported, and a real game was recorded on that ROM and replays in CI. A supported family without any verified ROM (Bally, Stern M100, Taito, Gottlieb System 3 today) is read from the map alone and has not been played on a rig yet: `docs/design/platform-coverage.md` says what each family rests on and which recording would verify it. **Unsupported** means the companion cannot follow a game on it, and the Reason column says why: no ROM (an original or electro-mechanical table, which needs a table-script recipe), no map for the ROM in pinmame-nvram-maps, or which live fields the map leaves out or keeps in CPU RAM, where the companion cannot see them.
 
 This list is about Witness scoring of VPX tables by the desktop companion, not Castcade matches. Each row is one game of the Virtual Pinball Spreadsheet that has a VPX table; its status is the best of the ROMs VPS lists for it, so a table that runs another ROM revision can differ (a game whose ROMs differ lists each ROM's status in the ROMs column). **Verified** is claimed only for the machine the recording was made on: an original or retheme table that reuses a verified ROM is listed as supported. The JSON next to this page is the same list for ArcAid: https://raw.githubusercontent.com/mekelburgj20/castcade/main/docs/witness-games.json. Regenerate both with `npm run witness-games -w companion` (WORK item B14).
 
 ## Versions
 
-- Generated: 2026-11-01T06:00:01.256Z
+- Generated: 2026-11-01T06:03:39.057Z
 - VPS database (vps-db commit): `cce9160b30110ee174786239fdfb30a6e4caaab7`
 - NVRAM maps (pinmame-nvram-maps commit): `f0c422099f0b50b69bfdf6d071a6653a8b25a6fd`
 - Castcade companion: 0.2.27
@@ -15,6 +15,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 
 | Platform | Verified | Supported | Unsupported | Games |
 |---|---:|---:|---:|---:|
+| bally-35-8K | 0 | 77 | 1 | 78 |
 | taito | 0 | 66 | 0 | 66 |
 | whitestar | 0 | 44 | 0 | 44 |
 | williams-system11-48K | 0 | 43 | 0 | 43 |
@@ -24,9 +25,13 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | gottlieb-system3 | 0 | 25 | 0 | 25 |
 | williams-wpc-8K | 0 | 23 | 0 | 23 |
 | williams-system9-12K | 0 | 20 | 0 | 20 |
+| bally-35-6K | 0 | 19 | 0 | 19 |
+| stern-m100 | 0 | 17 | 0 | 17 |
+| bally-17-4K | 0 | 10 | 0 | 10 |
 | williams-system11-40K | 0 | 4 | 0 | 4 |
 | taito-1979 | 0 | 3 | 0 | 3 |
 | williams-system9-16K | 0 | 3 | 1 | 4 |
+| bally-17-3K | 0 | 2 | 0 | 2 |
 | dataeast-v1 | 0 | 2 | 0 | 2 |
 | capcom | 0 | 1 | 4 | 5 |
 | gottlieb-system3-32K | 0 | 1 | 0 | 1 |
@@ -34,17 +39,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | alving | 0 | 0 | 1 | 1 |
 | atari-gen1 | 0 | 0 | 4 | 4 |
 | atari-gen2 | 0 | 0 | 2 | 2 |
-| bally-17-3K | 0 | 0 | 2 | 2 |
-| bally-17-4K | 0 | 0 | 10 | 10 |
-| bally-35-6K | 0 | 0 | 19 | 19 |
-| bally-35-8K | 0 | 0 | 78 | 78 |
 | gottlieb-system1 | 0 | 0 | 18 | 18 |
 | gottlieb-system80-1prom | 0 | 0 | 34 | 34 |
 | gottlieb-system80-2prom | 0 | 0 | 4 | 4 |
 | gottlieb-system80b-10K | 0 | 0 | 15 | 15 |
 | gottlieb-system80b-12K | 0 | 0 | 6 | 6 |
 | gottlieb-system80b-8K | 0 | 0 | 5 | 5 |
-| stern-m100 | 0 | 0 | 17 | 17 |
 | stern-m200 | 0 | 0 | 45 | 45 |
 | williams-system4-2prom | 0 | 0 | 9 | 9 |
 | williams-system4-3prom | 0 | 0 | 1 | 1 |
@@ -54,7 +54,7 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | zaccaria-gen1 | 0 | 0 | 3 | 3 |
 | zaccaria-gen2 | 0 | 0 | 8 | 8 |
 | no map | 0 | 0 | 1677 | 1677 |
-| **All** | **11** | **322** | **2032** | **2365** |
+| **All** | **11** | **447** | **1907** | **2365** |
 
 77 games have ROMs that came from pinmame-nvram-maps, not from VPS: VPS lists no ROM for them, and the corpus has a ROM of the same name from the same manufacturer (the Reason column says so). 2 more were left as no ROM because two VPS games share a name and manufacturer and the corpus has no years to tell them apart.
 
@@ -64,16 +64,12 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 |---|---:|
 | no ROM (original table: needs recipe B–E, C1.1) | 1460 |
 | no map in pinmame-nvram-maps | 217 |
-| bally-35-8K: current_ball, current_player in CPU RAM | 74 |
 | stern-m200: scores, game_over, current_ball, current_player in CPU RAM | 44 |
 | williams-system7-10K: scores, game_over, current_ball, current_player in CPU RAM | 42 |
 | gottlieb-system80-1prom: scores, game_over, current_ball, current_player in CPU RAM | 34 |
 | williams-system6-6K: scores, game_over, current_ball, current_player in CPU RAM | 22 |
-| bally-35-6K: current_ball, current_player in CPU RAM | 19 |
 | gottlieb-system1: scores, game_over, current_ball, current_player in CPU RAM | 18 |
-| stern-m100: current_ball, current_player in CPU RAM | 17 |
 | gottlieb-system80b-10K: scores, game_over, current_ball, current_player in CPU RAM | 15 |
-| bally-17-4K: current_ball, current_player in CPU RAM | 10 |
 | williams-system4-2prom: scores, game_over, current_ball, current_player in CPU RAM | 9 |
 | zaccaria-gen2: no game_over, current_ball, current_player in the map | 8 |
 | gottlieb-system80b-12K: scores, game_over, current_ball, current_player in CPU RAM | 6 |
@@ -82,15 +78,98 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | atari-gen1: scores, game_over, current_ball, current_player in CPU RAM | 4 |
 | capcom: no scores, game_over, current_ball, current_player in the map | 4 |
 | gottlieb-system80-2prom: scores, game_over, current_ball, current_player in CPU RAM | 4 |
-| bally-35-8K: current_player in CPU RAM; no current_ball in the map | 3 |
 | zaccaria-gen1: no game_over, current_ball, current_player in the map | 3 |
 | atari-gen2: game_over, current_ball, current_player in CPU RAM | 2 |
-| bally-17-3K: current_ball, current_player in CPU RAM | 2 |
 | alving: no scores, game_over, current_ball, current_player in the map | 1 |
 | bally-35-8K: no game_over, current_ball, current_player in the map | 1 |
 | stern-m200: no scores, game_over, current_ball, current_player in the map | 1 |
 | williams-system4-3prom: scores, game_over, current_ball, current_player in CPU RAM | 1 |
 | williams-system9-16K: no game_over, current_ball, current_player in the map | 1 |
+
+## bally-35-8K
+
+0 verified, 77 supported, 1 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| A Real American Hero - Operation P.I.N.B.A.L.L. | Original | 2017 | playboyb | supported |  |
+| Alice in Wonderland | Original | 2026 | elektra | supported |  |
+| Alice Through the Looking Glass | Original | 2026 | elektra | supported |  |
+| Alien 2 | Original | 2023 | startreb | supported |  |
+| Black Pyramid | Bally | 1984 | blakpyra | supported |  |
+| Bloom - Lunar Howl 5 | Original | 2026 | fathom | supported |  |
+| BMX | Bally | 1983 | bmx | supported |  |
+| Centaur | Bally | 1981 | centauri unsupported (no map in pinmame-nvram-maps), centaur supported | supported |  |
+| Conan | Rowamet | 1983 | rollstob | supported |  |
+| Conan the Barbarian | Original | 2026 | rollstob | supported |  |
+| Cybernaut | Bally | 1985 | cybrnaut | supported |  |
+| Disney Pixar Onward | Original | 2021 | skatebll | supported |  |
+| Dolly Parton | Bally | 1979 | dollyptb, dollyptn | supported |  |
+| Donald Duck Phantomias | Original | 2022 | blakpyra | supported |  |
+| Dr. Jekyll and Mr. Hyde | Original | 2022 | elektra | supported |  |
+| Duke Nukem 3D | Original | 2020 | skatebll | supported |  |
+| Eight Ball Deluxe | Bally | 1981 | eballdlx | supported |  |
+| Elektra | Bally | 1981 | elektra | supported |  |
+| Embryon | Bally | 1981 | embryond, embryon | supported |  |
+| Fathom | Bally | 1981 | fathom | supported |  |
+| Fireball Classic | Bally | 1985 | fbclass | supported |  |
+| Fireball II | Bally | 1981 | fball_ii | supported |  |
+| Flash Gordon | Bally | 1981 | flashgdn | supported |  |
+| Frontier | Bally | 1980 | frontier | supported |  |
+| Gold Ball | Bally | 1983 | goldball supported, goldbalc unsupported (no map in pinmame-nvram-maps) | supported |  |
+| Grand Slam | Bally | 1983 | gransla4 | supported |  |
+| Greedo's Cantina Pinball | Original | 2019 | skatebll | supported |  |
+| Halloween 1978-1981 | Original | 2022 | medusa | supported |  |
+| Harlem Globetrotters on Tour | Bally | 1979 | hglbtrtb | supported |  |
+| Ice Age Christmas | Original | 2021 | skatebll | supported |  |
+| Iron Eagle | Original | 2025 | fathom | supported |  |
+| Judas Priest | Original | 2019 | skatebll | supported |  |
+| Kings of Steel | Bally | 1984 | kosteel | supported |  |
+| KISS | Bally | 1979 | kisse, kissc, kiss | supported |  |
+| Labyrinth | Original | 2021 | skatebll | supported |  |
+| Labyrinth | Original | 2023 | skatebll | supported |  |
+| Lilo & Stitch | Original | 2025 | skatebll | supported |  |
+| Lunar Howl | Original | 2025 | skatebll | supported |  |
+| Magic - The Gathering | Original | 2020 | blakpyra | supported |  |
+| Medusa | Bally | 1981 | medusa | supported |  |
+| Minecraft | Original | 2020 | skatebll | supported |  |
+| Mr. & Mrs. Pac-Man Pinball | Bally | 1982 | m_mpac | supported |  |
+| Mystic | Bally | 1980 | mysticb | supported |  |
+| New Wave | Bell Games | 1985 | newwave | supported |  |
+| Nitro Ground Shaker | Bally | 1980 | ngndshkm unsupported (no map in pinmame-nvram-maps), ngndshkb supported, ngndshkr supported | supported |  |
+| Peaky Blinders | Original | 2021 | skatebll | supported |  |
+| Playboy | Bally | 1978 | playboyb | supported |  |
+| Predator | Original | 2019 | blakpyra | supported |  |
+| Predator | Original | 2023 | elektra | supported |  |
+| Rolling Stones | Bally | 1980 | rollst21 unsupported (no map in pinmame-nvram-maps), rollstob supported | supported |  |
+| Scooby-Doo! and KISS - Rock 'n Roll Mystery | Original | 2015 | kissb | supported |  |
+| Silverball Mania | Bally | 1980 | slbmanib, slbmania | supported |  |
+| Sin City | Original | 2022 | elektraa, elektra | supported |  |
+| Skateball | Bally | 1980 | skatebll | supported |  |
+| Speakeasy | Bally | 1982 | speakesy | supported |  |
+| Speakeasy 4 | Bally | 1982 | speakes4 | supported |  |
+| Spectrum | Bally | 1982 | spectru4 | supported |  |
+| SpongeBob | Original | 2020 | fathom | supported |  |
+| Spy Hunter | Bally | 1984 | spyhuntr | supported |  |
+| Star Trek | Bally | 1979 | startreb | supported |  |
+| Star Trek - Spock Tribute | Original | 2022 | skatebll | supported |  |
+| Star Trek - The Mirror Universe | Original | 2014 | startreb, startrek | supported |  |
+| Stray Cats | Original | 2025 | rollstob | supported |  |
+| Super Bowl | Bell Games | 1984 | suprbowl | supported |  |
+| Supersonic | Bally | 1979 | sstb, sst | supported |  |
+| The Beastmaster | Original | 2021 | blakpyra | supported |  |
+| The Delta Force | Original | 2019 | dollyptb | supported |  |
+| The Mandalorian | Original | 2020 | cybrnaut | supported |  |
+| The Six Million Dollar Man | Bally | 1978 | smmanc, smman | supported |  |
+| Tiger King | Original | 2020 | rollstob | supported |  |
+| Toxic Tattoo | Original | 2020 | mysticb | supported |  |
+| Vector | Bally | 1982 | vector | supported |  |
+| Viking | Bally | 1980 | vikingb | supported |  |
+| X's & O's | Bally | 1984 | xsandos, xsandosa | supported |  |
+| Xenon | Bally | 1980 | xenon | supported |  |
+| Young Frankenstein | Original | 2025 | playboyb | supported |  |
+| ZZ Top | Original | 2021 | startreb | supported |  |
+| Rapid Fire | Bally | 1982 | rapidfir | unsupported | bally-35-8K: no game_over, current_ball, current_player in the map |
 
 ## taito
 
@@ -473,6 +552,73 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Van Halen | Original | 2025 | sorcr_l1 | supported |  |
 | ZZ Top | Original | 2025 | sorcr_l1 | supported |  |
 
+## bally-35-6K
+
+0 verified, 19 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Christmas Pinball | Original | 2018 | playboy | supported |  |
+| Chuck Berry | Original | 2020 | lostwrld | supported |  |
+| Dark Rider | Geiger | 1984 | startrek | supported |  |
+| Death Wish 3 | Original | 2019 | lostwrld | supported |  |
+| Future Spa | Bally | 1979 | futurspa | supported |  |
+| Gunship | Original | 2023 | lostwrld | supported |  |
+| Heineken | Original | 2020 | ngndshkr | supported |  |
+| Hotdoggin' | Bally | 1980 | hotdoggn | supported |  |
+| Les Mystérieuses Cités d'or | Original | 2022 | sst | supported |  |
+| Lost World | Bally | 1978 | lostwrld | supported |  |
+| National Lampoon's Christmas Vacation | Original | 2019 | playboy | supported |  |
+| Ouija | Original | 2020 | sst | supported |  |
+| Paragon | Bally | 1979 | paragon | supported |  |
+| Pink Floyd Pinball | Original | 2020 | playboy | supported |  |
+| Red Sonja | Original | 2019 | ngndshkr | supported |  |
+| Sandra - The 80's Pop Star | Original | 2025 | futurspa | supported |  |
+| Sexy Girl | Arkon | 1980 | playboy | supported |  |
+| Space Invaders | Bally | 1980 | spaceinv, spaceinb | supported |  |
+| Voltan Escapes Cosmic Doom | Bally | 1979 | voltan | supported |  |
+
+## stern-m100
+
+0 verified, 17 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Cool Spot | Original | 2019 | princess | supported |  |
+| Cosmic Princess | Stern | 1979 | princess | supported |  |
+| Dracula | Stern | 1979 | dracula, draculfp | supported |  |
+| Hong Kong Phooey | Original | 2025 | wildfyre | supported |  |
+| Hot Hand | Stern | 1979 | hothand | supported |  |
+| Lectronamo | Stern | 1978 | lectrono | supported |  |
+| Magic | Stern | 1979 | magic | supported |  |
+| Memory Lane | Stern | 1978 | memlane | supported |  |
+| Near Dark | Original | 2025 | dracula | supported |  |
+| Nugent | Stern | 1978 | nugent | supported |  |
+| Pinball (EM) | Stern | 1977 | pinball | supported |  |
+| Pinball (SS) | Stern | 1977 | pinball | supported |  |
+| Stars | Stern | 1978 | starsb7 unsupported (no map in pinmame-nvram-maps), starsb unsupported (no map in pinmame-nvram-maps), stars supported | supported |  |
+| Stephen King's Pet Sematary | Original | 2019 | dracula | supported |  |
+| Stingray | Stern | 1977 | stingray | supported |  |
+| Trident | Stern | 1979 | trident | supported |  |
+| Wild Fyre | Stern | 1978 | wildfyrc unsupported (no map in pinmame-nvram-maps), wildfyre supported | supported |  |
+
+## bally-17-4K
+
+0 verified, 10 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Black Jack (SS) | Bally | 1978 | blackjck | supported |  |
+| Bobby Orr Power Play | Bally | 1978 | pwerplay | supported |  |
+| Eight Ball | Bally | 1977 | eightbll | supported |  |
+| Evel Knievel | Bally | 1977 | evelknie | supported |  |
+| Hot Ball | Taito do Brasil | 1979 | eightbll supported, eightblo unsupported (no map in pinmame-nvram-maps) | supported |  |
+| Mata Hari | Bally | 1978 | matahari | supported |  |
+| Night Rider | Bally | 1976 | nightrdr | supported |  |
+| Silver Bullet | Original | 2025 | matahari | supported |  |
+| Strikes and Spares | Bally | 1978 | stk_sprs | supported |  |
+| The Dude | Original | 2020 | stk_sprs | supported |  |
+
 ## williams-system11-40K
 
 0 verified, 4 supported, 0 unsupported.
@@ -504,6 +650,15 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Miami Vice | Original | 2020 | comet_l5 | supported |  |
 | Space Shuttle | Williams | 1984 | sshtl_l7, sshuttle | supported |  |
 | Gold Mine | Williams | 1988 | gmine_l2 | unsupported | williams-system9-16K: no game_over, current_ball, current_player in the map |
+
+## bally-17-3K
+
+0 verified, 2 supported, 0 unsupported.
+
+| Game | Manufacturer | Year | ROMs | Status | Reason |
+|---|---|---:|---|---|---|
+| Freedom (EM) | Bally | 1976 | freedom | supported |  |
+| Freedom (SS) | Bally | 1976 | freedom | supported |  |
 
 ## dataeast-v1
 
@@ -569,143 +724,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 |---|---|---:|---|---|---|
 | Hercules | Atari | 1979 | hercules | unsupported | atari-gen2: game_over, current_ball, current_player in CPU RAM |
 | Superman | Atari | 1979 | superman | unsupported | atari-gen2: game_over, current_ball, current_player in CPU RAM |
-
-## bally-17-3K
-
-0 verified, 0 supported, 2 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Freedom (EM) | Bally | 1976 | freedom | unsupported | bally-17-3K: current_ball, current_player in CPU RAM |
-| Freedom (SS) | Bally | 1976 | freedom | unsupported | bally-17-3K: current_ball, current_player in CPU RAM |
-
-## bally-17-4K
-
-0 verified, 0 supported, 10 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Black Jack (SS) | Bally | 1978 | blackjck | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Bobby Orr Power Play | Bally | 1978 | pwerplay | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Eight Ball | Bally | 1977 | eightbll | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Evel Knievel | Bally | 1977 | evelknie | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Hot Ball | Taito do Brasil | 1979 | eightbll unsupported (bally-17-4K: current_ball, current_player in CPU RAM), eightblo unsupported (no map in pinmame-nvram-maps) | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Mata Hari | Bally | 1978 | matahari | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Night Rider | Bally | 1976 | nightrdr | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Silver Bullet | Original | 2025 | matahari | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| Strikes and Spares | Bally | 1978 | stk_sprs | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-| The Dude | Original | 2020 | stk_sprs | unsupported | bally-17-4K: current_ball, current_player in CPU RAM |
-
-## bally-35-6K
-
-0 verified, 0 supported, 19 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Christmas Pinball | Original | 2018 | playboy | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Chuck Berry | Original | 2020 | lostwrld | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Dark Rider | Geiger | 1984 | startrek | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Death Wish 3 | Original | 2019 | lostwrld | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Future Spa | Bally | 1979 | futurspa | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Gunship | Original | 2023 | lostwrld | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Heineken | Original | 2020 | ngndshkr | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Hotdoggin' | Bally | 1980 | hotdoggn | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Les Mystérieuses Cités d'or | Original | 2022 | sst | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Lost World | Bally | 1978 | lostwrld | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| National Lampoon's Christmas Vacation | Original | 2019 | playboy | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Ouija | Original | 2020 | sst | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Paragon | Bally | 1979 | paragon | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Pink Floyd Pinball | Original | 2020 | playboy | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Red Sonja | Original | 2019 | ngndshkr | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Sandra - The 80's Pop Star | Original | 2025 | futurspa | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Sexy Girl | Arkon | 1980 | playboy | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Space Invaders | Bally | 1980 | spaceinv unsupported (bally-35-6K: current_ball, current_player in CPU RAM), spaceinb unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-| Voltan Escapes Cosmic Doom | Bally | 1979 | voltan | unsupported | bally-35-6K: current_ball, current_player in CPU RAM |
-
-## bally-35-8K
-
-0 verified, 0 supported, 78 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| A Real American Hero - Operation P.I.N.B.A.L.L. | Original | 2017 | playboyb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Alice in Wonderland | Original | 2026 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Alice Through the Looking Glass | Original | 2026 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Alien 2 | Original | 2023 | startreb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Black Pyramid | Bally | 1984 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Bloom - Lunar Howl 5 | Original | 2026 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| BMX | Bally | 1983 | bmx | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Centaur | Bally | 1981 | centauri unsupported (no map in pinmame-nvram-maps), centaur unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Conan | Rowamet | 1983 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Conan the Barbarian | Original | 2026 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Cybernaut | Bally | 1985 | cybrnaut | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Disney Pixar Onward | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Dolly Parton | Bally | 1979 | dollyptb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), dollyptn unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Donald Duck Phantomias | Original | 2022 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Dr. Jekyll and Mr. Hyde | Original | 2022 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Duke Nukem 3D | Original | 2020 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Eight Ball Deluxe | Bally | 1981 | eballdlx | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Elektra | Bally | 1981 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Embryon | Bally | 1981 | embryond, embryon | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Fathom | Bally | 1981 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Fireball Classic | Bally | 1985 | fbclass | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Fireball II | Bally | 1981 | fball_ii | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Flash Gordon | Bally | 1981 | flashgdn | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Frontier | Bally | 1980 | frontier | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Gold Ball | Bally | 1983 | goldball unsupported (bally-35-8K: current_ball, current_player in CPU RAM), goldbalc unsupported (no map in pinmame-nvram-maps) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Grand Slam | Bally | 1983 | gransla4 | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Greedo's Cantina Pinball | Original | 2019 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Halloween 1978-1981 | Original | 2022 | medusa | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Harlem Globetrotters on Tour | Bally | 1979 | hglbtrtb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Ice Age Christmas | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Iron Eagle | Original | 2025 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Judas Priest | Original | 2019 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Kings of Steel | Bally | 1984 | kosteel | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| KISS | Bally | 1979 | kisse unsupported (bally-35-8K: current_ball, current_player in CPU RAM), kissc unsupported (bally-35-8K: current_ball, current_player in CPU RAM), kiss unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Labyrinth | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Labyrinth | Original | 2023 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Lilo & Stitch | Original | 2025 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Lunar Howl | Original | 2025 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Magic - The Gathering | Original | 2020 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Medusa | Bally | 1981 | medusa | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Minecraft | Original | 2020 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Mr. & Mrs. Pac-Man Pinball | Bally | 1982 | m_mpac | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Mystic | Bally | 1980 | mysticb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| New Wave | Bell Games | 1985 | newwave | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Nitro Ground Shaker | Bally | 1980 | ngndshkm unsupported (no map in pinmame-nvram-maps), ngndshkb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), ngndshkr unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Peaky Blinders | Original | 2021 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Playboy | Bally | 1978 | playboyb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Predator | Original | 2019 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Predator | Original | 2023 | elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Rapid Fire | Bally | 1982 | rapidfir | unsupported | bally-35-8K: no game_over, current_ball, current_player in the map |
-| Rolling Stones | Bally | 1980 | rollst21 unsupported (no map in pinmame-nvram-maps), rollstob unsupported (bally-35-8K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Scooby-Doo! and KISS - Rock 'n Roll Mystery | Original | 2015 | kissb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Silverball Mania | Bally | 1980 | slbmanib unsupported (bally-35-8K: current_ball, current_player in CPU RAM), slbmania unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Sin City | Original | 2022 | elektraa, elektra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Skateball | Bally | 1980 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Speakeasy | Bally | 1982 | speakesy | unsupported | bally-35-8K: current_player in CPU RAM; no current_ball in the map |
-| Speakeasy 4 | Bally | 1982 | speakes4 | unsupported | bally-35-8K: current_player in CPU RAM; no current_ball in the map |
-| Spectrum | Bally | 1982 | spectru4 | unsupported | bally-35-8K: current_player in CPU RAM; no current_ball in the map |
-| SpongeBob | Original | 2020 | fathom | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Spy Hunter | Bally | 1984 | spyhuntr | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Star Trek | Bally | 1979 | startreb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Star Trek - Spock Tribute | Original | 2022 | skatebll | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Star Trek - The Mirror Universe | Original | 2014 | startreb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), startrek unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Stray Cats | Original | 2025 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Super Bowl | Bell Games | 1984 | suprbowl | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Supersonic | Bally | 1979 | sstb unsupported (bally-35-8K: current_ball, current_player in CPU RAM), sst unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| The Beastmaster | Original | 2021 | blakpyra | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| The Delta Force | Original | 2019 | dollyptb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| The Mandalorian | Original | 2020 | cybrnaut | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| The Six Million Dollar Man | Bally | 1978 | smmanc unsupported (bally-35-8K: current_ball, current_player in CPU RAM), smman unsupported (bally-35-6K: current_ball, current_player in CPU RAM) | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Tiger King | Original | 2020 | rollstob | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Toxic Tattoo | Original | 2020 | mysticb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Vector | Bally | 1982 | vector | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Viking | Bally | 1980 | vikingb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| X's & O's | Bally | 1984 | xsandos, xsandosa | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Xenon | Bally | 1980 | xenon | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| Young Frankenstein | Original | 2025 | playboyb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
-| ZZ Top | Original | 2021 | startreb | unsupported | bally-35-8K: current_ball, current_player in CPU RAM |
 
 ## gottlieb-system1
 
@@ -830,30 +848,6 @@ This list is about Witness scoring of VPX tables by the desktop companion, not C
 | Disney Vaiana | Original | 2021 | rock | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM |
 | Rock | Gottlieb | 1985 | rock, rockfp, rockgfp | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
 | Rock Encore | Gottlieb | 1986 | rock_efp, rock_enc, rockegfp | unsupported | gottlieb-system80b-8K: scores, game_over, current_ball, current_player in CPU RAM; ROM from pinmame-nvram-maps (VPS lists none) |
-
-## stern-m100
-
-0 verified, 0 supported, 17 unsupported.
-
-| Game | Manufacturer | Year | ROMs | Status | Reason |
-|---|---|---:|---|---|---|
-| Cool Spot | Original | 2019 | princess | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Cosmic Princess | Stern | 1979 | princess | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Dracula | Stern | 1979 | dracula, draculfp | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Hong Kong Phooey | Original | 2025 | wildfyre | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Hot Hand | Stern | 1979 | hothand | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Lectronamo | Stern | 1978 | lectrono | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Magic | Stern | 1979 | magic | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Memory Lane | Stern | 1978 | memlane | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Near Dark | Original | 2025 | dracula | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Nugent | Stern | 1978 | nugent | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Pinball (EM) | Stern | 1977 | pinball | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Pinball (SS) | Stern | 1977 | pinball | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Stars | Stern | 1978 | starsb7 unsupported (no map in pinmame-nvram-maps), starsb unsupported (no map in pinmame-nvram-maps), stars unsupported (stern-m100: current_ball, current_player in CPU RAM) | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Stephen King's Pet Sematary | Original | 2019 | dracula | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Stingray | Stern | 1977 | stingray | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Trident | Stern | 1979 | trident | unsupported | stern-m100: current_ball, current_player in CPU RAM |
-| Wild Fyre | Stern | 1978 | wildfyrc unsupported (no map in pinmame-nvram-maps), wildfyre unsupported (stern-m100: current_ball, current_player in CPU RAM) | unsupported | stern-m100: current_ball, current_player in CPU RAM |
 
 ## stern-m200
 
