@@ -7,7 +7,33 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
-On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel agents while the 0.2.27 headset test waited.
+On `main` since 2026-10-31 (evening), after 0.2.27; written by four parallel agents while the 0.2.27 headset test waited,
+then (2026-10-31, night) by the table-coverage lane: four more agents after Krobs' Freddy posted only at VPX exit.
+
+### Table coverage: every table posts each game live (C11, B23, B14.2, B10.2)
+- **Bally and Stern M100 tables score live (unverified); the Gottlieb System 3 ball decode is fixed (B10.2, B10.3).**
+  Bally AS-2518-17/-35 and Stern M100 keep ball and player in CPU RAM, out of the hook's reach. Their NVRAM holds the
+  GAME OVER lamp, the score displays and the last game's scores, so a new detector (`ballyTransition`, `liveSupport` via
+  `bally_lamp`) starts a game on the lamp going off with blank displays and ends it when the last-game scores match the
+  displays. About 125 more games are listed as readable, marked unverified until a rig recording lands; a wrong guess
+  only costs the live post, since the `.nv` still posts at close. On Gottlieb System 3, the owner's own `.nv` files for
+  Cue Ball Wizard and Rescue 911 carry flag bits in the ball byte (0x70, 0x90): decoded as BCD that is ball 70 / 90,
+  `plausible()` rejects every such state and the detector fires nothing; the companion now reads the low nibble on that
+  platform when the map gives no mask (a map's own mask wins; the corpus files are unchanged).
+  `docs/design/platform-coverage.md` records why Stern M200, Williams System 4–7, Gottlieb System 80/80B/1, Atari gen 1,
+  Zaccaria and Capcom stay unsupported, with the recording recipe per family. Test maps vendored under `fixtures/maps`.
+- **The witness-games list no longer calls ROM games originals (B23).** For a solid-state game VPS lists no ROM for
+  (type SS or unknown), `buildSupportList` takes the ROMs from pinmame-nvram-maps by matching the `romnames.json` name
+  and the map's manufacturer folder to the VPS name and manufacturer; EM and pure-mechanical games never take one, and
+  same-named pairs of one manufacturer (2 games) are left as no ROM. Each game carries `romSource`; the counts gain
+  `romsFromCorpus` (77) and `romsAmbiguous`, with the names on the script's last lines. Gottlieb System 3 went from 4 to
+  25 supported games, Freddy among them. Import and live scoring were never affected: they read `cGameName` / the hook's ROM.
+- **List shape (B14.2).** A game whose ROMs differ in status or reason carries `romsDiffer` and the Markdown ROMs cell
+  shows each ROM's status; `verified` is claimed only for the machine the recording was made on (JP's The Walking Dead
+  and The Return Of The Living Dead, both on `twd_160h`, are now `supported` with the reason); `docs/witness-games.json`
+  for ArcAid is compact (no per-ROM `live` or `map`; 1.17 MB → 0.98 MB, stable key order); the Markdown rendering is a
+  tested pure function in `support-list.ts`. The list after all three: 2365 games, **11 verified, 447 supported,
+  1907 unsupported** (was 13 / 297 / 2055).
 
 ### Table import: original tables post (C1.1)
 - Recipes **B** (JPSalas-pattern originals: `ResetForNewGame`, `AddScore`, top of `EndOfBall`, `EndOfGame`), **C**
