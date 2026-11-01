@@ -2,7 +2,7 @@
  * Layer 1 of the stale-sidecar guard (`docs/design/table-import-and-patching.md` §6): the companion
  * is a tray app, so it watches the tables folder. A `.vpx` whose size or mtime changed since the
  * last look (a table update dropped over the old file) is checked against its manifest; a stale
- * sidecar is re-rendered when the new script still classifies as recipe A, else disabled, and the
+ * sidecar is re-rendered when the new script still has a recipe (A–D, C1.1), else disabled, and the
  * player is told either way. The first look after start checks every patched table, because the
  * companion may not have been running when the file changed, and because a new companion build
  * (a newer hook library or recipe) makes every sidecar stale at once: those are re-made as one

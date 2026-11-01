@@ -48,7 +48,7 @@ import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { newestJournalSince, parseSessionStamp } from './journal-scan.js';
-import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
+import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, recipeFor, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
@@ -1137,7 +1137,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     // B12: the import will not patch a machine whose live score the hook cannot see, so do not send the player there.
     const rom = cls?.cls === 'A' ? cls.facts.rom ?? null : null;
     const support = rom ? liveSupport(await corpus.mapFor(rom).catch(() => null)) : null;
-    const patchable = cls?.cls === 'A' && (support === null || support.readable);
+    // C1.1: originals of class B, C and D have a recipe too; class E (generic) still has none.
+    const patchable = cls !== null && recipeFor(cls.cls) !== null && (cls.cls !== 'A' || support === null || support.readable);
     // An original (no ROM) leaves no NVRAM, so basic mode posts nothing at all for it: say so (TNA, rig 2026-10-28).
     // Classes B–E only: X (unclassified, e.g. no _KeyDown) says nothing about a ROM.
     const original = cls !== null && ['B', 'C', 'D', 'E'].includes(cls.cls);
