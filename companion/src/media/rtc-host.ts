@@ -24,7 +24,7 @@
  * page draws the stage <video> into a canvas and sends its pixels (RGBA) on `castcade-panel:video`, one frame in flight
  * (main acks each), at most 30 a second.
  */
-import { BrowserWindow, desktopCapturer, ipcMain, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
+import { BrowserWindow, desktopCapturer, ipcMain, powerSaveBlocker, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
@@ -352,6 +352,30 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let inVr = false;
   let ready = false;
   let attached = false;
+  /**
+   * D7.4.8 (2026-11-02): Windows turns the display off after its idle time while a player is in the headset (VR
+   * controllers are not desktop input), and the screen capture then delivers nothing: Krobs' rig sent 0–1 frames per
+   * 10 s for whole balls late in the night after 21 fps earlier. The display is kept awake while attached.
+   */
+  let displayHold: number | null = null;
+  const holdDisplay = (): void => {
+    if (displayHold !== null) return;
+    try {
+      displayHold = powerSaveBlocker.start('prevent-display-sleep');
+      log.info('media: keeping the display awake while attached (the screen capture needs a lit desktop)');
+    } catch (e) {
+      log.warn(`media: could not keep the display awake: ${(e as Error).message}`);
+    }
+  };
+  const releaseDisplay = (): void => {
+    if (displayHold === null) return;
+    try {
+      powerSaveBlocker.stop(displayHold);
+    } catch {
+      /* already gone */
+    }
+    displayHold = null;
+  };
   let attachMsg: PanelAttach | null = null;
   let attachSent = false;
   let queue: Array<[string, unknown]> = [];
@@ -892,6 +916,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     announced = null;
     stopCaptureTimer();
     stopLive();
+    releaseDisplay();
     page = null;
     sending = false;
     coverOffSaid = false;
@@ -910,6 +935,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (attached || win) await detach(restore !== null);
     const gen = ++generation;
     attached = true;
+    holdDisplay();
     signalling = sig;
     headset = wantHeadset;
     for (const p of initialPeers) if (p !== sig.localId) peers.add(p);

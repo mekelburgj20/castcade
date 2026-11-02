@@ -7,6 +7,28 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.31] — 2026-11-02
+
+The fourth two-rig run (VBPATF, 0.2.29 with the stereo window on both rigs): the stereo pair lines up on both sides
+without strain. Two things it found, both fixed here.
+
+### Theater follows the head's pitch (D7.4.7)
+- The window is placed where the receiver is looking when the other player's ball starts: the head's yaw and pitch,
+  never its roll, the pitch clamped to ±75°. The sender's eye render reaches 55° below his gaze and his playfield sits
+  low in it, so a level window put the flippers below the receiver's view. The mono screen uses the same frame.
+  `vr-layer.log`: `theater: the screen is placed 2.6 m ahead, yaw N degrees, pitch N degrees`. `vr-layer/src/layer.cpp`.
+
+### The display stays awake during a match (D7.4.8)
+- Krobs' screen capture delivered 0–1 frames per 10 s for whole balls late in the night (one frame per re-pick, then
+  nothing) after 21–29 fps earlier: Windows had turned his display off after its idle time (VR controllers are not
+  desktop input), and desktop duplication delivers nothing from a dark display. The companion now holds a
+  `prevent-display-sleep` power-save block while a match's media is attached and releases it on detach
+  (`media: keeping the display awake while attached`). His decode of the owner's feed ran at 30 fps throughout, so the
+  lag he felt is latency and the grain is 558x1080 per eye spread life-size (D7.4.9 raises the receiver's feed box;
+  D7.5 is the design that removes the screen capture from VR senders altogether). `companion/src/media/rtc-host.ts`.
+- Krobs' `vr-layer.log` confirms his headset is a Meta Quest 3 with the same fov and render size as the owner's, so the
+  stereo window's stand-in (the receiver's eyes for the sender's) is exact between these two rigs.
+
 ## [0.2.30] — 2026-11-02
 
 The third two-rig run (LUADLJ, 0.2.29) proved table sound (D2.8) and showed why the owner's theater had not changed:

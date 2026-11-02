@@ -10,6 +10,7 @@ import type { VpxWindow, WindowProbe } from './window-geometry.js';
 // ---- Electron, faked: windows record what they were built with and what they were sent ----
 
 const fake = vi.hoisted(() => {
+  const displayHolds = { started: 0, stopped: 0 };
   class FakeWebContents {
     sent: Array<[string, unknown]> = [];
     handlers = new Map<string, (...a: unknown[]) => void>();
@@ -86,11 +87,12 @@ const fake = vi.hoisted(() => {
   };
   const sources = { list: [{ id: 'screen:0:0', name: 'Screen 1', display_id: '1' }] as Array<{ id: string; name: string; display_id?: string }> };
   const displays = { list: [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 }] };
-  return { FakeWindow, ipc, ses, sources, displays };
+  return { FakeWindow, ipc, ses, sources, displays, displayHolds };
 });
 
 vi.mock('electron', () => ({
   BrowserWindow: fake.FakeWindow,
+  powerSaveBlocker: { start: () => ++fake.displayHolds.started && 7, stop: () => void fake.displayHolds.stopped++ },
   ipcMain: { on: (ch: string, cb: (e: { sender: unknown }, arg?: unknown) => void) => fake.ipc.set(ch, cb) },
   session: { fromPartition: () => fake.ses },
   desktopCapturer: { getSources: async () => fake.sources.list },
@@ -257,6 +259,18 @@ describe('createRtcHost (D2)', () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const fromPage = (w: InstanceType<typeof fake.FakeWindow>, ch: string, arg?: unknown): void => fake.ipc.get(ch)?.({ sender: w.webContents }, arg);
+
+  it('D7.4.8: the display is kept awake while attached and released on detach', async () => {
+    fake.displayHolds.started = 0;
+    fake.displayHolds.stopped = 0;
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    expect(fake.displayHolds).toEqual({ started: 1, stopped: 0 });
+    expect(logs).toContain('media: keeping the display awake while attached (the screen capture needs a lit desktop)');
+    await host.detach();
+    expect(fake.displayHolds).toEqual({ started: 1, stopped: 1 });
+  });
 
   it('VR: an offscreen window at 20 fps; attach first, then what was said before the page was ready; signals both ways', async () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
