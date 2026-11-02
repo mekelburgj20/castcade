@@ -28,7 +28,7 @@ import { BrowserWindow, desktopCapturer, ipcMain, powerSaveBlocker, screen, sess
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
-import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
+import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
@@ -310,6 +310,7 @@ export function mergeStatus(
     captureCrop?: { width: number; height: number } | null;
     panelWindow?: { visible: boolean; side: PanelSide } | null;
     captureStereo?: VrStereo | null;
+    captureWarning?: string | null;
   },
 ): MediaStatus {
   const live = main.attached && !!page?.capturing;
@@ -323,6 +324,7 @@ export function mergeStatus(
     captureSource: live ? main.captureLabel : null,
     captureCrop: live && main.captureCrop ? { width: main.captureCrop.width, height: main.captureCrop.height } : null,
     ...stereo,
+    ...(live && main.captureWarning ? { captureWarning: main.captureWarning } : {}),
     lastError: main.error ?? (main.attached ? (page?.error ?? null) : null),
   };
 }
@@ -423,10 +425,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** D7.4.4: one log line per stall episode, and the re-pick throttle. */
   let stallLogged = false;
   let lastRepickAt = 0;
+  /** D7.4.10: the fit warning, logged once per wording. */
+  let fitWarned: string | null = null;
   const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
     !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
-    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, captureStereo: capture ? (capture.stereo ?? null) : undefined, error: panelError ?? captureError, panelWindow: panelWindow() });
+    mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, captureStereo: capture ? (capture.stereo ?? null) : undefined, captureWarning: capture?.warning ?? null, error: panelError ?? captureError, panelWindow: panelWindow() });
   const emitStatus = (): void => {
     const s = status();
     for (const l of statusListeners) l(s);
@@ -527,7 +531,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   function stalledCapture(gen: number): void {
     if (!stallLogged) {
       stallLogged = true;
-      log.info('media: capture stalled (no new frame for 3 s); re-picking');
+      log.info(`media: capture stalled (no new frame for 3 s); re-picking${capture?.warning ? ` (${capture.warning})` : ''}`);
     }
     const now = Date.now();
     if (now - lastRepickAt < REPICK_MIN_MS) return;
@@ -734,7 +738,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     // D7.4.3: what the picture is, declared to the peers (the ini is read only for a VR rig on `auto`).
     const ini = inVr && previewSetting === 'auto' && opts.iniStereo ? await opts.iniStereo().catch(() => null) : null;
     const stereo = declaredStereo(previewSetting, inVr, ini);
-    return { capture: { sourceId: src.id, label: captureLabel(pick, target), screen: target.screen, crop: target.crop, out: target.out, stereo }, src, pick };
+    // D7.4.10: the fit warning only when there is one (the capture object reaches the page and the tests as is).
+    const warning = fitWarning(target.fit, target.screen);
+    return { capture: { sourceId: src.id, label: captureLabel(pick, target), screen: target.screen, crop: target.crop, out: target.out, stereo, ...(warning ? { warning } : {}) }, src, pick };
   };
 
   /** Finds the window to send and its capturer source; never throws. A newer attach or detach discards the result. */
@@ -753,6 +759,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         capturePidNow = r.pick.window.pid;
         captureError = null;
         if (r.pick.fallback) log.warn(`media: no "${PLAYER_TITLE}" window; sending the largest VPX window instead: ${capture.label}`);
+        if (capture.warning && capture.warning !== fitWarned) {
+          fitWarned = capture.warning;
+          log.warn(`media: ${capture.warning}`);
+        }
       } catch (e) {
         if (gen === generation) setCaptureError(`the VPX window could not be found (${errText(e)})`);
       } finally {

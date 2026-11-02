@@ -7,6 +7,28 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.32] — 2026-11-02
+
+The fourth run's logs re-read against the clock: 0.2.31's reading of Krobs' frozen picture (a display turned off) was
+wrong, and the owner's question, "could it be a focus thing?", was right. The display-awake hold stays (harmless).
+
+### A full-screen or clipped VR preview window is called out (D7.4.10)
+- Krobs' screen capture ran at 22–29 fps for the whole of LUADLJ (15 min, VPX focused in the headset), then delivered
+  one frame per pick from 90 s after he restarted VPX with `[PlayerVR] PreviewWidth / PreviewHeight` at 1920x1080, the
+  size of his display (1080x912 before), with bursts only while he had alt-tabbed out. A window that covers the whole
+  display is presented full screen once it has focus, past the desktop composition the screen capture films: the
+  tracker's third sighting of "froze once VPX had focus" (D2.5, D7.4.4). The companion now computes the window's fit
+  on its display at every pick and says so on the Match tab and in the log (`media: the VPX preview window covers the
+  whole 1920x1080 display: a full-screen window stops the screen capture once VPX has focus …`, with a size that fits:
+  960x960 on 1080p), repeats it on the stall line, and also names rows or columns of the window that hang off the
+  display and are not sent (his earlier 1080-row window sat 168 rows below the display: the bottom of his table never
+  left his PC). Runbook: 960x960 on a 1080p monitor, never the monitor's size, wholly on screen.
+  `companion/src/media/capture-crop.ts` cropFit / fitWarning, `rtc-host.ts`, `Match.tsx`.
+- The owner's own VPX (started 22:59, before the 0.2.29 install at 23:15) kept the 0.2.28 layer through the first three
+  matches of the night; only VBPATF ran the stereo window. So the one match with a healthy capture from Krobs was seen
+  through the old layer, and no clean moving picture of his table was seen all night. D7.5 (the layer as the camera)
+  remains the design that takes the screen capture, and all its conditions, out of VR senders.
+
 ## [0.2.31] — 2026-11-02
 
 The fourth two-rig run (VBPATF, 0.2.29 with the stereo window on both rigs): the stereo pair lines up on both sides

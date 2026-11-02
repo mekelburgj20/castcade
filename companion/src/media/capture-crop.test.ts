@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CoverGate, matchScreenSource, outSize, physicalRect, pickDisplay, screenCropFor, type ScreenDisplay } from './capture-crop.js';
+import { CoverGate, cropFit, fitWarning, matchScreenSource, outSize, physicalRect, pickDisplay, screenCropFor, type ScreenDisplay } from './capture-crop.js';
 import type { DxgiOutput, VpxWindow } from './window-geometry.js';
 
 const win = (left: number, top: number, width: number, height: number, monitor = '0'): VpxWindow => ({ pid: 7, title: 'Visual Pinball Player', client: { left, top, width, height }, monitor });
@@ -113,5 +113,28 @@ describe('the cover (D2.5, D1.9 for the match video)', () => {
     g.reset();
     expect(g.covered).toBe(false);
     expect(seen).toHaveLength(5);
+  });
+});
+
+describe("the window's fit on its display (D7.4.10)", () => {
+  const HD: ScreenDisplay = { id: 33, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 };
+  it("Krobs' 2026-11-02: a window the size of the display fills it; one hanging below it is cut; the owner's fits", () => {
+    const full = screenCropFor(win(0, 0, 1920, 1080), [], [HD]);
+    expect(full?.fit).toEqual({ fillsDisplay: true, cut: { top: 0, bottom: 0, left: 0, right: 0 } });
+    expect(fitWarning(full!.fit, full!.screen)).toMatch(/covers the whole 1920x1080 display/);
+    expect(fitWarning(full!.fit, full!.screen)).toMatch(/e\.g\. 960x960$/);
+    const low = screenCropFor(win(420, 168, 1080, 1080), [], [HD]);
+    expect(low?.crop).toEqual({ x: 420, y: 168, width: 1080, height: 912 });
+    expect(low?.fit).toEqual({ fillsDisplay: false, cut: { top: 0, bottom: 168, left: 0, right: 0 } });
+    expect(fitWarning(low!.fit, low!.screen)).toMatch(/^168 rows at the bottom of the VPX preview window are off the display/);
+    const owner = screenCropFor(win(100, 0, 1440, 1392), [], [LEFT]);
+    expect(owner?.fit).toEqual({ fillsDisplay: false, cut: { top: 0, bottom: 0, left: 0, right: 0 } });
+    expect(fitWarning(owner!.fit, owner!.screen)).toBeNull();
+    // Larger than the display on every side: full screen is the one warning (the edges are implied).
+    const fit = cropFit({ pid: 1, title: 'x', client: { left: -10, top: -10, width: 1940, height: 1100 }, monitor: '0' }, { left: 0, top: 0, width: 1920, height: 1080 });
+    expect(fit).toEqual({ fillsDisplay: true, cut: { top: 10, bottom: 10, left: 10, right: 10 } });
+    expect(fitWarning(fit, { width: 1920, height: 1080 })).toMatch(/^the VPX preview window covers/);
+    // Two edges off: both named, rows below first.
+    expect(fitWarning({ fillsDisplay: false, cut: { top: 0, bottom: 40, left: 0, right: 8 } }, { width: 1920, height: 1080 })).toMatch(/^40 rows at the bottom, 8 columns at the right of/);
   });
 });

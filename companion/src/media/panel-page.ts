@@ -82,6 +82,8 @@ export interface PanelCapture {
    * tells every peer on a `stereo` signal. Absent before D7.4.3 (treated as null).
    */
   stereo?: 'mono' | 'sbs' | null;
+  /** D7.4.10 (2026-11-02): the window covers its display or hangs off it (`capture-crop.ts` fitWarning); for the Match tab and the log, the page ignores it. */
+  warning?: string | null;
 }
 
 export interface PanelAttach {

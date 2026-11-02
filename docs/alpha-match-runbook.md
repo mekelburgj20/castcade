@@ -21,10 +21,13 @@ Table: ________ (ROM ______)
   window means a poor picture.
 - [ ] **Stereo for the other headset (optional, D7.4.3):** set VPX's VR preview to "both eyes" so the other player
   sees your table in stereo in theater mode: Preferences → VR → Preview: **Both Eyes**, or in `[PlayerVR]`
-  `VRPreview = 3`, with the preview window **as tall as your monitor and about as wide**: `PreviewWidth = 1080`,
-  `PreviewHeight = 1080` on a 1080p monitor (1440x1392 works on 1440p). VPX cuts each eye from its half of the
-  window without stretching it, so that window gives two tall eyes (540x1080 each), the view pinball wants; a
-  16:9 window gives two narrow slices, and a 2560x720 one does not fit a 1080p monitor. Castcade reads
+  `VRPreview = 3`, with the preview window **nearly as tall as your monitor and about as wide, never its full
+  size, and wholly on the screen**: `PreviewWidth = 960`, `PreviewHeight = 960` on a 1080p monitor (the owner's
+  1440x1392 on 1440p). VPX cuts each eye from its half of the window without stretching it, so that window gives
+  two tall eyes (480x960 each), the view pinball wants; a 16:9 window gives two narrow slices. A window the size
+  of the monitor (1920x1080 on 1080p) is presented full screen once VPX has focus and the screen capture then
+  stops at one frame (Krobs' rig, 2026-11-02: D7.4.10), and rows of a window hanging below the screen are not
+  sent (his 1080-row window lost its bottom 168 rows). The Match tab warns in both cases. Castcade reads
   `VRPreview` from your `VPinballX.ini` (the one beside VPX's exe, else `%APPDATA%\VPinballX`) and tells the
   other player's headset; if it cannot, or you start VPX with `-Ini <another file>`, pick it on the Match tab under
   **Your preview** (one eye / both eyes). The Match tab says when your rig sends one eye, or both eyes in a 16:9

@@ -411,6 +411,8 @@ interface MediaStatus {
   panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
   /** D7.4.3: what this rig tells the others its picture is, while the capture is live. */
   captureStereo?: 'mono' | 'sbs' | null;
+  /** D7.4.10: the preview window covers its display or hangs off it, while the capture is live. */
+  captureWarning?: string | null;
   /** D2.8: table sound: the helper, why not, and whether this rig's VPX is muted / being sent now. */
   tableAudio?: { helper: 'ready' | 'unavailable'; reason: string | null; muted: boolean; tapping: boolean };
   lastError: string | null;

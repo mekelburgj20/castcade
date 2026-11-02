@@ -219,6 +219,9 @@ describe('status (D2)', () => {
     // D7.4: the crop's size goes with the label while the capture is live.
     expect(mergeStatus(page, { attached: true, sending: true, captureLabel: 'x', captureCrop: { width: 2560, height: 720 }, error: null }).captureCrop).toEqual({ width: 2560, height: 720 });
     expect(mergeStatus({ ...page, capturing: false }, { attached: true, sending: true, captureLabel: 'x', captureCrop: { width: 2560, height: 720 }, error: null }).captureCrop).toBeNull();
+    // D7.4.10: the fit warning rides along while the capture is live, and only then.
+    expect(mergeStatus(page, { attached: true, sending: true, captureLabel: 'x', captureWarning: 'covers', error: null }).captureWarning).toBe('covers');
+    expect(mergeStatus({ ...page, capturing: false }, { attached: true, sending: true, captureLabel: 'x', captureWarning: 'covers', error: null }).captureWarning).toBeUndefined();
     expect(mergeStatus({ ...page, capturing: false }, { attached: true, sending: false, captureLabel: 'x', error: 'main says' })).toMatchObject({ captureSource: null, lastError: 'main says' });
     expect(mergeStatus(page, { attached: false, sending: true, captureLabel: 'x', error: null })).toEqual({ attached: false, sending: false, peers: {}, mic: 'unavailable', captureSource: null, captureCrop: null, lastError: null });
   });

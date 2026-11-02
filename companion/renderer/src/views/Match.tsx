@@ -424,7 +424,7 @@ function mediaLine(m: MatchStatus['media']): string {
   if (!m) return 'Video and voice: not in this build yet.';
   if (!m.attached) return `Video and voice: not connected${m.lastError ? ` (${m.lastError})` : ''}.`;
   const peers = Object.entries(m.peers).map(([id, p]) => `${id} ${p.ice}`);
-  return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
+  return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${m.captureWarning ? ` · ${m.captureWarning}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
 }
 
 /** D2.6 (2026-11-01): the match panel is a second window; say so, and where it is. */

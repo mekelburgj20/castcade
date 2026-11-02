@@ -94,6 +94,12 @@ export interface MediaStatus {
    */
   captureStereo?: VrStereo | null;
   /**
+   * D7.4.10 (2026-11-02): the preview window covers its whole display (presented full screen once VPX has focus, which
+   * stops the screen capture: Krobs' rig) or hangs off an edge (those rows are not sent), while the capture is live.
+   * Absent otherwise.
+   */
+  captureWarning?: string | null;
+  /**
    * D2.8 (2026-11-01): table sound (`media/audio-helper.ts`, audio-helper/README.md). `helper`: the helper runs
    * (`ready`) or cannot (`unavailable`: `helper_missing`, `helper_failed:<code>`); `reason` also carries a ready
    * helper's `tap_unavailable:<why>` (Windows before 10 2004: muting works, sending does not). `muted`: this rig's VPX

@@ -41,6 +41,8 @@ export interface ScreenTarget {
   crop: CropRect;
   /** The size the page draws the crop at (and sends). */
   out: { width: number; height: number };
+  /** D7.4.10: how the window sits on the display (full screen, or hanging off an edge). */
+  fit: CropFit;
 }
 
 /** The match video's largest size; the crop keeps its aspect inside it (PANEL_VIDEO is 1280x720, alpha-match.md §4). */
@@ -135,7 +137,52 @@ export function screenCropFor(win: VpxWindow, outputs: DxgiOutput[], displays: S
   const height = (y1 - y0) & ~1;
   if (width < 64 || height < 64) return null;
   const crop = { x: x0 - r.left, y: y0 - r.top, width, height };
-  return { ...hit, screen: { width: r.width, height: r.height }, crop, out: outSize(crop) };
+  return { ...hit, screen: { width: r.width, height: r.height }, crop, out: outSize(crop), fit: cropFit(win, r) };
+}
+
+/**
+ * D7.4.10 (2026-11-02, Krobs' rig, fourth run): how the window sits on its display. `fillsDisplay`: its client area
+ * covers the whole display (`[PlayerVR] PreviewWidth / PreviewHeight` set to the monitor's size). Windows presents such
+ * a window full screen once it has focus, past the desktop composition the screen capture films, and the capture then
+ * delivers one frame per pick and nothing after: his counters read 216–295 frames per 10 s with a 1080x912 window and
+ * 0–1 with 1920x1080 on his 1920x1080 display, with bursts only while he had alt-tabbed out (the third sighting of
+ * "froze once VPX had focus": D2.5, D7.4.4). `cut`: rows / columns of the client area past the display's edges, which
+ * the crop cannot send (his earlier window hung 168 rows below the display: the bottom of his table never left his PC).
+ */
+export interface CropFit {
+  fillsDisplay: boolean;
+  cut: { top: number; bottom: number; left: number; right: number };
+}
+
+export function cropFit(win: VpxWindow, display: { left: number; top: number; width: number; height: number }): CropFit {
+  const c = win.client;
+  const right = c.left + c.width;
+  const bottom = c.top + c.height;
+  const dRight = display.left + display.width;
+  const dBottom = display.top + display.height;
+  return {
+    fillsDisplay: c.left <= display.left && c.top <= display.top && right >= dRight && bottom >= dBottom,
+    cut: { top: Math.max(0, display.top - c.top), bottom: Math.max(0, bottom - dBottom), left: Math.max(0, display.left - c.left), right: Math.max(0, right - dRight) },
+  };
+}
+
+/**
+ * D7.4.10: the Match tab's and the log's warning for a fit that loses the picture, or null. A full-screen window is
+ * the one that stops the capture, so it is named alone; otherwise the edges off the display, with the rows below
+ * first (the bottom of the table). The size suggested leaves room for the title bar and the taskbar.
+ */
+export function fitWarning(fit: CropFit, screen: { width: number; height: number }): string | null {
+  if (fit.fillsDisplay) {
+    const side = Math.max(64, Math.floor((Math.min(screen.width, screen.height) - 120) / 8) * 8);
+    return `the VPX preview window covers the whole ${screen.width}x${screen.height} display: a full-screen window stops the screen capture once VPX has focus (one frame per pick); set the preview size (Preferences → VR, or [PlayerVR] PreviewWidth / PreviewHeight) smaller than the display, e.g. ${side}x${side}`;
+  }
+  const parts: string[] = [];
+  if (fit.cut.bottom > 0) parts.push(`${fit.cut.bottom} rows at the bottom`);
+  if (fit.cut.top > 0) parts.push(`${fit.cut.top} rows at the top`);
+  if (fit.cut.left > 0) parts.push(`${fit.cut.left} columns at the left`);
+  if (fit.cut.right > 0) parts.push(`${fit.cut.right} columns at the right`);
+  if (parts.length === 0) return null;
+  return `${parts.join(', ')} of the VPX preview window are off the display and are not sent: move the window ([PlayerVR] WindowPosX / WindowPosY) or make it smaller (PreviewWidth / PreviewHeight)`;
 }
 
 /**
