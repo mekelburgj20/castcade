@@ -3,7 +3,7 @@ import { exitRungFor, type LiveFacts, type UnpatchedFacts } from './exit-rung.js
 import type { SessionSummary } from './journal-detector.js';
 
 const T = 'Freddy A Nightmare on Elm Street (Gottlieb 1994)';
-const unpatched = (patch: Partial<UnpatchedFacts>): UnpatchedFacts => ({ cls: 'A', clsReason: null, rom: 'freddy', patchable: true, support: { readable: true, reason: 'live fields in NVRAM' }, noMap: false, hadManifest: false, ...patch });
+const unpatched = (patch: Partial<UnpatchedFacts>): UnpatchedFacts => ({ cls: 'A', clsReason: null, rom: 'freddy', patchable: true, support: { readable: true, reason: 'live fields in NVRAM' }, noMap: false, hadManifest: false, patchRemoved: false, ...patch });
 const summary = (patch: Partial<SessionSummary> = {}): SessionSummary => ({
   table: T,
   recipe: 'A',
@@ -40,6 +40,12 @@ describe('exitRungFor (C11: why a score was read only at close)', () => {
     expect(r).toMatchObject({ rung: 'a', kind: 'not_patched', patchable: true, detail: 'table not patched (new file; the import would patch it: VPM / ROM table, ROM freddy)' });
     expect(r.note).toBe(`${T}: only the score at close was read, not every game, because it is not patched. Press Patch now, then reopen the table so every game posts live.`);
     expect(exitRungFor({ table: T, live: null, unpatched: unpatched({ hadManifest: true }) }).detail).toMatch(/its earlier patch is gone/);
+    // C11.2: the sidecar vanished while the table file stayed as the manifest recorded it: an antivirus took it.
+    const removed = exitRungFor({ table: T, live: null, unpatched: unpatched({ hadManifest: true, patchRemoved: true }) });
+    expect(removed.kind).toBe('not_patched');
+    expect(removed.patchable).toBe(true);
+    expect(removed.detail).toMatch(/removed from disk by another program, most likely an antivirus quarantine/);
+    expect(removed.note).toMatch(/Windows Security → Protection history, then press Patch now/);
     expect(exitRungFor({ table: T, live: null, unpatched: unpatched({ cls: 'B', rom: null, support: null }) }).detail).toBe('table not patched (new file; the import would patch it: original table (JPSalas pattern))');
   });
 

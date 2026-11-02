@@ -54,6 +54,12 @@ export interface UnpatchedFacts {
   noMap: boolean;
   /** A manifest exists for the table (it was patched once and the sidecar is gone or disabled). */
   hadManifest: boolean;
+  /**
+   * C11.2: the manifest's sidecar is missing, no `.stale` copy sits beside the table, and the table file is as the
+   * manifest recorded it: another program removed the patch (the owner's rig 2026-11-01: Windows Defender quarantined
+   * one rendered `.vbs`). Patch now writes it again, and it will be removed again until the player allows it.
+   */
+  patchRemoved: boolean;
 }
 
 /** What live mode saw: the hook's journal followed while the table was open. */
@@ -157,6 +163,14 @@ export function exitRungFor(input: ExitRungInput): ExitRung {
   if (cls === null) return make('script_unread', "table not patched; its script could not be read", "Castcade could not read the table's script.");
   if (unpatched.patchable) {
     const what = `${describeClass(cls)}${cls === 'A' ? `, ROM ${rom ?? '?'}` : ''}`;
+    if (unpatched.patchRemoved) {
+      return make(
+        'not_patched',
+        `table not patched (its earlier patch was removed from disk by another program, most likely an antivirus quarantine of the .vbs; the import would patch it: ${what})`,
+        'its Castcade patch was removed from disk after it was written, most likely by an antivirus quarantine of the .vbs beside the table. Allow it in Windows Security → Protection history, then press Patch now and reopen the table.',
+        true,
+      );
+    }
     return make(
       'not_patched',
       `table not patched (${unpatched.hadManifest ? 'its earlier patch is gone' : 'new file'}; the import would patch it: ${what})`,

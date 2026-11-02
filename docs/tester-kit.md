@@ -66,6 +66,9 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
   update Castcade, or Settings → Import tables → Patch my tables.
 - Two-player games are skipped on purpose. Games under 20 seconds are skipped.
 - *skipped: no map for ROM* means that ROM has no last-game map yet; try one of the known-good tables.
+- A balloon *"Castcade could not keep a table patch"* means your antivirus removed the `.vbs` Castcade put beside one
+  table (Windows Defender did this to one original table whose own script looks obfuscated). The table still plays,
+  in basic mode. To get it live: Windows Security → Protection history → allow that file, then Status → **Patch now**.
 - Castcade updates itself from GitHub; when a new version has downloaded it installs on the next quit.
 - Uninstall: Castcade → Pairing → **Unpair**, then Windows Settings → Apps → Castcade → Uninstall.
   Delete `%APPDATA%\Castcade` by hand if you want the settings and log gone.

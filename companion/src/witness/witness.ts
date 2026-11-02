@@ -48,7 +48,7 @@ import { decideCapture } from './capture.js';
 import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { newestJournalSince, parseSessionStamp } from './journal-scan.js';
-import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, recipeFor, sidecarPathFor, unpatchRecipeA } from '../patcher/index.js';
+import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, recipeFor, sidecarPathFor, stalePathFor, unpatchRecipeA } from '../patcher/index.js';
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
@@ -1196,11 +1196,23 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     // Classes B–E only: X (unclassified, e.g. no _KeyDown) says nothing about a ROM.
     const original = cls !== null && ['B', 'C', 'D', 'E'].includes(cls.cls);
     // C11: kept on the session so the close-time capture names its rung without reading the script again.
-    const hadManifest = (await readManifest(fs, manifestPathFor(manifestDir, table)).catch(() => null)) !== null;
-    session.unpatched = { cls: cls?.cls ?? null, clsReason: cls?.facts.reason ?? null, rom, patchable, support: support ? { readable: support.readable, reason: support.reason } : null, noMap: rom !== null && map === null, hadManifest };
+    const manifest = await readManifest(fs, manifestPathFor(manifestDir, table)).catch(() => null);
+    const hadManifest = manifest !== null;
+    // C11.2: the manifest's sidecar is gone, nothing was disabled (`.stale`), and the table file is as the manifest recorded
+    // it: another program removed the patch (the owner's rig 2026-11-01: Defender quarantined one rendered .vbs). Patch now
+    // writes it again and it goes again, so the note sends the player to the quarantine, not just to the button.
+    const gone = async (p: string): Promise<boolean> => fs.stat(p).then(() => false, () => true);
+    const patchRemoved =
+      manifest !== null &&
+      (await gone(manifest.sidecarPath)) &&
+      (await gone(stalePathFor(vpxPath))) &&
+      (await fs.stat(vpxPath).then((s) => s.size === manifest.vpxSize && s.mtimeMs === manifest.vpxMtimeMs, () => false));
+    session.unpatched = { cls: cls?.cls ?? null, clsReason: cls?.facts.reason ?? null, rom, patchable, support: support ? { readable: support.readable, reason: support.reason } : null, noMap: rom !== null && map === null, hadManifest, patchRemoved };
     session.patchablePath = patchable ? vpxPath : null;
     const message = patchable
-      ? `${table} is not patched: only the last game of this session will post. Press Patch now (or Settings → Import tables → Patch my tables), then relaunch the table.`
+      ? patchRemoved
+        ? `${table} is not patched: the Castcade patch beside it was removed from disk after it was written, most likely by an antivirus quarantine of the .vbs (Windows Security → Protection history). Allow it there, press Patch now, then relaunch the table; until then only the last game of this session will post.`
+        : `${table} is not patched: only the last game of this session will post. Press Patch now (or Settings → Import tables → Patch my tables), then relaunch the table.`
       : support && !support.readable
         ? unreadableNote(table, support.reason)
         : original

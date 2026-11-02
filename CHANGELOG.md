@@ -7,6 +7,18 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Table coverage, after the first night on 0.2.28 (C11.2, B24)
+- The folder watch no longer rewrites a table patch that another program keeps removing. On the owner's rig Windows
+  Defender quarantined the rendered `.vbs` of one original (Thundercats Pinball v1.0.9, `Trojan:Script/ObfusScript.A!ml`:
+  the table's own obfuscated script, which VPX runs happily from inside the `.vpx`), and 0.2.28 wrote it again every
+  30 s for an hour, a balloon each time. The watch now remembers what it wrote; a sidecar gone while the table file is
+  unchanged is reported once (`sidecar watch: <table>: its Castcade patch (<file>.vbs) was removed right after Castcade
+  wrote it, most likely by an antivirus quarantine …`, balloon "Castcade could not keep a table patch") and not written
+  again until the file changes. When such a table is opened, Status and the close-time capture say `its earlier patch
+  was removed from disk by another program, most likely an antivirus quarantine of the .vbs` and send the player to
+  Windows Security → Protection history before Patch now. `companion/src/main/sidecar-watch.ts`, `witness.ts`
+  `noticeUnpatched`, `exit-rung.ts`; ladder row (a) in `docs/design/table-import-and-patching.md` §6a.
+
 ## [0.2.29] — 2026-11-02
 
 The second two-rig run on 0.2.28 (owner vs Krobs, 2026-11-02, two matches) found the stereo pair not fusing, only the

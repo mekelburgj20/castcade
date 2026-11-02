@@ -21,6 +21,12 @@
  * sidecar. On a never-imported folder the watch patches nothing; the witness's "table not patched" notice
  * (with its Patch now action) does the asking.
  *
+ * C11.2 (2026-11-01): a sidecar this watch wrote that is gone on a later look while the table file is unchanged was
+ * removed by another program (the owner's rig: Windows Defender quarantined one rendered `.vbs` as
+ * `Trojan:Script/ObfusScript.A!ml`, the table's own obfuscated script; the watch wrote it again every 30 s for an hour,
+ * a balloon each time). Such a table is reported once (log, balloon, outcome) and remembered like a decline, until the
+ * table file changes.
+ *
  * Every look runs under the tables host's lock (`exclusive`), so it never interleaves with an
  * import or a remove-all the player started from the Settings card (2026-10-22: both re-patched
  * the same folder at the same time and the card reported a nonsense count).
@@ -32,6 +38,7 @@ import { realClock, type Clock, type TimerHandle } from '../match/clock.js';
 import {
   LIB_VERSION,
   applyImport,
+  basenameOf,
   checkSidecar,
   countActions,
   decodeScript,
@@ -101,6 +108,12 @@ interface Stale {
   why: string;
 }
 
+/** C11.2: a table whose sidecar, written by this watch, is gone while the table file is still at `st`. */
+interface Gone {
+  vpxPath: string;
+  st: Seen;
+}
+
 const unlocked: Exclusive = (fn) => fn();
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -112,6 +125,8 @@ export class SidecarWatch {
   private seen = new Map<string, Seen>();
   /** C11: tables with no sidecar the plan declined (or that failed to render), at the size + mtime it was decided for. */
   private declined = new Map<string, Seen>();
+  /** C11.2: tables whose sidecar this watch wrote or re-made, at the table file's size + mtime then. */
+  private patchedHere = new Map<string, Seen>();
   /** C11: the folder was found imported once (the guard); only a reset forgets it. */
   private imported = false;
   private primed = false;
@@ -142,6 +157,7 @@ export class SidecarWatch {
   reset(): void {
     this.seen.clear();
     this.declined.clear();
+    this.patchedHere.clear();
     this.imported = false;
     this.primed = false;
   }
@@ -179,6 +195,8 @@ export class SidecarWatch {
     const changed: string[] = [];
     /** C11: tables with no sidecar that were not already declined at this size + mtime. */
     const unpatched: { vpxPath: string; st: Seen }[] = [];
+    /** C11.2: sidecars this watch wrote that are gone while the table file is unchanged. */
+    const vanished: Gone[] = [];
     const withSidecar: string[] = [];
     for (const path of files) {
       let st: Seen;
@@ -196,6 +214,12 @@ export class SidecarWatch {
         // First look: every table that has a sidecar beside it is checked once; later, only one that moved.
         if (!this.primed || !prev || prev.size !== st.size || prev.mtimeMs !== st.mtimeMs) changed.push(path);
       } else {
+        const here = this.patchedHere.get(path);
+        if (here && here.size === st.size && here.mtimeMs === st.mtimeMs) {
+          // C11.2: this watch wrote that sidecar and the table file has not changed since: another program removed it.
+          vanished.push({ vpxPath: path, st });
+          continue;
+        }
         const d = this.declined.get(path);
         if (!d || d.size !== st.size || d.mtimeMs !== st.mtimeMs) unpatched.push({ vpxPath: path, st });
       }
@@ -203,8 +227,9 @@ export class SidecarWatch {
     this.seen = next;
     this.primed = true;
     for (const p of [...this.declined.keys()]) if (!next.has(p)) this.declined.delete(p);
+    for (const p of [...this.patchedHere.keys()]) if (!next.has(p)) this.patchedHere.delete(p);
 
-    const outcomes: SidecarWatchOutcome[] = [];
+    const outcomes: SidecarWatchOutcome[] = this.lost(vanished);
     const stale: Stale[] = [];
     for (const vpxPath of changed) {
       const tableId = tableIdFor(vpxPath);
@@ -303,10 +328,17 @@ export class SidecarWatch {
     }
 
     const patched: Fresh[] = [];
+    const gone: Gone[] = [];
     for (const f of fresh) {
       const item = toPatch.get(f.vpxPath);
       if (!item) continue;
       if (remade.has(f.vpxPath)) {
+        if (!(await this.exists(sidecarPathFor(f.vpxPath)))) {
+          // C11.2: written and already gone (an antivirus that scans the file on close): reported once, not written again.
+          gone.push({ vpxPath: f.vpxPath, st: f.st });
+          continue;
+        }
+        this.patchedHere.set(f.vpxPath, f.st);
         const recipe = item.cls ? recipeFor(item.cls) : null;
         patched.push(f);
         this.opts.log(`sidecar watch: ${f.tableId} patched (${f.disabled ? 'its earlier patch was disabled' : 'new table'}, recipe ${recipe ?? '?'})`);
@@ -323,6 +355,8 @@ export class SidecarWatch {
     for (const s of stale) {
       if (remade.has(s.vpxPath)) {
         repatched.push(s);
+        const st = this.seen.get(s.vpxPath);
+        if (st) this.patchedHere.set(s.vpxPath, st);
         const detail = s.kind === 'version' ? `${s.tableId}: its Castcade patch was re-made for hook ${LIB_VERSION}` : `${s.tableId} changed on disk; its Castcade patch was re-made for the new version`;
         outcomes.push({ vpxPath: s.vpxPath, result: 'repatched', detail });
         continue;
@@ -340,6 +374,32 @@ export class SidecarWatch {
       }
     }
     this.announce(repatched, disabled, patched, outcomes);
+    outcomes.push(...this.lost(gone));
+    return outcomes;
+  }
+
+  /**
+   * C11.2: sidecars this watch wrote that another program removed while the table file stayed as it was. Each is
+   * reported once (log, outcome, one balloon per look) and remembered like a decline, so it is not written again until
+   * the table file changes: the only thing the player can do is allow the file where it was quarantined.
+   */
+  private lost(gone: Gone[]): SidecarWatchOutcome[] {
+    const outcomes: SidecarWatchOutcome[] = [];
+    for (const g of gone) {
+      this.declined.set(g.vpxPath, g.st);
+      this.patchedHere.delete(g.vpxPath);
+      const detail = `${tableIdFor(g.vpxPath)}: its Castcade patch (${basenameOf(sidecarPathFor(g.vpxPath))}) was removed right after Castcade wrote it, most likely by an antivirus quarantine of the .vbs (Windows Security → Protection history names it). Allow it there, or the table stays in basic mode; Castcade will not write it again until the table file changes.`;
+      this.opts.log(`sidecar watch: ${detail}`);
+      outcomes.push({ vpxPath: g.vpxPath, result: 'error', detail });
+    }
+    const only = outcomes[0];
+    if (only) {
+      const line =
+        outcomes.length === 1
+          ? only.detail
+          : `${outcomes.length} table patches Castcade wrote were removed right after, most likely by an antivirus quarantine of the .vbs files (Windows Security → Protection history). Allow them there, or those tables stay in basic mode.`;
+      this.opts.notify?.('Castcade could not keep a table patch', line);
+    }
     return outcomes;
   }
 

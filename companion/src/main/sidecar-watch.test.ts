@@ -138,6 +138,59 @@ describe('SidecarWatch: new tables (C11)', () => {
     h.clock.advance(30_000);
     expect((await h.watch.tick()).map((o) => o.result)).toEqual(['patched']);
   });
+
+  it('C11.2: a sidecar removed right after it is written (an antivirus quarantine) is reported once, not written every look', async () => {
+    const h = await harness();
+    await h.watch.tick();
+    h.fs.put(FREDDY, vpx(crlf(FREDDY_SCRIPT)));
+    // Defender on the owner's rig: the rendered .vbs is quarantined as soon as it is closed.
+    const write = h.fs.writeFile.bind(h.fs);
+    h.fs.writeFile = async (p: string, d: Uint8Array | string) => {
+      await write(p, d);
+      if (p === sidecarPathFor(FREDDY)) await h.fs.unlink(p);
+    };
+    h.clock.advance(30_000);
+    const out = await h.watch.tick();
+    expect(out).toEqual([{ vpxPath: FREDDY, result: 'error', detail: expect.stringContaining('was removed right after Castcade wrote it, most likely by an antivirus quarantine') }]);
+    expect(h.notices).toEqual([{ title: 'Castcade could not keep a table patch', body: expect.stringContaining('Windows Security → Protection history') }]);
+    expect(h.log.filter((l) => l.includes('patched (new table'))).toEqual([]);
+    expect(h.log.some((l) => l.includes('Freddy A Nightmare on Elm Street (Gottlieb 1994): its Castcade patch (Freddy A Nightmare on Elm Street (Gottlieb 1994).vbs) was removed right after'))).toBe(true);
+    // Quiet from then on: the table is remembered like a decline (no new write, no new balloon).
+    const writes: string[] = [];
+    h.fs.writeFile = async (p: string, d: Uint8Array | string) => {
+      writes.push(p);
+      await write(p, d);
+    };
+    for (let i = 0; i < 3; i++) {
+      h.clock.advance(30_000);
+      expect(await h.watch.tick()).toEqual([]);
+    }
+    expect(writes).toEqual([]);
+    expect(h.notices).toHaveLength(1);
+  });
+
+  it('C11.2: a sidecar that vanishes between looks while the table file is unchanged is reported once; a changed table file is tried again', async () => {
+    const h = await harness();
+    await h.watch.tick();
+    h.fs.put(FREDDY, vpx(crlf(FREDDY_SCRIPT)));
+    h.clock.advance(30_000);
+    expect((await h.watch.tick()).map((o) => o.result)).toEqual(['patched']);
+    // The quarantine lands a little later (a scheduled scan): the sidecar is gone on the next look, the .vpx untouched.
+    await h.fs.unlink(sidecarPathFor(FREDDY));
+    h.clock.advance(30_000);
+    const out = await h.watch.tick();
+    expect(out).toEqual([{ vpxPath: FREDDY, result: 'error', detail: expect.stringContaining('most likely by an antivirus quarantine') }]);
+    expect(h.fs.has(sidecarPathFor(FREDDY))).toBe(false);
+    expect(h.notices.map((n) => n.title)).toEqual(['Castcade patched a new table', 'Castcade could not keep a table patch']);
+    h.clock.advance(30_000);
+    expect(await h.watch.tick()).toEqual([]);
+    expect(h.fs.has(sidecarPathFor(FREDDY))).toBe(false);
+    // A new version of the table file (different size) is a new decision: patched again.
+    h.fs.put(FREDDY, vpx(crlf(FREDDY_SCRIPT), 64));
+    h.clock.advance(30_000);
+    expect((await h.watch.tick()).map((o) => o.result)).toEqual(['patched']);
+    expect(h.fs.has(sidecarPathFor(FREDDY))).toBe(true);
+  });
 });
 
 describe('SidecarWatch', () => {
