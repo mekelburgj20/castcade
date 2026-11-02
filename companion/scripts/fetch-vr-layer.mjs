@@ -27,10 +27,10 @@ import { fileURLToPath, URL } from 'node:url';
 // The first zip appears with the first release tagged after D7.3 lands (the vr-layer workflow attaches it when that tag
 // is pushed); a release's own installer cannot carry its own tag's zip (both workflows run at once), so TAG names an
 // earlier release. Until then a download fails with "does release … carry …": use --from with a local or CI build.
-const TAG = 'v0.2.30';
+const TAG = 'v0.2.31';
 // sha256 pinning starts at the first pinned zip: null means "not pinned yet" (the download is used, with a warning
 // and the hash to pin printed). Set it as soon as the zip exists.
-const SHA256 = '057898fafec42990678ab7be483aff8b78a3f73549e2c1f16cbba45d40e5e0ec';
+const SHA256 = '30307e4965a443f76eb5e610344406025a0f7d4161b685bff27cb1b80449937d';
 const NAME = `castcade-vr-layer-${TAG}-win-x64`;
 const URL_ = `https://github.com/mekelburgj20/castcade/releases/download/${TAG}/${NAME}.zip`;
 const KEEP = ['XrApiLayer_castcade_panel.dll', 'XrApiLayer_castcade_panel.json', 'THIRD-PARTY.md'];
