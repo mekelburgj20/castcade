@@ -186,6 +186,7 @@ export function withServedRoms(seed: VpsIndex, served: () => RomMap | null): Vps
 
   return {
     version: () => seed.version(),
+    info: () => seed.info(),
     async game(id) {
       const hit = await seed.game(id);
       if (hit) return hit;

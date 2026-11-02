@@ -4,7 +4,7 @@
  * the module reads at start (ArcAid URL, nvram dir) changes. The shell talks to this, never to the
  * module directly, so recreation never leaks a stale instance into IPC handlers.
  */
-import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS } from '../witness/index.js';
+import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS } from '../witness/index.js';
 import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { VrObservation } from '../witness/vr-detect.js';
@@ -54,8 +54,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   const statusListeners = new Set<(status: WitnessStatus) => void>();
   let paused = false;
   let unsubscribe: Array<() => void> = [];
-  // B8: ArcAid's ROM → VPS game map, fetched at start and daily; the module's default is off for its tests.
-  const deps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS };
+  // B8: ArcAid's ROM → VPS game map, fetched at start and daily; B24: the VPS index itself, rebuilt from vps-db daily.
+  // Both module defaults are off for its tests.
+  const deps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS, vpsRefreshMs: DEFAULT_VPS_REFRESH_MS };
   /** D2.8: the running VPX's pid (the table-sound helper's fallback when the match capture has no window). */
   let launchPid: number | null = null;
   let witness: Witness = attach(createWitness(store, deps));

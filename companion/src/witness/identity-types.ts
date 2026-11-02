@@ -6,7 +6,7 @@
  * - `vpx-file.ts`      reads a `.vpx` (OLE compound file) without loading it whole: TableInfo
  *                      strings, the file version, the table's physics scalars, a streaming SHA-256.
  * - `vps-index.ts`     loads the compact VPS index (`resources/vps/index.json`, built by
- *                      `scripts/fetch-vps.mjs`) and answers "which game has this ROM / name".
+ *                      `scripts/fetch-vps.ts`, refreshed daily by `vps-refresh.ts`) and answers "which game has this ROM / name".
  * - `table-match.ts`   scores a game's VPS table files against the evidence from the file.
  *
  * `witness.ts` composes them into a `TableIdentity` per session and puts the ids on the wire.
@@ -98,8 +98,22 @@ export interface VpsIndexFile {
   games: VpsGameEntry[];
 }
 
+/** Where the loaded index came from and how big it is (B24): the log line at start and the Status row. */
+export interface VpsIndexInfo {
+  /** `refreshed` = the daily copy under userData; `bundled` = the installer's; `none` = neither readable. */
+  source: 'bundled' | 'refreshed' | 'none';
+  /** The vps-db commit (bundled) or the content ETag of `vpsdb.json` (refreshed); null with no index. */
+  version: string | null;
+  games: number;
+  /** Table files across every game. */
+  tables: number;
+  /** The index file's `generatedAt`: the pin fetch (bundled) or the refresh that built it. */
+  builtAt: string | null;
+}
+
 export interface VpsIndex {
   version(): Promise<string | null>;
+  info(): Promise<VpsIndexInfo>;
   game(id: string): Promise<VpsGameEntry | null>;
   /**
    * Games whose ROM list contains `rom` (case-insensitive). When none lists it exactly, games whose

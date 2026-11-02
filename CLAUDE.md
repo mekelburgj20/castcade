@@ -52,7 +52,7 @@ npm run fetch-vr-overlay -w companion # fetch the OpenVR overlay helper zip from
 npm run fetch-vr-layer -w companion   # fetch the OpenXR panel layer zip (dll + json) into companion/resources/vr-layer (gitignored; `--from vr-layer/build/Release` for a local build; D7.3)
 npm run fetch-audio-helper -w companion # fetch castcade-audio.exe (the table-sound helper) into companion/resources/audio-helper (gitignored; `--from audio-helper/build/Release` for a local build; D2.8)
 npm run ffmpeg-source -w companion # download the GPL Corresponding Source of the bundled ffmpeg into companion/release (release.yml uploads it; E5, docs/ffmpeg-source.md)
-npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
+npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package; the installed app refreshes it daily from vps-db main into userData, B24); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run playfield-tags -w companion -- "<table.vpx>"   # re-record fixtures/playfield/tags.json (B4.1) after a VPX update: tag names and counts only
 npm run witness-games -w companion   # regenerate docs/witness-games.{json,md} (B14) from the fetched VPS index × maps corpus; verified = a fixtures/nvram/<rom> folder
 npm run pack:dir -w companion     # unpacked app in companion/release/win-unpacked (then run Castcade.exe --smoke)

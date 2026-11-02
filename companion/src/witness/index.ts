@@ -87,7 +87,9 @@ export { createIdentityResolver, type IdentityResolver, type IdentityResolverDep
 export { createIdentityStore, IDENTITY_FILE, type IdentityStore, type CachedFacts, type Confirmation } from './identity-store.js';
 export { createPostedGames, postedGameKey, POSTED_GAMES_FILE, MAX_POSTED_GAMES, type PostedGames } from './posted-games.js';
 export { findTableFile, tableRootsFor, tableBaseName } from './table-locator.js';
-export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer } from './vps-index.js';
+export { createVpsIndex, normalizeVpsName, romFamily, tableLabel, indexGames, sameManufacturer, vpsIndexPath, type ReloadableVpsIndex, type VpsIndexDirs } from './vps-index.js';
+export { buildIndex, gameEntry, tableEntry, countTables, type BuildIndexOptions } from './vps-build.js';
+export { createVpsRefresh, versionFromEtag, shortVersion, vpsRefreshDir, VPS_DB_URL, VPS_STATE_FILE, VPS_MAX_BODY_BYTES, DEFAULT_VPS_REFRESH_MS, DEFAULT_VPS_REFRESH_DELAY_MS, type VpsRefresh, type VpsRefreshDeps, type VpsRefreshState, type VpsRefreshResult, type VpsDbFetch } from './vps-refresh.js';
 export { buildSupportList, preloadMaps, romSupport, NO_MAP_REASON, NO_ROM_REASON, NO_PLATFORM, type SupportList, type GameSupport, type RomSupport, type SupportStatus, type SupportListInput } from './support-list.js';
 export { parseRomMap, createRomMapStore, fetchRomMap, withServedRoms, ROM_MAP_FILE, DEFAULT_ROM_MAP_REFRESH_MS, type RomMap, type RomMapEntry, type RomMapGame, type CachedRomMap, type RomMapStore, type RomMapFetchResult } from './rom-map.js';
 export { matchGame, matchTable, parseTableFileName, namePrefixes, versionFromName, versionForms, TABLE_SCORES, TABLE_MARGIN, type ParsedTableFileName } from './table-match.js';

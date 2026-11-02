@@ -6,7 +6,7 @@
  * module are built by different agents against it.
  */
 import type { Attestation } from './attestation-types.js';
-import type { TableIdentity } from './identity-types.js';
+import type { TableIdentity, VpsIndexInfo } from './identity-types.js';
 import type { ScoreTournament } from './arcaid-client.js';
 import type { GameEvent } from './journal-detector.js';
 import type { VrObservation } from './vr-detect.js';
@@ -42,7 +42,7 @@ export interface WitnessSettings {
   nvramDir: string | null;
   /** Directory for the module's own files (offline queue, shadow state). */
   dataDir: string;
-  /** Root of the bundled compact VPS index (`index.json`, `VERSION`), built by `scripts/fetch-vps.mjs`. */
+  /** Root of the bundled compact VPS index (`index.json`, `VERSION`), built by `scripts/fetch-vps.ts`; the daily refresh (B24) lives under `dataDir/vps`. */
   vpsDir: string;
   /** Extra folder to search for `<table>.vpx` when a table was opened from the editor; null = only `<exe dir>\tables`. */
   tablesDir: string | null;
@@ -112,6 +112,11 @@ export interface AttemptStatus {
   needsStart: boolean;
 }
 
+/** B24: the loaded VPS index for Status, plus when vps-db was last checked (a 200 or a 304), ISO or null. */
+export interface VpsIndexStatus extends VpsIndexInfo {
+  checkedAt: string | null;
+}
+
 export interface WitnessStatus {
   paired: boolean;
   running: boolean;
@@ -127,8 +132,10 @@ export interface WitnessStatus {
   currentIdentity: TableIdentity | null;
   /** Settings and builds in force for the current table (adjustments and the cheat flag fill in at capture). */
   currentAttestation: Attestation | null;
-  /** The compact VPS index's version (vps-db commit), or null when the index is missing. */
+  /** The compact VPS index's version (vps-db commit, or the content ETag once refreshed), or null when the index is missing. */
   vpsVersion: string | null;
+  /** B24: which VPS index is loaded and when it was built / last checked against vps-db; null until start. */
+  vpsIndex: VpsIndexStatus | null;
   lastCapture: LastCapture | null;
   /** Posts waiting in the offline queue. */
   queued: number;
