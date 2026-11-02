@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -367,7 +367,7 @@ describe('panel page script (D2)', () => {
     const video = pc.senders[1]!;
     expect(video.track.enabled).toBe(false);
     expect(video.params.encodings[0]).toEqual({ maxBitrate: 2_500_000, maxFramerate: 30 });
-    expect(video.track.contentHint).toBe('motion');
+    expect(video.track.contentHint).toBe('detail');
     p.emit(PANEL_CHANNELS.sending, true);
     expect(video.track.enabled).toBe(true);
     // the browser asks for negotiation; the offer goes to main addressed to that peer
@@ -487,7 +487,7 @@ describe('panel page script (D2)', () => {
     const sender = FakePeerConnection.all[0]!.senders.find((s) => s.track.kind === 'video')!;
     expect(sender.track).toBe(p.canvas.streams[0]?.getVideoTracks()[0]);
     expect(sender.track).not.toBe(p.captures[0]?.track);
-    expect(sender.track.contentHint).toBe('motion');
+    expect(sender.track.contentHint).toBe('detail');
 
     // The draw loop: a 33 ms timer; while not sending, once a second.
     const loop = p.intervals.find((i) => i.ms === 33)!;
@@ -801,10 +801,28 @@ describe('a stalled capture and the counters (D7.4.4, 2026-11-01)', () => {
       p.emit(PANEL_CHANNELS.videoAck);
     }
     stats.cb();
-    expect(last()).toEqual({ seq: 1, capture: null, decoded: 28, toLayer: 4 });
+    expect(last()).toEqual({ seq: 1, capture: null, decoded: 28, toLayer: 4, decodedSize: { width: 1280, height: 720 } });
     video.total = 35;
     feed.cb();
     stats.cb();
-    expect(last()).toEqual({ seq: 2, capture: null, decoded: 7, toLayer: 1 });
+    expect(last()).toEqual({ seq: 2, capture: null, decoded: 7, toLayer: 1, decodedSize: { width: 1280, height: 720 } });
+  });
+});
+
+describe('videoBitrateFor (D7.4.6)', () => {
+  it('a mono landscape picture up to 1280x720 keeps 2.5 Mbps', () => {
+    expect(videoBitrateFor({ width: 1280, height: 720, stereo: 'mono' })).toBe(2_500_000);
+    expect(videoBitrateFor({ width: 800, height: 600, stereo: null })).toBe(2_500_000);
+  });
+  it('side by side, portrait or larger scale with pixels, up to 8 Mbps', () => {
+    expect(videoBitrateFor({ width: 1280, height: 1080, stereo: 'sbs' })).toBe(5_400_000);
+    expect(videoBitrateFor({ width: 2560, height: 720, stereo: 'sbs' })).toBe(7_200_000);
+    expect(videoBitrateFor({ width: 1440, height: 1392, stereo: 'sbs' })).toBe(7_800_000);
+    expect(videoBitrateFor({ width: 1080, height: 1920, stereo: 'mono' })).toBe(8_000_000);
+    expect(videoBitrateFor({ width: 720, height: 1280, stereo: 'mono' })).toBe(3_600_000);
+    expect(videoBitrateFor({ width: 1280, height: 720, stereo: 'sbs' })).toBe(3_600_000);
+  });
+  it('a size not known gets the base rate', () => {
+    expect(videoBitrateFor({ width: 0, height: 0, stereo: 'mono' })).toBe(2_500_000);
   });
 });

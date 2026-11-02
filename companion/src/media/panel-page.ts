@@ -44,6 +44,8 @@ export const PANEL_CHANNELS = {
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
 export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
+/** D7.4.6: the most a bigger picture is given (`videoBitrateFor`). */
+export const VIDEO_MAX_BITRATE = 8_000_000;
 
 /**
  * D7.4 (2026-10-31): the video the headset's theater mode gets, at the received size up to these (a larger one is
@@ -119,6 +121,10 @@ export interface PanelStats {
   /** Frames the stage video decoded, and how many of them went to the layer, while theater wanted the feed; else null. */
   decoded: number | null;
   toLayer: number | null;
+  /** D7.4.6: the outbound video as the first peer's connection reports it (the tick before's reading); absent before one. */
+  sent?: { width: number; height: number; kbps: number | null; limit: string };
+  /** D7.4.6: the stage video's decoded frame size, while theater wanted the feed. */
+  decodedSize?: { width: number; height: number };
 }
 
 export interface MicDevice {
@@ -278,7 +284,20 @@ export function feedSize(videoWidth: number, videoHeight: number, stereo: 'mono'
   return { width: Math.max(2, Math.round(videoWidth * k) & ~1), height: Math.max(2, Math.round(videoHeight * k) & ~1) };
 }
 
-const HELPERS = [headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep];
+/**
+ * D7.4.6 (2026-11-02): the bitrate cap for what is sent. A mono landscape picture up to 1280x720 keeps 2.5 Mbps; anything
+ * larger, side by side, or portrait gets 0.13 bits a pixel a frame at 30 fps (1280x1080 about 5.4 Mbps, 2560x720 about
+ * 7.2, 1440x1392 about 7.8), at most 8 Mbps. (Inlined constants: these helpers are embedded in the page by their source.)
+ */
+export function videoBitrateFor(shape: { width: number; height: number; stereo: 'mono' | 'sbs' | null | undefined }): number {
+  const px = shape.width * shape.height;
+  if (!(px > 0)) return 2500000;
+  if (shape.stereo !== 'sbs' && shape.width >= shape.height && px <= 1280 * 720) return 2500000;
+  const bits = Math.round((px * 30 * 0.13) / 100000) * 100000;
+  return Math.min(8000000, Math.max(2500000, bits));
+}
+
+const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -547,6 +566,7 @@ function paint() {
 /** A new crop for the live capture: the canvas takes the output size (a new size resets it, so it is drawn at once). */
 function setCrop(c) {
   cap = c;
+  for (const r of remote.values()) void applyBitrate(r);
   if (canvas.width !== c.out.width) canvas.width = c.out.width;
   if (canvas.height !== c.out.height) canvas.height = c.out.height;
   paint();
@@ -638,8 +658,8 @@ async function openCapture(c) {
       fail('Could not capture ' + c.label + ' (the canvas gave no track).');
       return;
     }
-    // Pinball is motion: keep the frame rate, give up sharpness first under a thin uplink.
-    try { out.contentHint = 'motion'; } catch (e) { /* older engines */ }
+    // D7.4.6: theater shows this life-size in a headset, so under a thin uplink keep the resolution and drop frames.
+    try { out.contentHint = 'detail'; } catch (e) { /* older engines */ }
     out.enabled = sending && !stalled;
     videoTrack = out;
     localStream.addTrack(out);
@@ -721,7 +741,30 @@ function statsTick() {
   if (capture === null && decoded === null) return;
   statsSeq++;
   stats = { seq: statsSeq, capture: capture, decoded: decoded, toLayer: toLayer };
+  // D7.4.6: sizes and rates, from the probe of the tick before (getStats is async); keys absent until there is one.
+  if (capture !== null && outInfo) stats.sent = outInfo;
+  if (decoded !== null) {
+    const v = $('video');
+    if (v.videoWidth > 0) stats.decodedSize = { width: v.videoWidth, height: v.videoHeight };
+  }
   report();
+  void probeStats();
+}
+let outInfo = null;
+let outBytes = -1;
+async function probeStats() {
+  try {
+    const r = sending && videoTrack ? [...remote.values()].find((x) => x.videoSender) : null;
+    if (!r) { outInfo = null; outBytes = -1; return; }
+    const rep = await r.pc.getStats();
+    for (const s of rep.values()) {
+      if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue;
+      const kbps = outBytes >= 0 && s.bytesSent >= outBytes ? Math.round(((s.bytesSent - outBytes) * 8) / (STATS_MS / 1000) / 1000) : null;
+      outBytes = s.bytesSent;
+      outInfo = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, limit: s.qualityLimitationReason || 'none' };
+      return;
+    }
+  } catch (e) { /* no stats yet */ }
 }
 setInterval(statsTick, STATS_MS);
 
@@ -744,8 +787,10 @@ async function applyBitrate(r) {
   try {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) return;
-    if (p.encodings[0].maxBitrate === VIDEO.maxBitrate) return;
-    p.encodings[0].maxBitrate = VIDEO.maxBitrate;
+    // D7.4.6: a cap per shape, from the crop actually sent (it changes when the window does).
+    const want = cap ? videoBitrateFor({ width: cap.out.width, height: cap.out.height, stereo: myStereo }) : VIDEO.maxBitrate;
+    if (p.encodings[0].maxBitrate === want) return;
+    p.encodings[0].maxBitrate = want;
     p.encodings[0].maxFramerate = VIDEO.fps;
     await sender.setParameters(p);
   } catch (e) {

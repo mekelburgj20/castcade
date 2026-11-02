@@ -27,8 +27,8 @@ Table: ________ (ROM ______)
   `VRPreview` from your `VPinballX.ini` (the one beside VPX's exe, else `%APPDATA%\VPinballX`) and tells the
   other player's headset; if it cannot, or you start VPX with `-Ini <another file>`, pick it on the Match tab under
   **Your preview** (one eye / both eyes). The Match tab says when your rig sends one eye, or both eyes in a 16:9
-  window. Today the match video is at most 1280x720, so a 1080x1080 window goes at 720x720 (360x720 an eye):
-  sharper in depth, softer in detail than the one-eye picture. Try both and say which you prefer.
+  window. The match video is sent at the window's own size up to 1080x1920 (a 1280x1080 or 1440x1392 window as is; the bitrate
+  scales with it, up to 8 Mbps): sharper in depth, softer in detail than the one-eye picture. Try both and say which you prefer.
 - [ ] **SteamVR running** (the headset panel is drawn through it).
 - [ ] **A headset microphone chosen** on the Castcade **Match** tab. Do not leave it on "default": in VR the Windows
   default is often a virtual device (Steam Streaming Microphone, Virtual Desktop Audio) that records silence.

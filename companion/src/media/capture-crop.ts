@@ -51,6 +51,13 @@ export const MAX_OUT = { width: 1280, height: 720 } as const;
  */
 export const MAX_OUT_SBS = { width: 2560, height: 720 } as const;
 export const SBS_MIN_ASPECT = 3;
+/**
+ * D7.4.6 (2026-11-02): a portrait or near-square picture (under `TALL_MAX_ASPECT`) is sent at its own size: one portrait
+ * picture up to 1080x1920, a side-by-side pair of portrait eyes (1280x1080, 1440x1392) as is. The landscape limit
+ * would shrink a 1280x1080 window to 852x720, and the receiver's theater screen shows that life-size.
+ */
+export const MAX_OUT_TALL = { width: 1440, height: 1920 } as const;
+export const TALL_MAX_ASPECT = 1.5;
 /** Two rects that differ by this much or less are the same display (rounding between DIPs and pixels). */
 const SAME_RECT_PX = 2;
 
@@ -102,6 +109,7 @@ export function pickDisplay(win: VpxWindow, outputs: DxgiOutput[], displays: Scr
 /** Fits a crop inside `max` (never upscaled), keeping its aspect; even sizes, as the encoders want. */
 export function outSize(crop: { width: number; height: number }, max: { width: number; height: number } = MAX_OUT): { width: number; height: number } {
   if (max === MAX_OUT && crop.width / crop.height >= SBS_MIN_ASPECT) max = MAX_OUT_SBS;
+  else if (max === MAX_OUT && crop.width / crop.height < TALL_MAX_ASPECT) max = MAX_OUT_TALL;
   const k = Math.min(1, max.width / crop.width, max.height / crop.height);
   return { width: Math.max(2, Math.round(crop.width * k) & ~1), height: Math.max(2, Math.round(crop.height * k) & ~1) };
 }

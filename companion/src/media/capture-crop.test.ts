@@ -48,8 +48,13 @@ describe('the display that holds the player window (D2.5)', () => {
     expect(outSize({ width: 1920, height: 1080 })).toEqual({ width: 1280, height: 720 });
     expect(outSize({ width: 1280, height: 720 })).toEqual({ width: 1280, height: 720 });
     expect(outSize({ width: 800, height: 600 })).toEqual({ width: 800, height: 600 });
-    // A portrait playfield (the owner's rotated display): the height is the limit.
-    expect(outSize({ width: 1440, height: 2560 })).toEqual({ width: 404, height: 720 });
+    // A portrait playfield (the owner's rotated display): up to 1080x1920 (D7.4.6; it was 404x720).
+    expect(outSize({ width: 1440, height: 2560 })).toEqual({ width: 1080, height: 1920 });
+    expect(outSize({ width: 1080, height: 1920 })).toEqual({ width: 1080, height: 1920 });
+    // D7.4.6: two portrait eyes side by side (1280x1080, 1440x1392) are sent at their own size.
+    expect(outSize({ width: 1280, height: 1080 })).toEqual({ width: 1280, height: 1080 });
+    expect(outSize({ width: 1440, height: 1392 })).toEqual({ width: 1440, height: 1392 });
+    expect(outSize({ width: 1920, height: 1600 })).toEqual({ width: 1440, height: 1200 });
     // D7.4: a side-by-side stereo preview (VPX VRPreview = 3, 3:1 or wider) keeps 720 rows per eye.
     expect(outSize({ width: 2560, height: 720 })).toEqual({ width: 2560, height: 720 });
     expect(outSize({ width: 3840, height: 1080 })).toEqual({ width: 2560, height: 720 });

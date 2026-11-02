@@ -33,7 +33,7 @@ import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { declaredStereo, type PreviewStereoSetting } from './preview-stereo.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
@@ -465,8 +465,15 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     // D7.4.4: counters, said once per report of theirs (the page repeats the last one in every report).
     if (s.stats && s.stats.seq !== page?.stats?.seq) {
       const st = s.stats;
-      if (st.capture !== null) log.info(`media: capture: ${st.capture} frames in 10 s`);
-      if (st.decoded !== null) log.info(`media: theater: ${st.decoded} frames decoded, ${st.toLayer ?? 0} sent to the layer in 10 s`);
+      if (st.capture !== null) {
+        const o = st.sent;
+        const out = o && o.width > 0 ? `, sent ${o.width}x${o.height}${o.kbps !== null ? ` at ${(o.kbps / 1000).toFixed(1)} Mbps` : ''}, limited by ${o.limit}` : '';
+        log.info(`media: capture: ${st.capture} frames in 10 s${out}`);
+      }
+      if (st.decoded !== null) {
+        const d = st.decodedSize;
+        log.info(`media: theater: ${st.decoded} frames decoded${d ? ` at ${d.width}x${d.height}` : ''}, ${st.toLayer ?? 0} sent to the layer in 10 s`);
+      }
       if ((st.capture ?? 0) > 0) stallLogged = false;
     }
     page = s;
@@ -816,10 +823,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
    * adds the track to every connection disabled (`enabled = sending`), so the negotiation happens before the turn
    * and `setSending(true)` only flips the flag. Each capture is announced and logged once.
    */
+  const sendingLine = (c: PanelCapture): string =>
+    `media: sending ${c.out.width}x${c.out.height} ${c.stereo === 'sbs' ? 'sbs' : 'mono'} at ${(videoBitrateFor({ ...c.out, stereo: c.stereo }) / 1e6).toFixed(1)} Mbps`;
   const announceCapture = (gen: number): void => {
     if (gen !== generation || !attached || !capture || capture === announced) return;
     announced = capture;
     log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
+    log.info(sendingLine(capture));
     if (attachMsg && !attachSent) attachMsg.capture = capture;
     else toPage(PANEL_CHANNELS.capture, capture);
     captureLive(gen);
@@ -924,6 +934,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (capture) {
       announced = capture;
       log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
+    log.info(sendingLine(capture));
       captureLive(gen);
     } else scheduleCapture(gen);
     flush();
