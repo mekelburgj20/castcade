@@ -75,7 +75,8 @@ Run these a day or more before the match. If one fails, stop and send what is li
      to toggle it is to confirm on the build).
    - **Theater (D7.4, Virtual Desktop / Oculus rigs, the Castcade OpenXR layer):** when the other player's ball
      starts, your view dips to black for a moment and their table appears in front of you, where yours was, in the
-     dark. When their VPX preview shows both eyes it is in stereo and life size (D7.4.5): a window onto their view,
+     dark: straight ahead of where you are looking then, tilted down with your gaze (D7.4.7), so keep looking at
+     your playfield as their ball starts. When their VPX preview shows both eyes it is in stereo and life size (D7.4.5): a window onto their view,
      each eye getting what their eye saw, so it should look like standing at their table, not like a screen; it fills
      about your view and stays put in the room when you turn your head. If it does not fuse at your normal focus, or
      looks the wrong size, note it with the `theater: stereo window` line of `vr-layer.log` (in

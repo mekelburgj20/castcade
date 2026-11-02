@@ -219,8 +219,9 @@ struct Session {
   int shadeLevel = -1;
   XrPosef screenPose{};
   // D7.4.5, the stereo window: what VPX submits (each eye's fov and render size, from its projection layer, recorded
-  // every frame), each eye's pose in head space (xrLocateViews at the recentre), the recentre's head position and yaw,
-  // and the two eye quads placed from them (recomputed when an input changes, logged when the result does).
+  // every frame), each eye's pose in head space (xrLocateViews at the recentre), the recentre's head position and frame
+  // (its yaw then pitch, no roll: D7.4.7), and the two eye quads placed from them (recomputed when an input changes,
+  // logged when the result does).
   bool appViewsSeen = false;
   std::array<XrFovf, 2> appFov{};
   std::array<XrExtent2Di, 2> appRect{};
@@ -228,7 +229,7 @@ struct Session {
   std::array<XrPosef, 2> eyePose{};
   std::array<XrFovf, 2> locatedFov{};
   XrVector3f theaterHead{0.0f, 0.0f, 0.0f};
-  XrQuaternionf theaterYaw{0.0f, 0.0f, 0.0f, 1.0f};
+  XrQuaternionf theaterFrame{0.0f, 0.0f, 0.0f, 1.0f};
   bool windowDirty = true;
   uint32_t windowW = 0, windowH = 0;
   float windowScale = 0.0f;
@@ -606,8 +607,9 @@ void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) 
 //      (kScreenDistanceM); the scale S (Control::theaterScale, 1 by default) multiplies the quad's size and centre
 //      offset together, which scales the picture's angles about the eye's axis.
 //   4. Into LOCAL: the eye's pose in head space (xrLocateViews in VIEW space at the recentre: about ±IPD / 2 in x,
-//      identity orientation on parallel-view headsets) then the recentre's head position and yaw (upright, as the
-//      mono screen). Position = head + R_yaw (eye + R_eye (S D cx, S D cy, -D)); orientation = R_yaw R_eye; size =
+//      identity orientation on parallel-view headsets) then the recentre's head position and frame R_f (the head's
+//      yaw then pitch, never its roll, as the mono screen: D7.4.7). Position = head + R_f (eye + R_eye (S D cx, S D
+//      cy, -D)); orientation = R_f R_eye; size =
 //      (S D (tR' - tL'), S D (tU' - tD')).
 // Assumptions: the sender's eyes had the receiver's fov and render aspect (the video carries neither; the same headset
 // model on both ends makes it exact), and the receiver's head stays about where it was at the recentre (the window is
@@ -753,9 +755,9 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
     const float cx = (l + r) * 0.5f, cy = (d + u) * 0.5f;
     const XrVector3f onAxis = quatRotate(eye.orientation, {SD * cx, SD * cy, -D});
     const XrVector3f inHead = {eye.position.x + onAxis.x, eye.position.y + onAxis.y, eye.position.z + onAxis.z};
-    const XrVector3f inLocal = quatRotate(s.theaterYaw, inHead);
+    const XrVector3f inLocal = quatRotate(s.theaterFrame, inHead);
     s.windowPose[e].position = {s.theaterHead.x + inLocal.x, s.theaterHead.y + inLocal.y, s.theaterHead.z + inLocal.z};
-    s.windowPose[e].orientation = quatMul(s.theaterYaw, eye.orientation);
+    s.windowPose[e].orientation = quatMul(s.theaterFrame, eye.orientation);
     s.windowSize[e] = {SD * (r - l), SD * (u - d)};
     eyes[e] = std::string(e == 0 ? "left" : "right") + " eye: fov " + fovText(f) + " (" + fovFrom + ")" + fmt(", eye at x %+.4f y %+.4f z %+.4f m", eye.position.x, eye.position.y, eye.position.z) +
               (rectKnown ? fmt(", render %.0fx%.0f", w, h) : std::string(", render size unknown")) + fmt(", crop %.0fx%.0f at %.0f,%.0f", fw, fh, x, y) +
@@ -777,11 +779,16 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   }
 }
 
-// D7.4: theater begins: the screen goes 2.6 m in front of where the head points now, turned by the head's yaw only
-// (upright, at eye height), in LOCAL space, where it then stays. A location the runtime cannot give puts it in front
-// of LOCAL's origin (the head at the session's start, by the spec).
+// D7.4: theater begins: the screen goes 2.6 m in front of where the head points now, in LOCAL space, where it then
+// stays. D7.4.7 (2026-11-02): turned by the head's yaw AND pitch, never its roll, the pitch clamped to ±75° (never
+// overhead or underfoot). The receiver is looking down at his own playfield when the other player's ball starts, about
+// where the sender looks at his, so the window lands where the eyes already are; turned by the yaw only (level, at eye
+// height), the sender's low playfield fell up to 55° below a level gaze, beyond the headset's view (fourth run). A
+// location the runtime cannot give puts it in front of LOCAL's origin (the head at the session's start, by the spec).
+constexpr float kMaxTheaterPitchRad = 1.308997f;  // 75°
+
 void recentre(Session& s, XrTime when) {
-  float yaw = 0.0f;
+  float yaw = 0.0f, pitch = 0.0f;
   XrVector3f head{0.0f, 0.0f, 0.0f};
   XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
   const XrResult r = s.next.locateSpace(s.view, s.local, when, &loc);
@@ -790,19 +797,32 @@ void recentre(Session& s, XrTime when) {
       const XrQuaternionf& q = loc.pose.orientation;
       // The head's forward (-Z) in LOCAL: minus the rotation matrix's third column.
       const float fx = -2.0f * (q.x * q.z + q.w * q.y);
+      const float fy = -2.0f * (q.y * q.z - q.w * q.x);
       const float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
-      // A turn of `yaw` about +Y takes (0, 0, -1) to (-sin yaw, 0, -cos yaw). Looking straight up or down: keep 0.
-      if (fx * fx + fz * fz > 0.01f) yaw = std::atan2(-fx, -fz);
+      // A turn of `pitch` about +X, then of `yaw` about +Y, takes (0, 0, -1) to (-sin yaw cos pitch, sin pitch,
+      // -cos yaw cos pitch): yaw from the forward's x and z, pitch from its y against its horizontal length. Looking
+      // straight up or down: keep yaw 0 (the pitch, clamped, still holds).
+      const float horiz2 = fx * fx + fz * fz;
+      if (horiz2 > 0.01f) yaw = std::atan2(-fx, -fz);
+      pitch = std::atan2(fy, std::sqrt(horiz2));
+      if (!std::isfinite(pitch)) pitch = 0.0f;
+      pitch = std::fmax(-kMaxTheaterPitchRad, std::fmin(kMaxTheaterPitchRad, pitch));
     }
     if (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) head = loc.pose.position;
   } else {
     logOnce("locate_failed", "theater: xrLocateSpace(VIEW in LOCAL) failed (" + resultName(s.next, s.instance, r) + "); the screen goes ahead of LOCAL's origin");
   }
-  s.screenPose.position = {head.x - std::sin(yaw) * kScreenDistanceM, head.y, head.z - std::cos(yaw) * kScreenDistanceM};
-  s.screenPose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+  // The frame R_yaw R_pitch (the pitch turns in the head's own frame first; no roll). The mono screen and the stereo
+  // window's eye quads (placeWindows) both use it, so they agree.
+  const XrQuaternionf qYaw{0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+  const XrQuaternionf qPitch{std::sin(pitch * 0.5f), 0.0f, 0.0f, std::cos(pitch * 0.5f)};
+  s.theaterFrame = quatMul(qYaw, qPitch);
+  const XrVector3f fwd = quatRotate(s.theaterFrame, {0.0f, 0.0f, -kScreenDistanceM});
+  s.screenPose.position = {head.x + fwd.x, head.y + fwd.y, head.z + fwd.z};
+  s.screenPose.orientation = s.theaterFrame;
   s.theaterHead = head;
-  s.theaterYaw = s.screenPose.orientation;
-  logLine("theater: the screen is placed 2.6 m ahead, yaw " + std::to_string(static_cast<int>(yaw * 57.29578f)) + " degrees in LOCAL space");
+  logLine("theater: the screen is placed 2.6 m ahead, yaw " + std::to_string(static_cast<int>(yaw * kDegPerRad)) + " degrees, pitch " +
+          std::to_string(static_cast<int>(pitch * kDegPerRad)) + " degrees in LOCAL space");
   locateEyes(s, when);
 }
 

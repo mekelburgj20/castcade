@@ -88,7 +88,7 @@ Things that stop it loading:
 … [12345] mode: hidden -> panel
 … [12345] pipe: mode theater, stereo sbs, panel low
 … [12345] mode: panel -> theater (through black)
-… [12345] theater: the screen is placed 2.6 m ahead, yaw -12 degrees in LOCAL space
+… [12345] theater: the screen is placed 2.6 m ahead, yaw -12 degrees, pitch -30 degrees in LOCAL space
 … [12345] theater: stereo window, scale 1.00 (life size), 2.60 m ahead, video eye 426x720, eyes from xrLocateViews, IPD 63.0 mm; left eye: fov left -52.0 right +44.0 down -52.0 up +44.0 deg (VPX's frame), eye at x -0.0315 y +0.0000 z +0.0000 m, render 2064x2208, crop 1306x2208 at 379,0, quad 3.70 x 5.84 m centred -0.41, -0.41 m off the eye's axis; right eye: …
 ```
 
@@ -152,8 +152,11 @@ back to that default when the companion disconnects.
   - *theater*: the app's `XrCompositionLayerProjection` layers removed (OpenComposite submits VPX's two eyes as one;
     any other layer type the app submits stays), then a head-locked opaque black quad (30 m at 3 m) and the picture,
     in `LOCAL` space, so it stays put when the head turns. It is placed when theater begins: in front of where the head
-    points then (its yaw only, upright, at eye height; `xrLocateSpace` of `VIEW` in `LOCAL` at the frame's display
-    time).
+    points then (its yaw and pitch, never its roll, the pitch clamped to ±75°; `xrLocateSpace` of `VIEW` in `LOCAL`
+    at the frame's display time). The pitch is D7.4.7 (2026-11-02): you are looking down at your own playfield when
+    the other player's ball starts, about where they look at theirs, so the picture lands where your eyes already
+    are; level at eye height, the bottom of their playfield (up to 55° below their view's axis) fell outside your
+    headset's view.
     - `stereo: sbs`, the **stereo window** (D7.4.5, 2026-11-02): the video frame's left | right halves are the
       sender's two eyes, and each goes to its eye (one swapchain, `imageRect` halves, `eyeVisibility` LEFT / RIGHT) on
       its own quad, placed so that every pixel is seen in the direction the sender's eye rendered it. VPX's "both eyes"
