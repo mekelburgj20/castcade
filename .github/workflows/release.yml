@@ -47,7 +47,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S vr-layer -B vr-layer/build -A x64
+          # D7.3.3: the build id on the layer's "loaded in" log line: the tag on tag pushes, else the short sha.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then id="$GITHUB_REF_NAME"; else id="${GITHUB_SHA::7}"; fi
+          cmake -S vr-layer -B vr-layer/build -A x64 -DCASTCADE_BUILD_ID="$id"
           cmake --build vr-layer/build --config Release
           node companion/scripts/fetch-vr-layer.mjs --from vr-layer/build/Release
       # D2.8: the same for the table-sound helper (audio-helper.yml builds the release's zip in parallel).

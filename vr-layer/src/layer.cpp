@@ -1147,7 +1147,8 @@ void onInstanceCreated(XrInstance handle, PFN_xrGetInstanceProcAddr nextGipa) {
       inst->hooked = true;
       // Core, so always there in practice; still optional: the stereo window has a fallback, the rest needs none of it.
       if (!nextFn(inst->next, handle, "xrLocateViews", inst->next.locateViews)) inst->next.locateViews = nullptr;
-      logLine(std::string(kLayerName) + " " CASTCADE_VR_LAYER_VERSION " (OpenXR headers " CASTCADE_OPENXR_SDK_TAG ") loaded in " + exeName());
+      // D7.3.3: the build id names the exact dll (a release tag or a commit), so an older one kept by a running VPX shows.
+      logLine(std::string(kLayerName) + " " CASTCADE_VR_LAYER_VERSION " build " CASTCADE_BUILD_ID " (OpenXR headers " CASTCADE_OPENXR_SDK_TAG ") loaded in " + exeName());
       panelPipeStart();
     } else {
       logLine("a core OpenXR function is missing below this layer; passing through");

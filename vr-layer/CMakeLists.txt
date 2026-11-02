@@ -10,7 +10,12 @@
 # nor OpenGL (it calls the app's D3D11 device through its interface and finds the GL entry points in the opengl32.dll
 # the app already loaded, so a D3D or Vulkan app never gets opengl32 pulled in by us).
 cmake_minimum_required(VERSION 3.20)
-project(castcade_vr_layer VERSION 0.2.0 LANGUAGES CXX)  # 0.2.0: D7.4, pipe protocol 2 (modes, theater)
+# 0.2.0: D7.4, pipe protocol 2 (modes, theater). 0.3.0: D7.4.5 (the stereo window) and D7.3.3 (the build id in the log).
+project(castcade_vr_layer VERSION 0.3.0 LANGUAGES CXX)
+
+# D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
+# so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
+set(CASTCADE_BUILD_ID "dev" CACHE STRING "Build id on the layer's loaded-in log line (a release tag or a short commit sha)")
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "XrApiLayer_castcade_panel builds for Windows x64 only (VPinballX_GL64 and the OpenXR runtimes it reaches are x64)")
@@ -44,7 +49,8 @@ target_include_directories(XrApiLayer_castcade_panel PRIVATE "${openxr_sdk_SOURC
 target_compile_features(XrApiLayer_castcade_panel PRIVATE cxx_std_17)
 target_compile_definitions(XrApiLayer_castcade_panel PRIVATE
   WIN32_LEAN_AND_MEAN NOMINMAX
-  "CASTCADE_VR_LAYER_VERSION=\"${PROJECT_VERSION}\"" "CASTCADE_OPENXR_SDK_TAG=\"${OPENXR_SDK_TAG}\"")
+  "CASTCADE_VR_LAYER_VERSION=\"${PROJECT_VERSION}\"" "CASTCADE_OPENXR_SDK_TAG=\"${OPENXR_SDK_TAG}\""
+  "CASTCADE_BUILD_ID=\"${CASTCADE_BUILD_ID}\"")
 # /EHa: catch (...) also catches a structured exception (an access violation inside a driver call), so a fault in the
 # layer turns the panel off for the process instead of taking VPX down mid-game (D7.3: never throw across the API).
 target_compile_options(XrApiLayer_castcade_panel PRIVATE /W4 /permissive- /utf-8 /EHa "$<$<CONFIG:Release>:/O2;/GL>")
