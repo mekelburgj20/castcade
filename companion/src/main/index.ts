@@ -9,7 +9,7 @@
  */
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +43,7 @@ import { usableBounds } from '../media/panel-placement.js';
 import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
+import { createTableAudioHelper, resolveAudioHelper, type TableAudioHelper } from '../media/audio-helper.js';
 import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { watchFocus } from '../media/focus-watch.js';
@@ -71,6 +72,8 @@ let matchMedia: RtcHost | null = null;
 let mediaSettingsStore: MediaSettingsStore | null = null;
 let matchOverlay: VrOverlay | null = null;
 let matchLayer: VrOverlay | null = null;
+/** D2.8: the table-sound helper (mute this rig's VPX while another player is up, tap its sound while this rig is up). */
+let tableAudio: TableAudioHelper | null = null;
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -206,6 +209,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
+  await tableAudio?.stop().catch(() => undefined); // ends the helper's stdin: it unmutes everything it muted and exits
   await host.stop();
   if (install && updater?.pendingVersion()) {
     log?.info('quit: restarting to install the update');
@@ -486,6 +490,21 @@ async function main(): Promise<void> {
     logger.error(`vr-layer: could not set up (${describeError(e)}); no headset panel on OpenXR rigs this run`);
   }
 
+  // D2.8: table sound. A missing helper (or an old Windows) only means each rig hears its own table, as before.
+  try {
+    const exePath = resolveAudioHelper({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    const stateFile = join(userData, 'castcade-audio-state.txt');
+    tableAudio = createTableAudioHelper({ exePath, stateFile, log: (line) => logger.info(line) });
+    tableAudio.onFrame((pcm) => matchMedia?.pushTableAudio(pcm));
+    // A helper that was killed while it held a mute left this file: start one now, which unmutes those sessions first.
+    if (existsSync(stateFile)) {
+      logger.info('audio: an earlier run left sessions muted; starting the helper to restore them');
+      tableAudio.start();
+    }
+  } catch (e) {
+    logger.error(`audio: could not set up (${describeError(e)}); every rig hears its own table this run`);
+  }
+
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   try {
@@ -501,6 +520,7 @@ async function main(): Promise<void> {
       mediaSettings,
       vrOverlay: matchOverlay ?? undefined,
       vrLayer: matchLayer ?? undefined,
+      tableAudio: tableAudio ?? undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),
       appVersion,

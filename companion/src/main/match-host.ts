@@ -11,6 +11,11 @@
  * A8 (2026-10-31): hosting opens the listener LAST, once the panel is up and the public-IP lookup has answered (or
  * failed), so the first client to connect meets a host that can show it and an invite that exists; the invite is
  * published only once the listener is up. A listener that cannot open tears the half-built match down again.
+ *
+ * D2.8 (2026-11-01): table sound. `tableAudio` (the helper, `media/audio-helper.ts`) mutes this rig's VPX while another
+ * player is up and taps its sound while this rig is up; the panel page sends the tap as the table track and plays the
+ * up player's. `table-audio-policy.ts` decides from the panel state and the three settings, at every status change
+ * (`syncTableAudio`, beside `syncVrMode`); no match, the lobby and the result mute and tap nothing.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -26,6 +31,8 @@ import type { MediaSettingsStore } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
+import type { TableAudioHelper } from '../media/audio-helper.js';
+import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
@@ -150,6 +157,8 @@ export interface MatchHostOptions {
   vrOverlay?: VrOverlay;
   /** D7.3 (2026-10-31): the Castcade OpenXR layer (`media/vr-layer.ts`): the panel in the headset on any other runtime. */
   vrLayer?: VrOverlay;
+  /** D2.8 (2026-11-01): the table-sound helper (`media/audio-helper.ts`); absent → every rig hears its own table. */
+  tableAudio?: TableAudioHelper;
   /** MEDIA_SIGNAL over the match transport (D2); absent → the media layer gets a mute signalling. */
   signalling?: (role: HostMatch | ClientMatch, localId: string) => MediaSignalling;
   appVersion: string;
@@ -332,7 +341,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const c: ControllerStatus | null = a ? a.controller.status() : null;
     const phase: MatchPhase = connecting ? 'connecting' : c ? c.phase : 'none';
     const r = a ? { rig: a.rig, rigReason: a.rigReason, runtime: a.runtime } : rigOf(idleRig());
-    const media = a && opts.media ? opts.media.status() : null;
+    const rawMedia = a && opts.media ? opts.media.status() : null;
+    const media = rawMedia && opts.tableAudio ? { ...rawMedia, tableAudio: opts.tableAudio.status() } : rawMedia;
     return {
       role: a ? a.role : 'none',
       phase,
@@ -390,8 +400,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     log.info(`match: headset mode ${mode}`);
     to.setMode(mode);
   };
+  /**
+   * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
+   * else the witness's launch). The helper and the page each act only on a change.
+   */
+  let tableLogged = '';
+  const syncTableAudio = (): void => {
+    const a = active;
+    const plan = tableAudioPlan(a ? a.controller.panel() : null, settings);
+    const pid = a ? tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.()) : null;
+    opts.tableAudio?.apply({ mutePid: plan.muteMine ? pid : null, tapPid: plan.tapMine ? pid : null });
+    opts.media?.setTableAudio?.({ send: plan.tapMine && pid !== null, hear: plan.playTableOf !== null });
+    const words = `mute ${plan.muteMine ? 'on' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, VPX pid ${pid ?? 'unknown'}`;
+    if (opts.tableAudio && a && words !== tableLogged) {
+      tableLogged = words;
+      log.info(`match: table sound: ${words}`);
+    }
+  };
   const emit = (): void => {
     if (active) syncVrMode(active);
+    syncTableAudio();
     const s = status();
     for (const l of [...listeners]) l(s);
   };
@@ -410,6 +438,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) emit();
   });
   opts.vrLayer?.onStatus(() => {
+    if (active) emit();
+  });
+  opts.tableAudio?.onStatus(() => {
     if (active) emit();
   });
   opts.media?.onMicrophones?.(() => emit());
@@ -481,6 +512,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts, of the kind decided then. */
   const openPanel = async (a: Active): Promise<void> => {
+    // D2.8: the helper starts with the match, so "table sound unavailable" shows before the first ball.
+    opts.tableAudio?.start();
     await opts.media?.setVr?.(mediaRig(a));
     await a.controller.open();
     if (headsetPanel(a)) await startOverlay(a);
@@ -770,6 +803,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const teardown = async (a: Active): Promise<void> => {
     if (active === a) active = null;
     for (const off of a.offs) off();
+    // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
+    opts.tableAudio?.apply({ mutePid: null, tapPid: null });
+    tableLogged = '';
     if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
     const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
     await a.controller.close();

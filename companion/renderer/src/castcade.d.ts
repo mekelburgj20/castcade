@@ -393,7 +393,7 @@ interface PanelState {
 interface MediaStatus {
   attached: boolean;
   sending: boolean;
-  peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number }>;
+  peers: Record<string, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean }>;
   mic: 'open' | 'muted' | 'unavailable';
   captureSource: string | null;
   /** D7.4: the size of the region sent while the capture is live. */
@@ -402,6 +402,8 @@ interface MediaStatus {
   panelWindow?: { visible: boolean; side: 'right' | 'left' | 'below' | 'edge' } | null;
   /** D7.4.3: what this rig tells the others its picture is, while the capture is live. */
   captureStereo?: 'mono' | 'sbs' | null;
+  /** D2.8: table sound: the helper, why not, and whether this rig's VPX is muted / being sent now. */
+  tableAudio?: { helper: 'ready' | 'unavailable'; reason: string | null; muted: boolean; tapping: boolean };
   lastError: string | null;
 }
 interface VrOverlayStatus {
@@ -421,6 +423,10 @@ interface MatchSettings {
   spectate: 'theater' | 'panel';
   /** D7.4.3: what this rig's VR preview sends: `auto` (VPX's setting), one eye, both eyes. */
   previewStereo: 'auto' | 'mono' | 'sbs';
+  /** D2.8: table sound: mute mine while others play, send mine, hear the other table. */
+  tableMuteMine: boolean;
+  tableSendMine: boolean;
+  tableHearOthers: boolean;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

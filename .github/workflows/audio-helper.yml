@@ -1,0 +1,66 @@
+name: Audio helper (Windows x64)
+
+# castcade-audio.exe (D2.8; audio-helper/README.md): the build of record for the C++ table-sound helper.
+# Push or PR touching audio-helper/** (or this file) → build, upload the artifact castcade-audio-win-x64.
+# Tag push `v*` → also zip it as castcade-audio-<tag>-win-x64.zip on that GitHub release, where
+# companion/scripts/fetch-audio-helper.mjs fetches it for packaging. (Path filters do not apply to tag pushes.)
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'audio-helper/**'
+      - '.github/workflows/audio-helper.yml'
+  pull_request:
+    paths:
+      - 'audio-helper/**'
+      - '.github/workflows/audio-helper.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: audio-helper-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: castcade-audio (windows x64, MSVC, Release)
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure
+        run: cmake -S audio-helper -B audio-helper/build -A x64
+      - name: Build (Release)
+        run: cmake --build audio-helper/build --config Release
+      - name: The exe runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd audio-helper/build/Release
+          ls -l castcade-audio.exe
+          ./castcade-audio.exe --version
+      - name: Upload the helper as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: castcade-audio-win-x64
+          if-no-files-found: error
+          path: audio-helper/build/Release/castcade-audio.exe
+      - name: Zip for the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          Compress-Archive -Path audio-helper/build/Release/castcade-audio.exe -DestinationPath "castcade-audio-$env:GITHUB_REF_NAME-win-x64.zip"
+          (Get-FileHash "castcade-audio-$env:GITHUB_REF_NAME-win-x64.zip" -Algorithm SHA256).Hash.ToLower()
+      # release.yml creates the same pre-release on the same tag; whichever workflow gets there first creates it, the
+      # other finds it (a lost create race is fine: the view after it must then succeed).
+      - name: Attach the zip to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" "castcade-audio-$GITHUB_REF_NAME-win-x64.zip" --clobber --repo "$GITHUB_REPOSITORY"

@@ -33,6 +33,10 @@ export const PANEL_CHANNELS = {
   videoWant: 'castcade-panel:video-want',
   /** D7.4: main took a video frame; the page sends the next one only after this (one frame in flight). */
   videoAck: 'castcade-panel:video-ack',
+  /** D2.8: `{ send, hear }` (`TableAudioFlags`): the table track carries this rig's VPX sound; the up player's plays. */
+  tableAudio: 'castcade-panel:table-audio',
+  /** D2.8: one 10 ms frame of this rig's VPX sound (float32 stereo 48 kHz, a Uint8Array), only while sending. */
+  tablePcm: 'castcade-panel:table-pcm',
   // page -> main
   ready: 'castcade-panel:ready',
   send: 'castcade-panel:send',
@@ -295,7 +299,127 @@ export function videoBitrateFor(shape: { width: number; height: number; stereo: 
   return Math.min(8000000, Math.max(2500000, bits));
 }
 
-const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep];
+/**
+ * D2.8 (2026-11-01): the table track's stream id as the receivers see it. A MediaStream's id cannot be chosen, so the
+ * page renames its table stream's id to this in every SDP it sends (`outgoingSdp`); msid survives SDP, so `ontrack`'s
+ * `streams[0].id` tells the table track from the voice. The helpers below spell it out (they are embedded by source).
+ */
+export const TABLE_AUDIO_STREAM_ID = 'castcade-table-audio';
+
+/** D2.8: what a received track is: the sender's table sound (its own stream, `TABLE_AUDIO_STREAM_ID`), voice or video. */
+export function trackRole(kind: string, streamIds: readonly string[]): 'table' | 'audio' | 'video' {
+  if (kind === 'audio' && streamIds.indexOf('castcade-table-audio') >= 0) return 'table';
+  return kind === 'video' ? 'video' : 'audio';
+}
+
+/** D2.8: a peer's table track plays only while that peer is the player up (whose video fills the stage) and `hear` is on. */
+export function tablePlays(s: PanelState | null, peer: MatchPlayerId, hear: boolean): boolean {
+  return !!hear && !!s && videoPeer(s) === peer;
+}
+
+/**
+ * D2.8: an SDP this page sends. The table stream's own id becomes `castcade-table-audio`; the m-section that carries
+ * it asks for stereo Opus (`stereo=1;sprop-stereo=1` on its fmtp: a table is mixed in stereo, and the receiver's SDP is
+ * what lets the other side send it so). Everything else is untouched; with no table stream in it, the SDP is as given.
+ */
+export function outgoingSdp(sdp: string, tableStreamId: string | null): string {
+  if (!tableStreamId || sdp.indexOf(tableStreamId) < 0) return sdp;
+  const named = sdp.split(tableStreamId).join('castcade-table-audio');
+  return named
+    .split(/(?=\r?\nm=)/)
+    .map((sec) => {
+      if (!/^\r?\nm=audio/.test(sec) || sec.indexOf('msid:castcade-table-audio') < 0) return sec;
+      const opus = /a=rtpmap:(\d+) opus\/48000/i.exec(sec);
+      if (!opus) return sec;
+      return sec.replace(new RegExp('(a=fmtp:' + opus[1] + ' )([^\\r\\n]*)'), (_m: string, head: string, params: string) => {
+        let p = params;
+        if (!/(^|;)\s*stereo=/.test(p)) p += ';stereo=1';
+        if (!/(^|;)\s*sprop-stereo=/.test(p)) p += ';sprop-stereo=1';
+        return head + p;
+      });
+    })
+    .join('');
+}
+
+/**
+ * D2.8: the table track's jitter buffer (in the AudioWorklet; samples are interleaved stereo). Starts playing once
+ * `prime` samples are in; an underrun plays silence and primes again; more than `high` buffered (the helper's clock
+ * runs ahead of the page's) drops the oldest down to `target`, so the delay stays bounded. Embedded by its source.
+ */
+export function createTableRing(capacity: number, high: number, target: number, prime: number) {
+  const buf = new Float32Array(capacity);
+  let r = 0;
+  let w = 0;
+  let n = 0;
+  let primed = false;
+  return {
+    write(s: ArrayLike<number>): void {
+      const len = s.length - (s.length % 2);
+      for (let i = 0; i < len; i++) {
+        buf[w] = s[i] ?? 0;
+        w = (w + 1) % capacity;
+      }
+      n += len;
+      if (n > capacity) {
+        r = w;
+        n = capacity;
+      }
+      if (n > high) {
+        const drop = n - target - ((n - target) % 2);
+        r = (r + drop) % capacity;
+        n -= drop;
+      }
+    },
+    read(left: Float32Array, right: Float32Array | null): void {
+      if (!primed && n >= prime) primed = true;
+      for (let i = 0; i < left.length; i++) {
+        if (primed && n >= 2) {
+          left[i] = buf[r] ?? 0;
+          if (right) right[i] = buf[(r + 1) % capacity] ?? 0;
+          r = (r + 2) % capacity;
+          n -= 2;
+        } else {
+          left[i] = 0;
+          if (right) right[i] = 0;
+          primed = false;
+        }
+      }
+    },
+    flush(): void {
+      r = 0;
+      w = 0;
+      n = 0;
+      primed = false;
+    },
+    buffered: (): number => n,
+  };
+}
+
+/** D2.8: the ring's sizes, in samples of interleaved stereo at 48 kHz: 1 s held at most, 150 ms high, 60 ms target, 40 ms to start. */
+export const TABLE_RING = { capacity: 96_000, high: 14_400, target: 5_760, prime: 3_840 } as const;
+
+/** D2.8: the AudioWorklet module the table track is played from (loaded from a Blob URL; the ring embedded by source). */
+export function tableWorkletSource(): string {
+  const ring = [TABLE_RING.capacity, TABLE_RING.high, TABLE_RING.target, TABLE_RING.prime].join(', ');
+  return [
+    createTableRing.toString(),
+    'class CastcadeTableRing extends AudioWorkletProcessor {',
+    '  constructor() {',
+    '    super();',
+    '    this.ring = createTableRing(' + ring + ');',
+    "    this.port.onmessage = (e) => { if (e.data === 'flush') this.ring.flush(); else this.ring.write(new Float32Array(e.data)); };",
+    '  }',
+    '  process(inputs, outputs) {',
+    '    const out = outputs[0];',
+    '    if (out && out[0]) this.ring.read(out[0], out[1] || null);',
+    '    return true;',
+    '  }',
+    '}',
+    "registerProcessor('castcade-table-ring', CastcadeTableRing);",
+  ].join('\n');
+}
+
+const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -342,6 +466,7 @@ const VIDEO = ${JSON.stringify(PANEL_VIDEO)};
 const FEED_FPS = ${VIDEO_FEED_MAX.fps};
 const STALL_MS = ${CAPTURE_STALL_MS};
 const STATS_MS = ${STATS_MS};
+const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -435,7 +560,9 @@ function report() {
   for (const [id, r] of remote) {
     const v = r.stream.getVideoTracks()[0];
     const a = r.stream.getAudioTracks()[0];
+    const tt = r.tableStream.getAudioTracks()[0];
     peers[id] = {
+      receivingTable: !!tt && tt.readyState === 'live' && !tt.muted,
       ice: r.pc.iceConnectionState,
       receivingVideo: !!v && v.readyState === 'live' && !v.muted,
       receivingAudio: !!a && a.readyState === 'live' && !a.muted,
@@ -506,6 +633,7 @@ function render() {
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
   $('msg').textContent = (panel && panel.message) || localError || '';
+  routeTable();
 }
 
 async function sendDevices() {
@@ -802,6 +930,7 @@ function closeRemote(peer) {
   remote.delete(peer);
   clearInterval(r.retry);
   r.audio.srcObject = null;
+  r.tableAudio.srcObject = null;
   try { r.pc.close(); } catch (e) { /* closed */ }
   if (stageKey === 'peer:' + peer) stageKey = null;
 }
@@ -810,11 +939,24 @@ function closeRemote(peer) {
 function openPeer(peer) {
   closeRemote(peer);
   const pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle' });
-  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null };
+  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null };
   r.audio.autoplay = true;
   r.audio.srcObject = r.stream;
+  // D2.8: the peer's table sound plays from its own element, muted unless that peer is up (routeTable).
+  r.tableAudio.autoplay = true;
+  r.tableAudio.muted = true;
+  r.tableAudio.srcObject = r.tableStream;
   pc.addEventListener('track', (e) => {
     const t = e.track;
+    if (trackRole(t.kind, (e.streams || []).map((s) => s.id)) === 'table') {
+      for (const old of r.tableStream.getTracks()) if (old !== t) r.tableStream.removeTrack(old);
+      r.tableStream.addTrack(t);
+      t.addEventListener('mute', () => report());
+      t.addEventListener('unmute', () => report());
+      routeTable();
+      report();
+      return;
+    }
     for (const old of r.stream.getTracks()) if (old.kind === t.kind && old !== t) r.stream.removeTrack(old);
     r.stream.addTrack(t);
     t.addEventListener('mute', () => { report(); render(); });
@@ -835,6 +977,7 @@ function openPeer(peer) {
   remote.set(peer, r);
   attachAudio(r);
   attachVideo(r);
+  attachTable(r);
   // An offer lost on the way (the peer attached late, a reconnect) is sent again until the connection is up.
   r.retry = setInterval(() => {
     const n = mesh && mesh.get(peer);
@@ -857,7 +1000,7 @@ async function attach(a) {
   mesh = new SignalingMesh(
     localId,
     openPeer,
-    (to, signal) => ipcRenderer.send(C.send, { to: to, signal: signal }),
+    (to, signal) => ipcRenderer.send(C.send, { to: to, signal: tableSdp(signal) }),
     (peer, e, where) => { localError = 'Media with ' + peer + ' (' + where + '): ' + errText(e); report(); },
   );
   // D2.7: openPeer has already replaced the connection; count it, so the report (and companion.log) shows it.
@@ -898,6 +1041,8 @@ function detach() {
   myStereo = undefined;
   peerStereo.clear();
   reopens.clear();
+  // D2.8: the table track outlives an attach (one AudioContext per page); it goes quiet until main says send again.
+  setTableSend(false);
   report();
   render();
 }
@@ -997,6 +1142,82 @@ ipcRenderer.on(C.videoWant, (_e, on) => {
   feedLastFrame = -1;
 });
 ipcRenderer.on(C.videoAck, () => { feedInFlight = false; });
+
+/**
+ * D2.8 (2026-11-01): table sound. Sending: main feeds this rig's VPX sound (the helper's process-loopback tap) as 10 ms
+ * float32 stereo frames; they go to an AudioWorklet ring (createTableRing) whose output is a MediaStreamAudioDestination,
+ * and that track is the table track. It is added to every connection when the connection is made, like the others, and
+ * stays (enabled only while sending), so the m-line set never changes mid-match (the D2.7 lesson). Its stream id goes
+ * out as 'castcade-table-audio' (outgoingSdp), which is how the receivers tell it from the voice. Receiving: each peer's
+ * table track plays from its own element, only while that peer is up (tablePlays) and main says hear.
+ */
+let tableSend = false;
+let tableHear = true;
+let tableCtx = null;
+let tableDest = null;
+let tableNode = null;
+let tableTrack = null;
+function ensureTableTrack() {
+  if (tableTrack || tableCtx) return tableTrack;
+  if (typeof AudioContext !== 'function' || typeof AudioWorkletNode !== 'function') return null;
+  try {
+    tableCtx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    tableDest = tableCtx.createMediaStreamDestination();
+    try { tableDest.channelCount = 2; } catch (e) { /* fixed on some engines */ }
+    tableTrack = tableDest.stream.getAudioTracks()[0] || null;
+    if (tableTrack) {
+      // A table is music, not speech: no speech-tuned processing on the way out.
+      try { tableTrack.contentHint = 'music'; } catch (e) { /* older engines */ }
+      tableTrack.enabled = tableSend;
+    }
+    const url = URL.createObjectURL(new Blob([TABLE_WORKLET], { type: 'application/javascript' }));
+    void Promise.resolve(tableCtx.audioWorklet.addModule(url)).then(() => {
+      tableNode = new AudioWorkletNode(tableCtx, 'castcade-table-ring', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+      tableNode.connect(tableDest);
+    }).catch((e) => { localError = 'Table sound could not start (' + errText(e) + ').'; report(); });
+  } catch (e) {
+    tableTrack = null;
+    localError = 'Table sound could not start (' + errText(e) + ').';
+  }
+  return tableTrack;
+}
+function attachTable(r) {
+  const t = ensureTableTrack();
+  if (!t) return;
+  if (r.tableSender) void Promise.resolve(r.tableSender.replaceTrack(t)).catch(() => undefined);
+  else r.tableSender = r.pc.addTrack(t, tableDest.stream);
+}
+function tableSdp(signal) {
+  if (!signal || typeof signal.sdp !== 'string' || !tableDest || !tableDest.stream) return signal;
+  return Object.assign({}, signal, { sdp: outgoingSdp(signal.sdp, tableDest.stream.id) });
+}
+function setTableSend(on) {
+  if (tableSend === on) return;
+  tableSend = on;
+  if (tableTrack) tableTrack.enabled = on;
+  if (tableNode) tableNode.port.postMessage('flush');
+  if (on && tableCtx && tableCtx.state !== 'running') void Promise.resolve(tableCtx.resume()).catch(() => undefined);
+}
+function routeTable() {
+  for (const [id, r] of remote) {
+    const on = tablePlays(panel, id, tableHear);
+    if (r.tableAudio.muted === !on) continue;
+    r.tableAudio.muted = !on;
+    if (on) void Promise.resolve(r.tableAudio.play()).catch(() => undefined);
+  }
+}
+ipcRenderer.on(C.tableAudio, (_e, f) => {
+  tableHear = !(f && f.hear === false);
+  setTableSend(!!(f && f.send));
+  routeTable();
+});
+ipcRenderer.on(C.tablePcm, (_e, pcm) => {
+  if (!tableSend || !tableNode || !pcm || !pcm.byteLength) return;
+  // A copy into its own buffer (the IPC's view may sit at any offset), handed to the worklet without another copy.
+  const copy = new Float32Array(pcm.byteLength >> 2);
+  new Uint8Array(copy.buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, copy.byteLength));
+  tableNode.port.postMessage(copy.buffer, [copy.buffer]);
+});
 setInterval(report, 2000);
 render();
 ipcRenderer.send(C.ready);

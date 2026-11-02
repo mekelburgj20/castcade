@@ -72,7 +72,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -339,6 +339,26 @@ export function Match({ state }: { state: CastcadeState }) {
       </div>
 
       <div className="card">
+        <strong>Table sound</strong>
+        <label className="check">
+          <input type="checkbox" checked={st.settings.tableMuteMine} onChange={(e) => setView({ tableMuteMine: e.target.checked })} />
+          Mute my table while others play
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={st.settings.tableSendMine} onChange={(e) => setView({ tableSendMine: e.target.checked })} />
+          Send my table's sound
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={st.settings.tableHearOthers} onChange={(e) => setView({ tableHearOthers: e.target.checked })} />
+          Hear the other table
+        </label>
+        <small>
+          On your ball the others hear your table; on theirs you hear the player up, and your own VPX stays quiet (its backglass and PinUP too).
+          {tableSoundLine(st)}
+        </small>
+      </div>
+
+      <div className="card">
         <label className="field">
           <span>Turn sound volume ({volume ?? st.settings.cueVolume})</span>
           <input
@@ -356,6 +376,21 @@ export function Match({ state }: { state: CastcadeState }) {
       </div>
     </section>
   );
+}
+
+/** D2.8: the table-sound state in one line (appended to the card's note), or nothing when all is well and idle. */
+function tableSoundLine(st: MatchStatus): string {
+  const t = st.media?.tableAudio;
+  if (!t) return '';
+  if (t.helper === 'unavailable') {
+    const why = t.reason === 'helper_missing' ? 'this build has no table-sound helper' : `the helper did not start (${t.reason ?? 'unknown'})`;
+    return ` Table sound unavailable: ${why}; every player hears their own table.`;
+  }
+  const notes: string[] = [];
+  if (t.reason?.startsWith('tap_unavailable:')) notes.push('sending your table needs Windows 10 2004 or newer (muting still works)');
+  if (t.muted) notes.push('your table is muted now');
+  if (t.tapping) notes.push('your table is being sent now');
+  return notes.length ? ` Table sound: ${notes.join('; ')}.` : '';
 }
 
 function nameOf(st: MatchStatus, id: string | null): string {

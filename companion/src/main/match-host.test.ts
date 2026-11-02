@@ -115,6 +115,46 @@ describe('match host (A6)', () => {
     await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags.includes('disconnected') === true);
   }, 15_000);
 
+  it('D2.8 (2026-11-01): table sound follows the turn: the player up taps, the other is muted; leaving unmutes', async () => {
+    type Want = { mutePid: number | null; tapPid: number | null };
+    const fakeAudio = () => {
+      const wants: Want[] = [];
+      let started = 0;
+      const ta = {
+        start: () => void started++,
+        apply: (w: Want) => void wants.push({ ...w }),
+        status: () => ({ helper: 'ready' as const, reason: null, muted: false, tapping: false }),
+        onStatus: () => () => undefined,
+        onFrame: () => () => undefined,
+        stop: async () => undefined,
+      };
+      return { ta, wants, last: () => wants.at(-1), started: () => started };
+    };
+    const withPid = (sha: string, pid: number): WitnessHost => ({ ...witness(sha), vpxPid: () => pid }) as unknown as WitnessHost;
+    const ha = fakeAudio();
+    const ca = fakeAudio();
+    const H = make('ta-host', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 111), tableAudio: ha.ta });
+    const C = make('ta-client', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 222), tableAudio: ca.ta });
+    const port = 41000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    expect(ha.started()).toBe(1); // the helper comes up with the match, before any ball
+    expect(ha.last()).toEqual({ mutePid: null, tapPid: null }); // the lobby touches nothing
+    await C.mh.join(hs.invite!, 'Krobs');
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && C.mh.status().panel?.ball === 1);
+    // The host has ball 1: it sends its table, the client's VPX is muted.
+    await until(() => ha.last()?.tapPid === 111 && ca.last()?.mutePid === 222);
+    expect(ha.last()).toEqual({ mutePid: null, tapPid: 111 });
+    expect(ca.last()).toEqual({ mutePid: 222, tapPid: null });
+    // Off on the Match tab: the client's VPX is not muted any more.
+    C.mh.setSettings({ tableMuteMine: false });
+    expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
+    C.mh.setSettings({ tableMuteMine: true });
+    expect(ca.last()).toEqual({ mutePid: 222, tapPid: null });
+    await C.mh.leave();
+    expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
+  }, 15_000);
+
   it('microphone and mute: saved in media.json and live on the media layer when there is one (D2)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'castcade-match-mic-'));
     dirs.push(dir);

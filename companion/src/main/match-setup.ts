@@ -34,6 +34,13 @@ export interface MatchSettings {
    * from VPX's ini (media/preview-stereo.ts), `mono` one eye, `sbs` both eyes side by side.
    */
   previewStereo: 'auto' | 'mono' | 'sbs';
+  /**
+   * D2.8 (2026-11-01): table sound (media/table-audio-policy.ts): mute this rig's VPX while another player is up, send
+   * its sound while this rig is up, play the up player's table. All on by default.
+   */
+  tableMuteMine: boolean;
+  tableSendMine: boolean;
+  tableHearOthers: boolean;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -44,6 +51,9 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   theaterDuringMyTurn: 'hidden',
   spectate: 'theater',
   previewStereo: 'auto',
+  tableMuteMine: true,
+  tableSendMine: true,
+  tableHearOthers: true,
 };
 
 export function cleanPort(v: unknown): number | null {
@@ -68,6 +78,9 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (p.theaterDuringMyTurn === 'hidden' || p.theaterDuringMyTurn === 'panel') next.theaterDuringMyTurn = p.theaterDuringMyTurn;
   if (p.spectate === 'theater' || p.spectate === 'panel') next.spectate = p.spectate;
   if (p.previewStereo === 'auto' || p.previewStereo === 'mono' || p.previewStereo === 'sbs') next.previewStereo = p.previewStereo;
+  if (typeof p.tableMuteMine === 'boolean') next.tableMuteMine = p.tableMuteMine;
+  if (typeof p.tableSendMine === 'boolean') next.tableSendMine = p.tableSendMine;
+  if (typeof p.tableHearOthers === 'boolean') next.tableHearOthers = p.tableHearOthers;
   return next;
 }
 

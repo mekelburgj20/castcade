@@ -73,7 +73,7 @@ export interface MediaStatus {
    * (2026-11-01): `signaling` (the connection's signalling state) and `reopens` (how often the page replaced that
    * connection after a `reset` or a stale offer), so a dead connection shows in companion.log. Absent before D2.7.
    */
-  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number }>;
+  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean }>;
   mic: 'open' | 'muted' | 'unavailable';
   /** The capture source in use, for the Match tab: the window title, or null. */
   captureSource: string | null;
@@ -93,7 +93,30 @@ export interface MediaStatus {
    * live: `sbs` both eyes, `mono` one picture, null not known. Absent before D7.4.3.
    */
   captureStereo?: VrStereo | null;
+  /**
+   * D2.8 (2026-11-01): table sound (`media/audio-helper.ts`, audio-helper/README.md). `helper`: the helper runs
+   * (`ready`) or cannot (`unavailable`: `helper_missing`, `helper_failed:<code>`); `reason` also carries a ready
+   * helper's `tap_unavailable:<why>` (Windows before 10 2004: muting works, sending does not). `muted`: this rig's VPX
+   * is held muted now (another player is up); `tapping`: its sound is being captured for the others (this rig is up).
+   * Added by the match host (the media layer does not know it); absent when there is no helper wiring. Per peer,
+   * `receivingTable` (D2.8) says their table track is live.
+   */
+  tableAudio?: TableAudioStatus;
   lastError: string | null;
+}
+
+/** D2.8: see `MediaStatus.tableAudio`. */
+export interface TableAudioStatus {
+  helper: 'ready' | 'unavailable';
+  reason: string | null;
+  muted: boolean;
+  tapping: boolean;
+}
+
+/** D2.8: what the panel page does with table sound: send this rig's (the table track live) and play the up player's. */
+export interface TableAudioFlags {
+  send: boolean;
+  hear: boolean;
 }
 
 /** What the match controller drives (implemented by `media/rtc-host.ts`, D2). */
@@ -117,6 +140,15 @@ export interface MatchMedia {
   showPanel(): void;
   /** D2.6 (2026-11-01): hides the desktop panel window without ending anything (the Match tab's Hide panel). */
   hidePanel?(): void;
+  /**
+   * D2.8 (2026-11-01): table sound on the page. `send`: the table track carries this rig's VPX sound (fed by
+   * `pushTableAudio`); `hear`: the up player's table track plays (never this rig's own). Absent in fakes before D2.8.
+   */
+  setTableAudio?(flags: TableAudioFlags): void;
+  /** D2.8: one 10 ms frame of this rig's VPX sound (float32 stereo 48 kHz, the helper's frame payload). Dropped unless sending. */
+  pushTableAudio?(pcm: Uint8Array): void;
+  /** D2.8: the pid of the window the capture sends (the "Visual Pinball Player" window's VPX), or null with no capture. */
+  capturePid?(): number | null;
   detach(): Promise<void>;
 }
 

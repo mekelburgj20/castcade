@@ -41,6 +41,8 @@ export interface WitnessHost {
    * for the match controller.
    */
   onEvent(listener: (event: GameEvent | { kind: 'table_exit' }) => void): () => void;
+  /** D2.8 (2026-11-01): the pid of the VPX the witness last saw launch, until it exits; null when none runs. */
+  vpxPid?(): number | null;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -54,6 +56,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
   let unsubscribe: Array<() => void> = [];
   // B8: ArcAid's ROM → VPS game map, fetched at start and daily; the module's default is off for its tests.
   const deps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS };
+  /** D2.8: the running VPX's pid (the table-sound helper's fallback when the match capture has no window). */
+  let launchPid: number | null = null;
   let witness: Witness = attach(createWitness(store, deps));
 
   let lastCheckin: string | null = null;
@@ -74,6 +78,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       }),
       w.on('launch', (i) => {
         log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`);
+        launchPid = i.pid;
         // Remember where VPX lives so the import can find scripts\ on the next run without a launch.
         if (i.exe && store.get().vpxExe !== i.exe) void store.set({ vpxExe: i.exe }).catch((err: unknown) => log.warn(`settings: could not remember the VPX exe: ${err instanceof Error ? err.message : String(err)}`));
       }),
@@ -83,6 +88,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       }),
       w.on('exit', (i) => {
         log.info(`witness: exit ${i.table} after ${i.durationSec}s`);
+        launchPid = null;
         for (const l of eventListeners) l({ kind: 'table_exit' });
       }),
       w.on('capture', (c) => {
@@ -204,6 +210,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
         captureListeners.delete(listener);
       };
     },
+    vpxPid: () => launchPid,
     onEvent(listener) {
       eventListeners.add(listener);
       return () => {

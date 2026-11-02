@@ -1,0 +1,2 @@
+# CMake build tree (cmake -B build); the root .gitignore's build/ rule covers it too, kept so this folder stands alone
+build/

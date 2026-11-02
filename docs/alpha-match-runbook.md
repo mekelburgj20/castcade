@@ -94,6 +94,25 @@ Run these a day or more before the match. If one fails, stop and send what is li
    (<https://arcaid.app/arcaid_flippin_fear_fest_26/>). Quit the player normally after game over and the score
    posts within a minute, as in the tester kit. The match result itself is not on arcaid.app yet.
 
+### Table sound (D2.8)
+
+Each of you runs your own VPX, so without help you would hear only your own table all match long. Castcade's
+table-sound helper (`castcade-audio.exe`, installed with Castcade; nothing to set up) fixes that:
+
+- **On the other player's ball:** your own VPX goes silent (its backglass and PinUP screens too), and you hear
+  **their** table, sent from their PC next to their voice. Their game-over music, and yours after your last ball, play
+  only on the PC whose turn it is.
+- **On your ball:** your VPX sounds as normal, and your table's sound goes to the others.
+- **In the lobby, at the result, after Leave, and if Castcade quits or crashes:** your VPX sounds as normal again. A
+  session you had muted yourself in the Windows volume mixer is never unmuted by Castcade.
+- **Match tab, "Table sound":** three switches, all on: *Mute my table while others play*, *Send my table's sound*,
+  *Hear the other table*. Turn one off if it gets in the way (for example, keep your own table on if you stream it).
+- What to expect: their table reaches you about as late as their video (a fraction of a second). The first sound of a
+  table that only just opened can slip through for up to 2 s before your VPX goes quiet.
+- **"Table sound unavailable"** on the Match tab means the helper is not in this build or did not start: every
+  player hears their own table, as before, and the match is otherwise unaffected. **"Sending your table needs
+  Windows 10 2004 or newer"**: your VPX is still muted on their ball, but the others cannot hear your table.
+
 ## 4. If something goes wrong
 
 - **The match socket does not connect.** Host: is TCP 27401 forwarded to the right PC; does the invite's IP match your
@@ -105,6 +124,11 @@ Run these a day or more before the match. If one fails, stop and send what is li
   name the VPX preview window, not the editor or the desktop.
 - **No voice.** Pick the headset microphone by name on the Match tab. Check the mute state on the panel. Check
   Windows has not muted or disabled the headset mic.
+- **I hear my own table on their ball, or not theirs.** Read the Match tab's Table sound line, and look in
+  `companion.log` for `audio:` lines (`audio: muted VPX pid N (k sessions)` on their ball, `audio: tap on` on yours)
+  and `match: table sound:` lines. "0 sessions" means Castcade muted the wrong process or VPX had not played a sound
+  yet; send the log. **My VPX stayed silent after the match:** quit and reopen Castcade (it restores what it muted),
+  or unmute VPX in the Windows volume mixer.
 - **No panel in the headset.** SteamVR must be running before the match starts. Read the overlay status line on the
   Match tab; if it names an error, send it. Restarting Castcade after SteamVR is up is safe.
 - **The flippers stay dead after your cue.** Delete `%LOCALAPPDATA%\Castcade\lock\turn.lock` by hand and play on, then

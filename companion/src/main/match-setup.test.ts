@@ -52,7 +52,7 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
   });
@@ -70,6 +70,14 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
     // A match.json from before D7.4 reads with the defaults.
     expect(readMatchSettings('{"v":1,"port":27401,"ballsPerGame":3,"displayName":null,"cueVolume":80}')).toEqual(DEFAULT_MATCH_SETTINGS);
+  });
+
+  it('D2.8: the three table-sound settings, on by default, booleans only, saved and read back', () => {
+    expect(DEFAULT_MATCH_SETTINGS).toMatchObject({ tableMuteMine: true, tableSendMine: true, tableHearOthers: true });
+    const off = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { tableMuteMine: false, tableSendMine: false, tableHearOthers: false });
+    expect(off).toMatchObject({ tableMuteMine: false, tableSendMine: false, tableHearOthers: false });
+    expect(patchMatchSettings(off, { tableMuteMine: 'yes', tableSendMine: 1 } as never)).toEqual(off);
+    expect(readMatchSettings(writeMatchSettings(off))).toEqual(off);
   });
 
   it('match keys survive a save and still sign', () => {

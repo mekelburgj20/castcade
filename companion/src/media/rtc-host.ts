@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
+import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -94,6 +94,10 @@ export interface RtcHost extends MatchMedia {
    * while a capture is live the next look (at once) tells the page, which tells the peers.
    */
   setPreviewStereo(setting: PreviewStereoSetting): void;
+  /** D2.8 (2026-11-01): table sound on the page (MatchMedia); here always present. */
+  setTableAudio(flags: TableAudioFlags): void;
+  pushTableAudio(pcm: Uint8Array): void;
+  capturePid(): number | null;
 }
 
 const PARTITION = 'castcade-panel';
@@ -386,6 +390,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let coverOffSaid = false;
   /** D7.4.3: the Match tab's preview setting (`setPreviewStereo`). */
   let previewSetting: PreviewStereoSetting = 'auto';
+  /** D2.8: the table-sound flags the match host gave (replayed to a new page), and the pid of the window being sent. */
+  let tableFlags: TableAudioFlags | null = null;
+  let capturePidNow: number | null = null;
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -427,6 +434,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     PANEL_CHANNELS.cover,
     PANEL_CHANNELS.microphone,
     PANEL_CHANNELS.videoWant,
+    PANEL_CHANNELS.tableAudio,
   ]);
   const toPage = (channel: string, payload?: unknown): void => {
     if (win && ready && attachSent) return post(channel, payload);
@@ -718,6 +726,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         }
         captureSrc = r.src;
         capture = r.capture;
+        capturePidNow = r.pick.window.pid;
         captureError = null;
         if (r.pick.fallback) log.warn(`media: no "${PLAYER_TITLE}" window; sending the largest VPX window instead: ${capture.label}`);
       } catch (e) {
@@ -764,6 +773,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** The capture is gone (no window any more, or the page's capture ended); `tellPage`: main noticed it first. */
   function dropCapture(tellPage: boolean): void {
     capture = null;
+    capturePidNow = null;
     captureSrc = null;
     announced = null;
     stopLive();
@@ -806,6 +816,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (restereo) log.info(`media: the match video is ${stereoWords(r.capture.stereo)} now (${previewSetting === 'auto' ? "VPX's VR preview setting" : 'the Match tab'})`);
       captureSrc = r.src;
       capture = r.capture;
+      capturePidNow = r.pick.window.pid;
       announced = capture;
       toPage(PANEL_CHANNELS.capture, capture);
       emitStatus();
@@ -876,6 +887,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     attachSent = false;
     queue = [];
     capture = null;
+    capturePidNow = null;
     captureSrc = null;
     announced = null;
     stopCaptureTimer();
@@ -910,6 +922,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     }
     offSignal = sig.onSignal((from, signal) => toPage(PANEL_CHANNELS.signal, { from, signal }));
     if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
+    if (tableFlags) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -1037,6 +1050,17 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       opts.settings.patch({ micDeviceId: deviceId });
       if (attached) toPage(PANEL_CHANNELS.microphone, deviceId);
     },
+    setTableAudio(flags) {
+      if (tableFlags && tableFlags.send === flags.send && tableFlags.hear === flags.hear) return;
+      tableFlags = { send: flags.send, hear: flags.hear };
+      if (attached) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
+    },
+    pushTableAudio(pcm) {
+      // Straight to a ready page, never queued: a frame that cannot go now is useless later (100 a second).
+      if (!tableFlags?.send || !attached || !ready || !attachSent) return;
+      post(PANEL_CHANNELS.tablePcm, pcm);
+    },
+    capturePid: () => (attached ? capturePidNow : null),
     setPreviewStereo(setting) {
       if (setting === previewSetting) return;
       previewSetting = setting;
