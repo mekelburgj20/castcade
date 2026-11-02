@@ -18,6 +18,17 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   was removed from disk by another program, most likely an antivirus quarantine of the .vbs` and send the player to
   Windows Security → Protection history before Patch now. `companion/src/main/sidecar-watch.ts`, `witness.ts`
   `noticeUnpatched`, `exit-rung.ts`; ladder row (a) in `docs/design/table-import-and-patching.md` §6a.
+- The VPS index refreshes itself (B24). The installer's index was frozen at a vps-db commit of 2026-10-19, so a table
+  released after it could never be confirmed: the owner's Freddy file (VPS table `ZqH53HLaa4`, added 2026-10-31) was not
+  in the "which table is this file?" picker and identity stayed "table ambiguous". The companion now rebuilds the index
+  from vps-db `main` 30 s after start when its cached copy is missing or a day old, then daily (8 MB, `If-None-Match`,
+  32 MB guard, 120 s timeout), into `%APPDATA%\Castcade\witness\vps\`, reloads it live (the picker and every lookup see
+  the new tables without a restart) and falls back to the bundled index when the copy is missing, torn or empty. Status
+  gains a "VPS index" row beside Maps version (`2,643 games · bundled 2026-10-19`, then `2,671 games · refreshed …`);
+  the log says `witness: VPS index refreshed fffd511 (2671 games, 5798 table files, built …)`, `up to date` on a 304,
+  `refresh skipped (<reason>)` on any failure. The build logic moved into the app (`vps-build.ts`); the packaging script
+  is now `companion/scripts/fetch-vps.ts` under `tsx`, pinned to vps-db `70e1ff8e` (2026-11-02). `vps-refresh.ts`,
+  `vps-index.ts`, `witness.ts`, `Status.tsx`.
 
 ## [0.2.29] — 2026-11-02
 
