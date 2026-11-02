@@ -505,6 +505,9 @@ interface CastcadeBridge {
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
     setMuted(muted: boolean): Promise<MatchStatus>;
+    /** D2.6: the desktop match panel window (no-op in VR). */
+    showPanel(): Promise<MatchStatus>;
+    hidePanel(): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   readonly tables: {

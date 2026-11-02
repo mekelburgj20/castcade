@@ -7,6 +7,51 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.29] — 2026-11-02
+
+The second two-rig run on 0.2.28 (owner vs Krobs, 2026-11-02, two matches) found the stereo pair not fusing, only the
+player's own table audible, and one match whose media mesh never connected. This release answers the first two and
+adds the logging that will explain the third.
+
+### Theater: a life-size stereo window (D7.4.5)
+- A side-by-side picture (the sender's VPX "both eyes" preview) is no longer two halves on one shared 2.4 m screen. Each
+  eye gets its own quad, offset by the receiver's eye pose (`xrLocateViews`) and sized and centred in tangent space from
+  the eye field of view, cropped the way VPX cropped the eye render (`Player::PrepareVideoBuffers`), so every pixel
+  reaches the receiver's eye in the direction the sender's eye rendered it. Life size by default (`kTheaterScale` 1.0;
+  an optional `theaterScale` control field, 0.25–4, the companion does not send yet). The fov comes from VPX's own
+  projection views, then `xrLocateViews`, then ±45°; the eyes from `xrLocateViews`, else ±31.5 mm. One
+  `theater: stereo window, …` line per change in `vr-layer.log` names fov, IPD, render rect, crop and quads. Mono
+  pictures and the panel are unchanged; pipe protocol stays 2. `vr-layer/src/layer.cpp`, `panel_pipe.cpp`, `vr-layer/README.md`.
+
+### Theater detail (D7.4.6)
+- The match video track asks Chromium for detail over motion (`contentHint = 'detail'`: keep resolution, drop frames),
+  the bitrate follows the shape (2.5 Mbps for mono up to 1280x720 as before; 0.13 bits per pixel per frame above that,
+  so 1280x1080 side by side gets 5.4 Mbps, 2560x720 7.2, 1440x1392 7.8, capped at 8), and portrait or near-square
+  windows are sent at their own size (a 1440x1920 output box below aspect 1.5). `media: sending WxH sbs at N Mbps` once
+  per capture; the 10 s counters carry the outbound size, bitrate and `qualityLimitationReason`, and the decoded size on
+  the receiver. `companion/src/media/panel-page.ts` (`videoBitrateFor`), `capture-crop.ts`, `rtc-host.ts`.
+
+### Table sound (D2.8)
+- New helper `castcade-audio.exe` (`audio-helper/`, C++17, CoreAudio; built by `audio-helper.yml`, staged by
+  `release.yml`, fetched by `npm run fetch-audio-helper -w companion`). While another player is up, this rig's VPX
+  process tree, PinUP Player and the B2S server are muted at their Windows audio sessions on every render endpoint,
+  re-scanned every 2 s; they come back on my grant, at the result, on Leave, on quit, when the companion dies (the helper
+  unmutes on stdin EOF) and, through `--state`, after a crash of the helper itself. Only sessions the helper muted are
+  unmuted.
+- While I am up, the helper taps my VPX's sound alone (Windows process loopback, 10 2004+; never the voice coming out
+  of my speakers) and the panel page sends it as a second audio track, stereo Opus, in a stream named
+  `castcade-table-audio`; receivers play it only for the player up. Voice is unchanged. Three Match-tab switches, all on;
+  "table sound unavailable" names a missing helper or an old Windows and never blocks a match. **Both players must be
+  on 0.2.29**: a 0.2.28 receiver would play the table track as voice. `companion/src/media/audio-helper.ts`,
+  `table-audio-policy.ts`, `panel-page.ts`, `main/match-host.ts`, `renderer/src/views/Match.tsx`, runbook "Table sound".
+
+### Diagnosis carried in WORK.md
+- D2.9: in EFUKTZ both logs show offer and answer exchanged and ICE in `checking` with no pair ever connecting; the
+  same rigs connected in 0.3 s eleven minutes later. No TURN relay is configured. The fix (TURN, the nominated
+  candidate pair in the counters, an ICE restart after 10 s in `checking`) is the next media item. New A10 (a series of
+  games in one match, the host's next game on the table starts it) and A11 (start the match from inside the headset).
+- The renderer bridge's type declaration gains `showPanel` / `hidePanel` (D2.6 wired them; `typecheck:renderer` failed).
+
 ## [0.2.28] — 2026-11-01
 
 Everything since 0.2.27 (2026-10-31 evening to 2026-11-01 night): four agents' match and shell work while the headset
