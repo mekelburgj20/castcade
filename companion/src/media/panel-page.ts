@@ -44,8 +44,6 @@ export const PANEL_CHANNELS = {
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
 export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
-/** D7.4.6: the most a bigger picture is given (`videoBitrateFor`). */
-export const VIDEO_MAX_BITRATE = 8_000_000;
 
 /**
  * D7.4 (2026-10-31): the video the headset's theater mode gets, at the received size up to these (a larger one is
