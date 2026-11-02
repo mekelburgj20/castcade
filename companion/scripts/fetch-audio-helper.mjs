@@ -29,9 +29,9 @@ import { fileURLToPath, URL } from 'node:url';
 
 // The first zip appears with the first release tagged after D2.8 lands; set TAG to it then (a release's own installer
 // cannot carry its own tag's zip, both workflows run at once, so TAG names an earlier release).
-const TAG = 'v0.2.29';
+const TAG = 'v0.2.30';
 // null means "not pinned yet" (the download is used, with a warning and the hash to pin printed).
-const SHA256 = '2c8ee729f1776e8ade20c70cf08cf6f78674d748b44d2aa9b25ab9f709ddab67';
+const SHA256 = 'a13dc31e9847b547100e056f48462244e09708c3cad589c8d4a2a750e95e7acc';
 const KEEP = ['castcade-audio.exe'];
 
 const companionDir = resolve(fileURLToPath(new URL('..', import.meta.url)));
