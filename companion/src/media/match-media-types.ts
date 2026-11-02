@@ -200,6 +200,12 @@ export interface VrOverlayStatus {
    * (`runtime_not_steamvr`, B22, is gone: every runtime has an overlay since D7.3.)
    */
   reason: string | null;
+  /**
+   * D7.3.3 (2026-11-02), the OpenXR layer only: the VPX running started before the layer was registered (the registry
+   * value or its files changed after), so it runs an older layer or none; the Match tab says to restart VPX. Absent
+   * otherwise.
+   */
+  vpxBeforeLayer?: true;
 }
 
 /** The in-headset panel as the controller sees it: the SteamVR helper (`media/vr-overlay.ts`, D7) or the OpenXR layer (`media/vr-layer.ts`, D7.3). */

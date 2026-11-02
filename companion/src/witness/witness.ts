@@ -1696,7 +1696,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (parseWindowTitle(launch.title).kind === 'player') await tableFromJournal(session);
     if (!baseline) await refreshBaseline();
     refreshTableStatus();
-    emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt) });
+    emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt), startedAt: launch.startedAt });
     emitStatus();
     scheduleNvPoll();
     await reportLaunch(session);

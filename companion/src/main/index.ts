@@ -44,7 +44,8 @@ import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createTableAudioHelper, resolveAudioHelper, type TableAudioHelper } from '../media/audio-helper.js';
-import { createVrLayerOverlay, resolveVrLayer } from '../media/vr-layer.js';
+import { createVrLayerOverlay, registerVrLayer, resolveVrLayer } from '../media/vr-layer.js';
+import { createLayerAgeWatch, readRegisteredAt, sha256File, stageVrLayer, versionText, VR_LAYER_DLL, vrLayerStageRoot, writeRegisteredAt } from '../media/vr-layer-stage.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { watchFocus } from '../media/focus-watch.js';
 import { probeWindows } from '../media/window-geometry.js';
@@ -482,10 +483,35 @@ async function main(): Promise<void> {
     logger.error(`vr-overlay: could not set up (${describeError(e)}); the match panel shows on the desktop this run`);
   }
   // D7.3: off SteamVR (Virtual Desktop, Oculus, other OpenXR runtimes) the panel goes in through the OpenXR layer.
+  // D7.3.3 (2026-11-02): packaged, it runs from a per-version copy under %LOCALAPPDATA%\Castcade\vr-layer (an update
+  // cannot replace a dll a running VPX maps), registered now at start, and the log says when VPX predates it.
   try {
-    const jsonPath = resolveVrLayer({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    const layerLog = (line: string) => logger.info(line);
+    const sourceJson = resolveVrLayer({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    const staged = sourceJson && app.isPackaged ? stageVrLayer({ sourceDir: dirname(sourceJson), root: vrLayerStageRoot(process.env, userData), version: appVersion, log: layerLog }) : null;
+    const jsonPath = staged?.jsonPath ?? sourceJson;
     if (!jsonPath) logger.info('vr-layer: no OpenXR layer in this build; on OpenXR rigs the headset panel is unavailable');
-    matchLayer = createVrLayerOverlay({ jsonPath, log: (line) => logger.info(line), vpxRunning: () => host.status().running });
+    const layerAge = createLayerAgeWatch({ vpxPid: () => host.vpxPid?.() ?? null, vpxStartedAt: () => host.vpxStartedAt?.() ?? null, log: layerLog });
+    /** When the registration last changed: now when it did (or the files were copied), else the stage's stamp. */
+    const noteRegistered = (changed: boolean) => {
+      if (changed) {
+        const at = Date.now();
+        if (staged) writeRegisteredAt(staged.dir, at);
+        layerAge.setRegisteredAt(at);
+      } else if (layerAge.registeredAt() === null && staged) layerAge.setRegisteredAt(readRegisteredAt(staged.dir));
+    };
+    matchLayer = createVrLayerOverlay({ jsonPath, log: layerLog, vpxRunning: () => host.status().running, layerAge, onRegistered: noteRegistered });
+    if (jsonPath) {
+      const dir = dirname(jsonPath);
+      const dll = join(dir, VR_LAYER_DLL);
+      const sha = existsSync(dll) ? sha256File(dll).slice(0, 12) : 'missing';
+      void registerVrLayer(jsonPath, { log: layerLog }).then((r) => {
+        if (r.result !== 'ok') return;
+        noteRegistered(r.changed || staged?.copied === true);
+        logger.info(`vr-layer: registered for Castcade ${appVersion}: ${jsonPath} (dll sha256 ${sha}, VERSION ${versionText(dir) ?? 'none'})`);
+      });
+    }
+    layerAge.start();
   } catch (e) {
     logger.error(`vr-layer: could not set up (${describeError(e)}); no headset panel on OpenXR rigs this run`);
   }

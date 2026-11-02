@@ -10,6 +10,7 @@ import {
   parseHello,
   parseRegQuery,
   registerArgs,
+  registerVrLayer,
   resolveVrLayer,
   RESTART_VPX_AFTER_MS,
   VR_LAYER_JSON,
@@ -437,5 +438,59 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     await h.ov.stop();
     expect(v.wanted.at(-1)).toBe(false);
     expect(v.listeners()).toBe(0);
+  });
+});
+
+describe('D7.3.3: registration at start and the layer age', () => {
+  it('registerVrLayer says whether the value was written now (absent before) or was there', async () => {
+    const exec = (q: string | null): Exec =>
+      vi.fn(async (_f: string, args: string[]) => {
+        if (args[0] === 'query') {
+          if (q === null) throw new Error('not found');
+          return { stdout: q };
+        }
+        return { stdout: '' };
+      });
+    const log: string[] = [];
+    expect(await registerVrLayer(JSON_PATH, { log: (l) => log.push(l), exec: exec(null) })).toEqual({ result: 'ok', changed: true });
+    expect(await registerVrLayer(JSON_PATH, { log: (l) => log.push(l), exec: exec(`    ${JSON_PATH}    REG_DWORD    0x0\r\n`) })).toEqual({ result: 'ok', changed: false });
+    expect(await registerVrLayer(JSON_PATH, { log: (l) => log.push(l), exec: exec(`    ${JSON_PATH}    REG_DWORD    0x1\r\n`) })).toEqual({ result: 'disabled', changed: false });
+  });
+
+  it('the overlay reports each registration, and its status carries vpxBeforeLayer while the age watch says so', async () => {
+    let stale = false;
+    const cbs = new Set<() => void>();
+    const registered: boolean[] = [];
+    const exec: Exec = vi.fn(async (_f: string, args: string[]) => {
+      if (args[0] === 'query') throw new Error('not found');
+      return { stdout: '' };
+    });
+    const ov = createVrLayerOverlay({
+      jsonPath: JSON_PATH,
+      log: () => {},
+      exec,
+      connect: (p) => new FakePipe(p) as never,
+      layerAge: {
+        stale: () => stale,
+        onChange(cb) {
+          cbs.add(cb);
+          return () => void cbs.delete(cb);
+        },
+      },
+      onRegistered: (c) => registered.push(c),
+    });
+    const states: VrOverlayStatus[] = [];
+    ov.onStatus((s) => states.push(s));
+    vi.useFakeTimers();
+    expect(await ov.start(source().src)).toEqual({ state: 'starting', reason: null });
+    expect(registered).toEqual([true]);
+    stale = true;
+    cbs.forEach((cb) => cb());
+    expect(ov.status()).toEqual({ state: 'starting', reason: null, vpxBeforeLayer: true });
+    expect(states.at(-1)).toEqual({ state: 'starting', reason: null, vpxBeforeLayer: true });
+    stale = false;
+    cbs.forEach((cb) => cb());
+    expect(ov.status()).toEqual({ state: 'starting', reason: null });
+    await ov.stop();
   });
 });

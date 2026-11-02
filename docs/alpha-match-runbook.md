@@ -10,7 +10,8 @@ Table: ________ (ROM ______)
 
 - [ ] **Castcade 0.2.22 or newer**, from the GitHub releases page
   (<https://github.com/mekelburgj20/castcade/releases>). An installed copy updates itself; check
-  the version on the Status tab.
+  the version on the Status tab. After an update, restart VPX: a VPX left running keeps the older headset layer (the
+  Match tab says "VPX started before this layer was registered").
 - [ ] **The same table file on both PCs**: the table and ROM written in the line at the top. Copy the file, do not
   download it twice from different places. Castcade compares the two files and warns "different table file" if they differ.
 - [ ] **Patched**: Castcade, Settings, **Import tables for live scores**, Browse to your `tables` folder,

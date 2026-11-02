@@ -19,7 +19,10 @@
  *     the pipe on any other magic. Its mode is set by `setMode` (the match host, from the turn); video frames are
  *     wanted from the panel page only while the mode is theater and a protocol-2 layer listens; their `stereo` goes
  *     into the control when it changes;
- *   - `stop` closes the pipe. The registry entry stays: without a client the layer draws nothing.
+ *   - `stop` closes the pipe. The registry entry stays: without a client the layer draws nothing;
+ *   - D7.3.3 (2026-11-02): packaged, the json registered is the per-version copy under `%LOCALAPPDATA%\Castcade\vr-layer\`
+ *     (`vr-layer-stage.ts`), and the companion registers it at start too (`registerVrLayer`), not only here. `layerAge`
+ *     says when the VPX running started before that registration: the status then carries `vpxBeforeLayer`.
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -28,6 +31,7 @@ import { join, resolve } from 'node:path';
 import { VR_LAYER_VIDEO_MAGIC, type PanelFrameSource, type VideoFrameSource, type VrOverlay, type VrOverlayStatus, type VrStereo, type VrViewMode } from './match-media-types.js';
 import { controlMessage, createPanelFrameWriter, type FrameStream } from './panel-frame-writer.js';
 import type { VrOverlayPathInput } from './vr-overlay.js';
+import type { LayerAge } from './vr-layer-stage.js';
 
 export const VR_LAYER_JSON = 'XrApiLayer_castcade_panel.json';
 export const VR_LAYER_PIPE = '\\\\.\\pipe\\castcade-panel';
@@ -100,6 +104,39 @@ const execReg: Exec = (file, args) =>
     execFile(file, args, { windowsHide: true }, (err, stdout) => (err ? fail(err) : done({ stdout: String(stdout) })));
   });
 
+export interface RegisterResult {
+  /** 'ok', 'disabled' (the player set our value to 1) or 'failed'. */
+  result: 'ok' | 'disabled' | 'failed';
+  /** 'ok' only: the value was not there (enabled) before, so it was written now. */
+  changed: boolean;
+}
+
+/**
+ * Register `jsonPath` for the current user (D7.3; the rules in the file comment): drop other registrations of the same
+ * json file name, leave a value the player disabled alone. Never throws.
+ */
+export async function registerVrLayer(jsonPath: string, opts: { log: (line: string) => void; exec?: Exec }): Promise<RegisterResult> {
+  const exec = opts.exec ?? execReg;
+  try {
+    // `reg query` exits 1 when the key does not exist yet: nothing registered, nothing stale.
+    const existing = parseRegQuery((await exec('reg.exe', queryArgs()).catch(() => ({ stdout: '' }))).stdout);
+    const mine = existing.find((v) => sameFile(v.name, jsonPath));
+    if (mine && mine.value !== null && mine.value !== 0) {
+      opts.log(`vr-layer: ${jsonPath} is disabled under ${OPENXR_IMPLICIT_LAYERS_KEY} (value ${mine.value}); left as the player set it`);
+      return { result: 'disabled', changed: false };
+    }
+    for (const stale of existing.filter((v) => isOurJson(v.name) && !sameFile(v.name, jsonPath))) {
+      await exec('reg.exe', deleteArgs(stale.name));
+      opts.log(`vr-layer: removed an older registration ${stale.name}`);
+    }
+    await exec('reg.exe', registerArgs(jsonPath));
+    return { result: 'ok', changed: !mine };
+  } catch (e) {
+    opts.log(`vr-layer: could not register the layer (${(e as Error).message}); the panel can show only if it was registered before`);
+    return { result: 'failed', changed: false };
+  }
+}
+
 /** What the overlay needs of a pipe connection; a `net.Socket` fits. */
 export interface PipeSocket extends FrameStream {
   on(event: 'connect' | 'close' | 'drain', cb: () => void): unknown;
@@ -114,6 +151,10 @@ export interface VrLayerOverlayOptions {
   log: (line: string) => void;
   /** Whether VPX runs now (the witness); `restart_vpx` is only said while it does. Default: always. */
   vpxRunning?: () => boolean;
+  /** D7.3.3: whether the VPX running predates the registration (`createLayerAgeWatch`); stale → `vpxBeforeLayer`. */
+  layerAge?: LayerAge;
+  /** D7.3.3: each successful registration here, `changed` when the value was written now (the age watch's moment). */
+  onRegistered?: (changed: boolean) => void;
   /** Test seams. */
   exec?: Exec;
   connect?: (path: string) => PipeSocket;
@@ -150,36 +191,30 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let waitLogged = false;
   let registeredLogged = false;
 
+  /** D7.3.3: what callers see: `current` plus `vpxBeforeLayer` while the age watch says so (absent otherwise). */
+  const visible = (): VrOverlayStatus => (opts.layerAge?.stale() ? { ...current, vpxBeforeLayer: true } : current);
+  const notify = () => {
+    const s = visible();
+    for (const l of [...listeners]) l(s);
+  };
+
   const set = (state: VrOverlayStatus['state'], reason: string | null = null) => {
     if (current.state === state && current.reason === reason) return;
     current = { state, reason };
-    for (const l of [...listeners]) l(current);
+    notify();
   };
+  opts.layerAge?.onChange(notify);
 
   /** 'ok', 'disabled' (the player set our value to 1) or 'failed'; never throws. */
   const register = async (jsonPath: string): Promise<'ok' | 'disabled' | 'failed'> => {
-    try {
-      // `reg query` exits 1 when the key does not exist yet: nothing registered, nothing stale.
-      const existing = parseRegQuery((await exec('reg.exe', queryArgs()).catch(() => ({ stdout: '' }))).stdout);
-      const mine = existing.find((v) => sameFile(v.name, jsonPath));
-      if (mine && mine.value !== null && mine.value !== 0) {
-        opts.log(`vr-layer: ${jsonPath} is disabled under ${OPENXR_IMPLICIT_LAYERS_KEY} (value ${mine.value}); left as the player set it`);
-        return 'disabled';
-      }
-      for (const stale of existing.filter((v) => isOurJson(v.name) && !sameFile(v.name, jsonPath))) {
-        await exec('reg.exe', deleteArgs(stale.name));
-        opts.log(`vr-layer: removed an older registration ${stale.name}`);
-      }
-      await exec('reg.exe', registerArgs(jsonPath));
-      if (!registeredLogged) {
-        registeredLogged = true;
-        opts.log(`vr-layer: ${mine ? 'registered' : 'registered now'} ${jsonPath} under ${OPENXR_IMPLICIT_LAYERS_KEY}${mine ? '' : ' (a VPX already running loads it only after a restart)'}`);
-      }
-      return 'ok';
-    } catch (e) {
-      opts.log(`vr-layer: could not register the layer (${(e as Error).message}); the panel can show only if it was registered before`);
-      return 'failed';
+    const r = await registerVrLayer(jsonPath, { log: opts.log, exec });
+    if (r.result !== 'ok') return r.result;
+    if (!registeredLogged) {
+      registeredLogged = true;
+      opts.log(`vr-layer: ${r.changed ? 'registered now' : 'registered'} ${jsonPath} under ${OPENXR_IMPLICIT_LAYERS_KEY}${r.changed ? ' (a VPX already running loads it only after a restart)' : ''}`);
     }
+    opts.onRegistered?.(r.changed);
+    return 'ok';
   };
 
   /** No answer yet: after 20 s while VPX runs, the layer is not in that VPX (or not registered). */
@@ -305,7 +340,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       if (socket || retryTimer || unsubscribe) await stop();
       if (!opts.jsonPath) {
         set('unavailable', 'layer_missing');
-        return current;
+        return visible();
       }
       stopping = false;
       everConnected = false;
@@ -325,7 +360,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
         }) ?? null;
       set('starting');
       const reg = await register(opts.jsonPath);
-      if (stopping) return current; // stop() while registering
+      if (stopping) return visible(); // stop() while registering
       if (reg === 'disabled') {
         unsubscribe();
         unsubscribe = null;
@@ -333,11 +368,11 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
         unsubscribeVideo = null;
         video = null;
         set('unavailable', 'layer_disabled');
-        return current;
+        return visible();
       }
       registerFailed = reg === 'failed';
       tryConnect();
-      return current;
+      return visible();
     },
 
     stop,
@@ -353,7 +388,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       updateVideo();
     },
 
-    status: () => current,
+    status: visible,
 
     onStatus(cb) {
       listeners.add(cb);

@@ -167,8 +167,11 @@ export interface WitnessStatus {
 
 export interface WitnessEvents {
   status: (status: WitnessStatus) => void;
-  /** Every VPX process; `table` is null until the command line or the editor title names one. */
-  launch: (info: { table: string | null; exe: string; pid: number; at: string }) => void;
+  /**
+   * Every VPX process; `table` is null until the command line or the editor title names one. `startedAt` (D7.3.3): the
+   * process's own start, epoch ms, when the lister knows it (`at` is when the watch first saw it).
+   */
+  launch: (info: { table: string | null; exe: string; pid: number; at: string; startedAt: number | null }) => void;
   exit: (info: { table: string | null; at: string; durationSec: number }) => void;
   capture: (capture: LastCapture) => void;
   error: (message: string) => void;

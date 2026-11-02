@@ -30,6 +30,9 @@ it uploads the three files as the artifact `castcade-vr-layer-win-x64` on every 
 packaging (`--from vr-layer/build/Release` copies a local build instead). The release workflow builds it from the tag
 itself for the installer.
 
+Both workflows pass `-DCASTCADE_BUILD_ID=<tag>` on tag pushes, else `-DCASTCADE_BUILD_ID=<short sha>` (D7.3.3); a local
+build says `dev`. The id is on the layer's `loaded in` log line, so the log names the exact dll VPX loaded.
+
 ## How the loader finds it
 
 The manifest `XrApiLayer_castcade_panel.json` names the dll by a relative path (`./XrApiLayer_castcade_panel.dll`,
@@ -38,9 +41,15 @@ beside the json). The OpenXR loader reads implicit layer manifests from the regi
 `HKEY_CURRENT_USER\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit`, one `REG_DWORD` value per layer whose **name** is the
 json's absolute path and whose data is `0` (enabled).
 
-The companion registers it for the current user when a match needs the panel on a non-SteamVR runtime (no admin
-rights needed): `HKCU\...\ApiLayers\Implicit`, value `<install dir>\resources\vr-layer\XrApiLayer_castcade_panel.json`
-= `0`. By hand:
+The companion registers it for the current user (no admin rights needed) at start and again when a match needs the
+panel on a non-SteamVR runtime: `HKCU\...\ApiLayers\Implicit`, value
+`%LOCALAPPDATA%\Castcade\vr-layer\<companion version>\XrApiLayer_castcade_panel.json` = `0`. Since D7.3.3 (the release after 0.2.29) the
+installed app copies the layer there from `<install dir>\resources\vr-layer\` at start (only when that folder lacks it
+or its dll's sha256 differs) and registers the copy, never the install folder: VPX maps the dll while it runs, and an
+update that lands then cannot replace a mapped dll (0.2.28 → 0.2.29 kept the old one). Older `<version>` folders are
+removed at start; one a running VPX still holds is left and removed at a later start. A dev run registers the local
+build (`vr-layer/build/Release/`) or `companion/resources/vr-layer/` directly. `companion.log` says what was registered:
+`vr-layer: registered for Castcade <version>: <json> (dll sha256 <first 12 hex>, VERSION <first line>)`. By hand:
 
 ```powershell
 reg add "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\path\to\XrApiLayer_castcade_panel.json" /t REG_DWORD /d 0 /f
@@ -49,7 +58,9 @@ reg add "HKCU\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit" /v "C:\path\to\XrApi
 Things that stop it loading:
 
 - **VPX started before the registration.** The loader reads the list when VPX creates its OpenXR instance (VR start), so
-  the first match after installing needs VPX restarted. The companion says so (`restart_vpx`).
+  the first match after installing (and the first after an update) needs VPX restarted. The companion says so: `restart_vpx`
+  when nothing answers on the pipe, and `VPX started before this layer was registered: restart VPX for the latest
+  theater` (Match tab and `companion.log`) when the VPX running started before the registration changed.
 - **VPX run as administrator.** The loader ignores `HKEY_CURRENT_USER` (and environment variables) in an elevated
   process. Run VPX unelevated, or register the json under `HKEY_LOCAL_MACHINE` by hand.
 - `XR_API_LAYER_PATH` set in VPX's environment: the loader then reads layers from that path only.
@@ -67,7 +78,7 @@ Things that stop it loading:
 `%LOCALAPPDATA%\Castcade\logs\vr-layer.log` (one `.1` backup at 1 MB). Each line has the local time and VPX's pid:
 
 ```
-… [12345] XR_APILAYER_CASTCADE_panel 0.2.0 (OpenXR headers release-1.1.65) loaded in VPinballX_GL64.exe
+… [12345] XR_APILAYER_CASTCADE_panel 0.3.0 build v0.2.30 (OpenXR headers release-1.1.65) loaded in VPinballX_GL64.exe
 … [12345] pipe: serving \\.\pipe\castcade-panel
 … [12345] session created on 'Virtual Desktop' (max 16 layers): graphics binding OpenGL (Win32); the panel and theater are drawn in this session
 … [12345] pipe: the companion connected (protocol 2)
@@ -80,6 +91,9 @@ Things that stop it loading:
 … [12345] theater: the screen is placed 2.6 m ahead, yaw -12 degrees in LOCAL space
 … [12345] theater: stereo window, scale 1.00 (life size), 2.60 m ahead, video eye 426x720, eyes from xrLocateViews, IPD 63.0 mm; left eye: fov left -52.0 right +44.0 down -52.0 up +44.0 deg (VPX's frame), eye at x -0.0315 y +0.0000 z +0.0000 m, render 2064x2208, crop 1306x2208 at 379,0, quad 3.70 x 5.84 m centred -0.41, -0.41 m off the eye's axis; right eye: …
 ```
+
+`build` (D7.3.3) is the release tag (or the commit's short sha for a branch build, `dev` for a local one): a VPX that
+kept an older dll shows an older build here. A line without `build` (version 0.2.0) is a layer from 0.2.29 or older.
 
 The `stereo window` line (D7.4.5) comes with the first side-by-side frame of each theater and again whenever its
 inputs change (the video's size, VPX's fov, the scale; at most 20 per session). Per eye: the fov the window uses and

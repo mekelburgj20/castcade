@@ -418,6 +418,8 @@ interface MediaStatus {
 interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
   reason: string | null;
+  /** D7.3.3: the OpenXR layer only; the VPX running started before the layer was registered (restart VPX). */
+  vpxBeforeLayer?: true;
 }
 
 /** A6 (mirrors main/match-setup.ts MatchSettings). */

@@ -451,8 +451,11 @@ function rigLine(st: MatchStatus): string {
   if (rt === 'steamvr') return `Rig: VR headset via SteamVR (overlay: ${o ? state : 'no helper in this build'}).`;
   // D7.3 (2026-10-31): off SteamVR the Castcade OpenXR layer draws the panel inside VPX. The loader reads the layer list
   // when VPX starts VR, so a VPX started before Castcade first registered the layer has to be restarted once.
-  const restart =
-    o?.reason === 'restart_vpx'
+  // D7.3.3 (2026-11-02): the VPX running started before this layer was registered (an update while VPX ran): it runs
+  // an older layer, or none, until it restarts.
+  const restart = o?.vpxBeforeLayer
+    ? ' VPX started before this layer was registered: restart VPX for the latest theater.'
+    : o?.reason === 'restart_vpx'
       ? ' VPX was started before Castcade registered its layer: close VPX and start the table again, and the panel appears in the headset.'
       : '';
   return `Rig: VR headset via ${RUNTIME_LABEL[rt]}. In-headset panel: via the Castcade OpenXR layer (${state}).${restart}`;
