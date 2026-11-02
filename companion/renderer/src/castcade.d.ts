@@ -227,6 +227,15 @@ interface WitnessStatus {
   currentIdentity: TableIdentity | null;
   currentAttestation: Attestation | null;
   vpsVersion: string | null;
+  /** B24: which VPS index is loaded (the daily refresh or the installer's), its size, and when it was built / checked. */
+  vpsIndex: {
+    source: 'bundled' | 'refreshed' | 'none';
+    version: string | null;
+    games: number;
+    tables: number;
+    builtAt: string | null;
+    checkedAt: string | null;
+  } | null;
   lastCapture: LastCapture | null;
   queued: number;
   lastHeartbeatAt: string | null;

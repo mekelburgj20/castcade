@@ -98,7 +98,7 @@ and is skipped, exactly as the tailer does.
 
 ## `vps/` — vendored VPS index subset for the table-identity tests
 
-`fixtures/vps/index.json` is a 13-game cut of the compact index that `companion/scripts/fetch-vps.mjs` builds from
+`fixtures/vps/index.json` is a 13-game cut of the compact index that `companion/scripts/fetch-vps.ts` builds from
 the Virtual Pinball Spreadsheet database (`VirtualPinballSpreadsheet/vps-db`, `db/vpsdb.json`, community-maintained
 metadata about games and table files; pinned commit in `VERSION`). The companion fetches the full index at build time
 (`npm run fetch-vps -w companion`, ~1.4 MB, gitignored under `companion/resources/vps`); only this subset is committed,
@@ -108,4 +108,4 @@ file id/authors/version/features/format/comment/updatedAt (no download URLs, ima
 the owner's three acceptance games (Monster Bash, Medieval Madness, Tales from the Crypt), the five games that share the
 `rollstob` ROM, two same-name pairs (Deadpool 2014/2018, Black Belt Zaccaria/Bally 1986), and one game without ROMs
 (Sittin' Pretty). Regenerate with
-`node companion/scripts/fetch-vps.mjs --from <vpsdb.json> --out fixtures/vps --subset <the ids in the file>`.
+`npm run fetch-vps -w companion -- --from <vpsdb.json> --out fixtures/vps --subset <the ids in the file>`.

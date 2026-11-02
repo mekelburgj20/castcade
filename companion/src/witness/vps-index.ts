@@ -1,13 +1,18 @@
 /**
- * Loader for the compact VPS index (`resources/vps/index.json`, built by `scripts/fetch-vps.mjs`
+ * Loader for the compact VPS index (`resources/vps/index.json`, built by `scripts/fetch-vps.ts`
  * from the Virtual Pinball Spreadsheet database) and the lookups `table-match.ts` needs: a game by
  * id, the games that list a PinMAME ROM, the games with a given name. Everything is read once,
  * lazily, through `WitnessFs` so tests run on the vendored subset in `fixtures/vps` or a `MemoryFs`;
  * a missing or unreadable index makes every lookup empty rather than failing, because identity
  * never blocks a post.
+ *
+ * B24: a second, optional directory holds the copy `vps-refresh.ts` rebuilds daily from vps-db
+ * `main`. It is preferred whenever it exists and parses to at least one game; the bundled index is
+ * the fallback. `reload()` drops the cached load so the next lookup (the picker, a capture) reads
+ * the new file without a restart.
  */
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
-import type { VpsGameEntry, VpsIndex, VpsIndexFile, VpsTableEntry } from './identity-types.js';
+import type { VpsGameEntry, VpsIndex, VpsIndexFile, VpsIndexInfo, VpsTableEntry } from './identity-types.js';
 import { isObject, type Json } from './maps.js';
 
 /**
@@ -70,6 +75,7 @@ export function tableLabel(table: VpsTableEntry): string {
 
 interface LoadedIndex {
   version: string | null;
+  info: VpsIndexInfo;
   byId: Map<string, VpsGameEntry>;
   byRom: Map<string, VpsGameEntry[]>;
   byFamily: Map<string, VpsGameEntry[]>;
@@ -120,8 +126,15 @@ function push<K>(map: Map<K, VpsGameEntry[]>, key: K, game: VpsGameEntry): void 
 }
 
 /** Build the lookup tables from a parsed `VpsIndexFile` (exported for tests that assemble one in memory). */
-export function indexGames(file: Pick<VpsIndexFile, 'games'> & Partial<VpsIndexFile>): LoadedIndex {
-  const loaded: LoadedIndex = { version: file.version ?? null, byId: new Map(), byRom: new Map(), byFamily: new Map(), byName: new Map() };
+export function indexGames(file: Pick<VpsIndexFile, 'games'> & Partial<VpsIndexFile>, source: VpsIndexInfo['source'] = 'bundled'): LoadedIndex {
+  const info: VpsIndexInfo = {
+    source: file.games.length > 0 ? source : 'none',
+    version: file.version ?? null,
+    games: file.games.length,
+    tables: file.games.reduce((n, g) => n + g.tables.length, 0),
+    builtAt: file.generatedAt ?? null,
+  };
+  const loaded: LoadedIndex = { version: file.version ?? null, info, byId: new Map(), byRom: new Map(), byFamily: new Map(), byName: new Map() };
   for (const game of file.games) {
     loaded.byId.set(game.id, game);
     for (const rom of game.roms) {
@@ -146,30 +159,75 @@ export function sameManufacturer(a: string | null | undefined, b: string | null 
   return x !== '' && y !== '' && (x.includes(y) || y.includes(x));
 }
 
-export function createVpsIndex(dir: string, fs: WitnessFs = nodeFs): VpsIndex {
-  let loading: Promise<LoadedIndex> | null = null;
+/** `createVpsIndex`'s result: a `VpsIndex` that can be told to re-read its files. */
+export interface ReloadableVpsIndex extends VpsIndex {
+  /** Forget the loaded index; the next call reads the files again (after `vps-refresh.ts` wrote a new one). */
+  reload(): void;
+}
+
+export interface VpsIndexDirs {
+  /** The installer's index (`settings.vpsDir`). */
+  bundled: string;
+  /** B24: where the daily refresh writes `index.json`; read first when present. */
+  refreshed?: string | null;
+}
+
+/** `<dir>/index.json` with the directory's own separator style. */
+export function vpsIndexPath(dir: string): string {
   const sep = dir.includes('\\') && !dir.includes('/') ? '\\' : '/';
-  const path = dir.replace(/[\\/]+$/, '') + sep + 'index.json';
+  return dir.replace(/[\\/]+$/, '') + sep + 'index.json';
+}
+
+/**
+ * Read and type-check one index file. Null when it is missing; throws on any other read error; an
+ * unparsable file is an empty index (so a torn refreshed copy falls through to the bundled one).
+ */
+async function readIndexFile(fs: WitnessFs, path: string): Promise<(Pick<VpsIndexFile, 'games'> & Partial<VpsIndexFile>) | null> {
+  let text: string;
+  try {
+    text = new TextDecoder().decode(await fs.readFile(path));
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+  let json: Json;
+  try {
+    json = JSON.parse(text) as Json;
+  } catch {
+    return { games: [] };
+  }
+  if (!isObject(json)) return { games: [] };
+  const games = (Array.isArray(json['games']) ? json['games'] : []).map(parseGame).filter((g): g is VpsGameEntry => g !== null);
+  return { version: str(json['version']) ?? undefined, generatedAt: str(json['generatedAt']) ?? undefined, games };
+}
+
+export function createVpsIndex(dirs: string | VpsIndexDirs, fs: WitnessFs = nodeFs): ReloadableVpsIndex {
+  const { bundled, refreshed = null } = typeof dirs === 'string' ? { bundled: dirs } : dirs;
+  let loading: Promise<LoadedIndex> | null = null;
 
   const load = (): Promise<LoadedIndex> => {
     loading ??= (async () => {
-      let json: Json;
-      try {
-        json = JSON.parse(new TextDecoder().decode(await fs.readFile(path))) as Json;
-      } catch (err) {
-        if (isNotFound(err)) return indexGames({ games: [] });
-        throw err;
+      if (refreshed) {
+        // A refreshed copy that fails to read for any reason other than absence counts as absent: the
+        // bundled index always has the last word, and the next refresh rewrites the copy.
+        const file = await readIndexFile(fs, vpsIndexPath(refreshed)).catch(() => null);
+        if (file && file.games.length > 0) return indexGames(file, 'refreshed');
       }
-      if (!isObject(json)) return indexGames({ games: [] });
-      const games = (Array.isArray(json['games']) ? json['games'] : []).map(parseGame).filter((g): g is VpsGameEntry => g !== null);
-      return indexGames({ version: str(json['version']) ?? undefined, games });
+      const file = await readIndexFile(fs, vpsIndexPath(bundled));
+      return file ? indexGames(file, 'bundled') : indexGames({ games: [] });
     })();
     return loading;
   };
 
   return {
+    reload() {
+      loading = null;
+    },
     async version() {
       return (await load()).version;
+    },
+    async info() {
+      return (await load()).info;
     },
     async game(id) {
       return (await load()).byId.get(id) ?? null;

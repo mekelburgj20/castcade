@@ -80,6 +80,7 @@ import { PostQueue, type PostResult, type QueuedPost } from './queue.js';
 import { findTableFile, tableBaseName, tableRootsFor } from './table-locator.js';
 import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
+import { createVpsRefresh, shortVersion, vpsRefreshDir, type VpsRefresh } from './vps-refresh.js';
 import { createRomMapStore, fetchRomMap, withServedRoms, type CachedRomMap, type RomMap } from './rom-map.js';
 import type { AttemptStatus, CaptureOutcome, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
@@ -120,6 +121,13 @@ export interface WitnessDeps {
    * do not exercise B8 keep their exact call lists.
    */
   romMapRefreshMs?: number | null;
+  /**
+   * B24: how often the VPS index is rebuilt from vps-db `main` into `<dataDir>/vps` (a first check `vpsRefreshDelayMs`
+   * after start when the cached copy is missing or a day old, then this often). Omitted or null = never, and the bundled
+   * index alone serves: the shell passes `DEFAULT_VPS_REFRESH_MS`, so tests keep their exact fetch lists.
+   */
+  vpsRefreshMs?: number | null;
+  vpsRefreshDelayMs?: number;
   requestTimeoutMs?: number;
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
@@ -437,6 +445,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     currentIdentity: null,
     currentAttestation: null,
     vpsVersion: null,
+    vpsIndex: null,
     lastCapture: null,
     queued: 0,
     lastHeartbeatAt: null,
@@ -456,8 +465,38 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const postedGames = createPostedGames(fs, store.get().dataDir, () => clock.now());
   /** B8: the served ROM map in use (fetched, or the cached copy); null = the seed alone. */
   let servedRoms: RomMap | null = null;
-  const vpsIndex = withServedRoms(deps.vpsIndex ?? createVpsIndex(store.get().vpsDir, fs), () => servedRoms);
+  /** B24: the refreshed copy under userData is read first; the bundled index is the fallback. */
+  const vpsCacheDir = vpsRefreshDir(store.get().dataDir);
+  const seedIndex: VpsIndex & { reload?: () => void } = deps.vpsIndex ?? createVpsIndex({ bundled: store.get().vpsDir, refreshed: vpsCacheDir }, fs);
+  const vpsIndex = withServedRoms(seedIndex, () => servedRoms);
   const resolver = createIdentityResolver({ fs, index: vpsIndex, store: identityStore, now: () => clock.now(), log });
+  let vpsRefresh: VpsRefresh | null = null;
+  const updateVpsStatus = async (): Promise<void> => {
+    const info = await vpsIndex.info().catch(() => null);
+    status.vpsVersion = info?.version ?? null;
+    status.vpsIndex = info ? { ...info, checkedAt: vpsRefresh?.state()?.checkedAt ?? null } : null;
+  };
+  const logVpsIndex = (): void => {
+    const v = status.vpsIndex;
+    if (v) log(`witness: VPS index ${v.source} ${shortVersion(v.version)} (${v.games} games, ${v.tables} table files, built ${v.builtAt ?? 'unknown'})`);
+  };
+  if (deps.vpsRefreshMs != null) {
+    vpsRefresh = createVpsRefresh({
+      dir: vpsCacheDir,
+      fs,
+      fetch: deps.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+      clock,
+      log,
+      intervalMs: deps.vpsRefreshMs,
+      startDelayMs: deps.vpsRefreshDelayMs,
+      onRefreshed: async () => {
+        seedIndex.reload?.();
+        await updateVpsStatus();
+        logVpsIndex();
+        emitStatus();
+      },
+    });
+  }
   const hashWaitMs = deps.hashWaitMs ?? DEFAULT_HASH_WAIT_MS;
   const builds = createBuildAttester({ fs, registry, log });
   const env = deps.env ?? process.env;
@@ -1730,7 +1769,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       if (status.running) return;
       status.running = true;
       status.mapsVersion = await corpus.version().catch(() => null);
-      status.vpsVersion = await vpsIndex.version().catch(() => null);
+      await vpsRefresh?.start().catch((err: unknown) => log(`witness: VPS index refresh not started: ${errText(err)}`));
+      await updateVpsStatus();
+      logVpsIndex();
       status.nvramDir = await resolveDir(null);
       await queue.load();
       await identityStore.load().catch((err: unknown) => fail(`identity store: ${err instanceof Error ? err.message : String(err)}`));
@@ -1748,6 +1789,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       watch.stop();
       stopHeartbeat();
       stopRomMap();
+      vpsRefresh?.stop();
       stopNvPoll();
       queue.stop();
       await chain;

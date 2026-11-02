@@ -11,6 +11,18 @@ const OUTCOME_LABEL: Record<CaptureOutcome, string> = {
   skipped: 'skipped',
 };
 
+/**
+ * B24: `2,643 games · bundled 2026-10-19` (the installer's index, by the date its pin was fetched) or
+ * `2,702 games · refreshed 2026-11-02 04:10` (rebuilt from vps-db today), plus when upstream was last confirmed unchanged.
+ */
+function describeVpsIndex(v: WitnessStatus['vpsIndex']): string {
+  if (!v || v.source === 'none') return 'not bundled';
+  const games = `${v.games.toLocaleString()} games`;
+  if (v.source === 'bundled') return `${games} · bundled ${v.builtAt?.slice(0, 10) ?? 'unknown date'}`;
+  const checked = v.checkedAt && v.checkedAt !== v.builtAt ? ` · checked ${formatTime(v.checkedAt)}` : '';
+  return `${games} · refreshed ${formatTime(v.builtAt)}${checked}`;
+}
+
 export function Status({ state }: { state: CastcadeState }) {
   const { bridge, status } = state;
   const [busy, setBusy] = useState(false);
@@ -102,6 +114,8 @@ export function Status({ state }: { state: CastcadeState }) {
         <dd title={status.nvramDir ?? ''}>{status.nvramDir ?? 'not found'}</dd>
         <dt>Maps version</dt>
         <dd>{status.mapsVersion ?? 'unknown'}</dd>
+        <dt>VPS index</dt>
+        <dd title={status.vpsIndex?.version ? `${status.vpsIndex.tables.toLocaleString()} table files · ${status.vpsIndex.version}` : ''}>{describeVpsIndex(status.vpsIndex)}</dd>
         <dt>Current table</dt>
         <dd>{status.currentTable ?? '—'}</dd>
         {status.captureMode && (

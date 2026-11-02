@@ -1756,6 +1756,58 @@ describe('the served ROM map (B8)', () => {
   });
 });
 
+describe('the VPS index refresh (B24)', () => {
+  const DAY = 24 * 60 * 60_000;
+  const BUNDLED = { version: 'cce9160b30110ee174786239fdfb30a6e4caaab7', generatedAt: '2026-10-19T06:20:39.599Z', games: [{ id: 'SrcagQN8', name: 'Freddy: A Nightmare on Elm Street', manufacturer: 'Gottlieb', year: 1994, roms: ['freddy_4'], tables: [{ id: 'old1' }] }] };
+  /** vps-db `main` of the next day: Freddy has the table the owner plays (`ZqH53HLaa4`, added 2026-10-31). */
+  const UPSTREAM = [{ id: 'SrcagQN8', name: 'Freddy: A Nightmare on Elm Street', manufacturer: 'Gottlieb', year: 1994, romFiles: [{ version: 'freddy_4' }], tableFiles: [{ id: 'old1' }, { id: 'ZqH53HLaa4', authors: ['RobbyKingPin', 'Retro27'], version: '1.0', tableFormat: 'VPX' }] }];
+
+  it('reads the bundled index at start, fetches vps-db after the start delay, and serves the new table without a restart', async () => {
+    const logs: string[] = [];
+    // No `vpsIndex` dep: the witness builds its own loader over the bundled dir and `<dataDir>/vps`, both on the harness fs.
+    const h = harness({ vpsDir: '/bundled', token: null }, { vpsIndex: undefined, vpsRefreshMs: DAY, vpsRefreshDelayMs: 30_000, log: (l) => logs.push(l) });
+    h.fs.put('/bundled/index.json', JSON.stringify(BUNDLED));
+    let answer: { status: number; body?: unknown } = { status: 200, body: UPSTREAM };
+    h.setRespond((path) => (path.endsWith('/vpsdb.json') ? answer : { status: 200, body: { ok: true } }));
+    const vpsLines = () => logs.filter((l) => l.startsWith('witness: VPS index'));
+    await h.witness.start();
+    await h.flush();
+    expect(h.paths('/vpsdb.json')).toHaveLength(0);
+    expect(vpsLines()).toEqual(['witness: VPS index bundled cce9160 (1 games, 1 table files, built 2026-10-19T06:20:39.599Z)']);
+    expect(h.witness.status().vpsIndex).toEqual({ source: 'bundled', version: BUNDLED.version, games: 1, tables: 1, builtAt: BUNDLED.generatedAt, checkedAt: null });
+    expect(h.witness.status().vpsVersion).toBe(BUNDLED.version);
+
+    await h.playFor(30_000);
+    expect(h.paths('/vpsdb.json')).toHaveLength(1);
+    const builtAt = new Date(h.clock.now()).toISOString();
+    expect(vpsLines().at(-1)).toBe(`witness: VPS index refreshed fetched-${builtAt} (1 games, 2 table files, built ${builtAt})`);
+    expect(h.witness.status().vpsIndex).toEqual({ source: 'refreshed', version: `fetched-${builtAt}`, games: 1, tables: 2, builtAt, checkedAt: builtAt });
+    expect(h.statuses.at(-1)?.vpsIndex?.source).toBe('refreshed');
+    expect(h.fs.has('/data/vps/index.json')).toBe(true);
+    expect(h.fs.has('/data/vps/state.json')).toBe(true);
+
+    // The daily check: a failure keeps the refreshed index; the witness stops the timer with everything else.
+    answer = { status: 500 };
+    await h.playFor(DAY);
+    expect(h.paths('/vpsdb.json')).toHaveLength(2);
+    expect(vpsLines().at(-1)).toBe('witness: VPS index refresh skipped (HTTP 500); the loaded index stays in use');
+    expect(h.witness.status().vpsIndex?.source).toBe('refreshed');
+    await h.witness.stop();
+    await h.playFor(DAY);
+    expect(h.paths('/vpsdb.json')).toHaveLength(2);
+  });
+
+  it('is off unless the shell asks for it (tests keep their fetch lists)', async () => {
+    const logs: string[] = [];
+    const h = harness({ token: null }, { log: (l) => logs.push(l) });
+    await h.witness.start();
+    await h.playFor(DAY);
+    expect(h.paths('/vpsdb.json')).toHaveLength(0);
+    expect(logs.filter((l) => l.startsWith('witness: VPS index'))).toEqual([`witness: VPS index bundled cce9160 (13 games, 66 table files, built 2026-10-19T06:20:39.599Z)`]);
+    expect(h.witness.status().vpsIndex).toEqual({ source: 'bundled', version: 'cce9160b30110ee174786239fdfb30a6e4caaab7', games: 13, tables: 66, builtAt: '2026-10-19T06:20:39.599Z', checkedAt: null });
+  });
+});
+
 describe('C11: every close-time read names its rung (capture detail, Status, log)', () => {
   const ROM_VPX = (script: string) => buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(script)), record('ENDB', new Uint8Array(0))) });
 

@@ -20,7 +20,7 @@
     "smoke": "electron . --smoke",
     "typecheck:renderer": "tsc -p renderer --noEmit",
     "fetch-maps": "node scripts/fetch-maps.mjs",
-    "fetch-vps": "node scripts/fetch-vps.mjs",
+    "fetch-vps": "tsx scripts/fetch-vps.ts",
     "playfield-tags": "tsx scripts/playfield-tags.ts",
     "witness-games": "tsx scripts/witness-games.ts",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",

@@ -58,6 +58,19 @@ VPS ids are opaque keys assigned by the spreadsheet, not hashes: the game id (`M
 sheet) is shared by every table of the game, the table id (`VPS-ID` / `WebGameID`) is per table file.
 ArcAid's catalogue already holds the game id on every VPS-imported row (`global_games.vps_id`).
 
+The companion resolves against a compact **VPS index** (ids, names, ROM ids, and per table file the
+authors, version, features, format and comment; nothing else from the sheet). The installer ships one
+built at a pinned vps-db commit (`companion/scripts/fetch-vps.ts`), which can never know a table
+released after the pin: on 2026-11-01 Freddy's table of the day before (`ZqH53HLaa4`) was missing from
+the picker. So since 0.2.30 (B24) the companion **refreshes the index itself**: thirty seconds after
+start when its copy is missing or a day old, then once a day, it fetches `db/vpsdb.json` of vps-db
+`main` with `If-None-Match` (a 304 costs nothing), rebuilds the index with the same code the script
+uses (`companion/src/witness/vps-build.ts`) into `<userData>/witness/vps/`, and reloads it without a
+restart; the bundled index is the fallback whenever that copy is missing or unreadable, and any fetch
+failure is one log line. No setting (ADR 0007). Status shows which index is loaded and when it was
+built; the log line is `witness: VPS index <bundled|refreshed> <version> (<n> games, <m> table files,
+built <date>)`.
+
 Sent with every score (new wire params, all optional so today's server ignores them):
 `vps_game`, `vps_table`, `table_sha256` (whole file, informational), `table_save_rev`,
 `fingerprint` (§3), `script_sha256`, `script_diff` (§4, as a short classified summary), `rom`
