@@ -73,8 +73,13 @@ Run these a day or more before the match. If one fails, stop and send what is li
      their table video, and the scores. You can talk the whole time (open mic; the panel shows the mute state; how
      to toggle it is to confirm on the build).
    - **Theater (D7.4, Virtual Desktop / Oculus rigs, the Castcade OpenXR layer):** when the other player's ball
-     starts, your view dips to black for a moment and their table appears on a big screen in front of you, where
-     yours was, in the dark. On your ball it dips again and your own table is back with nothing over it. In the lobby
+     starts, your view dips to black for a moment and their table appears in front of you, where yours was, in the
+     dark. When their VPX preview shows both eyes it is in stereo and life size (D7.4.5): a window onto their view,
+     each eye getting what their eye saw, so it should look like standing at their table, not like a screen; it fills
+     about your view and stays put in the room when you turn your head. If it does not fuse at your normal focus, or
+     looks the wrong size, note it with the `theater: stereo window` line of `vr-layer.log` (in
+     `%LOCALAPPDATA%\Castcade\logs`). A one-eye preview shows on a big flat screen instead. On your ball it dips again
+     and your own table is back with nothing over it. In the lobby
      and at the end the panel sits low in your view, under the playfield. The Match tab has a setting for each
      ("In the headset on your ball", "on their ball") if you would rather have the panel. If theater does not
      appear, the VPX running was started before this Castcade: restart VPX once.

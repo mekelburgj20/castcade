@@ -6,7 +6,8 @@
 //     "CVO1", u32 width, u32 height, u32 byteLength = width * height * 4, then BGRA top-down: a panel frame (the panel
 //       page's paint; the SteamVR helper's stdin format, so a protocol-1 companion still works);
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
-//     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}: the control;
+//     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"} and optionally the
+//       number "theaterScale" (D7.4.5; no companion sends it yet, and it is optional, so the protocol stays 2): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -33,11 +34,17 @@ enum class Stream { Panel = 0, Video = 1 };
 // What the companion asks for (CVC1). The defaults hold until the first control and again after a disconnect, so a
 // protocol-1 companion gets the panel as before (placed low since D7.4).
 enum class ViewMode { Hidden, Panel, Theater };
+constexpr float kTheaterScale = 1.0f;  // D7.4.5: life size (layer.cpp, "the stereo window")
 struct Control {
   ViewMode mode = ViewMode::Panel;
   bool sbs = false;          // the video frame is left eye | right eye side by side
   bool panelCentre = false;  // panelPos "center": the D7.3 placement; else "low"
+  // D7.4.5: the side-by-side theater picture's size against life size (1 = every pixel in the direction the sender's
+  // eye rendered it). Optional in CVC1, clamped to [kTheaterScaleMin, kTheaterScaleMax]; the companion does not send it yet.
+  float theaterScale = kTheaterScale;
 };
+constexpr float kTheaterScaleMin = 0.25f;
+constexpr float kTheaterScaleMax = 4.0f;
 
 // Starts the server thread once per process (later calls do nothing) and pins this dll in memory, so the thread can
 // never outlive the code it runs when the loader unloads the layer at xrDestroyInstance.

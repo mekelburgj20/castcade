@@ -151,7 +151,11 @@ export interface VideoFrameSource {
   setWanted(on: boolean): void;
 }
 
-/** D7.4 (2026-10-31): what the OpenXR layer shows (vr-layer/README.md "The pipe"). */
+/**
+ * D7.4 (2026-10-31): what the OpenXR layer shows (vr-layer/README.md "The pipe"). D7.4.5: the layer's CVC1 control also
+ * reads an optional number `theaterScale` (the stereo window's size against life size, 0.25–4, default 1); the
+ * companion does not send it yet.
+ */
 export type VrViewMode = 'hidden' | 'panel' | 'theater';
 export type VrStereo = 'mono' | 'sbs';
 

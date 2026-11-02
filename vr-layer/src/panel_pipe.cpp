@@ -84,6 +84,33 @@ std::string jsonString(const std::string& body, const char* key) {
   return end == std::string::npos ? "" : body.substr(i + 1, end - i - 1);
 }
 
+// The number value of "key" in a flat JSON object: true with `out` set, or false (no key, not a plain decimal).
+// Parsed by hand, not with strtod: strtod follows the process's locale, and in a locale with a decimal comma VPX's
+// process would read "1.5" as 1.
+bool jsonNumber(const std::string& body, const char* key, double& out) {
+  const std::string k = std::string("\"") + key + "\"";
+  size_t i = body.find(k);
+  if (i == std::string::npos) return false;
+  i += k.size();
+  while (i < body.size() && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n')) i++;
+  if (i >= body.size() || body[i] != ':') return false;
+  i++;
+  while (i < body.size() && (body[i] == ' ' || body[i] == '\t' || body[i] == '\r' || body[i] == '\n')) i++;
+  bool negative = false;
+  if (i < body.size() && body[i] == '-') negative = true, i++;
+  double v = 0.0;
+  bool digits = false;
+  for (; i < body.size() && body[i] >= '0' && body[i] <= '9'; i++) v = v * 10.0 + (body[i] - '0'), digits = true;
+  if (i < body.size() && body[i] == '.') {
+    double place = 0.1;
+    for (i++; i < body.size() && body[i] >= '0' && body[i] <= '9'; i++) v += (body[i] - '0') * place, place *= 0.1, digits = true;
+  }
+  if (!digits) return false;
+  if (i < body.size() && (body[i] == 'e' || body[i] == 'E')) return false;  // no exponent in a scale: the field stays as it was
+  out = negative ? -v : v;
+  return true;
+}
+
 void applyControl(const std::string& body) {
   State& st = state();
   Control c;
@@ -99,15 +126,21 @@ void applyControl(const std::string& body) {
   else if (stereo == "mono") c.sbs = false;
   if (pos == "center") c.panelCentre = true;
   else if (pos == "low") c.panelCentre = false;
+  double scale = 0.0;
+  if (jsonNumber(body, "theaterScale", scale)) {
+    c.theaterScale = static_cast<float>(scale < kTheaterScaleMin ? kTheaterScaleMin : scale > kTheaterScaleMax ? kTheaterScaleMax : scale);
+  }
   bool changed = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
-    changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre;
+    changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre ||
+              st.control.theaterScale != c.theaterScale;
     st.control = c;
   }
   if (changed) {
     const char* m = c.mode == ViewMode::Hidden ? "hidden" : c.mode == ViewMode::Panel ? "panel" : "theater";
-    logLine(std::string("pipe: mode ") + m + (c.sbs ? ", stereo sbs" : ", stereo mono") + (c.panelCentre ? ", panel centre" : ", panel low"));
+    logLine(std::string("pipe: mode ") + m + (c.sbs ? ", stereo sbs" : ", stereo mono") + (c.panelCentre ? ", panel centre" : ", panel low") +
+            (c.theaterScale != 1.0f ? ", theater scale " + std::to_string(c.theaterScale) : std::string()));
   }
 }
 

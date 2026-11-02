@@ -3,8 +3,9 @@
 The match in the headset for OpenXR rigs (WORK items D7.3, D7.4; spec: `docs/design/alpha-match.md` §5). An implicit
 OpenXR API layer: the OpenXR loader puts it between VPinballX and the OpenXR runtime, and it changes the frames VPX
 submits by the mode the companion asks for: **hidden** (VPX's frame untouched: the player's own turn), **panel** (the
-match panel as a head-locked quad, low in the view) or **theater** (VPX's own world removed; the opponent's video on a
-large screen fixed in the room, in stereo when the sender's VR preview shows both eyes). The companion side is
+match panel as a head-locked quad, low in the view) or **theater** (VPX's own world removed; the opponent's video fixed
+in the room: a life-size stereo window onto the sender's view when the sender's VR preview shows both eyes, else a large
+screen). The companion side is
 `companion/src/media/vr-layer.ts`; it registers the layer and feeds it over a named pipe.
 
 Why a layer and not the SteamVR helper (`vr-overlay/`): on the owner's rig and Krobs', VPX
@@ -77,7 +78,16 @@ Things that stop it loading:
 … [12345] pipe: mode theater, stereo sbs, panel low
 … [12345] mode: panel -> theater (through black)
 … [12345] theater: the screen is placed 2.6 m ahead, yaw -12 degrees in LOCAL space
+… [12345] theater: stereo window, scale 1.00 (life size), 2.60 m ahead, video eye 426x720, eyes from xrLocateViews, IPD 63.0 mm; left eye: fov left -52.0 right +44.0 down -52.0 up +44.0 deg (VPX's frame), eye at x -0.0315 y +0.0000 z +0.0000 m, render 2064x2208, crop 1306x2208 at 379,0, quad 3.70 x 5.84 m centred -0.41, -0.41 m off the eye's axis; right eye: …
 ```
+
+The `stereo window` line (D7.4.5) comes with the first side-by-side frame of each theater and again whenever its
+inputs change (the video's size, VPX's fov, the scale; at most 20 per session). Per eye: the fov the window uses and
+where it came from (`VPX's frame` = the fov VPX rendered with, preferred; `xrLocateViews`; `assumed` = ±45°, logged
+once), the eye's place in the head, VPX's eye render and the part of it the sender's preview shows (`crop`, in render
+pixels), and the quad that shows it. The quads should be several metres wide and pushed outward (left eye negative x,
+right eye positive): the picture fills about the view, as the sender saw it. A `fov in VPX's frame … differs from
+xrLocateViews'` line is informational.
 
 No file, or no `loaded in` line after a VR start: the loader did not load the layer (see above). OpenComposite may first
 create a short-lived session on its own D3D11 or Vulkan device before VPX's first OpenGL frame; a Vulkan one is logged as
@@ -93,7 +103,7 @@ loader itself print what it found.
 | layer → companion, once on connect | `CVH1` | u32 protocol (2) | hello; a protocol-1 layer (0.2.26) sends none |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}` |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1; no companion sends it yet) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Video frames are RGBA because the companion reads them with canvas `getImageData`: no byte swap in JavaScript, and on
@@ -126,14 +136,25 @@ back to that default when the companion disconnects.
     (below the playfield's line of sight: the D7.3 placement covered it); `panelPos: center` is the D7.3 placement,
     0.55 m at `0, -0.28, -0.9`. Blended by the source alpha as premultiplied.
   - *theater*: the app's `XrCompositionLayerProjection` layers removed (OpenComposite submits VPX's two eyes as one;
-    any other layer type the app submits stays), then a head-locked opaque black quad (30 m at 3 m) and the screen: a
-    quad 2.6 m ahead whose longer side is 2.4 m (D7.4.3, 2026-11-01: 2.4 m wide for a landscape eye, 2.4 m tall for a
-    portrait one, the other side from the eye's aspect; VPX's "both eyes" preview in a window about as wide as it is
-    tall gives two portrait eyes), in `LOCAL` space, so it stays put when the head turns. It is placed when theater
-    begins: in front of where the head points then (its yaw only, upright, at eye height; `xrLocateSpace` of `VIEW` in
-    `LOCAL` at the frame's display time). `stereo: sbs` splits the video frame into left | right halves: one swapchain,
-    two quads at the same pose with `imageRect` halves and `eyeVisibility` LEFT / RIGHT. Mono: one quad for both eyes.
-    No live video frame while the panel is live: the panel frame goes on the screen instead of black.
+    any other layer type the app submits stays), then a head-locked opaque black quad (30 m at 3 m) and the picture,
+    in `LOCAL` space, so it stays put when the head turns. It is placed when theater begins: in front of where the head
+    points then (its yaw only, upright, at eye height; `xrLocateSpace` of `VIEW` in `LOCAL` at the frame's display
+    time).
+    - `stereo: sbs`, the **stereo window** (D7.4.5, 2026-11-02): the video frame's left | right halves are the
+      sender's two eyes, and each goes to its eye (one swapchain, `imageRect` halves, `eyeVisibility` LEFT / RIGHT) on
+      its own quad, placed so that every pixel is seen in the direction the sender's eye rendered it. VPX's "both eyes"
+      preview fills each half with a centre crop of that eye's whole render (cut to the half's aspect), and an eye
+      render covers an asymmetric frustum, so the layer takes each eye's fov and render size from VPX's projection
+      layer (every frame), each eye's place in the head from `xrLocateViews` (at the recentre), works out VPX's crop
+      in tangent space and puts each quad 2.6 m ahead of its eye, offset and sized by that crop's tangents. The
+      picture is life size: the sender's playfield fuses where it stood for the sender, where the player's own was. It
+      assumes the sender's headset has the receiver's fov (the same model on both ends makes it exact). A `theaterScale`
+      in the control scales its angles (0.25–4, default 1; not sent by the companion yet). The derivation is in
+      `src/layer.cpp` above `placeWindows`. Until D7.4.4 both halves sat at one pose as a 2.4 m screen: it did not fuse
+      (the far edges doubled; "you see them as separate views").
+    - Mono (a mono sender, or no live video frame while the panel is live: the panel frame instead of black): one quad
+      for both eyes, 2.6 m ahead, whose longer side is 2.4 m (D7.4.3, 2026-11-01: 2.4 m wide for a landscape picture,
+      2.4 m tall for a portrait one, the other side from its aspect).
 - **Fade**: into or out of theater the view dips to black: a head-locked shade quad over everything, its alpha 0 → 1
   in 150 ms, the mode switched at the dark middle, 1 → 0 in 150 ms (the alpha uploaded in 1/64 steps). Hidden ↔ panel
   keep VPX's world and switch at once. `XR_KHR_composition_layer_color_scale_bias` would fade layers directly, but only

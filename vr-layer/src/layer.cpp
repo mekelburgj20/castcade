@@ -15,9 +15,12 @@
 //   - everything of ours (spaces, swapchains, the theater screen's place, the fade) belongs to ONE session: the owner's
 //     log (0.2.26) shows OpenComposite creating a D3D11 session 2 s before the real OpenGL one, so nothing is per process;
 //   - modes (D7.4): hidden = VPX's frame untouched (the player's own turn); panel = VPX's frame plus the panel quad,
-//     low in the view; theater = VPX's projection layers removed, the opponent's video on a large screen fixed in the
-//     room, black around it. Into or out of theater the view dips to black over 300 ms; with no frame from the
-//     companion for 5 s the mode falls back to hidden;
+//     low in the view; theater = VPX's projection layers removed, the opponent's video fixed in the room, black around
+//     it. A side-by-side (stereo) video is a WINDOW onto the sender's view since D7.4.5 (2026-11-02): one quad per eye,
+//     each pixel where the sender's eye saw it, so the opponent's playfield appears life size where the player's own
+//     was ("the stereo window", above placeWindows); a mono video (or the panel frame) is one 2.4 m screen 2.6 m
+//     ahead. Into or out of theater the view dips to black over 300 ms; with no frame from the companion for 5 s the
+//     mode falls back to hidden;
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
@@ -36,6 +39,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <cwctype>
 #include <iterator>
@@ -67,7 +71,10 @@ constexpr float kPanelCentreOffset[3] = {0.0f, -0.28f, -0.9f};
 // wherever the player faces when theater begins. D7.4.3 (2026-11-01): 2.4 m is the screen's LONGER side. VPX's "both
 // eyes" preview centre-crops each eye to its half of the window, so a window about as wide as it is tall gives two
 // portrait eyes (540x1080 on a 1080p monitor): width-led sizing made that a 4.8 m tall screen; a portrait eye is now
-// height-led, 2.4 m tall and as wide as its aspect says.
+// height-led, 2.4 m tall and as wide as its aspect says. D7.4.5 (2026-11-02): this sizing is the MONO screen's only (a
+// mono sender, or the panel frame in theater). A side-by-side picture at one shared pose did not fuse (the owner: "you
+// see them as separate views"); it is now sized and placed per eye from the fov (placeWindows), life size by default,
+// kScreenDistanceM its distance and Control::theaterScale its scale.
 constexpr float kScreenWidthM = 2.4f;
 constexpr float kScreenHeightM = 2.4f;
 constexpr float kScreenDistanceM = 2.6f;
@@ -152,6 +159,7 @@ struct Next {
   PFN_xrEndFrame endFrame = nullptr;
   PFN_xrCreateReferenceSpace createReferenceSpace = nullptr;
   PFN_xrLocateSpace locateSpace = nullptr;
+  PFN_xrLocateViews locateViews = nullptr;  // D7.4.5; optional: without it the stereo window uses assumed eyes
   PFN_xrEnumerateSwapchainFormats enumerateSwapchainFormats = nullptr;
   PFN_xrCreateSwapchain createSwapchain = nullptr;
   PFN_xrDestroySwapchain destroySwapchain = nullptr;
@@ -210,6 +218,24 @@ struct Session {
   uint64_t lastTick = 0;
   int shadeLevel = -1;
   XrPosef screenPose{};
+  // D7.4.5, the stereo window: what VPX submits (each eye's fov and render size, from its projection layer, recorded
+  // every frame), each eye's pose in head space (xrLocateViews at the recentre), the recentre's head position and yaw,
+  // and the two eye quads placed from them (recomputed when an input changes, logged when the result does).
+  bool appViewsSeen = false;
+  std::array<XrFovf, 2> appFov{};
+  std::array<XrExtent2Di, 2> appRect{};
+  bool eyesLocated = false;
+  std::array<XrPosef, 2> eyePose{};
+  std::array<XrFovf, 2> locatedFov{};
+  XrVector3f theaterHead{0.0f, 0.0f, 0.0f};
+  XrQuaternionf theaterYaw{0.0f, 0.0f, 0.0f, 1.0f};
+  bool windowDirty = true;
+  uint32_t windowW = 0, windowH = 0;
+  float windowScale = 0.0f;
+  std::array<XrPosef, 2> windowPose{};
+  std::array<XrExtent2Df, 2> windowSize{};
+  std::string windowLog;
+  int windowLogs = 0;
   std::array<XrCompositionLayerQuad, 5> quads{};
   std::vector<const XrCompositionLayerBaseHeader*> layers;
 };
@@ -553,6 +579,204 @@ void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) 
   if (s.shade.released) s.shadeLevel = level;
 }
 
+// ---- the stereo window (D7.4.5) ---------------------------------------------------------------------------------------
+//
+// A side-by-side picture is the sender's VPX "both eyes" preview: each half is what one of the sender's eyes rendered.
+// VPX 10.8.0 (Player::PrepareVideoBuffers, ShrinkPreview off) fills each half with a CENTRE CROP of that eye's whole
+// render, cut to the half's aspect and scaled to it: render w x h, half aspect outAr; ar = w / h > outAr crops the
+// sides (fw = h * outAr, x = (w - fw) / 2, full height), else top and bottom (fh = w / outAr, y = (h - fh) / 2, full
+// width). The eye render covers that eye's frustum, which is asymmetric (wider on the outer side), so the render's
+// pixel centre is not straight ahead and is not the same direction for the two eyes. Two quads at one pose (D7.4 ..
+// D7.4.4) therefore added a crossed disparity of that asymmetry and showed the playfield's own disparities at about
+// half their angle: it did not fuse at normal convergence (the owner, 2026-11-02: "if I cross my eyes ... there is a
+// point where it is in the right position").
+//
+// So each half is shown as a WINDOW: one quad per eye, placed so that every pixel is seen from the receiver's eye in
+// the direction the sender's eye rendered it. Derivation, in one eye's frame (+X right, +Y up, -Z ahead):
+//   1. A perspective render with fov tangents (tL, tR, tD, tU) (OpenXR angleLeft / angleDown are negative, so tL, tD
+//      are) maps pixel column u in [0, w] linearly to the tangent tL + (u / w) (tR - tL), and rows likewise to
+//      tD .. tU. That is exact: on a plane perpendicular to the axis, tangent is linear in position.
+//   2. VPX's crop (x, y, fw, fh) is therefore the tangent rect tL' = tL + (x / w)(tR - tL), tR' = tL + ((x + fw) / w)
+//      (tR - tL), tD' = tD + (y / h)(tU - tD), tU' = tD + ((y + fh) / h)(tU - tD). The crop is centred, so whether a
+//      render's row 0 is its top (D3D) or bottom (GL) does not matter.
+//   3. A quad at distance D on the eye's -Z axis, centred at (D cx, D cy) with cx = (tL' + tR') / 2, cy = (tD' + tU')
+//      / 2, sized D (tR' - tL') x D (tU' - tD'), puts the crop's pixel (u, v) at tangent (tL' + u (tR' - tL'), ...)
+//      from the eye: the direction the sender's eye rendered it. Each eye sees only its own quad (eyeVisibility), so
+//      both eyes get the sender's rays, and the playfield fuses where it stood for the sender: life size. D is free
+//      (kScreenDistanceM); the scale S (Control::theaterScale, 1 by default) multiplies the quad's size and centre
+//      offset together, which scales the picture's angles about the eye's axis.
+//   4. Into LOCAL: the eye's pose in head space (xrLocateViews in VIEW space at the recentre: about ±IPD / 2 in x,
+//      identity orientation on parallel-view headsets) then the recentre's head position and yaw (upright, as the
+//      mono screen). Position = head + R_yaw (eye + R_eye (S D cx, S D cy, -D)); orientation = R_yaw R_eye; size =
+//      (S D (tR' - tL'), S D (tU' - tD')).
+// Assumptions: the sender's eyes had the receiver's fov and render aspect (the video carries neither; the same headset
+// model on both ends makes it exact), and the receiver's head stays about where it was at the recentre (the window is
+// fixed in the room, so moving the head moves the eyes against it, as with a real window).
+// Fallbacks, never dark: no fov from VPX → the fov xrLocateViews gave; neither → ±45° each way; no eye poses → ±0.0315 m.
+
+constexpr float kDegPerRad = 57.29578f;
+constexpr float kFallbackHalfFovRad = 0.7853982f;  // 45°
+constexpr float kFallbackHalfIpdM = 0.0315f;
+constexpr float kFovMismatchRad = 0.01745329f;     // 1°
+constexpr int kMaxWindowLogs = 20;                 // per session; a picture whose size keeps changing logs no more
+
+XrQuaternionf quatMul(const XrQuaternionf& a, const XrQuaternionf& b) {
+  return {a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y, a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z};
+}
+
+// v rotated by the unit quaternion q: v + w t + q.xyz x t, t = 2 q.xyz x v.
+XrVector3f quatRotate(const XrQuaternionf& q, const XrVector3f& v) {
+  const float tx = 2.0f * (q.y * v.z - q.z * v.y), ty = 2.0f * (q.z * v.x - q.x * v.z), tz = 2.0f * (q.x * v.y - q.y * v.x);
+  return {v.x + q.w * tx + (q.y * tz - q.z * ty), v.y + q.w * ty + (q.z * tx - q.x * tz), v.z + q.w * tz + (q.x * ty - q.y * tx)};
+}
+
+bool fovUsable(const XrFovf& f) {
+  const float lim = 1.553343f;  // 89°: a tangent beyond that is no picture
+  const float a[4] = {f.angleLeft, f.angleRight, f.angleDown, f.angleUp};
+  for (float v : a)
+    if (!std::isfinite(v) || std::fabs(v) > lim) return false;
+  return f.angleLeft < f.angleRight && f.angleDown < f.angleUp;
+}
+
+XrFovf fallbackFov() { return {-kFallbackHalfFovRad, kFallbackHalfFovRad, kFallbackHalfFovRad, -kFallbackHalfFovRad}; }
+
+bool sameFov(const XrFovf& a, const XrFovf& b, float tol) {
+  return std::fabs(a.angleLeft - b.angleLeft) <= tol && std::fabs(a.angleRight - b.angleRight) <= tol && std::fabs(a.angleUp - b.angleUp) <= tol &&
+         std::fabs(a.angleDown - b.angleDown) <= tol;
+}
+
+std::string fmt(const char* f, double a = 0, double b = 0, double c = 0, double d = 0) {
+  char buf[160];
+  std::snprintf(buf, sizeof buf, f, a, b, c, d);
+  return buf;
+}
+
+std::string fovText(const XrFovf& f) {
+  return fmt("left %+.1f right %+.1f down %+.1f up %+.1f deg", f.angleLeft * kDegPerRad, f.angleRight * kDegPerRad, f.angleDown * kDegPerRad, f.angleUp * kDegPerRad);
+}
+
+// Every frame, before anything is dropped: each eye's fov and render size from the app's projection layer (VPX keeps
+// rendering the receiver's own table in theater, so this stays current there too).
+void noteProjection(Session& s, const XrFrameEndInfo& info) {
+  for (uint32_t i = 0; i < info.layerCount; i++) {
+    const XrCompositionLayerBaseHeader* l = info.layers[i];
+    if (!l || l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) continue;
+    const auto* p = reinterpret_cast<const XrCompositionLayerProjection*>(l);
+    if (p->viewCount < 2 || !p->views) return;
+    for (size_t e = 0; e < 2; e++) {
+      const XrFovf& f = p->views[e].fov;
+      const XrExtent2Di& r = p->views[e].subImage.imageRect.extent;
+      if (!s.appViewsSeen || !sameFov(f, s.appFov[e], 1e-4f) || r.width != s.appRect[e].width || r.height != s.appRect[e].height) s.windowDirty = true;
+      s.appFov[e] = f;
+      s.appRect[e] = r;
+    }
+    s.appViewsSeen = true;
+    return;
+  }
+}
+
+// At the recentre: each eye's pose relative to the head and the runtime's fov for it.
+void locateEyes(Session& s, XrTime when) {
+  s.eyesLocated = false;
+  s.windowDirty = true;
+  if (!s.next.locateViews) {
+    logOnce("views_missing", "theater: xrLocateViews is not available below this layer; the stereo window assumes eyes 63 mm apart");
+    return;
+  }
+  XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
+  li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+  li.displayTime = when;
+  li.space = s.view;
+  XrViewState vs{XR_TYPE_VIEW_STATE};
+  std::array<XrView, 2> v{};
+  for (XrView& x : v) x = XrView{XR_TYPE_VIEW};
+  uint32_t n = 0;
+  const XrResult r = s.next.locateViews(s.handle, &li, &vs, static_cast<uint32_t>(v.size()), &n, v.data());
+  if (XR_FAILED(r) || n < 2) {
+    logOnce("views_failed", "theater: xrLocateViews failed (" + (XR_FAILED(r) ? resultName(s.next, s.instance, r) : std::to_string(n) + " view(s)") +
+                                "); the stereo window assumes eyes 63 mm apart");
+    return;
+  }
+  for (size_t e = 0; e < 2; e++) {
+    const float side = e == 0 ? -1.0f : 1.0f;
+    s.eyePose[e].position = (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) ? v[e].pose.position : XrVector3f{side * kFallbackHalfIpdM, 0.0f, 0.0f};
+    XrQuaternionf q{0.0f, 0.0f, 0.0f, 1.0f};
+    if (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) {
+      // Renormalised (our quads must carry unit quaternions or xrEndFrame refuses them); a degenerate one is ignored.
+      const XrQuaternionf& o = v[e].pose.orientation;
+      const float len = std::sqrt(o.x * o.x + o.y * o.y + o.z * o.z + o.w * o.w);
+      if (std::isfinite(len) && len > 0.5f) q = {o.x / len, o.y / len, o.z / len, o.w / len};
+    }
+    s.eyePose[e].orientation = q;
+    if (!std::isfinite(s.eyePose[e].position.x) || !std::isfinite(s.eyePose[e].position.y) || !std::isfinite(s.eyePose[e].position.z) ||
+        std::fabs(s.eyePose[e].position.x) > 0.2f)
+      s.eyePose[e].position = {side * kFallbackHalfIpdM, 0.0f, 0.0f};
+    s.locatedFov[e] = v[e].fov;
+  }
+  s.eyesLocated = true;
+  if (s.appViewsSeen)
+    for (size_t e = 0; e < 2; e++)
+      if (fovUsable(s.appFov[e]) && fovUsable(s.locatedFov[e]) && !sameFov(s.appFov[e], s.locatedFov[e], kFovMismatchRad))
+        logOnce("fov_differs", std::string("theater: the ") + (e == 0 ? "left" : "right") + " eye's fov in VPX's frame (" + fovText(s.appFov[e]) +
+                                   ") differs from xrLocateViews' (" + fovText(s.locatedFov[e]) + "); the stereo window uses VPX's");
+}
+
+// The two eye quads for a side-by-side picture of picW x picH (each eye picW / 2 wide), at scale `scale`.
+void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
+  s.windowDirty = false;
+  s.windowW = picW, s.windowH = picH, s.windowScale = scale;
+  const float outAr = static_cast<float>(picW / 2) / static_cast<float>(picH > 0 ? picH : 1);
+  const float D = kScreenDistanceM, SD = scale * kScreenDistanceM;
+  std::string eyes[2];
+  for (size_t e = 0; e < 2; e++) {
+    XrFovf f = fallbackFov();
+    const char* fovFrom = "assumed";
+    if (s.appViewsSeen && fovUsable(s.appFov[e])) f = s.appFov[e], fovFrom = "VPX's frame";
+    else if (s.eyesLocated && fovUsable(s.locatedFov[e])) f = s.locatedFov[e], fovFrom = "xrLocateViews";
+    else logOnce("fov_assumed", "theater: no field of view from VPX's frame or xrLocateViews; the stereo window assumes 45 degrees each way");
+    const float tL = std::tan(f.angleLeft), tR = std::tan(f.angleRight), tD = std::tan(f.angleDown), tU = std::tan(f.angleUp);
+    XrPosef eye{};
+    eye.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
+    eye.position = {(e == 0 ? -1.0f : 1.0f) * kFallbackHalfIpdM, 0.0f, 0.0f};
+    if (s.eyesLocated) eye = s.eyePose[e];
+    // The render's size: VPX's (only its aspect matters); unknown → square pixels in tangent space.
+    const bool rectKnown = s.appViewsSeen && s.appRect[e].width > 0 && s.appRect[e].height > 0;
+    const float w = rectKnown ? static_cast<float>(s.appRect[e].width) : (tR - tL) * 1000.0f;
+    const float h = rectKnown ? static_cast<float>(s.appRect[e].height) : (tU - tD) * 1000.0f;
+    // VPX's crop, ShrinkPreview off (see above).
+    float x = 0.0f, y = 0.0f, fw = w, fh = h;
+    if (w / h > outAr) fw = h * outAr, x = (w - fw) * 0.5f;
+    else fh = w / outAr, y = (h - fh) * 0.5f;
+    const float l = tL + (x / w) * (tR - tL), r = tL + ((x + fw) / w) * (tR - tL);
+    const float d = tD + (y / h) * (tU - tD), u = tD + ((y + fh) / h) * (tU - tD);
+    const float cx = (l + r) * 0.5f, cy = (d + u) * 0.5f;
+    const XrVector3f onAxis = quatRotate(eye.orientation, {SD * cx, SD * cy, -D});
+    const XrVector3f inHead = {eye.position.x + onAxis.x, eye.position.y + onAxis.y, eye.position.z + onAxis.z};
+    const XrVector3f inLocal = quatRotate(s.theaterYaw, inHead);
+    s.windowPose[e].position = {s.theaterHead.x + inLocal.x, s.theaterHead.y + inLocal.y, s.theaterHead.z + inLocal.z};
+    s.windowPose[e].orientation = quatMul(s.theaterYaw, eye.orientation);
+    s.windowSize[e] = {SD * (r - l), SD * (u - d)};
+    eyes[e] = std::string(e == 0 ? "left" : "right") + " eye: fov " + fovText(f) + " (" + fovFrom + ")" + fmt(", eye at x %+.4f y %+.4f z %+.4f m", eye.position.x, eye.position.y, eye.position.z) +
+              (rectKnown ? fmt(", render %.0fx%.0f", w, h) : std::string(", render size unknown")) + fmt(", crop %.0fx%.0f at %.0f,%.0f", fw, fh, x, y) +
+              fmt(", quad %.2f x %.2f m", s.windowSize[e].width, s.windowSize[e].height) + fmt(" centred %+.2f, %+.2f m off the eye's axis", SD * cx, SD * cy);
+  }
+  const XrVector3f a = s.eyesLocated ? s.eyePose[0].position : XrVector3f{-kFallbackHalfIpdM, 0.0f, 0.0f};
+  const XrVector3f b = s.eyesLocated ? s.eyePose[1].position : XrVector3f{kFallbackHalfIpdM, 0.0f, 0.0f};
+  const float ipd = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
+  const std::string line = "theater: stereo window, scale " + fmt("%.2f", scale) + (scale == 1.0f ? " (life size)" : "") + ", " + fmt("%.2f", D) +
+                           " m ahead, video eye " + std::to_string(picW / 2) + "x" + std::to_string(picH) + ", eyes from " +
+                           (s.eyesLocated ? "xrLocateViews" : "assumed") + fmt(", IPD %.1f mm", ipd * 1000.0f) + "; " + eyes[0] + "; " + eyes[1];
+  if (line == s.windowLog) return;
+  s.windowLog = line;
+  if (s.windowLogs < kMaxWindowLogs) {
+    s.windowLogs++;
+    logLine(line);
+  } else {
+    logOnce("window_log_limit", "theater: the stereo window keeps changing (the video's size, most likely); further changes are not logged");
+  }
+}
+
 // D7.4: theater begins: the screen goes 2.6 m in front of where the head points now, turned by the head's yaw only
 // (upright, at eye height), in LOCAL space, where it then stays. A location the runtime cannot give puts it in front
 // of LOCAL's origin (the head at the session's start, by the spec).
@@ -576,7 +800,10 @@ void recentre(Session& s, XrTime when) {
   }
   s.screenPose.position = {head.x - std::sin(yaw) * kScreenDistanceM, head.y, head.z - std::cos(yaw) * kScreenDistanceM};
   s.screenPose.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+  s.theaterHead = head;
+  s.theaterYaw = s.screenPose.orientation;
   logLine("theater: the screen is placed 2.6 m ahead, yaw " + std::to_string(static_cast<int>(yaw * 57.29578f)) + " degrees in LOCAL space");
+  locateEyes(s, when);
 }
 
 // What the companion's mode means now, given what has arrived: theater needs a picture (the video, else the panel
@@ -643,6 +870,7 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   static const XrPosef lowPose = facingEye(kPanelLowOffset), centrePose = facingEye(kPanelCentreOffset);
   static const XrPosef backdropPose = ahead(kBackdropDistanceM), shadePose = ahead(kShadeDistanceM);
   std::unique_ptr<GlContextScope> scope;
+  noteProjection(s, info);
   uploadStream(s, s.panel, Stream::Panel, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
   if (c.mode == ViewMode::Theater) uploadStream(s, s.video, Stream::Video, scope);
@@ -679,8 +907,9 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
     const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
     const Surface& pic = videoUp ? s.video : s.panel;
     if (pic.released) {
-      // Side by side (VPX's VR preview on "both eyes": left eye | right eye): one swapchain, each half to its eye as a
-      // quad at the same pose (XrSwapchainSubImage::imageRect may be any rect inside the image).
+      // Side by side (VPX's VR preview on "both eyes": left eye | right eye): one swapchain, each half to its eye as its
+      // own quad, the stereo window (D7.4.5, above placeWindows; XrSwapchainSubImage::imageRect may be any rect inside
+      // the image).
       const bool sbs = videoUp && c.sbs && pic.width >= 2;
       const int32_t half = w(pic) / 2;
       const float eyeW = static_cast<float>(sbs ? half : w(pic));
@@ -688,8 +917,9 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
       // D7.4.3: landscape (or square) eyes are width-led as before; portrait eyes height-led (see kScreenHeightM).
       const XrExtent2Df size = eyeW >= eyeH ? XrExtent2Df{kScreenWidthM, kScreenWidthM * eyeH / eyeW} : XrExtent2Df{kScreenHeightM * eyeW / eyeH, kScreenHeightM};
       if (sbs) {
-        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.screenPose, size, false));
-        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.screenPose, size, false));
+        if (s.windowDirty || s.windowW != pic.width || s.windowH != pic.height || s.windowScale != c.theaterScale) placeWindows(s, pic.width, pic.height, c.theaterScale);
+        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.windowPose[0], s.windowSize[0], false));
+        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.windowPose[1], s.windowSize[1], false));
       } else {
         // The panel frame has transparent corners (Chromium's paint): blended over the black; the video is opaque.
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_BOTH, 0, w(pic), s.screenPose, size, !videoUp));
@@ -915,6 +1145,8 @@ void onInstanceCreated(XrInstance handle, PFN_xrGetInstanceProcAddr nextGipa) {
   if (hostIsVpx() && !g_disabled.load()) {
     if (resolveNext(*inst)) {
       inst->hooked = true;
+      // Core, so always there in practice; still optional: the stereo window has a fallback, the rest needs none of it.
+      if (!nextFn(inst->next, handle, "xrLocateViews", inst->next.locateViews)) inst->next.locateViews = nullptr;
       logLine(std::string(kLayerName) + " " CASTCADE_VR_LAYER_VERSION " (OpenXR headers " CASTCADE_OPENXR_SDK_TAG ") loaded in " + exeName());
       panelPipeStart();
     } else {
