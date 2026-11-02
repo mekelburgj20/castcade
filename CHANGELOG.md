@@ -7,6 +7,24 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.30] — 2026-11-02
+
+The third two-rig run (LUADLJ, 0.2.29) proved table sound (D2.8) and showed why the owner's theater had not changed:
+his VPX had been running through the update, so Windows kept the 0.2.28 layer dll mapped and the installer could not
+replace it. This release makes that impossible from now on and carries the coverage lane's two rig-tested fixes.
+
+### The layer runs from a per-version copy (D7.3.3)
+- At start the companion copies the OpenXR layer to `%LOCALAPPDATA%\Castcade\vr-layer\<version>\` and registers that
+  manifest, never the install dir, so an update never touches a dll a running VPX holds; older copies are removed when
+  no VPX holds them. `companion.log` names the registered path, the dll's sha256 and the VERSION text. While a VPX
+  process predates the registration, the Match tab's rig line and the log say `VPX started before this layer was
+  registered: restart VPX for the latest theater`, and say when it cleared. The layer's `loaded in` line carries a build
+  id (`XR_APILAYER_CASTCADE_panel 0.3.0 build v0.2.30 …`; CI passes the tag or the short sha); a `0.2.0` line with no
+  `build` is a 0.2.29-or-older dll. The update **to** this release is the last one that can hit the old bug: close VPX
+  before it, or restart VPX and reinstall afterwards. `companion/src/media/vr-layer-stage.ts`, `vr-layer.ts`,
+  `witness/witness.ts` (`startedAt` on the launch event), `vr-layer/CMakeLists.txt`, `vr-layer.yml`, `release.yml`.
+- Pins: `fetch-vr-layer.mjs` and `fetch-audio-helper.mjs` name the v0.2.29 zips (D2.8.1).
+
 ### Table coverage, after the first night on 0.2.28 (C11.2, B24)
 - The folder watch no longer rewrites a table patch that another program keeps removing. On the owner's rig Windows
   Defender quarantined the rendered `.vbs` of one original (Thundercats Pinball v1.0.9, `Trojan:Script/ObfusScript.A!ml`:
