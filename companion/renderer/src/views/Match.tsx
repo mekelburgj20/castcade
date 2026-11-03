@@ -409,6 +409,8 @@ export function Match({ state }: { state: CastcadeState }) {
         </div>
       </div>
 
+      <VrBenchCard bridge={bridge} />
+
       <div className="card">
         <strong>Table sound</strong>
         <label className="check">
@@ -446,6 +448,45 @@ export function Match({ state }: { state: CastcadeState }) {
         </label>
       </div>
     </section>
+  );
+}
+
+/**
+ * D7.6 (2026-11-03): the VR test bench: checks a player can run alone in the headset. D7.6.2: "Write VR report" writes
+ * the whole picture of how VPX reaches the headset (the layer's session report, the settings, the counters, the
+ * preview window) beside companion.log and shows where.
+ */
+function VrBenchCard({ bridge }: { bridge: CastcadeBridge }) {
+  const [busy, setBusy] = useState(false);
+  const [written, setWritten] = useState<{ md: string; json: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const writeReport = () => {
+    setBusy(true);
+    setError(null);
+    void bridge.match
+      .vrReport()
+      .then(setWritten, (e: unknown) => setError(describe(e)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="card">
+      <strong>VR test bench</strong>
+      <div className="row">
+        <button type="button" className="small" disabled={busy} onClick={writeReport}>
+          {busy ? 'Writing the VR report…' : 'Write VR report'}
+        </button>
+      </div>
+      <small>
+        Writes what the headset, the runtime and VPX say about the picture (and this app's settings and counters) to a file to send. VPX should be running in VR for
+        the headset part; it takes a few seconds.
+      </small>
+      {written && (
+        <p className="muted">
+          Written: <code>{written.md}</code> (and <code>.json</code> beside it)
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
   );
 }
 

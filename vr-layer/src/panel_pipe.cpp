@@ -62,6 +62,8 @@ State& state() {
 
 // GetTickCount64 at the last complete frame of each stream; 0 = none (static storage: zero before the thread starts).
 std::atomic<uint64_t> g_lastFrameAt[2];
+// D7.6.2: connections plus report requests so far (panelPipeReportSerial).
+std::atomic<uint32_t> g_reportSerial{0};
 
 uint32_t le32(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |
@@ -169,6 +171,12 @@ bool jsonNumber(const std::string& body, const char* key, double& out) {
   return true;
 }
 
+// D7.6.2: "key": true in a flat JSON object (anything else, or no key: false).
+bool jsonTrue(const std::string& body, const char* key) {
+  const size_t i = valueAt(body, key);
+  return i != std::string::npos && body.compare(i, 4, "true") == 0;
+}
+
 // D7.5: "camera" in the control. Absent → unchanged (false). null → off. An object → its width / height / fps, each a
 // plain number inside the braces; a malformed object → off (never a camera the companion did not shape).
 bool jsonCamera(const std::string& body, CameraRequest& out) {
@@ -217,6 +225,11 @@ void applyControl(const std::string& body) {
               st.control.theaterScale != c.theaterScale;
     cameraChanged = st.control.camera != c.camera;
     st.control = c;
+  }
+  // D7.6.2: a request, not a state: every control that carries it asks again.
+  if (jsonTrue(body, "report")) {
+    g_reportSerial.fetch_add(1);
+    logLine("pipe: the companion asked for the session report");
   }
   if (changed) {
     const char* m = c.mode == ViewMode::Hidden ? "hidden" : c.mode == ViewMode::Panel ? "panel" : "theater";
@@ -328,6 +341,8 @@ void serve() {
           state().conn = conn;
         }
         sendHello();
+        // D7.6.2: the render thread sends this companion the session report at its next frame (after the hello).
+        g_reportSerial.fetch_add(1);
         const std::string why = readMessages(pipe);
         logLine("pipe: the companion disconnected (" + why + ")");
         // Whatever it asked for ends with it: the panel (its last frames fade out within 5 s), never a dark theater, no
@@ -415,6 +430,21 @@ bool panelPipeSend(const uint8_t* data, size_t length) {
   // The write failed (the companion went, or the pipe broke): the reader's ReadFile fails too and closes the handle.
   conn->dead.store(true);
   return false;
+}
+
+uint32_t panelPipeReportSerial() { return g_reportSerial.load(); }
+
+bool panelPipeConnected() {
+  std::lock_guard<std::mutex> lk(state().m);
+  return state().conn && !state().conn->dead.load();
+}
+
+bool panelPipeSendMessage(const char* magic, const std::string& payload) {
+  std::vector<uint8_t> msg(8 + payload.size());
+  std::memcpy(msg.data(), magic, 4);
+  put32(msg.data() + 4, static_cast<uint32_t>(payload.size()));
+  if (!payload.empty()) std::memcpy(msg.data() + 8, payload.data(), payload.size());
+  return panelPipeSend(msg.data(), msg.size());
 }
 
 bool panelPipeSendStatus(const char* camera, const std::string& why, const std::string& extra) {

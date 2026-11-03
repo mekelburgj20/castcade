@@ -28,7 +28,12 @@
  *     byte for byte what it was); the layer's answers come back on the same pipe as messages shaped magic + u32
  *     length + payload (`createLayerReader` cuts them out of the byte stream, whatever the chunking, and resyncs on
  *     garbage): `CVS1` status (on / off / refused, `cameraStatus`) and `CVF1` frames (`onCameraFrame`: both eyes as
- *     JPEG with their fov and crop). Counters go to the log every 10 s while the camera is asked, like the capture's.
+ *     JPEG with their fov and crop). Counters go to the log every 10 s while the camera is asked, like the capture's;
+ *   - D7.6.2 (2026-11-03), the session report: a `CVS1` whose JSON has `"kind": "session"` is the layer's report on
+ *     the runtime, the system and VPX's frames (it sends one after every connection and on request); `requestSession`
+ *     asks for a fresh one with `report: true` on a control (a request, so it never enters the dedup of controls);
+ *     `probeLayerSession` reads one over a short connection of its own when no match holds the pipe. `bench` is what
+ *     the test bench shows: connected, protocol, the last report and the last `BENCH_CONTROLS` controls sent.
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -42,8 +47,10 @@ import {
   type LayerCameraFrame,
   type LayerCameraRequest,
   type LayerCameraStatus,
+  type LayerSessionReport,
   type PanelFrameSource,
   type VideoFrameSource,
+  type VrLayerBench,
   type VrOverlay,
   type VrOverlayStatus,
   type VrStereo,
@@ -74,6 +81,8 @@ export const CAMERA_FRAME_MAX_BYTES = 32 * 1024 * 1024;
 export const LAYER_MESSAGE_MAX_BYTES = 64 * 1024;
 /** D7.5: the camera counters, like the capture's. */
 export const CAMERA_COUNTERS_MS = 10_000;
+/** D7.6.2: how many of the last controls `bench().controls` keeps. */
+export const BENCH_CONTROLS = 5;
 
 /** The layer's protocol from its hello (8 bytes: "CVH1", u32 version), or null while fewer than 8 bytes are in or it is not one. */
 export function parseHello(b: Buffer): number | null {
@@ -97,6 +106,8 @@ export type LayerMessage =
   | { kind: 'hello'; protocol: number }
   | { kind: 'frame'; frame: LayerCameraFrame }
   | { kind: 'status'; status: LayerCameraStatusMessage }
+  /** D7.6.2: the layer's session report (a CVS1 with `"kind": "session"`), its facts without `kind`. */
+  | { kind: 'session'; facts: Record<string, unknown> }
   /** A well-shaped message this companion does not know (a newer layer): skipped whole. */
   | { kind: 'unknown'; magic: string; length: number }
   /** A known magic whose payload did not parse: skipped whole. */
@@ -166,6 +177,21 @@ function parseCameraStatus(body: Buffer): LayerCameraStatusMessage | null {
   }
 }
 
+/**
+ * D7.6.2: a CVS1 payload that is a session report (`{"kind": "session", ...}`): its facts without `kind`, or null (a
+ * camera status, or not a JSON object).
+ */
+export function parseSessionReport(body: Buffer): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(body.toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const { kind, ...facts } = parsed as Record<string, unknown>;
+    return kind === 'session' ? facts : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface LayerReader {
   /** The messages completed by this chunk, in order. */
   push(chunk: Buffer): LayerMessage[];
@@ -187,6 +213,8 @@ export function createLayerReader(): LayerReader {
       return frame ? { kind: 'frame', frame } : { kind: 'bad', magic, reason: 'the frame header or its lengths do not parse' };
     }
     if (magic === VR_LAYER_CAMERA_STATUS_MAGIC) {
+      const facts = parseSessionReport(buf);
+      if (facts) return { kind: 'session', facts };
       const status = parseCameraStatus(buf);
       return status ? { kind: 'status', status } : { kind: 'bad', magic, reason: 'the status is not JSON with a camera state' };
     }
@@ -387,7 +415,24 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let counterTimer: ReturnType<typeof setInterval> | null = null;
   let counted = { frames: 0, bytes: 0, lastN: -1, gaps: 0, garbage: 0, bad: 0, width: 0, height: 0 };
   let oldCameraLogged = false;
-  const setCameraStatus = (patch: Partial<LayerCameraStatus>) => {
+  // D7.6: the bench: the last session report, the last controls written, report requests waiting, the listeners.
+  let session: LayerSessionReport | null = null;
+  let sentControls: Array<{ at: number; text: string }> = [];
+  const sessionWaiters = new Set<(r: LayerSessionReport) => void>();
+  const benchListeners = new Set<(b: VrLayerBench) => void>();
+  const isConnected = (): boolean => socket !== null && current.state === 'showing';
+  const bench = (): VrLayerBench => ({
+    started: current.state !== 'stopped',
+    connected: isConnected(),
+    protocol: isConnected() ? protocol : 0,
+    session,
+    controls: [...sentControls],
+  });
+  const notifyBench = () => {
+    const b = bench();
+    for (const l of [...benchListeners]) l(b);
+  };
+  const setCameraStatus =(patch: Partial<LayerCameraStatus>) => {
     const next = { ...camera, ...patch };
     if (JSON.stringify(next) === JSON.stringify(camera)) return;
     camera = next;
@@ -470,17 +515,24 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
    * The control, when a protocol-2 layer listens and it changed since the last one on this connection. D7.5: the
    * `camera` field goes only to a protocol-3 layer (a request, or null for none), so a protocol-2 control is unchanged.
    */
-  const sendControl = () => {
+  const sendControl = (report = false): boolean => {
     const sock = socket;
-    if (!sock || protocol < 2 || !sock.writable) return;
+    if (!sock || protocol < 2 || !sock.writable) return false;
     const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS, theaterScale, ...(protocol >= VR_LAYER_CAMERA_PROTOCOL ? { camera: cameraReq } : {}) };
     const text = JSON.stringify(body);
-    if (text === lastControl) return;
+    if (text === lastControl && !report) return false;
+    const changed = text !== lastControl;
     lastControl = text;
-    sock.write(controlMessage(body));
+    // D7.6.2: `report` rides on one control as a request; the dedup above compares the controls without it.
+    const sent = report ? { ...body, report: true } : body;
+    sock.write(controlMessage(sent));
+    sentControls = [...sentControls, { at: now(), text: report ? JSON.stringify(sent) : text }].slice(-BENCH_CONTROLS);
+    if (report) opts.log('vr-layer: asked the layer for its session report');
+    if (!changed) return true;
     const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps` : 'off'}` : '';
     opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
+    return true;
   };
 
   /** D7.5: one message the layer sent (after `createLayerReader` cut it out). */
@@ -496,6 +548,14 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
         }
         sendControl();
         updateVideo();
+        notifyBench();
+        return;
+      }
+      case 'session': {
+        session = { receivedAt: now(), facts: m.facts };
+        opts.log(`vr-layer: session report from the layer: ${sessionSummary(m.facts)}`);
+        for (const w of [...sessionWaiters]) w(session);
+        notifyBench();
         return;
       }
       case 'frame': {
@@ -613,6 +673,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       if (connected) {
         opts.log('vr-layer: the layer closed the pipe (VPX exited or left VR); trying again');
         set('hidden', 'pipe_closed');
+        notifyBench();
       } else noAnswer();
       retryTimer = setTimeout(tryConnect, CONNECT_RETRY_MS);
     });
@@ -636,6 +697,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     stopCounters();
     setCameraStatus({ state: 'off', why: null, api: null, source: null, size: null, lastFrameAt: null, frames: 0 });
     set('stopped');
+    notifyBench();
   };
 
   return {
@@ -744,5 +806,124 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       cameraListeners.add(cb);
       return () => void cameraListeners.delete(cb);
     },
+
+    // D7.6: the test bench.
+    bench,
+
+    onBench(cb) {
+      benchListeners.add(cb);
+      return () => void benchListeners.delete(cb);
+    },
+
+    requestSession(timeoutMs) {
+      return new Promise<LayerSessionReport | null>((done) => {
+        if (!isConnected() || protocol < VR_LAYER_CAMERA_PROTOCOL) return done(null);
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const waiter = (r: LayerSessionReport) => {
+          if (timer) clearTimeout(timer);
+          sessionWaiters.delete(waiter);
+          done(r);
+        };
+        timer = setTimeout(() => {
+          sessionWaiters.delete(waiter);
+          done(null);
+        }, timeoutMs);
+        sessionWaiters.add(waiter);
+        if (!sendControl(true)) {
+          clearTimeout(timer);
+          sessionWaiters.delete(waiter);
+          done(null);
+        }
+      });
+    },
   };
+}
+
+/** D7.6.2: one line about a session report for the log (layer build, runtime, system, OpenComposite). */
+export function sessionSummary(facts: Record<string, unknown>): string {
+  const obj = (v: unknown): Record<string, unknown> | null => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+  const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const layer = obj(facts.layer);
+  const runtime = obj(facts.runtime);
+  const system = obj(facts.system);
+  const oc = obj(facts.openComposite);
+  const graphics = obj(facts.graphics);
+  return [
+    `layer ${str(layer?.version) ?? 'unknown'} build ${str(layer?.build) ?? 'unknown'}`,
+    runtime ? `runtime '${str(runtime.name) ?? '?'}' ${str(runtime.version) ?? '?'}` : 'runtime unknown',
+    system ? `system '${str(system.name) ?? '?'}'` : 'system unknown',
+    `graphics ${str(graphics?.binding) ?? 'unknown'}`,
+    `OpenComposite ${str(oc?.verdict) ?? 'unknown'}`,
+  ].join('; ');
+}
+
+export interface LayerProbeResult {
+  /** The pipe connected (a layer serves it: VPX runs in VR with the layer loaded). */
+  connected: boolean;
+  /** The layer's pipe protocol from its hello; null without one. */
+  protocol: number | null;
+  session: LayerSessionReport | null;
+  /** What happened, in words, for the report. */
+  note: string;
+}
+
+/**
+ * D7.6.2: the session report over a short connection of its own, for when no match holds the pipe (the layer serves one
+ * client at a time). The layer sends the report after every new connection at its next frame, so this connects,
+ * reads the hello and the report, and closes; nothing is written, so the layer's control stays at its defaults (the
+ * panel, with no panel frame: nothing is drawn). Never rejects.
+ */
+export function probeLayerSession(opts: { timeoutMs: number; connect?: (path: string) => PipeSocket; pipePath?: string; now?: () => number }): Promise<LayerProbeResult> {
+  const connect = opts.connect ?? ((p: string) => netConnect(p) as unknown as PipeSocket);
+  const now = opts.now ?? Date.now;
+  const pipePath = opts.pipePath ?? VR_LAYER_PIPE;
+  return new Promise((done) => {
+    let sock: PipeSocket | null = null;
+    let finished = false;
+    let connected = false;
+    let protocol: number | null = null;
+    const finish = (session: LayerSessionReport | null, note: string) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try {
+        sock?.destroy();
+      } catch {
+        // already gone
+      }
+      done({ connected, protocol, session, note });
+    };
+    const silence = () =>
+      !connected
+        ? 'no layer answered on the pipe (VPX not running in VR, or the layer not loaded in it)'
+        : protocol === null
+          ? 'the layer sent no hello'
+          : `the layer (pipe protocol ${protocol}) sent no session report within ${Math.round(opts.timeoutMs / 1000)} s (a layer before 0.5.0, or VPX is not rendering VR frames)`;
+    const timer = setTimeout(() => finish(null, silence()), opts.timeoutMs);
+    try {
+      sock = connect(pipePath);
+    } catch (e) {
+      finish(null, `could not open ${pipePath}: ${(e as Error).message}`);
+      return;
+    }
+    const reader = createLayerReader();
+    sock.on('connect', () => {
+      connected = true;
+    });
+    sock.on('data', (chunk) => {
+      connected = true;
+      for (const m of reader.push(chunk)) {
+        if (m.kind === 'hello') {
+          protocol = m.protocol;
+          if (m.protocol < VR_LAYER_CAMERA_PROTOCOL) finish(null, `the layer speaks pipe protocol ${m.protocol}, before the session report: restart VPX with this Castcade's layer`);
+        } else if (m.kind === 'session') {
+          finish({ receivedAt: now(), facts: m.facts }, 'read over a short pipe connection of its own (no match held the pipe)');
+        }
+      }
+    });
+    sock.on('error', (e) => {
+      if (!connected) finish(null, `no layer answered on the pipe (${e.code ?? e.message}): VPX not running in VR, or the layer not loaded in it`);
+    });
+    sock.on('close', () => finish(null, connected ? `the layer closed the pipe before its report (${silence()})` : silence()));
+  });
 }

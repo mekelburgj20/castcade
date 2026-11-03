@@ -539,6 +539,8 @@ interface CastcadeBridge {
     /** D2.6: the desktop match panel window (no-op in VR). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;
+    /** D7.6.2: write the VR report beside companion.log; the two paths. */
+    vrReport(): Promise<{ md: string; json: string }>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   readonly tables: {

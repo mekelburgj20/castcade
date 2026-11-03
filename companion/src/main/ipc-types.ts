@@ -58,6 +58,8 @@ export const IPC = {
   matchSetTurn: 'match:setTurn',
   matchShowPanel: 'match:showPanel',
   matchHidePanel: 'match:hidePanel',
+  /** D7.6.2: write the VR report (vr-report-<date>.md / .json beside companion.log). */
+  matchVrReport: 'match:vrReport',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
@@ -222,6 +224,11 @@ export interface CastcadeApi {
     /** D2.6: show or hide the desktop match panel window (a separate window beside this one). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;
+    /**
+     * D7.6.2: the VR report: the layer's session report (runtime, headset, what VPX submits), the companion's settings,
+     * counters and preview window, written beside companion.log; resolves with the two paths.
+     */
+    vrReport(): Promise<{ md: string; json: string }>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   tables: {
