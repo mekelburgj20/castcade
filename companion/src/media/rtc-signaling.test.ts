@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaSignal } from './match-media-types.js';
-import { isPolite, negotiationSource, PeerNegotiator, SignalingMesh, type CandidateInit, type NegotiablePc, type SdpInit } from './rtc-signaling.js';
+import { isPolite, leadsIceRestart, negotiationSource, PeerNegotiator, SignalingMesh, type CandidateInit, type NegotiablePc, type SdpInit } from './rtc-signaling.js';
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 const settle = async (n = 20): Promise<void> => {
@@ -76,6 +76,13 @@ class FakePc implements NegotiablePc {
 
   close(): void {
     this.signalingState = 'closed';
+  }
+
+  /** D2.9: like the browser, a restart asks for negotiation (queued, not inside the call). */
+  restarts = 0;
+  restartIce(): void {
+    this.restarts++;
+    setImmediate(() => this.onnegotiationneeded?.());
   }
 
   /** The browser gathered a local candidate. */
@@ -403,5 +410,67 @@ describe('perfect negotiation (D2)', () => {
       for (const w of queue.splice(0)) await m[w.to]?.receive(w.from, w.signal);
     }
     expect(paired(pcs['ab']!, pcs['ba']!)).toBe(true);
+  });
+
+  it('D2.9: exactly one side of a pair leads an ICE restart, the impolite one', () => {
+    expect(leadsIceRestart('alice', 'bob')).toBe(false);
+    expect(leadsIceRestart('bob', 'alice')).toBe(true);
+    for (const [x, y] of [['a', 'b'], ['B', 'a'], ['p1', 'p10']] as const) expect(leadsIceRestart(x, y) !== leadsIceRestart(y, x)).toBe(true);
+  });
+
+  it('D2.9: an ICE restart renegotiates on the same connections: no reopen, the pair stable again', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    expect(paired(pa, pb)).toBe(true);
+    // b leads (impolite): its restart offer is answered by a's existing connection.
+    expect(net.meshes['b']?.get('a')?.restartIce()).toBe(true);
+    await net.run();
+    expect(pb.restarts).toBe(1);
+    expect(net.pc('a', 'b')).toBe(pa);
+    expect(net.pc('b', 'a')).toBe(pb);
+    expect(paired(pa, pb)).toBe(true);
+    expect(pb.localDescription?.type).toBe('offer');
+    expect(net.reopens).toEqual([]);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+  });
+
+  it('D2.9: both sides restarting at once settle by the glare rule, still on the same connections', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    net.meshes['a']?.get('b')?.restartIce();
+    net.meshes['b']?.get('a')?.restartIce();
+    await net.run();
+    expect(net.pc('a', 'b')).toBe(pa);
+    expect(net.pc('b', 'a')).toBe(pb);
+    expect(paired(pa, pb)).toBe(true);
+    expect(net.reopens).toEqual([]);
+    expect(net.errors).toEqual([]);
+  });
+
+  it('D2.9: restartIce on a closed negotiator, or a connection without restartIce, does nothing', () => {
+    const plain: NegotiablePc = {
+      signalingState: 'stable',
+      localDescription: null,
+      remoteDescription: null,
+      setLocalDescription: () => Promise.resolve(),
+      setRemoteDescription: () => Promise.resolve(),
+      addIceCandidate: () => Promise.resolve(),
+    };
+    expect(new PeerNegotiator(plain, true, () => undefined).restartIce()).toBe(false);
+    const pc = new FakePc('a', 'b');
+    const n = new PeerNegotiator(pc, false, () => undefined);
+    n.close();
+    expect(n.restartIce()).toBe(false);
+    expect(pc.restarts).toBe(0);
   });
 });

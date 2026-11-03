@@ -470,6 +470,8 @@ interface MatchStatus {
   microphones: Array<{ deviceId: string; label: string }>;
   micDeviceId: string | null;
   muted: boolean;
+  /** D2.9: the TURN relay saved in media.json (the credential only as "set"); null = none. */
+  turn: { url: string; username: string; credentialSet: boolean } | null;
   locked: boolean;
   settings: MatchSettings;
   defaultName: string;
@@ -520,6 +522,8 @@ interface CastcadeBridge {
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
     setMuted(muted: boolean): Promise<MatchStatus>;
+    /** D2.9: the TURN relay; null (or an empty url) clears it, a null credential keeps the saved one. */
+    setTurn(turn: { url: string; username: string; credential: string | null } | null): Promise<MatchStatus>;
     /** D2.6: the desktop match panel window (no-op in VR). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;

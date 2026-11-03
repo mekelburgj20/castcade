@@ -16,6 +16,12 @@
  * voice and video die both ways. Two halves: an offer that fails to apply on a connection that already had a remote
  * description reopens that peer through the mesh's factory and applies the offer (and every signal queued behind it)
  * to the fresh connection; and the rebuilt side sends `reset` first, so the other side reopens before the offer lands.
+ *
+ * D2.9 (2026-11-02, EFUKTZ): an ICE restart is an ordinary renegotiation: `restartIce()` makes the browser fire
+ * `negotiationneeded`, and the next offer carries fresh ICE credentials on the same m-lines (the same transceivers), so
+ * the peer's connection takes it like any other offer. The impolite peer leads the restart (`leadsIceRestart`): its
+ * offer is the one that wins a collision anyway; the polite one restarts only when the lead has not (the page's
+ * watchdog gives it a lag), and if both do at once the usual glare rule settles it.
  */
 import type { MatchPlayerId, MediaSignal } from './match-media-types.js';
 
@@ -41,11 +47,18 @@ export interface NegotiablePc {
   onnegotiationneeded?: (() => void) | null;
   onicecandidate?: ((ev: { candidate: CandidateInit | null }) => void) | null;
   close?(): void;
+  /** D2.9: fresh ICE credentials at the next offer (the browser fires `negotiationneeded`). */
+  restartIce?(): void;
 }
 
 /** Who rolls back when two offers cross: the lexically smaller id (UTF-16 order, the same on every machine). */
 export function isPolite(localId: MatchPlayerId, remoteId: MatchPlayerId): boolean {
   return localId < remoteId;
+}
+
+/** D2.9: who restarts ICE on a stuck connection first: the impolite peer (its offer wins a collision). */
+export function leadsIceRestart(localId: MatchPlayerId, remoteId: MatchPlayerId): boolean {
+  return !isPolite(localId, remoteId);
 }
 
 export class PeerNegotiator {
@@ -119,6 +132,17 @@ export class PeerNegotiator {
     const d = this.pc.localDescription;
     if (this.closed || this.makingOffer || this.pc.signalingState !== 'have-local-offer' || !d || d.type !== 'offer') return false;
     this.send({ kind: 'offer', sdp: d.sdp });
+    return true;
+  }
+
+  /**
+   * D2.9: an ICE restart on this connection. The offer follows through `negotiationneeded` (at once when stable; after
+   * the outstanding exchange otherwise), so it goes out by the same path as every other offer. False: closed, or the
+   * connection cannot restart.
+   */
+  restartIce(): boolean {
+    if (this.closed || typeof this.pc.restartIce !== 'function') return false;
+    this.pc.restartIce();
     return true;
   }
 
@@ -294,5 +318,5 @@ export class SignalingMesh {
 
 /** The classes as plain JS for the panel page's `<script>` (see the header): one source, no second copy to drift. */
 export function negotiationSource(): string {
-  return [isPolite, PeerNegotiator, SignalingMesh].map((x) => x.toString()).join('\n');
+  return [isPolite, leadsIceRestart, PeerNegotiator, SignalingMesh].map((x) => x.toString()).join('\n');
 }

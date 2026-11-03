@@ -44,6 +44,8 @@ export const PANEL_CHANNELS = {
   devices: 'castcade-panel:devices',
   /** D7.4: `{ width, height, rgba: Uint8Array, stereo: 'mono' | 'sbs' }`, the stage video's pixels. */
   video: 'castcade-panel:video',
+  /** D2.9: one line for companion.log (ICE restarts and their outcome, the candidate pair); main prefixes `media: `. */
+  log: 'castcade-panel:log',
 } as const;
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
@@ -344,6 +346,101 @@ export function outgoingSdp(sdp: string, tableStreamId: string | null): string {
 }
 
 /**
+ * D2.9 (2026-11-02, EFUKTZ: ICE sat in `checking` for ever on one rig and went `disconnected` after 15 s on the other;
+ * `failed` never came while the players waited). The watchdog's timings: a connection stuck (`checking`, `disconnected`,
+ * `failed`, or `new` once signalling is `stable`) restarts ICE after `backoffMs[0]`, again `backoffMs[1]` after that
+ * restart, and so on; `backoffMs.length` restarts at most, then, `backoffMs` last after the last one, it gives up and says
+ * so. The peer that does not lead the restart (`leadsIceRestart`, rtc-signaling.ts) waits `lagMs` longer each time, so
+ * the lead's restart reaches it first and is counted as one of its own.
+ */
+export const ICE_WATCH = { backoffMs: [10_000, 20_000, 40_000], lagMs: 5_000, tickMs: 1_000 } as const;
+
+/** D2.9: the candidate pair a connection uses (or none yet), from `getStats()`; types and protocol only, no address. */
+export interface IcePairInfo {
+  pair: { state: string; local: string; remote: string; protocol: string; rttMs: number | null } | null;
+  /** Candidate pairs the browser formed, and how many of them failed. */
+  tried: number;
+  failed: number;
+  /** Candidate types gathered here and received from the peer (`host`, `srflx`, `prflx`, `relay`), each once, sorted. */
+  local: string[];
+  remote: string[];
+}
+
+/**
+ * D2.9: the nominated pair from a `getStats()` report's entries (plain objects): the transport's selected pair, else a
+ * nominated succeeded one, else any succeeded one; null when none has worked yet. Never reads an address.
+ */
+export function icePairInfo(entries: ReadonlyArray<Record<string, unknown>>): IcePairInfo {
+  const byId: Record<string, Record<string, unknown>> = {};
+  const pairs: Array<Record<string, unknown>> = [];
+  const local: string[] = [];
+  const remote: string[] = [];
+  let selected: unknown = null;
+  for (const e of entries) {
+    if (typeof e.id === 'string') byId[e.id] = e;
+    if (e.type === 'candidate-pair') pairs.push(e);
+    else if (e.type === 'transport' && typeof e.selectedCandidatePairId === 'string') selected = e.selectedCandidatePairId;
+    else if ((e.type === 'local-candidate' || e.type === 'remote-candidate') && typeof e.candidateType === 'string') {
+      const list = e.type === 'local-candidate' ? local : remote;
+      if (list.indexOf(e.candidateType) < 0) list.push(e.candidateType);
+    }
+  }
+  let p: Record<string, unknown> | null = typeof selected === 'string' ? (byId[selected] ?? null) : null;
+  if (!p) p = pairs.find((x) => x.nominated === true && x.state === 'succeeded') ?? null;
+  if (!p) p = pairs.find((x) => x.state === 'succeeded') ?? null;
+  let pair: IcePairInfo['pair'] = null;
+  if (p) {
+    const lc = typeof p.localCandidateId === 'string' ? byId[p.localCandidateId] : undefined;
+    const rc = typeof p.remoteCandidateId === 'string' ? byId[p.remoteCandidateId] : undefined;
+    const rtt = typeof p.currentRoundTripTime === 'number' && isFinite(p.currentRoundTripTime) ? Math.round(p.currentRoundTripTime * 1000) : null;
+    pair = {
+      state: typeof p.state === 'string' ? p.state : '?',
+      local: lc && typeof lc.candidateType === 'string' ? lc.candidateType : '?',
+      remote: rc && typeof rc.candidateType === 'string' ? rc.candidateType : '?',
+      protocol: lc && typeof lc.protocol === 'string' ? lc.protocol : '?',
+      rttMs: rtt,
+    };
+  }
+  return { pair, tried: pairs.length, failed: pairs.filter((x) => x.state === 'failed').length, local: local.sort(), remote: remote.sort() };
+}
+
+/** D2.9: `icePairInfo` for the log: `pair srflx -> srflx udp succeeded, rtt 34 ms`, or `no pair yet (…)`. */
+export function icePairText(info: IcePairInfo, withRtt: boolean): string {
+  const p = info.pair;
+  if (p) return 'pair ' + p.local + ' -> ' + p.remote + ' ' + p.protocol + ' ' + p.state + (withRtt && p.rttMs !== null ? ', rtt ' + p.rttMs + ' ms' : '');
+  const types = (l: string[]) => (l.length ? l.join('+') : 'none');
+  return 'no pair yet (' + info.tried + ' tried, ' + info.failed + ' failed; local ' + types(info.local) + ', remote ' + types(info.remote) + ')';
+}
+
+/** D2.9: the ICE username fragment of an SDP (the first one: bundled, every m-line has the same); it changes on a restart. */
+export function iceUfrag(sdp: string | null | undefined): string | null {
+  const m = /a=ice-ufrag:(\S+)/.exec(sdp || '');
+  return m ? m[1]! : null;
+}
+
+/**
+ * D2.9: the watchdog's decision for one connection. `elapsedMs`: since it got stuck, or since the last restart (ours
+ * or the peer's) if later; `restarts`: in this stuck spell. `ok`: connected (the caller clears the spell); `wait`;
+ * `restart`; `give_up` once `w.backoffMs.length` restarts have not helped. A `failed` connection restarts at once
+ * (the browser gave up on every pair); the backoff still holds after a restart. `lead`: this side leads restarts.
+ */
+export function iceWatchStep(ice: string, elapsedMs: number, restarts: number, lead: boolean, w: { backoffMs: readonly number[]; lagMs: number }): 'ok' | 'wait' | 'restart' | 'give_up' {
+  if (ice === 'connected' || ice === 'completed') return 'ok';
+  if (ice !== 'new' && ice !== 'checking' && ice !== 'disconnected' && ice !== 'failed') return 'wait';
+  const lag = lead ? 0 : w.lagMs;
+  const n = w.backoffMs.length;
+  if (restarts >= n) return elapsedMs >= (w.backoffMs[n - 1] ?? 0) + lag ? 'give_up' : 'wait';
+  const delay = ice === 'failed' && restarts === 0 ? 0 : (w.backoffMs[restarts] ?? 0);
+  return elapsedMs >= delay + lag ? 'restart' : 'wait';
+}
+
+/** D2.9: what the panel and the Match tab say once the watchdog gave up on a peer. */
+export function noPathText(name: string, ice: string, restarts: number, relay: boolean): string {
+  const why = relay ? 'the TURN relay did not get through either' : 'both routers blocked the direct connection; a TURN relay is needed';
+  return 'No path to ' + name + ' (ICE ' + ice + ' after ' + restarts + ' restarts): ' + why + '.';
+}
+
+/**
  * D2.8: the table track's jitter buffer (in the AudioWorklet; samples are interleaved stereo). Starts playing once
  * `prime` samples are in; an underrun plays silence and primes again; more than `high` buffered (the helper's clock
  * runs ahead of the page's) drops the oldest down to `target`, so the delay stays bounded. Embedded by its source.
@@ -421,7 +518,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp];
+const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -468,6 +565,7 @@ const VIDEO = ${JSON.stringify(PANEL_VIDEO)};
 const FEED_FPS = ${VIDEO_FEED_MAX.fps};
 const STALL_MS = ${CAPTURE_STALL_MS};
 const STATS_MS = ${STATS_MS};
+const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
 const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
 ${helpers}
 ${negotiationSource()}
@@ -572,7 +670,7 @@ function report() {
       reopens: reopens.get(id) || 0,
     };
   }
-  ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: localError, captureStalled: stalled, stats: stats });
+  ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: noPathMessage() || localError, captureStalled: stalled, stats: stats });
 }
 
 function fail(msg) {
@@ -634,7 +732,7 @@ function render() {
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
-  $('msg').textContent = (panel && panel.message) || localError || '';
+  $('msg').textContent = noPathMessage() || (panel && panel.message) || localError || '';
   routeTable();
 }
 
@@ -866,6 +964,7 @@ function statsTick() {
     toLayer = feedSent;
   } else decodedLast = -1;
   feedSent = 0;
+  void probePairs(true);
   if (capture === null && decoded === null) return;
   statsSeq++;
   stats = { seq: statsSeq, capture: capture, decoded: decoded, toLayer: toLayer };
@@ -895,6 +994,109 @@ async function probeStats() {
   } catch (e) { /* no stats yet */ }
 }
 setInterval(statsTick, STATS_MS);
+
+/**
+ * D2.9: the ICE watchdog and the candidate pair, per peer (r.watch). A spell starts when the connection is stuck
+ * (iceWatchStep's states; 'new' only once signalling is stable with a remote description) and ends when it connects.
+ * The lead side (leadsIceRestart) restarts after 10 s, then 20 s, then 40 s; the other side 5 s later each time, and a
+ * restart the peer made (its offer brought new ICE credentials while the spell lasted) counts as one of ours. After
+ * the third, 40 s more and it gives up: the panel and the Match tab say there is no path. Every step is logged.
+ */
+function newWatch(peer) {
+  return { since: null, lastAt: 0, restarts: 0, gaveUp: false, ufrag: null, lead: leadsIceRestart(localId, peer) };
+}
+function logLine(line) {
+  ipcRenderer.send(C.log, line);
+}
+function peerName(peer) {
+  const p = panel && panel.players ? panel.players.find((x) => x.id === peer) : null;
+  return p && p.name ? p.name : peer;
+}
+function hasRelay() {
+  return ice.some((s) => [].concat(s.urls || []).some((u) => /^turns?:/i.test(String(u))));
+}
+function current(peer, r) {
+  const n = mesh && mesh.get(peer);
+  return !!n && n.pc === r.pc && remote.get(peer) === r;
+}
+function stuckFor(r, now) {
+  return now - Math.max(r.watch.since, r.watch.lastAt);
+}
+function iceWatch(peer, r) {
+  if (!current(peer, r)) return;
+  const pc = r.pc;
+  const w = r.watch;
+  const st = pc.iceConnectionState;
+  const now = Date.now();
+  if (st === 'connected' || st === 'completed') {
+    if (w.since !== null && w.restarts > 0) logLine('peer ' + peer + ': ICE ' + st + ' after ' + w.restarts + ' restart(s), ' + Math.round((now - w.since) / 1000) + ' s stuck' + (r.pairText ? '; ' + r.pairText : ''));
+    r.watch = newWatch(peer);
+    r.watch.ufrag = w.ufrag;
+    if (w.gaveUp) { report(); render(); }
+    return;
+  }
+  const counting = st === 'checking' || st === 'disconnected' || st === 'failed' || (st === 'new' && pc.signalingState === 'stable' && !!pc.remoteDescription);
+  if (!counting) return;
+  if (w.since === null) w.since = now;
+  if (w.gaveUp) return;
+  const action = iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH);
+  if (action === 'restart') {
+    const secs = Math.round(stuckFor(r, now) / 1000);
+    if (!mesh.get(peer).restartIce()) return;
+    w.restarts++;
+    w.lastAt = now;
+    logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' (' + st + ' for ' + secs + ' s, ' + (w.lead ? 'we lead' : 'the peer did not restart') + '; ' + (r.pairText || 'no pair yet') + ')');
+  } else if (action === 'give_up') {
+    w.gaveUp = true;
+    logLine('peer ' + peer + ': no path after ' + w.restarts + ' ICE restart(s), ' + st + ' for ' + Math.round((now - w.since) / 1000) + ' s; ' + (r.pairText || 'no pair yet') + (hasRelay() ? '; the TURN relay did not get through' : '; no TURN relay is set'));
+    report();
+    render();
+  }
+}
+/** D2.9: signalling back to stable with new remote ICE credentials while stuck, and we answered: the peer restarted. */
+function notePeerRestart(peer, r) {
+  const pc = r.pc;
+  const u = iceUfrag(pc.remoteDescription && pc.remoteDescription.sdp);
+  const w = r.watch;
+  const was = w.ufrag;
+  w.ufrag = u;
+  if (!was || !u || u === was || !pc.localDescription || pc.localDescription.type !== 'answer') return;
+  if (w.since === null || w.gaveUp || !current(peer, r)) return;
+  w.restarts++;
+  w.lastAt = Date.now();
+  logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer (' + pc.iceConnectionState + ')');
+}
+function iceWatchTick() {
+  for (const [peer, r] of remote) iceWatch(peer, r);
+}
+setInterval(iceWatchTick, ICE_WATCH.tickMs);
+/** D2.9: the first peer the watchdog gave up on, as the panel and the Match tab say it; null otherwise. */
+function noPathMessage() {
+  for (const [peer, r] of remote) {
+    if (r.watch && r.watch.gaveUp) return noPathText(peerName(peer), r.pc.iceConnectionState, r.watch.restarts, hasRelay());
+  }
+  return null;
+}
+/** D2.9: each peer's candidate pair, logged when it changes (a look every 3 s) and on every 10 s counter tick. */
+async function probePairs(tick) {
+  for (const [peer, r] of [...remote]) {
+    if (typeof r.pc.getStats !== 'function') continue;
+    let info;
+    try {
+      const rep = await r.pc.getStats();
+      info = icePairInfo([...rep.values()]);
+    } catch (e) {
+      continue;
+    }
+    if (remote.get(peer) !== r) continue;
+    const key = icePairText(info, false);
+    r.pairText = icePairText(info, true);
+    const changed = key !== r.pairKey;
+    r.pairKey = key;
+    if (changed || tick) logLine('peer ' + peer + ': ' + r.pairText + ', ice ' + r.pc.iceConnectionState + (r.watch.restarts ? ', ' + r.watch.restarts + ' restart(s)' : ''));
+  }
+}
+setInterval(() => void probePairs(false), 3000);
 
 function attachAudio(r) {
   if (!micTrack) return;
@@ -941,7 +1143,7 @@ function closeRemote(peer) {
 function openPeer(peer) {
   closeRemote(peer);
   const pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle' });
-  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null };
+  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), pairKey: null, pairText: null };
   r.audio.autoplay = true;
   r.audio.srcObject = r.stream;
   // D2.8: the peer's table sound plays from its own element, muted unless that peer is up (routeTable).
@@ -968,12 +1170,16 @@ function openPeer(peer) {
     report();
     render();
   });
+  // D2.9: the watchdog (iceWatchTick) restarts a stuck connection; a state change is looked at at once.
   pc.addEventListener('iceconnectionstatechange', () => {
-    if (pc.iceConnectionState === 'failed') pc.restartIce();
+    iceWatch(peer, r);
     report();
   });
   pc.addEventListener('signalingstatechange', () => {
-    if (pc.signalingState === 'stable') void applyBitrate(r);
+    if (pc.signalingState === 'stable') {
+      void applyBitrate(r);
+      notePeerRestart(peer, r);
+    }
     report();
   });
   remote.set(peer, r);

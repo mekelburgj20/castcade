@@ -275,6 +275,26 @@ describe('createRtcHost (D2)', () => {
     expect(fake.displayHolds).toEqual({ started: 1, stopped: 1 });
   });
 
+  it('D2.9: a TURN server in the settings reaches the page and the attach line (never its credential); the page logs ICE lines', async () => {
+    const turn = { url: 'turn:relay.example.org:3478?transport=udp', username: 'castcade', credential: 's3cret' };
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store({ turn }) });
+    await host.setVr(VR_STEAM);
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    const w = fake.FakeWindow.all[0]!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect((w.webContents.sent[0]?.[1] as { ice: unknown }).ice).toEqual([
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      { urls: turn.url, username: 'castcade', credential: 's3cret' },
+    ]);
+    expect(logs.find((l) => l.startsWith('media: attach'))).toContain('2 STUN, TURN turn:relay.example.org:3478?transport=udp');
+    fromPage(w, PANEL_CHANNELS.log, 'peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet)\nsecond line');
+    fromPage(w, PANEL_CHANNELS.log, { not: 'a string' });
+    fromPage(w, PANEL_CHANNELS.log, '   ');
+    expect(logs.filter((l) => l.startsWith('media: peer'))).toEqual(['media: peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet) second line']);
+    expect(logs.join('\n')).not.toContain('s3cret');
+    await host.detach();
+  });
+
   it('VR: an offscreen window at 20 fps; attach first, then what was said before the page was ready; signals both ways', async () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
     const probe = async (): Promise<WindowProbe> => ({ outputs: [], windows });

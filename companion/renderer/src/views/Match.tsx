@@ -302,6 +302,8 @@ export function Match({ state }: { state: CastcadeState }) {
         </small>
       </div>
 
+      <TurnCard turn={st.turn} save={(t) => bridge.match.setTurn(t).then(setSt)} />
+
       <div className="card">
         <div className="row">
           <label className="field">
@@ -427,6 +429,63 @@ function turnLine(st: MatchStatus): string {
 function transferLine(t: NonNullable<MatchStatus['transfer']>): string {
   const to = t.newHost ?? 'another player';
   return t.reason === 'host_left' ? `The host left: ${to} is taking over as host…` : `${t.proposer} is handing the host over to ${to}…`;
+}
+
+/**
+ * D2.9 (2026-11-02): the TURN relay (media.json). Two players behind routers that block a direct connection (EFUKTZ)
+ * need one; it is used from the next match on. The credential is never shown back: blank keeps the saved one.
+ */
+function TurnCard({ turn, save }: { turn: MatchStatus['turn']; save: (t: { url: string; username: string; credential: string | null } | null) => Promise<void> }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [username, setUsername] = useState<string | null>(null);
+  const [credential, setCredential] = useState('');
+  const [note, setNote] = useState<string | null>(null);
+  const urlText = url ?? turn?.url ?? '';
+  const userText = username ?? turn?.username ?? '';
+  const dirty = url !== null || username !== null || credential !== '';
+  const submit = (clear: boolean) => {
+    setNote(null);
+    const t = clear || urlText.trim() === '' ? null : { url: urlText, username: userText, credential: credential === '' ? null : credential };
+    save(t).then(
+      () => {
+        setUrl(null);
+        setUsername(null);
+        setCredential('');
+        setNote(t ? 'Saved: used from the next match.' : 'Cleared: STUN only from the next match.');
+      },
+      (e: unknown) => setNote(describe(e)),
+    );
+  };
+  return (
+    <div className="card">
+      <div className="row">
+        <label className="field">
+          <span>TURN relay</span>
+          <input type="text" value={urlText} placeholder="turn:relay.example.org:3478" onChange={(e) => setUrl(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Username</span>
+          <input type="text" value={userText} onChange={(e) => setUsername(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Credential</span>
+          <input type="password" value={credential} placeholder={turn?.credentialSet ? 'saved (blank keeps it)' : ''} onChange={(e) => setCredential(e.target.value)} />
+        </label>
+        <button type="button" className="small" disabled={!dirty} onClick={() => submit(false)}>
+          Save
+        </button>
+        {turn && (
+          <button type="button" className="small" onClick={() => submit(true)}>
+            Clear
+          </button>
+        )}
+      </div>
+      <small>
+        Only if video and voice never connect (&quot;no path to …&quot;): a relay carries them when both routers block a direct connection. Used from the next match.
+        {note ? ` ${note}` : ''}
+      </small>
+    </div>
+  );
 }
 
 function mediaLine(m: MatchStatus['media']): string {

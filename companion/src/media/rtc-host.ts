@@ -299,6 +299,13 @@ export function peerChanges(before: PanelPageStatus['peers'] | null | undefined,
   return out;
 }
 
+/** D2.9: a line the page sent for companion.log: one line of text, at most 400 characters, prefixed `media: `; else null. */
+export function panelLogLine(line: unknown): string | null {
+  if (typeof line !== 'string') return null;
+  const one = line.replace(/[\r\n]+/g, ' ').trim();
+  return one ? `media: ${one.slice(0, 400)}` : null;
+}
+
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */
 export function mergeStatus(
   page: PanelPageStatus | null,
@@ -492,6 +499,11 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!fromPanel(e) || !signalling || !isSignal(m)) return;
     // Never logged (SDP and candidates carry addresses); the engine validates the shape.
     signalling.send(m.to, m.signal);
+  });
+  // D2.9: the page's own lines (ICE restarts and their outcome, the candidate pair: types and protocol, no address).
+  ipcMain.on(PANEL_CHANNELS.log, (e, line: unknown) => {
+    const l = fromPanel(e) ? panelLogLine(line) : null;
+    if (l) log.info(l);
   });
   ipcMain.on(PANEL_CHANNELS.status, (e, s: PanelPageStatus) => {
     if (!fromPanel(e)) return;
