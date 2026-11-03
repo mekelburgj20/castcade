@@ -174,6 +174,113 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   MATCH_READY the host passes it on to the others (the log's roster stays as it started) and the Match tab and panel
   show the rig each player has now.
 
+## 5a. The layer as the camera (D7.5, 2026-11-02): integration contract
+
+**Why.** A VR sender's picture has been a screen capture of VPX's VR preview window, which needs a lit desktop, the
+window in front, smaller than the display and wholly on it, and still died on Krobs' rig once VPX had focus (D2.5,
+D7.4.4, D7.4.10). The OpenXR layer sees the two eye views VPX submits (`XrCompositionLayerProjection`) in every
+`xrEndFrame`; D7.5 makes it the camera: it copies them out of the frame, crops each eye the way VPX's own preview does,
+scales, encodes to JPEG and writes them to the pipe with each eye's fov and crop. `VRPreview` becomes optional, the
+monitor may be off, the resolution follows the headset, and the receiver's stereo window can place the picture from
+the **sender's** eyes instead of standing in with its own (exact for mixed headsets).
+
+**Built this round** (`vr-layer/`, pipe protocol 3, `companion/src/media/vr-layer.ts`, `layer-camera.ts`, the
+`cameraSource` setting and its Match-tab control). **Not built: the panel page, `rtc-host.ts` and `capture-crop.ts`
+are untouched**; this section is the contract the lead wires next round.
+
+### What exists
+
+- **Pipe protocol 3** (`vr-layer/README.md` "The pipe", "The camera"): the control's `camera: {width, height, fps} |
+  null` (a per-eye box; only sent to a protocol-3 layer, so a protocol-2 control is byte for byte what it was); the
+  layer's `CVS1` status (`on` with api / source / size / fps, `off` with why, `refused` with why) and `CVF1` frames
+  (u16 jsonLength, JSON header, the two JPEG payloads left then right). The layer logs `camera: on …`, per-frame
+  timings for the first 10 frames and then every 300th, and `camera: off …` with averages and drop counts.
+- **`VrOverlay`** (`match-media-types.ts`; the OpenXR layer implements them, the SteamVR helper has none):
+  - `setCamera(req: LayerCameraRequest | null)`: ask (or stop). Sent with the control once a protocol-3 layer is on
+    the pipe and again on every new connection while asked. Idempotent for an equal request.
+  - `onCameraFrame(cb: (f: LayerCameraFrame) => void)`: every complete frame, in order. `f.width` x `f.height` is each
+    eye's JPEG size; `f.eyes[0]` left, `f.eyes[1]` right, each `{fov, rect, render, data}` (`LayerCameraEye`:
+    `fov` = `[angleLeft, angleRight, angleUp, angleDown]` radians, `render` = the view's `imageRect` size, `rect` =
+    the crop taken inside it `[x, y, w, h]` with y from the top, `data` = the JPEG bytes, a view into the message
+    buffer: hand it on, never keep more than the newest). `f.n` counts the layer's issued frames (a gap = a drop on its
+    side), `f.t` is microseconds since the layer's camera started, `f.us` the layer's own timings.
+  - `cameraStatus()` / `onCameraStatus(cb)`: `{state: 'off' | 'asked' | 'on' | 'refused', why, api, source, size,
+    lastFrameAt, frames}`.
+  - `companion.log` gets `vr-layer camera: asked …`, `… first frame …`, `… refused by the layer: …`, and a counter line
+    every 10 s: `vr-layer camera: N frames in 10 s (WxH per eye, K KB a frame), D dropped by the layer; on`.
+- **Policy** (`layer-camera.ts`, pure, tested): `decideCamera({setting, rig, runtime, layerProtocol})` →
+  `{source: 'layer' | 'screen', reason}` (layer only when the setting says so, the rig is a headset on a non-SteamVR
+  runtime, and the layer on the pipe is protocol 3+; otherwise the screen capture with the reason);
+  `cameraRequestFor({eyeHeight?, fps?, sourceEye?})` → the box (720x1440 at 30 fps by default: portrait 1:2, the
+  receiver's side-by-side feed box height, never taller than the eye render); `cameraFallback(status, now, askedAt,
+  sending)` → `{fallBack, reason}` (refused; stopped by the layer; no frame within 8 s of asking; frames stopped for
+  3 s while sending).
+- **Setting**: `match.json` `cameraSource: 'screen' | 'layer'` (default `screen`), the Match tab's **Camera** select
+  (`Screen capture of the VR preview window` / `VR layer (experimental)`), `MatchHost.setSettings` logs a change.
+- `MediaSignal` of kind `stereo` has an optional `eyes?: LayerCameraEyeGeometry[] | null` (the type only; nobody sends
+  it yet).
+
+### What the lead wires (next round)
+
+1. **Choosing the source** (`rtc-host.ts`, at attach and when the setting or the layer's protocol changes): `const d =
+   decideCamera({ setting: settings.cameraSource, rig, runtime, layerProtocol })`. For `screen`, everything as today.
+   For `layer`: `overlay.setCamera(cameraRequestFor())`, log `media: camera: the VR layer (…)`, and tell the page
+   (`PANEL_CHANNELS.capture` with a new `PanelCapture` shape, or a new channel `castcade-panel:camera`) that frames
+   will come from main. Keep the capture pick's pieces that still matter (the VPX pid for table sound, the window
+   probe for the Match tab) but do not open the screen capture while the layer feeds. Run `cameraFallback(status,
+   Date.now(), askedAt, sending)` on a 1 s tick and on every camera status; on `fallBack`, log `media: camera: back to
+   the screen capture: <reason>`, `setCamera(null)`, and pick the capture as today (`pickCapture`). A later `on`
+   status does not switch back within the same match (no flapping); the next attach decides afresh.
+2. **Feeding the page** (`panel-page.ts`): frames go main → page over IPC as `{n, width, height, left: Uint8Array,
+   right: Uint8Array}` (the two JPEGs, about 150–400 KB a frame: Electron's structured clone carries them; one frame
+   in flight with an ack like the theater feed, newest wins, older dropped and counted). In the page:
+   `createImageBitmap(new Blob([left], {type: 'image/jpeg'}))` and the same for the right, then
+   `ctx.drawImage(leftBitmap, 0, 0, w, h)` and `ctx.drawImage(rightBitmap, w, 0, w, h)` onto the **same canvas whose
+   track the peers already get** (`canvas.captureStream(VIDEO.fps)`, `videoTrack`), sized `2w x h`: nothing
+   renegotiates, `applyBitrate` sees a side-by-side shape (`videoBitrateFor` already rates 1440x1440 at about
+   8 Mbps), `contentHint` stays `detail`. The hidden `<video id="src">` and `paintFrame` are simply not used while
+   the layer feeds; `cap` is a synthetic `PanelCapture` (`sourceId: 'layer-camera'`, `out: {2w, h}`, `stereo: 'sbs'`,
+   `label: 'VR layer camera'`) so `report()`, the Match tab's `captureSource` / `captureCrop` and the 10 s counters
+   (`capture: N frames`) keep working, with the counter fed by decoded camera frames. Decode failures (a truncated
+   JPEG) are skipped and counted; the stall watch (`srcTick`) uses the camera frame counter as its mark so a stalled
+   layer shows as `capture stalled` and goes through the same fallback.
+3. **The stereo declaration carries the sender's eyes** (`MediaSignal` `stereo`): while the layer feeds, `noteStereo`
+   sends `{kind: 'stereo', stereo: 'sbs', eyes: [geometryOf(left), geometryOf(right)]}` (fov, rect, render from the
+   newest frame; re-sent when they change, which is at most once per VPX resolution change) and `stereo: 'sbs'` is
+   forced whatever `previewStereo` says. The receiver keeps `peerStereo` and adds `peerEyes`; the theater feed
+   (`feedTick`) passes the eyes to main with each video frame (`VideoFrame.eyes?`), `vr-layer.ts` puts them on the
+   control as `"eyes": [{"fov": […], "rect": […], "render": […]}, …]` (a new optional control field; the layer's
+   `placeWindows` then uses the sender's fov, render and crop instead of its own `appFov` / `appRect` and the
+   centre-crop it assumes: the tangent rect is `tL' = tL + (x / W)(tR - tL)` etc. with the sender's numbers, the
+   same derivation as §D7.4.5 with the crop given rather than inferred). Until the layer side exists, a receiver that
+   gets `eyes` ignores them and the picture is placed as today (the sender's crop is the same centre crop VPX would
+   have made for a 1:2 window, so the current geometry is already right when both rigs have the same headset).
+4. **Fallback rules** (all logged, all visible on the Match tab through `captureSource` and `captureWarning`): PC
+   rig → screen; SteamVR rig → screen; protocol-2 layer → screen with "restart VPX with the new layer"; refused → screen
+   with the layer's reason; no frame within 8 s → screen; frames stopped for 3 s while sending → screen (and the
+   `capture stalled` line); the pipe closes mid-match → the capture (the layer comes back with VPX, the next attach
+   decides). The screen capture never falls *forward* to the layer within a match.
+5. **Receiver box**: a camera frame is `2w x h` = 1440x1440 by default; `VIDEO_FEED_MAX` (D7.4.9 raises the
+   side-by-side box to 1440 high) passes it through unscaled.
+
+### Decisions taken alone this round
+
+- **Wire encoding JPEG, quality 85, one JPEG per eye, the right eye encoded on a second thread** (stb_image_write,
+  vendored, public domain). Raw at 2x720x1440x30 would be 250 MB/s; the pipe could carry it, the IPC hop into the page
+  could not. Two JPEGs rather than one side-by-side image so the two encodes run in parallel and the page draws each
+  half where it belongs with no cropping.
+- **Default box 720x1440 at 30 fps per eye** (not 900x1800): the receiver's feed box is 1440 high (D7.4.9), the
+  shape is the runbook's 1:2, and 2x720x1440 is 2.1 Mpx a frame: within what a scalar JPEG encoder on two threads
+  manages at 30 fps on a desktop core (the per-frame `encode` log line says whether it does; above about 30 000 us,
+  ask for a smaller box).
+- **GPU work on the render thread is a blit plus a pixel-pack readback behind a fence, mapped one or two frames
+  later**; the worker reads the mapped memory and lets the slot go before encoding, so the render thread never
+  waits and never copies a full frame. Two slots; frames are dropped, never queued.
+- **Crop before scale, the box's aspect, centred**: what VPX's own both-eyes preview does, so the receiver's existing
+  stereo-window geometry is already right for same-headset pairs, and the frame header makes it exact for others.
+- **Refusals are loud and specific** (multisampled swapchain, non-8-bit format, OpenGL below 3.2, no projection layer
+  the layer saw created) and always end in the screen capture.
+
 ## 6. Checks only the rig can answer (run before the first match)
 
 1. **VR controller input under the lock** (15 min): with a table open in VR, create `turn.lock` by hand; the flippers

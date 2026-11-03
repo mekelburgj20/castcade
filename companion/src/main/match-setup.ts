@@ -46,6 +46,11 @@ export interface MatchSettings {
    * a smaller, sharper picture (the same pixels over less of the view). Sent live in the layer's control.
    */
   theaterScale: number;
+   * D7.5 (2026-11-02): where a VR sender's picture comes from (media/layer-camera.ts): `screen`, the screen capture of
+   * VPX's VR preview window (the default); `layer`, the Castcade OpenXR layer copies the eye views out of VPX's frame
+   * (experimental; falls back to the screen capture on PC rigs, SteamVR rigs and a layer that cannot read the frame).
+   */
+  cameraSource: 'screen' | 'layer';
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -60,6 +65,7 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   tableSendMine: true,
   tableHearOthers: true,
   theaterScale: 1,
+  cameraSource: 'screen',
 };
 
 export function cleanPort(v: unknown): number | null {
@@ -94,6 +100,7 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (typeof p.tableSendMine === 'boolean') next.tableSendMine = p.tableSendMine;
   if (typeof p.tableHearOthers === 'boolean') next.tableHearOthers = p.tableHearOthers;
   if ('theaterScale' in p) next.theaterScale = cleanTheaterScale(p.theaterScale) ?? current.theaterScale;
+  if (p.cameraSource === 'screen' || p.cameraSource === 'layer') next.cameraSource = p.cameraSource;
   return next;
 }
 

@@ -76,7 +76,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -393,6 +393,17 @@ export function Match({ state }: { state: CastcadeState }) {
             <small>
               What your VR preview window shows, told to the other player's headset. Both eyes in a window as tall as your monitor and about as wide (1080x1080 on
               1080p) shows them your table in stereo, tall like pinball.
+            </small>
+          </label>
+          <label className="field">
+            <span>Camera</span>
+            <select value={st.settings.cameraSource} onChange={(e) => setView({ cameraSource: e.target.value === 'layer' ? 'layer' : 'screen' })}>
+              <option value="screen">Screen capture of the VR preview window</option>
+              <option value="layer">VR layer (experimental)</option>
+            </select>
+            <small>
+              VR layer: the Castcade OpenXR layer sends your two eye views straight out of VPX, so no preview window is needed and your monitor may be off; it
+              needs the layer from this Castcade version in VPX (restart VPX after updating) and falls back to the screen capture on PC and SteamVR rigs.
             </small>
           </label>
         </div>

@@ -10,7 +10,8 @@
 // Rules:
 //   - active only when the host exe is VPinballX*.exe; anywhere else every function passes straight through;
 //   - hooks xrCreateSession (learns the graphics binding: D3D11 or OpenGL on Win32; any other → that session passes
-//     through, logged with the binding's name), xrDestroySession, xrEndFrame, xrDestroyInstance;
+//     through, logged with the binding's name), xrDestroySession, xrEndFrame, xrDestroyInstance (and, D7.5, the
+//     swapchain functions);
 //   - input comes over \\.\pipe\castcade-panel (panel_pipe.cpp): panel frames, video frames, the mode;
 //   - everything of ours (spaces, swapchains, the theater screen's place, the fade) belongs to ONE session: the owner's
 //     log (0.2.26) shows OpenComposite creating a D3D11 session 2 s before the real OpenGL one, so nothing is per process;
@@ -21,6 +22,11 @@
 //     was ("the stereo window", above placeWindows); a mono video (or the panel frame) is one 2.4 m screen 2.6 m
 //     ahead. Into or out of theater the view dips to black over 300 ms; with no frame from the companion for 5 s the
 //     mode falls back to hidden;
+//   - D7.5 (2026-11-02), the camera: hooks xrCreateSwapchain / xrDestroySwapchain / xrEnumerateSwapchainImages /
+//     xrAcquireSwapchainImage / xrReleaseSwapchainImage to know the app's swapchain images and which one each
+//     xrEndFrame submits; when the companion asks (the control's "camera"), camera.cpp copies the two eye views of
+//     the app's projection layer out of VPX's frame and writes them to the pipe as JPEG (a VR sender's picture without
+//     a screen capture);
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
@@ -49,6 +55,7 @@
 #include <string>
 #include <vector>
 
+#include "camera.h"
 #include "layer_log.h"
 #include "panel_pipe.h"
 
@@ -239,11 +246,17 @@ struct Session {
   int windowLogs = 0;
   std::array<XrCompositionLayerQuad, 5> quads{};
   std::vector<const XrCompositionLayerBaseHeader*> layers;
+  // D7.5: the camera (made on first need); `cameraSeen` = the control asked for it at the last tick, so one more tick
+  // runs after it is turned off (to stop it).
+  std::unique_ptr<Camera> camera;
+  bool cameraSeen = false;
 };
 
 std::mutex g_mutex;
 std::map<XrInstance, std::shared_ptr<Instance>> g_instances;
 std::map<XrSession, std::shared_ptr<Session>> g_sessions;
+// D7.5: the app's swapchains (never ours: the layer calls the next layer's functions directly for its own), by handle.
+std::map<XrSwapchain, std::shared_ptr<AppSwapchain>> g_appSwapchains;
 PFN_xrGetInstanceProcAddr g_lastNextGipa = nullptr;  // for calls on XR_NULL_HANDLE (one runtime per process)
 std::atomic<bool> g_disabled{false};
 
@@ -885,12 +898,46 @@ XrCompositionLayerQuad& quadAt(Session& s, size_t i, XrSpace space, const Surfac
   return q;
 }
 
+// D7.5: the camera's turn in this xrEndFrame: the two eyes of the app's projection layer (fov, rect, the swapchain
+// record the hooks keep) to camera.cpp, which issues the GPU copy; nothing when the companion never asked.
+void cameraTick(Session& s, const XrFrameEndInfo& info, const Control& c, std::unique_ptr<GlContextScope>& scope) {
+  if (!c.camera.on && !s.cameraSeen) return;
+  s.cameraSeen = c.camera.on;
+  if (!s.camera) s.camera = std::make_unique<Camera>();
+  if (!glReady(s, scope)) return;
+  std::array<CameraView, 2> views{};
+  size_t count = 0;
+  for (uint32_t i = 0; i < info.layerCount && count == 0; i++) {
+    const XrCompositionLayerBaseHeader* l = info.layers[i];
+    if (!l || l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) continue;
+    const auto* p = reinterpret_cast<const XrCompositionLayerProjection*>(l);
+    if (p->viewCount < 2 || !p->views) continue;
+    std::lock_guard<std::mutex> lk(g_mutex);
+    for (size_t e = 0; e < 2; e++) {
+      const XrCompositionLayerProjectionView& pv = p->views[e];
+      CameraView& v = views[e];
+      v.fovLeft = pv.fov.angleLeft, v.fovRight = pv.fov.angleRight, v.fovUp = pv.fov.angleUp, v.fovDown = pv.fov.angleDown;
+      v.rectX = pv.subImage.imageRect.offset.x, v.rectY = pv.subImage.imageRect.offset.y;
+      v.rectW = pv.subImage.imageRect.extent.width, v.rectH = pv.subImage.imageRect.extent.height;
+      v.arrayIndex = pv.subImage.imageArrayIndex;
+      auto it = g_appSwapchains.find(pv.subImage.swapchain);
+      if (it != g_appSwapchains.end()) {
+        v.swapchain = *it->second;
+        v.known = s.api == Api::OpenGL ? !v.swapchain.glImages.empty() : !v.swapchain.d3dImages.empty();
+      }
+    }
+    count = 2;
+  }
+  s.camera->tick(c.camera, s.api == Api::OpenGL ? CameraApi::OpenGL : CameraApi::D3D11, s.device, count ? views.data() : nullptr, count);
+}
+
 // The layers of this frame into s.layers. False: send the app's frame as it is.
 bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   static const XrPosef lowPose = facingEye(kPanelLowOffset), centrePose = facingEye(kPanelCentreOffset);
   static const XrPosef backdropPose = ahead(kBackdropDistanceM), shadePose = ahead(kShadeDistanceM);
   std::unique_ptr<GlContextScope> scope;
   noteProjection(s, info);
+  cameraTick(s, info, c, scope);
   uploadStream(s, s.panel, Stream::Panel, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
   if (c.mode == ViewMode::Theater) uploadStream(s, s.video, Stream::Video, scope);
@@ -1045,8 +1092,113 @@ XrResult XRAPI_CALL Hook_xrDestroySession(XrSession session) {
     else if (!g_instances.empty()) next = g_instances.begin()->second->next.destroySession;
   }
   if (!next) return XR_ERROR_HANDLE_INVALID;
+  // D7.5: the camera's worker must let go of the session's memory before the session goes.
+  if (s && s->camera) {
+    try {
+      s->camera->shutdown(s->dc, s->rc);
+    } catch (...) {
+      disable("a fault while stopping the camera at xrDestroySession");
+    }
+  }
   // Our space and swapchain are the session's children: destroying the session destroys them.
   return next(session);
+}
+
+// ---- D7.5: the app's swapchains ---------------------------------------------------------------------------------------
+// The next layer's functions for a handle the layer did not record (another instance's): one runtime per process.
+Next anyNext() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  return g_instances.empty() ? Next{} : g_instances.begin()->second->next;
+}
+
+XrResult XRAPI_CALL Hook_xrCreateSwapchain(XrSession session, const XrSwapchainCreateInfo* createInfo, XrSwapchain* swapchain) {
+  const auto s = findSession(session);
+  const Next next = s ? s->next : anyNext();
+  if (!next.createSwapchain) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = next.createSwapchain(session, createInfo, swapchain);
+  if (XR_FAILED(r) || !swapchain || !createInfo || g_disabled.load()) return r;
+  try {
+    auto rec = std::make_shared<AppSwapchain>();
+    rec->format = createInfo->format;
+    rec->width = createInfo->width;
+    rec->height = createInfo->height;
+    rec->arraySize = createInfo->arraySize ? createInfo->arraySize : 1;
+    rec->sampleCount = createInfo->sampleCount ? createInfo->sampleCount : 1;
+    std::lock_guard<std::mutex> lk(g_mutex);
+    g_appSwapchains[*swapchain] = std::move(rec);
+  } catch (...) {
+    disable("a fault while recording the app's swapchain");
+  }
+  return r;
+}
+
+XrResult XRAPI_CALL Hook_xrDestroySwapchain(XrSwapchain swapchain) {
+  const Next next = anyNext();
+  if (!next.destroySwapchain) return XR_ERROR_HANDLE_INVALID;
+  {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    g_appSwapchains.erase(swapchain);
+  }
+  return next.destroySwapchain(swapchain);
+}
+
+XrResult XRAPI_CALL Hook_xrEnumerateSwapchainImages(XrSwapchain swapchain, uint32_t capacity, uint32_t* countOutput, XrSwapchainImageBaseHeader* images) {
+  const Next next = anyNext();
+  if (!next.enumerateSwapchainImages) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = next.enumerateSwapchainImages(swapchain, capacity, countOutput, images);
+  if (XR_FAILED(r) || !images || capacity == 0 || !countOutput || g_disabled.load()) return r;
+  try {
+    const uint32_t n = *countOutput < capacity ? *countOutput : capacity;
+    std::lock_guard<std::mutex> lk(g_mutex);
+    auto it = g_appSwapchains.find(swapchain);
+    if (it == g_appSwapchains.end()) return r;
+    AppSwapchain& rec = *it->second;
+    if (images->type == XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR) {
+      const auto* gl = reinterpret_cast<const XrSwapchainImageOpenGLKHR*>(images);
+      rec.glImages.assign(n, 0);
+      for (uint32_t i = 0; i < n; i++) rec.glImages[i] = gl[i].image;
+    } else if (images->type == XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR) {
+      const auto* d3d = reinterpret_cast<const XrSwapchainImageD3D11KHR*>(images);
+      rec.d3dImages.assign(n, nullptr);
+      for (uint32_t i = 0; i < n; i++) rec.d3dImages[i] = d3d[i].texture;
+    }
+  } catch (...) {
+    disable("a fault while recording the app's swapchain images");
+  }
+  return r;
+}
+
+XrResult XRAPI_CALL Hook_xrAcquireSwapchainImage(XrSwapchain swapchain, const XrSwapchainImageAcquireInfo* acquireInfo, uint32_t* index) {
+  const Next next = anyNext();
+  if (!next.acquireSwapchainImage) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = next.acquireSwapchainImage(swapchain, acquireInfo, index);
+  if (XR_FAILED(r) || !index || g_disabled.load()) return r;
+  try {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    auto it = g_appSwapchains.find(swapchain);
+    if (it != g_appSwapchains.end() && it->second->acquired.size() < 64) it->second->acquired.push_back(*index);
+  } catch (...) {
+    disable("a fault while recording an acquired swapchain image");
+  }
+  return r;
+}
+
+XrResult XRAPI_CALL Hook_xrReleaseSwapchainImage(XrSwapchain swapchain, const XrSwapchainImageReleaseInfo* releaseInfo) {
+  const Next next = anyNext();
+  if (!next.releaseSwapchainImage) return XR_ERROR_HANDLE_INVALID;
+  const XrResult r = next.releaseSwapchainImage(swapchain, releaseInfo);
+  if (XR_FAILED(r) || g_disabled.load()) return r;
+  try {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    auto it = g_appSwapchains.find(swapchain);
+    if (it != g_appSwapchains.end() && !it->second->acquired.empty()) {
+      it->second->lastReleased = static_cast<int32_t>(it->second->acquired.front());
+      it->second->acquired.erase(it->second->acquired.begin());
+    }
+  } catch (...) {
+    disable("a fault while recording a released swapchain image");
+  }
+  return r;
 }
 
 XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameEndInfo* frameEndInfo) {
@@ -1089,6 +1241,7 @@ XrResult XRAPI_CALL Hook_xrEndFrame(XrSession session, const XrFrameEndInfo* fra
 
 XrResult XRAPI_CALL Hook_xrDestroyInstance(XrInstance instance) {
   std::shared_ptr<Instance> inst;
+  std::vector<std::shared_ptr<Session>> gone;
   {
     std::lock_guard<std::mutex> lk(g_mutex);
     auto it = g_instances.find(instance);
@@ -1096,7 +1249,22 @@ XrResult XRAPI_CALL Hook_xrDestroyInstance(XrInstance instance) {
       inst = it->second;
       g_instances.erase(it);
     }
-    for (auto s = g_sessions.begin(); s != g_sessions.end();) s = s->second->instance == instance ? g_sessions.erase(s) : std::next(s);
+    for (auto s = g_sessions.begin(); s != g_sessions.end();) {
+      if (s->second->instance != instance) {
+        ++s;
+        continue;
+      }
+      gone.push_back(s->second);
+      s = g_sessions.erase(s);
+    }
+  }
+  for (const auto& s : gone) {
+    if (!s->camera) continue;
+    try {
+      s->camera->shutdown(s->dc, s->rc);
+    } catch (...) {
+      disable("a fault while stopping the camera at xrDestroyInstance");
+    }
   }
   return inst ? inst->next.destroyInstance(instance) : XR_ERROR_HANDLE_INVALID;
 }
@@ -1125,6 +1293,11 @@ XrResult XRAPI_CALL Hook_xrGetInstanceProcAddr(XrInstance instance, const char* 
     else if (std::strcmp(name, "xrDestroySession") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrDestroySession);
     else if (std::strcmp(name, "xrEndFrame") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrEndFrame);
     else if (std::strcmp(name, "xrDestroyInstance") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrDestroyInstance);
+    else if (std::strcmp(name, "xrCreateSwapchain") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrCreateSwapchain);
+    else if (std::strcmp(name, "xrDestroySwapchain") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrDestroySwapchain);
+    else if (std::strcmp(name, "xrEnumerateSwapchainImages") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrEnumerateSwapchainImages);
+    else if (std::strcmp(name, "xrAcquireSwapchainImage") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrAcquireSwapchainImage);
+    else if (std::strcmp(name, "xrReleaseSwapchainImage") == 0) mine = reinterpret_cast<PFN_xrVoidFunction>(&Hook_xrReleaseSwapchainImage);
     if (mine) {
       *function = mine;
       return XR_SUCCESS;
