@@ -41,6 +41,11 @@ export interface MatchSettings {
   tableMuteMine: boolean;
   tableSendMine: boolean;
   tableHearOthers: boolean;
+  /**
+   * D7.4.9 (2026-11-02): the theater window's size against life size (0.25–4, the layer's range): 1 life size, 0.8 or 0.6
+   * a smaller, sharper picture (the same pixels over less of the view). Sent live in the layer's control.
+   */
+  theaterScale: number;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -54,11 +59,18 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   tableMuteMine: true,
   tableSendMine: true,
   tableHearOthers: true,
+  theaterScale: 1,
 };
 
 export function cleanPort(v: unknown): number | null {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
   return typeof n === 'number' && Number.isInteger(n) && n >= 1024 && n <= 65535 ? n : null;
+}
+
+/** D7.4.9: a finite number in the layer's 0.25–4 range (clamped, two decimals), else null. */
+export function cleanTheaterScale(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.round(Math.min(4, Math.max(0.25, v)) * 100) / 100;
 }
 
 /** ParticipantInfo.displayName: 1–64 characters. */
@@ -81,6 +93,7 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (typeof p.tableMuteMine === 'boolean') next.tableMuteMine = p.tableMuteMine;
   if (typeof p.tableSendMine === 'boolean') next.tableSendMine = p.tableSendMine;
   if (typeof p.tableHearOthers === 'boolean') next.tableHearOthers = p.tableHearOthers;
+  if ('theaterScale' in p) next.theaterScale = cleanTheaterScale(p.theaterScale) ?? current.theaterScale;
   return next;
 }
 
