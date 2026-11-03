@@ -22,13 +22,33 @@
  *   - `stop` closes the pipe. The registry entry stays: without a client the layer draws nothing;
  *   - D7.3.3 (2026-11-02): packaged, the json registered is the per-version copy under `%LOCALAPPDATA%\Castcade\vr-layer\`
  *     (`vr-layer-stage.ts`), and the companion registers it at start too (`registerVrLayer`), not only here. `layerAge`
- *     says when the VPX running started before that registration: the status then carries `vpxBeforeLayer`.
+ *     says when the VPX running started before that registration: the status then carries `vpxBeforeLayer`;
+ *   - D7.5 (2026-11-02), pipe protocol 3, the layer camera (vr-layer/README.md "The camera"; `layer-camera.ts` is the
+ *     policy): `setCamera` puts a `camera` field on the control (only to a protocol-3 layer; a protocol-2 control is
+ *     byte for byte what it was); the layer's answers come back on the same pipe as messages shaped magic + u32
+ *     length + payload (`createLayerReader` cuts them out of the byte stream, whatever the chunking, and resyncs on
+ *     garbage): `CVS1` status (on / off / refused, `cameraStatus`) and `CVF1` frames (`onCameraFrame`: both eyes as
+ *     JPEG with their fov and crop). Counters go to the log every 10 s while the camera is asked, like the capture's.
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { connect as netConnect } from 'node:net';
 import { join, resolve } from 'node:path';
-import { VR_LAYER_VIDEO_MAGIC, type PanelFrameSource, type VideoFrameSource, type VrOverlay, type VrOverlayStatus, type VrStereo, type VrViewMode } from './match-media-types.js';
+import {
+  VR_LAYER_CAMERA_FRAME_MAGIC,
+  VR_LAYER_CAMERA_STATUS_MAGIC,
+  VR_LAYER_VIDEO_MAGIC,
+  type LayerCameraEye,
+  type LayerCameraFrame,
+  type LayerCameraRequest,
+  type LayerCameraStatus,
+  type PanelFrameSource,
+  type VideoFrameSource,
+  type VrOverlay,
+  type VrOverlayStatus,
+  type VrStereo,
+  type VrViewMode,
+} from './match-media-types.js';
 import { controlMessage, createPanelFrameWriter, type FrameStream } from './panel-frame-writer.js';
 import type { VrOverlayPathInput } from './vr-overlay.js';
 import type { LayerAge } from './vr-layer-stage.js';
@@ -38,17 +58,194 @@ export const VR_LAYER_PIPE = '\\\\.\\pipe\\castcade-panel';
 export const OPENXR_IMPLICIT_LAYERS_KEY = 'HKCU\\SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit';
 export const CONNECT_RETRY_MS = 2000;
 export const RESTART_VPX_AFTER_MS = 20_000;
-/** D7.4: the pipe protocol this side speaks (vr-layer/src/panel_pipe.h kPipeProtocol); a layer without a hello is 1. */
-export const VR_LAYER_PROTOCOL = 2;
+/**
+ * The pipe protocol this side speaks (vr-layer/src/panel_pipe.h kPipeProtocol); a layer without a hello is 1. D7.4: 2
+ * (modes, theater). D7.5: 3 (the camera: the control's `camera`, the layer's CVF1 / CVS1).
+ */
+export const VR_LAYER_PROTOCOL = 3;
+/** D7.5: the first protocol with the camera. */
+export const VR_LAYER_CAMERA_PROTOCOL = 3;
 export const VR_LAYER_HELLO_MAGIC = 'CVH1';
 /** D7.4: the panel's place in panel mode: below the playfield's line of sight (the layer's "center" is the D7.3 one). */
 export const VR_LAYER_PANEL_POS = 'low';
+/** D7.5: the largest CVF1 the reader accepts (two JPEG eyes of a few hundred KB each; the layer refuses larger first). */
+export const CAMERA_FRAME_MAX_BYTES = 32 * 1024 * 1024;
+/** D7.5: the largest other layer → companion message (a CVS1 is about 100 bytes). */
+export const LAYER_MESSAGE_MAX_BYTES = 64 * 1024;
+/** D7.5: the camera counters, like the capture's. */
+export const CAMERA_COUNTERS_MS = 10_000;
 
 /** The layer's protocol from its hello (8 bytes: "CVH1", u32 version), or null while fewer than 8 bytes are in or it is not one. */
 export function parseHello(b: Buffer): number | null {
   if (b.length < 8 || b.toString('latin1', 0, 4) !== VR_LAYER_HELLO_MAGIC) return null;
   return b.readUInt32LE(4);
 }
+
+// ---- D7.5: the layer's messages ------------------------------------------------------------------------------------
+
+/** D7.5: what the layer says about its camera (CVS1). */
+export interface LayerCameraStatusMessage {
+  camera: 'on' | 'off' | 'refused';
+  why: string;
+  api?: string;
+  source?: [number, number];
+  size?: [number, number];
+  fps?: number;
+}
+
+export type LayerMessage =
+  | { kind: 'hello'; protocol: number }
+  | { kind: 'frame'; frame: LayerCameraFrame }
+  | { kind: 'status'; status: LayerCameraStatusMessage }
+  /** A well-shaped message this companion does not know (a newer layer): skipped whole. */
+  | { kind: 'unknown'; magic: string; length: number }
+  /** A known magic whose payload did not parse: skipped whole. */
+  | { kind: 'bad'; magic: string; reason: string }
+  /** Bytes that were no message at all, dropped one by one until a magic was found again. */
+  | { kind: 'garbage'; bytes: number };
+
+const isInt = (v: unknown, min = 0): v is number => typeof v === 'number' && Number.isInteger(v) && v >= min;
+const isNums = (v: unknown, n: number): v is number[] => Array.isArray(v) && v.length === n && v.every((x) => typeof x === 'number' && Number.isFinite(x));
+
+/**
+ * D7.5: a CVF1 payload (vr-layer/README.md "The camera"): u16 jsonLength, the JSON header, the eyes' JPEG bytes back to
+ * back. Null when it does not parse (a length that does not add up, a header without two eyes). The eyes' `data` are
+ * views into `body` (no copy): the caller hands over the buffer.
+ */
+export function parseCameraFrame(body: Buffer): LayerCameraFrame | null {
+  if (body.length < 2) return null;
+  const jsonLen = body.readUInt16LE(0);
+  if (2 + jsonLen > body.length) return null;
+  let h: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(body.toString('utf8', 2, 2 + jsonLen));
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    h = parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (h.enc !== 'jpeg' || !isInt(h.n) || !isInt(h.t) || !isInt(h.w, 1) || !isInt(h.h, 1) || !Array.isArray(h.eyes) || h.eyes.length !== 2) return null;
+  const eyes: LayerCameraEye[] = [];
+  let at = 2 + jsonLen;
+  for (const raw of h.eyes as unknown[]) {
+    if (typeof raw !== 'object' || raw === null) return null;
+    const e = raw as Record<string, unknown>;
+    if (!isNums(e.fov, 4) || !isNums(e.rect, 4) || !isNums(e.render, 2) || !isInt(e.len, 1)) return null;
+    if (at + e.len > body.length) return null;
+    eyes.push({
+      fov: [e.fov[0]!, e.fov[1]!, e.fov[2]!, e.fov[3]!],
+      rect: [e.rect[0]!, e.rect[1]!, e.rect[2]!, e.rect[3]!],
+      render: [e.render[0]!, e.render[1]!],
+      data: body.subarray(at, at + e.len),
+    });
+    at += e.len;
+  }
+  if (at !== body.length) return null;
+  const us = h.us;
+  const timings =
+    typeof us === 'object' && us !== null && ['issue', 'map', 'copy', 'enc'].every((k) => isInt((us as Record<string, unknown>)[k]))
+      ? { issue: (us as Record<string, number>).issue!, map: (us as Record<string, number>).map!, copy: (us as Record<string, number>).copy!, enc: (us as Record<string, number>).enc! }
+      : null;
+  return { n: h.n, t: h.t, encoding: 'jpeg', width: h.w, height: h.h, eyes, us: timings };
+}
+
+function parseCameraStatus(body: Buffer): LayerCameraStatusMessage | null {
+  try {
+    const parsed: unknown = JSON.parse(body.toString('utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const s = parsed as Record<string, unknown>;
+    if (s.camera !== 'on' && s.camera !== 'off' && s.camera !== 'refused') return null;
+    const out: LayerCameraStatusMessage = { camera: s.camera, why: typeof s.why === 'string' ? s.why : '' };
+    if (typeof s.api === 'string') out.api = s.api;
+    if (isNums(s.source, 2)) out.source = [s.source[0]!, s.source[1]!];
+    if (isNums(s.size, 2)) out.size = [s.size[0]!, s.size[1]!];
+    if (isInt(s.fps)) out.fps = s.fps;
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+export interface LayerReader {
+  /** The messages completed by this chunk, in order. */
+  push(chunk: Buffer): LayerMessage[];
+}
+
+/**
+ * D7.5: cuts the layer's messages out of the pipe's byte stream (a `net.Socket` splits and joins writes as it likes).
+ * Every message is magic + u32 length + payload, except the hello (magic + u32 protocol, no payload). A 4-byte magic
+ * of the form `CV??` with a length inside the limits is a message (known or not); anything else is garbage, dropped a
+ * byte at a time until a magic lines up again (a frame written across a reconnect, a stream out of step).
+ */
+export function createLayerReader(): LayerReader {
+  let head: Buffer = Buffer.alloc(0);
+  let body: { buf: Buffer; filled: number; magic: string } | null = null;
+  let garbage = 0;
+  const decode = (magic: string, buf: Buffer): LayerMessage => {
+    if (magic === VR_LAYER_CAMERA_FRAME_MAGIC) {
+      const frame = parseCameraFrame(buf);
+      return frame ? { kind: 'frame', frame } : { kind: 'bad', magic, reason: 'the frame header or its lengths do not parse' };
+    }
+    if (magic === VR_LAYER_CAMERA_STATUS_MAGIC) {
+      const status = parseCameraStatus(buf);
+      return status ? { kind: 'status', status } : { kind: 'bad', magic, reason: 'the status is not JSON with a camera state' };
+    }
+    return { kind: 'unknown', magic, length: buf.length };
+  };
+  return {
+    push(chunk) {
+      const out: LayerMessage[] = [];
+      const flushGarbage = () => {
+        if (garbage > 0) out.push({ kind: 'garbage', bytes: garbage });
+        garbage = 0;
+      };
+      let at = 0;
+      while (at < chunk.length) {
+        if (body) {
+          const take = Math.min(body.buf.length - body.filled, chunk.length - at);
+          chunk.copy(body.buf, body.filled, at, at + take);
+          body.filled += take;
+          at += take;
+          if (body.filled === body.buf.length) {
+            out.push(decode(body.magic, body.buf));
+            body = null;
+          }
+          continue;
+        }
+        const take = Math.min(8 - head.length, chunk.length - at);
+        head = head.length === 0 ? chunk.subarray(at, at + take) : Buffer.concat([head, chunk.subarray(at, at + take)]);
+        at += take;
+        if (head.length < 8) break;
+        const magic = head.toString('latin1', 0, 4);
+        const len = head.readUInt32LE(4);
+        if (magic === VR_LAYER_HELLO_MAGIC) {
+          flushGarbage();
+          out.push({ kind: 'hello', protocol: len });
+          head = Buffer.alloc(0);
+          continue;
+        }
+        const max = magic === VR_LAYER_CAMERA_FRAME_MAGIC ? CAMERA_FRAME_MAX_BYTES : LAYER_MESSAGE_MAX_BYTES;
+        if (!/^CV[A-Z0-9]{2}$/.test(magic) || len > max) {
+          // Not a message: one byte gone, the header window slides on.
+          garbage++;
+          head = Buffer.from(head.subarray(1));
+          continue;
+        }
+        flushGarbage();
+        head = Buffer.alloc(0);
+        if (len === 0) {
+          out.push(decode(magic, Buffer.alloc(0)));
+          continue;
+        }
+        body = { buf: Buffer.allocUnsafe(len), filled: 0, magic };
+      }
+      return out;
+    },
+  };
+}
+
+const sameRequest = (a: LayerCameraRequest | null, b: LayerCameraRequest | null): boolean =>
+  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps);
 
 /**
  * Where the layer's manifest is: packaged, `resources/vr-layer/` (fetch-vr-layer.mjs, shipped by electron-builder.yml);
@@ -180,6 +377,37 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let protocol = 1;
   let lastControl: string | null = null;
   let oldLayerLogged = false;
+  // D7.5: the camera: what is asked, what the layer said, the frame listeners and the 10 s counters.
+  let cameraReq: LayerCameraRequest | null = null;
+  let camera: LayerCameraStatus = { state: 'off', why: null, lastFrameAt: null, frames: 0 };
+  const frameListeners = new Set<(f: LayerCameraFrame) => void>();
+  const cameraListeners = new Set<(s: LayerCameraStatus) => void>();
+  let counterTimer: ReturnType<typeof setInterval> | null = null;
+  let counted = { frames: 0, bytes: 0, lastN: -1, gaps: 0, garbage: 0, bad: 0, width: 0, height: 0 };
+  let oldCameraLogged = false;
+  const setCameraStatus = (patch: Partial<LayerCameraStatus>) => {
+    const next = { ...camera, ...patch };
+    if (JSON.stringify(next) === JSON.stringify(camera)) return;
+    camera = next;
+    for (const l of [...cameraListeners]) l(camera);
+  };
+  const counters = () => {
+    if (!cameraReq) return;
+    const c = counted;
+    counted = { frames: 0, bytes: 0, lastN: c.lastN, gaps: 0, garbage: 0, bad: 0, width: c.width, height: c.height };
+    const kb = c.frames ? Math.round(c.bytes / c.frames / 1024) : 0;
+    opts.log(
+      `vr-layer camera: ${c.frames} frames in ${CAMERA_COUNTERS_MS / 1000} s${c.frames ? ` (${c.width}x${c.height} per eye, ${kb} KB a frame)` : ''}${c.gaps ? `, ${c.gaps} dropped by the layer` : ''}${c.bad ? `, ${c.bad} unreadable` : ''}${c.garbage ? `, ${c.garbage} stray bytes skipped` : ''}; ${camera.state}${camera.why ? ` (${camera.why})` : ''}`,
+    );
+  };
+  const startCounters = () => {
+    if (counterTimer) return;
+    counterTimer = setInterval(counters, CAMERA_COUNTERS_MS);
+  };
+  const stopCounters = () => {
+    if (counterTimer) clearInterval(counterTimer);
+    counterTimer = null;
+  };
   let current: VrOverlayStatus = { state: 'stopped', reason: null };
   let unsubscribe: (() => void) | null = null;
   let socket: PipeSocket | null = null;
@@ -236,16 +464,85 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     set('starting', reason);
   };
 
-  /** The control, when a protocol-2 layer listens and it changed since the last one on this connection. */
+  /**
+   * The control, when a protocol-2 layer listens and it changed since the last one on this connection. D7.5: the
+   * `camera` field goes only to a protocol-3 layer (a request, or null for none), so a protocol-2 control is unchanged.
+   */
   const sendControl = () => {
     const sock = socket;
     if (!sock || protocol < 2 || !sock.writable) return;
-    const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS };
+    const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS, ...(protocol >= VR_LAYER_CAMERA_PROTOCOL ? { camera: cameraReq } : {}) };
     const text = JSON.stringify(body);
     if (text === lastControl) return;
     lastControl = text;
     sock.write(controlMessage(body));
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''})`);
+    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps` : 'off'}` : '';
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam})`);
+    if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
+  };
+
+  /** D7.5: one message the layer sent (after `createLayerReader` cut it out). */
+  const onLayerMessage = (m: LayerMessage, sock: PipeSocket) => {
+    switch (m.kind) {
+      case 'hello': {
+        if (protocol >= 2) return; // a second hello on one connection: not a thing
+        protocol = m.protocol;
+        opts.log(`vr-layer: the layer speaks pipe protocol ${m.protocol}${m.protocol >= VR_LAYER_CAMERA_PROTOCOL ? ' (modes, theater, camera)' : m.protocol >= 2 ? ' (modes, theater)' : ''}`);
+        if (cameraReq && m.protocol < VR_LAYER_CAMERA_PROTOCOL && !oldCameraLogged) {
+          oldCameraLogged = true;
+          opts.log(`vr-layer: the camera is asked, but the layer in VPX speaks pipe protocol ${m.protocol} (before the layer camera): the screen capture stays until VPX restarts with the new layer`);
+        }
+        sendControl();
+        updateVideo();
+        return;
+      }
+      case 'frame': {
+        const f = m.frame;
+        if (!cameraReq) return; // a frame after the camera was turned off: the layer had not read the control yet
+        counted.frames++;
+        counted.width = f.width;
+        counted.height = f.height;
+        for (const e of f.eyes) counted.bytes += e.data.length;
+        if (counted.lastN >= 0 && f.n > counted.lastN + 1) counted.gaps += f.n - counted.lastN - 1;
+        counted.lastN = f.n;
+        const first = camera.frames === 0;
+        setCameraStatus({ state: 'on', why: null, lastFrameAt: now(), frames: camera.frames + 1 });
+        if (first) opts.log(`vr-layer camera: first frame: ${f.width}x${f.height} per eye, ${f.eyes.map((e) => e.data.length).join(' + ')} bytes${f.us ? `, layer issue ${f.us.issue} us, map ${f.us.map} us, copy ${f.us.copy} us, encode ${f.us.enc} us` : ''}`);
+        for (const l of [...frameListeners]) l(f);
+        return;
+      }
+      case 'status': {
+        const s = m.status;
+        if (s.camera === 'on') {
+          opts.log(`vr-layer camera: on${s.api ? ` (${s.api})` : ''}${s.source ? `, eye render ${s.source[0]}x${s.source[1]}` : ''}${s.size ? `, ${s.size[0]}x${s.size[1]} per eye` : ''}${s.fps ? ` at ${s.fps} fps` : ''}`);
+          setCameraStatus({
+            state: 'on',
+            why: null,
+            api: s.api ?? null,
+            source: s.source ? { width: s.source[0], height: s.source[1] } : null,
+            size: s.size ? { width: s.size[0], height: s.size[1] } : null,
+          });
+        } else if (s.camera === 'refused') {
+          opts.log(`vr-layer camera: refused by the layer: ${s.why}; the screen capture stays`);
+          setCameraStatus({ state: 'refused', why: s.why || 'refused' });
+        } else {
+          opts.log(`vr-layer camera: off (${s.why || 'no reason given'})`);
+          setCameraStatus({ state: cameraReq ? 'asked' : 'off', why: s.why || null, api: null, source: null, size: null });
+        }
+        return;
+      }
+      case 'unknown':
+        opts.log(`vr-layer: skipped a ${m.length}-byte '${m.magic}' message this companion does not know (newer layer)`);
+        return;
+      case 'bad':
+        counted.bad++;
+        if (counted.bad === 1) opts.log(`vr-layer: an unreadable '${m.magic}' message from the layer (${m.reason}); skipped`);
+        return;
+      case 'garbage':
+        counted.garbage += m.bytes;
+        if (sock === socket) opts.log(`vr-layer: skipped ${m.bytes} stray byte(s) on the pipe to find the next message`);
+        return;
+    }
   };
 
   /** Video frames flow from the panel page only in theater with a protocol-2 layer on the pipe: each one is a copy. */
@@ -269,7 +566,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     }
     socket = sock;
     let connected = false;
-    let hello = Buffer.alloc(0);
+    const reader = createLayerReader();
+    let firstMessage = true;
     sock.on('connect', () => {
       if (socket !== sock) return;
       connected = true;
@@ -281,18 +579,17 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       writer.attach(sock);
     });
     sock.on('data', (chunk) => {
-      if (socket !== sock || protocol >= 2 || hello.length >= 8) return;
-      hello = Buffer.concat([hello, chunk]);
-      if (hello.length < 8) return;
-      const v = parseHello(hello);
-      if (v === null) {
-        opts.log('vr-layer: the layer sent something that is not a hello; staying on protocol 1 (the panel only)');
-        return;
+      if (socket !== sock) return;
+      for (const m of reader.push(chunk)) {
+        // The hello comes first on a protocol-2+ pipe; anything else first means a layer this side cannot read.
+        if (firstMessage && m.kind !== 'hello') {
+          firstMessage = false;
+          opts.log('vr-layer: the layer sent something that is not a hello; staying on protocol 1 (the panel only)');
+          continue;
+        }
+        firstMessage = false;
+        onLayerMessage(m, sock);
       }
-      protocol = v;
-      opts.log(`vr-layer: the layer speaks pipe protocol ${v}${v >= 2 ? ' (modes, theater)' : ''}`);
-      sendControl();
-      updateVideo();
     });
     sock.on('error', (e) => {
       if (connected) opts.log(`vr-layer: pipe error: ${e.message}`);
@@ -308,6 +605,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       protocol = 1;
       lastControl = null;
       updateVideo();
+      // D7.5: frames end with the pipe; a camera still asked is asked again of the next connection.
+      if (camera.state === 'on' || camera.state === 'refused') setCameraStatus({ state: cameraReq ? 'asked' : 'off', why: 'pipe closed', api: null, source: null, size: null });
       if (stopping) return;
       if (connected) {
         opts.log('vr-layer: the layer closed the pipe (VPX exited or left VR); trying again');
@@ -332,6 +631,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     const s = socket;
     socket = null;
     s?.destroy();
+    stopCounters();
+    setCameraStatus({ state: 'off', why: null, api: null, source: null, size: null, lastFrameAt: null, frames: 0 });
     set('stopped');
   };
 
@@ -393,6 +694,39 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     onStatus(cb) {
       listeners.add(cb);
       return () => void listeners.delete(cb);
+    },
+
+    // D7.5: the camera.
+    setCamera(req) {
+      if (sameRequest(req, cameraReq)) return;
+      cameraReq = req;
+      counted = { frames: 0, bytes: 0, lastN: -1, gaps: 0, garbage: 0, bad: 0, width: 0, height: 0 };
+      if (req) {
+        opts.log(`vr-layer camera: asked: each eye in a ${req.width}x${req.height} box at ${req.fps} fps`);
+        setCameraStatus({ state: 'asked', why: null, lastFrameAt: null, frames: 0 });
+        startCounters();
+        if (socket && protocol >= 2 && protocol < VR_LAYER_CAMERA_PROTOCOL && !oldCameraLogged) {
+          oldCameraLogged = true;
+          opts.log(`vr-layer: the camera is asked, but the layer in VPX speaks pipe protocol ${protocol} (before the layer camera): the screen capture stays until VPX restarts with the new layer`);
+        }
+      } else {
+        opts.log('vr-layer camera: off');
+        stopCounters();
+        setCameraStatus({ state: 'off', why: null, api: null, source: null, size: null });
+      }
+      sendControl();
+    },
+
+    onCameraFrame(cb) {
+      frameListeners.add(cb);
+      return () => void frameListeners.delete(cb);
+    },
+
+    cameraStatus: () => camera,
+
+    onCameraStatus(cb) {
+      cameraListeners.add(cb);
+      return () => void cameraListeners.delete(cb);
     },
   };
 }

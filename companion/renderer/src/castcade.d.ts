@@ -440,6 +440,8 @@ interface MatchSettings {
   tableMuteMine: boolean;
   tableSendMine: boolean;
   tableHearOthers: boolean;
+  /** D7.5: a VR sender's picture: the screen capture of the preview window, or the OpenXR layer's copy of the eye views (experimental). */
+  cameraSource: 'screen' | 'layer';
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

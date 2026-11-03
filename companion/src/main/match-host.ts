@@ -864,10 +864,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     leave,
     setSettings(patch) {
       const before = settings.previewStereo;
+      const cameraBefore = settings.cameraSource;
       saveSettings(patchMatchSettings(settings, patch));
       if (settings.previewStereo !== before) {
         opts.media?.setPreviewStereo?.(settings.previewStereo);
         log.info(`match: preview stereo set to ${settings.previewStereo} on the Match tab`);
+      }
+      // D7.5: the media layer reads it at its next attach (the lead wires the live switch; alpha-match.md §5a).
+      if (settings.cameraSource !== cameraBefore) {
+        log.info(`match: camera set to ${settings.cameraSource === 'layer' ? 'the VR layer' : 'the screen capture'} on the Match tab (takes effect at the next match)`);
       }
       emit();
       return status();

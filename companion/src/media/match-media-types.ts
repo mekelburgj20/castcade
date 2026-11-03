@@ -56,6 +56,13 @@ export interface MediaSignal {
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null };
   /** On `stereo`: `sbs` (VPX's VR preview on both eyes), `mono`, or null (the sender does not know). */
   stereo?: VrStereo | null;
+  /**
+   * D7.5 (2026-11-02): on `stereo` from a sender whose picture is the layer camera's: each eye's fov, crop and render
+   * size (`LayerCameraEye` without the data), left then right, so the receiver's stereo window is placed from the
+   * sender's eyes, not its own (exact for mixed headsets). Null or absent: a screen capture (the receiver's own eyes
+   * stand in, as before). Sent by the panel page once the lead wires §5a of docs/design/alpha-match.md.
+   */
+  eyes?: LayerCameraEyeGeometry[] | null;
 }
 
 /** How the media layer reaches the other players: the controller wraps the match transport (MEDIA_SIGNAL). */
@@ -214,6 +221,64 @@ export interface VrOverlayStatus {
   vpxBeforeLayer?: true;
 }
 
+/**
+ * D7.5 (2026-11-02): the layer camera (vr-layer/README.md "The camera"; docs/design/alpha-match.md §5a). What the
+ * companion asks the OpenXR layer for: each of VPX's two eye views, centre-cropped to this box's aspect and scaled into
+ * it (never up), at most `fps` frames a second, as JPEG over the pipe. `media/layer-camera.ts` picks the numbers.
+ */
+export interface LayerCameraRequest {
+  width: number;
+  height: number;
+  fps: number;
+}
+
+/** D7.5: one eye's geometry as the sender's VPX rendered it: enough to place its picture from the sender's eye, not the receiver's. */
+export interface LayerCameraEyeGeometry {
+  /** The view's field of view, radians, OpenXR's order and signs: [angleLeft, angleRight, angleUp, angleDown]. */
+  fov: [number, number, number, number];
+  /** The crop taken inside the view's render: [x, y, width, height], y from the top. */
+  rect: [number, number, number, number];
+  /** The view's render size (its `imageRect`): [width, height]. */
+  render: [number, number];
+}
+
+/** D7.5: one eye of a camera frame: its geometry and its JPEG. */
+export interface LayerCameraEye extends LayerCameraEyeGeometry {
+  data: Uint8Array;
+}
+
+/** D7.5: one camera frame off the pipe (`VrOverlay.onCameraFrame`): both eyes, left then right, each `width` x `height`. */
+export interface LayerCameraFrame {
+  /** The layer's frame counter (issued frames: a gap is a drop on its side). */
+  n: number;
+  /** Microseconds since the layer's camera started. */
+  t: number;
+  encoding: 'jpeg';
+  width: number;
+  height: number;
+  eyes: LayerCameraEye[];
+  /** The layer's own timings for this frame, microseconds (render thread: issue, map; worker: copy, encode). */
+  us?: { issue: number; map: number; copy: number; enc: number } | null;
+}
+
+/**
+ * D7.5: where the layer camera stands. `off`: not asked (or the layer stopped it: `why`); `asked`: asked, no answer
+ * yet (a protocol-2 layer never answers: the fallback timer decides); `on`: the layer confirmed and frames may flow;
+ * `refused`: the layer cannot read VPX's frame (`why`), the screen capture stays.
+ */
+export interface LayerCameraStatus {
+  state: 'off' | 'asked' | 'on' | 'refused';
+  why: string | null;
+  /** On `on`: the graphics API read, the eye render size and the size sent per eye, as the layer said. */
+  api?: string | null;
+  source?: { width: number; height: number } | null;
+  size?: { width: number; height: number } | null;
+  /** `Date.now()` of the last frame, or null. */
+  lastFrameAt: number | null;
+  /** Frames received since the camera was asked. */
+  frames: number;
+}
+
 /** The in-headset panel as the controller sees it: the SteamVR helper (`media/vr-overlay.ts`, D7) or the OpenXR layer (`media/vr-layer.ts`, D7.3). */
 export interface VrOverlay {
   /** `video` (D7.4): the up player's video for theater mode; only the OpenXR layer takes it. */
@@ -226,6 +291,16 @@ export interface VrOverlay {
   stop(): Promise<void>;
   status(): VrOverlayStatus;
   onStatus(cb: (s: VrOverlayStatus) => void): () => void;
+  /**
+   * D7.5 (2026-11-02), the OpenXR layer only (absent on the SteamVR helper and in fakes before D7.5): ask the layer for
+   * the camera (or stop it with null). Sent with the control once a protocol-3 layer is on the pipe, and again on
+   * every new connection while asked.
+   */
+  setCamera?(req: LayerCameraRequest | null): void;
+  /** D7.5: every complete camera frame off the pipe, in order; frames arrive only while asked and the layer is on. */
+  onCameraFrame?(cb: (frame: LayerCameraFrame) => void): () => void;
+  cameraStatus?(): LayerCameraStatus;
+  onCameraStatus?(cb: (s: LayerCameraStatus) => void): () => void;
 }
 
 /** Default placement (alpha-match.md §5): head-anchored, 0.55 m wide, below the line of sight. */
@@ -235,3 +310,6 @@ export const VR_OVERLAY_DEFAULTS = { widthM: 0.55, anchor: 'hmd' as const, offse
 export const VR_OVERLAY_FRAME_MAGIC = 'CVO1';
 /** D7.4: the same header for a video frame (RGBA) on the OpenXR layer's pipe. */
 export const VR_LAYER_VIDEO_MAGIC = 'CVO2';
+/** D7.5: the layer's camera frame and camera status messages (layer → companion; magic, u32 byteLength, payload). */
+export const VR_LAYER_CAMERA_FRAME_MAGIC = 'CVF1';
+export const VR_LAYER_CAMERA_STATUS_MAGIC = 'CVS1';

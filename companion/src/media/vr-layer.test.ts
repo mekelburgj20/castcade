@@ -361,7 +361,7 @@ const vframe = (tag: number, stereo: VideoFrame['stereo'] = 'mono'): VideoFrame 
 
 describe('createVrLayerOverlay: modes (D7.4)', () => {
   it('parseHello: "CVH1" + u32 version; anything shorter or else is no hello', () => {
-    expect(VR_LAYER_PROTOCOL).toBe(2);
+    expect(VR_LAYER_PROTOCOL).toBe(3); // D7.5; the D7.4 tests below speak to a protocol-2 layer
     expect(parseHello(hello(2))).toBe(2);
     expect(parseHello(hello(7))).toBe(7);
     expect(parseHello(hello(2).subarray(0, 7))).toBeNull();
