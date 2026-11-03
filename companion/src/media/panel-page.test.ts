@@ -592,12 +592,16 @@ describe('the theater feed (D7.4, 2026-10-31)', () => {
   });
 
   it('the feed is the video at its own size, scaled down into 1920x1080 (a side-by-side one into 3840x1080), even sides', () => {
-    expect(VIDEO_FEED_MAX).toEqual({ mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1080 }, fps: 30 });
+    expect(VIDEO_FEED_MAX).toEqual({ mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1440 }, fps: 30 });
     expect(feedSize(1280, 720, 'mono')).toEqual({ width: 1280, height: 720 });
     expect(feedSize(2560, 1440, 'mono')).toEqual({ width: 1920, height: 1080 });
     expect(feedSize(1281, 721, 'mono')).toEqual({ width: 1280, height: 720 });
     expect(feedSize(2560, 720, 'sbs')).toEqual({ width: 2560, height: 720 });
     expect(feedSize(5120, 1440, 'sbs')).toEqual({ width: 3840, height: 1080 });
+    // D7.4.9: the owner's both-eyes window (1440x1392) lands whole; a taller one scales into 1440 high
+    expect(feedSize(1440, 1392, 'sbs')).toEqual({ width: 1440, height: 1392 });
+    expect(feedSize(2880, 1600, 'sbs')).toEqual({ width: 2592, height: 1440 });
+    expect(feedSize(1440, 1392, 'mono')).toEqual({ width: 1116, height: 1080 });
     expect(feedSize(0, 0, 'mono')).toBeNull();
   });
 

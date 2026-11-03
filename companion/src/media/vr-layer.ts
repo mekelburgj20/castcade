@@ -176,6 +176,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   /** D7.4: what the match host asked for; the layer's own default (before any control) is the panel too. */
   let mode: VrViewMode = 'panel';
   let stereo: VrStereo = 'mono';
+  let theaterScale = 1;
+  let fedSize = '';
   /** The connected layer's protocol: 1 until its hello says more. */
   let protocol = 1;
   let lastControl: string | null = null;
@@ -240,7 +242,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   const sendControl = () => {
     const sock = socket;
     if (!sock || protocol < 2 || !sock.writable) return;
-    const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS };
+    const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS, theaterScale };
     const text = JSON.stringify(body);
     if (text === lastControl) return;
     lastControl = text;
@@ -356,7 +358,14 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
             stereo = f.stereo;
             sendControl();
           }
-          if (mode === 'theater' && protocol >= 2) videoWriter.push(f);
+          if (mode === 'theater' && protocol >= 2) {
+            const fed = `${f.width}x${f.height} (${f.stereo})`;
+            if (fed !== fedSize) {
+              fedSize = fed;
+              opts.log(`theater: feeding ${fed} to the layer`);
+            }
+            videoWriter.push(f);
+          }
         }) ?? null;
       set('starting');
       const reg = await register(opts.jsonPath);
@@ -386,6 +395,13 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       }
       sendControl();
       updateVideo();
+    },
+
+    setTheaterScale(scale) {
+      const next = Number.isFinite(scale) ? Math.min(4, Math.max(0.25, scale)) : 1;
+      if (next === theaterScale) return;
+      theaterScale = next;
+      sendControl();
     },
 
     status: visible,

@@ -394,6 +394,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const syncVrMode = (a: Active): void => {
     const to = a.overlay;
     if (!to) return;
+    to.setTheaterScale?.(settings.theaterScale);
     const mode = vrViewMode(a.controller.panel(), settings);
     if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
     a.vrMode = { mode, to };

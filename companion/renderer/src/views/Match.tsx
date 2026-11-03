@@ -72,7 +72,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -319,6 +319,15 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="panel">The match panel, low in view</option>
             </select>
             <small>Theater replaces your view with the other player's table on a big screen; it needs the Castcade OpenXR layer (not SteamVR).</small>
+          </label>
+          <label className="field">
+            <span>Theater size</span>
+            <select value={String(st.settings.theaterScale)} onChange={(e) => setView({ theaterScale: Number(e.target.value) })}>
+              <option value="1">Life size</option>
+              <option value="0.8">80 %</option>
+              <option value="0.6">60 %</option>
+            </select>
+            <small>Smaller is sharper: the same picture over less of your view. Takes effect at once.</small>
           </label>
           <label className="field">
             <span>Your preview</span>

@@ -440,6 +440,8 @@ interface MatchSettings {
   tableMuteMine: boolean;
   tableSendMine: boolean;
   tableHearOthers: boolean;
+  /** D7.4.9: the theater window's size against life size (0.25–4). */
+  theaterScale: number;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

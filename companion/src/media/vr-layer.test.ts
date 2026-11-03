@@ -368,6 +368,26 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     expect(parseHello(Buffer.from('CVO1abcd', 'latin1'))).toBeNull();
   });
 
+  it('D7.4.9: setTheaterScale sends the control live (clamped, once per change); the fed size is logged once per change', async () => {
+    const h = setup();
+    const v = videoSource();
+    await h.ov.start(h.src, v.src);
+    h.ov.setMode('theater');
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(2));
+    h.ov.setTheaterScale?.(0.8);
+    h.ov.setTheaterScale?.(0.8);
+    expect(messages(h.pipes[0]!)).toEqual([
+      ['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 }],
+      ['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 0.8 }],
+    ]);
+    h.ov.setTheaterScale?.(0.01);
+    expect(messages(h.pipes[0]!).at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 0.25 }]);
+    v.push(vframe(1));
+    v.push(vframe(2));
+    expect(h.log.filter((l) => l.startsWith('theater: feeding'))).toHaveLength(1);
+  });
+
   it('a protocol-2 layer: the control after its hello, then on every change; video wanted and sent as CVO2 only in theater', async () => {
     const h = setup();
     const v = videoSource();
@@ -381,7 +401,7 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     h.pipes[0]!.emit('data', hello(2).subarray(0, 3));
     h.pipes[0]!.emit('data', hello(2).subarray(3));
     expect(h.log).toContain('vr-layer: the layer speaks pipe protocol 2 (modes, theater)');
-    expect(messages(h.pipes[0]!).slice(1)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low' }]]);
+    expect(messages(h.pipes[0]!).slice(1)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 }]]);
     expect(v.wanted.at(-1)).toBe(true);
     v.push(vframe(5));
     // Side by side now: the control says so before the frame.
@@ -389,7 +409,7 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     v.push(vframe(7, 'sbs'));
     expect(messages(h.pipes[0]!).slice(2)).toEqual([
       ['CVO2', 5],
-      ['CVC1', { mode: 'theater', stereo: 'sbs', panelPos: 'low' }],
+      ['CVC1', { mode: 'theater', stereo: 'sbs', panelPos: 'low', theaterScale: 1 }],
       ['CVO2', 6],
       ['CVO2', 7],
     ]);
@@ -398,9 +418,9 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     h.ov.setMode('hidden');
     expect(v.wanted.at(-1)).toBe(false);
     v.push(vframe(8, 'sbs'));
-    expect(messages(h.pipes[0]!).slice(6)).toEqual([['CVC1', { mode: 'hidden', stereo: 'sbs', panelPos: 'low' }]]);
+    expect(messages(h.pipes[0]!).slice(6)).toEqual([['CVC1', { mode: 'hidden', stereo: 'sbs', panelPos: 'low', theaterScale: 1 }]]);
     h.ov.setMode('panel');
-    expect(messages(h.pipes[0]!).slice(7)).toEqual([['CVC1', { mode: 'panel', stereo: 'sbs', panelPos: 'low' }]]);
+    expect(messages(h.pipes[0]!).slice(7)).toEqual([['CVC1', { mode: 'panel', stereo: 'sbs', panelPos: 'low', theaterScale: 1 }]]);
     expect(h.log).toContain('vr-layer: mode panel (sbs, panel low)');
   });
 
@@ -433,7 +453,7 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     h.pipes[1]!.answer();
     expect(v.wanted.at(-1)).toBe(false);
     h.pipes[1]!.emit('data', hello(2));
-    expect(messages(h.pipes[1]!)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low' }]]);
+    expect(messages(h.pipes[1]!)).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 }]]);
     expect(v.wanted.at(-1)).toBe(true);
     await h.ov.stop();
     expect(v.wanted.at(-1)).toBe(false);

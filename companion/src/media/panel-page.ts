@@ -54,7 +54,7 @@ export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_50
  * scaled down, aspect kept): a mono picture up to 1080p, a side-by-side one up to two 1080p halves. Each frame is a
  * copy (getImageData, IPC, the pipe), so at most `fps` a second and only when the video has a new frame.
  */
-export const VIDEO_FEED_MAX = { mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1080 }, fps: 30 } as const;
+export const VIDEO_FEED_MAX = { mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1440 }, fps: 30 } as const;
 /** Two 16:9 eyes side by side are 32:9; no single picture a player sends is 3:1 or wider. */
 export const SBS_MIN_ASPECT = 3;
 
@@ -283,7 +283,7 @@ export function stereoOf(declared: string | null | undefined, rig: string | unde
 /** D7.4: the size the theater feed is read at: the video's own, scaled down into the limit for its kind, even sides. */
 export function feedSize(videoWidth: number, videoHeight: number, stereo: 'mono' | 'sbs'): { width: number; height: number } | null {
   if (!(videoWidth >= 2 && videoHeight >= 2)) return null;
-  const max = stereo === 'sbs' ? { width: 3840, height: 1080 } : { width: 1920, height: 1080 };
+  const max = stereo === 'sbs' ? { width: 3840, height: 1440 } : { width: 1920, height: 1080 };
   const k = Math.min(1, max.width / videoWidth, max.height / videoHeight);
   return { width: Math.max(2, Math.round(videoWidth * k) & ~1), height: Math.max(2, Math.round(videoHeight * k) & ~1) };
 }

@@ -191,8 +191,8 @@ export interface VideoFrameSource {
 
 /**
  * D7.4 (2026-10-31): what the OpenXR layer shows (vr-layer/README.md "The pipe"). D7.4.5: the layer's CVC1 control also
- * reads an optional number `theaterScale` (the stereo window's size against life size, 0.25–4, default 1); the
- * companion does not send it yet.
+ * reads an optional number `theaterScale` (the stereo window's size against life size, 0.25–4, default 1); D7.4.9
+ * the companion sends it with every control, from the Match tab's "Theater size" (match settings `theaterScale`).
  */
 export type VrViewMode = 'hidden' | 'panel' | 'theater';
 export type VrStereo = 'mono' | 'sbs';
@@ -223,6 +223,8 @@ export interface VrOverlay {
    * host decides, `vrViewMode` in match/controller.ts). The OpenXR layer only; the SteamVR helper keeps the panel.
    */
   setMode(mode: VrViewMode): void;
+  /** D7.4.9: the theater window's size against life size (0.25–4); the OpenXR layer only. Idempotent. */
+  setTheaterScale?(scale: number): void;
   stop(): Promise<void>;
   status(): VrOverlayStatus;
   onStatus(cb: (s: VrOverlayStatus) => void): () => void;
