@@ -37,6 +37,7 @@ import type { MediaSettingsStore, TurnServer } from '../media/media-settings.js'
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
+import { clipFolderName, type SaveFramesResult } from '../media/frame-clip.js';
 import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
@@ -163,6 +164,11 @@ export interface MatchHost {
   refreshMicrophones(): void;
   status(): MatchStatus;
   onStatus(cb: (s: MatchStatus) => void): () => void;
+  /**
+   * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
+   * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
+   */
+  saveFrames(): Promise<SaveFramesResult>;
   /** On quit: leave any match and close the cue window. */
   stop(): Promise<void>;
 }
@@ -174,7 +180,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'saveFrames'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -195,6 +201,8 @@ export interface MatchHostOptions {
   listenAddress?: string;
   /** Test seam: the rig decision at host / join. Default `decideRig(witness)`: the running VPX probed now (A6, 2026-10-31). */
   rig?: () => Promise<RigDecision>;
+  /** D7.6.3: where saved frames go. Default `<userData>/logs/frames` (beside companion.log; `file`'s folder is userData). */
+  framesDir?: string;
 }
 
 const CUE_CHANNEL = 'castcade-cue:play';
@@ -1007,6 +1015,20 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return () => {
         listeners.delete(cb);
       };
+    },
+    async saveFrames() {
+      const media = opts.media;
+      if (!media?.saveFrames) throw new Error('The media layer is not running in this build: no frames to save');
+      const root = opts.framesDir ?? join(dirname(opts.file), 'logs', 'frames');
+      const base = clipFolderName(new Date());
+      let folder = base;
+      for (let k = 2; existsSync(join(root, folder)); k++) folder = `${base}-${k}`;
+      const a = active;
+      return media.saveFrames({
+        dir: join(root, folder),
+        folder,
+        settings: { match: { ...settings }, phase: a ? a.controller.status().phase : 'none', rig: a ? a.rig : null, runtime: a ? a.runtime : null, headsetMode: a?.vrMode?.mode ?? null },
+      });
     },
     async stop() {
       await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));

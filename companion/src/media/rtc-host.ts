@@ -46,6 +46,7 @@ import type { LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSig
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, receivedFrameFrom, savedLine, type FrameSaver, type SaveFramesResult } from './frame-clip.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { declaredStereo, type PreviewStereoSetting } from './preview-stereo.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
@@ -120,6 +121,12 @@ export interface RtcHost extends MatchMedia {
   setTableAudio(flags: TableAudioFlags): void;
   pushTableAudio(pcm: Uint8Array): void;
   capturePid(): number | null;
+  /**
+   * D7.6.3 (2026-11-03): save the next 2 s of frames into `dir` (`frame-clip.ts`): every layer-camera frame while the
+   * camera runs (the sender side), and every theater frame the panel page hands to the layer while it does (the receiver
+   * side). Resolves once the files and `clip.json` are written; one save at a time.
+   */
+  saveFrames(o: { dir: string; folder: string; settings: Record<string, unknown> }): Promise<SaveFramesResult>;
 }
 
 const PARTITION = 'castcade-panel';
@@ -482,6 +489,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let cameraGaveUp: string | null = null;
   /** A Camera change made during this rig's ball: applied when the ball ends. */
   let cameraSwitchPending = false;
+  /** D7.6.3: the save under way, if any. */
+  let saving: FrameSaver | null = null;
   const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
     !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
@@ -637,6 +646,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!fromPanel(e)) return;
     const next = camSlot.ack(Date.now());
     if (next && cam) postCameraFrame(cam, next);
+  });
+  // D7.6.3: a theater frame the page saved, while a save runs.
+  ipcMain.on(PANEL_CHANNELS.savedFrame, (e, m: unknown) => {
+    if (!fromPanel(e) || !saving) return;
+    const f = receivedFrameFrom(m);
+    if (f) saving.receiverFrame(f);
   });
   ipcMain.on(PANEL_CHANNELS.devices, (e, d: unknown) => {
     if (!fromPanel(e) || !Array.isArray(d)) return;
@@ -1318,6 +1333,36 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       post(PANEL_CHANNELS.tablePcm, pcm);
     },
     capturePid: () => (attached ? capturePidNow : null),
+    async saveFrames(o) {
+      if (saving) throw new Error('Frames are being saved already: wait for that save to finish');
+      const notes: string[] = [];
+      const camState = cameraUsable(cameraLayer) ? cameraLayer.cameraStatus().state : null;
+      const camOn = camState === 'on' || camState === 'asked';
+      const feeding = !!win && !win.isDestroyed() && ready && videoHub.wanted();
+      const saver = createFrameSaver({
+        dir: o.dir,
+        folder: o.folder,
+        settings: { ...o.settings, cameraRequest: cam || camOn ? cameraRequestFor() : null, feedMax: VIDEO_FEED_MAX, previewStereo: previewSetting, cameraSetting, capture: capture ? { label: capture.label, out: capture.out, stereo: capture.stereo ?? null } : null },
+      });
+      saving = saver;
+      const off = camOn && cameraUsable(cameraLayer) ? cameraLayer.onCameraFrame((f) => saver.senderFrame(f)) : null;
+      if (!camOn) notes.push('sender: the layer camera is not running (Camera = VR layer in a match, or the VR test bench on "my own table, live")');
+      if (feeding) post(PANEL_CHANNELS.saveFrames, { ms: FRAME_SAVE_MS, max: FRAME_SAVE_MAX });
+      else notes.push('receiver: no theater feed is being handed to the layer (another player up in theater, or the VR test bench in the headset)');
+      log.info(`media: frames: saving ${FRAME_SAVE_MS / 1000} s to ${o.dir} (layer camera ${camOn ? 'on' : 'not running'}, theater feed ${feeding ? 'on' : 'not running'})`);
+      try {
+        await new Promise((r) => setTimeout(r, FRAME_SAVE_MS + (feeding ? FRAME_SAVE_GRACE_MS : 100)));
+      } finally {
+        off?.();
+        saving = null;
+      }
+      const index = await saver.finish(notes);
+      const line = savedLine(o.dir, index);
+      log.info(line);
+      for (const n of index?.notes ?? notes) log.info(`media: frames: ${n}`);
+      const c = saver.counts();
+      return { dir: index ? o.dir : null, sender: c.sender, receiver: c.receiver, notes: index?.notes ?? notes, line };
+    },
     setCameraLayer(layer) {
       cameraLayer = layer;
     },

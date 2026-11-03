@@ -430,6 +430,15 @@ interface VrOverlayStatus {
   vpxBeforeLayer?: true;
 }
 
+/** D7.6.3 (mirrors media/frame-clip.ts SaveFramesResult): the folder written (null: nothing), frames per side, why a side is empty. */
+interface SaveFramesResult {
+  dir: string | null;
+  sender: number;
+  receiver: number;
+  notes: string[];
+  line: string;
+}
+
 /** A6 (mirrors main/match-setup.ts MatchSettings). */
 interface MatchSettings {
   port: number;
@@ -529,6 +538,8 @@ interface CastcadeBridge {
     start(): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
+    /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
+    saveFrames(): Promise<SaveFramesResult>;
     /** A10: the host's leave between games is End match (everyone is told). */
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;

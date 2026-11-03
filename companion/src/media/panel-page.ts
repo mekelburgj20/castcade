@@ -12,6 +12,7 @@
  */
 import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
+import { IN_JPEG_QUALITY } from './frame-clip.js';
 import { negotiationSource } from './rtc-signaling.js';
 
 /** The IPC channels between the panel page and the main process (`rtc-host.ts`). */
@@ -42,6 +43,11 @@ export const PANEL_CHANNELS = {
    * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
    */
   cameraFrame: 'castcade-panel:camera-frame',
+  /**
+   * D7.6.3 (2026-11-03): `{ ms, max }`: JPEG-encode (quality 90) each frame the theater feed hands to the layer for the
+   * next `ms`, at most `max`, one encode in flight; each goes back on `savedFrame`.
+   */
+  saveFrames: 'castcade-panel:save-frames',
   // page -> main
   ready: 'castcade-panel:ready',
   send: 'castcade-panel:send',
@@ -53,6 +59,8 @@ export const PANEL_CHANNELS = {
   log: 'castcade-panel:log',
   /** D7.5.1: the page drew (or gave up on) the camera frame main sent last; main may send the next. */
   cameraAck: 'castcade-panel:camera-ack',
+  /** D7.6.3: one saved theater frame (`PanelSavedFrame`). */
+  savedFrame: 'castcade-panel:saved-frame',
 } as const;
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
@@ -110,6 +118,20 @@ export interface PanelCameraFrame {
   right: Uint8Array;
   /** Left then right: fov, crop, render (the stereo declaration carries them, D7.5.2). */
   eyes: LayerCameraEyeGeometry[];
+}
+
+/** D7.6.3: one theater frame the page saved, page -> main: the JPEG, its size and stereo, the eyes if known, when and from what. */
+export interface PanelSavedFrame {
+  i: number;
+  jpeg: Uint8Array;
+  width: number;
+  height: number;
+  stereo: 'mono' | 'sbs';
+  eyes: LayerCameraEyeGeometry[] | null;
+  at: number;
+  source: string;
+  /** Frames handed to the layer since the last saved one that were not saved (an encode was in flight). */
+  skipped: number;
 }
 
 export interface PanelAttach {
@@ -668,6 +690,7 @@ const STALL_MS = ${CAPTURE_STALL_MS};
 const STATS_MS = ${STATS_MS};
 const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
 const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
+const SAVE_QUALITY = ${IN_JPEG_QUALITY};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -1460,6 +1483,7 @@ function detach() {
   myStereo = undefined;
   peerStereo.clear();
   reopens.clear();
+  saveReq = null;
   // D2.8: the table track outlives an attach (one AudioContext per page); it goes quiet until main says send again.
   setTableSend(false);
   report();
@@ -1551,10 +1575,60 @@ function feedTick() {
     feedInFlight = true;
     feedSentAt = now;
     ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo });
+    saveFeedFrame(v, v.videoWidth, v.videoHeight, stereo, null, 'peer ' + who);
   } catch (e) {
     /* a frame lost; the next tick tries again */
   }
 }
+
+/**
+ * D7.6.3 (2026-11-03): main asked to save the theater frames (C.saveFrames): each frame handed to the layer is drawn at
+ * its decoded size onto its own canvas and encoded to JPEG, one encode in flight (a frame that comes meanwhile is
+ * counted as skipped), until the time is up or max are saved. Each goes to main on C.savedFrame.
+ */
+let saveReq = null;
+let saveCanvas = null;
+let saveCtx = null;
+function saveFeedFrame(src, w, h, stereo, eyes, source) {
+  const r = saveReq;
+  if (!r || !(w > 0 && h > 0)) return;
+  const now = Date.now();
+  if (now > r.until || r.n >= r.max) {
+    saveReq = null;
+    return;
+  }
+  if (r.busy) {
+    r.skipped++;
+    return;
+  }
+  try {
+    if (!saveCtx) {
+      saveCanvas = document.createElement('canvas');
+      saveCtx = saveCanvas.getContext('2d', { alpha: false });
+      if (!saveCtx) return;
+    }
+    if (saveCanvas.width !== w) saveCanvas.width = w;
+    if (saveCanvas.height !== h) saveCanvas.height = h;
+    saveCtx.drawImage(src, 0, 0, w, h);
+    const i = r.n++;
+    const skipped = r.skipped;
+    r.skipped = 0;
+    r.busy = true;
+    const done = () => { r.busy = false; };
+    saveCanvas.toBlob((blob) => {
+      if (!blob) return done();
+      void Promise.resolve(blob.arrayBuffer()).then((buf) => {
+        ipcRenderer.send(C.savedFrame, { i: i, jpeg: new Uint8Array(buf), width: w, height: h, stereo: stereo, eyes: eyes || null, at: now, source: source, skipped: skipped });
+      }).catch(() => undefined).then(done);
+    }, 'image/jpeg', SAVE_QUALITY);
+  } catch (e) {
+    r.busy = false;
+  }
+}
+ipcRenderer.on(C.saveFrames, (_e, q) => {
+  const ms = q && typeof q.ms === 'number' ? q.ms : 0;
+  saveReq = ms > 0 ? { until: Date.now() + ms, max: q && typeof q.max === 'number' ? q.max : 0, n: 0, busy: false, skipped: 0 } : null;
+});
 setInterval(feedTick, Math.round(1000 / FEED_FPS));
 ipcRenderer.on(C.videoWant, (_e, on) => {
   feedWanted = !!on;

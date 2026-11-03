@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { TestBench } from './TestBench.js';
 
 /**
  * A6 + C3 (docs/design/alpha-match.md §1, §3, 2026-10-30): the Match page. Host a match (the invite string to send the
@@ -408,6 +409,8 @@ export function Match({ state }: { state: CastcadeState }) {
           </label>
         </div>
       </div>
+
+      <TestBench bridge={bridge} st={st} />
 
       <div className="card">
         <strong>Table sound</strong>
