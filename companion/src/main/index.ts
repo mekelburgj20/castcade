@@ -365,6 +365,10 @@ function registerIpc(
   ipcMain.handle(IPC.matchStart, () => mh().start());
   ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchSaveFrames, () => mh().saveFrames());
+  ipcMain.handle(IPC.matchBenchStart, (_e, req: unknown) => mh().startBench(req));
+  ipcMain.handle(IPC.matchBenchStop, () => mh().stopBench());
+  ipcMain.handle(IPC.matchBenchView, (_e, view: unknown) => mh().setBenchView(view === 'direct' ? 'direct' : 'theater'));
+  ipcMain.handle(IPC.matchBenchClips, () => mh().benchClips());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));

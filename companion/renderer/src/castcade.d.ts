@@ -439,6 +439,26 @@ interface SaveFramesResult {
   line: string;
 }
 
+/** D7.6 (mirrors media/frame-clip.ts ClipSummary): one saved clip under <logs>/frames. */
+interface ClipSummary {
+  name: string;
+  dir: string;
+  sender: { count: number; fps: number | null; eye: { width: number; height: number } | null } | null;
+  receiver: { count: number; fps: number | null; size: { width: number; height: number } | null; stereo: 'mono' | 'sbs' | null } | null;
+}
+
+/** D7.6 (mirrors media/bench.ts BenchStatus): the VR test bench while it runs. */
+interface BenchStatus {
+  state: 'starting' | 'running';
+  source: 'clip' | 'live';
+  path: 'direct' | 'loop';
+  clip: string | null;
+  headset: boolean;
+  view: 'theater' | 'direct';
+  readout: string;
+  hint: string;
+}
+
 /** A6 (mirrors main/match-setup.ts MatchSettings). */
 interface MatchSettings {
   port: number;
@@ -495,6 +515,8 @@ interface MatchStatus {
   settings: MatchSettings;
   defaultName: string;
   lastError: string | null;
+  /** D7.6: the VR test bench while it runs, else null. */
+  bench: BenchStatus | null;
 }
 
 interface CastcadeBridge {
@@ -540,6 +562,11 @@ interface CastcadeBridge {
     resume(): Promise<MatchStatus>;
     /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
     saveFrames(): Promise<SaveFramesResult>;
+    /** D7.6: the VR test bench: start (refused during a match), stop, theater or VPX's own view, the saved clips. */
+    benchStart(req: { source: 'clip' | 'live'; path: 'direct' | 'loop'; clip: { name: string; side: 'sender' | 'receiver' } | null }): Promise<MatchStatus>;
+    benchStop(): Promise<MatchStatus>;
+    benchView(view: 'theater' | 'direct'): Promise<MatchStatus>;
+    benchClips(): Promise<ClipSummary[]>;
     /** A10: the host's leave between games is End match (everyone is told). */
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;

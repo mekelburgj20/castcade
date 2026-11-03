@@ -37,7 +37,8 @@ import type { MediaSettingsStore, TurnServer } from '../media/media-settings.js'
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
-import { clipFolderName, type SaveFramesResult } from '../media/frame-clip.js';
+import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
+import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
@@ -137,6 +138,8 @@ export interface MatchStatus {
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
   defaultName: string;
   lastError: string | null;
+  /** D7.6 (2026-11-03): the VR test bench while it runs (media/bench.ts), else null. */
+  bench: BenchStatus | null;
 }
 
 export interface MatchHost {
@@ -169,6 +172,17 @@ export interface MatchHost {
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
   saveFrames(): Promise<SaveFramesResult>;
+  /**
+   * D7.6 (2026-11-03): the VR test bench: theater alone in the headset, no second player (media/bench.ts). Refused
+   * while a match is on; a match hosted or joined stops it. `req` comes from the renderer and is checked here.
+   */
+  startBench(req: unknown): Promise<MatchStatus>;
+  /** D7.6: Stop: VPX's own view back (theater off), the layer and the panel detached. */
+  stopBench(): Promise<MatchStatus>;
+  /** D7.6: while it runs, theater (the bench picture) or VPX's own view, to compare. */
+  setBenchView(view: BenchView): MatchStatus;
+  /** D7.6: the saved clips under the frames folder, newest first (D7.6.3 makes them). */
+  benchClips(): ClipSummary[];
   /** On quit: leave any match and close the cue window. */
   stop(): Promise<void>;
 }
@@ -180,7 +194,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'saveFrames'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -213,6 +227,8 @@ const JOIN_TIMEOUT_MS = 10_000;
 const LEAVE_FLUSH_MS = 300;
 /** A10: how long a client shows the final standings after the series ended before it closes the match by itself. */
 const SERIES_OVER_LINGER_MS = 20_000;
+/** D7.6: after the bench's theater-off control, before the pipe closes (the layer reads the control first). */
+const BENCH_HIDE_MS = 300;
 
 interface Active {
   role: 'host' | 'client';
@@ -299,6 +315,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   opts.media?.setCameraSource?.(settings.cameraSource);
   let active: Active | null = null;
   let connecting = false;
+  /** D7.6: the VR test bench (null: off). `overlay`: the OpenXR layer it put in theater, else the desktop panel shows it. */
+  type Bench = { state: BenchState; source: 'clip' | 'live'; path: 'direct' | 'loop'; clip: string | null; overlay: VrOverlay | null; view: BenchView };
+  let bench: Bench | null = null;
+  const framesRoot = (): string => opts.framesDir ?? join(dirname(opts.file), 'logs', 'frames');
   let lastError: string | null = null;
   let busy = false;
 
@@ -431,7 +451,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       settings: { ...settings },
       defaultName: defaultName(),
       lastError,
+      bench: benchView(),
     };
+  };
+  /** D7.6: the bench for the Match tab: the media layer's readout, plus the layer's own state while it is not showing. */
+  const benchView = (): BenchStatus | null => {
+    const b = bench;
+    if (!b) return null;
+    const m = opts.media?.benchStatus?.() ?? null;
+    const o = b.overlay?.status() ?? null;
+    const layer = o && o.state !== 'showing' ? ` · the layer is ${o.state}${o.reason ? ` (${o.reason})` : ''}` : '';
+    const headset = !!b.overlay;
+    return { state: b.state === 'running' ? 'running' : 'starting', source: b.source, path: b.path, clip: b.clip, headset, view: b.view, readout: (m?.readout ?? 'starting') + layer, hint: benchHint(headset, b.view) };
   };
   /**
    * D7.4 (2026-10-31): the headset follows the turn: hidden on this player's ball, theater while another is up, the
@@ -481,6 +512,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       syncVrMode(active);
       scheduleSeriesEnd(active);
     }
+    // D7.6: Theater size applies to the bench live, as in a match.
+    bench?.overlay?.setTheaterScale?.(settings.theaterScale);
     syncTableAudio();
     const s = status();
     for (const l of [...listeners]) l(s);
@@ -500,7 +533,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) emit();
   });
   opts.vrLayer?.onStatus(() => {
-    if (active) emit();
+    if (active || bench) emit();
+  });
+  opts.media?.onBenchStatus?.(() => {
+    if (bench) emit();
   });
   opts.tableAudio?.onStatus(() => {
     if (active) emit();
@@ -701,9 +737,75 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
   };
 
+  /**
+   * D7.6: ends the bench (Stop, a match starting, quit): VPX's own view first (theater off, the control given a moment
+   * to reach the layer), then the layer's pipe and the panel. Never throws.
+   */
+  const endBench = async (why: string): Promise<void> => {
+    const b = bench;
+    if (!b) return;
+    bench = null;
+    if (b.overlay) {
+      b.overlay.setMode('hidden');
+      await new Promise<void>((r) => setTimeout(r, BENCH_HIDE_MS));
+      await b.overlay.stop().catch((e: unknown) => log.warn(`bench: layer stop: ${describeError(e)}`));
+    }
+    await opts.media?.stopBench?.().catch((e: unknown) => log.warn(`bench: media stop: ${describeError(e)}`));
+    log.info(`bench: stopped (${why})${b.overlay ? "; VPX's own view is back" : ''}`);
+    emit();
+  };
+  const startBench = (raw: unknown): Promise<MatchStatus> =>
+    guard(async () => {
+      const step = benchStep(bench ? bench.state : 'off', { kind: 'start', matchOn: !!active || connecting });
+      if (step.refuse) return fail(new Error(step.refuse));
+      const media = opts.media;
+      if (!media?.startBench || !media.stopBench) return fail(new Error('The media layer is not running in this build: no test bench'));
+      const req = benchRequestFrom(raw);
+      if (typeof req === 'string') return fail(new Error(req));
+      lastError = null;
+      const d = await decide();
+      const layer = usesLayer(d) && opts.vrLayer ? opts.vrLayer : null;
+      if (req.source === 'live') {
+        const why = liveRefusal(d.rig, d.runtime, !!opts.vrLayer);
+        if (why) return fail(new Error(why));
+      }
+      const clipDir = req.clip ? join(framesRoot(), req.clip.name) : null;
+      const clip = req.clip && clipDir ? loadClip(clipDir, req.clip.side) : null;
+      if (req.source === 'clip' && !clip) return fail(new Error(`The saved clip ${req.clip?.name ?? ''} has no ${req.clip?.side === 'receiver' ? 'received' : 'eye'} frames to play`));
+      const b: Bench = { state: 'starting', source: req.source, path: req.path, clip: req.clip ? `${req.clip.name} (${req.clip.side === 'receiver' ? 'received frames' : 'eye frames'})` : null, overlay: null, view: 'theater' };
+      bench = b;
+      emit();
+      try {
+        await media.startBench({ source: req.source, path: req.path, clip, clipDir, clipName: req.clip?.name ?? null, inVr: d.rig === 'vr_headset', headsetPanel: !!layer });
+      } catch (e) {
+        bench = null;
+        return fail(e);
+      }
+      if (layer) {
+        const frames = media.frames();
+        if (frames) {
+          b.overlay = layer;
+          layer.setTheaterScale?.(settings.theaterScale);
+          layer.setMode('theater');
+          try {
+            const st = await layer.start(frames, media.videoFrames?.() ?? null);
+            log.info(`bench: the OpenXR layer ${st.state}${st.reason ? ` (${st.reason})` : ''}, theater at Theater size ${settings.theaterScale}`);
+          } catch (e) {
+            log.warn(`bench: the OpenXR layer did not start: ${describeError(e)}`);
+          }
+        }
+      } else media.showPanel();
+      if (bench !== b) return status();
+      b.state = benchStep(b.state, { kind: 'started' }).state;
+      log.info(`bench: running (${d.rig}${d.runtime ? ` via ${d.runtime}` : ''}; ${b.overlay ? 'theater in the headset' : 'the desktop panel'})`);
+      emit();
+      return status();
+    });
+
   const host = (o: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus> =>
     guard(async () => {
       if (active) return fail(new Error('Leave the current match first'));
+      await endBench('a match is hosted');
       lastError = null;
       const port = o.port === undefined ? settings.port : cleanPort(o.port);
       if (port === null) return fail(new Error('The port must be a number from 1024 to 65535'));
@@ -809,6 +911,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const joinMatch = (invite: string, displayName: string): Promise<MatchStatus> =>
     guard(async () => {
       if (active) return fail(new Error('Leave the current match first'));
+      await endBench('a match is joined');
       lastError = null;
       let parsed: ReturnType<typeof parseInvite>;
       try {
@@ -1019,7 +1122,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     async saveFrames() {
       const media = opts.media;
       if (!media?.saveFrames) throw new Error('The media layer is not running in this build: no frames to save');
-      const root = opts.framesDir ?? join(dirname(opts.file), 'logs', 'frames');
+      const root = framesRoot();
       const base = clipFolderName(new Date());
       let folder = base;
       for (let k = 2; existsSync(join(root, folder)); k++) folder = `${base}-${k}`;
@@ -1030,7 +1133,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         settings: { match: { ...settings }, phase: a ? a.controller.status().phase : 'none', rig: a ? a.rig : null, runtime: a ? a.runtime : null, headsetMode: a?.vrMode?.mode ?? null },
       });
     },
+    startBench,
+    async stopBench() {
+      await endBench('Stop on the Match tab');
+      return status();
+    },
+    setBenchView(view) {
+      const b = bench;
+      if (!b || b.state !== 'running') return status();
+      const next: BenchView = view === 'direct' ? 'direct' : 'theater';
+      if (next !== b.view) {
+        b.view = next;
+        b.overlay?.setMode(next === 'theater' ? 'theater' : 'hidden');
+        log.info(`bench: ${next === 'theater' ? 'the bench picture (theater)' : "VPX's own view"} on the Match tab`);
+      }
+      emit();
+      return status();
+    },
+    benchClips: () => listClips(framesRoot()),
     async stop() {
+      await endBench('Castcade quits');
       await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
       cue.destroy();
     },

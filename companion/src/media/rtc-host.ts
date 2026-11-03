@@ -34,9 +34,15 @@
  * Nothing falls forward to the layer again within the match, except the player choosing it again on the Match tab
  * (taken between balls). With the setting on `screen` (the default) none of this runs: the capture path, its log lines
  * and its page messages are those of 0.2.32.
+ *
+ * The VR test bench and saved frames (D7.6, D7.6.3, 2026-11-03; alpha-match.md §5b): `startBench` opens the panel page
+ * without a match (the page gets `castcade-panel:bench` instead of an attach) and feeds it a saved clip or this rig's
+ * layer camera, one frame in flight; `frames()` / `videoFrames()` serve it as in a match, so the OpenXR layer's
+ * theater takes it by the receiver's own path. `saveFrames` writes 2 s of layer-camera frames and of the theater
+ * frames the page hands to the layer (`frame-clip.ts`).
  */
 import { BrowserWindow, desktopCapturer, ipcMain, powerSaveBlocker, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
@@ -45,8 +51,9 @@ import { cameraRequestFor, cameraWatch, createFrameSlot, decideCamera, type Came
 import type { LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
-import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, receivedFrameFrom, savedLine, type FrameSaver, type SaveFramesResult } from './frame-clip.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, playbackIndex, receivedFrameFrom, savedLine, type FrameSaver, type Playback, type SaveFramesResult } from './frame-clip.js';
+import { benchReadout, benchReportFrom, benchWords, type BenchPageReport, type BenchPath, type BenchSource } from './bench.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { declaredStereo, type PreviewStereoSetting } from './preview-stereo.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
@@ -127,7 +134,42 @@ export interface RtcHost extends MatchMedia {
    * side). Resolves once the files and `clip.json` are written; one save at a time.
    */
   saveFrames(o: { dir: string; folder: string; settings: Record<string, unknown> }): Promise<SaveFramesResult>;
+  /**
+   * D7.6 (2026-11-03): the VR test bench (media/bench.ts): the panel page without a match (no mesh, no microphone, no
+   * capture), showing a saved clip or this rig's layer camera on its stage and, while the layer wants it, handing it to
+   * the layer as the theater feed by the chosen path. Refused while attached; `frames()` and `videoFrames()` serve it
+   * like a match. `stopBench` (or a match's attach) detaches it.
+   */
+  startBench(o: RtcBenchStart): Promise<void>;
+  stopBench(): Promise<void>;
+  benchStatus(): RtcBenchStatus | null;
+  onBenchStatus(cb: (s: RtcBenchStatus | null) => void): () => void;
 }
+
+/** D7.6: what the match host asks of the bench. `clip` (source clip): the frames to loop, read from `clipDir`. */
+export interface RtcBenchStart {
+  source: BenchSource;
+  path: BenchPath;
+  clip: Playback | null;
+  clipDir: string | null;
+  clipName: string | null;
+  inVr: boolean;
+  /** The offscreen panel for the headset (the OpenXR layer takes its frames); false: the desktop window, shown. */
+  headsetPanel: boolean;
+}
+
+/** D7.6: the bench now: what runs, the page's last readout, the layer camera's state (source live), the readout line. */
+export interface RtcBenchStatus {
+  source: BenchSource;
+  path: BenchPath;
+  headset: boolean;
+  report: BenchPageReport | null;
+  camera: { state: string; why: string | null } | null;
+  readout: string;
+}
+
+/** D7.6: the bench's readout goes to companion.log this often while it runs. */
+export const BENCH_LOG_MS = 10_000;
 
 const PARTITION = 'castcade-panel';
 const PAGE_FILE = 'match-panel.html';
@@ -491,6 +533,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let cameraSwitchPending = false;
   /** D7.6.3: the save under way, if any. */
   let saving: FrameSaver | null = null;
+  // ---- D7.6: the VR test bench ----
+  type BenchRun = { cfg: RtcBenchStart; timer: ReturnType<typeof setInterval> | null; off: Array<() => void>; startedAt: number; lastIdx: number; n: number; report: BenchPageReport | null; loggedAt: number };
+  let benchRun: BenchRun | null = null;
+  /** The bench page was given the bench (the bench's `attachSent`). */
+  let benchSent = false;
+  const benchSlot = createFrameSlot<PanelBenchFrame>();
+  const benchListeners = new Set<(s: RtcBenchStatus | null) => void>();
   const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
     !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
@@ -529,14 +578,21 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     PANEL_CHANNELS.tableAudio,
   ]);
   const toPage = (channel: string, payload?: unknown): void => {
-    if (win && ready && attachSent) return post(channel, payload);
+    if (win && ready && (attachSent || benchSent)) return post(channel, payload);
     if (LATEST.has(channel)) queue = queue.filter(([c]) => c !== channel);
     queue.push([channel, payload]);
   };
   /** The page gets `attach` first, then everything said before it was ready, in order. */
   const flush = (): void => {
-    if (!win || !ready || !attachMsg) return;
-    if (!attachSent) {
+    if (!win || !ready) return;
+    // D7.6: a bench page gets the bench instead of an attach.
+    if (benchRun) {
+      if (!benchSent) {
+        post(PANEL_CHANNELS.bench, { path: benchRun.cfg.path, source: benchRun.cfg.source });
+        benchSent = true;
+      }
+    } else if (!attachMsg) return;
+    else if (!attachSent) {
       post(PANEL_CHANNELS.attach, attachMsg);
       attachSent = true;
     }
@@ -646,6 +702,24 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!fromPanel(e)) return;
     const next = camSlot.ack(Date.now());
     if (next && cam) postCameraFrame(cam, next);
+  });
+  // D7.6: the page drew the bench frame in flight; the newest waiting one goes now. Its readout every second.
+  ipcMain.on(PANEL_CHANNELS.benchAck, (e) => {
+    if (!fromPanel(e) || !benchRun) return;
+    const next = benchSlot.ack(Date.now());
+    if (next) postBench(next);
+  });
+  ipcMain.on(PANEL_CHANNELS.benchStatus, (e, m: unknown) => {
+    const run = benchRun;
+    if (!fromPanel(e) || !run) return;
+    run.report = benchReportFrom(m);
+    const s = benchStatusNow();
+    const now = Date.now();
+    if (s && now - run.loggedAt >= BENCH_LOG_MS) {
+      run.loggedAt = now;
+      log.info(`media: bench: ${s.readout}`);
+    }
+    emitBench();
   });
   // D7.6.3: a theater frame the page saved, while a save runs.
   ipcMain.on(PANEL_CHANNELS.savedFrame, (e, m: unknown) => {
@@ -1126,8 +1200,111 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     emitStatus();
   };
 
+  // ---- D7.6: the VR test bench ----
+  const benchStatusNow = (): RtcBenchStatus | null => {
+    const r = benchRun;
+    if (!r) return null;
+    const cs = r.cfg.source === 'live' && cameraUsable(cameraLayer) ? cameraLayer.cameraStatus() : null;
+    const camera = cs ? { state: cs.state, why: cs.why } : null;
+    return { source: r.cfg.source, path: r.cfg.path, headset, report: r.report, camera, readout: benchReadout({ report: r.report, headset, path: r.cfg.path, source: r.cfg.source, camera }) };
+  };
+  const emitBench = (): void => {
+    const s = benchStatusNow();
+    for (const l of [...benchListeners]) l(s);
+  };
+  const postBench = (f: PanelBenchFrame): void => {
+    if (win && !win.isDestroyed() && ready && benchSent) post(PANEL_CHANNELS.benchFrame, f);
+  };
+  const offerBench = (f: PanelBenchFrame): void => {
+    if (!ready || !benchSent) return;
+    const out = benchSlot.offer(f, Date.now());
+    if (out) postBench(out);
+  };
+  /** One saved frame read from the clip folder (null when a file went missing: that frame is skipped). */
+  const clipFrame = (run: BenchRun, i: number): PanelBenchFrame | null => {
+    const p = run.cfg.clip?.frames[i];
+    const dir = run.cfg.clipDir;
+    if (!p || !dir) return null;
+    try {
+      const left = readFileSync(join(dir, p.left));
+      const right = p.right ? readFileSync(join(dir, p.right)) : null;
+      return { n: run.n++, width: p.width, height: p.height, left, right, stereo: p.stereo, eyes: p.eyes };
+    } catch {
+      return null;
+    }
+  };
+  /** The bench's feed ends (its timer, the camera); the page goes with the window (`detach`). */
+  const endBenchRun = (): void => {
+    const run = benchRun;
+    if (!run) return;
+    benchRun = null;
+    benchSent = false;
+    if (run.timer) clearInterval(run.timer);
+    for (const off of run.off) off();
+    if (run.cfg.source === 'live') cameraLayer?.setCamera?.(null);
+    benchSlot.reset();
+    emitBench();
+  };
+  const startBench = async (o: RtcBenchStart): Promise<void> => {
+    if (attached) throw new Error('A match is on: the VR test bench runs only without a match');
+    if (benchRun) throw new Error('The VR test bench is running already');
+    if (o.source === 'clip' && (!o.clip || !o.clip.frames.length || !o.clipDir)) throw new Error('That saved clip has no frames to play');
+    if (o.source === 'live' && !cameraUsable(cameraLayer)) throw new Error('There is no OpenXR layer camera in this build');
+    if (win) await detach(true);
+    generation++;
+    inVr = o.inVr;
+    wantHeadset = o.headsetPanel;
+    headset = o.headsetPanel;
+    const run: BenchRun = { cfg: o, timer: null, off: [], startedAt: Date.now(), lastIdx: -1, n: 0, report: null, loggedAt: Date.now() };
+    benchRun = run;
+    benchSent = false;
+    benchSlot.reset();
+    try {
+      const file = join(opts.userData, PAGE_FILE);
+      mkdirSync(opts.userData, { recursive: true });
+      writeFileSync(file, panelPageHtml({ vr: headset }));
+      win = createWindow(headset);
+      const gen = generation;
+      void win.loadFile(file).catch((e: unknown) => {
+        if (gen === generation) setPanelError(`the bench panel did not load (${errText(e)})`);
+      });
+    } catch (e) {
+      endBenchRun();
+      throw new Error(`The bench panel could not open (${errText(e)})`, { cause: e });
+    }
+    if (!headset) {
+      placeDesktopPanel(win);
+      win.showInactive();
+    }
+    if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
+    if (o.source === 'live' && cameraUsable(cameraLayer)) {
+      const req = cameraRequestFor();
+      run.off.push(
+        cameraLayer.onCameraFrame((f) => {
+          const pf = benchRun === run ? cameraPageFrame(f) : null;
+          if (pf) offerBench({ ...pf, stereo: 'sbs' });
+        }),
+      );
+      cameraLayer.setCamera(req);
+    } else if (o.clip) {
+      const clip = o.clip;
+      run.timer = setInterval(() => {
+        if (benchRun !== run || !ready || !benchSent) return;
+        const i = playbackIndex(clip.frames.length, run.startedAt, Date.now(), clip.fps);
+        if (i === run.lastIdx) return;
+        run.lastIdx = i;
+        const f = clipFrame(run, i);
+        if (f) offerBench(f);
+      }, Math.max(10, Math.round(1000 / clip.fps / 2)));
+    }
+    const clipWords = o.clip && o.clipName ? { name: o.clipName, side: o.clip.side, frames: o.clip.frames.length, fps: o.clip.fps } : null;
+    log.info(`media: bench: started: ${benchWords({ source: o.source, path: o.path, clip: clipWords, headset })}`);
+    emitBench();
+  };
+
   const detach = async (quiet = false): Promise<void> => {
     generation++;
+    endBenchRun();
     stopCamera();
     cameraSwitchPending = false;
     offSignal?.();
@@ -1170,6 +1347,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
 
   /** `restore`: what a re-attach (`setVr`) carries over, applied before the first await so newer calls win over it. */
   const attach = async (sig: MediaSignalling, initialPeers: MatchPlayerId[], restore: { state: PanelState | null; sending: boolean } | null = null): Promise<void> => {
+    if (benchRun) log.info('media: bench: ended (a match attaches)');
     if (attached || win) await detach(restore !== null);
     const gen = ++generation;
     // D7.5.1: a new match may try the layer camera again; a re-attach within one (setVr) keeps what it learnt.
@@ -1269,8 +1447,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         statusListeners.delete(cb);
       };
     },
-    frames: () => (attached && headset ? hub.source : null),
-    videoFrames: () => (attached && headset ? videoHub.source : null),
+    frames: () => ((attached || benchRun) && headset ? hub.source : null),
+    videoFrames: () => ((attached || benchRun) && headset ? videoHub.source : null),
     showPanel() {
       if (headset || !win || win.isDestroyed()) return;
       // D2.6: placed again each time, beside the main window as it is now (it may have moved since).
@@ -1333,6 +1511,19 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       post(PANEL_CHANNELS.tablePcm, pcm);
     },
     capturePid: () => (attached ? capturePidNow : null),
+    startBench,
+    async stopBench() {
+      if (!benchRun) return;
+      await detach(true);
+      log.info('media: bench: stopped, the panel closed');
+    },
+    benchStatus: benchStatusNow,
+    onBenchStatus(cb) {
+      benchListeners.add(cb);
+      return () => {
+        benchListeners.delete(cb);
+      };
+    },
     async saveFrames(o) {
       if (saving) throw new Error('Frames are being saved already: wait for that save to finish');
       const notes: string[] = [];

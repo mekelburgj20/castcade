@@ -10,9 +10,10 @@ import type { StreamSettings } from '../media/stream-settings.js';
 import type { PreviewStatus, StreamSettingsView } from './stream-host.js';
 import type { MatchStatus } from './match-host.js';
 import type { MatchSettings } from './match-setup.js';
-import type { SaveFramesResult } from '../media/frame-clip.js';
+import type { ClipSummary, SaveFramesResult } from '../media/frame-clip.js';
+import type { BenchStatus } from '../media/bench.js';
 
-export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
+export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
   witnessStatus: 'witness:status',
@@ -54,6 +55,11 @@ export const IPC = {
   matchResume: 'match:resume',
   /** D7.6.3: save 2 s of eye frames to the logs folder. */
   matchSaveFrames: 'match:saveFrames',
+  /** D7.6: the VR test bench. */
+  matchBenchStart: 'match:bench:start',
+  matchBenchStop: 'match:bench:stop',
+  matchBenchView: 'match:bench:view',
+  matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
@@ -216,6 +222,11 @@ export interface CastcadeApi {
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
     saveFrames(): Promise<SaveFramesResult>;
+    /** D7.6 (2026-11-03): the VR test bench: start (refused during a match), stop, theater or VPX's own view, the saved clips. */
+    benchStart(req: { source: 'clip' | 'live'; path: 'direct' | 'loop'; clip: { name: string; side: 'sender' | 'receiver' } | null }): Promise<MatchStatus>;
+    benchStop(): Promise<MatchStatus>;
+    benchView(view: 'theater' | 'direct'): Promise<MatchStatus>;
+    benchClips(): Promise<ClipSummary[]>;
     /** A10 (2026-11-02): the host's leave between games is End match: MATCH_END to everyone, then the teardown. */
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;

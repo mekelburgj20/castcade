@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LayerCameraFrame, LayerCameraRequest, LayerCameraStatus, MediaSignal, MediaSignalling, VrOverlay } from './match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, patchMediaSettings, type MediaSettings, type MediaSettingsStore } from './media-settings.js';
 import { PANEL_CHANNELS } from './panel-page.js';
+import { createFrameSaver, loadClip, type Playback } from './frame-clip.js';
 import type { VpxWindow } from './window-geometry.js';
 
 const fake = vi.hoisted(() => {
@@ -198,5 +199,97 @@ describe('save frames in rtc-host (D7.6.3)', () => {
     ]);
     expect(existsSync(out)).toBe(false);
     expect(logs).toContain('media: frames: nothing saved (no layer camera frame and no theater frame in 2 s)');
+  });
+});
+
+describe('the VR test bench in rtc-host (D7.6)', () => {
+  async function savedClip(): Promise<{ clipDir: string; clip: Playback }> {
+    const clipDir = join(dir, 'logs', 'frames', '2026-11-03-101500');
+    const s = createFrameSaver({ dir: clipDir, folder: '2026-11-03-101500', settings: {} });
+    const geo = { fov: [-0.9, 0.8, 0.9, -0.95] as [number, number, number, number], rect: [0, 0, 720, 1440] as [number, number, number, number], render: [720, 1440] as [number, number] };
+    for (let n = 0; n < 3; n++) s.senderFrame({ n, t: n * 33_333, encoding: 'jpeg', width: 720, height: 1440, eyes: [{ ...geo, data: new Uint8Array([0xff, 0xd8, n, 1]) }, { ...geo, data: new Uint8Array([0xff, 0xd8, n, 2]) }], us: null });
+    await s.finish();
+    return { clipDir, clip: loadClip(clipDir, 'sender')! };
+  }
+
+  it('refused while a match is attached; a match attach ends a running bench', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.attach(signalling('owner'), ['krobs']);
+    await expect(host.startBench({ source: 'live', path: 'direct', clip: null, clipDir: null, clipName: null, inVr: true, headsetPanel: true })).rejects.toThrow(/A match is on/);
+    await host.detach();
+    const { clipDir, clip } = await savedClip();
+    await host.startBench({ source: 'clip', path: 'direct', clip, clipDir, clipName: '2026-11-03-101500', inVr: false, headsetPanel: false });
+    expect(host.benchStatus()).toMatchObject({ source: 'clip', path: 'direct', headset: false });
+    await host.attach(signalling('owner'), []);
+    expect(logs).toContain('media: bench: ended (a match attaches)');
+    expect(host.benchStatus()).toBeNull();
+    await host.detach();
+  });
+
+  it('a saved clip on a PC: the desktop panel shows, the page gets the bench, frames loop at the clip’s fps one in flight; Stop closes it', async () => {
+    const { clipDir, clip } = await savedClip();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    const statuses: unknown[] = [];
+    host.onBenchStatus((s) => statuses.push(s));
+    await host.startBench({ source: 'clip', path: 'loop', clip, clipDir, clipName: '2026-11-03-101500', inVr: false, headsetPanel: false });
+    const w = fake.FakeWindow.all.at(-1)!;
+    expect(w.opts.show).toBe(false);
+    expect(w.shown).toBe(1); // the desktop panel, shown at once
+    expect(host.frames()).toBeNull(); // no headset panel on a PC
+    expect(logs).toContain('media: bench: started: clip 2026-11-03-101500 (sender side, 3 frames at 30 fps), through a local WebRTC loop, the desktop panel');
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'loop', source: 'clip' }]);
+    expect(sentOn(w, PANEL_CHANNELS.attach)).toEqual([]);
+    const frames = () => sentOn(w, PANEL_CHANNELS.benchFrame) as Array<{ n: number; width: number; height: number; left: Uint8Array; right: Uint8Array | null; stereo: string }>;
+    vi.advanceTimersByTime(20);
+    expect(frames()).toHaveLength(1);
+    expect(frames()[0]).toMatchObject({ n: 0, width: 720, height: 1440, stereo: 'sbs' });
+    expect([...frames()[0]!.left]).toEqual([0xff, 0xd8, 0, 1]);
+    expect([...frames()[0]!.right!]).toEqual([0xff, 0xd8, 0, 2]);
+    vi.advanceTimersByTime(40); // the next clip frame is due, but the first is not acked: it waits
+    expect(frames()).toHaveLength(1);
+    fromPage(w, PANEL_CHANNELS.benchAck);
+    expect(frames()).toHaveLength(2);
+    expect([...frames()[1]!.left]).toEqual([0xff, 0xd8, 1, 1]);
+    // the readout: kept, emitted, logged every 10 s
+    fromPage(w, PANEL_CHANNELS.benchStatus, { path: 'loop', drawn: 30, fed: null, sent: { width: 1440, height: 1440, kbps: 7900, fps: 30, limit: 'none' }, bitrate: 8e6, loopUp: true });
+    expect(host.benchStatus()!.readout).toBe('30 fps drawn · no headset layer: the picture is in the desktop panel · encoder sent 1440x1440 at 7.9 Mbps (cap 8.0 Mbps), 30 fps, limited by none');
+    expect(statuses.length).toBeGreaterThan(1);
+    vi.advanceTimersByTime(10_000);
+    fromPage(w, PANEL_CHANNELS.benchStatus, { path: 'loop', drawn: 30, fed: null, sent: null, loopUp: true });
+    expect(logs).toContain('media: bench: 30 fps drawn · no headset layer: the picture is in the desktop panel · encoder: no stats yet');
+    await host.stopBench();
+    expect(w.destroyed).toBe(true);
+    expect(sentOn(w, PANEL_CHANNELS.detach)).toHaveLength(1);
+    expect(host.benchStatus()).toBeNull();
+    expect(statuses.at(-1)).toBeNull();
+    expect(logs).toContain('media: bench: stopped, the panel closed');
+    const n = frames().length;
+    vi.advanceTimersByTime(1000);
+    expect(frames()).toHaveLength(n); // the clip timer is gone
+  });
+
+  it('own table live in the headset: the layer camera is asked, its frames go to the page, the theater sources serve the bench; Stop stops the camera', async () => {
+    const cam = fakeLayer();
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setCameraLayer(cam.layer);
+    await host.startBench({ source: 'live', path: 'direct', clip: null, clipDir: null, clipName: null, inVr: true, headsetPanel: true });
+    const w = fake.FakeWindow.all.at(-1)!;
+    expect((w.opts.webPreferences as { offscreen: boolean }).offscreen).toBe(true);
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }]);
+    expect(host.frames()).not.toBeNull();
+    host.videoFrames()!.setWanted(true); // the layer in theater wants the feed: queued until the page is ready
+    cam.frame(1); // before ready: not sent
+    fromPage(w, PANEL_CHANNELS.ready);
+    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'direct', source: 'live' }]);
+    expect(sentOn(w, PANEL_CHANNELS.videoWant)).toEqual([true]);
+    cam.frame(2);
+    expect(sentOn(w, PANEL_CHANNELS.benchFrame)).toMatchObject([{ n: 2, width: 720, height: 1440, stereo: 'sbs' }]);
+    expect(host.benchStatus()).toMatchObject({ source: 'live', headset: true, camera: { state: 'on' } });
+    await host.stopBench();
+    expect(cam.asks.at(-1)).toBeNull();
+    expect(cam.listening()).toBe(0);
+    expect(host.frames()).toBeNull();
   });
 });
