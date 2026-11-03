@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { TestBench } from './TestBench.js';
 
 /**
  * A6 + C3 (docs/design/alpha-match.md §1, §3, 2026-10-30): the Match page. Host a match (the invite string to send the
@@ -409,7 +410,7 @@ export function Match({ state }: { state: CastcadeState }) {
         </div>
       </div>
 
-      <VrBenchCard bridge={bridge} bench={st.vrBench} onStatus={setSt} />
+      <VrBenchCard bridge={bridge} bench={st.vrBench} onStatus={setSt} st={st} />
 
       <div className="card">
         <strong>Table sound</strong>
@@ -468,7 +469,7 @@ function patternBlocker(bench: MatchStatus['vrBench']): string | null {
   return null;
 }
 
-function VrBenchCard({ bridge, bench, onStatus }: { bridge: CastcadeBridge; bench: MatchStatus['vrBench']; onStatus: (s: MatchStatus) => void }) {
+function VrBenchCard({ bridge, bench, onStatus, st }: { bridge: CastcadeBridge; bench: MatchStatus['vrBench']; onStatus: (s: MatchStatus) => void; st: MatchStatus }) {
   const [busy, setBusy] = useState(false);
   const [written, setWritten] = useState<{ md: string; json: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -489,6 +490,9 @@ function VrBenchCard({ bridge, bench, onStatus }: { bridge: CastcadeBridge; benc
   return (
     <div className="card">
       <strong>VR test bench</strong>
+      {/* D7.6: theater alone (a clip or my own table, straight to the layer or through a local WebRTC loop), Save 2 s of frames. */}
+      <TestBench bridge={bridge} st={st} bare />
+      {/* D7.6.1: the calibration pattern the layer draws itself; D7.6.2: the VR report. */}
       <label className="check">
         <input type="checkbox" checked={pattern} disabled={blocker !== null && !pattern} onChange={(e) => togglePattern(e.target.checked)} />
         Show calibration pattern

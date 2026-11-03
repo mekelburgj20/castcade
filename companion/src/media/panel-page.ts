@@ -12,6 +12,7 @@
  */
 import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
+import { IN_JPEG_QUALITY } from './frame-clip.js';
 import { negotiationSource } from './rtc-signaling.js';
 
 /** The IPC channels between the panel page and the main process (`rtc-host.ts`). */
@@ -42,6 +43,18 @@ export const PANEL_CHANNELS = {
    * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
    */
   cameraFrame: 'castcade-panel:camera-frame',
+  /**
+   * D7.6.3 (2026-11-03): `{ ms, max }`: JPEG-encode (quality 90) each frame the theater feed hands to the layer for the
+   * next `ms`, at most `max`, one encode in flight; each goes back on `savedFrame`.
+   */
+  saveFrames: 'castcade-panel:save-frames',
+  /**
+   * D7.6 (2026-11-03): the VR test bench (`PanelBench`, or null to end it), instead of an attach: no mesh, no
+   * microphone, no capture; the stage shows the bench canvas (path direct) or a local WebRTC loop's received track.
+   */
+  bench: 'castcade-panel:bench',
+  /** D7.6: one bench frame (`PanelBenchFrame`), one in flight: main sends the next after `benchAck`. */
+  benchFrame: 'castcade-panel:bench-frame',
   // page -> main
   ready: 'castcade-panel:ready',
   send: 'castcade-panel:send',
@@ -53,7 +66,33 @@ export const PANEL_CHANNELS = {
   log: 'castcade-panel:log',
   /** D7.5.1: the page drew (or gave up on) the camera frame main sent last; main may send the next. */
   cameraAck: 'castcade-panel:camera-ack',
+  /** D7.6.3: one saved theater frame (`PanelSavedFrame`). */
+  savedFrame: 'castcade-panel:saved-frame',
+  /** D7.6: the page drew (or gave up on) the bench frame main sent last. */
+  benchAck: 'castcade-panel:bench-ack',
+  /** D7.6: the bench readout every second (`BenchPageReport`, media/bench.ts). */
+  benchStatus: 'castcade-panel:bench-status',
 } as const;
+
+/** D7.6: the bench as the page runs it. */
+export interface PanelBench {
+  path: 'direct' | 'loop';
+  source: 'clip' | 'live';
+}
+
+/**
+ * D7.6: one bench frame, main -> page: two eye JPEGs side by side (`right` set; `width` x `height` per eye: a layer
+ * camera frame or a saved sender frame) or one whole picture (`right` null: a saved received frame).
+ */
+export interface PanelBenchFrame {
+  n: number;
+  width: number;
+  height: number;
+  left: Uint8Array;
+  right: Uint8Array | null;
+  stereo: 'mono' | 'sbs';
+  eyes: LayerCameraEyeGeometry[] | null;
+}
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
 export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_500_000 } as const;
@@ -110,6 +149,20 @@ export interface PanelCameraFrame {
   right: Uint8Array;
   /** Left then right: fov, crop, render (the stereo declaration carries them, D7.5.2). */
   eyes: LayerCameraEyeGeometry[];
+}
+
+/** D7.6.3: one theater frame the page saved, page -> main: the JPEG, its size and stereo, the eyes if known, when and from what. */
+export interface PanelSavedFrame {
+  i: number;
+  jpeg: Uint8Array;
+  width: number;
+  height: number;
+  stereo: 'mono' | 'sbs';
+  eyes: LayerCameraEyeGeometry[] | null;
+  at: number;
+  source: string;
+  /** Frames handed to the layer since the last saved one that were not saved (an encode was in flight). */
+  skipped: number;
 }
 
 export interface PanelAttach {
@@ -668,6 +721,7 @@ const STALL_MS = ${CAPTURE_STALL_MS};
 const STATS_MS = ${STATS_MS};
 const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
 const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
+const SAVE_QUALITY = ${IN_JPEG_QUALITY};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -761,6 +815,8 @@ let camFrames = 0;
 let camBad = 0;
 let myEyes = null;
 let myEyesKey = null;
+// D7.6: the VR test bench (startBench); null outside it. A page runs either a bench or an attach, never both.
+let bench = null;
 const $ = (id) => document.getElementById(id);
 const errText = (e) => (e && e.message ? e.message : String(e));
 
@@ -790,25 +846,30 @@ function fail(msg) {
 
 function render() {
   const head = $('head');
-  if (!panel) {
+  if (bench) {
+    head.textContent = 'VR TEST BENCH';
+    head.className = '';
+  } else if (!panel) {
     head.textContent = 'CASTCADE MATCH';
     head.className = '';
   } else {
     head.textContent = headerText(panel);
     head.className = panel.myTurn && panel.phase === 'playing' ? 'mine' : '';
   }
-  const who = panel ? videoPeer(panel) : null;
+  // D7.6: the bench's stage is its canvas (path direct) or the local loop's received track (path loop).
+  const who = !bench && panel ? videoPeer(panel) : null;
   let stream = null;
-  if (who === 'self') stream = videoTrack ? new MediaStream([videoTrack]) : null;
+  if (bench) stream = bench.stageStream;
+  else if (who === 'self') stream = videoTrack ? new MediaStream([videoTrack]) : null;
   else if (who && remote.has(who)) stream = remote.get(who).stream;
-  const key = who === 'self' ? 'self:' + (videoTrack ? videoTrack.id : '') : who ? 'peer:' + who : '';
+  const key = bench ? 'bench:' + bench.streamN : who === 'self' ? 'self:' + (videoTrack ? videoTrack.id : '') : who ? 'peer:' + who : '';
   const video = $('video');
   if (key !== stageKey) {
     stageKey = key;
     video.srcObject = stream;
   }
   const hasVideo = !!stream && stream.getVideoTracks().some((t) => t.readyState === 'live' && (who === 'self' || !t.muted));
-  $('idle').textContent = stageText(panel, hasVideo);
+  $('idle').textContent = bench ? (bench.drawn > 0 && stream ? '' : 'WAITING FOR FRAMES') : stageText(panel, hasVideo);
   const strip = $('strip');
   strip.replaceChildren();
   for (const row of panel ? stripRows(panel) : []) {
@@ -841,7 +902,7 @@ function render() {
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
-  $('msg').textContent = noPathMessage() || (panel && panel.message) || localError || '';
+  $('msg').textContent = (bench && bench.error) || noPathMessage() || (panel && panel.message) || localError || '';
   routeTable();
 }
 
@@ -1460,6 +1521,8 @@ function detach() {
   myStereo = undefined;
   peerStereo.clear();
   reopens.clear();
+  saveReq = null;
+  stopBench();
   // D2.8: the table track outlives an attach (one AudioContext per page); it goes quiet until main says send again.
   setTableSend(false);
   report();
@@ -1521,9 +1584,15 @@ let feedLastFrame = -1;
 let feedCanvas = null;
 let feedCtx = null;
 function feedTick() {
-  if (!feedWanted || !panel) return;
+  if (!feedWanted) return;
   const now = Date.now();
   if (feedInFlight && now - feedSentAt < 1000) return;
+  // D7.6: the bench feeds the layer by the same path (feedOut), from its canvas or the local loop's received video.
+  if (bench) {
+    benchFeed(bench);
+    return;
+  }
+  if (!panel) return;
   const who = videoPeer(panel);
   if (!who || who === 'self') return;
   const v = $('video');
@@ -1534,27 +1603,87 @@ function feedTick() {
   if (mark === feedLastFrame) return;
   const up = panel.players.find((p) => p.id === who);
   const stereo = stereoOf(peerStereo.get(who), up ? up.rig : undefined, v.videoWidth, v.videoHeight);
-  const size = feedSize(v.videoWidth, v.videoHeight, stereo);
-  if (!size) return;
+  feedOut(v, v.videoWidth, v.videoHeight, mark, stereo, null, 'peer ' + who);
+}
+
+/**
+ * One frame to the layer: drawn at the feed size (feedSize, VIDEO_FEED_MAX) into the feed canvas, its pixels to main
+ * (one in flight), and saved when a save runs (D7.6.3). The size handed over, or null when nothing went.
+ */
+function feedOut(src, w, h, mark, stereo, eyes, source) {
+  const size = feedSize(w, h, stereo);
+  if (!size) return null;
   try {
     if (!feedCtx) {
       feedCanvas = document.createElement('canvas');
       feedCtx = feedCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
-      if (!feedCtx) return;
+      if (!feedCtx) return null;
     }
     if (feedCanvas.width !== size.width) feedCanvas.width = size.width;
     if (feedCanvas.height !== size.height) feedCanvas.height = size.height;
-    feedCtx.drawImage(v, 0, 0, size.width, size.height);
+    feedCtx.drawImage(src, 0, 0, size.width, size.height);
     const img = feedCtx.getImageData(0, 0, size.width, size.height);
     feedLastFrame = mark;
     feedSent++;
     feedInFlight = true;
-    feedSentAt = now;
+    feedSentAt = Date.now();
     ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo });
+    saveFeedFrame(src, w, h, stereo, eyes, source);
+    return size;
   } catch (e) {
     /* a frame lost; the next tick tries again */
+    return null;
   }
 }
+
+/**
+ * D7.6.3 (2026-11-03): main asked to save the theater frames (C.saveFrames): each frame handed to the layer is drawn at
+ * its decoded size onto its own canvas and encoded to JPEG, one encode in flight (a frame that comes meanwhile is
+ * counted as skipped), until the time is up or max are saved. Each goes to main on C.savedFrame.
+ */
+let saveReq = null;
+let saveCanvas = null;
+let saveCtx = null;
+function saveFeedFrame(src, w, h, stereo, eyes, source) {
+  const r = saveReq;
+  if (!r || !(w > 0 && h > 0)) return;
+  const now = Date.now();
+  if (now > r.until || r.n >= r.max) {
+    saveReq = null;
+    return;
+  }
+  if (r.busy) {
+    r.skipped++;
+    return;
+  }
+  try {
+    if (!saveCtx) {
+      saveCanvas = document.createElement('canvas');
+      saveCtx = saveCanvas.getContext('2d', { alpha: false });
+      if (!saveCtx) return;
+    }
+    if (saveCanvas.width !== w) saveCanvas.width = w;
+    if (saveCanvas.height !== h) saveCanvas.height = h;
+    saveCtx.drawImage(src, 0, 0, w, h);
+    const i = r.n++;
+    const skipped = r.skipped;
+    r.skipped = 0;
+    r.busy = true;
+    const done = () => { r.busy = false; };
+    saveCanvas.toBlob((blob) => {
+      if (!blob) return done();
+      void Promise.resolve(blob.arrayBuffer()).then((buf) => {
+        ipcRenderer.send(C.savedFrame, { i: i, jpeg: new Uint8Array(buf), width: w, height: h, stereo: stereo, eyes: eyes || null, at: now, source: source, skipped: skipped });
+      }).catch(() => undefined).then(done);
+    }, 'image/jpeg', SAVE_QUALITY);
+  } catch (e) {
+    r.busy = false;
+  }
+}
+ipcRenderer.on(C.saveFrames, (_e, q) => {
+  const ms = q && typeof q.ms === 'number' ? q.ms : 0;
+  saveReq = ms > 0 ? { until: Date.now() + ms, max: q && typeof q.max === 'number' ? q.max : 0, n: 0, busy: false, skipped: 0 } : null;
+});
 setInterval(feedTick, Math.round(1000 / FEED_FPS));
 ipcRenderer.on(C.videoWant, (_e, on) => {
   feedWanted = !!on;
@@ -1562,6 +1691,177 @@ ipcRenderer.on(C.videoWant, (_e, on) => {
   feedLastFrame = -1;
 });
 ipcRenderer.on(C.videoAck, () => { feedInFlight = false; });
+
+/**
+ * D7.6 (2026-11-03): the VR test bench. Main sends the bench (C.bench) instead of an attach, then frames (C.benchFrame,
+ * one in flight, acked): two eye JPEGs drawn side by side, or one whole picture, onto the bench canvas. Path direct:
+ * that canvas is the stage and the theater feed (feedOut). Path loop: the canvas track goes through two
+ * RTCPeerConnections in this page (the match's bitrate rule, detail kept), and the received track is the stage, fed to
+ * the layer the way a peer's video is. Every second the readout goes to main (C.benchStatus).
+ */
+function startBench(cfg) {
+  stopBench();
+  if (cfg) {
+    const c = document.createElement('canvas');
+    c.width = 2;
+    c.height = 2;
+    const b = { path: cfg.path === 'loop' ? 'loop' : 'direct', canvas: c, ctx: c.getContext('2d', { alpha: false }), drawn: 0, drawnSec: 0, bad: 0, stereo: 'sbs', eyes: null, track: null, stageStream: null, streamN: 0, a: null, b: null, sender: null, bitrate: null, fed: null, fedSec: 0, outBytes: -1, outAt: 0, error: null };
+    const t = c.captureStream(VIDEO.fps).getVideoTracks()[0] || null;
+    if (!t) b.error = 'The bench canvas gave no video track.';
+    else {
+      try { t.contentHint = 'detail'; } catch (e) { /* older engines */ }
+      b.track = t;
+    }
+    bench = b;
+    feedLastFrame = -1;
+    feedInFlight = false;
+    if (t && b.path === 'direct') setBenchStream(b, new MediaStream([t]));
+    else if (t) void openLoop(b);
+  }
+  render();
+}
+function stopBench() {
+  const b = bench;
+  if (!b) return;
+  bench = null;
+  for (const pc of [b.a, b.b]) {
+    if (!pc) continue;
+    try { pc.close(); } catch (e) { /* closed */ }
+  }
+  if (b.track) b.track.stop();
+  stageKey = null;
+}
+function setBenchStream(b, s) {
+  if (bench !== b) return;
+  b.stageStream = s;
+  b.streamN++;
+  stageKey = null;
+  render();
+}
+async function openLoop(b) {
+  try {
+    const a = new RTCPeerConnection({ iceServers: [] });
+    const r = new RTCPeerConnection({ iceServers: [] });
+    b.a = a;
+    b.b = r;
+    a.addEventListener('icecandidate', (e) => { if (e.candidate) void Promise.resolve(r.addIceCandidate(e.candidate)).catch(() => undefined); });
+    r.addEventListener('icecandidate', (e) => { if (e.candidate) void Promise.resolve(a.addIceCandidate(e.candidate)).catch(() => undefined); });
+    r.addEventListener('track', (e) => setBenchStream(b, new MediaStream([e.track])));
+    b.sender = a.addTrack(b.track, new MediaStream([b.track]));
+    const offer = await a.createOffer();
+    await a.setLocalDescription(offer);
+    await r.setRemoteDescription(offer);
+    const answer = await r.createAnswer();
+    await r.setLocalDescription(answer);
+    await a.setRemoteDescription(answer);
+    await applyBenchBitrate(b);
+  } catch (e) {
+    if (bench === b) b.error = 'The local WebRTC loop did not start (' + errText(e) + ').';
+    render();
+  }
+}
+/** The match's rule (videoBitrateFor, D7.4.6) on the loop's sender, from the canvas's size and the frames' stereo. */
+async function applyBenchBitrate(b) {
+  if (!b.sender) return;
+  const want = videoBitrateFor({ width: b.canvas.width, height: b.canvas.height, stereo: b.stereo });
+  b.bitrate = want;
+  try {
+    const p = b.sender.getParameters();
+    if (!p.encodings || !p.encodings.length) return;
+    if (p.encodings[0].maxBitrate === want) return;
+    p.encodings[0].maxBitrate = want;
+    p.encodings[0].maxFramerate = VIDEO.fps;
+    await b.sender.setParameters(p);
+  } catch (e) {
+    /* no encodings before negotiation; the next size change tries again */
+  }
+}
+async function drawBench(f) {
+  const b = bench;
+  let l = null;
+  let r = null;
+  try {
+    if (!b || !b.ctx || !f || !f.left || !f.left.byteLength || typeof createImageBitmap !== 'function') {
+      if (b) b.bad++;
+      return;
+    }
+    const both = await Promise.all([
+      createImageBitmap(new Blob([f.left], { type: 'image/jpeg' })),
+      f.right ? createImageBitmap(new Blob([f.right], { type: 'image/jpeg' })) : Promise.resolve(null),
+    ]);
+    l = both[0];
+    r = both[1];
+    if (bench !== b) return;
+    const w = f.width > 0 ? f.width : l.width;
+    const h = f.height > 0 ? f.height : l.height;
+    const W = r ? 2 * w : w;
+    const stereo = f.stereo === 'mono' ? 'mono' : 'sbs';
+    const resized = b.canvas.width !== W || b.canvas.height !== h || b.stereo !== stereo;
+    if (b.canvas.width !== W) b.canvas.width = W;
+    if (b.canvas.height !== h) b.canvas.height = h;
+    b.stereo = stereo;
+    b.eyes = f.eyes || null;
+    b.ctx.drawImage(l, 0, 0, l.width || w, l.height || h, 0, 0, w, h);
+    if (r) b.ctx.drawImage(r, 0, 0, r.width || w, r.height || h, w, 0, w, h);
+    b.drawn++;
+    b.drawnSec++;
+    if (resized) void applyBenchBitrate(b);
+    if (b.drawn === 1) render();
+  } catch (e) {
+    if (b) b.bad++;
+  } finally {
+    if (l && typeof l.close === 'function') l.close();
+    if (r && typeof r.close === 'function') r.close();
+    ipcRenderer.send(C.benchAck);
+  }
+}
+/** The bench's theater feed: the canvas itself (direct), or the stage video once the loop delivers (loop). */
+function benchFeed(b) {
+  let out = null;
+  if (b.path === 'direct') {
+    if (!b.drawn || b.drawn === feedLastFrame) return;
+    out = feedOut(b.canvas, b.canvas.width, b.canvas.height, b.drawn, b.stereo, b.eyes, 'bench (direct)');
+  } else {
+    const v = $('video');
+    if (!b.stageStream || !v.videoWidth || !v.videoHeight || v.readyState < 2) return;
+    const q = typeof v.getVideoPlaybackQuality === 'function' ? v.getVideoPlaybackQuality() : null;
+    const mark = q && q.totalVideoFrames > 0 ? q.totalVideoFrames : v.currentTime;
+    if (mark === feedLastFrame) return;
+    out = feedOut(v, v.videoWidth, v.videoHeight, mark, b.stereo, b.eyes, 'bench (local WebRTC loop)');
+  }
+  if (out) {
+    b.fed = { width: out.width, height: out.height, stereo: b.stereo };
+    b.fedSec++;
+  }
+}
+async function benchTick() {
+  const b = bench;
+  if (!b) return;
+  let sent = null;
+  if (b.a && b.sender && typeof b.a.getStats === 'function') {
+    try {
+      const rep = await b.a.getStats();
+      for (const s of rep.values()) {
+        if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue;
+        const now = Date.now();
+        // bits per millisecond = kbit/s
+        const kbps = b.outBytes >= 0 && s.bytesSent >= b.outBytes && now > b.outAt ? Math.round(((s.bytesSent - b.outBytes) * 8) / (now - b.outAt)) : null;
+        b.outBytes = s.bytesSent;
+        b.outAt = now;
+        sent = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, fps: typeof s.framesPerSecond === 'number' ? s.framesPerSecond : null, limit: s.qualityLimitationReason || 'none' };
+        break;
+      }
+    } catch (e) { /* no stats yet */ }
+  }
+  if (bench !== b) return;
+  ipcRenderer.send(C.benchStatus, { path: b.path, drawn: b.drawnSec, bad: b.bad, fed: b.fed, fedFrames: b.fedSec, sent: sent, bitrate: b.bitrate, loopUp: !!b.stageStream, error: b.error });
+  b.drawnSec = 0;
+  b.fedSec = 0;
+  b.bad = 0;
+}
+setInterval(() => void benchTick(), 1000);
+ipcRenderer.on(C.bench, (_e, cfg) => startBench(cfg));
+ipcRenderer.on(C.benchFrame, (_e, f) => void drawBench(f));
 
 /**
  * D2.8 (2026-11-01): table sound. Sending: main feeds this rig's VPX sound (the helper's process-loopback tap) as 10 ms

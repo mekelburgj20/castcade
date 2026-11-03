@@ -326,6 +326,38 @@ what the code changed in the contract.
   10 s from the VR layer camera, 1440x1440 (sbs)[, K unreadable][, D dropped before the panel (newest wins)], sent …`.
   With Camera = screen (the default) none of these lines, messages or code paths occur.
 
+## 5b. The VR test bench and saved frames (D7.6, D7.6.3, 2026-11-03)
+
+**Why.** Every headset finding so far cost a two-person session; the bench answers theater geometry, scale, detail
+and frame rate on one rig in five minutes, and saved frames give the real images for offline analysis.
+
+- **Saved frames** (`media/frame-clip.ts`; the Match tab's **Save 2 s of frames**): `<logs>/frames/<yyyy-mm-dd-hhmmss>/`
+  holds, for 2 s and at most 120 frames per side, every layer-camera frame (`NNNN-L.jpg`, `NNNN-R.jpg` as the layer
+  sent them, `NNNN.json` = the frame header `n, t, w, h, us, eyes`) while the camera runs, every theater frame the panel
+  page hands to the layer (`in-NNNN.jpg`, encoded in the page at quality 90 at the decoded size, one encode in flight;
+  `in-NNNN.json` = size, stereo, eyes if known, time, source) while theater shows, and `clip.json` (both lists, the
+  recorded fps and sizes, the settings in force). Log: `media: frames: saving 2 s to <dir> (layer camera on|not
+  running, theater feed on|not running)`, then `media: frames: saved N sender frame(s) (WxH per eye, F fps) and M
+  received frame(s) (WxH sbs, F fps) to <dir>` and a `media: frames: <side>: …` line for a side that was empty.
+- **The bench** (`media/bench.ts`, `RtcHost.startBench`, `MatchHost.startBench`; the Match tab's VR test bench card,
+  `renderer/src/views/TestBench.tsx`): the panel page is opened without a match (a `castcade-panel:bench` message
+  instead of the attach: no mesh, no microphone, no capture, no listener); refused while a match is on, and a match
+  hosted or joined stops it. On a VR rig off SteamVR the OpenXR layer is started with the bench's panel and video
+  sources and put in theater (Theater size live), exactly the receiver's path: the page's `feedTick` → `feedOut`
+  (feedSize, `VIDEO_FEED_MAX`) → `castcade-panel:video` → the layer. On a PC the picture shows in the desktop panel.
+  Sources: a saved clip (sender eye frames or received frames, looped at the recorded fps by the wall clock), or
+  **my own table, live** (the layer camera; it reads VPX's submitted eye views in `cameraTick` before `compose` drops
+  them for theater, so the window shows the player's own table to compare with the direct view: the card's **Show
+  VPX's own view** sets the layer to hidden while the bench keeps running). Paths: **straight to the layer** (the bench
+  canvas, no encoder) or **through a local WebRTC loop** (two RTCPeerConnections in the page, the canvas track under
+  `videoBitrateFor` and `contentHint = 'detail'`, the received track fed as a peer's is). Stop: theater off (`hidden`),
+  300 ms for the control to land, the pipe closed, the panel destroyed.
+- **The log**: `bench: …` lines from the match host (`running (vr_headset via virtual-desktop; theater in the
+  headset)`, `the OpenXR layer showing, theater at Theater size 1`, `stopped (…); VPX's own view is back`), and from the
+  media layer `media: bench: started: <source>, <path>, <where>` and every 10 s `media: bench: 30 fps drawn · 1440x1440
+  sbs to the layer at 30 fps[ · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none]`, plus the
+  layer's own `theater: feeding 1440x1440 (sbs) to the layer` and `vr-layer camera: …` lines.
+
 ## 6. Checks only the rig can answer (run before the first match)
 
 1. **VR controller input under the lock** (15 min): with a table open in VR, create `turn.lock` by hand; the flippers
