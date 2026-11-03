@@ -7,6 +7,108 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.33] — 2026-11-03
+
+Protocol 3. Five headset runs had each returned one fact, because every hypothesis needed a second player in a headset
+and the picture came from a screen capture of a preview window. This build takes the picture from inside VPX's frame,
+lets a match run more than one game without leaving the table, recovers a connection both routers block, and adds a
+test bench so the owner can judge theater geometry, scale, detail and frame rate alone in five minutes. VPX must be
+restarted after the update so the new layer loads (`vr-layer.log` says `build v0.2.33`).
+
+### A match is a series; the match starts from the headset (A10, A11, A10.5)
+- After a game's RESULT the match stays open (peers, mesh, voice, panel): the panel shows `GAME 1 OVER`, the standings
+  and "Next game: <host> starts a game on the table". The host starting a game on their table (the hook's `game_start`
+  in the journal) begins the next game for everyone from ball 1, no button and no desktop; the header reads `GAME 2 ·
+  YOUR BALL 1`; from two games on the score rows show the series place and wins (by outright wins, then total score; a
+  tie for first gives nobody the win). The host's Match tab gets Next game and End match; End match works between games,
+  Leave is still the way out mid-game. A client shows the final standings for 20 s, then closes the match itself.
+  Protocol 3: one hash-chained log for the whole series, `NEXT_GAME {game, playerOrder}` host → all and logged,
+  `MATCH_END {games, reason}` not logged, `game` on the TURN_GRANT body and on each signed RESULT with the series
+  standings so far. Reconnect mid-series, host transfer mid-game-2, a player who left before game 2, a late LOG_SIGN
+  and a bad NEXT_GAME are covered by `companion/src/match/series.test.ts` and the fakeclient `two-game-series`
+  scenario. `protocol/src/messages.ts`, `match/state.ts`, `result.ts`, `host.ts`, `client.ts`, `controller.ts`,
+  `main/match-host.ts`, `media/panel-page.ts` headerText / stripRows, `Match.tsx`; design in
+  `docs/design/alpha-match.md` §8. ArcAid's side (N results under one Throwdown) is WORK F24, before A5 posts.
+- Start from inside the headset: the host's first game on the table starts the match when the lobby is complete
+  (every joined rig has its table open), after a 5 s countdown on every panel (`STARTING IN 5`, "Starting the match:
+  <names>"; `HELLO_ACK.startsInMs` carries it as a duration, the clocks need not agree). A second plunge changes
+  nothing; the desktop Start still starts at once; a table still loading (`HELLO_ACK.loading`, a LOADING flag on the
+  roster) makes the start wait and fire when it opens. `match/host.ts` startIn, `main/match-host.ts`.
+- Fixed: a RESULT resent to a reconnecting peer was always dropped by the seq rule (it went out with its old `seq`
+  after the newer RECONNECT_ACK), so 0.2.22's "sent RESULT again" never worked; every RESULT is now resent in a fresh
+  envelope.
+- Wire / journal: protocol 2 → 3 (`PROTOCOL_VERSION`, `protocol/SPEC.md`, `protocol/schemas/`); MEDIA_SIGNAL's stereo
+  signal gains an optional `eyes` field (two `EyeGeometry` entries: fov, crop rect, render size) for the layer camera
+  (D7.5.2's wire half; `protocol/test/messages.test.ts`). The journal format is unchanged.
+
+### The picture comes from inside VPX: the layer camera (D7.5, D7.5.1; layer 0.4.0 → 0.5.0)
+- On the Match tab, Camera: `screen capture` (the default, unchanged from 0.2.32) or `VR layer (experimental)`. With the
+  layer, the OpenXR layer copies the two eye views VPX submits (`XrCompositionLayerProjection`) out of VPX's frame:
+  OpenGL (the owner's rig through OpenComposite) by `glBlitFramebuffer` into a texture of ours, `glReadPixels` into a
+  PBO, a fence polled and never waited on; D3D11 by a staging copy; a worker thread reads back one or two frames late,
+  centre-crops each eye to a 720x1440 box (VPX's own preview rule, never stretched), encodes each eye as JPEG quality
+  85 (vendored `stb_image_write.h`, `vr-layer/third_party/stb`, attributed in `THIRD-PARTY.md`) and writes the frame
+  down the pipe; the render thread never copies a frame or blocks. Per-frame `issue / map / copy / encode / write`
+  microseconds are logged for the first 10 frames and then every 300th (`camera: frame N: …`); `camera: on (OpenGL):
+  eye render WxH …` / `camera: off (why): N frames sent …` / `camera: refused: …` bracket a run (multisampled or
+  non-8-bit swapchains, OpenGL below 3.2, a VPX started before the layer are refused loudly). The pipe is overlapped
+  now, so the worker's writes no longer queue behind the reader. Pipe protocol 3: control `camera: {width, height,
+  fps} | null`, layer → companion `CVS1` status and `CVF1` frames (header JSON with n, t, w, h, timings and per-eye
+  fov / rect / render, then the two JPEGs). `vr-layer/src/layer.cpp`, `camera.cpp`, `jpeg_encode.cpp`,
+  `panel_pipe.cpp`; `companion/src/media/vr-layer.ts` createLayerReader / parseCameraFrame, `layer-camera.ts`.
+- The panel page draws the two JPEGs side by side on the same canvas whose track the peers already hold (1440x1440,
+  no renegotiation; `media: sending 1440x1440 sbs at 8.0 Mbps`), a synthetic capture `VR layer camera` keeps the
+  Match tab fields and the `capture: N frames in 10 s from the VR layer camera …` counters working, and the stereo
+  declaration is forced to `sbs` with the sender's eyes. While another player is up, one frame a second reaches the
+  page; the full rate returns on this rig's turn. Falls back to the screen capture, once per match and never forward
+  again within it (`media: camera: back to the screen capture: <reason>`): the layer not on the pipe within 20 s, a
+  refusal, no frame for 8 s after `on`, a stall of 3 s, the pipe closing. A Camera change applies between balls. PC
+  rigs and SteamVR rigs always use the screen capture. `rtc-host.ts`, `panel-page.ts`; the contract and what is built
+  are `docs/design/alpha-match.md` §5a. Left for later: the receiver's window still assumes its own eyes (D7.5.2).
+
+### Theater: size and a taller feed; the connection recovers (D7.4.9, D2.9)
+- Theater size on the Match tab: life size, 80 % or 60 % (sharper, smaller; `theaterScale` in the layer's control,
+  live). The side-by-side feed box is 3840x1440 instead of 3840x1080, so the owner's 1440x1392 preview reaches the
+  other rig whole (it arrived as 1116x1080 on 2026-11-02); `theater: feeding WxH (sbs) to the layer` is logged once per
+  size change. `panel-page.ts` VIDEO_FEED_MAX / feedSize, `vr-layer.ts`, `main/match-setup.ts`, `Match.tsx`.
+- EFUKTZ 2026-11-02 never found a working ICE pair (two NATed peers, STUN only) and nobody heard anything until the
+  owner forfeited. Now every 10 s counter line names the nominated candidate pair per peer (state, local and remote
+  candidate types host / srflx / relay, protocol, round trip; never an address), and a watchdog restarts ICE through
+  the existing signalling when a connection sits in `checking` (or `new` after signalling settled, or `disconnected`)
+  for 10 s, again after 20 s and 40 s, three restarts at most, the impolite peer leading and the polite one 5 s
+  behind; after that the panel and the Match tab say "No path to <name> (ICE checking after 3 restarts): both routers
+  blocked the direct connection; a TURN relay is needed". `media: peer <id>: ICE restart 1 of 3 (checking for 10 s, we
+  lead …)` / `ICE connected after 1 restart(s) …; pair srflx -> srflx udp succeeded`. The Match tab has TURN relay
+  fields (url, username, credential; saved in `media.json`, the credential never shown or logged) until a relay of
+  ours exists (WORK F23). `rtc-signaling.ts` restartIce / leadsIceRestart, `panel-page.ts` icePairInfo / iceWatchStep,
+  `media-settings.ts`, `main/match-host.ts` setTurn, `Match.tsx`.
+
+### The VR test bench: theater alone in the headset (D7.6, D7.6.1, D7.6.2, D7.6.3)
+- A "VR test bench" card on the Match tab. Start puts the layer in theater without a match (refused while one is on):
+  Source "My own table, live" (this rig's layer camera: the owner sees their own table in the window and can compare
+  it with the direct view through "Show VPX's own view") or a saved clip; Path "Straight to the layer" (no encoder) or
+  "local WebRTC loop" (two peer connections inside the panel page with the match's bitrate rule, so the encoder's
+  detail is in the picture); Theater size live; a readout every second (fps drawn, the size handed to the layer, and
+  on the loop the encoder's sent size, bitrate against its cap and `qualityLimitationReason`); Stop restores VPX's
+  view. On a PC the picture shows in the desktop panel window. `media/bench.ts`, `rtc-host.ts`, `panel-page.ts`,
+  `main/match-host.ts`, `renderer/src/views/TestBench.tsx`; `docs/design/alpha-match.md` §5b.
+- Show calibration pattern: the layer draws a stereo test image itself (control `test: 'pattern'`): per eye a grid
+  every 5° of visual angle, labelled every 10°, circles at 10° and 20°, a cross on the axis, left orange and right
+  blue, a large L / R in the outer corner, placed with the exact geometry theater uses for a sender. A doubled line
+  at a known angle measures the geometry error directly. Needs a hosted match today (the layer connects only during
+  one; WORK D7.6.1.2). `vr-layer/src/layer.cpp` eyeCrop / the pattern canvas.
+- Write VR report: `vr-report-<date>.md` and `.json` in the logs folder with what the headset, the runtime and VPX
+  say about the picture: runtime name and version, system, view configuration and recommended eye sizes, per-eye fov,
+  VPX's swapchains (format, size, array, samples, usage), the last frame's layers and rects, the graphics binding and
+  GL strings, the OpenComposite verdict and the VR modules in VPX, the last theater placement; plus the rig and
+  runtime detection, the match settings, the ICE description, the last controls sent, the camera status, the last
+  60 s of counters, the VPX preview window's fit and the `[PlayerVR]` ini keys. The layer logs the same `session:`
+  block to `vr-layer.log` at each session's first frame. `vr-layer/src/layer.cpp` sessionFacts,
+  `companion/src/main/vr-report.ts`, `vr-report-host.ts`, `media/vr-layer.ts` requestSession / probeLayerSession.
+- Save 2 s of frames: `logs/frames/<date>/` gets the layer camera's own JPEG eyes with their headers (`NNNN-L.jpg`,
+  `NNNN-R.jpg`, `NNNN.json`) and the received theater frames as the page decoded them (`in-NNNN.jpg` + `.json`), at
+  most 120 a side, with a `clip.json` index the bench replays. `media/frame-clip.ts`.
+
 ## [0.2.32] — 2026-11-02
 
 The fourth run's logs re-read against the clock: 0.2.31's reading of Krobs' frozen picture (a display turned off) was
