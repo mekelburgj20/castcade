@@ -410,8 +410,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const overlayFor = (a: RigRuntime): VrOverlay | undefined => (usesLayer(a) ? opts.vrLayer : opts.vrOverlay);
   const headsetPanel = (a: RigRuntime): boolean => a.rig === 'vr_headset';
   const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean; runtime: VrRuntime | null } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a), runtime: a.runtime });
-  /** D7.6: the OpenXR layer's pipe as the Match tab's test bench needs it. */
-  const benchView = (): MatchStatus['vrBench'] => {
+  /** D7.6.1 / D7.6.2: the OpenXR layer's pipe as the Match tab's test-bench card needs it (the pattern toggle, the report). */
+  const layerBenchView = (): MatchStatus['vrBench'] => {
     const b = opts.vrLayer?.bench?.();
     return b ? { connected: b.connected, protocol: b.protocol, pattern: b.test === 'pattern' } : null;
   };
@@ -456,7 +456,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       media,
       previewAdvice: previewAdvice({ inVr: r.rig === 'vr_headset', declared: media?.captureStereo, crop: media?.captureCrop }),
       vrOverlay: a ? ((a.overlay ?? overlayFor(a))?.status() ?? null) : null,
-      vrBench: benchView(),
+      vrBench: layerBenchView(),
       rig: r.rig,
       rigReason: r.rigReason,
       vrRuntime: r.runtime,
