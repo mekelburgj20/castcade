@@ -4,13 +4,17 @@
 //   layer → companion, once per connection: "CVH1", u32 protocol version (kPipeProtocol);
 //   layer → companion (protocol 3): "CVF1", u32 byteLength, a camera frame (camera.h: u16 jsonLength, the JSON header,
 //     then the eyes' JPEG payloads back to back); "CVS1", u32 byteLength, UTF-8 JSON {"camera", "why", ...}: the
-//     camera's state. Every layer → companion message after the hello is magic + u32 byteLength + payload;
+//     camera's state, or (D7.6.2) {"kind": "session", ...}: the session report (layer.cpp sessionFacts), sent at the
+//     session's first frame, on every new connection and on request. Every layer → companion message after the hello
+//     is magic + u32 byteLength + payload;
 //   companion → layer, any order:
 //     "CVO1", u32 width, u32 height, u32 byteLength = width * height * 4, then BGRA top-down: a panel frame (the panel
 //       page's paint; the SteamVR helper's stdin format, so a protocol-1 companion still works);
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
 //     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}, optionally the
-//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5): the control;
+//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5),
+//       "report": true (D7.6.2: send the session report now; a request, never a state) and "test": "pattern" (D7.6.1:
+//       the calibration pattern in theater; a control without it = off): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -55,6 +59,10 @@ struct CameraRequest {
 constexpr uint32_t kCameraMaxSide = 4096;
 constexpr uint32_t kCameraMaxFps = 60;
 
+// D7.6.1: what theater shows instead of the companion's feed. Pattern = the layer's own stereo calibration image
+// (layer.cpp drawPatternEye), shown in theater whatever the mode while asked; a control without "test" = None.
+enum class TestPattern { None, Pattern };
+
 struct Control {
   ViewMode mode = ViewMode::Panel;
   bool sbs = false;          // the video frame is left eye | right eye side by side
@@ -63,6 +71,7 @@ struct Control {
   // eye rendered it). Optional in CVC1, clamped to [kTheaterScaleMin, kTheaterScaleMax].
   float theaterScale = kTheaterScale;
   CameraRequest camera;  // D7.5
+  TestPattern test = TestPattern::None;  // D7.6.1
 };
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;
@@ -85,6 +94,16 @@ Control panelPipeControl();
 // any thread; blocks while the companion is slow to read; false when no companion is connected or the write failed
 // (the connection is then dropped). Writes never interleave: one message at a time.
 bool panelPipeSend(const uint8_t* data, size_t length);
+
+// D7.6.2: goes up by one on every new connection (after the hello) and every control with "report": true; the render
+// thread sends the session report whenever it differs from the value at its last report.
+uint32_t panelPipeReportSerial();
+
+// D7.6.2: a companion is connected now (a write may succeed).
+bool panelPipeConnected();
+
+// D7.6.2: one message, `magic` (4 characters) + u32 byteLength + `payload`, to the companion. Blocks like panelPipeSend.
+bool panelPipeSendMessage(const char* magic, const std::string& payload);
 
 // D7.5: a JSON status message ("CVS1") to the companion: the camera's state, `{"camera": "<state>", "why": "<why>", ...}`.
 // `extra` is appended inside the object as is (already JSON, e.g. `,"source":[3072,3264]`), or empty.

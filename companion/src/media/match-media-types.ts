@@ -320,6 +320,53 @@ export interface VrOverlay {
    * not spoken yet. `layer-camera.ts` decideCamera / cameraWatch read it.
    */
   layerProtocol?(): number | null;
+  /**
+   * D7.6 (2026-11-03), the OpenXR layer only: the test bench's view of the pipe (connected, its protocol, the last
+   * session report, the last controls sent) and its changes.
+   */
+  bench?(): VrLayerBench;
+  onBench?(cb: (b: VrLayerBench) => void): () => void;
+  /**
+   * D7.6.2: ask the connected protocol-3 layer for its session report (control `report: true`); the report that comes
+   * back, or null when none came within `timeoutMs` (an older layer, VPX not rendering) or no layer is connected.
+   */
+  requestSession?(timeoutMs: number): Promise<LayerSessionReport | null>;
+  /**
+   * D7.6.1: the layer's calibration pattern in theater instead of any picture (control `test: 'pattern'`, sent only to
+   * a protocol-3 layer and only while set: a control without it is byte for byte what it was), or null to stop it.
+   * Cleared by `stop`. Idempotent.
+   */
+  setTest?(test: VrTestPattern | null): void;
+}
+
+/** D7.6.1: what the layer shows in theater instead of the companion's picture (vr-layer/README.md "The calibration pattern"). */
+export type VrTestPattern = 'pattern';
+
+/**
+ * D7.6.2 (2026-11-03): the layer's session report (CVS1 `{"kind": "session", ...}`, vr-layer/src/layer.cpp
+ * sessionFacts): runtime, system, view configuration, VPX's fov, swapchains and last frame, the graphics binding,
+ * OpenComposite's marks, the last theater placement. `facts` is the JSON as the layer sent it, minus `kind`.
+ */
+export interface LayerSessionReport {
+  /** `Date.now()` when it arrived. */
+  receivedAt: number;
+  facts: Record<string, unknown>;
+}
+
+/** D7.6: the OpenXR layer as the test bench sees it. */
+export interface VrLayerBench {
+  /** `start` ran and `stop` did not (a match holds the overlay). */
+  started: boolean;
+  /** The pipe is connected to the layer in VPX. */
+  connected: boolean;
+  /** The connected layer's pipe protocol (1 until its hello; 0 when not connected). */
+  protocol: number;
+  /** The last session report from the layer (this connection or an earlier one), or null. */
+  session: LayerSessionReport | null;
+  /** The last controls written to the pipe, oldest first (at most `BENCH_CONTROLS`), as JSON text. */
+  controls: Array<{ at: number; text: string }>;
+  /** D7.6.1: the test picture asked for (sent while a protocol-3 layer is connected), or null. */
+  test: VrTestPattern | null;
 }
 
 /** Default placement (alpha-match.md §5): head-anchored, 0.55 m wide, below the line of sight. */

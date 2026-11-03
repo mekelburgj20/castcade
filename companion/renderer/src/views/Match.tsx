@@ -409,6 +409,8 @@ export function Match({ state }: { state: CastcadeState }) {
         </div>
       </div>
 
+      <VrBenchCard bridge={bridge} bench={st.vrBench} onStatus={setSt} />
+
       <div className="card">
         <strong>Table sound</strong>
         <label className="check">
@@ -446,6 +448,72 @@ export function Match({ state }: { state: CastcadeState }) {
         </label>
       </div>
     </section>
+  );
+}
+
+/**
+ * D7.6 (2026-11-03): the VR test bench: checks a player can run alone in the headset. D7.6.2: "Write VR report" writes
+ * the whole picture of how VPX reaches the headset (the layer's session report, the settings, the counters, the
+ * preview window) beside companion.log and shows where. D7.6.1: "Show calibration pattern" puts the layer's own stereo
+ * grid in theater (it needs the layer connected on pipe protocol 3: in a match, VPX in VR with this version's layer).
+ */
+const PATTERN_HINT =
+  'In the headset: one grid, the L and R labels in their corners, the circles round and single. Doubled lines mean the geometry is off: note the angle label where it starts.';
+
+/** D7.6.1: why the pattern switch is off, or null when it can be used. */
+function patternBlocker(bench: MatchStatus['vrBench']): string | null {
+  if (!bench) return 'This build has no OpenXR layer.';
+  if (!bench.connected) return 'Needs the Castcade layer connected: host or join a match with VPX running in VR.';
+  if (bench.protocol < 3) return `The layer in VPX is older (pipe protocol ${bench.protocol}): restart VPX after updating Castcade.`;
+  return null;
+}
+
+function VrBenchCard({ bridge, bench, onStatus }: { bridge: CastcadeBridge; bench: MatchStatus['vrBench']; onStatus: (s: MatchStatus) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [written, setWritten] = useState<{ md: string; json: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const writeReport = () => {
+    setBusy(true);
+    setError(null);
+    void bridge.match
+      .vrReport()
+      .then(setWritten, (e: unknown) => setError(describe(e)))
+      .finally(() => setBusy(false));
+  };
+  const blocker = patternBlocker(bench);
+  const pattern = bench?.pattern ?? false;
+  const togglePattern = (on: boolean) => {
+    setError(null);
+    void bridge.match.setVrTest(on ? 'pattern' : null).then(onStatus, (e: unknown) => setError(describe(e)));
+  };
+  return (
+    <div className="card">
+      <strong>VR test bench</strong>
+      <label className="check">
+        <input type="checkbox" checked={pattern} disabled={blocker !== null && !pattern} onChange={(e) => togglePattern(e.target.checked)} />
+        Show calibration pattern
+      </label>
+      <small>
+        {pattern
+          ? PATTERN_HINT
+          : (blocker ?? 'Replaces theater with a test grid drawn by the layer, at the Theater size above: checks the stereo geometry alone, no second player needed.')}
+      </small>
+      <div className="row">
+        <button type="button" className="small" disabled={busy} onClick={writeReport}>
+          {busy ? 'Writing the VR report…' : 'Write VR report'}
+        </button>
+      </div>
+      <small>
+        Writes what the headset, the runtime and VPX say about the picture (and this app's settings and counters) to a file to send. VPX should be running in VR for
+        the headset part; it takes a few seconds.
+      </small>
+      {written && (
+        <p className="muted">
+          Written: <code>{written.md}</code> (and <code>.json</code> beside it)
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
   );
 }
 

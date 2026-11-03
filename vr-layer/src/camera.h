@@ -39,7 +39,11 @@ namespace castcade {
 struct AppSwapchain {
   int64_t format = 0;  // GL internal format or DXGI_FORMAT
   uint32_t width = 0, height = 0, arraySize = 1, sampleCount = 1;
-  std::vector<uint32_t> glImages;           // OpenGL sessions: texture names by image index
+  // D7.6.2, for the session report: the rest of XrSwapchainCreateInfo and the session it was made in (the handle's value).
+  uint64_t usageFlags = 0;
+  uint32_t faceCount = 1, mipCount = 1;
+  uintptr_t session = 0;
+  std::vector<uint32_t> glImages;          // OpenGL sessions: texture names by image index
   std::vector<ID3D11Texture2D*> d3dImages;  // D3D11 sessions: the app's textures (not AddRef'd; alive while the swapchain is)
   std::vector<uint32_t> acquired;           // indices acquired and not yet released, oldest first
   int32_t lastReleased = -1;                // the image the app submits in its next xrEndFrame; -1 before the first release

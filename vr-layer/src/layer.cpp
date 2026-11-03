@@ -27,11 +27,19 @@
 //     xrEndFrame submits; when the companion asks (the control's "camera"), camera.cpp copies the two eye views of
 //     the app's projection layer out of VPX's frame and writes them to the pipe as JPEG (a VR sender's picture without
 //     a screen capture);
+//   - D7.6.2 (2026-11-03), the session report: what the runtime, the system and VPX's frames say (runtime and system
+//     names, view configuration, the app's fov, swapchains and last frame, the graphics binding, OpenComposite's
+//     marks, the last theater placement), logged once per session as `session:` lines at its first frame and sent to
+//     the companion as a CVS1 {"kind": "session", ...} then, on every new connection and on request (sessionFacts);
+//   - D7.6.1 (2026-11-03), the calibration pattern: on control "test": "pattern", theater shows a stereo grid the
+//     layer draws itself with the geometry the stereo window assumes (drawPatternEye), whatever the mode, until the
+//     control (or the pipe) drops it;
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
 
 #include <d3d11.h>
+#include <tlhelp32.h>
 
 #define XR_NO_PROTOTYPES  // every OpenXR call goes to the next layer's function pointers; the loader is not linked
 #define XR_USE_PLATFORM_WIN32
@@ -53,6 +61,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "camera.h"
@@ -131,6 +140,7 @@ struct Gl {
   HDC(WINAPI* getCurrentDC)() = nullptr;
   BOOL(WINAPI* makeCurrent)(HDC, HGLRC) = nullptr;
   PROC(WINAPI* getProcAddress)(LPCSTR) = nullptr;
+  const unsigned char*(WINAPI* getString)(GLenum) = nullptr;  // D7.6.2, the report only (not in ok())
   bool ok() const { return bindTexture && texSubImage2D && getIntegerv && pixelStorei && getCurrentContext && getCurrentDC && makeCurrent && getProcAddress; }
 };
 
@@ -151,6 +161,7 @@ Gl loadGl() {
   resolve(m, "wglGetCurrentDC", g.getCurrentDC);
   resolve(m, "wglMakeCurrent", g.makeCurrent);
   resolve(m, "wglGetProcAddress", g.getProcAddress);
+  resolve(m, "glGetString", g.getString);
   return g;
 }
 
@@ -174,12 +185,24 @@ struct Next {
   PFN_xrAcquireSwapchainImage acquireSwapchainImage = nullptr;
   PFN_xrWaitSwapchainImage waitSwapchainImage = nullptr;
   PFN_xrReleaseSwapchainImage releaseSwapchainImage = nullptr;
+  // D7.6.2, the session report only; optional (null: "unknown" in the report).
+  PFN_xrGetInstanceProperties getInstanceProperties = nullptr;
+  PFN_xrEnumerateViewConfigurationViews enumerateViewConfigurationViews = nullptr;
+};
+
+// D7.6.2: what the app asked for at xrCreateInstance (OpenComposite's own instance, in VPX's case).
+struct InstanceInfo {
+  std::string application, engine;
+  uint32_t applicationVersion = 0, engineVersion = 0;
+  XrVersion apiVersion = 0;
+  std::vector<std::string> extensions, apiLayers;
 };
 
 struct Instance {
   XrInstance handle = XR_NULL_HANDLE;
   Next next;
   bool hooked = false;  // VPX, and every function we need resolved
+  InstanceInfo info;    // D7.6.2
 };
 
 enum class Api { None, D3D11, OpenGL };
@@ -200,6 +223,17 @@ struct Surface {
   std::vector<XrSwapchainImageD3D11KHR> d3dImages;
   std::vector<XrSwapchainImageOpenGLKHR> glImages;
   bool released = false;  // an image has been released, so a quad may reference the swapchain (XR_ERROR_LAYER_INVALID otherwise)
+};
+
+// The geometry theater assumes for one eye of a side-by-side picture (eyeCrop, above placeWindows): the fov used and
+// where it came from, the render size, VPX's centre crop of it and that crop's tangent rect.
+struct EyeCrop {
+  XrFovf fov{};
+  const char* fovFrom = "assumed";
+  bool rectKnown = false;
+  float w = 0.0f, h = 0.0f;
+  float x = 0.0f, y = 0.0f, fw = 0.0f, fh = 0.0f;
+  float l = 0.0f, r = 0.0f, d = 0.0f, u = 0.0f;
 };
 
 struct Session {
@@ -250,6 +284,39 @@ struct Session {
   // runs after it is turned off (to stop it).
   std::unique_ptr<Camera> camera;
   bool cameraSeen = false;
+  // D7.6.2, the session report: facts read at xrCreateSession, the last frame's layers, the last placement's inputs.
+  XrSystemId systemId = XR_NULL_SYSTEM_ID;
+  InstanceInfo instanceInfo;
+  std::string binding;  // what the graphics binding was, in words (also for a binding we do not draw in)
+  bool runtimeKnown = false;
+  std::string runtimeName;
+  XrVersion runtimeVersion = 0;
+  bool systemKnown = false;
+  std::string systemName;
+  uint32_t vendorId = 0;
+  bool orientationTracking = false, positionTracking = false;
+  std::vector<XrViewConfigurationView> configViews;
+  std::string configViewsWhy;  // why configViews is empty
+  std::string glVersion, glRenderer, glVendor;
+  uint32_t d3dFeatureLevel = 0;
+  uint32_t lastLayerCount = 0;
+  std::array<int32_t, 8> lastLayerTypes{};
+  size_t lastLayerTypeCount = 0;
+  bool lastViewsSeen = false;
+  std::array<XrSwapchainSubImage, 2> lastViewImage{};
+  float theaterYawDeg = 0.0f, theaterPitchDeg = 0.0f;
+  bool theaterPlaced = false;
+  std::array<EyeCrop, 2> windowCrop{};
+  bool reportLogged = false;
+  uint32_t reportSerial = 0;
+  bool modulesRead = false;
+  std::vector<std::string> modules;  // VR-related modules in VPX's process (full paths), read once
+  // D7.6.1, the calibration pattern: its swapchain, the geometry it was drawn for, when, and whether it is asked.
+  Surface pattern;
+  std::array<EyeCrop, 2> patternCrop{};
+  uint32_t patternEyeW = 0, patternEyeH = 0;
+  uint64_t patternAt = 0;
+  bool patternOn = false;
 };
 
 std::mutex g_mutex;
@@ -674,6 +741,11 @@ std::string fovText(const XrFovf& f) {
 // Every frame, before anything is dropped: each eye's fov and render size from the app's projection layer (VPX keeps
 // rendering the receiver's own table in theater, so this stays current there too).
 void noteProjection(Session& s, const XrFrameEndInfo& info) {
+  // D7.6.2: the frame's shape for the session report (the layer types, then the projection's two image rects).
+  s.lastLayerCount = info.layerCount;
+  s.lastLayerTypeCount = 0;
+  for (uint32_t i = 0; i < info.layerCount && s.lastLayerTypeCount < s.lastLayerTypes.size(); i++)
+    s.lastLayerTypes[s.lastLayerTypeCount++] = info.layers[i] ? static_cast<int32_t>(info.layers[i]->type) : 0;
   for (uint32_t i = 0; i < info.layerCount; i++) {
     const XrCompositionLayerBaseHeader* l = info.layers[i];
     if (!l || l->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) continue;
@@ -685,8 +757,10 @@ void noteProjection(Session& s, const XrFrameEndInfo& info) {
       if (!s.appViewsSeen || !sameFov(f, s.appFov[e], 1e-4f) || r.width != s.appRect[e].width || r.height != s.appRect[e].height) s.windowDirty = true;
       s.appFov[e] = f;
       s.appRect[e] = r;
+      s.lastViewImage[e] = p->views[e].subImage;
     }
     s.appViewsSeen = true;
+    s.lastViewsSeen = true;
     return;
   }
 }
@@ -737,6 +811,29 @@ void locateEyes(Session& s, XrTime when) {
                                    ") differs from xrLocateViews' (" + fovText(s.locatedFov[e]) + "); the stereo window uses VPX's");
 }
 
+// Steps 1 and 2 above for eye `e` of a picture whose eye is `outAr` wide per unit of height: the fov (VPX's, else
+// xrLocateViews', else assumed), the render size, VPX's centre crop and the crop's tangent rect. placeWindows places
+// the quads from it; the calibration pattern (D7.6.1) is drawn from the same numbers.
+EyeCrop eyeCrop(const Session& s, size_t e, float outAr) {
+  EyeCrop c;
+  c.fov = fallbackFov();
+  if (s.appViewsSeen && fovUsable(s.appFov[e])) c.fov = s.appFov[e], c.fovFrom = "VPX's frame";
+  else if (s.eyesLocated && fovUsable(s.locatedFov[e])) c.fov = s.locatedFov[e], c.fovFrom = "xrLocateViews";
+  else logOnce("fov_assumed", "theater: no field of view from VPX's frame or xrLocateViews; the stereo window assumes 45 degrees each way");
+  const float tL = std::tan(c.fov.angleLeft), tR = std::tan(c.fov.angleRight), tD = std::tan(c.fov.angleDown), tU = std::tan(c.fov.angleUp);
+  // The render's size: VPX's (only its aspect matters); unknown → square pixels in tangent space.
+  c.rectKnown = s.appViewsSeen && s.appRect[e].width > 0 && s.appRect[e].height > 0;
+  c.w = c.rectKnown ? static_cast<float>(s.appRect[e].width) : (tR - tL) * 1000.0f;
+  c.h = c.rectKnown ? static_cast<float>(s.appRect[e].height) : (tU - tD) * 1000.0f;
+  // VPX's crop, ShrinkPreview off (see above).
+  c.x = 0.0f, c.y = 0.0f, c.fw = c.w, c.fh = c.h;
+  if (c.w / c.h > outAr) c.fw = c.h * outAr, c.x = (c.w - c.fw) * 0.5f;
+  else c.fh = c.w / outAr, c.y = (c.h - c.fh) * 0.5f;
+  c.l = tL + (c.x / c.w) * (tR - tL), c.r = tL + ((c.x + c.fw) / c.w) * (tR - tL);
+  c.d = tD + (c.y / c.h) * (tU - tD), c.u = tD + ((c.y + c.fh) / c.h) * (tU - tD);
+  return c;
+}
+
 // The two eye quads for a side-by-side picture of picW x picH (each eye picW / 2 wide), at scale `scale`.
 void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   s.windowDirty = false;
@@ -745,26 +842,17 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   const float D = kScreenDistanceM, SD = scale * kScreenDistanceM;
   std::string eyes[2];
   for (size_t e = 0; e < 2; e++) {
-    XrFovf f = fallbackFov();
-    const char* fovFrom = "assumed";
-    if (s.appViewsSeen && fovUsable(s.appFov[e])) f = s.appFov[e], fovFrom = "VPX's frame";
-    else if (s.eyesLocated && fovUsable(s.locatedFov[e])) f = s.locatedFov[e], fovFrom = "xrLocateViews";
-    else logOnce("fov_assumed", "theater: no field of view from VPX's frame or xrLocateViews; the stereo window assumes 45 degrees each way");
-    const float tL = std::tan(f.angleLeft), tR = std::tan(f.angleRight), tD = std::tan(f.angleDown), tU = std::tan(f.angleUp);
+    const EyeCrop c = eyeCrop(s, e, outAr);
+    s.windowCrop[e] = c;
+    const XrFovf& f = c.fov;
+    const char* fovFrom = c.fovFrom;
     XrPosef eye{};
     eye.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
     eye.position = {(e == 0 ? -1.0f : 1.0f) * kFallbackHalfIpdM, 0.0f, 0.0f};
     if (s.eyesLocated) eye = s.eyePose[e];
-    // The render's size: VPX's (only its aspect matters); unknown → square pixels in tangent space.
-    const bool rectKnown = s.appViewsSeen && s.appRect[e].width > 0 && s.appRect[e].height > 0;
-    const float w = rectKnown ? static_cast<float>(s.appRect[e].width) : (tR - tL) * 1000.0f;
-    const float h = rectKnown ? static_cast<float>(s.appRect[e].height) : (tU - tD) * 1000.0f;
-    // VPX's crop, ShrinkPreview off (see above).
-    float x = 0.0f, y = 0.0f, fw = w, fh = h;
-    if (w / h > outAr) fw = h * outAr, x = (w - fw) * 0.5f;
-    else fh = w / outAr, y = (h - fh) * 0.5f;
-    const float l = tL + (x / w) * (tR - tL), r = tL + ((x + fw) / w) * (tR - tL);
-    const float d = tD + (y / h) * (tU - tD), u = tD + ((y + fh) / h) * (tU - tD);
+    const bool rectKnown = c.rectKnown;
+    const float w = c.w, h = c.h, x = c.x, y = c.y, fw = c.fw, fh = c.fh;
+    const float l = c.l, r = c.r, d = c.d, u = c.u;
     const float cx = (l + r) * 0.5f, cy = (d + u) * 0.5f;
     const XrVector3f onAxis = quatRotate(eye.orientation, {SD * cx, SD * cy, -D});
     const XrVector3f inHead = {eye.position.x + onAxis.x, eye.position.y + onAxis.y, eye.position.z + onAxis.z};
@@ -790,6 +878,179 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   } else {
     logOnce("window_log_limit", "theater: the stereo window keeps changing (the video's size, most likely); further changes are not logged");
   }
+}
+
+// ---- the calibration pattern (D7.6.1) ---------------------------------------------------------------------------------
+//
+// On control "test": "pattern", theater shows a side-by-side picture the layer draws itself instead of the companion's
+// feed (no companion frames needed): in each eye, lines at known angles from that eye's axis, drawn with exactly the
+// geometry theater assumes for a sender (eyeCrop: the fov and render size of VPX's frame, VPX's centre crop to the
+// picture's aspect) and placed by placeWindows like any side-by-side picture, at Control::theaterScale. If the stereo
+// window is right, a pixel drawn at angle a is seen at angle a from its eye, so the two grids land on each other (one
+// grid, at infinity); a doubled line at a labelled angle measures the error there. Vertical lines at a horizontal angle
+// atan(tx) of k * 5 degrees, horizontal lines at a vertical angle atan(ty) of k * 5 degrees (every 10 thicker and
+// labelled along the eye's axis), circles at 10 and 20 degrees from the axis and a cross on it in the eye's colour
+// (left warm, right cool), and a large L / R in the eye's outer top corner. Drawn on the render thread when its
+// geometry changes (at most once a second; about 2 Mpixel, a few ms), uploaded once, the pixels then freed.
+
+constexpr uint32_t kPatternEyeH = 1024;
+constexpr double kPatternEyeMinW = 256.0, kPatternEyeMaxW = 2048.0;
+constexpr uint64_t kPatternRedrawMs = 1000;
+
+struct Rgb {
+  uint8_t r, g, b;
+};
+constexpr Rgb kPatternBack{18, 18, 22};
+constexpr Rgb kPatternGrid5{84, 84, 92};
+constexpr Rgb kPatternGrid10{205, 205, 205};
+constexpr Rgb kPatternText{240, 240, 240};
+constexpr Rgb kPatternEye[2] = {{255, 136, 0}, {0, 168, 255}};  // left warm (orange), right cool (blue)
+
+// A 5x7 font for the labels: '0'-'9', '-', 'L', 'R'; bit 4 of each row is its leftmost column.
+const uint8_t* glyph(char ch) {
+  static const uint8_t digits[10][7] = {
+      {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
+      {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+      {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},
+      {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}};
+  static const uint8_t minus[7] = {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
+  static const uint8_t letterL[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+  static const uint8_t letterR[7] = {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+  if (ch >= '0' && ch <= '9') return digits[ch - '0'];
+  if (ch == '-') return minus;
+  if (ch == 'L') return letterL;
+  if (ch == 'R') return letterR;
+  return nullptr;
+}
+
+// One eye's half of the RGBA picture (top-down): columns x0 .. x0 + w of rows 0 .. h, the whole picture `stride` wide.
+struct EyeCanvas {
+  uint8_t* px;
+  uint32_t stride;
+  int32_t x0, w, h;
+  void fill(int32_t x, int32_t y, int32_t fw, int32_t fh, Rgb c) const {
+    const int32_t xa = x < 0 ? 0 : x, ya = y < 0 ? 0 : y;
+    const int32_t xb = x + fw > w ? w : x + fw, yb = y + fh > h ? h : y + fh;
+    if (xa >= xb || ya >= yb) return;
+    for (int32_t yy = ya; yy < yb; yy++) {
+      uint8_t* p = px + (static_cast<size_t>(yy) * stride + static_cast<size_t>(x0 + xa)) * 4;
+      for (int32_t xx = xa; xx < xb; xx++, p += 4) p[0] = c.r, p[1] = c.g, p[2] = c.b, p[3] = 255;
+    }
+  }
+};
+
+int32_t textWidth(const std::string& t, int32_t scale) { return t.empty() ? 0 : static_cast<int32_t>(t.size()) * 6 * scale - scale; }
+
+void drawText(const EyeCanvas& cv, int32_t x, int32_t y, const std::string& t, int32_t scale, Rgb c) {
+  for (const char ch : t) {
+    if (const uint8_t* g = glyph(ch)) {
+      for (int32_t row = 0; row < 7; row++)
+        for (int32_t col = 0; col < 5; col++)
+          if ((g[row] >> (4 - col)) & 1) cv.fill(x + col * scale, y + row * scale, scale, scale, c);
+    }
+    x += 6 * scale;
+  }
+}
+
+int32_t pixel(float v) { return static_cast<int32_t>(std::lround(v)); }
+
+// Eye `e` of the pattern for the crop `c` (its tangent rect: columns from c.l to c.r, rows from c.u at the top to c.d).
+void drawPatternEye(const EyeCanvas& cv, const EyeCrop& c, size_t e) {
+  const int32_t W = cv.w, H = cv.h;
+  const float spanX = c.r - c.l, spanY = c.u - c.d;
+  cv.fill(0, 0, W, H, kPatternBack);
+  if (!(spanX > 0.0f) || !(spanY > 0.0f)) return;
+  const auto colOf = [&](float t) { return (t - c.l) / spanX * static_cast<float>(W); };
+  const auto rowOf = [&](float t) { return (c.u - t) / spanY * static_cast<float>(H); };
+  const auto tanDeg = [](float deg) { return std::tan(deg / kDegPerRad); };
+  const Rgb eye = kPatternEye[e];
+  const float minX = std::atan(c.l) * kDegPerRad, maxX = std::atan(c.r) * kDegPerRad;
+  const float minY = std::atan(c.d) * kDegPerRad, maxY = std::atan(c.u) * kDegPerRad;
+  // The grid: every 5 degrees, every 10 thicker, the axis thickest.
+  for (int k = static_cast<int>(std::ceil(minX / 5.0f)); static_cast<float>(k) * 5.0f <= maxX; k++) {
+    const bool ten = k % 2 == 0;
+    const int32_t t = k == 0 ? 3 : ten ? 2 : 1;
+    cv.fill(pixel(colOf(tanDeg(static_cast<float>(k) * 5.0f)) - 0.5f * static_cast<float>(t)), 0, t, H, ten ? kPatternGrid10 : kPatternGrid5);
+  }
+  for (int k = static_cast<int>(std::ceil(minY / 5.0f)); static_cast<float>(k) * 5.0f <= maxY; k++) {
+    const bool ten = k % 2 == 0;
+    const int32_t t = k == 0 ? 3 : ten ? 2 : 1;
+    cv.fill(0, pixel(rowOf(tanDeg(static_cast<float>(k) * 5.0f)) - 0.5f * static_cast<float>(t)), W, t, ten ? kPatternGrid10 : kPatternGrid5);
+  }
+  // The circles at 10 and 20 degrees from the axis, 0.6 degrees thick: bands of tangent radius, per pixel.
+  float lo2[2], hi2[2];
+  const float ring[2] = {10.0f, 20.0f};
+  for (int i = 0; i < 2; i++) {
+    const float a = tanDeg(ring[i] - 0.3f), b = tanDeg(ring[i] + 0.3f);
+    lo2[i] = a * a, hi2[i] = b * b;
+  }
+  for (int32_t y = 0; y < H; y++) {
+    const float ty = c.u - (static_cast<float>(y) + 0.5f) / static_cast<float>(H) * spanY;
+    for (int32_t x = 0; x < W; x++) {
+      const float tx = c.l + (static_cast<float>(x) + 0.5f) / static_cast<float>(W) * spanX;
+      const float r2 = tx * tx + ty * ty;
+      if ((r2 >= lo2[0] && r2 <= hi2[0]) || (r2 >= lo2[1] && r2 <= hi2[1])) cv.fill(x, y, 1, 1, eye);
+    }
+  }
+  // The cross on the axis, arms 3 degrees long, in the eye's colour.
+  const int32_t ax = pixel(colOf(0.0f)), ay = pixel(rowOf(0.0f));
+  const int32_t armX = pixel(colOf(tanDeg(3.0f))) - ax, armY = pixel(rowOf(-tanDeg(3.0f))) - ay;
+  cv.fill(ax - armX, ay - 3, 2 * armX + 1, 7, eye);
+  cv.fill(ax - 3, ay - armY, 7, 2 * armY + 1, eye);
+  // The labels every 10 degrees, along the axis lines (beside each line, clear of the axis).
+  const int32_t s = 3, glyphH = 7 * s;
+  for (int k = static_cast<int>(std::ceil(minX / 10.0f)); static_cast<float>(k) * 10.0f <= maxX; k++)
+    if (k != 0) drawText(cv, pixel(colOf(tanDeg(static_cast<float>(k) * 10.0f))) + 5, ay + 8, std::to_string(k * 10), s, kPatternText);
+  for (int k = static_cast<int>(std::ceil(minY / 10.0f)); static_cast<float>(k) * 10.0f <= maxY; k++)
+    if (k != 0) drawText(cv, ax + 8, pixel(rowOf(tanDeg(static_cast<float>(k) * 10.0f))) - 6 - glyphH, std::to_string(k * 10), s, kPatternText);
+  // The eye's letter, large, in its outer top corner.
+  const int32_t big = 16;
+  const std::string letter = e == 0 ? "L" : "R";
+  const int32_t lx = e == 0 ? W * 14 / 100 : W * 86 / 100 - textWidth(letter, big);
+  drawText(cv, lx, H * 14 / 100, letter, big, eye);
+}
+
+// The pattern in its swapchain: drawn again when the geometry it is drawn for changes (VPX's fov or render size), at
+// most once a second; each eye kPatternEyeH high and as wide as VPX's render aspect says (so the crop is the whole
+// render, give or take a pixel's rounding).
+void patternTick(Session& s, std::unique_ptr<GlContextScope>& scope) {
+  const bool rectKnown = s.appViewsSeen && s.appRect[0].width > 0 && s.appRect[0].height > 0;
+  uint32_t eyeW = kPatternEyeH;
+  if (rectKnown) {
+    const double w = std::round(static_cast<double>(kPatternEyeH) * s.appRect[0].width / s.appRect[0].height);
+    eyeW = static_cast<uint32_t>(w < kPatternEyeMinW ? kPatternEyeMinW : w > kPatternEyeMaxW ? kPatternEyeMaxW : w);
+  }
+  const uint32_t eyeH = kPatternEyeH;
+  const float outAr = static_cast<float>(eyeW) / static_cast<float>(eyeH);
+  const std::array<EyeCrop, 2> crops = {eyeCrop(s, 0, outAr), eyeCrop(s, 1, outAr)};
+  bool same = s.pattern.released && s.patternEyeW == eyeW && s.patternEyeH == eyeH;
+  for (size_t e = 0; e < 2 && same; e++) {
+    const EyeCrop& a = crops[e];
+    const EyeCrop& b = s.patternCrop[e];
+    same = std::fabs(a.l - b.l) < 1e-4f && std::fabs(a.r - b.r) < 1e-4f && std::fabs(a.d - b.d) < 1e-4f && std::fabs(a.u - b.u) < 1e-4f;
+  }
+  if (same) return;
+  const uint64_t now = GetTickCount64();
+  if (s.patternAt != 0 && now - s.patternAt < kPatternRedrawMs) return;
+  s.patternAt = now;
+  const uint32_t picW = 2 * eyeW;
+  std::vector<uint8_t> px(static_cast<size_t>(picW) * eyeH * 4);
+  for (size_t e = 0; e < 2; e++) {
+    const EyeCanvas cv{px.data(), picW, static_cast<int32_t>(e * eyeW), static_cast<int32_t>(eyeW), static_cast<int32_t>(eyeH)};
+    drawPatternEye(cv, crops[e], e);
+  }
+  const uint64_t drawMs = GetTickCount64() - now;
+  upload(s, s.pattern, scope, px.data(), picW, eyeH);
+  if (s.off || !s.pattern.released) return;
+  s.patternEyeW = eyeW, s.patternEyeH = eyeH, s.patternCrop = crops;
+  std::string eyes;
+  for (size_t e = 0; e < 2; e++) {
+    const EyeCrop& c = crops[e];
+    eyes += std::string(e == 0 ? "; left" : "; right") + " eye (fov from " + c.fovFrom + ")" +
+            fmt(" %+.1f .. %+.1f deg across, %+.1f .. %+.1f deg up", std::atan(c.l) * kDegPerRad, std::atan(c.r) * kDegPerRad, std::atan(c.d) * kDegPerRad,
+                std::atan(c.u) * kDegPerRad);
+  }
+  logLine("test: calibration pattern drawn, each eye " + std::to_string(eyeW) + "x" + std::to_string(eyeH) + eyes + "; " + std::to_string(drawMs) + " ms");
 }
 
 // D7.4: theater begins: the screen goes 2.6 m in front of where the head points now, in LOCAL space, where it then
@@ -834,6 +1095,7 @@ void recentre(Session& s, XrTime when) {
   s.screenPose.position = {head.x + fwd.x, head.y + fwd.y, head.z + fwd.z};
   s.screenPose.orientation = s.theaterFrame;
   s.theaterHead = head;
+  s.theaterYawDeg = yaw * kDegPerRad, s.theaterPitchDeg = pitch * kDegPerRad, s.theaterPlaced = true;
   logLine("theater: the screen is placed 2.6 m ahead, yaw " + std::to_string(static_cast<int>(yaw * kDegPerRad)) + " degrees, pitch " +
           std::to_string(static_cast<int>(pitch * kDegPerRad)) + " degrees in LOCAL space");
   locateEyes(s, when);
@@ -843,6 +1105,8 @@ void recentre(Session& s, XrTime when) {
 // frame on the screen), panel needs the panel; nothing live for 5 s → hidden, whatever was asked (a crashed
 // companion never leaves a player in the dark).
 ViewMode wantedMode(const Session& s, const Control& c) {
+  // D7.6.1: the calibration pattern needs no frame from the companion; it ends with the control (and so with the pipe).
+  if (c.test == TestPattern::Pattern && s.pattern.released) return ViewMode::Theater;
   const bool panelUp = s.panel.released && panelPipeLive(Stream::Panel);
   const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
   switch (c.mode) {
@@ -898,6 +1162,458 @@ XrCompositionLayerQuad& quadAt(Session& s, size_t i, XrSpace space, const Surfac
   return q;
 }
 
+// ---- the session report (D7.6.2) --------------------------------------------------------------------------------------
+//
+// One fact per entry: a key, its JSON value and one line for vr-layer.log. Logged once per session at its first frame
+// (the app's swapchains and fov exist by then; at xrCreateSession they do not), and sent to the companion as CVS1
+// {"kind": "session", <key>: <value>, ...} at that frame, after every new connection and on request
+// (panelPipeReportSerial). JSON numbers are formatted by hand, never with printf's %f: VPX's process may run in a
+// locale with a decimal comma. Facts the runtime did not give are null in the JSON and "unknown" in the log.
+
+struct Fact {
+  std::string key, json, text;
+};
+
+std::string jstr(const std::string& v) {
+  std::string o = "\"";
+  for (const char ch : v) {
+    const auto u = static_cast<unsigned char>(ch);
+    if (ch == '"' || ch == '\\') {
+      o += '\\';
+      o += ch;
+    } else if (u < 0x20 || u == 0x7f) {
+      char buf[8];
+      std::snprintf(buf, sizeof buf, "\\u%04x", static_cast<unsigned>(u));
+      o += buf;
+    } else {
+      o += ch;
+    }
+  }
+  return o + "\"";
+}
+
+std::string jlist(const std::vector<std::string>& items) {
+  std::string o = "[";
+  for (size_t i = 0; i < items.size(); i++) o += (i ? "," : "") + items[i];
+  return o + "]";
+}
+
+std::string joined(const std::vector<std::string>& items, const char* sep, const char* none) {
+  if (items.empty()) return none;
+  std::string o;
+  for (size_t i = 0; i < items.size(); i++) o += (i ? sep : "") + items[i];
+  return o;
+}
+
+// `v` with `places` decimals, locale-free; "null" when not finite.
+std::string fixed(double v, int places) {
+  if (!std::isfinite(v)) return "null";
+  long long scale = 1;
+  for (int i = 0; i < places; i++) scale *= 10;
+  const long long n = std::llround(std::fabs(v) * static_cast<double>(scale));
+  std::string out = (v < 0.0 && n != 0 ? "-" : "") + std::to_string(n / scale);
+  if (places > 0) {
+    std::string frac = std::to_string(n % scale);
+    while (frac.size() < static_cast<size_t>(places)) frac = "0" + frac;
+    out += "." + frac;
+  }
+  return out;
+}
+
+std::string hex(uint64_t v) {
+  char buf[24];
+  std::snprintf(buf, sizeof buf, "0x%llx", static_cast<unsigned long long>(v));
+  return buf;
+}
+
+std::string xrVersionText(XrVersion v) {
+  return std::to_string(XR_VERSION_MAJOR(v)) + "." + std::to_string(XR_VERSION_MINOR(v)) + "." + std::to_string(XR_VERSION_PATCH(v));
+}
+
+// A char array the runtime filled: up to its first NUL or its size.
+std::string fromChars(const char* p, size_t size) { return std::string(p, strnlen(p, size)); }
+
+std::string utf8(const wchar_t* w) {
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  if (n <= 1) return "";
+  std::string s(static_cast<size_t>(n), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
+  s.resize(static_cast<size_t>(n - 1));
+  return s;
+}
+
+std::string lowerAscii(std::string s) {
+  for (char& ch : s)
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  return s;
+}
+
+std::string baseName(const std::string& path) {
+  const size_t slash = path.find_last_of("\\/");
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// The swapchain formats VPX and the runtimes are seen to use (DXGI_FORMAT, or a GL internal format); null otherwise.
+const char* formatName(Api api, int64_t f) {
+  if (api == Api::D3D11) {
+    switch (f) {
+      case DXGI_FORMAT_R8G8B8A8_UNORM: return "DXGI_FORMAT_R8G8B8A8_UNORM";
+      case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "DXGI_FORMAT_R8G8B8A8_UNORM_SRGB";
+      case DXGI_FORMAT_B8G8R8A8_UNORM: return "DXGI_FORMAT_B8G8R8A8_UNORM";
+      case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "DXGI_FORMAT_B8G8R8A8_UNORM_SRGB";
+      case DXGI_FORMAT_R16G16B16A16_FLOAT: return "DXGI_FORMAT_R16G16B16A16_FLOAT";
+      case DXGI_FORMAT_R10G10B10A2_UNORM: return "DXGI_FORMAT_R10G10B10A2_UNORM";
+      case DXGI_FORMAT_R11G11B10_FLOAT: return "DXGI_FORMAT_R11G11B10_FLOAT";
+      case DXGI_FORMAT_D16_UNORM: return "DXGI_FORMAT_D16_UNORM";
+      case DXGI_FORMAT_D24_UNORM_S8_UINT: return "DXGI_FORMAT_D24_UNORM_S8_UINT";
+      case DXGI_FORMAT_D32_FLOAT: return "DXGI_FORMAT_D32_FLOAT";
+      case DXGI_FORMAT_D32_FLOAT_S8X24_UINT: return "DXGI_FORMAT_D32_FLOAT_S8X24_UINT";
+      default: return nullptr;
+    }
+  }
+  switch (f) {
+    case 0x8058: return "GL_RGBA8";
+    case 0x8C43: return "GL_SRGB8_ALPHA8";
+    case 0x8051: return "GL_RGB8";
+    case 0x8C41: return "GL_SRGB8";
+    case 0x881A: return "GL_RGBA16F";
+    case 0x8814: return "GL_RGBA32F";
+    case 0x8059: return "GL_RGB10_A2";
+    case 0x8C3A: return "GL_R11F_G11F_B10F";
+    case 0x81A5: return "GL_DEPTH_COMPONENT16";
+    case 0x81A6: return "GL_DEPTH_COMPONENT24";
+    case 0x8CAC: return "GL_DEPTH_COMPONENT32F";
+    case 0x88F0: return "GL_DEPTH24_STENCIL8";
+    case 0x8CAD: return "GL_DEPTH32F_STENCIL8";
+    default: return nullptr;
+  }
+}
+
+std::string usageNames(uint64_t u) {
+  struct Bit {
+    uint64_t bit;
+    const char* name;
+  };
+  const Bit bits[] = {{XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT, "color"}, {XR_SWAPCHAIN_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, "depth"},
+                      {XR_SWAPCHAIN_USAGE_UNORDERED_ACCESS_BIT, "uav"},   {XR_SWAPCHAIN_USAGE_TRANSFER_SRC_BIT, "transfer_src"},
+                      {XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT, "transfer_dst"}, {XR_SWAPCHAIN_USAGE_SAMPLED_BIT, "sampled"},
+                      {XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT, "mutable"}};
+  std::vector<std::string> names;
+  uint64_t rest = u;
+  for (const Bit& b : bits)
+    if (u & b.bit) names.push_back(b.name), rest &= ~b.bit;
+  if (rest) names.push_back(hex(rest));
+  return joined(names, "|", "none");
+}
+
+const char* layerTypeName(int32_t t) {
+  switch (t) {
+    case XR_TYPE_COMPOSITION_LAYER_PROJECTION: return "projection";
+    case XR_TYPE_COMPOSITION_LAYER_QUAD: return "quad";
+    case XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR: return "cylinder";
+    case XR_TYPE_COMPOSITION_LAYER_CUBE_KHR: return "cube";
+    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT_KHR: return "equirect";
+    case XR_TYPE_COMPOSITION_LAYER_EQUIRECT2_KHR: return "equirect2";
+    default: return nullptr;
+  }
+}
+
+// The VR-related modules in this process (full paths): OpenVR / OpenComposite, OpenXR loaders and runtimes, API
+// layers, SteamVR's and Oculus' clients. Read once per session, on the render thread at its first report.
+std::vector<std::string> vrModules() {
+  static const wchar_t* const keys[] = {L"openvr", L"opencomposite", L"openxr", L"vrclient", L"virtualdesktop", L"libovr", L"oculus", L"xrapilayer", L"vdxr", L"steamvr"};
+  std::vector<std::string> out;
+  HANDLE snap = INVALID_HANDLE_VALUE;
+  for (int tries = 0; tries < 3 && snap == INVALID_HANDLE_VALUE; tries++) {
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+    if (snap == INVALID_HANDLE_VALUE && GetLastError() != ERROR_BAD_LENGTH) break;  // ERROR_BAD_LENGTH: a module loaded meanwhile
+  }
+  if (snap == INVALID_HANDLE_VALUE) return out;
+  MODULEENTRY32W me{};
+  me.dwSize = static_cast<DWORD>(sizeof me);
+  for (BOOL ok = Module32FirstW(snap, &me); ok && out.size() < 32; ok = Module32NextW(snap, &me)) {
+    std::wstring name(me.szModule);
+    for (wchar_t& ch : name) ch = static_cast<wchar_t>(std::towlower(ch));
+    for (const wchar_t* k : keys) {
+      if (name.find(k) != std::wstring::npos) {
+        out.push_back(utf8(me.szExePath));
+        break;
+      }
+    }
+  }
+  CloseHandle(snap);
+  return out;
+}
+
+// GL_VERSION / GL_RENDERER / GL_VENDOR, only while the app's context is current on this thread (never made current
+// for this: the report must not change what the frame does).
+void readGlStrings(Session& s) {
+  if (s.api != Api::OpenGL || !s.gl.getString || !s.gl.getCurrentContext || s.gl.getCurrentContext() != s.rc) return;
+  const auto str = [&s](GLenum e) {
+    const unsigned char* p = s.gl.getString(e);
+    return p ? std::string(reinterpret_cast<const char*>(p)) : std::string();
+  };
+  s.glVersion = str(0x1F02);
+  s.glRenderer = str(0x1F01);
+  s.glVendor = str(0x1F00);
+}
+
+std::string fovDeg(const XrFovf& f) {
+  return "[" + fixed(f.angleLeft * kDegPerRad, 2) + "," + fixed(f.angleRight * kDegPerRad, 2) + "," + fixed(f.angleUp * kDegPerRad, 2) + "," +
+         fixed(f.angleDown * kDegPerRad, 2) + "]";
+}
+
+std::string jpair(double a, double b, int places = 0) { return "[" + fixed(a, places) + "," + fixed(b, places) + "]"; }
+
+std::string vec3(const XrVector3f& v) { return "[" + fixed(v.x, 4) + "," + fixed(v.y, 4) + "," + fixed(v.z, 4) + "]"; }
+
+std::vector<Fact> sessionFacts(const Session& s) {
+  std::vector<Fact> f;
+  const auto add = [&f](const char* key, const std::string& json, const std::string& text) { f.push_back(Fact{key, json, text}); };
+  const auto nullable = [](const std::string& v) { return v.empty() ? std::string("null") : jstr(v); };
+  const auto orUnknown = [](const std::string& v) { return v.empty() ? std::string("unknown") : "'" + v + "'"; };
+
+  add("layer",
+      std::string("{\"name\":") + jstr(kLayerName) + ",\"version\":" + jstr(CASTCADE_VR_LAYER_VERSION) + ",\"build\":" + jstr(CASTCADE_BUILD_ID) +
+          ",\"openxrHeaders\":" + jstr(CASTCADE_OPENXR_SDK_TAG) + ",\"pipeProtocol\":" + std::to_string(kPipeProtocol) + "}",
+      std::string("layer ") + kLayerName + " " CASTCADE_VR_LAYER_VERSION " build " CASTCADE_BUILD_ID " (OpenXR headers " CASTCADE_OPENXR_SDK_TAG
+                                           "), pipe protocol " + std::to_string(kPipeProtocol));
+  add("process", "{\"exe\":" + jstr(exeName()) + ",\"pid\":" + std::to_string(GetCurrentProcessId()) + "}",
+      "process " + exeName() + " pid " + std::to_string(GetCurrentProcessId()));
+
+  const InstanceInfo& ii = s.instanceInfo;
+  std::vector<std::string> extJson, layerJson;
+  for (const std::string& e : ii.extensions) extJson.push_back(jstr(e));
+  for (const std::string& l : ii.apiLayers) layerJson.push_back(jstr(l));
+  add("instance",
+      "{\"application\":" + jstr(ii.application) + ",\"applicationVersion\":" + std::to_string(ii.applicationVersion) + ",\"engine\":" + jstr(ii.engine) +
+          ",\"engineVersion\":" + std::to_string(ii.engineVersion) + ",\"apiVersion\":" + jstr(xrVersionText(ii.apiVersion)) +
+          ",\"extensions\":" + jlist(extJson) + ",\"apiLayers\":" + jlist(layerJson) + "}",
+      "instance: application '" + ii.application + "' version " + std::to_string(ii.applicationVersion) + ", engine '" + ii.engine + "' version " +
+          std::to_string(ii.engineVersion) + ", OpenXR API " + xrVersionText(ii.apiVersion) + "; extensions: " + joined(ii.extensions, ", ", "none") +
+          "; API layers the app enabled: " + joined(ii.apiLayers, ", ", "none"));
+
+  add("runtime", s.runtimeKnown ? "{\"name\":" + jstr(s.runtimeName) + ",\"version\":" + jstr(xrVersionText(s.runtimeVersion)) + "}" : std::string("null"),
+      s.runtimeKnown ? "runtime '" + s.runtimeName + "' version " + xrVersionText(s.runtimeVersion)
+                     : std::string("runtime unknown (xrGetInstanceProperties not available or failed)"));
+
+  add("system",
+      s.systemKnown ? "{\"id\":" + jstr(hex(s.systemId)) + ",\"name\":" + jstr(s.systemName) + ",\"vendorId\":" + jstr(hex(s.vendorId)) +
+                          ",\"maxLayers\":" + std::to_string(s.maxLayers) + ",\"maxSwapchain\":" + jpair(s.maxWidth, s.maxHeight) +
+                          ",\"orientationTracking\":" + (s.orientationTracking ? "true" : "false") + ",\"positionTracking\":" +
+                          (s.positionTracking ? "true" : "false") + "}"
+                    : std::string("null"),
+      s.systemKnown ? "system '" + s.systemName + "' vendor " + hex(s.vendorId) + ", max " + std::to_string(s.maxLayers) + " layers, swapchains up to " +
+                          std::to_string(s.maxWidth) + "x" + std::to_string(s.maxHeight) + ", tracking orientation " +
+                          (s.orientationTracking ? "yes" : "no") + " position " + (s.positionTracking ? "yes" : "no")
+                    : std::string("system unknown (xrGetSystemProperties failed)"));
+
+  const char* apiName = s.api == Api::D3D11 ? "D3D11" : s.api == Api::OpenGL ? "OpenGL" : "none";
+  add("graphics",
+      std::string("{\"binding\":") + jstr(s.binding) + ",\"api\":" + jstr(apiName) + ",\"glVersion\":" + nullable(s.glVersion) +
+          ",\"glRenderer\":" + nullable(s.glRenderer) + ",\"glVendor\":" + nullable(s.glVendor) +
+          ",\"d3dFeatureLevel\":" + (s.d3dFeatureLevel ? jstr(hex(s.d3dFeatureLevel)) : std::string("null")) + "}",
+      "graphics binding " + s.binding +
+          (s.api == Api::OpenGL ? ", GL_VERSION " + orUnknown(s.glVersion) + ", GL_RENDERER " + orUnknown(s.glRenderer) + ", GL_VENDOR " + orUnknown(s.glVendor)
+                                : std::string()) +
+          (s.api == Api::D3D11 ? ", feature level " + (s.d3dFeatureLevel ? hex(s.d3dFeatureLevel) : std::string("unknown")) : std::string()));
+
+  {
+    std::vector<std::string> json, text;
+    for (size_t i = 0; i < s.configViews.size(); i++) {
+      const XrViewConfigurationView& v = s.configViews[i];
+      json.push_back("{\"recommended\":" + jpair(v.recommendedImageRectWidth, v.recommendedImageRectHeight) + ",\"max\":" +
+                     jpair(v.maxImageRectWidth, v.maxImageRectHeight) + ",\"samples\":" + jpair(v.recommendedSwapchainSampleCount, v.maxSwapchainSampleCount) +
+                     "}");
+      text.push_back("view " + std::to_string(i) + " recommended " + std::to_string(v.recommendedImageRectWidth) + "x" +
+                     std::to_string(v.recommendedImageRectHeight) + " (max " + std::to_string(v.maxImageRectWidth) + "x" +
+                     std::to_string(v.maxImageRectHeight) + "), samples " + std::to_string(v.recommendedSwapchainSampleCount) + " (max " +
+                     std::to_string(v.maxSwapchainSampleCount) + ")");
+    }
+    add("views", s.configViews.empty() ? std::string("null") : jlist(json),
+        s.configViews.empty() ? "view configuration unknown (" + s.configViewsWhy + ")" : "view configuration (primary stereo): " + joined(text, "; ", ""));
+  }
+
+  {
+    std::vector<std::string> json, text;
+    if (s.appViewsSeen)
+      for (size_t e = 0; e < 2; e++) {
+        json.push_back("{\"eye\":" + jstr(e == 0 ? "left" : "right") + ",\"fovDeg\":" + fovDeg(s.appFov[e]) + ",\"render\":" +
+                       jpair(s.appRect[e].width, s.appRect[e].height) + "}");
+        text.push_back(std::string(e == 0 ? "left" : "right") + " eye fov " + fovText(s.appFov[e]) + ", render " + std::to_string(s.appRect[e].width) + "x" +
+                       std::to_string(s.appRect[e].height));
+      }
+    add("appFov", s.appViewsSeen ? jlist(json) : std::string("null"),
+        s.appViewsSeen ? "VPX's last frame: " + joined(text, "; ", "") : std::string("VPX's fov unknown (no projection layer seen yet)"));
+  }
+
+  {
+    std::vector<std::string> json, text;
+    if (s.eyesLocated)
+      for (size_t e = 0; e < 2; e++) {
+        const XrQuaternionf& q = s.eyePose[e].orientation;
+        json.push_back("{\"eye\":" + jstr(e == 0 ? "left" : "right") + ",\"position\":" + vec3(s.eyePose[e].position) + ",\"orientation\":[" +
+                       fixed(q.x, 4) + "," + fixed(q.y, 4) + "," + fixed(q.z, 4) + "," + fixed(q.w, 4) + "],\"fovDeg\":" + fovDeg(s.locatedFov[e]) + "}");
+        text.push_back(std::string(e == 0 ? "left" : "right") + " eye at" + fmt(" x %+.4f y %+.4f z %+.4f m", s.eyePose[e].position.x, s.eyePose[e].position.y,
+                                                                              s.eyePose[e].position.z) +
+                       ", fov " + fovText(s.locatedFov[e]));
+      }
+    add("located", s.eyesLocated ? jlist(json) : std::string("null"),
+        s.eyesLocated ? "xrLocateViews at the last recentre: " + joined(text, "; ", "")
+                      : std::string("xrLocateViews: not called yet in this session (theater never began) or failed"));
+  }
+
+  // The app's swapchains in this session, in creation order of their handles; the last frame's views point into it.
+  std::vector<XrSwapchain> handles;
+  {
+    std::vector<std::string> json, text;
+    std::lock_guard<std::mutex> lk(g_mutex);
+    const auto mine = reinterpret_cast<uintptr_t>(s.handle);
+    for (const auto& kv : g_appSwapchains) {
+      const AppSwapchain& a = *kv.second;
+      if (a.session != mine || json.size() >= 16) continue;
+      handles.push_back(kv.first);
+      const char* name = formatName(s.api, a.format);
+      const size_t images = a.glImages.empty() ? a.d3dImages.size() : a.glImages.size();
+      json.push_back("{\"format\":" + jstr(hex(static_cast<uint64_t>(a.format))) + ",\"formatName\":" + (name ? jstr(name) : std::string("null")) +
+                     ",\"size\":" + jpair(a.width, a.height) + ",\"array\":" + std::to_string(a.arraySize) + ",\"faces\":" + std::to_string(a.faceCount) +
+                     ",\"mips\":" + std::to_string(a.mipCount) + ",\"samples\":" + std::to_string(a.sampleCount) + ",\"usage\":" + jstr(hex(a.usageFlags)) +
+                     ",\"usageNames\":" + jstr(usageNames(a.usageFlags)) + ",\"images\":" + std::to_string(images) + "}");
+      text.push_back("#" + std::to_string(handles.size() - 1) + " " + hex(static_cast<uint64_t>(a.format)) + (name ? std::string(" ") + name : std::string()) +
+                     " " + std::to_string(a.width) + "x" + std::to_string(a.height) + " array " + std::to_string(a.arraySize) + " samples " +
+                     std::to_string(a.sampleCount) + " usage " + usageNames(a.usageFlags) + ", " + std::to_string(images) + " images");
+    }
+    add("swapchains", jlist(json), "VPX's swapchains: " + joined(text, "; ", "none seen (created before this layer loaded?)"));
+  }
+
+  {
+    std::vector<std::string> types, typeText, views, viewText;
+    for (size_t i = 0; i < s.lastLayerTypeCount; i++) {
+      const char* n = layerTypeName(s.lastLayerTypes[i]);
+      const std::string t = n ? std::string(n) : "type " + std::to_string(s.lastLayerTypes[i]);
+      types.push_back(jstr(t));
+      typeText.push_back(t);
+    }
+    if (s.lastViewsSeen)
+      for (size_t e = 0; e < 2; e++) {
+        const XrSwapchainSubImage& si = s.lastViewImage[e];
+        int index = -1;
+        for (size_t h = 0; h < handles.size(); h++)
+          if (handles[h] == si.swapchain) index = static_cast<int>(h);
+        views.push_back("{\"swapchain\":" + (index >= 0 ? std::to_string(index) : std::string("null")) + ",\"offset\":" +
+                        jpair(si.imageRect.offset.x, si.imageRect.offset.y) + ",\"extent\":" + jpair(si.imageRect.extent.width, si.imageRect.extent.height) +
+                        ",\"arrayIndex\":" + std::to_string(si.imageArrayIndex) + "}");
+        viewText.push_back(std::string(e == 0 ? "left" : "right") + " eye from swapchain " + (index >= 0 ? "#" + std::to_string(index) : std::string("unknown")) +
+                           " rect " + std::to_string(si.imageRect.extent.width) + "x" + std::to_string(si.imageRect.extent.height) + " at " +
+                           std::to_string(si.imageRect.offset.x) + "," + std::to_string(si.imageRect.offset.y) + ", array index " +
+                           std::to_string(si.imageArrayIndex));
+      }
+    add("lastFrame",
+        "{\"layerCount\":" + std::to_string(s.lastLayerCount) + ",\"layerTypes\":" + jlist(types) + ",\"projectionViews\":" +
+            (s.lastViewsSeen ? jlist(views) : std::string("null")) + "}",
+        "VPX's last frame: " + std::to_string(s.lastLayerCount) + " layer(s) (" + joined(typeText, ", ", "none") + ")" +
+            (s.lastViewsSeen ? "; " + joined(viewText, "; ", "") : std::string("; no projection layer")));
+  }
+
+  {
+    std::string window = "null", text;
+    if (!s.windowLog.empty()) {
+      const XrVector3f a = s.eyesLocated ? s.eyePose[0].position : XrVector3f{-kFallbackHalfIpdM, 0.0f, 0.0f};
+      const XrVector3f b = s.eyesLocated ? s.eyePose[1].position : XrVector3f{kFallbackHalfIpdM, 0.0f, 0.0f};
+      const float ipd = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
+      std::vector<std::string> eyes;
+      for (size_t e = 0; e < 2; e++) {
+        const EyeCrop& c = s.windowCrop[e];
+        eyes.push_back("{\"fovFrom\":" + jstr(c.fovFrom) + ",\"fovDeg\":" + fovDeg(c.fov) + ",\"renderKnown\":" + (c.rectKnown ? "true" : "false") +
+                       ",\"render\":" + jpair(c.w, c.h) + ",\"crop\":[" + fixed(c.x, 0) + "," + fixed(c.y, 0) + "," + fixed(c.fw, 0) + "," + fixed(c.fh, 0) +
+                       "],\"tangents\":[" + fixed(c.l, 4) + "," + fixed(c.r, 4) + "," + fixed(c.d, 4) + "," + fixed(c.u, 4) + "],\"quadM\":" +
+                       jpair(s.windowSize[e].width, s.windowSize[e].height, 3) + ",\"position\":" + vec3(s.windowPose[e].position) + "}");
+      }
+      window = "{\"scale\":" + fixed(s.windowScale, 2) + ",\"distanceM\":" + fixed(kScreenDistanceM, 2) + ",\"picture\":" + jpair(s.windowW, s.windowH) +
+               ",\"eyesFrom\":" + jstr(s.eyesLocated ? "xrLocateViews" : "assumed") + ",\"ipdMm\":" + fixed(ipd * 1000.0f, 1) + ",\"eyes\":" + jlist(eyes) + "}";
+    }
+    text = std::string("theater: shown ") + modeName(s.shown) +
+           (s.theaterPlaced ? fmt(", last placed at yaw %.1f pitch %.1f deg in LOCAL", s.theaterYawDeg, s.theaterPitchDeg) : std::string(", never placed in this session")) +
+           (s.windowLog.empty() ? std::string("; no stereo window placed yet") : "; last " + s.windowLog);
+    add("theater",
+        std::string("{\"shown\":") + jstr(modeName(s.shown)) + ",\"placed\":" +
+            (s.theaterPlaced ? "{\"yawDeg\":" + fixed(s.theaterYawDeg, 1) + ",\"pitchDeg\":" + fixed(s.theaterPitchDeg, 1) + "}" : std::string("null")) +
+            ",\"window\":" + window + ",\"windowLog\":" + nullable(s.windowLog) + "}",
+        text);
+  }
+
+  // D7.6.1: the calibration pattern.
+  add("test", std::string("{\"pattern\":") + (s.patternOn ? "true" : "false") + ",\"eye\":" + (s.patternEyeW ? jpair(s.patternEyeW, s.patternEyeH) : std::string("null")) + "}",
+      s.patternOn ? "test: calibration pattern on (each eye " + std::to_string(s.patternEyeW) + "x" + std::to_string(s.patternEyeH) + ")"
+                  : std::string("test: calibration pattern off"));
+
+  {
+    // OpenComposite: VPX 10.8.0 speaks OpenVR only, so an OpenXR instance inside it is OpenComposite's (or another
+    // OpenVR-to-OpenXR shim). The marks, strongest first: its name on the instance, a module named after it, an
+    // openvr_api.dll without SteamVR's vrclient beside it.
+    const bool named = lowerAscii(ii.application).find("opencomposite") != std::string::npos || lowerAscii(ii.engine).find("opencomposite") != std::string::npos;
+    bool ocModule = false, openvrApi = false, vrclient = false;
+    std::vector<std::string> mods;
+    for (const std::string& m : s.modules) {
+      const std::string b = lowerAscii(baseName(m));
+      ocModule = ocModule || b.find("opencomposite") != std::string::npos;
+      openvrApi = openvrApi || b.rfind("openvr_api", 0) == 0;
+      vrclient = vrclient || b.find("vrclient") != std::string::npos;
+      mods.push_back(jstr(m));
+    }
+    const char* verdict = named      ? "yes (the instance's application or engine name)"
+                          : ocModule ? "yes (an OpenComposite module is loaded)"
+                          : openvrApi && !vrclient ? "likely (openvr_api.dll is loaded without SteamVR's vrclient, and VPX made an OpenXR instance)"
+                                                   : "no mark seen";
+    add("openComposite",
+        std::string("{\"verdict\":") + jstr(verdict) + ",\"namedOnInstance\":" + (named ? "true" : "false") + ",\"module\":" + (ocModule ? "true" : "false") +
+            ",\"openvrApi\":" + (openvrApi ? "true" : "false") + ",\"vrclient\":" + (vrclient ? "true" : "false") + "}",
+        std::string("OpenComposite: ") + verdict);
+    add("modules", jlist(mods), "VR modules in VPX: " + joined(s.modules, ", ", "none found"));
+  }
+  return f;
+}
+
+// The report's turn in this xrEndFrame: logged at the session's first frame, sent whenever panelPipeReportSerial moved
+// since the last one (a new connection, a request). The write goes on a thread of its own: a pipe write blocks while
+// the companion is slow to read, and the render thread must never wait on it.
+void reportTick(Session& s) {
+  const uint32_t serial = panelPipeReportSerial();
+  const bool first = !s.reportLogged;
+  if (!first && serial == s.reportSerial) return;
+  s.reportSerial = serial;
+  if (!s.modulesRead) {
+    s.modules = vrModules();
+    s.modulesRead = true;
+  }
+  if (s.glVersion.empty()) readGlStrings(s);
+  const std::vector<Fact> facts = sessionFacts(s);
+  if (first) {
+    s.reportLogged = true;
+    logLine("session: report at this session's first frame (sent to the companion on every connection and on request):");
+    for (const Fact& fact : facts) logLine("session: " + fact.text);
+  }
+  if (!panelPipeConnected()) return;
+  std::string json = "{\"kind\":\"session\"";
+  for (const Fact& fact : facts) json += ",\"" + fact.key + "\":" + fact.json;
+  json += "}";
+  if (json.size() > 60 * 1024) {
+    logOnce("report_too_big", "session: the report is " + std::to_string(json.size()) + " bytes, over the pipe's 64 KiB message limit; not sent");
+    return;
+  }
+  try {
+    std::thread([json]() {
+      try {
+        if (!panelPipeSendMessage("CVS1", json)) logLine("session: the report could not be written to the pipe (the companion went?)");
+      } catch (...) {
+      }
+    }).detach();
+    logLine("session: report sent to the companion (" + std::to_string(json.size()) + " bytes)");
+  } catch (...) {
+    logOnce("report_thread", "session: could not start a thread to send the report; not sent");
+  }
+}
+
 // D7.5: the camera's turn in this xrEndFrame: the two eyes of the app's projection layer (fov, rect, the swapchain
 // record the hooks keep) to camera.cpp, which issues the GPU copy; nothing when the companion never asked.
 void cameraTick(Session& s, const XrFrameEndInfo& info, const Control& c, std::unique_ptr<GlContextScope>& scope) {
@@ -937,10 +1653,23 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   static const XrPosef backdropPose = ahead(kBackdropDistanceM), shadePose = ahead(kShadeDistanceM);
   std::unique_ptr<GlContextScope> scope;
   noteProjection(s, info);
+  try {
+    reportTick(s);
+  } catch (...) {
+    logOnce("report_fault", "session: a fault while building the session report; no report this time");
+  }
   cameraTick(s, info, c, scope);
   uploadStream(s, s.panel, Stream::Panel, scope);
+  // D7.6.1: the calibration pattern takes the video's place while asked (the companion's frames are taken, not shown).
+  const bool pattern = c.test == TestPattern::Pattern;
+  if (pattern != s.patternOn) {
+    s.patternOn = pattern;
+    logLine(pattern ? "test: calibration pattern on: theater shows the layer's own stereo grid instead of the companion's picture"
+                    : "test: calibration pattern off");
+  }
+  if (pattern) patternTick(s, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
-  if (c.mode == ViewMode::Theater) uploadStream(s, s.video, Stream::Video, scope);
+  if (c.mode == ViewMode::Theater && !pattern) uploadStream(s, s.video, Stream::Video, scope);
   else panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH);
   if (s.off) return false;
   stepMode(s, wantedMode(s, c), info.displayTime);
@@ -971,13 +1700,15 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
                {width, width * static_cast<float>(s.panel.height) / static_cast<float>(s.panel.width)}, true));
   } else if (s.shown == ViewMode::Theater && s.shade.released) {
     add(quadAt(s, used++, s.view, s.shade, XR_EYE_VISIBILITY_BOTH, 0, w(s.shade), backdropPose, {kBackdropSizeM, kBackdropSizeM}, false));
-    const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
-    const Surface& pic = videoUp ? s.video : s.panel;
+    // D7.6.1: the pattern, while asked, is a side-by-side picture like a VR sender's.
+    const bool patternUp = pattern && s.pattern.released;
+    const bool videoUp = !patternUp && s.video.released && panelPipeLive(Stream::Video);
+    const Surface& pic = patternUp ? s.pattern : videoUp ? s.video : s.panel;
     if (pic.released) {
       // Side by side (VPX's VR preview on "both eyes": left eye | right eye): one swapchain, each half to its eye as its
       // own quad, the stereo window (D7.4.5, above placeWindows; XrSwapchainSubImage::imageRect may be any rect inside
       // the image).
-      const bool sbs = videoUp && c.sbs && pic.width >= 2;
+      const bool sbs = patternUp || (videoUp && c.sbs && pic.width >= 2);
       const int32_t half = w(pic) / 2;
       const float eyeW = static_cast<float>(sbs ? half : w(pic));
       const float eyeH = static_cast<float>(pic.height > 0 ? pic.height : 1);
@@ -1026,6 +1757,8 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
   s->video.name = "video";
   s->video.order = Order::RGBA;
   s->shade.name = "shade";
+  s->pattern.name = "pattern";  // D7.6.1
+  s->pattern.order = Order::RGBA;
   s->screenPose = ahead(kScreenDistanceM);  // until the first recentre (a quad's pose must be a unit quaternion)
   const auto* b = info ? reinterpret_cast<const XrBaseInStructure*>(info->next) : nullptr;
   std::string binding = "none";
@@ -1056,9 +1789,47 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
     if (props.graphicsProperties.maxLayerCount) s->maxLayers = props.graphicsProperties.maxLayerCount;
     if (props.graphicsProperties.maxSwapchainImageWidth) s->maxWidth = props.graphicsProperties.maxSwapchainImageWidth;
     if (props.graphicsProperties.maxSwapchainImageHeight) s->maxHeight = props.graphicsProperties.maxSwapchainImageHeight;
-    system = props.systemName;
+    system = fromChars(props.systemName, sizeof props.systemName);
+    // D7.6.2: the rest of the system for the session report.
+    s->systemKnown = true;
+    s->systemName = system;
+    s->vendorId = props.vendorId;
+    s->orientationTracking = props.trackingProperties.orientationTracking == XR_TRUE;
+    s->positionTracking = props.trackingProperties.positionTracking == XR_TRUE;
   }
   const char* api = s->api == Api::D3D11 ? "D3D11" : s->api == Api::OpenGL ? "OpenGL (Win32)" : nullptr;
+  // D7.6.2: what the session report needs and can only be asked now (or is cheapest now).
+  s->systemId = info ? info->systemId : XR_NULL_SYSTEM_ID;
+  s->instanceInfo = inst.info;
+  s->binding = api ? std::string(api) : binding;
+  if (s->next.getInstanceProperties) {
+    XrInstanceProperties ip{XR_TYPE_INSTANCE_PROPERTIES};
+    if (XR_SUCCEEDED(s->next.getInstanceProperties(inst.handle, &ip))) {
+      s->runtimeKnown = true;
+      s->runtimeName = fromChars(ip.runtimeName, sizeof ip.runtimeName);
+      s->runtimeVersion = ip.runtimeVersion;
+    }
+  }
+  if (!info) {
+    s->configViewsWhy = "no session create info";
+  } else if (!s->next.enumerateViewConfigurationViews) {
+    s->configViewsWhy = "xrEnumerateViewConfigurationViews is not available below this layer";
+  } else {
+    uint32_t n = 0;
+    XrResult r = s->next.enumerateViewConfigurationViews(inst.handle, info->systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &n, nullptr);
+    if (XR_SUCCEEDED(r) && n > 0 && n <= 8) {
+      std::vector<XrViewConfigurationView> views(n, XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW});
+      r = s->next.enumerateViewConfigurationViews(inst.handle, info->systemId, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, n, &n, views.data());
+      if (XR_SUCCEEDED(r)) {
+        views.resize(n);
+        s->configViews = std::move(views);
+      }
+    }
+    if (s->configViews.empty())
+      s->configViewsWhy = "xrEnumerateViewConfigurationViews: " + (XR_FAILED(r) ? resultName(s->next, inst.handle, r) : std::to_string(n) + " view(s)");
+  }
+  readGlStrings(*s);  // usually current here: the spec has the app's context bound on its thread for xrCreateSession
+  if (s->api == Api::D3D11 && s->device) s->d3dFeatureLevel = static_cast<uint32_t>(s->device->GetFeatureLevel());
   logLine("session created on '" + system + "' (max " + std::to_string(s->maxLayers) + " layers): graphics binding " + (api ? std::string(api) : binding) +
           (api ? "; the panel and theater are drawn in this session" : "; not supported, this session passes through"));
   std::lock_guard<std::mutex> lk(g_mutex);
@@ -1124,6 +1895,10 @@ XrResult XRAPI_CALL Hook_xrCreateSwapchain(XrSession session, const XrSwapchainC
     rec->height = createInfo->height;
     rec->arraySize = createInfo->arraySize ? createInfo->arraySize : 1;
     rec->sampleCount = createInfo->sampleCount ? createInfo->sampleCount : 1;
+    rec->usageFlags = createInfo->usageFlags;
+    rec->faceCount = createInfo->faceCount ? createInfo->faceCount : 1;
+    rec->mipCount = createInfo->mipCount ? createInfo->mipCount : 1;
+    rec->session = reinterpret_cast<uintptr_t>(session);
     std::lock_guard<std::mutex> lk(g_mutex);
     g_appSwapchains[*swapchain] = std::move(rec);
   } catch (...) {
@@ -1331,15 +2106,32 @@ bool resolveNext(Instance& inst) {
          nextFn(n, i, "xrWaitSwapchainImage", n.waitSwapchainImage) && nextFn(n, i, "xrReleaseSwapchainImage", n.releaseSwapchainImage);
 }
 
-void onInstanceCreated(XrInstance handle, PFN_xrGetInstanceProcAddr nextGipa) {
+void onInstanceCreated(XrInstance handle, PFN_xrGetInstanceProcAddr nextGipa, const XrInstanceCreateInfo* createInfo) {
   auto inst = std::make_shared<Instance>();
   inst->handle = handle;
   inst->next.getInstanceProcAddr = nextGipa;
+  if (createInfo) {
+    // D7.6.2: what the app (OpenComposite, in VPX) asked for, for the session report.
+    const XrApplicationInfo& a = createInfo->applicationInfo;
+    inst->info.application = fromChars(a.applicationName, sizeof a.applicationName);
+    inst->info.engine = fromChars(a.engineName, sizeof a.engineName);
+    inst->info.applicationVersion = a.applicationVersion;
+    inst->info.engineVersion = a.engineVersion;
+    inst->info.apiVersion = a.apiVersion;
+    for (uint32_t i = 0; i < createInfo->enabledExtensionCount && createInfo->enabledExtensionNames && i < 64; i++)
+      if (createInfo->enabledExtensionNames[i]) inst->info.extensions.push_back(fromChars(createInfo->enabledExtensionNames[i], XR_MAX_EXTENSION_NAME_SIZE));
+    for (uint32_t i = 0; i < createInfo->enabledApiLayerCount && createInfo->enabledApiLayerNames && i < 64; i++)
+      if (createInfo->enabledApiLayerNames[i]) inst->info.apiLayers.push_back(fromChars(createInfo->enabledApiLayerNames[i], XR_MAX_API_LAYER_NAME_SIZE));
+  }
   if (hostIsVpx() && !g_disabled.load()) {
     if (resolveNext(*inst)) {
       inst->hooked = true;
       // Core, so always there in practice; still optional: the stereo window has a fallback, the rest needs none of it.
       if (!nextFn(inst->next, handle, "xrLocateViews", inst->next.locateViews)) inst->next.locateViews = nullptr;
+      // D7.6.2: the session report's runtime name and view configuration; core too, optional all the same.
+      if (!nextFn(inst->next, handle, "xrGetInstanceProperties", inst->next.getInstanceProperties)) inst->next.getInstanceProperties = nullptr;
+      if (!nextFn(inst->next, handle, "xrEnumerateViewConfigurationViews", inst->next.enumerateViewConfigurationViews))
+        inst->next.enumerateViewConfigurationViews = nullptr;
       // D7.3.3: the build id names the exact dll (a release tag or a commit), so an older one kept by a running VPX shows.
       logLine(std::string(kLayerName) + " " CASTCADE_VR_LAYER_VERSION " build " CASTCADE_BUILD_ID " (OpenXR headers " CASTCADE_OPENXR_SDK_TAG ") loaded in " + exeName());
       panelPipeStart();
@@ -1369,7 +2161,7 @@ XrResult XRAPI_CALL Hook_xrCreateApiLayerInstance(const XrInstanceCreateInfo* in
   const XrResult r = apiLayerInfo->nextInfo->nextCreateApiLayerInstance(info, &nextInfo, instance);
   if (XR_FAILED(r) || !instance) return r;
   try {
-    onInstanceCreated(*instance, nextGipa);
+    onInstanceCreated(*instance, nextGipa, info);
   } catch (...) {
     disable("a fault while recording the new instance");
   }

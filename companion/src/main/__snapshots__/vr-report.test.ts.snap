@@ -1,0 +1,115 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`vr-report (D7.6.2) > the markdown has every section, one fact per line (snapshot) 1`] = `
+"# Castcade VR report
+
+- written: 2026-11-03T14:25:01.000Z
+- companion: 0.2.33 (match protocol 1)
+
+## The layer in VPX (runtime, headset, what VPX submits)
+
+- source: the match's pipe connection
+- connected: true
+- pipe protocol: 3
+- report: fresh (asked now)
+- received: 2026-11-03T14:25:00.500Z
+- note: asked over the match's pipe connection
+
+### layer
+
+- layer.version: 0.5.0
+- layer.build: abc1234
+
+### runtime
+
+- runtime.name: VirtualDesktopXR
+- runtime.version: 1.0.9
+
+### views
+
+- views[0].recommended: 2064, 2208
+- views[0].max: 4096, 4096
+- views[0].samples: 1, 4
+- views[1].recommended: 2064, 2208
+- views[1].max: 4096, 4096
+- views[1].samples: 1, 4
+
+### located
+
+- located: unknown
+
+## Rig
+
+- rig: vr_headset
+- reason: VR at host
+- VR runtime: virtual-desktop
+- VPX started before this layer was registered: false
+- overlay.state: showing
+- overlay.reason: unknown
+- witness VR reading.inVr: true
+- witness VR reading.activeOpenXrRuntime: C:\\VD\\vdxr.json
+
+## Match
+
+- role: host
+- phase: lobby
+- settings.theaterScale: 1
+- settings.cameraSource: screen
+- media.attached: true
+- media.sending: false
+- media.captureSource: Visual Pinball Player
+- media.captureCrop.width: 1440
+- media.captureCrop.height: 1392
+- media.captureStereo: sbs
+- media.captureWarning: unknown
+- media.lastError: unknown
+
+## Network (ICE)
+
+- servers: 2 STUN, TURN turn:relay.example:3478
+- STUN: stun:a:19302, stun:b:19302
+- TURN: turn:relay.example:3478 (user me, credential set)
+
+## Last controls sent to the layer
+
+- 2026-11-03T14:25:00.000Z: {"mode":"panel","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null,"report":true}
+
+## Layer camera
+
+- camera.state: off
+- camera.why: unknown
+- camera.lastFrameAt: unknown
+- camera.frames: 0
+
+## Counters, last 60 s (companion.log)
+
+\`\`\`
+2026-11-03T14:24:05.000Z info  media: capture: 290 frames in 10 s, sent 1440x1392
+2026-11-03T14:24:30.000Z info  media: theater: 300 frames decoded at 1440x1392, 290 sent to the layer in 10 s
+2026-11-03T14:24:40.000Z info  vr-layer camera: 300 frames in 10 s (720x1440 per eye, 80 KB a frame); on
+2026-11-03T14:24:41.000Z info  theater: feeding 1440x1392 (sbs) to the layer
+\`\`\`
+
+## vr-layer.log, last lines
+
+- file: C:\\L\\vr-layer.log
+\`\`\`
+2026-11-03 15:25:00.700 [42] session: report sent to the companion (2048 bytes)
+\`\`\`
+
+## VPX preview window
+
+- player window: 1920x1080 at 0,0 (pid 42, 'Visual Pinball Player')
+- its display: 1920x1080 at 0,0
+- covers the whole display: true
+- off the display: 0 rows top, 0 rows bottom, 0 columns left, 0 columns right
+- warning: the VPX preview window covers the whole 1920x1080 display: a full-screen window stops the screen capture once VPX has focus (one frame per pick); set the preview size (Preferences → VR, or [PlayerVR] PreviewWidth / PreviewHeight) smaller than the display, e.g. 960x960
+- VPX window: 1920x1080 at 0,0 (pid 42, 'Visual Pinball Player')
+
+## VPX's ini, [PlayerVR]
+
+- file: C:\\VPX\\VPinballX.ini
+- VRPreview = 3
+- PreviewWidth = 960
+"
+`;

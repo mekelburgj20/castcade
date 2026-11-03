@@ -118,10 +118,10 @@ on a synchronous handle Windows would queue the write behind the read).
 |---|---|---|---|
 | layer → companion, once on connect | `CVH1` | u32 protocol (3) | hello; a protocol-1 layer (0.2.26) sends none |
 | layer → companion (protocol 3) | `CVF1` | u32 byteLength, then u16 jsonLength, the UTF-8 JSON header, the eyes' JPEG payloads back to back | a camera frame ("The camera" below) |
-| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"` |
+| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`; or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -135,7 +135,57 @@ only after a hello of 2 or more; without one it sends panel frames only, as 0.2.
 reads the hello (8 bytes sit in its socket) and gets the default control: panel mode, placed low. The control goes
 back to that default when the companion disconnects. The companion asks for the camera only after a hello of 3 or more
 (a protocol-2 layer would leave the key unread and send no frames, harmlessly); a protocol-2 companion never reads
-`CVF1` / `CVS1`, which a protocol-3 layer sends only once asked.
+`CVF1` / `CVS1`, which a protocol-3 layer sends only once asked. The session report (a `CVS1` too) goes after every
+connection; a companion from before D7.6.2 logs it once as an unreadable `CVS1` and goes on.
+
+## The session report (layer 0.5.0, D7.6.2)
+
+One complete picture of how VPX reaches the headset, so a rig is described once instead of one fact per headset
+session. At the first frame of every session the layer logs it as `session:` lines (one fact per line) in
+`vr-layer.log`, and it sends it to the companion as `CVS1` `{"kind": "session", <fact>: <value>, ...}` at that frame,
+after every new pipe connection (at the next frame) and on a control with `"report": true`. The facts
+(`layer.cpp` `sessionFacts`; null when the runtime did not give one):
+
+| Key | What |
+|---|---|
+| `layer` | name, version, build id, OpenXR headers tag, pipe protocol |
+| `process` | the exe and pid |
+| `instance` | what the app (OpenComposite, in VPX) asked at `xrCreateInstance`: application and engine name and version, API version, extensions, API layers it enabled |
+| `runtime` | `xrGetInstanceProperties`: runtime name and version |
+| `system` | `xrGetSystemProperties`: id, name, vendor id, layer and swapchain limits, tracking |
+| `graphics` | the binding (D3D11 / OpenGL (Win32) / another), `GL_VERSION` / `GL_RENDERER` / `GL_VENDOR` when the app's context was current, the D3D11 feature level |
+| `views` | `xrEnumerateViewConfigurationViews` (primary stereo): recommended and max image rect per eye, sample counts |
+| `appFov` | each eye's fov (degrees: left, right, up, down) and render size in VPX's last frame |
+| `located` | each eye's pose and fov from `xrLocateViews` at the last recentre (null before theater) |
+| `swapchains` | VPX's swapchains in this session: format (hex and name), size, array, faces, mips, samples, usage flags, image count |
+| `lastFrame` | VPX's last `xrEndFrame`: layer count and types, each projection view's swapchain (index into `swapchains`), image rect and array index |
+| `theater` | the mode shown, the last recentre's yaw and pitch, the last stereo window (scale, distance, picture size, IPD, per eye: fov and its source, render, crop, tangent rect, quad size, position), the window log line |
+| `openComposite` | a verdict (its name on the instance; a module named after it; `openvr_api.dll` without SteamVR's `vrclient`) and the marks behind it |
+| `modules` | the VR-related modules in VPX's process (full paths) |
+
+The companion's Match tab ("VR test bench", Write VR report) puts it into `vr-report-<date>.md` / `.json` beside
+`companion.log`, with the companion's own side (settings, ICE, rig, last controls, counters, the preview window's fit,
+VPX's `[PlayerVR]` keys).
+
+## The calibration pattern (layer 0.5.0, D7.6.1)
+
+On a control with `"test": "pattern"` the layer goes to theater (through black, recentred where the head points, like
+any theater) and shows a side-by-side picture it draws itself instead of the companion's feed: no second player and no
+video needed. Each eye is drawn with the geometry the stereo window assumes for a sender (`eyeCrop`: VPX's fov and render
+size from its own frame, VPX's centre crop to the picture's aspect) and placed by `placeWindows` at the control's
+`theaterScale`, so a line drawn at angle *a* from an eye's axis is seen at *a* from that eye when the geometry is right:
+the two eyes' grids land on each other as one grid at infinity, and a doubled line at a labelled angle is the error
+there. In each eye (1024 high, as wide as VPX's render aspect):
+
+- vertical lines every 5° of horizontal angle (atan of the x tangent) and horizontal lines every 5° of vertical angle,
+  every 10° brighter and labelled along the eye's axis, the axis itself thickest;
+- circles at 10° and 20° from the axis and a cross on it, in the eye's colour (left orange, right blue);
+- a large L (left eye, top left) or R (right eye, top right).
+
+What to look for: one grid, the L and R each in its corner, the circles round and single. `vr-layer.log` says
+`test: calibration pattern on`, then `test: calibration pattern drawn, each eye WxH; left eye (fov from VPX's frame)
+… deg across …` and the `theater: stereo window …` line with the placement. It is redrawn when VPX's fov or render
+size changes (at most once a second) and ends with the control (or the pipe: a companion that goes takes it along).
 
 ## The camera (protocol 3, D7.5)
 

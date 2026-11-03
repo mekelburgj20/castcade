@@ -473,6 +473,8 @@ interface MatchStatus {
   /** D7.4.3: one line for a VR player about the picture sent, or null. */
   previewAdvice: string | null;
   vrOverlay: VrOverlayStatus | null;
+  /** D7.6: the OpenXR layer's pipe for the VR test bench (connected, protocol, the calibration pattern); null without a layer. */
+  vrBench: { connected: boolean; protocol: number; pattern: boolean } | null;
   rig: 'vr_headset' | 'pc';
   rigReason: string;
   /** B22: the VR runtime behind `rig: 'vr_headset'`. D7.3: `steamvr` → the SteamVR overlay, any other → the OpenXR layer. */
@@ -539,6 +541,10 @@ interface CastcadeBridge {
     /** D2.6: the desktop match panel window (no-op in VR). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;
+    /** D7.6.2: write the VR report beside companion.log; the two paths. */
+    vrReport(): Promise<{ md: string; json: string }>;
+    /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
+    setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   readonly tables: {

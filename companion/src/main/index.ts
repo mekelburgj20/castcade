@@ -17,6 +17,7 @@ import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
 import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
+import { writeVrReport } from './vr-report-host.js';
 import {
   DEFAULT_ARCAID_BASE_URL,
   openSettingsStore,
@@ -375,6 +376,22 @@ function registerIpc(
   });
   ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
   ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
+  ipcMain.handle(IPC.matchSetVrTest, (_e, test: unknown) => mh().setVrTest(test === 'pattern' ? 'pattern' : null));
+  // D7.6.2: the VR report, beside companion.log; works with no match (the layer is then read over a short pipe connection).
+  ipcMain.handle(IPC.matchVrReport, () =>
+    writeVrReport({
+      logFile: logger.file,
+      layerLogFile: process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Castcade', 'logs', 'vr-layer.log') : null,
+      appVersion,
+      protocol: PROTOCOL_VERSION,
+      match: maybeMatch,
+      vrLayer: matchLayer,
+      mediaSettings: mediaSettingsStore,
+      witness: host,
+      fs: nodeFs,
+      log: (line) => logger.info(line),
+    }),
+  );
   ipcMain.handle(IPC.appClipboardText, () => clipboard.readText());
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
