@@ -314,6 +314,12 @@ export interface VrOverlay {
   onCameraFrame?(cb: (frame: LayerCameraFrame) => void): () => void;
   cameraStatus?(): LayerCameraStatus;
   onCameraStatus?(cb: (s: LayerCameraStatus) => void): () => void;
+  /**
+   * D7.5.1 (2026-11-02): the pipe protocol of the layer connected now, once it has said anything on this connection
+   * (its hello; a layer that sends something else first is protocol 1); null while no layer is connected or it has
+   * not spoken yet. `layer-camera.ts` decideCamera / cameraWatch read it.
+   */
+  layerProtocol?(): number | null;
 }
 
 /** Default placement (alpha-match.md §5): head-anchored, 0.55 m wide, below the line of sight. */

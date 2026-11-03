@@ -23,6 +23,17 @@
  * Theater (D7.4, 2026-10-31): `videoFrames()` hands the OpenXR layer the up player's video. While someone wants it the
  * page draws the stage <video> into a canvas and sends its pixels (RGBA) on `castcade-panel:video`, one frame in flight
  * (main acks each), at most 30 a second.
+ *
+ * The layer camera (D7.5.1, 2026-11-02; docs/design/alpha-match.md §5a): with the Match tab's Camera on `VR layer`, a
+ * VR rig on an OpenXR runtime other than SteamVR sends what the Castcade OpenXR layer copies out of VPX's own frame
+ * instead of a screen capture. Each attach decides (`layer-camera.ts` decideCamera); for the layer, the camera is asked
+ * (`setCamera(cameraRequestFor())`), no screen capture is opened, and the page is given a synthetic capture
+ * (`cameraCapture`, `sourceId: 'layer-camera'`) and the frames (both eyes' JPEGs, one in flight, newest wins; one a
+ * second while another player is up). A 1 s tick and every camera status run `cameraWatch`; on a fallback the camera
+ * is stopped, logged (`media: camera: back to the screen capture: <reason>`) and the screen capture picked as usual.
+ * Nothing falls forward to the layer again within the match, except the player choosing it again on the Match tab
+ * (taken between balls). With the setting on `screen` (the default) none of this runs: the capture path, its log lines
+ * and its page messages are those of 0.2.32.
  */
 import { BrowserWindow, desktopCapturer, ipcMain, powerSaveBlocker, screen, session, type DesktopCapturerSource, type IpcMainEvent, type NativeImage, type Session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -30,10 +41,11 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import type { MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrStereo } from './match-media-types.js';
+import { cameraRequestFor, cameraWatch, createFrameSlot, decideCamera, type CameraDecision, type CameraDecisionInput, type CameraSourceSetting } from './layer-camera.js';
+import type { LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { UNCOVER_MS } from './stream-engine.js';
 import { declaredStereo, type PreviewStereoSetting } from './preview-stereo.js';
 import { pickPlayfield, type VpxWindow, type WindowProbe } from './window-geometry.js';
@@ -76,7 +88,17 @@ export interface RtcHost extends MatchMedia {
    * (the peers renegotiate through the page's offer resend), so `frames()` has a source for the overlay once it
    * resolves. Headset → desktop while attached is not supported: logged and ignored until the match ends.
    */
-  setVr(rig: { inVr: boolean; headsetPanel: boolean }): Promise<void>;
+  setVr(rig: { inVr: boolean; headsetPanel: boolean; runtime?: CameraDecisionInput['runtime'] }): Promise<void>;
+  /**
+   * D7.5.1 (2026-11-02): the OpenXR layer whose camera a VR sender may use (`media/vr-layer.ts`; the match host passes
+   * its `vrLayer`); null or one without `setCamera`: the screen capture only.
+   */
+  setCameraLayer(layer: VrOverlay | null): void;
+  /**
+   * D7.5.1: the Match tab's Camera (match settings `cameraSource`). Read at each attach; while attached a change takes
+   * effect at once between balls, or when this rig's ball ends.
+   */
+  setCameraSource(setting: CameraSourceSetting): void;
   /**
    * B22 (2026-10-31): list the microphones before a match (the panel page lists them only once it opens, so a tester
    * saw "Windows default" alone at Host / Join). A hidden page in the panel's partition enumerates them, opening the
@@ -120,6 +142,9 @@ export const CAPTURE_RETRY_MS = 3_000;
 export const RECROP_MS = 5_000;
 /** D7.4.4: a stalled capture is re-picked at most this often (the page reports every 2 s while it stays stalled). */
 export const REPICK_MIN_MS = 10_000;
+/** D7.5.1: the camera watch's tick (alpha-match.md §5a), and the frames a second the page gets while another player is up. */
+export const CAMERA_WATCH_MS = 1_000;
+export const CAMERA_IDLE_FRAME_MS = 1_000;
 const PLAYER_TITLE = 'Visual Pinball Player';
 
 // ---- pure parts ----
@@ -344,6 +369,17 @@ function isSignal(v: unknown): v is { to: MatchPlayerId; signal: MediaSignal } {
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** D7.5.1: a layer camera frame as the page gets it: the two JPEG views (no copy here) and the eyes' geometry. */
+export function cameraPageFrame(f: LayerCameraFrame): PanelCameraFrame | null {
+  const [l, r] = f.eyes;
+  if (!l || !r || f.eyes.length !== 2) return null;
+  const geometry = (e: typeof l) => ({ fov: e.fov, rect: e.rect, render: e.render });
+  return { n: f.n, width: f.width, height: f.height, left: l.data, right: r.data, eyes: [geometry(l), geometry(r)] };
+}
+
+/** D7.5.1: what the `capture:` lines say about a layer camera capture: `from the VR layer camera, 1440x1440 (sbs)`. */
+export const cameraWords = (c: Pick<PanelCapture, 'out'>): string => `from the VR layer camera, ${c.out.width}x${c.out.height} (sbs)`;
+
 /** D7.4.3: the declared stereo for the log. */
 export const stereoWords = (s: VrStereo | null | undefined): string =>
   s === 'sbs' ? 'both eyes side by side' : s === 'mono' ? 'one picture' : 'stereo not known (the others guess from its shape)';
@@ -434,6 +470,18 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let lastRepickAt = 0;
   /** D7.4.10: the fit warning, logged once per wording. */
   let fitWarned: string | null = null;
+  // ---- D7.5.1: the layer camera ----
+  let cameraLayer: VrOverlay | null = null;
+  let cameraSetting: CameraSourceSetting = 'screen';
+  let vrRuntime: CameraDecisionInput['runtime'] = null;
+  /** The camera feeding this attach (null: the screen capture path, as before D7.5.1). */
+  type CameraRun = { gen: number; askedAt: number; connectedAt: number | null; off: Array<() => void>; timer: ReturnType<typeof setInterval>; lastPostAt: number };
+  let cam: CameraRun | null = null;
+  const camSlot = createFrameSlot<PanelCameraFrame>();
+  /** Why the camera was given up in this match (never asked again within it, unless the Match tab says layer again). */
+  let cameraGaveUp: string | null = null;
+  /** A Camera change made during this rig's ball: applied when the ball ends. */
+  let cameraSwitchPending = false;
   const panelWindow = (): { visible: boolean; side: PanelSide } | null =>
     !headset && win && !win.isDestroyed() ? { visible: win.isVisible(), side: panelSide } : null;
   const status = (): MediaStatus =>
@@ -516,7 +564,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (st.capture !== null) {
         const o = st.sent;
         const out = o && o.width > 0 ? `, sent ${o.width}x${o.height}${o.kbps !== null ? ` at ${(o.kbps / 1000).toFixed(1)} Mbps` : ''}, limited by ${o.limit}` : '';
-        log.info(`media: capture: ${st.capture} frames in 10 s${out}`);
+        // D7.5.1: where the picture comes from, when it is the layer camera (the screen capture's line is unchanged).
+        const from = capture && isCameraCapture(capture) ? ` ${cameraWords(capture)}${st.camera?.unreadable ? `, ${st.camera.unreadable} unreadable` : ''}${cameraDropped(true)}` : '';
+        log.info(`media: capture: ${st.capture} frames in 10 s${from}${out}`);
       }
       if (st.decoded !== null) {
         const d = st.decodedSize;
@@ -526,8 +576,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     }
     page = s;
     if (s.captureStalled === true && capture && attached) stalledCapture(generation);
+    // D7.5.1: the canvas track of a camera capture ended: nothing left to draw on; back to the screen.
+    if (ended && cam && attached) cameraBack(generation, 'the panel lost its video track');
     // The page's capture track ended (the table closed, VPX restarted): look for the window again (D2, 2026-10-31).
-    if (ended && capture && attached) {
+    else if (ended && capture && attached) {
       log.info(`media: the capture of ${capture.label} ended; looking for the VPX window again`);
       dropCapture(false);
       scheduleCapture(generation);
@@ -541,6 +593,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
    * `REPICK_MIN_MS`. The page has already taken its track off the connections.
    */
   function stalledCapture(gen: number): void {
+    // D7.5.1: a stalled layer camera goes through the camera's fallback, not a re-pick.
+    if (cam) {
+      log.info('media: capture stalled (no new frame from the VR layer camera for 3 s)');
+      cameraBack(gen, 'the layer camera stalled (no new frame on the panel for 3 s)');
+      return;
+    }
     if (!stallLogged) {
       stallLogged = true;
       log.info(`media: capture stalled (no new frame for 3 s); re-picking${capture?.warning ? ` (${capture.warning})` : ''}`);
@@ -573,6 +631,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     post(PANEL_CHANNELS.videoAck);
     const f = videoFrameFrom(m);
     if (f) videoHub.push(f);
+  });
+  // D7.5.1: the page drew the camera frame in flight; the newest waiting one goes now.
+  ipcMain.on(PANEL_CHANNELS.cameraAck, (e) => {
+    if (!fromPanel(e)) return;
+    const next = camSlot.ack(Date.now());
+    if (next && cam) postCameraFrame(cam, next);
   });
   ipcMain.on(PANEL_CHANNELS.devices, (e, d: unknown) => {
     if (!fromPanel(e) || !Array.isArray(d)) return;
@@ -761,7 +825,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const done = (async () => {
       try {
         const r = await resolveCapture();
-        if (gen !== generation) return;
+        // D7.5.1: the layer camera took over meanwhile: this pick is not wanted.
+        if (gen !== generation || cam) return;
         if ('error' in r) {
           setCaptureError(r.error);
           return;
@@ -826,7 +891,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (tellPage) toPage(PANEL_CHANNELS.capture, null);
   }
   function scheduleRecrop(gen: number): void {
-    if (recropTimer || gen !== generation || !attached || !capture) return;
+    // D7.5.1: the layer camera has no window to re-crop.
+    if (recropTimer || gen !== generation || !attached || !capture || cam) return;
     recropTimer = setTimeout(() => {
       recropTimer = null;
       void recrop(gen);
@@ -834,7 +900,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   }
   /** One re-probe of a live capture: same crop → nothing; moved or resized → the page re-crops; gone → dropped. */
   const recrop = async (gen: number): Promise<void> => {
-    if (gen !== generation || !attached || !capture) return;
+    if (gen !== generation || !attached || !capture || cam) return;
     let r: Resolved;
     try {
       r = await resolveCapture();
@@ -844,7 +910,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       return;
     }
     const cur = capture;
-    if (gen !== generation || !attached || !cur) return;
+    if (gen !== generation || !attached || !cur || cam) return;
     if ('error' in r) {
       log.info(`media: stopped sending ${cur.label}: ${r.error}`);
       dropCapture(true);
@@ -912,8 +978,143 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     captureTimer = null;
   };
 
+  // ---- D7.5.1: the layer camera (alpha-match.md §5a) ----
+  const cameraUsable = (l: VrOverlay | null): l is VrOverlay & Required<Pick<VrOverlay, 'setCamera' | 'onCameraFrame' | 'cameraStatus' | 'onCameraStatus'>> =>
+    !!l && !!l.setCamera && !!l.onCameraFrame && !!l.cameraStatus && !!l.onCameraStatus;
+  /**
+   * The source for this attach: null with the setting on `screen` (nothing said: the 0.2.32 path), else the decision,
+   * logged. The screen whenever the layer cannot be the camera, or already failed in this match.
+   */
+  const chooseCamera = (): CameraDecision | null => {
+    if (cameraSetting !== 'layer') return null;
+    let d: CameraDecision;
+    if (cameraGaveUp) d = { source: 'screen', reason: `the layer camera failed earlier in this match: ${cameraGaveUp}` };
+    else if (!cameraUsable(cameraLayer)) d = { source: 'screen', reason: 'there is no OpenXR layer camera in this build' };
+    else d = decideCamera({ setting: cameraSetting, rig: inVr ? 'vr_headset' : 'pc', runtime: vrRuntime, layerProtocol: cameraLayer.layerProtocol?.() ?? null });
+    if (d.source === 'screen') log.info(`media: camera: the screen capture (${d.reason})`);
+    return d;
+  };
+  const cameraDropped = (take: boolean): string => {
+    const n = take ? camSlot.takeDropped() : 0;
+    return n ? `, ${n} dropped before the panel (newest wins)` : '';
+  };
+  const postCameraFrame = (c: CameraRun, f: PanelCameraFrame): void => {
+    c.lastPostAt = Date.now();
+    // Structured clone, no JSON: the two views share the frame's one buffer, which is copied once.
+    post(PANEL_CHANNELS.cameraFrame, f);
+  };
+  /** The camera's size changed (or its first frame came): the capture main holds follows, logged once per change. */
+  const cameraSize = (width: number, height: number): void => {
+    if (!capture || !isCameraCapture(capture)) return;
+    if (capture.out.width === width * 2 && capture.out.height === height) return;
+    capture = cameraCapture(width, height);
+    announced = capture;
+    log.info(`media: capture: ${cameraWords(capture)}`);
+    log.info(sendingLine(capture));
+    emitStatus();
+  };
+  const cameraFrame = (c: CameraRun, f: LayerCameraFrame): void => {
+    if (cam !== c || !attached) return;
+    const pf = cameraPageFrame(f);
+    if (!pf) return;
+    cameraSize(f.width, f.height);
+    if (!ready || !attachSent) return;
+    const now = Date.now();
+    // Another player is up: the track is disabled, one frame a second keeps the canvas (and the self view) fresh.
+    if (!sending && now - c.lastPostAt < CAMERA_IDLE_FRAME_MS) return;
+    const out = camSlot.offer(pf, now);
+    if (out) postCameraFrame(c, out);
+  };
+  const checkCamera = (c: CameraRun): void => {
+    if (cam !== c || !cameraUsable(cameraLayer)) return;
+    const now = Date.now();
+    const layerProtocol = cameraLayer.layerProtocol?.() ?? null;
+    if (layerProtocol !== null && c.connectedAt === null) c.connectedAt = now;
+    const w = cameraWatch({ status: cameraLayer.cameraStatus(), now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status() });
+    if (w.fallBack) cameraBack(c.gen, w.reason ?? 'no reason given');
+  };
+  /** Ask the layer and hold the synthetic capture; the screen capture is not opened. The pid is probed for table sound. */
+  const startCamera = (gen: number, reason: string): void => {
+    if (!cameraUsable(cameraLayer)) return;
+    const layer = cameraLayer;
+    const req = cameraRequestFor();
+    log.info(`media: camera: the VR layer (${reason}): each eye in a ${req.width}x${req.height} box at ${req.fps} fps; no screen capture`);
+    camSlot.reset();
+    const run: CameraRun = { gen, askedAt: Date.now(), connectedAt: null, off: [], timer: setInterval(() => checkCamera(run), CAMERA_WATCH_MS), lastPostAt: 0 };
+    cam = run;
+    run.off.push(layer.onCameraFrame((f) => cameraFrame(run, f)));
+    run.off.push(layer.onCameraStatus(() => checkCamera(run)));
+    captureSrc = null;
+    captureError = null;
+    capture = cameraCapture(req.width, req.height);
+    layer.setCamera(req);
+    void (async () => {
+      try {
+        const probe = await opts.probe();
+        if (cam !== run) return;
+        capturePidNow = pickCaptureWindow(probe.windows, inVr)?.window.pid ?? null;
+      } catch {
+        /* table sound falls back to the witness's pid */
+      }
+    })();
+  };
+  /** Stop asking; frames still on their way are ignored. */
+  const stopCamera = (): void => {
+    const run = cam;
+    if (!run) return;
+    cam = null;
+    clearInterval(run.timer);
+    for (const off of run.off) off();
+    camSlot.reset();
+    cameraLayer?.setCamera?.(null);
+  };
+  /** D7.5.1: give the layer up for this match and pick the screen capture as today (`pickCapture`). */
+  function cameraBack(gen: number, reason: string): void {
+    if (!cam || gen !== generation || !attached) return;
+    log.info(`media: camera: back to the screen capture: ${reason}`);
+    cameraGaveUp = reason;
+    stopCamera();
+    capture = null;
+    announced = null;
+    captureSrc = null;
+    void pickCapture(gen).then(() => {
+      if (gen !== generation || !attached || cam) return;
+      if (capture) announceCapture(gen);
+      else {
+        toPage(PANEL_CHANNELS.capture, null);
+        scheduleCapture(gen);
+      }
+      emitStatus();
+    });
+    emitStatus();
+  }
+  /** D7.5.1: a Camera change while attached, between balls: to the screen at once; to the layer if it can be. */
+  const switchCamera = (gen: number): void => {
+    cameraSwitchPending = false;
+    if (gen !== generation || !attached) return;
+    if (cameraSetting === 'screen') {
+      if (cam) cameraBack(gen, 'the Match tab says screen capture');
+      return;
+    }
+    if (cam) return;
+    cameraGaveUp = null; // the player asked for it again
+    const d = chooseCamera();
+    if (!d || d.source !== 'layer') return;
+    stopLive();
+    stopCaptureTimer();
+    startCamera(gen, d.reason);
+    if (!capture) return;
+    announced = capture;
+    log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
+    log.info(sendingLine(capture));
+    toPage(PANEL_CHANNELS.capture, capture);
+    emitStatus();
+  };
+
   const detach = async (quiet = false): Promise<void> => {
     generation++;
+    stopCamera();
+    cameraSwitchPending = false;
     offSignal?.();
     offSignal = null;
     signalling = null;
@@ -956,6 +1157,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const attach = async (sig: MediaSignalling, initialPeers: MatchPlayerId[], restore: { state: PanelState | null; sending: boolean } | null = null): Promise<void> => {
     if (attached || win) await detach(restore !== null);
     const gen = ++generation;
+    // D7.5.1: a new match may try the layer camera again; a re-attach within one (setVr) keeps what it learnt.
+    if (restore === null) cameraGaveUp = null;
     attached = true;
     holdDisplay();
     signalling = sig;
@@ -986,7 +1189,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       setPanelError(`the match panel could not open (${errText(e)}); video and voice are off`);
       return;
     }
-    await pickCapture(gen);
+    // D7.5.1: the layer camera, when this attach decides so; else the screen capture as before.
+    const camera = chooseCamera();
+    if (camera?.source === 'layer') startCamera(gen, camera.reason);
+    else await pickCapture(gen);
     if (gen !== generation) return;
     const s = opts.settings.get();
     // D2.7 (2026-11-01): a re-attach (`setVr`) replaces a page whose connections still stand on the peers' side.
@@ -1007,6 +1213,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     sending = on;
     if (attachMsg && !attachSent) attachMsg.sending = on;
     toPage(PANEL_CHANNELS.sending, on);
+    // D7.5.1: a Camera change made during this ball, now that it is over.
+    if (!on && cameraSwitchPending) switchCamera(generation);
     // Still no window at this rig's turn (the 3 s looks found none yet): look once more now, not at the next tick.
     if (on && attached && !capture) {
       stopCaptureTimer();
@@ -1066,6 +1274,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       // The capture pick follows the rig at once (the next pick reads it); the window kind needs a re-attach.
       inVr = rig.inVr;
       wantHeadset = rig.headsetPanel;
+      if (rig.runtime !== undefined) vrRuntime = rig.runtime;
       // A rig found to be in VR mid-capture: the focus watch goes, and a cover it put up comes down.
       if (inVr && focus) {
         focus.stop();
@@ -1109,6 +1318,20 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       post(PANEL_CHANNELS.tablePcm, pcm);
     },
     capturePid: () => (attached ? capturePidNow : null),
+    setCameraLayer(layer) {
+      cameraLayer = layer;
+    },
+    setCameraSource(setting) {
+      if (setting === cameraSetting) return;
+      cameraSetting = setting;
+      if (!attached) return;
+      if (sending) {
+        cameraSwitchPending = true;
+        log.info('media: camera: the change takes effect when this ball ends');
+        return;
+      }
+      switchCamera(generation);
+    },
     setPreviewStereo(setting) {
       if (setting === previewSetting) return;
       previewSetting = setting;

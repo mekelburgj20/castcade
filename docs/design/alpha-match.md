@@ -185,8 +185,9 @@ monitor may be off, the resolution follows the headset, and the receiver's stere
 the **sender's** eyes instead of standing in with its own (exact for mixed headsets).
 
 **Built this round** (`vr-layer/`, pipe protocol 3, `companion/src/media/vr-layer.ts`, `layer-camera.ts`, the
-`cameraSource` setting and its Match-tab control). **Not built: the panel page, `rtc-host.ts` and `capture-crop.ts`
-are untouched**; this section is the contract the lead wires next round.
+`cameraSource` setting and its Match-tab control). The panel page and `rtc-host.ts` side is **built in D7.5.1**
+(items 1, 2, 4 and 5 below, and the sender's half of item 3); see "Built in D7.5.1" at the end of this section for
+what the code changed in the contract.
 
 ### What exists
 
@@ -220,7 +221,7 @@ are untouched**; this section is the contract the lead wires next round.
 - `MediaSignal` of kind `stereo` has an optional `eyes?: LayerCameraEyeGeometry[] | null` (the type only; nobody sends
   it yet).
 
-### What the lead wires (next round)
+### What the lead wires (built in D7.5.1, with the changes listed at the end of this section)
 
 1. **Choosing the source** (`rtc-host.ts`, at attach and when the setting or the layer's protocol changes): `const d =
    decideCamera({ setting: settings.cameraSource, rig, runtime, layerProtocol })`. For `screen`, everything as today.
@@ -280,6 +281,50 @@ are untouched**; this section is the contract the lead wires next round.
   stereo-window geometry is already right for same-headset pairs, and the frame header makes it exact for others.
 - **Refusals are loud and specific** (multisampled swapchain, non-8-bit format, OpenGL below 3.2, no projection layer
   the layer saw created) and always end in the screen capture.
+
+### Built in D7.5.1 (2026-11-02): what the code changed in the contract
+
+- **Plumbing.** `RtcHost.setCameraLayer(vrLayer)` and `setCameraSource(setting)` (the match host calls both at start,
+  and the latter on every Match-tab change); `setVr` now carries the rig's `runtime` too. `VrOverlay.layerProtocol()`
+  is new (`vr-layer.ts`): the connected layer's protocol once it has said anything on this connection, else null.
+- **The channel.** The page is told through the existing `PANEL_CHANNELS.capture` (and `attach.capture`): a capture
+  whose `sourceId` is `layer-camera` (`cameraCapture(w, h)` in `panel-page.ts`, `out` 2w x h, `stereo: 'sbs'`, label
+  `VR layer camera`) puts the page in camera mode; any screen capture after it takes it out (the canvas track stays,
+  the declaration is re-sent without eyes). Frames go on `castcade-panel:camera-frame` as `PanelCameraFrame` `{n,
+  width, height, left, right, eyes}` (eyes = the geometry, no data), acked on `castcade-panel:camera-ack`; main's side
+  is `createFrameSlot` (`layer-camera.ts`: one in flight, newest waits, older dropped and counted, a lost ack given up
+  after 1 s). **No transfer:** Electron's `webContents.send` structured-clones (only MessagePorts transfer
+  main → renderer), so each frame is copied once; the two eye views share the frame's one buffer (`Buffer.allocUnsafe`
+  of the CVF1 payload, tight to the message), so that copy is the payload and nothing else.
+- **While another player is up** main forwards one frame a second (the track is disabled then; the decode of two
+  JPEGs at 30 fps would be wasted); at `setSending(true)` the full rate is back on the next frame. The layer keeps
+  encoding at 30 fps meanwhile (asking it for fewer while not up is a follow-up).
+- **The watch** is `cameraWatch` (`layer-camera.ts`), on a 1 s tick and on every camera status. Two things the code
+  taught: (a) at attach the overlay has not started yet (the match host starts it after the panel opens), so
+  `layerProtocol` is null at decide time and the 8 s "no frame" clock runs from when the layer comes on the pipe; a
+  layer that never comes is given up after `LAYER_CAMERA_PIPE_WAIT_MS` (20 s); (b) when the layer stops the camera on
+  its own while it is still asked, `vr-layer.ts` keeps the state `asked` with the layer's `why` (not `off` with a why,
+  as `cameraFallback` assumed), so the watch reads that case itself. Also: a pipe that closes after the layer spoke →
+  the screen at once; `on` with no frame within 8 s → the screen; an overlay `unavailable` → the screen. The page's
+  own stall (no drawn camera frame for 3 s while sending) reports `captureStalled`; main logs `media: capture stalled
+  (no new frame from the VR layer camera for 3 s)` and falls back instead of re-picking.
+- **Never forward within a match**: once given up, a re-attach of the same match (the panel moving into the headset)
+  logs `media: camera: the screen capture (the layer camera failed earlier in this match: …)`; the next match decides
+  afresh. The one exception is the player: setting Camera back to `VR layer` on the Match tab tries again.
+- **Live switch**: a Camera change while attached takes effect at once between balls, or when this rig's ball ends
+  (`media: camera: the change takes effect when this ball ends`).
+- **Table sound's pid** comes from one window probe at the camera's start (no screen capture is opened).
+- **Item 3, the eyes on the wire: the sender sends them, the wire drops them.** The page's `stereo` signal carries
+  `eyes` (`stereoSignal`, re-sent when `eyesKey` changes), but `protocol/src/messages.ts` `MediaSignal` has no `eyes`
+  field and zod strips unknown keys when the client builds the frame, so no receiver sees them until D7.5.2 adds the
+  field to the protocol (additive, optional). The receiver side (`peerEyes`, `VideoFrame.eyes`, the control's `eyes`)
+  is D7.5.2.
+- **The log**, first run with Camera = VR layer: `media: camera: the VR layer (the VR layer, once it is on the pipe):
+  each eye in a 720x1440 box at 30 fps; no screen capture`, `media: capture VR layer camera ready, both eyes side by
+  side`, `media: sending 1440x1440 sbs at 8.0 Mbps`, `media: capture: from the VR layer camera, WxH (sbs)` when the
+  first frame's size differs from the request (once per change), and every 10 s while up `media: capture: N frames in
+  10 s from the VR layer camera, 1440x1440 (sbs)[, K unreadable][, D dropped before the panel (newest wins)], sent …`.
+  With Camera = screen (the default) none of these lines, messages or code paths occur.
 
 ## 6. Checks only the rig can answer (run before the first match)
 

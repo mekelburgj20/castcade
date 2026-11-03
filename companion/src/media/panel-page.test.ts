@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -950,6 +950,149 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
     } finally {
       restart.mockRestore();
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {
+  const GEO = { fov: [-0.9, 0.8, 0.9, -0.95], rect: [450, 0, 900, 1800], render: [1800, 1800] };
+  const CAMERA = cameraCapture(720, 1440);
+
+  it('helpers: the synthetic capture, its test, a frame checked, the eyes as a key, the stereo signal (unchanged without eyes)', () => {
+    expect(CAMERA).toEqual({ sourceId: 'layer-camera', label: 'VR layer camera', screen: { width: 1440, height: 1440 }, crop: { x: 0, y: 0, width: 1440, height: 1440 }, out: { width: 1440, height: 1440 }, stereo: 'sbs' });
+    expect(LAYER_CAMERA_SOURCE_ID).toBe(CAMERA.sourceId);
+    expect(isCameraCapture(CAMERA)).toBe(true);
+    expect(isCameraCapture(CAP)).toBe(false);
+    expect(isCameraCapture(null)).toBe(false);
+    const jpg = new Uint8Array([1, 2]);
+    expect(cameraFrameSize({ width: 720, height: 1440, left: jpg, right: jpg })).toEqual({ width: 720, height: 1440 });
+    expect(cameraFrameSize({ width: 720, height: 1440, left: new Uint8Array(0), right: jpg })).toBeNull();
+    expect(cameraFrameSize({ width: 0, height: 1440, left: jpg, right: jpg })).toBeNull();
+    expect(cameraFrameSize({ width: 5000, height: 1440, left: jpg, right: jpg })).toBeNull();
+    expect(cameraFrameSize(null)).toBeNull();
+    expect(eyesKey([GEO, GEO])).toBe(eyesKey([{ ...GEO, fov: [-0.90001, 0.8, 0.9, -0.95] }, GEO]));
+    expect(eyesKey([GEO, GEO])).not.toBe(eyesKey([{ ...GEO, rect: [449, 0, 900, 1800] }, GEO]));
+    expect(eyesKey([GEO])).toBeNull();
+    expect(eyesKey(null)).toBeNull();
+    expect(eyesKey([{ ...GEO, fov: [1, 2, 3] }, GEO])).toBeNull();
+    expect(stereoSignal('sbs', null)).toEqual({ kind: 'stereo', stereo: 'sbs' });
+    expect(Object.keys(stereoSignal('mono', [GEO, GEO]))).toEqual(['kind', 'stereo']);
+    expect(stereoSignal('sbs', [GEO, GEO])).toEqual({ kind: 'stereo', stereo: 'sbs', eyes: [GEO, GEO] });
+    expect(PANEL_CHANNELS.cameraFrame).toBe('castcade-panel:camera-frame');
+    expect(PANEL_CHANNELS.cameraAck).toBe('castcade-panel:camera-ack');
+  });
+
+  async function cameraPage() {
+    const bitmaps: Array<{ width: number; height: number; closed: boolean }> = [];
+    const fail = { next: false };
+    vi.stubGlobal('createImageBitmap', async (b: Blob) => {
+      if (fail.next || !(b instanceof Blob) || b.type !== 'image/jpeg') throw new Error('The source image could not be decoded.');
+      const bm = { width: 720, height: 1440, closed: false, close: () => (bm.closed = true) };
+      bitmaps.push(bm);
+      return bm;
+    });
+    const p = loadPage({ mic: true, capture: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAMERA, micDeviceId: null, muted: false, sending: true });
+    await settle();
+    const jpg = new Uint8Array([0xff, 0xd8, 0xff]);
+    const frame = (n: number, o: Partial<{ width: number; height: number; left: Uint8Array; eyes: unknown[] }> = {}) => ({ n, width: 720, height: 1440, left: jpg, right: jpg, eyes: [GEO, GEO], ...o });
+    const acks = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.cameraAck).length;
+    const stereoSignals = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.send && (s.arg as { signal: { kind: string } }).signal.kind === 'stereo').map((s) => (s.arg as { signal: unknown }).signal);
+    const sender = () => FakePeerConnection.all[0]!.senders.find((s) => s.track?.kind === 'video');
+    return { p, bitmaps, fail, frame, acks, stereoSignals, sender };
+  }
+
+  it('no screen is opened; each frame draws both eyes side by side onto the same canvas (2w x h), is acked, and the declaration carries the eyes once', async () => {
+    try {
+      const { p, bitmaps, frame, acks, stereoSignals, sender } = await cameraPage();
+      expect(p.captures).toHaveLength(0); // getUserMedia never asked for a screen
+      expect(p.canvas.width).toBe(1440);
+      expect(p.canvas.height).toBe(1440);
+      expect(p.canvas.streams).toHaveLength(1);
+      const track = sender()!.track;
+      expect(track.enabled).toBe(true);
+      expect(stereoSignals()).toEqual([{ kind: 'stereo', stereo: 'sbs' }]); // before a frame: side by side, no eyes yet
+      p.canvas.ctx.calls.length = 0;
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(1));
+      await settle();
+      expect(p.canvas.ctx.calls).toEqual([
+        ['drawImage', 0, 0, 720, 1440, 0, 0, 720, 1440],
+        ['drawImage', 0, 0, 720, 1440, 720, 0, 720, 1440],
+      ]);
+      expect(bitmaps.every((b) => b.closed)).toBe(true);
+      expect(acks()).toBe(1);
+      expect(stereoSignals().at(-1)).toEqual({ kind: 'stereo', stereo: 'sbs', eyes: [GEO, GEO] });
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(2));
+      await settle();
+      expect(stereoSignals()).toHaveLength(2); // same eyes: not said again
+      // A smaller box: the canvas follows (same track: nothing renegotiates), and so does the bitrate cap.
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(3, { width: 540, height: 1080 }));
+      await settle();
+      expect([p.canvas.width, p.canvas.height]).toEqual([1080, 1080]);
+      expect(p.canvas.streams).toHaveLength(1);
+      expect(sender()!.track).toBe(track);
+      expect(p.canvas.ctx.calls.at(-1)).toEqual(['drawImage', 0, 0, 720, 1440, 540, 0, 540, 1080]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('unreadable frames are skipped, acked and counted; the counters and the stall watch run on drawn camera frames', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { p, fail, frame, acks } = await cameraPage();
+      const watch = p.intervals.find((i) => i.ms === 400)!;
+      const stats = p.intervals.find((i) => i.ms === STATS_MS)!;
+      const status = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { captureStalled: boolean; capturing: boolean; stats: { capture: number | null; camera?: { unreadable: number } } | null };
+      for (let n = 1; n <= 3; n++) {
+        p.emit(PANEL_CHANNELS.cameraFrame, frame(n));
+        await settle();
+        watch.cb();
+      }
+      fail.next = true;
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(4));
+      await settle();
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(5, { left: new Uint8Array(0) }));
+      await settle();
+      expect(acks()).toBe(5);
+      stats.cb();
+      expect(status().capturing).toBe(true);
+      expect(status().stats).toMatchObject({ capture: 3, camera: { unreadable: 2 } });
+      // No drawn frame for 3 s while sending: stalled (main falls back to the screen capture).
+      vi.advanceTimersByTime(3_100);
+      watch.cb();
+      expect(status().captureStalled).toBe(true);
+      fail.next = false;
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(6));
+      await settle();
+      watch.cb();
+      expect(status().captureStalled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('back to a screen capture: the screen is opened, the canvas track kept, the declaration re-sent without the eyes; frames then are ignored but acked', async () => {
+    try {
+      const { p, frame, acks, stereoSignals, sender } = await cameraPage();
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(1));
+      await settle();
+      const track = sender()!.track;
+      p.emit(PANEL_CHANNELS.capture, { ...CAP, stereo: 'sbs' });
+      await settle();
+      expect(p.captures).toHaveLength(1);
+      expect(p.canvas.streams).toHaveLength(1);
+      expect(sender()!.track).toBe(track);
+      expect([p.canvas.width, p.canvas.height]).toEqual([1280, 720]);
+      expect(stereoSignals().at(-1)).toEqual({ kind: 'stereo', stereo: 'sbs' });
+      p.canvas.ctx.calls.length = 0;
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(2));
+      await settle();
+      expect(p.canvas.ctx.calls.filter((c) => c[0] === 'drawImage' && c[5] === 720)).toEqual([]);
+      expect(acks()).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

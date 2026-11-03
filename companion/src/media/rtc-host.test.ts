@@ -2,9 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MediaSignal, MediaSignalling, MediaStatus, PanelFrame } from './match-media-types.js';
+import type { LayerCameraFrame, LayerCameraRequest, LayerCameraStatus, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, VrOverlay } from './match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, patchMediaSettings, type MediaSettings, type MediaSettingsStore } from './media-settings.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, cameraCapture, type PanelPageStatus } from './panel-page.js';
 import type { VpxWindow, WindowProbe } from './window-geometry.js';
 
 // ---- Electron, faked: windows record what they were built with and what they were sent ----
@@ -1045,5 +1045,241 @@ describe('theater video, pure parts (D7.4)', () => {
     expect(wishes).toEqual([true, false]);
     expect(got).toEqual([2]);
     expect(hub.wanted()).toBe(false);
+  });
+});
+
+// ---- D7.5.1 (2026-11-02): the layer camera ----
+
+function fakeLayer(protocol: number | null = 3) {
+  const frameCbs = new Set<(f: LayerCameraFrame) => void>();
+  const statusCbs = new Set<(s: LayerCameraStatus) => void>();
+  const proto = { v: protocol };
+  let st: LayerCameraStatus = { state: 'off', why: null, lastFrameAt: null, frames: 0 };
+  const asks: Array<LayerCameraRequest | null> = [];
+  const emitStatus = (): void => statusCbs.forEach((cb) => cb(st));
+  const layer: VrOverlay = {
+    start: async () => ({ state: 'showing', reason: null }),
+    setMode: () => undefined,
+    stop: async () => undefined,
+    status: () => ({ state: 'showing', reason: null }),
+    onStatus: () => () => undefined,
+    setCamera(r) {
+      asks.push(r);
+      st = r ? { state: 'asked', why: null, lastFrameAt: null, frames: 0 } : { state: 'off', why: null, lastFrameAt: null, frames: 0 };
+    },
+    onCameraFrame(cb) {
+      frameCbs.add(cb);
+      return () => void frameCbs.delete(cb);
+    },
+    cameraStatus: () => st,
+    onCameraStatus(cb) {
+      statusCbs.add(cb);
+      return () => void statusCbs.delete(cb);
+    },
+    layerProtocol: () => proto.v,
+  };
+  const eye = (x: number) => ({
+    fov: [-0.9, 0.8, 0.9, -0.95] as [number, number, number, number],
+    rect: [x, 0, 900, 1800] as [number, number, number, number],
+    render: [1800, 1800] as [number, number],
+    data: new Uint8Array([0xff, 0xd8, x & 0xff]),
+  });
+  return {
+    layer,
+    asks,
+    proto,
+    listening: () => frameCbs.size,
+    frame(n: number, width = 720, height = 1440): LayerCameraFrame {
+      st = { ...st, state: 'on', why: null, lastFrameAt: Date.now(), frames: st.frames + 1 };
+      const f: LayerCameraFrame = { n, t: n * 33_000, encoding: 'jpeg', width, height, eyes: [eye(450), eye(450)], us: null };
+      frameCbs.forEach((cb) => cb(f));
+      emitStatus();
+      return f;
+    },
+    status(p: Partial<LayerCameraStatus>) {
+      st = { ...st, ...p };
+      emitStatus();
+    },
+  };
+}
+
+describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
+  let dir: string;
+  const logs: string[] = [];
+  const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(`WARN ${m}`) };
+  const VD = { inVr: true, headsetPanel: true, runtime: 'virtual-desktop' } as const;
+  const CAMERA = cameraCapture(720, 1440);
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'castcade-cam-'));
+    fake.FakeWindow.all = [];
+    fake.ipc.clear();
+    fake.sources.list = [{ id: 'screen:0:0', name: 'Screen 1', display_id: '1' }];
+    logs.length = 0;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const fromPage = (w: InstanceType<typeof fake.FakeWindow>, ch: string, arg?: unknown): void => fake.ipc.get(ch)?.({ sender: w.webContents }, arg);
+  const sentOn = (w: InstanceType<typeof fake.FakeWindow>, ch: string) => w.webContents.sent.filter(([c]) => c === ch).map(([, p]) => p);
+  const live: PanelPageStatus = { sending: false, peers: {}, mic: 'open', capturing: true, error: null };
+
+  async function cameraHost(o: { setting?: 'screen' | 'layer'; rig?: { inVr: boolean; headsetPanel: boolean; runtime?: 'virtual-desktop' | 'steamvr' | null }; protocol?: number | null } = {}) {
+    const cam = fakeLayer(o.protocol === undefined ? 3 : o.protocol);
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setCameraLayer(cam.layer);
+    if (o.setting) host.setCameraSource(o.setting);
+    await host.setVr(o.rig ?? VD);
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    await settle();
+    return { host, cam, w };
+  }
+
+  it('the default (screen): the layer is never asked and the attach is the screen capture, with no camera line', async () => {
+    const { host, cam, w } = await cameraHost();
+    expect(cam.asks).toEqual([]);
+    expect((w.webContents.sent[0]?.[1] as { capture: { sourceId: string } }).capture.sourceId).toBe('screen:0:0');
+    expect(logs.filter((l) => l.includes('camera'))).toEqual([]);
+    await host.detach();
+    expect(cam.asks).toEqual([]);
+  });
+
+  it('a VR rig off SteamVR on `layer`: the camera is asked, no screen capture is opened, the page gets the synthetic capture; the status names it', async () => {
+    const { host, cam, w } = await cameraHost({ setting: 'layer' });
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }]);
+    expect(logs).toContain('media: camera: the VR layer (the VR layer): each eye in a 720x1440 box at 30 fps; no screen capture');
+    expect((w.webContents.sent[0]?.[1] as { capture: unknown }).capture).toEqual(CAMERA);
+    expect(CAMERA).toMatchObject({ sourceId: 'layer-camera', label: 'VR layer camera', out: { width: 1440, height: 1440 }, stereo: 'sbs' });
+    expect(logs).toContain('media: sending 1440x1440 sbs at 8.0 Mbps');
+    fromPage(w, PANEL_CHANNELS.status, live);
+    expect(host.status()).toMatchObject({ captureSource: 'VR layer camera', captureCrop: { width: 1440, height: 1440 }, captureStereo: 'sbs' });
+    // the window probe still runs for table sound's pid
+    expect(host.capturePid()).toBe(7);
+    await host.detach();
+    expect(cam.asks.at(-1)).toBeNull();
+    expect(cam.listening()).toBe(0);
+  });
+
+  it('frames go to the page one in flight, newest wins (drops counted), one a second while another player is up; a new size is logged once', async () => {
+    const { host, cam, w } = await cameraHost({ setting: 'layer' });
+    const frames = () => sentOn(w, PANEL_CHANNELS.cameraFrame) as Array<{ n: number; width: number; left: Uint8Array; right: Uint8Array; eyes: unknown[] }>;
+    cam.frame(1);
+    expect(frames().map((f) => f.n)).toEqual([1]);
+    expect(frames()[0]!.left).toBeInstanceOf(Uint8Array);
+    const geo = { fov: [-0.9, 0.8, 0.9, -0.95], rect: [450, 0, 900, 1800], render: [1800, 1800] };
+    expect(frames()[0]!.eyes).toEqual([geo, geo]);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    vi.advanceTimersByTime(100);
+    cam.frame(2); // another player is up: within the second, not sent
+    expect(frames().map((f) => f.n)).toEqual([1]);
+    host.setSending(true);
+    cam.frame(3);
+    expect(frames().map((f) => f.n)).toEqual([1, 3]);
+    cam.frame(4); // in flight: waits
+    cam.frame(5); // replaces 4
+    expect(frames().map((f) => f.n)).toEqual([1, 3]);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    expect(frames().map((f) => f.n)).toEqual([1, 3, 5]);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    cam.frame(6, 640, 1280);
+    expect(logs.filter((l) => l.startsWith('media: capture: from'))).toEqual(['media: capture: from the VR layer camera, 1280x1280 (sbs)']);
+    cam.frame(7, 640, 1280);
+    expect(logs.filter((l) => l.startsWith('media: capture: from'))).toHaveLength(1);
+    fromPage(w, PANEL_CHANNELS.status, { ...live, sending: true, stats: { seq: 1, capture: 290, decoded: null, toLayer: null, camera: { unreadable: 2 }, sent: { width: 1280, height: 1280, kbps: 7600, limit: 'none' } } });
+    expect(logs).toContain('media: capture: 290 frames in 10 s from the VR layer camera, 1280x1280 (sbs), 2 unreadable, 1 dropped before the panel (newest wins), sent 1280x1280 at 7.6 Mbps, limited by none');
+    expect(host.status().captureCrop).toEqual({ width: 1280, height: 1280 });
+    await host.detach();
+  });
+
+  it('refused → back to the screen capture once, the camera stopped, the page handed the screen; a re-attach in the same match stays on the screen', async () => {
+    const { host, cam, w } = await cameraHost({ setting: 'layer', rig: { inVr: true, headsetPanel: false, runtime: 'virtual-desktop' } });
+    cam.status({ state: 'refused', why: 'multisampled swapchain' });
+    await settle();
+    expect(logs.filter((l) => l.includes('back to the screen'))).toEqual(['media: camera: back to the screen capture: the layer refused the camera: multisampled swapchain']);
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }, null]);
+    expect((sentOn(w, PANEL_CHANNELS.capture).at(-1) as { sourceId: string }).sourceId).toBe('screen:0:0');
+    vi.advanceTimersByTime(5_000);
+    expect(logs.filter((l) => l.includes('back to the screen'))).toHaveLength(1);
+    // The panel moves into the headset: a re-attach of the same match does not try the layer again.
+    await host.setVr(VD);
+    await settle();
+    expect(cam.asks).toHaveLength(2);
+    expect(logs).toContain('media: camera: the screen capture (the layer camera failed earlier in this match: the layer refused the camera: multisampled swapchain)');
+    // A new match decides afresh.
+    await host.detach();
+    await host.attach(signalling('owner').sig, ['krobs']);
+    expect(cam.asks.at(-1)).toEqual({ width: 720, height: 1440, fps: 30 });
+    await host.detach();
+  });
+
+  it('the watch: no layer on the pipe for 20 s; a protocol-2 layer; frames that stop for 3 s while up; the page seeing a stall', async () => {
+    {
+      const { host, cam } = await cameraHost({ setting: 'layer', protocol: null });
+      vi.advanceTimersByTime(19_000);
+      expect(cam.asks).toHaveLength(1);
+      vi.advanceTimersByTime(1_000);
+      expect(logs).toContain('media: camera: back to the screen capture: the layer did not answer on the pipe within 20 s');
+      await host.detach();
+    }
+    logs.length = 0;
+    {
+      const { host, cam } = await cameraHost({ setting: 'layer', protocol: null });
+      cam.proto.v = 2;
+      vi.advanceTimersByTime(1_000);
+      expect(logs).toContain('media: camera: back to the screen capture: the layer in VPX speaks pipe protocol 2, before the layer camera (restart VPX with the new layer)');
+      await host.detach();
+    }
+    logs.length = 0;
+    {
+      const { host, cam } = await cameraHost({ setting: 'layer' });
+      host.setSending(true);
+      cam.frame(1);
+      vi.advanceTimersByTime(3_000);
+      expect(logs).toContain('media: camera: back to the screen capture: the layer camera stalled (no frame for 3 s)');
+      await host.detach();
+    }
+    logs.length = 0;
+    {
+      const { host, cam, w } = await cameraHost({ setting: 'layer' });
+      cam.frame(1);
+      fromPage(w, PANEL_CHANNELS.status, { ...live, sending: true, captureStalled: true });
+      await settle();
+      expect(logs).toContain('media: capture stalled (no new frame from the VR layer camera for 3 s)');
+      expect(logs).toContain('media: camera: back to the screen capture: the layer camera stalled (no new frame on the panel for 3 s)');
+      expect(logs.filter((l) => l.includes('re-picking'))).toEqual([]);
+      await host.detach();
+    }
+  });
+
+  it('PC and SteamVR rigs stay on the screen capture with the reason; a live switch takes effect between balls', async () => {
+    {
+      const { host, cam } = await cameraHost({ setting: 'layer', rig: { inVr: false, headsetPanel: false } });
+      expect(cam.asks).toEqual([]);
+      expect(logs).toContain('media: camera: the screen capture (not a VR rig: there is no headset frame to read)');
+      await host.detach();
+    }
+    {
+      const { host, cam } = await cameraHost({ setting: 'layer', rig: { inVr: true, headsetPanel: true, runtime: 'steamvr' } });
+      expect(cam.asks).toEqual([]);
+      await host.detach();
+    }
+    logs.length = 0;
+    const { host, cam, w } = await cameraHost();
+    host.setCameraSource('layer');
+    await settle();
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }]);
+    expect(sentOn(w, PANEL_CHANNELS.capture).at(-1)).toEqual(CAMERA);
+    host.setSending(true);
+    host.setCameraSource('screen');
+    expect(logs).toContain('media: camera: the change takes effect when this ball ends');
+    expect(cam.asks).toHaveLength(1);
+    host.setSending(false);
+    await settle();
+    expect(logs).toContain('media: camera: back to the screen capture: the Match tab says screen capture');
+    expect((sentOn(w, PANEL_CHANNELS.capture).at(-1) as { sourceId: string }).sourceId).toBe('screen:0:0');
+    await host.detach();
   });
 });
