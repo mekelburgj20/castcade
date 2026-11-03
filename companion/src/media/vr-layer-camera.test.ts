@@ -243,11 +243,11 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
     p.answer();
     p.emit('data', hello(3));
     expect(h.log).toContain('vr-layer: the layer speaks pipe protocol 3 (modes, theater, camera)');
-    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', camera: null }]);
+    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null }]);
     expect(h.ov.cameraStatus!().state).toBe('off');
 
     h.ov.setCamera!({ width: 720, height: 1440, fps: 30 });
-    expect(p.controls()[1]).toEqual({ mode: 'panel', stereo: 'mono', panelPos: 'low', camera: { width: 720, height: 1440, fps: 30 } });
+    expect(p.controls()[1]).toEqual({ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: { width: 720, height: 1440, fps: 30 } });
     expect(h.ov.cameraStatus!().state).toBe('asked');
     h.ov.setCamera!({ width: 720, height: 1440, fps: 30 }); // the same again: nothing written
     expect(p.controls()).toHaveLength(2);
@@ -271,7 +271,7 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
 
     // Off: camera null on the wire, frames that still arrive are ignored.
     h.ov.setCamera!(null);
-    expect(p.controls()[2]).toEqual({ mode: 'panel', stereo: 'mono', panelPos: 'low', camera: null });
+    expect(p.controls()[2]).toEqual({ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null });
     p.emit('data', frameMessage(6));
     expect(h.frames).toHaveLength(3);
     expect(h.ov.cameraStatus!().state).toBe('off');
@@ -285,7 +285,7 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
     const p = h.pipes[0]!;
     p.answer();
     p.emit('data', Buffer.concat([hello(3), statusMessage({ camera: 'refused', why: 'swapchain format 0x881a is not an 8-bit RGBA format the layer camera reads' })]));
-    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', camera: { width: 720, height: 1440, fps: 30 } }]);
+    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: { width: 720, height: 1440, fps: 30 } }]);
     expect(h.ov.cameraStatus!()).toMatchObject({ state: 'refused', why: 'swapchain format 0x881a is not an 8-bit RGBA format the layer camera reads' });
     expect(h.log.at(-1)).toBe('vr-layer camera: refused by the layer: swapchain format 0x881a is not an 8-bit RGBA format the layer camera reads; the screen capture stays');
     p.hangUp();
@@ -307,8 +307,8 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
     h.ov.setCamera!({ width: 720, height: 1440, fps: 30 });
     h.ov.setMode('theater');
     expect(p.controls()).toEqual([
-      { mode: 'panel', stereo: 'mono', panelPos: 'low' },
-      { mode: 'theater', stereo: 'mono', panelPos: 'low' },
+      { mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1 },
+      { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 },
     ]);
     expect(h.log.filter((l) => l.includes('speaks pipe protocol 2 (before the layer camera)'))).toHaveLength(1);
     expect(h.ov.cameraStatus!().state).toBe('asked'); // the fallback timer (layer-camera.ts) decides
@@ -323,7 +323,7 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
     p.emit('data', Buffer.concat([Buffer.from('oops', 'latin1'), hello(3)]));
     expect(h.log).toContain('vr-layer: the layer sent something that is not a hello; staying on protocol 1 (the panel only)');
     // The hello that followed the garbage still counts: a protocol-3 control went out.
-    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', camera: null }]);
+    expect(p.controls()).toEqual([{ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null }]);
     expect(h.statuses.length).toBeGreaterThanOrEqual(0);
   });
 });

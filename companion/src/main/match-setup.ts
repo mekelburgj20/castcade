@@ -46,6 +46,7 @@ export interface MatchSettings {
    * a smaller, sharper picture (the same pixels over less of the view). Sent live in the layer's control.
    */
   theaterScale: number;
+  /**
    * D7.5 (2026-11-02): where a VR sender's picture comes from (media/layer-camera.ts): `screen`, the screen capture of
    * VPX's VR preview window (the default); `layer`, the Castcade OpenXR layer copies the eye views out of VPX's frame
    * (experimental; falls back to the screen capture on PC rigs, SteamVR rigs and a layer that cannot read the frame).
