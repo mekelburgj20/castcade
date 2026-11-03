@@ -20,6 +20,12 @@
  * names the new host's listener it opens a socket there and resumes with RECONNECT from its log
  * head; the RECONNECT_ACK brings the commit event and anything after it, checked entry by entry
  * against the hash chain, so the commit lands at the same log position as everywhere else.
+ *
+ * A10 (2026-11-02): a match is a series. A RESULT no longer ends it: the client logs the host's NEXT_GAME (only between
+ * games, only the next number) and plays on; it signs the log once per game; it raises `result` once per game, and
+ * checks a RESULT that arrives late (after a reconnect, game 1's RESULT during game 2) against the log entry at that
+ * game's end, not the head. MATCH_END ends the series (`matchEnded`); after it a dropped host is not reconnected to.
+ * The host dropping between games and not coming back is `hostGone` (no transfer: no game is running).
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
@@ -128,9 +134,15 @@ export interface ClientEvents extends Record<string, unknown> {
    * sent its own), or this player's own (`updateParticipant`). The roster in the log keeps what MATCH_READY said.
    */
   rigUpdated: { playerId: PlayerId; rig: ParticipantInfo['rig'] };
+  /** A10: the host started the next game of the series (logged); its grant 1 follows. */
+  nextGame: PayloadOf<'NEXT_GAME'>;
+  /** A10: the host ended the series (MATCH_END). */
+  matchEnded: PayloadOf<'MATCH_END'>;
+  /** A10: the host is gone for good while no game runs (between games, or after the series), so no transfer follows. */
+  hostGone: PlayerId;
 }
 
-const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT']);
+const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 const DEFAULT_RECONNECT_ATTEMPTS = 30;
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 
@@ -169,7 +181,8 @@ export class ClientMatch {
   private _inputUnlocked = false;
   private _myGrant: GrantBody | null = null;
   private lastGrantSeqSeen = 0;
-  private signed = false;
+  /** A10: the game this client last signed the log for (0: none yet). */
+  private signedGame = 0;
   private hostLost = false;
   private transferAccepts = new Set<PlayerId>();
   private readonly gone = new Set<PlayerId>();
@@ -177,7 +190,10 @@ export class ClientMatch {
   private readonly reconnectDelayMs: number;
   /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
   private reconnecting: Reconnecting | null = null;
-  private resultReceived = false;
+  /** A10: the games whose RESULT arrived (each raises `result` once). */
+  private readonly resultsReceived = new Set<number>();
+  /** A10: MATCH_END arrived. */
+  private ended = false;
   /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
   private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'> }[] = [];
   private detached = false;
@@ -293,8 +309,13 @@ export class ClientMatch {
       inputUnlocked: this._inputUnlocked,
       myGrant: this._myGrant,
       hostId: this.hostId,
-      signed: this.signed,
+      signed: this.signedGame > 0 && this.signedGame === this.s.state.gameNumber,
     };
+  }
+
+  /** A10: MATCH_END arrived. */
+  get matchEnded(): boolean {
+    return this.ended;
   }
 
   join(): void {
@@ -626,6 +647,23 @@ export class ClientMatch {
       case 'REJECT':
         this.events.emit('reject', msg.payload);
         return;
+      case 'NEXT_GAME': {
+        // A10: only from the host, between games, the next number; anything else would fork the fold.
+        const st = this.s.state;
+        if (msg.from !== this.hostId) return this.drop(msg, 'not_host');
+        if (st.phase !== 'ended' || msg.payload.game !== st.gameNumber + 1) return this.drop(msg, 'unexpected');
+        this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this._myGrant = null;
+        this._inputUnlocked = false;
+        this.events.emit('nextGame', msg.payload);
+        return;
+      }
+      case 'MATCH_END':
+        if (msg.from !== this.hostId || this.ended) return this.drop(msg, 'unexpected');
+        this.ended = true;
+        this.cancelReconnect();
+        this.events.emit('matchEnded', msg.payload);
+        return;
       case 'PARTICIPANT_UPDATE':
         // A6.1 (2026-11-01): another player's rig (or the host's own) after MATCH_READY; in the lobby HELLO_ACK says it.
         if (this.s.state.phase === 'lobby' || msg.payload.rig === undefined || msg.from === this.localId) return this.drop(msg, 'unexpected');
@@ -666,6 +704,8 @@ export class ClientMatch {
     if (!key || msg.from !== this.hostId) return this.drop(msg, 'not_host');
     if (!verifyCanonical(grant, grantSig, key)) return this.drop(msg, 'bad_signature');
     if (grant.grantSeq <= this.lastGrantSeqSeen) return this.drop(msg, 'stale_grant');
+    // A10: a grant for another game than the one this log is in (a host that missed a NEXT_GAME, or one from before it).
+    if (grant.game !== undefined && grant.game !== this.s.state.gameNumber) return this.drop(msg, 'stale_grant');
     const head = this.s.log.head();
     if (grant.logHash !== head.hash) this.events.emit('desync', { context: 'grant.logHash', expected: grant.logHash, actual: head.hash });
     this.lastGrantSeqSeen = grant.grantSeq;
@@ -681,10 +721,11 @@ export class ClientMatch {
     }
   }
 
+  /** Once per game (A10), when this client's log shows that game ended and it played in it. */
   private maybeSignLog(): void {
     const st = this.s.state;
-    if (this.signed || st.phase !== 'ended' || !st.matchId) return;
-    this.signed = true;
+    if (this.signedGame === st.gameNumber || st.phase !== 'ended' || !st.matchId || !st.playerOrder.includes(this.localId)) return;
+    this.signedGame = st.gameNumber;
     const head = this.s.log.head();
     const payload: PayloadOf<'LOG_SIGN'> = {
       logHash: head.hash,
@@ -695,14 +736,20 @@ export class ClientMatch {
     this.events.emit('logSigned', payload);
   }
 
+  /**
+   * A10: once per game. A RESULT for an earlier game (sent again after a reconnect) is checked against this log's entry
+   * at that game's end, which is where the host froze it; the current game's against the head, as before.
+   */
   private onResult(msg: Message<'RESULT'>): void {
     const r = msg.payload;
+    if (this.resultsReceived.has(r.game)) return;
     const key = this.hostPublicKey;
     const head = this.s.log.head();
-    const logMatches = r.logHash === head.hash && r.logLength === head.length;
+    const atEnd = r.logLength > 0 && r.logLength <= head.length ? this.s.log.at(r.logLength - 1)?.hash : r.logLength === 0 ? head.hash : undefined;
+    const logMatches = r.game < this.s.state.gameNumber ? atEnd === r.logHash : r.logHash === head.hash && r.logLength === head.length;
     const signatureValid = key !== null && verifyCanonical(logSignBody(r.matchId, r.logHash, r.logLength), r.hostSignature, key);
-    if (!logMatches) this.events.emit('desync', { context: 'result.logHash', expected: r.logHash, actual: head.hash });
-    this.resultReceived = true;
+    if (!logMatches) this.events.emit('desync', { context: 'result.logHash', expected: r.logHash, actual: atEnd ?? head.hash });
+    this.resultsReceived.add(r.game);
     this.events.emit('result', { result: r, logMatches, signatureValid });
   }
 
@@ -733,7 +780,8 @@ export class ClientMatch {
   }
 
   private mayReconnect(): boolean {
-    return this.s.transport.topology === 'star' && this.s.transport.connectTo !== undefined && this.s.state.phase !== 'lobby' && !this.resultReceived;
+    // A10: a RESULT no longer ends the match (the next game may follow); MATCH_END does.
+    return this.s.transport.topology === 'star' && this.s.transport.connectTo !== undefined && this.s.state.phase !== 'lobby' && !this.ended;
   }
 
   private onHostGone(peer: PlayerId): void {
@@ -743,7 +791,9 @@ export class ClientMatch {
       this.proposeIfCandidate();
       return;
     }
+    const known = this.gone.has(peer);
     this.gone.add(peer);
+    if (!known && peer === this.hostId && this.s.state.phase !== 'running') this.events.emit('hostGone', peer);
   }
 
   private votingParticipants(): PlayerId[] {
@@ -890,6 +940,9 @@ export class ClientMatch {
     switch (msg.type) {
       case 'MATCH_READY':
         this.events.emit('ready', msg.payload);
+        return;
+      case 'NEXT_GAME':
+        this.events.emit('nextGame', msg.payload);
         return;
       case 'TURN_GRANT':
         this.lastGrantSeqSeen = Math.max(this.lastGrantSeqSeen, msg.payload.grant.grantSeq);

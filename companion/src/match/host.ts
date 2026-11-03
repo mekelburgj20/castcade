@@ -26,6 +26,15 @@
  * - A8 (2026-10-31): every lobby roster change (a join, a leave, a PARTICIPANT_UPDATE) re-sends HELLO_ACK to every
  *   accepted client, with `tableMismatches` (who differs from this host's fingerprint and how). The list survives a
  *   transfer through `ResumeOptions.tableMismatches` / `AdoptOptions.tableMismatches`; it is never logged.
+ * - A10 (2026-11-02): a match is a series. After a game's RESULT the match stays open: `nextGame()` appends NEXT_GAME
+ *   (the connected roster, this host first) and issues grant 1 of the new game; `endMatch()` sends MATCH_END (never
+ *   logged) and nothing more can happen. Neither works before the current game's RESULT went out, so a `game_start`
+ *   seen on the host's table while the last RESULT is still due starts nothing. Each RESULT carries `game` and the
+ *   series so far (`seriesOf`, a fold over the log, so a host that took over mid-series computes the same). A peer
+ *   that reconnects is sent every RESULT this host sent, oldest first. A LOG_SIGN for an earlier game is dropped.
+ * - A11 (2026-11-02): `startIn(ms)` starts the match after a countdown the lobby sees (`HELLO_ACK.startsInMs`); a
+ *   second call while it runs changes nothing, `start()` during it starts at once. `HELLO_ACK.loading` names the
+ *   participants whose fingerprint says no table is open (`HostOptions.tableOpen`).
  */
 import {
   PROTOCOL_VERSION,
@@ -43,7 +52,7 @@ import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { GENESIS_HASH, type LogHead, type MatchLog } from './log.js';
-import { logSignBody, pickWinner, rankEntries, reconnectSignBody } from './result.js';
+import { logSignBody, pickWinner, rankEntries, reconnectSignBody, seriesOf } from './result.js';
 import { Session } from './session.js';
 import {
   cloneState,
@@ -79,6 +88,11 @@ export interface HostOptions {
   /** How long to wait for LOG_SIGNs before sending RESULT anyway. Default 10 s. */
   logSignTimeoutMs?: number;
   companionVersion?: string;
+  /**
+   * A11 (2026-11-02): whether a fingerprint says the player has a table open (the lobby's `loading`, and the start from
+   * the host's table waits for none). Default: a table hash that is not all zeros.
+   */
+  tableOpen?: (game: GameFingerprint) => boolean;
 }
 
 export interface ResumeOptions {
@@ -148,6 +162,14 @@ export interface HostEvents extends Record<string, unknown> {
   reconnectRejected: { playerId: PlayerId; code: ReconnectCode };
   /** A MEDIA_SIGNAL addressed to this host's own player (D2); signals for anyone else are only forwarded. */
   mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
+  /** A10: NEXT_GAME went out; grant 1 of that game follows at once. */
+  nextGame: PayloadOf<'NEXT_GAME'>;
+  /** A10: MATCH_END went out; the series is over. */
+  matchEnded: PayloadOf<'MATCH_END'>;
+  /** A11: a start countdown began (`startIn`); MATCH_READY follows after `startsInMs` unless the lobby fell below two. */
+  countdown: { startsInMs: number };
+  /** A11: the countdown ran out with fewer than two players; nothing started. */
+  countdownCancelled: { reason: string };
 }
 
 /** What the media layer hands over to send; the engine adds `to` and the envelope (D2). */
@@ -155,7 +177,9 @@ export type OutgoingMediaSignal = Omit<PayloadOf<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
-const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT']);
+const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
+const ZERO_HASH = '0'.repeat(64);
+const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
 const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL', 'PARTICIPANT_UPDATE']);
 
@@ -181,8 +205,14 @@ export class HostMatch {
   private logSignTimer: TimerHandle | null = null;
   private finalHead: LogHead | null = null;
   private resultSent = false;
-  /** The RESULT as sent, for a participant that reconnects after it went out (A3). */
-  private resultMsg: Message<'RESULT'> | null = null;
+  /** Every RESULT as sent, one per game (A10), for a participant that reconnects after they went out (A3). */
+  private readonly resultMsgs: Message<'RESULT'>[] = [];
+  /** A10: MATCH_END went out. */
+  private ended = false;
+  /** A11: the start countdown under way: its timer and when it runs out (this host's clock). */
+  private startTimer: TimerHandle | null = null;
+  private startAt: number | null = null;
+  private readonly tableOpen: (game: GameFingerprint) => boolean;
   private readonly signatures = new Map<PlayerId, LogSignRecord>();
   /** Players whose link dropped, by the transport's account (independent of the log). */
   private readonly gone = new Set<PlayerId>();
@@ -199,6 +229,7 @@ export class HostMatch {
     this.hostGame = { ...opts.hostGame };
     this.fingerprintPolicy = opts.fingerprintPolicy ?? 'refuse';
     this.turnMode = opts.turnMode ?? 'alternating';
+    this.tableOpen = opts.tableOpen ?? defaultTableOpen;
     if (opts.hostParticipant.playerId !== opts.transport.localId) {
       throw new Error('hostParticipant.playerId must equal transport.localId');
     }
@@ -322,11 +353,63 @@ export class HostMatch {
     return true;
   }
 
-  /** Freeze the roster and start the rotation. Needs at least two participants. */
+  /**
+   * A11 (2026-11-02): the lobby participants whose table is not open (by `HostOptions.tableOpen` over their latest
+   * fingerprint), this host included. Empty after the start.
+   */
+  loading(): PlayerId[] {
+    if (this.s.state.phase !== 'lobby') return [];
+    return this.lobby
+      .map((p) => p.playerId)
+      .filter((id) => {
+        const g = id === this.localId ? this.hostGame : this.lobbyGames.get(id);
+        return g === undefined || !this.tableOpen(g);
+      });
+  }
+
+  /** A11: ms left of the start countdown, or null when none runs. */
+  countdownRemaining(): number | null {
+    return this.startAt === null ? null : Math.max(0, this.startAt - this.s.clock.now());
+  }
+
+  /**
+   * A11 (2026-11-02): start the match in `ms` (the host's first game on its table): every client sees the countdown in
+   * a HELLO_ACK. False (nothing done) when one already runs (a second plunge does not restart or cancel it), the match
+   * has started, or fewer than two are in. When it runs out with fewer than two, nothing starts (`countdownCancelled`).
+   */
+  startIn(ms: number): boolean {
+    this.assertActive();
+    if (this.s.state.phase !== 'lobby' || this.startAt !== null || this.lobby.length < 2) return false;
+    const wait = Math.max(0, Math.min(60_000, Math.round(ms)));
+    this.startAt = this.s.clock.now() + wait;
+    this.startTimer = this.s.clock.setTimeout(() => {
+      this.startTimer = null;
+      this.startAt = null;
+      if (this.detached || this.s.state.phase !== 'lobby') return;
+      if (this.lobby.length < 2) {
+        this.events.emit('countdownCancelled', { reason: 'fewer than two players are in' });
+        this.resendAck();
+        return;
+      }
+      this.start();
+    }, wait);
+    this.events.emit('countdown', { startsInMs: wait });
+    this.resendAck();
+    return true;
+  }
+
+  private clearStartTimer(): void {
+    if (this.startTimer !== null) this.s.clock.clearTimeout(this.startTimer);
+    this.startTimer = null;
+    this.startAt = null;
+  }
+
+  /** Freeze the roster and start the rotation. Needs at least two participants. Ends a countdown (A11). */
   start(): void {
     this.assertActive();
     if (this.s.state.phase !== 'lobby') throw new Error('match already started');
     if (this.lobby.length < 2) throw new Error('need at least two participants to start');
+    this.clearStartTimer();
     const payload: PayloadOf<'MATCH_READY'> = {
       matchId: this.matchId,
       ballsPerGame: this.ballsPerGameInit,
@@ -343,6 +426,76 @@ export class HostMatch {
     this.s.transport.send('all', msg);
     this.events.emit('ready', msg.payload);
     this.advance();
+  }
+
+  /**
+   * A10 (2026-11-02): why the next game cannot start now, or null when it can: the current game must have ended and
+   * its RESULT gone out, the series not be over, and two of the roster still be connected.
+   */
+  nextGameBlocker(): string | null {
+    const st = this.s.state;
+    if (this.detached) return 'this companion is not the host any more';
+    if (this.ended) return 'the match has ended';
+    if (st.phase === 'lobby') return 'the match has not started';
+    if (st.phase !== 'ended') return 'the current game is still being played';
+    if (!this.resultSent) return "the last game's result has not gone out yet";
+    if (this.nextGameOrder().length < 2) return 'fewer than two players are still connected';
+    return null;
+  }
+
+  /** The next game's players: the roster still connected, in roster order, this host first. */
+  private nextGameOrder(): PlayerId[] {
+    const ids = this.s.state.participants.map((p) => p.playerId).filter((id) => id !== this.localId && !this.gone.has(id));
+    return [this.localId, ...ids];
+  }
+
+  /**
+   * A10: start the next game of the series (NEXT_GAME, logged) and issue its grant 1 (to this host). False, with
+   * nothing done, when `nextGameBlocker()` says why not: a `game_start` on the table before the last RESULT went out
+   * is ignored this way.
+   */
+  nextGame(): boolean {
+    this.assertActive();
+    if (this.nextGameBlocker() !== null) return false;
+    const st = this.s.state;
+    const msg = this.s.build('NEXT_GAME', { game: st.gameNumber + 1, playerOrder: this.nextGameOrder() }, this.matchId);
+    this.finalHead = null;
+    this.resultSent = false;
+    this.signatures.clear();
+    if (this.logSignTimer !== null) {
+      this.s.clock.clearTimeout(this.logSignTimer);
+      this.logSignTimer = null;
+    }
+    this.s.commit({ ts: msg.ts, kind: 'msg', from: this.localId, message: msg });
+    this.broadcast(msg);
+    this.events.emit('nextGame', msg.payload);
+    this.advance();
+    return true;
+  }
+
+  /**
+   * A10: end the series between games (MATCH_END, never logged; the last RESULT stands). False when a game is still
+   * being played or its RESULT has not gone out (the Match tab's Leave covers a match left mid-game), or it already ended.
+   */
+  endMatch(reason = 'the host ended the match'): boolean {
+    this.assertActive();
+    const st = this.s.state;
+    if (this.ended || st.phase !== 'ended' || !this.resultSent) return false;
+    this.ended = true;
+    const msg = this.s.build('MATCH_END', { games: Math.max(1, st.gameNumber), reason: reason.slice(0, 200) }, this.matchId);
+    this.broadcast(msg);
+    this.events.emit('matchEnded', msg.payload);
+    return true;
+  }
+
+  /** A10: MATCH_END went out. */
+  get matchEnded(): boolean {
+    return this.ended;
+  }
+
+  /** A10: the current game's RESULT went out (so the next game may start). */
+  get resultOut(): boolean {
+    return this.resultSent;
   }
 
   /** After `resumeFromLog`: re-issue the outstanding grant (or continue the rotation). */
@@ -480,6 +633,7 @@ export class HostMatch {
     for (const off of this.unsubscribe) off();
     this.unsubscribe.length = 0;
     this.clearBallEndTimer();
+    this.clearStartTimer();
     if (this.logSignTimer !== null) {
       this.s.clock.clearTimeout(this.logSignTimer);
       this.logSignTimer = null;
@@ -628,8 +782,9 @@ export class HostMatch {
     }
   }
 
+  /** In the roster (A10: a player out of the current game of a series is still a participant: media, reconnect). */
   private isParticipant(id: PlayerId): boolean {
-    return this.s.state.phase === 'lobby' ? this.lobby.some((p) => p.playerId === id) : this.s.state.players[id] !== undefined;
+    return this.s.state.phase === 'lobby' ? this.lobby.some((p) => p.playerId === id) : this.s.state.participants.some((p) => p.playerId === id);
   }
 
   private onPeerLeave(peer: PlayerId): void {
@@ -771,6 +926,8 @@ export class HostMatch {
         participants: this.lobby.map((x) => ({ ...x })),
         hostGame: { ...this.hostGame },
         tableMismatches: [...this.mismatched].map(([playerId, mismatches]) => ({ playerId, mismatches: mismatches.map((x) => ({ ...x })) })),
+        startsInMs: this.countdownRemaining(),
+        loading: this.loading(),
       },
       null,
     );
@@ -808,6 +965,7 @@ export class HostMatch {
       grantSeq: st.lastGrantSeq + 1,
       issuedAt: this.s.clock.now(),
       logHash: this.s.log.head().hash,
+      game: Math.max(1, st.gameNumber),
     };
     const msg = this.s.build('TURN_GRANT', { grant: body, grantSig: signCanonical(body, this.s.keys.privateKey) }, this.matchId);
     this.s.commit({ ts: msg.ts, kind: 'grant', from: this.localId, message: msg });
@@ -967,6 +1125,8 @@ export class HostMatch {
   }
 
   private onLogSign(msg: Message<'LOG_SIGN'>): void {
+    // A10: a LOG_SIGN over a head at or before this game's start signs an earlier game, whose RESULT already went out.
+    if (msg.payload.logLength <= this.s.state.gameStartIndex) return;
     if (!this.finalHead) {
       this.reject(msg, 'unexpected_state', 'games are still in progress');
       return;
@@ -1013,9 +1173,11 @@ export class HostMatch {
       hostTransfers: st.hostTransfers,
       startedAt: st.startedAt ?? head.length,
       finishedAt: st.endedAt ?? this.s.clock.now(),
+      game: Math.max(1, st.gameNumber),
+      series: seriesOf(st),
     };
     const msg = this.s.build('RESULT', payload, this.matchId);
-    this.resultMsg = msg;
+    this.resultMsgs.push(msg);
     this.broadcast(msg);
     this.events.emit('result', { result: msg.payload, signatures: [...this.signatures.values()] });
   }
@@ -1095,7 +1257,9 @@ export class HostMatch {
     // pause; until then the rotation pauses again rather than grant to it.
     this.gone.delete(msg.from);
     this.events.emit('reconnected', { playerId: msg.from, entries: entries.length });
-    if (this.resultMsg) this.s.transport.send(linkFrom, this.resultMsg);
+    // A fresh envelope for each: the receiver drops a frame whose seq is not above the last it took from this host,
+    // and the RECONNECT_ACK just went out with a newer one (A10: the payload, signatures and all, is the same).
+    for (const r of this.resultMsgs) this.s.transport.send(linkFrom, this.s.build('RESULT', r.payload, matchId));
   }
 
   private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {

@@ -183,3 +183,34 @@ describe('GAME_OVER before the last ball', () => {
     expect(run.outcomes['p1']?.result?.entries.find((e) => e.playerId === 'p2')).toMatchObject({ score: 3000, ballsPlayed: 1, status: 'finished', rank: 1 });
   });
 });
+
+describe('A10 (2026-11-02): a two-game series', () => {
+  it('two games in one match: grant 1 again for game 2, one RESULT per game with the series, one hash chain, MATCH_END ends it', async () => {
+    const run = await runLocalScenario(loadScenario('two-game-series'));
+    checkExpectations(run);
+    const host = run.outcomes['p1'];
+    const p2 = run.outcomes['p2'];
+    const grants = host?.issuedGrants ?? [];
+    expect(grants.map((g) => `g${g.game}:${g.player}b${g.ballNumber}`)).toEqual(['g1:p1b1', 'g1:p2b1', 'g1:p1b2', 'g1:p2b2', 'g2:p1b1', 'g2:p2b1', 'g2:p1b2', 'g2:p2b2']);
+    expect(grants.map((g) => g.grantSeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    for (const o of [host, p2]) {
+      expect(o?.results.map((r) => [r.result.game, r.result.winner, r.logMatches, r.signatureValid])).toEqual([
+        [1, 'p2', true, true],
+        [2, 'p1', true, true],
+      ]);
+    }
+    const [r1, r2] = host?.results.map((r) => r.result) ?? [];
+    expect(r1?.entries.map((e) => [e.playerId, e.score])).toEqual([
+      ['p1', 2000],
+      ['p2', 3000],
+    ]);
+    expect(r2?.series).toEqual([
+      { playerId: 'p1', games: 2, wins: 1, totalScore: 8000, rank: 1 },
+      { playerId: 'p2', games: 2, wins: 1, totalScore: 5500, rank: 2 },
+    ]);
+    // Game 1's RESULT signed an earlier head of the same chain.
+    expect(r1 && host?.log.at(r1.logLength - 1)?.hash).toBe(r1?.logHash);
+    expect(p2?.signed).toBe(true);
+    expect(host?.log.entries().filter((e) => e.message?.type === 'NEXT_GAME')).toHaveLength(1);
+  });
+});

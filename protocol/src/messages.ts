@@ -41,6 +41,7 @@ export const MatchId = z
   .describe('The Throwdown code from ArcAid, or any unique string in a local/fake match.');
 
 export const BallNumber = z.number().int().min(1).max(99).describe('1-based ball number within a game.');
+export const GameNumber = z.number().int().min(1).max(999).describe('1-based game number within a match (a series, A10).');
 export const Score = z.number().int().min(0).max(1_000_000_000_000).describe('Score as an integer; no decimals.');
 
 export const RigDevice = z.enum(['pc', 'vr_headset', 'real_cabinet']).describe("The player's declared rig, for provenance (ArcAid badge, never a gate).");
@@ -80,6 +81,9 @@ export const GrantBody = z
     grantSeq: z.number().int().min(1).describe('Monotonic per match; a client ignores a grant with a lower seq than one it has seen.'),
     issuedAt: z.number().int().describe('Host clock, ms since epoch.'),
     logHash: Sha256Hex.describe('Hash of the host log head when the grant was issued; lets a client detect a forked log.'),
+    // A10 (2026-11-02): no default on purpose: GrantBody is signed and logged, and a default would make a peer that
+    // parses a grant without it hash and verify a different object. A protocol 3 host always sends it.
+    game: GameNumber.optional().describe('Which game of the series this grant belongs to (1-based; protocol 3 hosts always send it).'),
   })
   .describe('The signed part of a TURN_GRANT. Signature is over canonicalJson(GrantBody).');
 export type GrantBody = z.infer<typeof GrantBody>;
@@ -124,6 +128,19 @@ export const HelloAck = z
       .describe(
         "A8 (2026-10-31): every accepted participant whose fingerprint differs from the host's (advisory mode), with what differs, so each client can flag the others too, not only itself. Additive and defaulted, so still protocol 2: a host that does not send it reads as no differences. Not in MATCH_READY: that message is logged, and a peer that strips or defaults an unknown field would hash a different log.",
       ),
+    // A11 (2026-11-02): the match starts from the host's table; the lobby sees the countdown and who is still loading.
+    startsInMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(60_000)
+      .nullable()
+      .default(null)
+      .describe('The host starts the match in this many ms (its first game on the table, A11); null when no start is under way. A duration, not a time: the two clocks need not agree.'),
+    loading: z
+      .array(PlayerId)
+      .default([])
+      .describe("Accepted participants whose table is not open yet, as the host judges from their fingerprint (A11): the match does not start from the table until this is empty."),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 
@@ -273,7 +290,18 @@ export const LogSign = z
     logLength: z.number().int().min(0),
     signature: Signature.describe("The participant's signature over canonicalJson({matchId, logHash, logLength}).")
   })
-  .describe('client -> host at game over, once every game in the match has ended.');
+  .describe("client -> host at game over, once every player's game of the current game has ended (A10: once per game of a series).");
+
+// A10 (2026-11-02): one match, N games. Each game's RESULT carries the series so far.
+export const SeriesEntry = z
+  .object({
+    playerId: PlayerId,
+    games: z.number().int().min(0).describe('Games of the series this player was in.'),
+    wins: z.number().int().min(0).describe("Games this player won outright (a tie for first is nobody's win)."),
+    totalScore: z.number().int().min(0).describe('The sum of their scores over those games.'),
+    rank: z.number().int().min(1).describe('By wins, then total score; ties share a rank.'),
+  })
+  .describe("One player's standing in the series after this game.");
 
 export const ResultEntry = z.object({
   playerId: PlayerId,
@@ -295,10 +323,35 @@ export const Result = z
       .array(z.object({ playerId: PlayerId, signature: Signature, logHash: Sha256Hex, logLength: z.number().int().min(0) }))
       .describe('Every LOG_SIGN received, with the head each participant actually signed; missing or disagreeing ones are flagged on the ArcAid side, never rejected.'),
     hostTransfers: z.number().int().min(0),
-    startedAt: z.number().int(),
+    startedAt: z.number().int().describe('ts of the entry that started this game (MATCH_READY, or its NEXT_GAME).'),
     finishedAt: z.number().int(),
+    game: GameNumber.default(1).describe('Which game of the series this result is for (A10). RESULT is not logged, so a default is harmless.'),
+    series: z
+      .array(SeriesEntry)
+      .max(4)
+      .default([])
+      .describe('The series standings after this game, every participant who played any game of it (A10).'),
   })
-  .describe('host -> all, and posted to ArcAid as the Throwdown result plus a castcade_matches record.');
+  .describe("host -> all, once per game (A10): the game's entries, signed over the log head at that game's end, and the series so far. Posted to ArcAid as one result of the Throwdown plus a castcade_matches record.");
+
+// A10 (2026-11-02): the series. NEXT_GAME is logged (the games share one hash chain); MATCH_END is not.
+export const NextGame = z
+  .object({
+    game: GameNumber.describe('The game that starts now: the previous one plus 1.'),
+    playerOrder: z
+      .array(PlayerId)
+      .min(2)
+      .max(4)
+      .describe("Who plays this game, in rotation order: the roster's players still connected, the host first (its table started the game). A player who left is out of this game and its standings."),
+  })
+  .describe("host -> all, logged. Only after the previous game's RESULT went out. Every listed player starts a fresh game: grant 1 follows, ball counts and scores start again.");
+
+export const MatchEnd = z
+  .object({
+    games: GameNumber.describe('How many games the series had.'),
+    reason: z.string().max(200),
+  })
+  .describe('host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards.');
 
 export const Pause = z
   .object({
@@ -408,6 +461,8 @@ export const payloadSchemas = {
   RECONNECT_ACK: ReconnectAck,
   MEDIA_SIGNAL: MediaSignal,
   PARTICIPANT_UPDATE: ParticipantUpdate,
+  NEXT_GAME: NextGame,
+  MATCH_END: MatchEnd,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -439,4 +494,6 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   RECONNECT_ACK: 'host->client',
   MEDIA_SIGNAL: 'any',
   PARTICIPANT_UPDATE: 'client->host',
+  NEXT_GAME: 'host->all',
+  MATCH_END: 'host->all',
 };

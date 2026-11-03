@@ -5,6 +5,10 @@
  * signs the log automatically through the engine. It follows the engine across host transfers
  * in both directions. `runLocalScenario` wires N fake players over a MemoryBus and returns every
  * participant's outcome (RESULT, log head, grants issued/seen, rejects received).
+ *
+ * A10 (2026-11-02): a scenario with `games` > 1 is a series: the host-role player starts the next game at each RESULT
+ * (NEXT_GAME) and ends the match at the last one (MATCH_END); a player is done at the last game's RESULT (the host)
+ * or at MATCH_END (a client), and its outcome holds every RESULT, `result` being the last.
  */
 import type { GameFingerprint, GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import {
@@ -61,8 +65,11 @@ export interface FakePlayerOptions {
 export interface FakePlayerOutcome {
   playerId: PlayerId;
   publicKey: string;
+  /** The last RESULT (A10: of the last game). */
   result: PayloadOf<'RESULT'> | null;
   resultInfo: { logMatches: boolean; signatureValid: boolean } | null;
+  /** A10: every RESULT received or sent, one per game, with what the client's checks said. */
+  results: { result: PayloadOf<'RESULT'>; logMatches: boolean; signatureValid: boolean }[];
   logHead: LogHead;
   log: MatchLog;
   /** Grants this participant issued while it was host, in order. */
@@ -161,6 +168,7 @@ export class FakePlayer {
       publicKey: this.keys.publicKeyB64,
       result: null,
       resultInfo: null,
+      results: [],
       logHead: { hash: '', length: 0 },
       log: engine.log,
       issuedGrants: [],
@@ -261,8 +269,29 @@ export class FakePlayer {
     on('result', ({ result }) => {
       this.out.result = result;
       this.out.resultInfo = { logMatches: true, signatureValid: true };
+      this.out.results.push({ result, logMatches: true, signatureValid: true });
+      // A10: a series goes on from the RESULT (after the current dispatch, so the RESULT is on the wire first).
+      if (result.game < this.games) {
+        queueMicrotask(() => {
+          if (this.host === host) host.nextGame();
+        });
+        return;
+      }
+      if (this.games > 1) host.endMatch('the scenario is over');
       this.finish();
     });
+    on('nextGame', () => this.onNextGame());
+  }
+
+  /** A10: the series' game count. */
+  private get games(): number {
+    return Math.max(1, this.opts.scenario.games ?? 1);
+  }
+
+  /** A10: a new game: the ball bookkeeping starts again. */
+  private onNextGame(): void {
+    this.playing = null;
+    this.shotAgain.clear();
   }
 
   private applyHostPolicy(host: HostMatch, pause: PayloadOf<'PAUSE'>): void {
@@ -368,8 +397,12 @@ export class FakePlayer {
     on('result', (info) => {
       this.out.result = info.result;
       this.out.resultInfo = { logMatches: info.logMatches, signatureValid: info.signatureValid };
-      this.finish();
+      this.out.results.push({ result: info.result, logMatches: info.logMatches, signatureValid: info.signatureValid });
+      // A10: in a series a client is done at MATCH_END, not at a RESULT.
+      if (this.games <= 1) this.finish();
     });
+    on('nextGame', () => this.onNextGame());
+    on('matchEnded', () => this.finish());
   }
 
   // ------------------------------------------------------------------------------------------
@@ -418,9 +451,11 @@ export class FakePlayer {
       this.staleDone = true;
       this.reportBallEnd(0, false, { grantSeq: this.lastAnsweredGrantSeq, ballNumber: ball });
     }
-    const last = script.scores[script.scores.length - 1] ?? 0;
-    const target = script.scores[idx] ?? last;
-    const prev = idx > 0 ? (script.scores[idx - 1] ?? 0) : 0;
+    // A10: game n of a series plays `seriesScores[n-1]` when the script has one.
+    const curve = script.seriesScores?.[(grant.game ?? 1) - 1] ?? script.scores;
+    const last = curve[curve.length - 1] ?? 0;
+    const target = curve[idx] ?? last;
+    const prev = idx > 0 ? (curve[idx - 1] ?? 0) : 0;
     const slice = this.ballMs / this.stateUpdates;
     for (let k = 1; k <= this.stateUpdates; k++) {
       await sleep(slice);

@@ -1,0 +1,32 @@
+{
+  "$id": "https://castcade.dev/protocol/v3/NEXT_GAME.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "game": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999,
+      "description": "The game that starts now: the previous one plus 1."
+    },
+    "playerOrder": {
+      "minItems": 2,
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_.:-]+$",
+        "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+      },
+      "description": "Who plays this game, in rotation order: the roster's players still connected, the host first (its table started the game). A player who left is out of this game and its standings."
+    }
+  },
+  "required": [
+    "game",
+    "playerOrder"
+  ],
+  "additionalProperties": false,
+  "description": "host -> all, logged. Only after the previous game's RESULT went out. Every listed player starts a fresh game: grant 1 follows, ball counts and scores start again."
+}

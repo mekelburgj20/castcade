@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 2,
+  "protocolVersion": 3,
   "envelope": "Envelope.schema.json",
   "shared": [
     "Envelope.schema.json",
@@ -92,6 +92,14 @@
     "PARTICIPANT_UPDATE": {
       "direction": "client->host",
       "schema": "PARTICIPANT_UPDATE.schema.json"
+    },
+    "NEXT_GAME": {
+      "direction": "host->all",
+      "schema": "NEXT_GAME.schema.json"
+    },
+    "MATCH_END": {
+      "direction": "host->all",
+      "schema": "MATCH_END.schema.json"
     }
   }
 }

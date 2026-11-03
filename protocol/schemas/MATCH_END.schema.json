@@ -1,0 +1,23 @@
+{
+  "$id": "https://castcade.dev/protocol/v3/MATCH_END.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "games": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999,
+      "description": "How many games the series had."
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 200
+    }
+  },
+  "required": [
+    "games",
+    "reason"
+  ],
+  "additionalProperties": false,
+  "description": "host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards."
+}

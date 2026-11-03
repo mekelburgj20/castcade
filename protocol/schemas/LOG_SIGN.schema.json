@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v2/LOG_SIGN.schema.json",
+  "$id": "https://castcade.dev/protocol/v3/LOG_SIGN.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -25,5 +25,5 @@
     "signature"
   ],
   "additionalProperties": false,
-  "description": "client -> host at game over, once every game in the match has ended."
+  "description": "client -> host at game over, once every player's game of the current game has ended (A10: once per game of a series)."
 }
