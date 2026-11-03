@@ -571,6 +571,7 @@ any -> `to`, through the host: it forwards the frame to `to` only, `from` preser
 | `sdp` | string | no | The session description; present on offer and answer. |
 | `candidate` | object | no | Present on ice. |
 | `stereo` | `"mono"` \| `"sbs"` \| null | no | Present on stereo: `sbs` = left eye \| right eye side by side, `mono` = one picture, null = the sender does not know (the receiver guesses from the picture's shape). |
+| `eyes` | array of object \| null | no | Optional on stereo `sbs`: the geometry of [left, right] as the sender rendered them (the OpenXR layer camera, D7.5). Absent or null: a screen capture; the receiver assumes its own eyes. |
 
 ### `PARTICIPANT_UPDATE`
 

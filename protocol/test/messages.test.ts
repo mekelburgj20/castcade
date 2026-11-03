@@ -143,6 +143,15 @@ describe('envelope', () => {
     expect(MESSAGE_DIRECTION.MEDIA_SIGNAL).toBe('any');
   });
 
+  it('MEDIA_SIGNAL stereo: `eyes` is optional and survives the wire when present (D7.5.2)', () => {
+    const eye = { fov: [-0.9, 0.8, 0.8, -0.95], rect: [0, 120, 1536, 3072], render: [3072, 3264] };
+    const plain = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs' }, { matchId: 'TD-1', seq: 11, from: 'p1' });
+    expect(decodeFrame(encodeFrame(plain)).payload).not.toHaveProperty('eyes');
+    const withEyes = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs', eyes: [eye, eye] }, { matchId: 'TD-1', seq: 12, from: 'p1' });
+    expect(decodeFrame(encodeFrame(withEyes)).payload.eyes).toEqual([eye, eye]);
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs', eyes: [eye] }, { matchId: 'TD-1', seq: 13, from: 'p1' })).toThrow(ProtocolError);
+  });
+
   it('MEDIA_SIGNAL: reset carries nothing, stereo carries the flag (D2.7, D7.4.3, 2026-11-01)', () => {
     const reset = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'reset' }, { matchId: 'TD-1', seq: 5, from: 'p1', ts: 1 });
     expect(decodeFrame(encodeFrame(reset))).toEqual(reset);

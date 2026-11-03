@@ -410,6 +410,14 @@ export const IceCandidate = z
   })
   .describe('One trickled ICE candidate, as RTCIceCandidate.toJSON() gives it.');
 
+export const EyeGeometry = z
+  .object({
+    fov: z.tuple([z.number(), z.number(), z.number(), z.number()]).describe("The view's field of view in radians, OpenXR's order and signs: [angleLeft, angleRight, angleUp, angleDown]."),
+    rect: z.tuple([z.number().int().min(0), z.number().int().min(0), z.number().int().min(1), z.number().int().min(1)]).describe("The crop taken inside the view's render: [x, y, width, height], y from the top."),
+    render: z.tuple([z.number().int().min(1), z.number().int().min(1)]).describe("The view's render size (its imageRect): [width, height]."),
+  })
+  .describe('One eye of a sender whose picture comes from the OpenXR layer camera (D7.5): how it was rendered and cropped.');
+
 export const MediaSignal = z
   .object({
     to: PlayerId.describe('The one participant this signal is for. The host forwards it there and nowhere else.'),
@@ -427,6 +435,14 @@ export const MediaSignal = z
       .nullable()
       .optional()
       .describe("Present on stereo: `sbs` = left eye | right eye side by side, `mono` = one picture, null = the sender does not know (the receiver guesses from the picture's shape)."),
+    // D7.5.2 (2026-11-03): additive like `stereo`; the sender's eye geometry when the picture comes from the OpenXR
+    // layer's camera (D7.5), so the receiver's theater window uses the sender's eyes, not its own.
+    eyes: z
+      .array(EyeGeometry)
+      .length(2)
+      .nullable()
+      .optional()
+      .describe('Optional on stereo `sbs`: the geometry of [left, right] as the sender rendered them (the OpenXR layer camera, D7.5). Absent or null: a screen capture; the receiver assumes its own eyes.'),
   })
   .refine((s) => (s.kind === 'ice' ? s.candidate !== undefined : s.kind === 'reset' ? true : s.kind === 'stereo' ? s.stereo !== undefined : s.sdp !== undefined), {
     message: 'an offer or answer carries sdp; an ice signal carries candidate; a stereo signal carries stereo',

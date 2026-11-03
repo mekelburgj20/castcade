@@ -80,6 +80,100 @@
           "type": "null"
         }
       ]
+    },
+    "eyes": {
+      "description": "Optional on stereo `sbs`: the geometry of [left, right] as the sender rendered them (the OpenXR layer camera, D7.5). Absent or null: a screen capture; the receiver assumes its own eyes.",
+      "anyOf": [
+        {
+          "minItems": 2,
+          "maxItems": 2,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "fov": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "items": false,
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "The view's field of view in radians, OpenXR's order and signs: [angleLeft, angleRight, angleUp, angleDown]."
+              },
+              "rect": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                ],
+                "items": false,
+                "minItems": 4,
+                "maxItems": 4,
+                "description": "The crop taken inside the view's render: [x, y, width, height], y from the top."
+              },
+              "render": {
+                "type": "array",
+                "prefixItems": [
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "The view's render size (its imageRect): [width, height]."
+              }
+            },
+            "required": [
+              "fov",
+              "rect",
+              "render"
+            ],
+            "additionalProperties": false,
+            "description": "One eye of a sender whose picture comes from the OpenXR layer camera (D7.5): how it was rendered and cropped."
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
