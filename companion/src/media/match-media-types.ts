@@ -29,17 +29,28 @@ export interface PanelState {
      * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
      * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same.
      */
-    flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected'>;
+    flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading'>;
     /**
      * D7.4 (2026-10-31): that player's declared rig (HELLO / lobby update). The headset panel reads it to tell a VR
      * sender's side-by-side preview ("both eyes") from a wide monitor picture. Absent in states made before D7.4.
      */
     rig?: 'pc' | 'vr_headset' | 'real_cabinet';
   }>;
-  /** `idle` before start, `playing`, `paused` (someone dropped), `over` once RESULT is in. */
+  /**
+   * `idle` before start, `playing`, `paused` (someone dropped), `over` once a game's RESULT is in. A10 (2026-11-02): a
+   * match is a series, so `over` is the gap between games until `seriesOver`.
+   */
   phase: 'idle' | 'playing' | 'paused' | 'over';
-  /** Standings once `phase` is `over`, best first. */
+  /** Standings of the game just played once `phase` is `over`, best first. */
   result: Array<{ id: MatchPlayerId; name: string; score: number; place: number }> | null;
+  /** A10: the game of the series being played (or just played), 1-based. Absent in states made before A10. */
+  game?: number;
+  /** A10: the series standings after the last RESULT (wins, then total score), best first; null before the first one. */
+  series?: Array<{ id: MatchPlayerId; name: string; wins: number; games: number; total: number; place: number }> | null;
+  /** A10: the series is over (the host ended it, or left between games): no next game follows. */
+  seriesOver?: boolean;
+  /** A11 (2026-11-02): whole seconds until the match starts from the host's table; null when no start is counting down. */
+  countdown?: number | null;
   /** One line for the player: an error, "different table file", "waiting for <name>". Null when nothing to say. */
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';

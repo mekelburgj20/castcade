@@ -22,6 +22,16 @@
  *   (what the fake client does; the host never resumes on its own, A3). A pause nobody resumes is the host's Match
  *   tab's Resume button (`main/match-host.ts`). A host transfer under way is shown (`status().transfer`); the engine
  *   acks it by itself (accept = the same log head), so there is nothing for the player to decide.
+ * - A10 (2026-11-02): a match is a series of games (docs/design/alpha-match.md §8). A game's RESULT puts the panel in
+ *   `over` with the game's standings, the series so far and "Next game: <host> starts a game on the table"; the
+ *   match stays open (peers, media, panel). The host's table is unlocked then and its own `game_start` starts the next
+ *   game (`HostMatch.nextGame`, which refuses before the RESULT went out); a client's table stays locked until its
+ *   grant in the next game. MATCH_END (the host's End match), or the host gone between games, ends the series:
+ *   `seriesOver`, every table unlocked.
+ * - A11 (2026-11-02): in the lobby the host's `game_start` starts the match: when two or more are in and every table
+ *   is open, a 5 s countdown (`HostMatch.startIn`) the whole lobby sees ("Starting the match: <names>"); a second
+ *   `game_start` changes nothing. With a table still loading the start is armed and fires once the last one opens;
+ *   the host's game ending in the lobby disarms it. The desktop Start button works throughout.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
@@ -31,7 +41,10 @@ import type { HostMatch } from './host.js';
 import type { MatchState } from './state.js';
 
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
-export type HostRole = Pick<HostMatch, 'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit'>;
+export type HostRole = Pick<
+  HostMatch,
+  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading'
+>;
 /** What a client-side role must offer (structurally a ClientMatch). */
 export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume'>;
 export type MatchRole = HostRole | ClientRole;
@@ -65,6 +78,11 @@ export interface ControllerStatus {
   mismatches: Record<PlayerId, string[]>;
   /** A8 (2026-10-31): a HOST_TRANSFER proposed and not committed yet (the log's `pendingTransfer`), else null. */
   transfer: { proposer: PlayerId; newHost: PlayerId | null; reason: 'host_left' | 'host_requested' } | null;
+  /**
+   * A10 (2026-11-02): the series: the game being played (or just played), whether it is over for good, and, for the
+   * host between games, why the next game cannot start now (null: it can).
+   */
+  series: { game: number; over: boolean; nextGameBlocker: string | null };
   panel: PanelState;
 }
 
@@ -86,6 +104,8 @@ export interface MatchControllerOptions {
   stateIntervalMs?: number;
   /** For the panel before MATCH_READY says it (the host knows its own choice; a client learns it at the start). */
   ballsPerGame?: number;
+  /** A11: the countdown before a start from the host's table. Default 5 s. */
+  startCountdownMs?: number;
 }
 
 /**
@@ -107,6 +127,7 @@ export function mismatchWords(fields: readonly string[]): { table: string | null
 }
 
 const DEFAULT_SETTLE_MS = 2000;
+const DEFAULT_START_COUNTDOWN_MS = 5000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
 const MAX_SCORE = 1_000_000_000_000;
 
@@ -193,6 +214,20 @@ export class MatchController {
   private lastPanel: string | null = null;
   private lastTransfer = 'null';
   private closed = false;
+  /** A10: the game the last RESULT was for, and the series after it (names resolved at the panel). */
+  private resultGame = 0;
+  private series: PayloadOf<'RESULT'>['series'] | null = null;
+  /** A10: no next game follows (MATCH_END, or the host gone between games), and what the panel says about it. */
+  private seriesOver = false;
+  private seriesOverLine: string | null = null;
+  /** A10: a game was started on this player's table in the current game (the "press Start" prompt is then moot). */
+  private tableStarted = false;
+  /** A11: the lobby start countdown (local deadline and tick timer), and a start from the table waiting for a table. */
+  private countdownEnd: number | null = null;
+  private countdownTimer: unknown = null;
+  private startArmed = false;
+  /** A11: lobby players whose table is not open (the host's `loading()`, a client's last HELLO_ACK). */
+  private loadingIds: PlayerId[] = [];
 
   constructor(opts: MatchControllerOptions) {
     this.opts = opts;
@@ -224,8 +259,51 @@ export class MatchController {
       tableMismatch: [...this.mismatch].filter(([, f]) => mismatchWords(f).table !== null).map(([id]) => id),
       mismatches: Object.fromEntries([...this.mismatch].map(([id, f]) => [id, [...f]])),
       transfer: this.transfer(),
+      series: { game: this.gameNumber(), over: this.seriesOver, nextGameBlocker: this.nextGameBlocker() },
       panel: this.panel(),
     };
+  }
+
+  private gameNumber(): number {
+    return Math.max(1, this.role.state.gameNumber);
+  }
+
+  /** A10: for the host's Next game button: why not now, or null. A client is never the one to start it. */
+  private nextGameBlocker(): string | null {
+    const r = this.role;
+    if (!isHostRole(r)) return 'only the host starts the next game';
+    if (this.seriesOver) return 'the match has ended';
+    return r.nextGameBlocker();
+  }
+
+  /**
+   * A10: the host's Next game (the Match tab's button; the table's `game_start` does the same). False, with the reason
+   * on the panel's message line, when it cannot start now.
+   */
+  nextGame(): boolean {
+    const r = this.role;
+    if (this.closed || !isHostRole(r)) return false;
+    const why = this.nextGameBlocker();
+    if (why !== null) {
+      this.opts.log(`match: no next game: ${why}`);
+      return false;
+    }
+    let ok = false;
+    this.call(() => {
+      ok = r.nextGame();
+    }, 'NEXT_GAME');
+    return ok;
+  }
+
+  /** A10: the host's End match, between games: MATCH_END to everyone; the series is over. */
+  endMatch(): boolean {
+    const r = this.role;
+    if (this.closed || !isHostRole(r) || this.seriesOver) return false;
+    let ok = false;
+    this.call(() => {
+      ok = r.endMatch('the host ended the match');
+    }, 'MATCH_END');
+    return ok;
   }
 
   private transfer(): ControllerStatus['transfer'] {
@@ -264,6 +342,9 @@ export class MatchController {
   feed(ev: ControllerFeed): void {
     if (this.closed) return;
     switch (ev.kind) {
+      case 'game_start':
+        this.onTableGameStart();
+        return;
       case 'current_scores': {
         if (!this.holding) return;
         const score = cleanScore(ev.scores[0]);
@@ -288,6 +369,7 @@ export class MatchController {
         return;
       }
       case 'game_end': {
+        if (this.phase === 'lobby') this.disarmStart('the game on your table ended');
         if (!this.inPlay()) return;
         const score = cleanScore(ev.scores[0]);
         if (score !== null) {
@@ -301,6 +383,7 @@ export class MatchController {
       }
       case 'game_abandoned':
       case 'table_exit': {
+        if (this.phase === 'lobby') this.disarmStart(ev.kind === 'table_exit' ? 'your table closed' : 'the game on your table ended');
         if (!this.inPlay() || this.myGameDone()) return;
         this.forfeit('table closed');
         return;
@@ -316,6 +399,7 @@ export class MatchController {
     this.closed = true;
     this.clearPending();
     this.clearStateTimer();
+    this.clearCountdown();
     for (const off of this.offs) off();
     this.offs = [];
     this.setLocked(false);
@@ -335,6 +419,122 @@ export class MatchController {
   }
 
   // ------------------------------------------------------------------------------------------
+  // A10 / A11: a game started on this player's table
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * The hook's `game_start` (the player pressed Start on the table). The host's starts the match from the lobby (A11)
+   * or the next game between games (A10); a client's, and the host's during a game, only clear the "press Start" prompt.
+   */
+  private onTableGameStart(): void {
+    const r = this.role;
+    if (this.phase === 'playing' || this.phase === 'paused') {
+      if (this.holding && !this.tableStarted) {
+        this.tableStarted = true;
+        this.push();
+      }
+      return;
+    }
+    if (!isHostRole(r)) return;
+    if (this.phase === 'lobby') {
+      this.tryStartFromTable(r, true);
+      return;
+    }
+    if (this.phase === 'over' && !this.seriesOver) {
+      const why = r.nextGameBlocker();
+      if (why !== null) {
+        this.opts.log(`match: a game started on the table; no next game (${why})`);
+        return;
+      }
+      this.opts.log(`match: a game started on the table; game ${this.gameNumber() + 1} starts for everyone`);
+      let ok = false;
+      this.call(() => {
+        ok = r.nextGame();
+      }, 'NEXT_GAME');
+      // nextGame resets the per-game state (onNextGame); this host's own game is already running on its table.
+      if (ok) {
+        this.tableStarted = true;
+        this.push();
+      }
+    }
+  }
+
+  /** A11: start the countdown if the lobby is complete, else arm the start for when it is (`fromTable`: a new press). */
+  private tryStartFromTable(h: HostRole, fromTable: boolean): void {
+    if (h.state.phase !== 'lobby' || this.countdownEnd !== null) return;
+    const roster = h.roster();
+    if (roster.length < 2) {
+      if (fromTable) this.opts.log('match: a game started on the table, but nobody has joined yet; the match does not start');
+      return;
+    }
+    const loading = h.loading();
+    if (loading.length > 0) {
+      if (!this.startArmed) {
+        this.startArmed = true;
+        this.opts.log(`match: a game started on the table; the match starts once ${loading.map((id) => this.nameOf(id)).join(', ')}'s table is open`);
+        this.push();
+      }
+      return;
+    }
+    this.startArmed = false;
+    const ms = this.opts.startCountdownMs ?? DEFAULT_START_COUNTDOWN_MS;
+    let ok = false;
+    this.call(() => {
+      ok = h.startIn(ms);
+    }, 'the start');
+    if (ok) this.opts.log(`match: starting in ${Math.round(ms / 1000)} s from the table: ${roster.map((p) => p.displayName).join(', ')}`);
+  }
+
+  private disarmStart(why: string): void {
+    if (!this.startArmed) return;
+    this.startArmed = false;
+    this.opts.log(`match: the start from the table is off: ${why}`);
+    this.push();
+  }
+
+  /** A11: the lobby countdown, from this host's `countdown` or a client's HELLO_ACK (`startsInMs`, null: none). */
+  private setCountdown(ms: number | null): void {
+    if (ms === null) {
+      if (this.countdownEnd === null) return;
+      this.clearCountdown();
+      this.push();
+      return;
+    }
+    const end = this.opts.now() + ms;
+    // A re-sent HELLO_ACK during the countdown carries what is left; keep the earlier deadline (it only drifts by latency).
+    if (this.countdownEnd !== null && Math.abs(this.countdownEnd - end) < 1000) return;
+    this.clearCountdown();
+    this.countdownEnd = end;
+    this.tickCountdown();
+  }
+
+  private tickCountdown(): void {
+    this.countdownTimer = null;
+    if (this.closed || this.countdownEnd === null) return;
+    this.push();
+    const left = this.countdownEnd - this.opts.now();
+    if (left <= 0) return;
+    const step = left % 1000 || 1000;
+    this.countdownTimer = this.opts.setTimeout(() => this.tickCountdown(), step);
+  }
+
+  private clearCountdown(): void {
+    if (this.countdownTimer !== null) this.opts.clearTimeout(this.countdownTimer);
+    this.countdownTimer = null;
+    this.countdownEnd = null;
+  }
+
+  private countdownSeconds(): number | null {
+    if (this.countdownEnd === null || this.phase !== 'lobby') return null;
+    return Math.max(0, Math.ceil((this.countdownEnd - this.opts.now()) / 1000));
+  }
+
+  /** A11: who is still loading, as the host knows it (its engine) or last told this client (HELLO_ACK.loading). */
+  private noteLoading(ids: readonly PlayerId[]): void {
+    this.loadingIds = [...ids];
+  }
+
+  // ------------------------------------------------------------------------------------------
   // Engine events
   // ------------------------------------------------------------------------------------------
 
@@ -349,10 +549,20 @@ export class MatchController {
   private bindHost(h: HostRole): void {
     this.hostId = this.localId;
     this.lobby = h.roster();
+    this.noteLoading(h.loading());
     const offs = this.offs;
-    offs.push(h.on('joined', () => this.onLobby(h.roster())));
+    offs.push(h.on('joined', () => this.onHostLobby(h)));
     // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
-    offs.push(h.on('participantUpdated', () => this.onLobby(h.roster())));
+    offs.push(h.on('participantUpdated', () => this.onHostLobby(h)));
+    offs.push(h.on('countdown', (c) => this.setCountdown(c.startsInMs)));
+    offs.push(
+      h.on('countdownCancelled', (c) => {
+        this.opts.log(`match: the start from the table did not happen: ${c.reason}`);
+        this.setCountdown(null);
+      }),
+    );
+    offs.push(h.on('nextGame', (p) => this.onNextGame(p)));
+    offs.push(h.on('matchEnded', (p) => this.onSeriesOver(`Match over after ${p.games} game${p.games === 1 ? '' : 's'}`)));
     offs.push(h.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
     offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
@@ -369,7 +579,12 @@ export class MatchController {
         if (r.to === this.localId) this.onReject(r);
       }),
     );
-    offs.push(h.on('peerLeft', (id) => this.onPeerLeft(id)));
+    offs.push(
+      h.on('peerLeft', (id) => {
+        this.onPeerLeft(id);
+        if (h.state.phase === 'lobby') this.onHostLobby(h);
+      }),
+    );
     offs.push(h.on('reconnected', (r) => this.onPeerBack(r.playerId)));
     offs.push(h.on('result', (r) => this.onResult(r.result)));
     offs.push(h.on('transferProposed', () => this.push()));
@@ -390,11 +605,18 @@ export class MatchController {
     offs.push(
       c.on('joined', (ack) => {
         this.hostId = ack.hostPlayerId;
-        this.onLobby(ack.participants);
+        this.onClientAck(ack);
       }),
     );
-    // A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (a rig or a table changed).
-    offs.push(c.on('roster', (ack) => this.onLobby(ack.participants)));
+    // A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (a rig or a table changed; A11: a start countdown).
+    offs.push(c.on('roster', (ack) => this.onClientAck(ack)));
+    offs.push(c.on('nextGame', (p) => this.onNextGame(p)));
+    offs.push(c.on('matchEnded', (p) => this.onSeriesOver(`The host ended the match after ${p.games} game${p.games === 1 ? '' : 's'}`)));
+    offs.push(
+      c.on('hostGone', () => {
+        if (this.phase === 'over') this.onSeriesOver('The host left; the match is over');
+      }),
+    );
     offs.push(c.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     // HELLO_ACK's `hostGame` differs from this player's own: the host accepted it anyway (§3, advisory).
     offs.push(c.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
@@ -444,6 +666,52 @@ export class MatchController {
     this.push();
   }
 
+  /** A host's lobby changed (a join, a leave, a table loaded): the roster, who is loading, and an armed start (A11). */
+  private onHostLobby(h: HostRole): void {
+    this.noteLoading(h.loading());
+    this.onLobby(h.roster());
+    if (this.startArmed) this.tryStartFromTable(h, false);
+  }
+
+  private onClientAck(ack: PayloadOf<'HELLO_ACK'>): void {
+    this.noteLoading(ack.loading);
+    this.setCountdown(ack.startsInMs);
+    this.onLobby(ack.participants);
+  }
+
+  /**
+   * A10: the next game of the series began (NEXT_GAME, logged): every per-game note starts again; the table stays
+   * locked until this player's grant (the host's grant 1 follows at once). The series standings stay on the panel.
+   */
+  private onNextGame(p: PayloadOf<'NEXT_GAME'>): void {
+    this.clearPending();
+    this.clearStateTimer();
+    this.phase = 'playing';
+    this.holding = null;
+    this.upPlayer = null;
+    this.upBall = null;
+    this.myBallsDone = 0;
+    this.myScore = null;
+    this.myGameOver = false;
+    this.tableStarted = false;
+    this.scores.clear();
+    this.result = null;
+    this.message = null;
+    this.setLocked(true);
+    this.opts.log(`match: game ${p.game} begins: ${p.playerOrder.map((id) => this.nameOf(id)).join(', ')}`);
+    this.push();
+  }
+
+  /** A10: no next game follows. Every table is unlocked (solo play works again); the panel keeps the standings. */
+  private onSeriesOver(line: string): void {
+    if (this.seriesOver) return;
+    this.seriesOver = true;
+    this.seriesOverLine = line;
+    this.setLocked(false);
+    this.opts.log(`match: ${line}`);
+    this.push();
+  }
+
   private onRigUpdated(id: PlayerId, rig: ParticipantInfo['rig']): void {
     if (this.liveRigs.get(id) === rig) return;
     this.liveRigs.set(id, rig);
@@ -452,6 +720,9 @@ export class MatchController {
   }
 
   private onReady(p: PayloadOf<'MATCH_READY'>): void {
+    this.clearCountdown();
+    this.startArmed = false;
+    this.loadingIds = [];
     this.phase = 'playing';
     this.hostId = p.hostPlayerId;
     this.lobby = p.participants.map((x) => ({ ...x }));
@@ -552,7 +823,19 @@ export class MatchController {
     }
   }
 
+  /**
+   * A game's RESULT (A10: one per game). One for an earlier game (sent again after a reconnect) only brings the series
+   * if this player has none newer. The host's table is unlocked for the next game; a client's stays locked.
+   */
   private onResult(r: PayloadOf<'RESULT'>): void {
+    if (r.game > this.resultGame) {
+      this.resultGame = r.game;
+      this.series = r.series.map((x) => ({ ...x }));
+    }
+    if (r.game < this.role.state.gameNumber) {
+      this.push();
+      return;
+    }
     if (this.phase === 'over') return;
     this.phase = 'over';
     this.clearPending();
@@ -566,9 +849,10 @@ export class MatchController {
       .sort((a, b) => a.rank - b.rank || b.score - a.score)
       .map((e) => ({ id: e.playerId, name: name(e.playerId), score: e.score, place: e.rank }));
     for (const e of r.entries) this.scores.set(e.playerId, e.score);
-    this.setLocked(false);
+    this.setLocked(!isHostRole(this.role) && !this.seriesOver);
     this.opts.cue.play('match_over');
-    this.opts.log(`match: result ${this.result.map((x) => `${x.place}. ${x.name} ${x.score}`).join(', ')}`);
+    this.opts.log(`match: game ${r.game} result ${this.result.map((x) => `${x.place}. ${x.name} ${x.score}`).join(', ')}`);
+    if (r.series.length > 0) this.opts.log(`match: series ${[...r.series].sort((a, b) => a.rank - b.rank).map((x) => `${x.rank}. ${name(x.playerId)} ${x.wins} win(s), ${x.totalScore}`).join(', ')}`);
     this.push();
   }
 
@@ -737,6 +1021,7 @@ export class MatchController {
       if (words.table) flags.push('table_mismatch');
       if (words.build) flags.push('build_mismatch');
       if (this.left.has(p.playerId) || prog?.connected === false) flags.push('disconnected');
+      if (this.phase === 'lobby' && this.loadingIds.includes(p.playerId)) flags.push('loading');
       return {
         id: p.playerId,
         name: p.displayName,
@@ -749,7 +1034,16 @@ export class MatchController {
     });
     const phase: PanelState['phase'] = this.phase === 'lobby' ? 'idle' : this.phase;
     const myTurn = this.phase !== 'over' && this.upPlayer !== null && this.upPlayer === this.localId;
+    const series = this.series
+      ? [...this.series]
+          .sort((a, b) => a.rank - b.rank || b.wins - a.wins || b.totalScore - a.totalScore)
+          .map((x) => ({ id: x.playerId, name: this.nameOf(x.playerId), wins: x.wins, games: x.games, total: x.totalScore, place: x.rank }))
+      : null;
     return {
+      game: this.phase === 'lobby' ? 1 : this.gameNumber(),
+      series,
+      seriesOver: this.seriesOver,
+      countdown: this.countdownSeconds(),
       playerUp: this.phase === 'over' ? null : this.upPlayer,
       myTurn,
       ball: this.phase === 'over' ? null : this.upBall,
@@ -771,17 +1065,36 @@ export class MatchController {
       const what = mismatchWords(fields).table;
       if (what) byWhat.set(what, [...(byWhat.get(what) ?? []), id === this.localId ? 'you' : this.nameOf(id)]);
     }
-    if (byWhat.size > 0 && this.phase !== 'over') return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
     const st = this.role.state;
-    if (this.phase === 'lobby') return isHostRole(this.role) && this.participants().length >= 2 ? 'Everyone in? Press Start match' : isHostRole(this.role) ? 'Waiting for players' : 'Waiting for the host to start';
+    // A11: the countdown is the one line that matters in the lobby, over a table note.
+    const count = this.countdownSeconds();
+    if (count !== null) return `Starting the match: ${this.participants().map((p) => (p.playerId === this.localId ? 'you' : p.displayName)).join(', ')}`;
+    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && this.loadingIds.length > 0)) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
+    if (this.phase === 'lobby') return this.lobbyMessage();
+    if (this.phase === 'over') {
+      if (this.seriesOver) return this.seriesOverLine;
+      return isHostRole(this.role) ? 'Next game: start a game on your table (or press Next game)' : `Next game: ${this.nameOf(this.hostId)} starts a game on the table`;
+    }
     if (this.phase === 'paused') {
       const who = st.paused?.player ?? null;
       return st.paused?.reason === 'disconnect' && who ? `Paused: waiting for ${this.nameOf(who)} to reconnect` : 'Paused';
     }
-    if (this.phase === 'playing' && this.holding && this.holding.ballNumber === 1 && this.myScore === null) return 'Press Start on the table to begin your game';
+    if (this.phase === 'playing' && this.holding && this.holding.ballNumber === 1 && this.myScore === null && !this.tableStarted) return 'Press Start on the table to begin your game';
     if (this.phase === 'playing' && this.myGameDone() && this.upPlayer !== this.localId) return 'Your game is over; the others are still playing';
     // Nothing about the match to say: say what is wrong with video or voice (no window to send, no microphone).
     return this.opts.media?.status().lastError ?? null;
+  }
+
+  /** The lobby line (A11): who is still loading, an armed start, else what starts the match. */
+  private lobbyMessage(): string {
+    const host = isHostRole(this.role);
+    const loading = this.loadingIds.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`));
+    if (this.participants().length < 2) return host ? 'Waiting for players' : 'Waiting for the host to start';
+    if (loading.length > 0) {
+      const tables = `${loading.join(', ')} table${loading.length > 1 ? 's' : ''}`;
+      return host && this.startArmed ? `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open` : `Waiting for ${tables} to open`;
+    }
+    return host ? 'Everyone in? Start a game on your table (or press Start match)' : `Waiting for ${this.nameOf(this.hostId)} to start a game on the table`;
   }
 
   private push(force = false): void {

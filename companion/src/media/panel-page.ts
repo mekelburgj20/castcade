@@ -150,13 +150,18 @@ export interface StripRow {
 
 // ---- formatting helpers (embedded in the page; keep them self-contained) ----
 
-/** `YOUR BALL 2` / `KROBS IS UP`, or the phase when nobody is. */
+/**
+ * `YOUR BALL 2` / `KROBS IS UP`, or the phase when nobody is. A10 (2026-11-02): from game 2 of a series the turn line
+ * says the game (`GAME 2 · YOUR BALL 1`), and a game's result reads `GAME 1 OVER` until the series is over
+ * (`MATCH OVER`). A11: `STARTING IN 5` while the start from the host's table counts down.
+ */
 export function headerText(s: PanelState): string {
-  if (s.phase === 'over') return 'MATCH OVER';
-  if (s.phase === 'idle') return 'WAITING FOR THE START';
+  const game = typeof s.game === 'number' && s.game > 0 ? s.game : 1;
+  if (s.phase === 'over') return s.seriesOver === false ? 'GAME ' + game + ' OVER' : 'MATCH OVER';
+  if (s.phase === 'idle') return typeof s.countdown === 'number' ? 'STARTING IN ' + s.countdown : 'WAITING FOR THE START';
   const up = s.players.find((p) => p.id === s.playerUp);
   const ball = s.ball !== null ? ' ' + s.ball : '';
-  const turn = s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING';
+  const turn = (game > 1 ? 'GAME ' + game + ' · ' : '') + (s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING');
   return s.phase === 'paused' ? 'PAUSED · ' + turn : turn;
 }
 
@@ -164,17 +169,33 @@ export function scoreText(score: number | null): string {
   return score === null ? '–' : score.toLocaleString('en-US');
 }
 
-/** The score strip: players in the controller's order while playing, the standings by place once it is over. */
+/**
+ * The score strip: players in the controller's order while playing, the game's standings by place once it is over.
+ * A10 (2026-11-02): once a series has two or more games, a result row says the series place and wins too (`#1 · SERIES
+ * #2 · 1 WIN`), and from game 2 on a playing row carries the player's series wins as a muted note. A11: a lobby row
+ * whose table is not open yet is flagged `LOADING`.
+ */
 export function stripRows(s: PanelState): StripRow[] {
+  const series = s.series || [];
+  const wins = (n: number): string => n + (n === 1 ? ' WIN' : ' WINS');
+  const many = series.some((x) => x.games > 1);
   if (s.phase === 'over' && s.result) {
     return [...s.result]
       .sort((a, b) => a.place - b.place)
-      .map((r) => ({ id: r.id, name: r.name, score: scoreText(r.score), detail: '#' + r.place, up: false, flags: [], notes: [] }));
+      .map((r) => {
+        const sr = series.find((x) => x.id === r.id);
+        const detail = '#' + r.place + (many && sr ? ' · SERIES #' + sr.place + ' · ' + wins(sr.wins) : '');
+        return { id: r.id, name: r.name, score: scoreText(r.score), detail, up: false, flags: [], notes: [] };
+      });
   }
   return s.players.map((p) => {
     const detail = p.isUp && s.ball !== null ? 'BALL ' + s.ball : p.ballsDone >= s.ballsPerGame ? 'DONE' : p.ballsDone + '/' + s.ballsPerGame;
-    const flags = p.flags.filter((f) => f !== 'build_mismatch').map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : String(f).toUpperCase()));
+    const flags = p.flags
+      .filter((f) => f !== 'build_mismatch')
+      .map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : f === 'loading' ? 'LOADING' : String(f).toUpperCase()));
     const notes = p.flags.includes('build_mismatch') ? ['DIFFERENT VPX BUILD'] : [];
+    const sr = series.find((x) => x.id === p.id);
+    if (sr && (s.game || 1) > 1) notes.push(wins(sr.wins));
     return { id: p.id, name: p.name, score: scoreText(p.score), detail, up: p.isUp, flags, notes };
   });
 }

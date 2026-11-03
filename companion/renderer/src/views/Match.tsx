@@ -6,6 +6,10 @@ import { describe, type CastcadeState } from '../useCastcade.js';
  * other player) or join one by pasting it; then the roster, whose ball it is, the scores and, at the end, the result.
  * The turn lock, the cue and the media all run in the main process; this page only shows them and sends the
  * player's choices.
+ *
+ * A10 + A11 (2026-11-02): a match is a series of games, started from the host's table (a game started there starts the
+ * match, then each next game). The host also gets Next game and End match here between games (the same IPC calls as
+ * Start match and Leave: main decides by the phase), and the result card shows the series standings.
  */
 
 const RIG_LABEL: Record<MatchStatus['participants'][number]['rig'], string> = { pc: 'PC', vr_headset: 'VR headset', real_cabinet: 'cabinet' };
@@ -227,21 +231,38 @@ export function Match({ state }: { state: CastcadeState }) {
                   Start match
                 </button>
               )}
+              {st.role === 'host' && st.phase === 'over' && !st.series?.over && (
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || (st.series?.nextGameBlocker ?? null) !== null}
+                  title={st.series?.nextGameBlocker ?? 'Or start a game on your table'}
+                  onClick={() => void run(() => bridge.match.start())}
+                >
+                  Next game
+                </button>
+              )}
               {st.role === 'host' && st.phase === 'paused' && !st.transfer && (
                 <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.resume())}>
                   Resume
                 </button>
               )}
               <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.leave())}>
-                {st.phase === 'over' ? 'Close match' : 'Leave'}
+                {st.phase === 'over' ? (st.role === 'host' && !st.series?.over ? 'End match' : 'Close match') : 'Leave'}
               </button>
             </div>
             {st.phase === 'playing' && st.locked && <small className="muted">Your table is locked until your ball comes up.</small>}
+            {st.phase === 'lobby' && st.role === 'host' && st.participants.length >= 2 && (
+              <small className="muted">Starting a game on your table starts the match too (after a 5 s countdown in every headset).</small>
+            )}
+            {st.phase === 'over' && st.role === 'client' && !st.series?.over && st.locked && (
+              <small className="muted">Your table is locked until the next game reaches your ball.</small>
+            )}
           </div>
 
           {panel?.result && (
             <div className="card">
-              <strong>Result</strong>
+              <strong>{panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}</strong>
               <table className="match-table">
                 <tbody>
                   {panel.result.map((r) => (
@@ -254,6 +275,34 @@ export function Match({ state }: { state: CastcadeState }) {
                 </tbody>
               </table>
               <small className="muted">Each game also posted to ArcAid as a normal score.</small>
+            </div>
+          )}
+
+          {panel?.series && panel.series.some((s) => s.games > 1) && (
+            <div className="card">
+              <strong>Series</strong>
+              <table className="match-table">
+                <thead>
+                  <tr>
+                    <th />
+                    <th>Player</th>
+                    <th className="num">Wins</th>
+                    <th className="num">Games</th>
+                    <th className="num">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {panel.series.map((s) => (
+                    <tr key={s.id}>
+                      <td>{s.place}.</td>
+                      <td>{s.name}</td>
+                      <td className="num">{s.wins}</td>
+                      <td className="num">{s.games}</td>
+                      <td className="num">{s.total.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
@@ -401,14 +450,17 @@ function turnLine(st: MatchStatus): string {
   const panel = st.panel;
   switch (st.phase) {
     case 'lobby':
+      if (typeof panel?.countdown === 'number') return `STARTING IN ${panel.countdown}`;
       return st.role === 'host' ? (st.participants.length < 2 ? 'Waiting for players' : 'Everyone in? Start the match') : `Waiting for ${nameOf(st, st.hostId)} to start`;
-    case 'playing':
-      if (!panel?.playerUp) return 'Next ball coming up';
-      return panel.myTurn ? `YOUR BALL ${panel.ball ?? ''}`.trim() : `${nameOf(st, panel.playerUp).toUpperCase()} IS UP`;
+    case 'playing': {
+      const game = panel?.game && panel.game > 1 ? `GAME ${panel.game} · ` : '';
+      if (!panel?.playerUp) return `${game}Next ball coming up`;
+      return game + (panel.myTurn ? `YOUR BALL ${panel.ball ?? ''}`.trim() : `${nameOf(st, panel.playerUp).toUpperCase()} IS UP`);
+    }
     case 'paused':
       return 'PAUSED';
     case 'over':
-      return 'MATCH OVER';
+      return st.series && !st.series.over ? `GAME ${st.series.game} OVER` : 'MATCH OVER';
     default:
       return '';
   }

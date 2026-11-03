@@ -16,6 +16,12 @@
  * player is up and taps its sound while this rig is up; the panel page sends the tap as the table track and plays the
  * up player's. `table-audio-policy.ts` decides from the panel state and the three settings, at every status change
  * (`syncTableAudio`, beside `syncVrMode`); no match, the lobby and the result mute and tap nothing.
+ *
+ * A10 + A11 (2026-11-02): a match is a series, started and continued from the host's table (the controller follows
+ * its `game_start`). The Match tab's buttons stay on the same IPC channels: `start()` is Start match in the lobby and
+ * Next game between games; the host's `leave()` between games is End match (MATCH_END first, then the teardown). A
+ * client whose series is over (MATCH_END, or the host gone between games) keeps the final standings up for
+ * `SERIES_OVER_LINGER_MS` and then tears down by itself, so the headset does not keep a dead panel.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -43,6 +49,7 @@ import {
   formatInvite,
   gameFingerprintFrom,
   isIpv4,
+  isTableOpen,
   lockPathFrom,
   newMatchCode,
   newMatchIdentity,
@@ -86,6 +93,11 @@ export interface MatchStatus {
   participants: Array<{ id: string; name: string; rig: ParticipantInfo['rig']; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
+  /**
+   * A10 (2026-11-02): the series: the game being played or just played, whether it is over for good, and, for the host
+   * between games, why Next game cannot start now (null: it can). Null with no match.
+   */
+  series: ControllerStatus['series'] | null;
   panel: PanelState | null;
   media: MediaStatus | null;
   /**
@@ -124,9 +136,11 @@ export interface MatchStatus {
 export interface MatchHost {
   host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
   join(invite: string, displayName: string): Promise<MatchStatus>;
+  /** Host only: Start match in the lobby; A10: Next game between games (the same as a game started on the host's table). */
   start(): Promise<MatchStatus>;
   /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
   resume(): Promise<MatchStatus>;
+  /** Leave the match; A10: the host's leave between games is End match (MATCH_END to everyone first). */
   leave(): Promise<MatchStatus>;
   setSettings(patch: Partial<MatchSettings>): MatchStatus;
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
@@ -179,6 +193,8 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const JOIN_TIMEOUT_MS = 10_000;
 /** Lets a FORFEIT frame leave the socket before the transport is torn down. */
 const LEAVE_FLUSH_MS = 300;
+/** A10: how long a client shows the final standings after the series ended before it closes the match by itself. */
+const SERIES_OVER_LINGER_MS = 20_000;
 
 interface Active {
   role: 'host' | 'client';
@@ -211,6 +227,8 @@ interface Active {
   lobbyKey: string;
   refreshing: boolean;
   refreshAgain: boolean;
+  /** A10: a client's teardown after the series ended, once scheduled. */
+  endTimer: ReturnType<typeof setTimeout> | null;
   offs: (() => void)[];
 }
 
@@ -371,6 +389,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
             reason: c.transfer.reason,
           }
         : null,
+      series: c?.series ?? null,
       panel: c?.panel ?? null,
       media,
       previewAdvice: previewAdvice({ inVr: r.rig === 'vr_headset', declared: media?.captureStereo, crop: media?.captureCrop }),
@@ -417,8 +436,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.info(`match: table sound: ${words}`);
     }
   };
+  /** A10: a client whose series is over closes the match after the linger (the host's End match tears down at once). */
+  const scheduleSeriesEnd = (a: Active): void => {
+    if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !a.controller.status().series.over) return;
+    log.info(`match: the series is over; closing the match in ${Math.round(SERIES_OVER_LINGER_MS / 1000)} s`);
+    a.endTimer = setTimeout(() => {
+      if (active !== a) return;
+      void teardown(a).then(() => {
+        log.info(`match: closed ${a.code} after the series ended`);
+        emit();
+      });
+    }, SERIES_OVER_LINGER_MS);
+  };
   const emit = (): void => {
-    if (active) syncVrMode(active);
+    if (active) {
+      syncVrMode(active);
+      scheduleSeriesEnd(active);
+    }
     syncTableAudio();
     const s = status();
     for (const l of [...listeners]) l(s);
@@ -665,6 +699,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         // §3: a different table file is shown on both panels, never refused (the client learns it from HELLO_ACK).
         fingerprintPolicy: 'advise',
         companionVersion: opts.appVersion.slice(0, 32),
+        // A11: who is still loading, and whether the start from this host's table may go.
+        tableOpen: isTableOpen,
       });
       const controller = makeController(engine, ballsPerGame);
       const a: Active = {
@@ -685,6 +721,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         lobbyKey: lobbyKey(ws),
         refreshing: false,
         refreshAgain: false,
+        endTimer: null,
         offs: [],
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
@@ -782,6 +819,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           lobbyKey: lobbyKey(ws),
           refreshing: false,
           refreshAgain: false,
+          endTimer: null,
           offs: [],
         };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
@@ -802,6 +840,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. */
   const teardown = async (a: Active): Promise<void> => {
     if (active === a) active = null;
+    if (a.endTimer) clearTimeout(a.endTimer);
+    a.endTimer = null;
     for (const off of a.offs) off();
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
     opts.tableAudio?.apply({ mutePid: null, tapPid: null });
@@ -818,6 +858,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const a = active;
       if (!a) return status();
       a.controller.leave('left the match');
+      // A10: the host leaving between games ends the series for everyone (MATCH_END), rather than leaving them to find
+      // out from a dead socket.
+      if (a.controller.currentRole instanceof HostMatch && a.controller.endMatch()) log.info(`match: ${a.code} ended by the host after ${a.controller.status().series.game} game(s)`);
       await new Promise<void>((r) => setTimeout(r, LEAVE_FLUSH_MS));
       await teardown(a);
       lastError = null;
@@ -834,6 +877,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (!a) return fail(new Error('No match: host one first'));
       const r = a.controller.currentRole;
       if (!(r instanceof HostMatch)) return fail(new Error('Only the host starts the match'));
+      if (r.state.phase !== 'lobby') {
+        // A10: between games this is Next game.
+        const why = a.controller.status().series.nextGameBlocker;
+        if (why !== null || !a.controller.nextGame()) return fail(new Error(`No next game now: ${why ?? 'the host could not start it'}`));
+        lastError = null;
+        log.info(`match: ${a.code} game ${r.state.gameNumber} started from the Match tab`);
+        emit();
+        return status();
+      }
       try {
         r.start();
       } catch (e) {

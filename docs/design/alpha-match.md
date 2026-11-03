@@ -28,6 +28,8 @@ later, F6), ADR 0007 (functionality first, guided setup).
    `current_scores` after the ball end, or 2 s), `game_end` becomes `GAME_OVER`; after everyone's last ball the host
    issues `RESULT`, every companion signs, both panels show the standings. Each player's game ALSO posts to ArcAid as
    a normal Witness score, so the boards see both games today; the Throwdown result on arcaid.app is A5 / F6.
+7. (A10 + A11, 2026-11-02, §8) The match stays open at the RESULT: the host starting a game on its table starts the
+   next game for everyone, from the headset; the host starting a game in a full lobby starts the match itself.
 
 ## 2. Pieces and owners (one worktree agent each)
 
@@ -180,3 +182,78 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 
 The ArcAid lobby and Throwdown result (F6, A5), host transfer in the UI (engine only), the runner stage and watch link
 (D3, D4, D5), push-to-talk, a TURN server of ours, DMD frames on the panel.
+
+## 8. Series: more than one game in a match (A10, A11; 2026-11-02)
+
+Owner, 2026-11-02: "after you start match, play one full game, be able to start another game without leaving the table
+VR view", and start the match from inside the headset too. Built 2026-11-02 (protocol 3); untested on a rig. Gates:
+A10, owner + Krobs play two games back to back in headsets; A11, both in headsets from Host / Join to the first ball.
+
+**Shape (the lead's decision).** One Throwdown, N games, in ONE hash-chained log. Each game ends exactly as a single
+game did (every player finished or forfeited, the log holds still, LOG_SIGN, one signed RESULT), and that RESULT
+carries `game` (1-based) and `series`, the standings so far. The log then continues: the host's `NEXT_GAME`
+(`{game, playerOrder}`, logged) starts game N+1, and each later RESULT signs the log head at the end of ITS game. The
+host's `MATCH_END` (`{games, reason}`, not logged: the last RESULT stands) ends the series; the existing teardown then
+runs. `TURN_GRANT.grant.game` names the game too (signed and logged; optional in the schema with no default, so a grant
+is the same object on both sides). Protocol 3: `NEXT_GAME` is a new logged message type, which a protocol 2 peer could
+not fold; both rigs run the same build through the updater.
+
+**Series standings** (`match/result.ts` `seriesStandings`): per player the games played, the outright wins (a tie for
+first wins nobody that game, as `RESULT.winner` is null then) and the total score; ranked by wins, then total score
+(competition ranking). Folded from the log (`MatchState.pastGames`), so a host that took over mid-series computes the
+same table. Every participant who played any game is in it.
+
+**The next game.**
+- At a RESULT the match stays open: peers, mesh, voice, panel and overlay. The panel (header `GAME 1 OVER`) shows the
+  game's standings, with the series place and wins once there are two games, and "Next game: <host> starts a game on
+  the table" (the host's own: "start a game on your table (or press Next game)"). The headset is in panel mode (the
+  view mode of `over`). From game 2 the turn line says the game (`GAME 2 · YOUR BALL 1`) and each row its series wins.
+- Lock between games: the host's table is unlocked (its Start starts the next game); a client's stays locked until
+  its grant in the next game (it would otherwise start a solo game that the next grant then scores). The series over
+  (`MATCH_END`, or the host gone between games: `ClientEvents.hostGone`) unlocks every table.
+- Trigger: the host's own `game_start` (the hook's, which the witness already follows), only once the current game's
+  RESULT has gone out (`HostMatch.nextGameBlocker`): a `game_start` seen before that, or during a game, is ignored.
+  The host's Match tab also has **Next game** (the same IPC call as Start match: main decides by the phase) and **End
+  match** (the host's Leave between games: MATCH_END first). A client's `game_start` never starts a game.
+- Game N+1's `playerOrder`: the roster still connected, in roster order, the host first (its table started the game,
+  so grant 1 is the host's). Every listed player starts afresh (ball 1, score 0); `grantSeq` keeps counting. A player
+  who left before the game is out of its order, its entries and its signers, and stays in the series with the games
+  it played. With fewer than two connected, no next game.
+- Readiness: there is no "your table is back on the attract screen" signal for a client, so a client whose VPX is
+  still on the last game's game-over sequence is told nothing; its grant waits as any grant does (it starts its own
+  game when the grant unlocks it).
+- After MATCH_END a client keeps the final standings up for 20 s and then closes the match by itself, so the headset
+  does not keep a dead panel; the host's End match tears down at once.
+
+**Edge cases built and tested** (`match/series.test.ts`, `controller.test.ts`, fakeclient `two-game-series`,
+`main/match-host.test.ts`):
+- Reconnect mid-series: the RECONNECT_ACK carries the NEXT_GAME entries like any other, so the game number comes back
+  with the log. The host then sends every RESULT it sent, oldest first, each in a fresh envelope (a resent frame with
+  its old `seq` was dropped by the receiver's seq rule: true of A3's single resend too, fixed with this).
+- The last RESULT of game 1 reaching a late peer (already in game 2): the client checks it against its own log entry
+  at that game's end (`RESULT.logLength`), not its head, and raises `result` once per game.
+- Host transfer mid-series: transfers happen during a game, as before; the new host's `resumeFromLog` folds the
+  series from the log, finishes the game, sends its RESULT with the same series and can start the next game.
+  Between games there is no transfer: a host gone then ends the series for the others.
+- A LOG_SIGN for an earlier game (late) is dropped by the host; a client signs once per game it played.
+- A NEXT_GAME that is not the next number, or arrives while a game runs, is dropped by a client (not logged).
+
+**A11, the start from the headset.** In the lobby the host's `game_start` starts the match when two or more are in and
+every joined table is open (`HELLO_ACK.loading` is empty; open = a table hash, or at least a table name, in the
+fingerprint: `match-setup.ts` `isTableOpen`): a 5 s countdown (`HostMatch.startIn`) that every panel shows
+(`STARTING IN 5`, "Starting the match: <names>"; clients learn it from a re-sent `HELLO_ACK.startsInMs`, a duration
+because the two clocks need not agree), then MATCH_READY. A second plunge does not restart or cancel it. With a table
+still loading the start is armed and fires once the last table opens; the host's game ending in the lobby (game end,
+abandoned, table exit) disarms it. Fewer than two when it runs out: nothing starts. The desktop Start button stays,
+works during the countdown (it starts at once; the countdown then does nothing) and cancels nothing. Lobby rows whose
+table is not open say LOADING on every panel. The alternative, an explicit Castcade key read by the hook and journaled,
+stays unbuilt until the first-game rule proves too eager (it needs a journal version bump and a fixture).
+
+**For the F-lane (ArcAid, A5 / F6): one Throwdown with N results.** A Castcade match stays one Throwdown
+(`play_mode='castcade'`), but it can carry several games: the companion will post one RESULT per game, each with
+`game` (1, 2, ...), the game's ranked entries, its own `logHash` / `logLength` (heads of one growing log, so game 2's
+head extends game 1's) and signatures, plus the `series` standings after it (wins, then total score). ArcAid needs a
+way to hold N results under one Throwdown (a `game` column on the result or the `castcade_matches` record), to show
+the series standings, and to decide what the Throwdown's own outcome is when the series ends (the last RESULT's
+series ranks, or each game as its own scored round). The end of a series is not posted as a separate message today
+(MATCH_END is peer to peer and unlogged); the post after the last game is the final one.

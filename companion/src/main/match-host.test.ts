@@ -546,8 +546,8 @@ describe('match host: the lobby refresh (A6, 2026-10-31)', () => {
     await until(() => row(H.mh, 'Krobs')?.rig === 'vr_headset' && row(H.mh, 'Krobs')?.tableMatch === true);
     await until(() => row(C.mh, 'Krobs')?.rig === 'vr_headset' && row(C.mh, 'Krobs')?.tableMatch === true);
     expect(C.mh.status().rig).toBe('vr_headset');
-    expect(H.mh.status().panel?.message).toBe('Everyone in? Press Start match');
-    expect(C.mh.status().panel?.message).toBe('Waiting for the host to start');
+    expect(H.mh.status().panel?.message).toBe('Everyone in? Start a game on your table (or press Start match)');
+    expect(C.mh.status().panel?.message).toBe('Waiting for Owner to start a game on the table');
 
     // A different table file is still a difference.
     krobs.load('cd'.repeat(32), VR_VD);
@@ -687,4 +687,63 @@ describe('match host: A8 (2026-10-31)', () => {
     await expect(B.mh.resume()).rejects.toThrow(/Only the host/);
     await expect(H.mh.resume()).rejects.toThrow(/not paused/);
   }, 15_000);
+});
+
+describe('match host: a series (A10, 2026-11-02)', () => {
+  type Feed = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
+  /** A witness whose detector events the test feeds by hand. */
+  const feeding = (sha: string): { w: WitnessHost; feed: (ev: Feed) => void } => {
+    const cbs: ((ev: Feed) => void)[] = [];
+    const w = { ...witness(sha), onEvent: (cb: (ev: Feed) => void) => (cbs.push(cb), () => undefined) } as unknown as WitnessHost;
+    return { w, feed: (ev) => cbs.forEach((cb) => cb(ev)) };
+  };
+  const scores = (s: number): Feed => ({ kind: 'current_scores', t: 0, scores: [s], player: 1, ball: 1 }) as Feed;
+  const ballEnd = (ball: number): Feed => ({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 }) as Feed;
+
+  it('Start match, then Next game (the same call) between games; the host leaving between games is End match for everyone', async () => {
+    const hw = feeding('ab'.repeat(32));
+    const cw = feeding('ab'.repeat(32));
+    const H = make('series-host', 'ab'.repeat(32), { witness: hw.w });
+    const C = make('series-client', 'ab'.repeat(32), { witness: cw.w });
+    const port = 43000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    const playGame = async (base: number): Promise<void> => {
+      for (let ball = 1; ball <= 3; ball++) {
+        for (const [who, seat] of [
+          ['Hosty', hw],
+          ['Krobs', cw],
+        ] as const) {
+          const mh = who === 'Hosty' ? H.mh : C.mh;
+          await until(() => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball);
+          const s = base * ball + (who === 'Hosty' ? 10 : 20);
+          seat.feed(scores(s));
+          seat.feed(ballEnd(ball));
+          seat.feed(scores(s));
+          await until(() => mh.status().panel?.myTurn !== true || mh.status().phase === 'over');
+        }
+      }
+      await until(() => H.mh.status().phase === 'over' && C.mh.status().phase === 'over');
+    };
+    await playGame(1000);
+    expect(H.mh.status()).toMatchObject({ phase: 'over', locked: false, series: { game: 1, over: false, nextGameBlocker: null } });
+    expect(C.mh.status()).toMatchObject({ phase: 'over', locked: true, series: { game: 1, over: false } });
+    expect(existsSync(C.lock)).toBe(true);
+    // A client cannot start the next game.
+    await expect(C.mh.start()).rejects.toThrow(/Only the host/);
+    const next = await H.mh.start();
+    expect(next.series).toMatchObject({ game: 2, over: false });
+    await until(() => C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
+    await playGame(2000);
+    expect(C.mh.status().panel?.series?.map((x) => x.games)).toEqual([2, 2]);
+    // End match: the host tears down at once; the client's series is over and its table free.
+    const left = await H.mh.leave();
+    expect(left).toMatchObject({ role: 'none' });
+    await until(() => C.mh.status().series?.over === true);
+    expect(C.mh.status()).toMatchObject({ phase: 'over', locked: false });
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.mh.status().panel?.message).toBe('The host ended the match after 2 games');
+  }, 20_000);
 });
