@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { feedSize, headerText, micText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -824,5 +824,128 @@ describe('videoBitrateFor (D7.4.6)', () => {
   });
   it('a size not known gets the base rate', () => {
     expect(videoBitrateFor({ width: 0, height: 0, stereo: 'mono' })).toBe(2_500_000);
+  });
+});
+
+describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
+  const report = (o: { selected?: string; pairs?: Array<Record<string, unknown>> } = {}): Array<Record<string, unknown>> => [
+    ...(o.selected ? [{ type: 'transport', id: 'T1', selectedCandidatePairId: o.selected }] : []),
+    { type: 'local-candidate', id: 'L1', candidateType: 'host', protocol: 'udp', address: '192.168.1.5' },
+    { type: 'local-candidate', id: 'L2', candidateType: 'srflx', protocol: 'udp', address: '203.0.113.7' },
+    { type: 'remote-candidate', id: 'R1', candidateType: 'srflx', protocol: 'udp', address: '198.51.100.9' },
+    ...(o.pairs ?? []),
+  ];
+  const pair = (id: string, l: string, r: string, state: string, more: Record<string, unknown> = {}) => ({ type: 'candidate-pair', id, localCandidateId: l, remoteCandidateId: r, state, ...more });
+
+  it('icePairInfo: the transport-selected pair, else a nominated succeeded one; types, protocol and rtt, no address', () => {
+    const sel = icePairInfo(report({ selected: 'P2', pairs: [pair('P1', 'L1', 'R1', 'failed'), pair('P2', 'L2', 'R1', 'succeeded', { nominated: true, currentRoundTripTime: 0.0342 })] }));
+    expect(sel).toEqual({ pair: { state: 'succeeded', local: 'srflx', remote: 'srflx', protocol: 'udp', rttMs: 34 }, tried: 2, failed: 1, local: ['host', 'srflx'], remote: ['srflx'] });
+    expect(JSON.stringify(sel)).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+    const nominated = icePairInfo(report({ pairs: [pair('P1', 'L1', 'R1', 'in-progress'), pair('P2', 'L2', 'R1', 'succeeded', { nominated: true })] }));
+    expect(nominated.pair).toMatchObject({ local: 'srflx', remote: 'srflx', rttMs: null });
+    expect(icePairInfo(report({ pairs: [pair('P1', 'L1', 'R1', 'in-progress'), pair('P2', 'L2', 'R1', 'failed')] })).pair).toBeNull();
+    expect(icePairInfo([])).toEqual({ pair: null, tried: 0, failed: 0, local: [], remote: [] });
+  });
+
+  it('icePairText: the pair as the log says it, or why there is none', () => {
+    const ok = icePairInfo(report({ selected: 'P2', pairs: [pair('P2', 'L2', 'R1', 'succeeded', { currentRoundTripTime: 0.05 })] }));
+    expect(icePairText(ok, true)).toBe('pair srflx -> srflx udp succeeded, rtt 50 ms');
+    expect(icePairText(ok, false)).toBe('pair srflx -> srflx udp succeeded');
+    const stuck = icePairInfo(report({ pairs: [pair('P1', 'L1', 'R1', 'failed'), pair('P2', 'L2', 'R1', 'in-progress')] }));
+    expect(icePairText(stuck, true)).toBe('no pair yet (2 tried, 1 failed; local host+srflx, remote srflx)');
+    expect(icePairText(icePairInfo([]), true)).toBe('no pair yet (0 tried, 0 failed; local none, remote none)');
+  });
+
+  it('iceUfrag: the first ice-ufrag of an SDP, null without one', () => {
+    expect(iceUfrag('v=0\r\na=ice-ufrag:AbC1\r\na=ice-pwd:x\r\nm=audio\r\na=ice-ufrag:AbC1\r\n')).toBe('AbC1');
+    expect(iceUfrag('v=0\r\n')).toBeNull();
+    expect(iceUfrag(null)).toBeNull();
+  });
+
+  it('iceWatchStep: 10 s stuck then restart; 20 s, 40 s backoff; give up 40 s after the third; the other side 5 s later', () => {
+    const step = (ice: string, s: number, n: number, lead = true) => iceWatchStep(ice, s * 1000, n, lead, ICE_WATCH);
+    expect(step('connected', 999, 3)).toBe('ok');
+    expect(step('completed', 0, 0)).toBe('ok');
+    expect(step('closed', 999, 0)).toBe('wait');
+    for (const ice of ['new', 'checking', 'disconnected']) {
+      expect(step(ice, 9.9, 0)).toBe('wait');
+      expect(step(ice, 10, 0)).toBe('restart');
+    }
+    expect(step('checking', 19.9, 1)).toBe('wait');
+    expect(step('checking', 20, 1)).toBe('restart');
+    expect(step('checking', 39.9, 2)).toBe('wait');
+    expect(step('checking', 40, 2)).toBe('restart');
+    expect(step('checking', 39.9, 3)).toBe('wait');
+    expect(step('checking', 40, 3)).toBe('give_up');
+    // failed: the browser gave up on every pair, so the first restart is at once; the backoff holds after it
+    expect(step('failed', 0, 0)).toBe('restart');
+    expect(step('failed', 5, 1)).toBe('wait');
+    expect(step('failed', 40, 3)).toBe('give_up');
+    // the side that does not lead waits 5 s more each time, so the lead's restart reaches it first
+    expect(step('checking', 14.9, 0, false)).toBe('wait');
+    expect(step('checking', 15, 0, false)).toBe('restart');
+    expect(step('failed', 4.9, 0, false)).toBe('wait');
+    expect(step('checking', 44.9, 3, false)).toBe('wait');
+    expect(step('checking', 45, 3, false)).toBe('give_up');
+  });
+
+  it('noPathText: names the player and the state; says what is missing', () => {
+    expect(noPathText('Krobs', 'checking', 3, false)).toBe('No path to Krobs (ICE checking after 3 restarts): both routers blocked the direct connection; a TURN relay is needed.');
+    expect(noPathText('Krobs', 'failed', 3, true)).toBe('No path to Krobs (ICE failed after 3 restarts): the TURN relay did not get through either.');
+  });
+
+  it('the page: a connection stuck in checking restarts ICE on the backoff, then says there is no path; connected clears it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const restart = vi.spyOn(FakePeerConnection.prototype, 'restartIce');
+    try {
+      const p = loadPage({ mic: true, capture: false });
+      // owner > krobs: owner is the impolite side and leads the restart
+      p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [{ urls: ['stun:x'] }], capture: null, micDeviceId: null, muted: false, sending: false });
+      p.emit(PANEL_CHANNELS.state, state());
+      await settle();
+      const pc = FakePeerConnection.all[0]!;
+      pc.onnegotiationneeded?.();
+      await settle();
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'answer session:k1' } });
+      await settle();
+      const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+      const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
+      const status = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { error: string | null };
+      tick.cb();
+      expect(restart).not.toHaveBeenCalled();
+      pc.iceConnectionState = 'checking';
+      tick.cb();
+      vi.advanceTimersByTime(9_900);
+      tick.cb();
+      expect(restart).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(100);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(logs().at(-1)).toBe('peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet)');
+      vi.advanceTimersByTime(20_000);
+      tick.cb();
+      vi.advanceTimersByTime(40_000);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(39_000);
+      tick.cb();
+      expect(status().error).toBeNull();
+      vi.advanceTimersByTime(1_000);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(3);
+      expect(logs().at(-1)).toBe('peer krobs: no path after 3 ICE restart(s), checking for 110 s; no pair yet; no TURN relay is set');
+      const msg = 'No path to Krobs (ICE checking after 3 restarts): both routers blocked the direct connection; a TURN relay is needed.';
+      expect(status().error).toBe(msg);
+      expect(p.el('msg').textContent).toBe(msg);
+      // a path after all: the message goes, the outcome is logged
+      pc.iceConnectionState = 'connected';
+      vi.advanceTimersByTime(5_000);
+      tick.cb();
+      expect(logs().at(-1)).toBe('peer krobs: ICE connected after 3 restart(s), 115 s stuck');
+      expect(status().error).toBeNull();
+    } finally {
+      restart.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
