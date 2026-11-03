@@ -60,6 +60,8 @@ export const IPC = {
   matchHidePanel: 'match:hidePanel',
   /** D7.6.2: write the VR report (vr-report-<date>.md / .json beside companion.log). */
   matchVrReport: 'match:vrReport',
+  /** D7.6.1: the OpenXR layer's calibration pattern on / off. */
+  matchSetVrTest: 'match:setVrTest',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
@@ -229,6 +231,8 @@ export interface CastcadeApi {
      * counters and preview window, written beside companion.log; resolves with the two paths.
      */
     vrReport(): Promise<{ md: string; json: string }>;
+    /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
+    setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
   };
   tables: {

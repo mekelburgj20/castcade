@@ -376,6 +376,7 @@ function registerIpc(
   });
   ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
   ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
+  ipcMain.handle(IPC.matchSetVrTest, (_e, test: unknown) => mh().setVrTest(test === 'pattern' ? 'pattern' : null));
   // D7.6.2: the VR report, beside companion.log; works with no match (the layer is then read over a short pipe connection).
   ipcMain.handle(IPC.matchVrReport, () =>
     writeVrReport({

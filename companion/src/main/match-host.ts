@@ -107,6 +107,11 @@ export interface MatchStatus {
   previewAdvice: string | null;
   vrOverlay: VrOverlayStatus | null;
   /**
+   * D7.6 (2026-11-03): the VR test bench: whether the OpenXR layer's pipe is connected, its protocol (the pattern needs
+   * 3) and whether the calibration pattern is asked (D7.6.1). Null when this build has no layer.
+   */
+  vrBench: { connected: boolean; protocol: number; pattern: boolean } | null;
+  /**
    * A6 (2026-10-31): where this rig's panel goes, decided at host / join (and switched to the headset when the witness
    * later reads VR), with the evidence. With no match, the witness's last sample. The Match tab shows both.
    */
@@ -159,6 +164,12 @@ export interface MatchHost {
   /** D2.6 (2026-11-01): the Match tab's Show panel / Hide panel for the desktop panel window; a no-op without one. */
   showPanel(): MatchStatus;
   hidePanel(): MatchStatus;
+  /**
+   * D7.6.1 (2026-11-03): the Match tab's "Show calibration pattern": the OpenXR layer shows its stereo test grid in
+   * theater instead of any picture (null stops it). A no-op without the layer; the tab enables it only while
+   * `vrBench` says a protocol-3 layer is connected.
+   */
+  setVrTest(test: 'pattern' | null): MatchStatus;
   /** B22 (2026-10-31): the Match tab opened: list the microphones if no match lists them; a status follows. Never throws. */
   refreshMicrophones(): void;
   status(): MatchStatus;
@@ -368,6 +379,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const overlayFor = (a: RigRuntime): VrOverlay | undefined => (usesLayer(a) ? opts.vrLayer : opts.vrOverlay);
   const headsetPanel = (a: RigRuntime): boolean => a.rig === 'vr_headset';
   const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a) });
+  /** D7.6: the OpenXR layer's pipe as the Match tab's test bench needs it. */
+  const benchView = (): MatchStatus['vrBench'] => {
+    const b = opts.vrLayer?.bench?.();
+    return b ? { connected: b.connected, protocol: b.protocol, pattern: b.test === 'pattern' } : null;
+  };
   const nameIn = (c: ControllerStatus, id: string): string => c.participants.find((p) => p.playerId === id)?.displayName ?? id;
   const status = (): MatchStatus => {
     const a = active;
@@ -409,6 +425,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       media,
       previewAdvice: previewAdvice({ inVr: r.rig === 'vr_headset', declared: media?.captureStereo, crop: media?.captureCrop }),
       vrOverlay: a ? ((a.overlay ?? overlayFor(a))?.status() ?? null) : null,
+      vrBench: benchView(),
       rig: r.rig,
       rigReason: r.rigReason,
       vrRuntime: r.runtime,
@@ -486,6 +503,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     emit();
   });
   opts.vrOverlay?.onStatus(() => {
+    if (active) emit();
+  });
+  // D7.6: the bench's facts (connected, protocol, the pattern) reach the Match tab as they change.
+  opts.vrLayer?.onBench?.(() => {
     if (active) emit();
   });
   opts.vrLayer?.onStatus(() => {
@@ -989,6 +1010,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     hidePanel() {
       opts.media?.hidePanel?.();
+      emit();
+      return status();
+    },
+    setVrTest(test) {
+      if (opts.vrLayer?.setTest) {
+        log.info(`match: calibration pattern ${test ? 'on' : 'off'} (Match tab)`);
+        opts.vrLayer.setTest(test);
+      }
       emit();
       return status();
     },

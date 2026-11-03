@@ -12,8 +12,9 @@
 //       page's paint; the SteamVR helper's stdin format, so a protocol-1 companion still works);
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
 //     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}, optionally the
-//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5) and
-//       "report": true (D7.6.2: send the session report now; a request, never a state): the control;
+//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5),
+//       "report": true (D7.6.2: send the session report now; a request, never a state) and "test": "pattern" (D7.6.1:
+//       the calibration pattern in theater; a control without it = off): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -58,6 +59,10 @@ struct CameraRequest {
 constexpr uint32_t kCameraMaxSide = 4096;
 constexpr uint32_t kCameraMaxFps = 60;
 
+// D7.6.1: what theater shows instead of the companion's feed. Pattern = the layer's own stereo calibration image
+// (layer.cpp drawPatternEye), shown in theater whatever the mode while asked; a control without "test" = None.
+enum class TestPattern { None, Pattern };
+
 struct Control {
   ViewMode mode = ViewMode::Panel;
   bool sbs = false;          // the video frame is left eye | right eye side by side
@@ -66,6 +71,7 @@ struct Control {
   // eye rendered it). Optional in CVC1, clamped to [kTheaterScaleMin, kTheaterScaleMax].
   float theaterScale = kTheaterScale;
   CameraRequest camera;  // D7.5
+  TestPattern test = TestPattern::None;  // D7.6.1
 };
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;

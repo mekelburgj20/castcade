@@ -218,14 +218,18 @@ void applyControl(const std::string& body) {
   }
   CameraRequest cam;
   if (jsonCamera(body, cam)) c.camera = cam;
-  bool changed = false, cameraChanged = false;
+  // D7.6.1: the companion sends its whole control every time, so a control without "test" turns the pattern off.
+  c.test = jsonString(body, "test") == "pattern" ? TestPattern::Pattern : TestPattern::None;
+  bool changed = false, cameraChanged = false, testChanged = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
     changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre ||
               st.control.theaterScale != c.theaterScale;
     cameraChanged = st.control.camera != c.camera;
+    testChanged = st.control.test != c.test;
     st.control = c;
   }
+  if (testChanged) logLine(c.test == TestPattern::Pattern ? "pipe: calibration pattern asked" : "pipe: calibration pattern off");
   // D7.6.2: a request, not a state: every control that carries it asks again.
   if (jsonTrue(body, "report")) {
     g_reportSerial.fetch_add(1);

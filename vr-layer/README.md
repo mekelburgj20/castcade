@@ -121,7 +121,7 @@ on a synchronous handle Windows would queue the write behind the read).
 | layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`; or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -166,6 +166,26 @@ after every new pipe connection (at the next frame) and on a control with `"repo
 The companion's Match tab ("VR test bench", Write VR report) puts it into `vr-report-<date>.md` / `.json` beside
 `companion.log`, with the companion's own side (settings, ICE, rig, last controls, counters, the preview window's fit,
 VPX's `[PlayerVR]` keys).
+
+## The calibration pattern (layer 0.5.0, D7.6.1)
+
+On a control with `"test": "pattern"` the layer goes to theater (through black, recentred where the head points, like
+any theater) and shows a side-by-side picture it draws itself instead of the companion's feed: no second player and no
+video needed. Each eye is drawn with the geometry the stereo window assumes for a sender (`eyeCrop`: VPX's fov and render
+size from its own frame, VPX's centre crop to the picture's aspect) and placed by `placeWindows` at the control's
+`theaterScale`, so a line drawn at angle *a* from an eye's axis is seen at *a* from that eye when the geometry is right:
+the two eyes' grids land on each other as one grid at infinity, and a doubled line at a labelled angle is the error
+there. In each eye (1024 high, as wide as VPX's render aspect):
+
+- vertical lines every 5° of horizontal angle (atan of the x tangent) and horizontal lines every 5° of vertical angle,
+  every 10° brighter and labelled along the eye's axis, the axis itself thickest;
+- circles at 10° and 20° from the axis and a cross on it, in the eye's colour (left orange, right blue);
+- a large L (left eye, top left) or R (right eye, top right).
+
+What to look for: one grid, the L and R each in its corner, the circles round and single. `vr-layer.log` says
+`test: calibration pattern on`, then `test: calibration pattern drawn, each eye WxH; left eye (fov from VPX's frame)
+… deg across …` and the `theater: stereo window …` line with the placement. It is redrawn when VPX's fov or render
+size changes (at most once a second) and ends with the control (or the pipe: a companion that goes takes it along).
 
 ## The camera (protocol 3, D7.5)
 

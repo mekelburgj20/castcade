@@ -325,7 +325,16 @@ export interface VrOverlay {
    * back, or null when none came within `timeoutMs` (an older layer, VPX not rendering) or no layer is connected.
    */
   requestSession?(timeoutMs: number): Promise<LayerSessionReport | null>;
+  /**
+   * D7.6.1: the layer's calibration pattern in theater instead of any picture (control `test: 'pattern'`, sent only to
+   * a protocol-3 layer and only while set: a control without it is byte for byte what it was), or null to stop it.
+   * Cleared by `stop`. Idempotent.
+   */
+  setTest?(test: VrTestPattern | null): void;
 }
+
+/** D7.6.1: what the layer shows in theater instead of the companion's picture (vr-layer/README.md "The calibration pattern"). */
+export type VrTestPattern = 'pattern';
 
 /**
  * D7.6.2 (2026-11-03): the layer's session report (CVS1 `{"kind": "session", ...}`, vr-layer/src/layer.cpp
@@ -350,6 +359,8 @@ export interface VrLayerBench {
   session: LayerSessionReport | null;
   /** The last controls written to the pipe, oldest first (at most `BENCH_CONTROLS`), as JSON text. */
   controls: Array<{ at: number; text: string }>;
+  /** D7.6.1: the test picture asked for (sent while a protocol-3 layer is connected), or null. */
+  test: VrTestPattern | null;
 }
 
 /** Default placement (alpha-match.md §5): head-anchored, 0.55 m wide, below the line of sight. */

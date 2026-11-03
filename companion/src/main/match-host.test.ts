@@ -766,3 +766,25 @@ describe('match host: a series (A10, 2026-11-02)', () => {
     expect(C.mh.status().panel?.message).toBe('The host ended the match after 2 games');
   }, 20_000);
 });
+
+describe('match host: the VR test bench (D7.6.1, 2026-11-03)', () => {
+  it('vrBench mirrors the layer (null without one); setVrTest reaches the layer', () => {
+    expect(make('bench-none', 'ab'.repeat(32)).mh.status().vrBench).toBeNull();
+    const tests: Array<string | null> = [];
+    let test: 'pattern' | null = null;
+    const layer = {
+      ...(fakeOverlay().overlay as unknown as Record<string, unknown>),
+      bench: () => ({ started: true, connected: true, protocol: 3, session: null, controls: [], test }),
+      onBench: () => () => undefined,
+      setTest: (t: 'pattern' | null) => {
+        tests.push(t);
+        test = t;
+      },
+    } as unknown as OverlayOpt;
+    const H = make('bench', 'ab'.repeat(32), { vrLayer: layer });
+    expect(H.mh.status().vrBench).toEqual({ connected: true, protocol: 3, pattern: false });
+    expect(H.mh.setVrTest('pattern').vrBench).toEqual({ connected: true, protocol: 3, pattern: true });
+    H.mh.setVrTest(null);
+    expect(tests).toEqual(['pattern', null]);
+  });
+});

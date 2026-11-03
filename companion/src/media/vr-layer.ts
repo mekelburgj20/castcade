@@ -52,6 +52,7 @@ import {
   type VideoFrameSource,
   type VrLayerBench,
   type VrOverlay,
+  type VrTestPattern,
   type VrOverlayStatus,
   type VrStereo,
   type VrViewMode,
@@ -417,6 +418,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let oldCameraLogged = false;
   // D7.6: the bench: the last session report, the last controls written, report requests waiting, the listeners.
   let session: LayerSessionReport | null = null;
+  /** D7.6.1: the calibration pattern, while asked. */
+  let test: VrTestPattern | null = null;
   let sentControls: Array<{ at: number; text: string }> = [];
   const sessionWaiters = new Set<(r: LayerSessionReport) => void>();
   const benchListeners = new Set<(b: VrLayerBench) => void>();
@@ -427,6 +430,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     protocol: isConnected() ? protocol : 0,
     session,
     controls: [...sentControls],
+    test,
   });
   const notifyBench = () => {
     const b = bench();
@@ -518,7 +522,15 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   const sendControl = (report = false): boolean => {
     const sock = socket;
     if (!sock || protocol < 2 || !sock.writable) return false;
-    const body = { mode, stereo, panelPos: VR_LAYER_PANEL_POS, theaterScale, ...(protocol >= VR_LAYER_CAMERA_PROTOCOL ? { camera: cameraReq } : {}) };
+    // D7.6.1: `test` only while set and only to a protocol-3 layer, so every other control is byte for byte as before.
+    const body = {
+      mode,
+      stereo,
+      panelPos: VR_LAYER_PANEL_POS,
+      theaterScale,
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL ? { camera: cameraReq } : {}),
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? { test } : {}),
+    };
     const text = JSON.stringify(body);
     if (text === lastControl && !report) return false;
     const changed = text !== lastControl;
@@ -530,7 +542,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     if (report) opts.log('vr-layer: asked the layer for its session report');
     if (!changed) return true;
     const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps` : 'off'}` : '';
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam})`);
+    const pat = protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? ', calibration pattern' : '';
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
     return true;
   };
@@ -696,6 +709,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     s?.destroy();
     stopCounters();
     setCameraStatus({ state: 'off', why: null, api: null, source: null, size: null, lastFrameAt: null, frames: 0 });
+    test = null; // D7.6.1: a test picture never outlives the overlay (the next match starts without it)
     set('stopped');
     notifyBench();
   };
@@ -809,6 +823,14 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
 
     // D7.6: the test bench.
     bench,
+
+    setTest(next) {
+      if (next === test) return;
+      test = next;
+      opts.log(`vr-layer: calibration pattern ${test ? 'asked' : 'off'}${test && !(isConnected() && protocol >= VR_LAYER_CAMERA_PROTOCOL) ? ' (sent once a protocol-3 layer is connected)' : ''}`);
+      sendControl();
+      notifyBench();
+    },
 
     onBench(cb) {
       benchListeners.add(cb);

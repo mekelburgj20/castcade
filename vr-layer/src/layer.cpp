@@ -31,6 +31,9 @@
 //     names, view configuration, the app's fov, swapchains and last frame, the graphics binding, OpenComposite's
 //     marks, the last theater placement), logged once per session as `session:` lines at its first frame and sent to
 //     the companion as a CVS1 {"kind": "session", ...} then, on every new connection and on request (sessionFacts);
+//   - D7.6.1 (2026-11-03), the calibration pattern: on control "test": "pattern", theater shows a stereo grid the
+//     layer draws itself with the geometry the stereo window assumes (drawPatternEye), whatever the mode, until the
+//     control (or the pipe) drops it;
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
@@ -308,6 +311,12 @@ struct Session {
   uint32_t reportSerial = 0;
   bool modulesRead = false;
   std::vector<std::string> modules;  // VR-related modules in VPX's process (full paths), read once
+  // D7.6.1, the calibration pattern: its swapchain, the geometry it was drawn for, when, and whether it is asked.
+  Surface pattern;
+  std::array<EyeCrop, 2> patternCrop{};
+  uint32_t patternEyeW = 0, patternEyeH = 0;
+  uint64_t patternAt = 0;
+  bool patternOn = false;
 };
 
 std::mutex g_mutex;
@@ -871,6 +880,179 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   }
 }
 
+// ---- the calibration pattern (D7.6.1) ---------------------------------------------------------------------------------
+//
+// On control "test": "pattern", theater shows a side-by-side picture the layer draws itself instead of the companion's
+// feed (no companion frames needed): in each eye, lines at known angles from that eye's axis, drawn with exactly the
+// geometry theater assumes for a sender (eyeCrop: the fov and render size of VPX's frame, VPX's centre crop to the
+// picture's aspect) and placed by placeWindows like any side-by-side picture, at Control::theaterScale. If the stereo
+// window is right, a pixel drawn at angle a is seen at angle a from its eye, so the two grids land on each other (one
+// grid, at infinity); a doubled line at a labelled angle measures the error there. Vertical lines at a horizontal angle
+// atan(tx) of k * 5 degrees, horizontal lines at a vertical angle atan(ty) of k * 5 degrees (every 10 thicker and
+// labelled along the eye's axis), circles at 10 and 20 degrees from the axis and a cross on it in the eye's colour
+// (left warm, right cool), and a large L / R in the eye's outer top corner. Drawn on the render thread when its
+// geometry changes (at most once a second; about 2 Mpixel, a few ms), uploaded once, the pixels then freed.
+
+constexpr uint32_t kPatternEyeH = 1024;
+constexpr double kPatternEyeMinW = 256.0, kPatternEyeMaxW = 2048.0;
+constexpr uint64_t kPatternRedrawMs = 1000;
+
+struct Rgb {
+  uint8_t r, g, b;
+};
+constexpr Rgb kPatternBack{18, 18, 22};
+constexpr Rgb kPatternGrid5{84, 84, 92};
+constexpr Rgb kPatternGrid10{205, 205, 205};
+constexpr Rgb kPatternText{240, 240, 240};
+constexpr Rgb kPatternEye[2] = {{255, 136, 0}, {0, 168, 255}};  // left warm (orange), right cool (blue)
+
+// A 5x7 font for the labels: '0'-'9', '-', 'L', 'R'; bit 4 of each row is its leftmost column.
+const uint8_t* glyph(char ch) {
+  static const uint8_t digits[10][7] = {
+      {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},
+      {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}, {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},
+      {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},
+      {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}};
+  static const uint8_t minus[7] = {0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00};
+  static const uint8_t letterL[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+  static const uint8_t letterR[7] = {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+  if (ch >= '0' && ch <= '9') return digits[ch - '0'];
+  if (ch == '-') return minus;
+  if (ch == 'L') return letterL;
+  if (ch == 'R') return letterR;
+  return nullptr;
+}
+
+// One eye's half of the RGBA picture (top-down): columns x0 .. x0 + w of rows 0 .. h, the whole picture `stride` wide.
+struct EyeCanvas {
+  uint8_t* px;
+  uint32_t stride;
+  int32_t x0, w, h;
+  void fill(int32_t x, int32_t y, int32_t fw, int32_t fh, Rgb c) const {
+    const int32_t xa = x < 0 ? 0 : x, ya = y < 0 ? 0 : y;
+    const int32_t xb = x + fw > w ? w : x + fw, yb = y + fh > h ? h : y + fh;
+    if (xa >= xb || ya >= yb) return;
+    for (int32_t yy = ya; yy < yb; yy++) {
+      uint8_t* p = px + (static_cast<size_t>(yy) * stride + static_cast<size_t>(x0 + xa)) * 4;
+      for (int32_t xx = xa; xx < xb; xx++, p += 4) p[0] = c.r, p[1] = c.g, p[2] = c.b, p[3] = 255;
+    }
+  }
+};
+
+int32_t textWidth(const std::string& t, int32_t scale) { return t.empty() ? 0 : static_cast<int32_t>(t.size()) * 6 * scale - scale; }
+
+void drawText(const EyeCanvas& cv, int32_t x, int32_t y, const std::string& t, int32_t scale, Rgb c) {
+  for (const char ch : t) {
+    if (const uint8_t* g = glyph(ch)) {
+      for (int32_t row = 0; row < 7; row++)
+        for (int32_t col = 0; col < 5; col++)
+          if ((g[row] >> (4 - col)) & 1) cv.fill(x + col * scale, y + row * scale, scale, scale, c);
+    }
+    x += 6 * scale;
+  }
+}
+
+int32_t pixel(float v) { return static_cast<int32_t>(std::lround(v)); }
+
+// Eye `e` of the pattern for the crop `c` (its tangent rect: columns from c.l to c.r, rows from c.u at the top to c.d).
+void drawPatternEye(const EyeCanvas& cv, const EyeCrop& c, size_t e) {
+  const int32_t W = cv.w, H = cv.h;
+  const float spanX = c.r - c.l, spanY = c.u - c.d;
+  cv.fill(0, 0, W, H, kPatternBack);
+  if (!(spanX > 0.0f) || !(spanY > 0.0f)) return;
+  const auto colOf = [&](float t) { return (t - c.l) / spanX * static_cast<float>(W); };
+  const auto rowOf = [&](float t) { return (c.u - t) / spanY * static_cast<float>(H); };
+  const auto tanDeg = [](float deg) { return std::tan(deg / kDegPerRad); };
+  const Rgb eye = kPatternEye[e];
+  const float minX = std::atan(c.l) * kDegPerRad, maxX = std::atan(c.r) * kDegPerRad;
+  const float minY = std::atan(c.d) * kDegPerRad, maxY = std::atan(c.u) * kDegPerRad;
+  // The grid: every 5 degrees, every 10 thicker, the axis thickest.
+  for (int k = static_cast<int>(std::ceil(minX / 5.0f)); static_cast<float>(k) * 5.0f <= maxX; k++) {
+    const bool ten = k % 2 == 0;
+    const int32_t t = k == 0 ? 3 : ten ? 2 : 1;
+    cv.fill(pixel(colOf(tanDeg(static_cast<float>(k) * 5.0f)) - 0.5f * static_cast<float>(t)), 0, t, H, ten ? kPatternGrid10 : kPatternGrid5);
+  }
+  for (int k = static_cast<int>(std::ceil(minY / 5.0f)); static_cast<float>(k) * 5.0f <= maxY; k++) {
+    const bool ten = k % 2 == 0;
+    const int32_t t = k == 0 ? 3 : ten ? 2 : 1;
+    cv.fill(0, pixel(rowOf(tanDeg(static_cast<float>(k) * 5.0f)) - 0.5f * static_cast<float>(t)), W, t, ten ? kPatternGrid10 : kPatternGrid5);
+  }
+  // The circles at 10 and 20 degrees from the axis, 0.6 degrees thick: bands of tangent radius, per pixel.
+  float lo2[2], hi2[2];
+  const float ring[2] = {10.0f, 20.0f};
+  for (int i = 0; i < 2; i++) {
+    const float a = tanDeg(ring[i] - 0.3f), b = tanDeg(ring[i] + 0.3f);
+    lo2[i] = a * a, hi2[i] = b * b;
+  }
+  for (int32_t y = 0; y < H; y++) {
+    const float ty = c.u - (static_cast<float>(y) + 0.5f) / static_cast<float>(H) * spanY;
+    for (int32_t x = 0; x < W; x++) {
+      const float tx = c.l + (static_cast<float>(x) + 0.5f) / static_cast<float>(W) * spanX;
+      const float r2 = tx * tx + ty * ty;
+      if ((r2 >= lo2[0] && r2 <= hi2[0]) || (r2 >= lo2[1] && r2 <= hi2[1])) cv.fill(x, y, 1, 1, eye);
+    }
+  }
+  // The cross on the axis, arms 3 degrees long, in the eye's colour.
+  const int32_t ax = pixel(colOf(0.0f)), ay = pixel(rowOf(0.0f));
+  const int32_t armX = pixel(colOf(tanDeg(3.0f))) - ax, armY = pixel(rowOf(-tanDeg(3.0f))) - ay;
+  cv.fill(ax - armX, ay - 3, 2 * armX + 1, 7, eye);
+  cv.fill(ax - 3, ay - armY, 7, 2 * armY + 1, eye);
+  // The labels every 10 degrees, along the axis lines (beside each line, clear of the axis).
+  const int32_t s = 3, glyphH = 7 * s;
+  for (int k = static_cast<int>(std::ceil(minX / 10.0f)); static_cast<float>(k) * 10.0f <= maxX; k++)
+    if (k != 0) drawText(cv, pixel(colOf(tanDeg(static_cast<float>(k) * 10.0f))) + 5, ay + 8, std::to_string(k * 10), s, kPatternText);
+  for (int k = static_cast<int>(std::ceil(minY / 10.0f)); static_cast<float>(k) * 10.0f <= maxY; k++)
+    if (k != 0) drawText(cv, ax + 8, pixel(rowOf(tanDeg(static_cast<float>(k) * 10.0f))) - 6 - glyphH, std::to_string(k * 10), s, kPatternText);
+  // The eye's letter, large, in its outer top corner.
+  const int32_t big = 16;
+  const std::string letter = e == 0 ? "L" : "R";
+  const int32_t lx = e == 0 ? W * 14 / 100 : W * 86 / 100 - textWidth(letter, big);
+  drawText(cv, lx, H * 14 / 100, letter, big, eye);
+}
+
+// The pattern in its swapchain: drawn again when the geometry it is drawn for changes (VPX's fov or render size), at
+// most once a second; each eye kPatternEyeH high and as wide as VPX's render aspect says (so the crop is the whole
+// render, give or take a pixel's rounding).
+void patternTick(Session& s, std::unique_ptr<GlContextScope>& scope) {
+  const bool rectKnown = s.appViewsSeen && s.appRect[0].width > 0 && s.appRect[0].height > 0;
+  uint32_t eyeW = kPatternEyeH;
+  if (rectKnown) {
+    const double w = std::round(static_cast<double>(kPatternEyeH) * s.appRect[0].width / s.appRect[0].height);
+    eyeW = static_cast<uint32_t>(w < kPatternEyeMinW ? kPatternEyeMinW : w > kPatternEyeMaxW ? kPatternEyeMaxW : w);
+  }
+  const uint32_t eyeH = kPatternEyeH;
+  const float outAr = static_cast<float>(eyeW) / static_cast<float>(eyeH);
+  const std::array<EyeCrop, 2> crops = {eyeCrop(s, 0, outAr), eyeCrop(s, 1, outAr)};
+  bool same = s.pattern.released && s.patternEyeW == eyeW && s.patternEyeH == eyeH;
+  for (size_t e = 0; e < 2 && same; e++) {
+    const EyeCrop& a = crops[e];
+    const EyeCrop& b = s.patternCrop[e];
+    same = std::fabs(a.l - b.l) < 1e-4f && std::fabs(a.r - b.r) < 1e-4f && std::fabs(a.d - b.d) < 1e-4f && std::fabs(a.u - b.u) < 1e-4f;
+  }
+  if (same) return;
+  const uint64_t now = GetTickCount64();
+  if (s.patternAt != 0 && now - s.patternAt < kPatternRedrawMs) return;
+  s.patternAt = now;
+  const uint32_t picW = 2 * eyeW;
+  std::vector<uint8_t> px(static_cast<size_t>(picW) * eyeH * 4);
+  for (size_t e = 0; e < 2; e++) {
+    const EyeCanvas cv{px.data(), picW, static_cast<int32_t>(e * eyeW), static_cast<int32_t>(eyeW), static_cast<int32_t>(eyeH)};
+    drawPatternEye(cv, crops[e], e);
+  }
+  const uint64_t drawMs = GetTickCount64() - now;
+  upload(s, s.pattern, scope, px.data(), picW, eyeH);
+  if (s.off || !s.pattern.released) return;
+  s.patternEyeW = eyeW, s.patternEyeH = eyeH, s.patternCrop = crops;
+  std::string eyes;
+  for (size_t e = 0; e < 2; e++) {
+    const EyeCrop& c = crops[e];
+    eyes += std::string(e == 0 ? "; left" : "; right") + " eye (fov from " + c.fovFrom + ")" +
+            fmt(" %+.1f .. %+.1f deg across, %+.1f .. %+.1f deg up", std::atan(c.l) * kDegPerRad, std::atan(c.r) * kDegPerRad, std::atan(c.d) * kDegPerRad,
+                std::atan(c.u) * kDegPerRad);
+  }
+  logLine("test: calibration pattern drawn, each eye " + std::to_string(eyeW) + "x" + std::to_string(eyeH) + eyes + "; " + std::to_string(drawMs) + " ms");
+}
+
 // D7.4: theater begins: the screen goes 2.6 m in front of where the head points now, in LOCAL space, where it then
 // stays. D7.4.7 (2026-11-02): turned by the head's yaw AND pitch, never its roll, the pitch clamped to ±75° (never
 // overhead or underfoot). The receiver is looking down at his own playfield when the other player's ball starts, about
@@ -923,6 +1105,8 @@ void recentre(Session& s, XrTime when) {
 // frame on the screen), panel needs the panel; nothing live for 5 s → hidden, whatever was asked (a crashed
 // companion never leaves a player in the dark).
 ViewMode wantedMode(const Session& s, const Control& c) {
+  // D7.6.1: the calibration pattern needs no frame from the companion; it ends with the control (and so with the pipe).
+  if (c.test == TestPattern::Pattern && s.pattern.released) return ViewMode::Theater;
   const bool panelUp = s.panel.released && panelPipeLive(Stream::Panel);
   const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
   switch (c.mode) {
@@ -1358,6 +1542,11 @@ std::vector<Fact> sessionFacts(const Session& s) {
         text);
   }
 
+  // D7.6.1: the calibration pattern.
+  add("test", std::string("{\"pattern\":") + (s.patternOn ? "true" : "false") + ",\"eye\":" + (s.patternEyeW ? jpair(s.patternEyeW, s.patternEyeH) : std::string("null")) + "}",
+      s.patternOn ? "test: calibration pattern on (each eye " + std::to_string(s.patternEyeW) + "x" + std::to_string(s.patternEyeH) + ")"
+                  : std::string("test: calibration pattern off"));
+
   {
     // OpenComposite: VPX 10.8.0 speaks OpenVR only, so an OpenXR instance inside it is OpenComposite's (or another
     // OpenVR-to-OpenXR shim). The marks, strongest first: its name on the instance, a module named after it, an
@@ -1471,8 +1660,16 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   }
   cameraTick(s, info, c, scope);
   uploadStream(s, s.panel, Stream::Panel, scope);
+  // D7.6.1: the calibration pattern takes the video's place while asked (the companion's frames are taken, not shown).
+  const bool pattern = c.test == TestPattern::Pattern;
+  if (pattern != s.patternOn) {
+    s.patternOn = pattern;
+    logLine(pattern ? "test: calibration pattern on: theater shows the layer's own stereo grid instead of the companion's picture"
+                    : "test: calibration pattern off");
+  }
+  if (pattern) patternTick(s, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
-  if (c.mode == ViewMode::Theater) uploadStream(s, s.video, Stream::Video, scope);
+  if (c.mode == ViewMode::Theater && !pattern) uploadStream(s, s.video, Stream::Video, scope);
   else panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH);
   if (s.off) return false;
   stepMode(s, wantedMode(s, c), info.displayTime);
@@ -1503,13 +1700,15 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
                {width, width * static_cast<float>(s.panel.height) / static_cast<float>(s.panel.width)}, true));
   } else if (s.shown == ViewMode::Theater && s.shade.released) {
     add(quadAt(s, used++, s.view, s.shade, XR_EYE_VISIBILITY_BOTH, 0, w(s.shade), backdropPose, {kBackdropSizeM, kBackdropSizeM}, false));
-    const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
-    const Surface& pic = videoUp ? s.video : s.panel;
+    // D7.6.1: the pattern, while asked, is a side-by-side picture like a VR sender's.
+    const bool patternUp = pattern && s.pattern.released;
+    const bool videoUp = !patternUp && s.video.released && panelPipeLive(Stream::Video);
+    const Surface& pic = patternUp ? s.pattern : videoUp ? s.video : s.panel;
     if (pic.released) {
       // Side by side (VPX's VR preview on "both eyes": left eye | right eye): one swapchain, each half to its eye as its
       // own quad, the stereo window (D7.4.5, above placeWindows; XrSwapchainSubImage::imageRect may be any rect inside
       // the image).
-      const bool sbs = videoUp && c.sbs && pic.width >= 2;
+      const bool sbs = patternUp || (videoUp && c.sbs && pic.width >= 2);
       const int32_t half = w(pic) / 2;
       const float eyeW = static_cast<float>(sbs ? half : w(pic));
       const float eyeH = static_cast<float>(pic.height > 0 ? pic.height : 1);
@@ -1558,6 +1757,8 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
   s->video.name = "video";
   s->video.order = Order::RGBA;
   s->shade.name = "shade";
+  s->pattern.name = "pattern";  // D7.6.1
+  s->pattern.order = Order::RGBA;
   s->screenPose = ahead(kScreenDistanceM);  // until the first recentre (a quad's pose must be a unit quaternion)
   const auto* b = info ? reinterpret_cast<const XrBaseInStructure*>(info->next) : nullptr;
   std::string binding = "none";

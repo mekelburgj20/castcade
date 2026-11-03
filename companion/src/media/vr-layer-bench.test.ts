@@ -187,6 +187,50 @@ describe('createVrLayerOverlay: the bench and the report request (D7.6.2)', () =
   });
 });
 
+describe('createVrLayerOverlay: the calibration pattern (D7.6.1)', () => {
+  it('test: "pattern" is on the control only while set, only to a protocol-3 layer; off is the control as before', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    h.ov.setTest!('pattern'); // before any connection: kept, sent with the first control
+    await h.ov.start(h.src); // start() runs stop() only when already running; nothing to clear here
+    const p = h.pipes[0]!;
+    p.answer();
+    p.emit('data', hello(3));
+    expect(p.controlTexts()).toEqual(['{"mode":"panel","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null,"test":"pattern"}']);
+    expect(h.ov.bench!().test).toBe('pattern');
+    h.ov.setTest!('pattern'); // the same again: nothing written
+    expect(p.controlTexts()).toHaveLength(1);
+    h.ov.setTest!(null);
+    expect(p.controlTexts()[1]).toBe('{"mode":"panel","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null}');
+    expect(h.benches.at(-1)!.test).toBeNull();
+    expect(h.log).toContain('vr-layer: calibration pattern off');
+
+    // A new connection (VPX restarted) gets it again while set.
+    h.ov.setTest!('pattern');
+    p.hangUp();
+    vi.advanceTimersByTime(2000);
+    const p2 = h.pipes[1]!;
+    p2.answer();
+    p2.emit('data', hello(3));
+    expect(p2.controlTexts()[0]).toContain('"test":"pattern"');
+
+    // stop() clears it: the next match starts without the pattern.
+    await h.ov.stop();
+    expect(h.ov.bench!().test).toBeNull();
+  });
+
+  it('a protocol-2 layer never sees the key', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    await h.ov.start(h.src);
+    const p = h.pipes[0]!;
+    p.answer();
+    p.emit('data', hello(2));
+    h.ov.setTest!('pattern');
+    expect(p.controlTexts()).toEqual(['{"mode":"panel","stereo":"mono","panelPos":"low","theaterScale":1}']);
+  });
+});
+
 describe('probeLayerSession (D7.6.2)', () => {
   it('reads the hello and the report, writes nothing, closes', async () => {
     vi.useFakeTimers();

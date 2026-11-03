@@ -57,6 +57,7 @@ const CH = {
   matchShowPanel: 'match:showPanel',
   matchHidePanel: 'match:hidePanel',
   matchVrReport: 'match:vrReport',
+  matchSetVrTest: 'match:setVrTest',
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
@@ -148,6 +149,7 @@ const castcade: CastcadeApi = {
     showPanel: () => ipcRenderer.invoke(CH.matchShowPanel),
     hidePanel: () => ipcRenderer.invoke(CH.matchHidePanel),
     vrReport: () => ipcRenderer.invoke(CH.matchVrReport),
+    setVrTest: (test) => ipcRenderer.invoke(CH.matchSetVrTest, test),
     onStatus(cb) {
       const listener = (_e: Electron.IpcRendererEvent, s: MatchStatus): void => cb(s);
       ipcRenderer.on(CH.matchStatusEvent, listener);
