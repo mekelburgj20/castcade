@@ -368,6 +368,11 @@ function registerIpc(
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
   ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
+  ipcMain.handle(IPC.matchSetTurn, (_e, t: unknown) => {
+    const v = (typeof t === 'object' && t !== null ? t : {}) as { url?: unknown; username?: unknown; credential?: unknown };
+    if (typeof v.url !== 'string' || v.url.trim() === '') return mh().setTurn(null);
+    return mh().setTurn({ url: v.url, username: typeof v.username === 'string' ? v.username : '', credential: typeof v.credential === 'string' ? v.credential : null });
+  });
   ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
   ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
   ipcMain.handle(IPC.appClipboardText, () => clipboard.readText());

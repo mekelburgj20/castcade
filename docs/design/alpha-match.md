@@ -105,7 +105,12 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   (`micDeviceId` setting; the panel lists devices, and before a match a hidden page in the same partition does when
   the Match tab opens, B22; the Windows default is often a virtual device in VR).
 - **ICE**: STUN `stun:stun.l.google.com:19302` and `stun:stun1.l.google.com:19302`; optional TURN from settings
-  (`turnUrl`, `turnUser`, `turnCredential`); no relay of ours yet.
+  (media.json `turn: { url, username, credential }`, set on the Match tab, D2.9); no relay of ours yet. D2.9
+  (2026-11-02, EFUKTZ: two NATed rigs sat in `checking` with no pair): each peer's candidate pair from `getStats()`
+  (types and protocol, never an address) is logged when it changes and every 10 s, and a connection stuck in
+  `checking` / `disconnected` / `failed` (or `new` once signalling is stable) restarts ICE through the normal
+  negotiation: the impolite peer leads after 10 s, 20 s, 40 s, the polite one 5 s later each time; after three the
+  panel and the Match tab say there is no path and a TURN relay is needed.
 - **Panel page**: one HTML page (a template string, like `stream-host.ts`'s audio page) holding the peer connections
   AND the UI: the up player's video large, a header `YOUR BALL 2` / `<name> IS UP`, a score strip (name, score, ball),
   the mic state, a one-line message (errors, "different table file"). Dark, high-contrast, legible at 0.6 m in a

@@ -27,7 +27,7 @@ import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
-import type { MediaSettingsStore } from '../media/media-settings.js';
+import type { MediaSettingsStore, TurnServer } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
@@ -114,6 +114,11 @@ export interface MatchStatus {
   /** Null: the Windows default device. */
   micDeviceId: string | null;
   muted: boolean;
+  /**
+   * D2.9 (2026-11-02): the player's own TURN relay from media.json (url and username; the credential only as "set"),
+   * used from the next match on. Null: none (STUN only).
+   */
+  turn: { url: string; username: string; credentialSet: boolean } | null;
   locked: boolean;
   settings: MatchSettings;
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
@@ -132,6 +137,11 @@ export interface MatchHost {
   /** Null: the Windows default. Saved in media.json, and switched live while a match runs. */
   setMicrophone(deviceId: string | null): MatchStatus;
   setMuted(muted: boolean): MatchStatus;
+  /**
+   * D2.9 (2026-11-02): the TURN relay (saved in media.json, used from the next match on). Null or an empty url clears
+   * it; a null credential keeps the saved one. Throws on a url that is not `turn:` / `turns:`.
+   */
+  setTurn(turn: { url: string; username: string; credential: string | null } | null): MatchStatus;
   /** D2.6 (2026-11-01): the Match tab's Show panel / Hide panel for the desktop panel window; a no-op without one. */
   showPanel(): MatchStatus;
   hidePanel(): MatchStatus;
@@ -215,6 +225,11 @@ interface Active {
 }
 
 /** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
+/** D2.9: the saved TURN relay as the Match tab sees it: never the credential itself. */
+export function turnView(t: TurnServer | null): MatchStatus['turn'] {
+  return t ? { url: t.url, username: t.username, credentialSet: t.credential !== '' } : null;
+}
+
 function lobbyKey(s: WitnessStatus): string {
   const vr = s.currentAttestation?.vr;
   return JSON.stringify([gameFingerprintFrom(s, RECIPE_VERSION), vr?.sampledAt ?? null, vr?.inVr ?? null]);
@@ -381,6 +396,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       microphones: opts.media?.microphones?.() ?? [],
       micDeviceId: opts.mediaSettings?.get().micDeviceId ?? null,
       muted: opts.mediaSettings?.get().muted ?? false,
+      turn: turnView(opts.mediaSettings?.get().turn ?? null),
       locked,
       settings: { ...settings },
       defaultName: defaultName(),
@@ -878,6 +894,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (opts.media?.setMicrophone) opts.media.setMicrophone(id);
       else opts.mediaSettings?.patch({ micDeviceId: id });
       log.info(`match: microphone ${id === null ? 'set to the Windows default' : 'chosen on the Match tab'}`);
+      emit();
+      return status();
+    },
+    setTurn(turn) {
+      const store = opts.mediaSettings;
+      if (!store) throw new Error('media settings are not available in this build');
+      const url = turn?.url.trim() ?? '';
+      if (!turn || url === '') {
+        store.patch({ turn: null });
+        log.info('match: TURN relay cleared on the Match tab (STUN only from the next match)');
+      } else {
+        const saved = store.get().turn;
+        const next: TurnServer = { url, username: turn.username.trim(), credential: turn.credential ?? saved?.credential ?? '' };
+        const got = store.patch({ turn: next }).turn;
+        if (!got || got.url !== next.url || got.username !== next.username || got.credential !== next.credential) {
+          throw new Error('The TURN relay needs a turn: or turns: address (for example turn:relay.example.org:3478), a username and a credential, each under 512 characters.');
+        }
+        // Never the credential (media-settings.ts).
+        log.info(`match: TURN relay set to ${got.url} on the Match tab (used from the next match)`);
+      }
       emit();
       return status();
     },

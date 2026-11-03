@@ -155,6 +155,25 @@ describe('match host (A6)', () => {
     expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
   }, 15_000);
 
+  it('D2.9: the TURN relay is saved in media.json; the status shows url and username, never the credential', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-match-turn-'));
+    dirs.push(dir);
+    const file = join(dir, 'media.json');
+    const { mh } = make('turn', 'ab'.repeat(32), { mediaSettings: createMediaSettingsStore(file) });
+    expect(mh.status().turn).toBeNull();
+    const set = mh.setTurn({ url: ' turn:relay.example.org:3478 ', username: 'castcade', credential: 's3cret' });
+    expect(set.turn).toEqual({ url: 'turn:relay.example.org:3478', username: 'castcade', credentialSet: true });
+    expect(JSON.stringify(set)).not.toContain('s3cret');
+    // a null credential keeps the saved one
+    mh.setTurn({ url: 'turns:relay.example.org:5349', username: 'castcade', credential: null });
+    expect(createMediaSettingsStore(file).get().turn).toEqual({ url: 'turns:relay.example.org:5349', username: 'castcade', credential: 's3cret' });
+    expect(() => mh.setTurn({ url: 'http://relay.example.org', username: 'u', credential: 'c' })).toThrow(/turn: or turns:/);
+    expect(createMediaSettingsStore(file).get().turn?.url).toBe('turns:relay.example.org:5349');
+    expect(mh.setTurn(null).turn).toBeNull();
+    expect(mh.setTurn({ url: '  ', username: 'x', credential: 'y' }).turn).toBeNull();
+    expect(createMediaSettingsStore(file).get().turn).toBeNull();
+  });
+
   it('microphone and mute: saved in media.json and live on the media layer when there is one (D2)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'castcade-match-mic-'));
     dirs.push(dir);

@@ -53,6 +53,7 @@ const CH = {
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
+  matchSetTurn: 'match:setTurn',
   matchShowPanel: 'match:showPanel',
   matchHidePanel: 'match:hidePanel',
   witnessStatusEvent: 'witness:status',
@@ -142,6 +143,7 @@ const castcade: CastcadeApi = {
     setSettings: (patch) => ipcRenderer.invoke(CH.matchSettingsSet, patch),
     setMicrophone: (deviceId) => ipcRenderer.invoke(CH.matchSetMicrophone, deviceId),
     setMuted: (muted) => ipcRenderer.invoke(CH.matchSetMuted, muted),
+    setTurn: (turn) => ipcRenderer.invoke(CH.matchSetTurn, turn),
     showPanel: () => ipcRenderer.invoke(CH.matchShowPanel),
     hidePanel: () => ipcRenderer.invoke(CH.matchHidePanel),
     onStatus(cb) {
