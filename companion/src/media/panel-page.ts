@@ -10,7 +10,7 @@
  * must stay self-contained (no imports, no module constants, only each other). Remote players' names reach the DOM
  * through `textContent` only.
  */
-import type { MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
+import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
 import { negotiationSource } from './rtc-signaling.js';
 
@@ -37,6 +37,11 @@ export const PANEL_CHANNELS = {
   tableAudio: 'castcade-panel:table-audio',
   /** D2.8: one 10 ms frame of this rig's VPX sound (float32 stereo 48 kHz, a Uint8Array), only while sending. */
   tablePcm: 'castcade-panel:table-pcm',
+  /**
+   * D7.5.1: one frame of the layer camera (`PanelCameraFrame`: both eyes' JPEGs), only while the capture is the
+   * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
+   */
+  cameraFrame: 'castcade-panel:camera-frame',
   // page -> main
   ready: 'castcade-panel:ready',
   send: 'castcade-panel:send',
@@ -46,6 +51,8 @@ export const PANEL_CHANNELS = {
   video: 'castcade-panel:video',
   /** D2.9: one line for companion.log (ICE restarts and their outcome, the candidate pair); main prefixes `media: `. */
   log: 'castcade-panel:log',
+  /** D7.5.1: the page drew (or gave up on) the camera frame main sent last; main may send the next. */
+  cameraAck: 'castcade-panel:camera-ack',
 } as const;
 
 /** The picture sent while this rig is up (alpha-match.md §4): the VR preview window is set to 1280x720. */
@@ -86,6 +93,23 @@ export interface PanelCapture {
   stereo?: 'mono' | 'sbs' | null;
   /** D7.4.10 (2026-11-02): the window covers its display or hangs off it (`capture-crop.ts` fitWarning); for the Match tab and the log, the page ignores it. */
   warning?: string | null;
+}
+
+/**
+ * D7.5.1 (2026-11-02): the capture is the VR layer camera (alpha-match.md §5a) when its `sourceId` is this: no screen is
+ * opened, the page draws the two eyes main sends on `cameraFrame` side by side onto the same canvas.
+ */
+export const LAYER_CAMERA_SOURCE_ID = 'layer-camera';
+
+/** D7.5.1: one camera frame, main -> page: each eye `width` x `height` as JPEG, left then right, and their geometry. */
+export interface PanelCameraFrame {
+  n: number;
+  width: number;
+  height: number;
+  left: Uint8Array;
+  right: Uint8Array;
+  /** Left then right: fov, crop, render (the stereo declaration carries them, D7.5.2). */
+  eyes: LayerCameraEyeGeometry[];
 }
 
 export interface PanelAttach {
@@ -131,6 +155,8 @@ export interface PanelStats {
   sent?: { width: number; height: number; kbps: number | null; limit: string };
   /** D7.4.6: the stage video's decoded frame size, while theater wanted the feed. */
   decodedSize?: { width: number; height: number };
+  /** D7.5.1: `capture` counted layer camera frames drawn; `unreadable`: frames whose JPEGs did not decode, skipped. */
+  camera?: { unreadable: number };
 }
 
 export interface MicDevice {
@@ -288,6 +314,60 @@ export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeigh
   if (!r) return 'blank';
   ctx.drawImage(video, r.sx, r.sy, r.sw, r.sh, 0, 0, w, h);
   return 'crop';
+}
+
+/**
+ * D7.5.1 (2026-11-02): the capture main and the page hold while the layer camera feeds (alpha-match.md §5a): no screen,
+ * the two eyes side by side, `2 * eyeWidth` x `eyeHeight`, declared side by side. `report()`, the Match tab's capture
+ * fields and the `capture:` counters read it as they read a screen capture's. (Inlined source id: embedded by source.)
+ */
+export function cameraCapture(eyeWidth: number, eyeHeight: number): PanelCapture {
+  const w = Math.max(1, Math.round(eyeWidth)) * 2;
+  const h = Math.max(1, Math.round(eyeHeight));
+  return { sourceId: 'layer-camera', label: 'VR layer camera', screen: { width: w, height: h }, crop: { x: 0, y: 0, width: w, height: h }, out: { width: w, height: h }, stereo: 'sbs' };
+}
+
+/** D7.5.1: the capture is the layer camera (`cameraCapture`), not a screen. */
+export function isCameraCapture(c: { sourceId?: unknown } | null | undefined): boolean {
+  return !!c && c.sourceId === 'layer-camera';
+}
+
+/** D7.5.1: a camera frame from main, checked: each eye's size (1–4096, whole) and two non-empty JPEGs; else null. */
+export function cameraFrameSize(f: unknown): { width: number; height: number } | null {
+  if (typeof f !== 'object' || f === null) return null;
+  const v = f as { width?: unknown; height?: unknown; left?: { byteLength?: unknown } | null; right?: { byteLength?: unknown } | null };
+  const ok = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 4096;
+  const bytes = (b: { byteLength?: unknown } | null | undefined): boolean => !!b && typeof b.byteLength === 'number' && b.byteLength > 0;
+  if (!ok(v.width) || !ok(v.height) || !bytes(v.left) || !bytes(v.right)) return null;
+  return { width: v.width, height: v.height };
+}
+
+/**
+ * D7.5.1: the eyes' geometry as a comparable key (fov to 1e-4 rad, crop and render whole), so the stereo declaration
+ * is re-sent only when it changes (at most once per VPX resolution change); null for none or a malformed list.
+ */
+export function eyesKey(eyes: ReadonlyArray<{ fov?: unknown; rect?: unknown; render?: unknown }> | null | undefined): string | null {
+  if (!eyes || !Array.isArray(eyes) || eyes.length !== 2) return null;
+  const nums = (a: unknown, n: number, k: number): string | null =>
+    Array.isArray(a) && a.length === n && a.every((x) => typeof x === 'number' && isFinite(x)) ? a.map((x: number) => Math.round(x * k)).join(',') : null;
+  const parts: string[] = [];
+  for (const e of eyes) {
+    const fov = nums(e && e.fov, 4, 10000);
+    const rect = nums(e && e.rect, 4, 1);
+    const render = nums(e && e.render, 2, 1);
+    if (fov === null || rect === null || render === null) return null;
+    parts.push(fov + '|' + rect + '|' + render);
+  }
+  return parts.join(';');
+}
+
+/**
+ * D7.4.3 + D7.5.1: the `stereo` signal this rig sends. A screen capture's is `{ kind, stereo }` exactly as before; while
+ * the layer camera feeds it is side by side with each eye's fov, crop and render (`eyes`, left then right).
+ */
+export function stereoSignal(stereo: 'mono' | 'sbs' | null, eyes: ReadonlyArray<{ fov: number[]; rect: number[]; render: number[] }> | null | undefined): { kind: 'stereo'; stereo: 'mono' | 'sbs' | null; eyes?: Array<{ fov: number[]; rect: number[]; render: number[] }> } {
+  if (stereo !== 'sbs' || !eyes || eyes.length !== 2) return { kind: 'stereo', stereo: stereo };
+  return { kind: 'stereo', stereo: 'sbs', eyes: eyes.map((e) => ({ fov: e.fov.slice(0, 4), rect: e.rect.slice(0, 4), render: e.render.slice(0, 2) })) };
 }
 
 /**
@@ -539,7 +619,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -673,6 +753,14 @@ const reopens = new Map();
 // D7.4.3: this rig's declared stereo (undefined until a capture says; null = not known) and each peer's.
 let myStereo = undefined;
 const peerStereo = new Map();
+// D7.5.1: the capture is the VR layer camera (cap is cameraCapture(...)): main sends the eyes on C.cameraFrame and
+// they are drawn side by side onto the canvas; camFrames is the stall watch's mark, camBad the frames that did not
+// decode; myEyes / myEyesKey the eyes' geometry the stereo declaration carries.
+let camMode = false;
+let camFrames = 0;
+let camBad = 0;
+let myEyes = null;
+let myEyesKey = null;
 const $ = (id) => document.getElementById(id);
 const errText = (e) => (e && e.message ? e.message : String(e));
 
@@ -804,9 +892,9 @@ async function openMic(deviceId) {
   render();
 }
 
-/** D2.5: one frame of the match video onto the canvas (the crop, or the cover). */
+/** D2.5: one frame of the match video onto the canvas (the crop, or the cover). D7.5.1: the camera draws per frame. */
 function paint() {
-  if (!cap || !ctx) return;
+  if (!cap || !ctx || camMode) return;
   try { paintFrame(ctx, $('src'), cap, covered); } catch (e) { /* a frame lost; the next tick draws again */ }
 }
 
@@ -826,6 +914,7 @@ function dropCapture() {
   srcTrack = null;
   videoTrack = null;
   cap = null;
+  camMode = false;
   stalled = false;
   $('src').srcObject = null;
   if (src) src.stop();
@@ -842,23 +931,120 @@ function dropCapture() {
  * size so the crop stays sharp; getDisplayMedia, which main answers with the same source, if that fails), drawn cropped
  * onto the canvas. The canvas track outlives a change of display: the peers keep their sender and nothing renegotiates.
  */
-/** D7.4.3: a new declared stereo goes to every peer (a new connection gets it from openPeer); none given, nothing said. */
-function noteStereo(s) {
+/**
+ * D7.4.3: a new declared stereo goes to every peer (a new connection gets it from openPeer); none given, nothing said.
+ * D7.5.1: with the layer camera's eyes (side by side only), re-sent when their geometry changes too.
+ */
+function noteStereo(s, eyes) {
   if (s === undefined) return;
   const v = s === 'sbs' || s === 'mono' ? s : null;
-  if (v === myStereo) return;
+  const e = v === 'sbs' && eyes ? eyes : null;
+  const k = eyesKey(e);
+  if (v === myStereo && k === myEyesKey) return;
   myStereo = v;
+  myEyes = k === null ? null : e;
+  myEyesKey = k;
   if (mesh) for (const id of remote.keys()) sendStereo(id);
 }
 function sendStereo(peer) {
   if (myStereo === undefined) return;
-  ipcRenderer.send(C.send, { to: peer, signal: { kind: 'stereo', stereo: myStereo } });
+  ipcRenderer.send(C.send, { to: peer, signal: stereoSignal(myStereo, myEyes) });
+}
+
+/** The canvas's track, made once and kept (on every connection: the peers keep their sender, nothing renegotiates). */
+function ensureVideoTrack(label) {
+  if (videoTrack && videoTrack.readyState === 'live') return true;
+  const out = canvas.captureStream(VIDEO.fps).getVideoTracks()[0];
+  if (!out) {
+    fail('Could not capture ' + label + ' (the canvas gave no track).');
+    return false;
+  }
+  // D7.4.6: theater shows this life-size in a headset, so under a thin uplink keep the resolution and drop frames.
+  try { out.contentHint = 'detail'; } catch (e) { /* older engines */ }
+  out.enabled = sending && !stalled;
+  videoTrack = out;
+  localStream.addTrack(out);
+  for (const r of remote.values()) attachVideo(r);
+  return true;
+}
+
+/**
+ * D7.5.1 (2026-11-02): the capture is the VR layer camera. No screen is opened (a live one is stopped); the canvas
+ * keeps its track and takes the camera's size (2w x h), so the peers keep their sender; the declaration is side by
+ * side whatever the preview setting says. Frames arrive on C.cameraFrame.
+ */
+function openCamera(c) {
+  const fresh = !camMode;
+  camMode = true;
+  if (srcTrack) {
+    const s = srcTrack;
+    srcTrack = null;
+    $('src').srcObject = null;
+    s.stop();
+  }
+  if (fresh) {
+    camFrames = 0;
+    watch = { mark: 0, at: Date.now() };
+    applyStall(false);
+  }
+  noteStereo('sbs', myEyes);
+  setCrop(c);
+  if (!ensureVideoTrack(c.label)) return;
+  if (localError && localError.indexOf('Could not capture') === 0) localError = null;
+  report();
+  render();
+}
+
+/** D7.5.1: one camera frame: both JPEGs decoded, drawn left | right, counted; the ack goes whatever happened. */
+async function drawCamera(f) {
+  const size = cameraFrameSize(f);
+  if (!camMode || !ctx || !size || typeof createImageBitmap !== 'function') {
+    if (camMode && !size) camBad++;
+    ipcRenderer.send(C.cameraAck);
+    return;
+  }
+  let l = null;
+  let r = null;
+  try {
+    const both = await Promise.all([
+      createImageBitmap(new Blob([f.left], { type: 'image/jpeg' })),
+      createImageBitmap(new Blob([f.right], { type: 'image/jpeg' })),
+    ]);
+    l = both[0];
+    r = both[1];
+    if (camMode) {
+      const w = size.width;
+      const h = size.height;
+      if (!cap || cap.out.width !== 2 * w || cap.out.height !== h) setCrop(cameraCapture(w, h));
+      ctx.drawImage(l, 0, 0, l.width || w, l.height || h, 0, 0, w, h);
+      ctx.drawImage(r, 0, 0, r.width || w, r.height || h, w, 0, w, h);
+      camFrames++;
+      noteStereo('sbs', f.eyes || null);
+    }
+  } catch (e) {
+    camBad++;
+  } finally {
+    if (l && typeof l.close === 'function') l.close();
+    if (r && typeof r.close === 'function') r.close();
+    ipcRenderer.send(C.cameraAck);
+  }
 }
 
 async function openCapture(c) {
   if (!c) {
     if (srcTrack || videoTrack) dropCapture();
     return;
+  }
+  if (isCameraCapture(c)) {
+    openCamera(c);
+    return;
+  }
+  // D7.5.1: back from the layer camera to a screen: opened afresh; the canvas track stays.
+  if (camMode) {
+    camMode = false;
+    cap = null;
+    // The eyes go with the camera; a screen that declares nothing is not known (not the camera's side by side).
+    noteStereo(c.stereo === undefined ? null : c.stereo);
   }
   noteStereo(c.stereo);
   if (!c.restart && cap && srcTrack && srcTrack.readyState === 'live' && cap.sourceId === c.sourceId) {
@@ -899,19 +1085,7 @@ async function openCapture(c) {
     dropCapture();
     fail('The capture of ' + c.label + ' ended (the display went away?).');
   });
-  if (!videoTrack || videoTrack.readyState !== 'live') {
-    const out = canvas.captureStream(VIDEO.fps).getVideoTracks()[0];
-    if (!out) {
-      fail('Could not capture ' + c.label + ' (the canvas gave no track).');
-      return;
-    }
-    // D7.4.6: theater shows this life-size in a headset, so under a thin uplink keep the resolution and drop frames.
-    try { out.contentHint = 'detail'; } catch (e) { /* older engines */ }
-    out.enabled = sending && !stalled;
-    videoTrack = out;
-    localStream.addTrack(out);
-    for (const r of remote.values()) attachVideo(r);
-  }
+  if (!ensureVideoTrack(c.label)) return;
   if (localError && localError.indexOf('Could not capture') === 0) localError = null;
   report();
   render();
@@ -949,6 +1123,14 @@ function applyStall(on) {
   render();
 }
 function srcTick() {
+  // D7.5.1: the layer camera's mark is the count of frames drawn; a stall goes through main's fallback.
+  if (camMode) {
+    const cw = stallStep(watch, camFrames, Date.now(), sending, STALL_MS);
+    if (cw.moved) capFrames += Math.max(1, camFrames - watch.mark);
+    watch = { mark: cw.mark, at: cw.at };
+    applyStall(cw.stalled);
+    return;
+  }
   if (!srcTrack) {
     watch = { mark: -1, at: Date.now() };
     applyStall(false);
@@ -972,8 +1154,10 @@ function statsTick() {
   let capture = null;
   let decoded = null;
   let toLayer = null;
-  if (sending && srcTrack) capture = capFrames;
+  if (sending && (srcTrack || camMode)) capture = capFrames;
   capFrames = 0;
+  const unreadable = camBad;
+  camBad = 0;
   const who = panel ? videoPeer(panel) : null;
   if (feedWanted && who && who !== 'self') {
     const v = $('video');
@@ -991,6 +1175,7 @@ function statsTick() {
   stats = { seq: statsSeq, capture: capture, decoded: decoded, toLayer: toLayer };
   // D7.4.6: sizes and rates, from the probe of the tick before (getStats is async); keys absent until there is one.
   if (capture !== null && outInfo) stats.sent = outInfo;
+  if (capture !== null && camMode) stats.camera = { unreadable: unreadable };
   if (decoded !== null) {
     const v = $('video');
     if (v.videoWidth > 0) stats.decodedSize = { width: v.videoWidth, height: v.videoHeight };
@@ -1260,6 +1445,11 @@ function detach() {
   videoTrack = null;
   srcTrack = null;
   cap = null;
+  camMode = false;
+  camFrames = 0;
+  camBad = 0;
+  myEyes = null;
+  myEyesKey = null;
   covered = false;
   stalled = false;
   stats = null;
@@ -1309,6 +1499,7 @@ ipcRenderer.on(C.muted, (_e, on) => {
   render();
 });
 ipcRenderer.on(C.capture, (_e, c) => void openCapture(c));
+ipcRenderer.on(C.cameraFrame, (_e, f) => void drawCamera(f));
 ipcRenderer.on(C.cover, (_e, on) => {
   covered = !!on;
   paint();

@@ -377,6 +377,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let fedSize = '';
   /** The connected layer's protocol: 1 until its hello says more. */
   let protocol = 1;
+  /** D7.5.1: the connected layer has said something (its hello, or not): only then is `protocol` known. */
+  let spoke = false;
   let lastControl: string | null = null;
   let oldLayerLogged = false;
   // D7.5: the camera: what is asked, what the layer said, the frame listeners and the 10 s counters.
@@ -575,6 +577,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       connected = true;
       everConnected = true;
       protocol = 1;
+      spoke = false;
       lastControl = null;
       opts.log(`vr-layer: connected to the layer in VPX (${pipePath})`);
       set('showing');
@@ -583,6 +586,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     sock.on('data', (chunk) => {
       if (socket !== sock) return;
       for (const m of reader.push(chunk)) {
+        spoke = true;
         // The hello comes first on a protocol-2+ pipe; anything else first means a layer this side cannot read.
         if (firstMessage && m.kind !== 'hello') {
           firstMessage = false;
@@ -605,6 +609,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       socket = null;
       writer.attach(null);
       protocol = 1;
+      spoke = false;
       lastControl = null;
       updateVideo();
       // D7.5: frames end with the pipe; a camera still asked is asked again of the next connection.
@@ -739,6 +744,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     },
 
     cameraStatus: () => camera,
+
+    layerProtocol: () => (socket && spoke ? protocol : null),
 
     onCameraStatus(cb) {
       cameraListeners.add(cb);

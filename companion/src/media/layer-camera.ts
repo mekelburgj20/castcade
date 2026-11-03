@@ -2,7 +2,8 @@
  * D7.5 (2026-11-02): the layer camera's policy (vr-layer/README.md "The camera"; docs/design/alpha-match.md §5a): whether
  * a VR sender's picture comes from the Castcade OpenXR layer (its copy of the two eye views VPX submits) or from the
  * screen capture of VPX's preview window, what size and rate to ask the layer for, and when to give the layer up and
- * fall back. Pure: `rtc-host.ts` / `match-host.ts` call these and act (the lead wires that; §5a).
+ * fall back. Pure: `rtc-host.ts` calls these and acts (D7.5.1, §5a): `decideCamera` at each attach, `cameraWatch` on a
+ * 1 s tick and on every camera status, `createFrameSlot` for the frames it hands the panel page.
  *
  * Rules:
  *   - the screen capture is the default (`match.json` `cameraSource: 'screen'`); the layer is asked only when the
@@ -94,4 +95,109 @@ export function cameraFallback(s: LayerCameraStatus, now: number, askedAt: numbe
     return { fallBack: true, reason: `the layer camera stalled (no frame for ${LAYER_CAMERA_STALL_MS / 1000} s)` };
   }
   return { fallBack: false, reason: null };
+}
+
+/**
+ * D7.5.1 (2026-11-02): asked and the layer never came on the pipe at all (a layer that is missing, disabled, or older
+ * than the hello, which never says anything): the screen capture after this long. Longer than the 8 s an answering
+ * layer gets, because at host / join the overlay starts only after the panel has opened.
+ */
+export const LAYER_CAMERA_PIPE_WAIT_MS = 20_000;
+
+export interface CameraWatchInput {
+  status: LayerCameraStatus;
+  now: number;
+  /** When this rig asked the layer for the camera (ms clock). */
+  askedAt: number;
+  /** When the layer on the pipe first said who it is during this ask (its protocol became known); null: not yet. */
+  connectedAt: number | null;
+  /** This rig is the player up. */
+  sending: boolean;
+  /** The protocol of the layer on the pipe now (`VrOverlay.layerProtocol`), null while none has spoken. */
+  layerProtocol: number | null;
+  /** The overlay's own state (`VrOverlay.status()`), when known. */
+  overlay?: { state: string; reason: string | null } | null;
+}
+
+/**
+ * D7.5.1: the whole watch over an asked camera, run on a 1 s tick and on every camera status (alpha-match.md §5a item
+ * 4): `cameraFallback` plus what only the pipe tells: a layer that turns out to speak protocol 2, an overlay that
+ * cannot run, a pipe that never opened (`LAYER_CAMERA_PIPE_WAIT_MS`) or closed after it had (VPX exited or left VR), a
+ * layer that stopped the camera on its own while still asked (`vr-layer.ts` then keeps the state `asked` with the
+ * layer's `why`), and a layer that said `on` and sent nothing. The 8 s "no frame" clock runs from when the layer came
+ * on the pipe, not from the ask.
+ */
+export function cameraWatch(i: CameraWatchInput): CameraFallback {
+  if (i.layerProtocol !== null && i.layerProtocol < LAYER_CAMERA_MIN_PROTOCOL) {
+    return { fallBack: true, reason: `the layer in VPX speaks pipe protocol ${i.layerProtocol}, before the layer camera (restart VPX with the new layer)` };
+  }
+  if (i.overlay?.state === 'unavailable') return { fallBack: true, reason: `the OpenXR layer is not available (${i.overlay.reason ?? 'no reason given'})` };
+  if (i.layerProtocol === null) {
+    if (i.connectedAt !== null) return { fallBack: true, reason: 'the pipe to the layer closed (VPX exited or left VR)' };
+    if (i.now - i.askedAt >= LAYER_CAMERA_PIPE_WAIT_MS) return { fallBack: true, reason: `the layer did not answer on the pipe within ${LAYER_CAMERA_PIPE_WAIT_MS / 1000} s` };
+    return { fallBack: false, reason: null };
+  }
+  const since = Math.max(i.askedAt, i.connectedAt ?? i.askedAt);
+  if (i.status.state === 'asked' && i.status.why) return { fallBack: true, reason: `the layer stopped the camera: ${i.status.why}` };
+  if (i.status.state === 'on' && i.status.frames === 0 && i.now - since >= LAYER_CAMERA_FALLBACK_MS) {
+    return { fallBack: true, reason: `the layer said the camera is on but sent no frame within ${LAYER_CAMERA_FALLBACK_MS / 1000} s` };
+  }
+  return cameraFallback(i.status, i.now, since, i.sending);
+}
+
+/**
+ * D7.5.1: main's side of the camera frames going to the panel page: one frame in flight (the page acks each one once it
+ * has drawn it), the newest waiting, older ones dropped and counted. An ack lost for `lostAckMs` (a page that reloaded)
+ * is given up and the next frame goes.
+ */
+export interface FrameSlot<T> {
+  /** A new frame: the one to send now, or null (one is in flight; this one waits, replacing any that waited). */
+  offer(frame: T, now: number): T | null;
+  /** The page drew the frame in flight: the waiting one to send now, or null. */
+  ack(now: number): T | null;
+  /** Frames replaced before they could be sent, since the last call. */
+  takeDropped(): number;
+  reset(): void;
+}
+
+export function createFrameSlot<T>(lostAckMs = 1000): FrameSlot<T> {
+  let inFlight = false;
+  let sentAt = 0;
+  let waiting: T | null = null;
+  let dropped = 0;
+  const send = (f: T, now: number): T => {
+    inFlight = true;
+    sentAt = now;
+    return f;
+  };
+  return {
+    offer(frame, now) {
+      if (!inFlight || now - sentAt >= lostAckMs) {
+        if (waiting !== null) dropped++;
+        waiting = null;
+        return send(frame, now);
+      }
+      if (waiting !== null) dropped++;
+      waiting = frame;
+      return null;
+    },
+    ack(now) {
+      inFlight = false;
+      if (waiting === null) return null;
+      const f = waiting;
+      waiting = null;
+      return send(f, now);
+    },
+    takeDropped() {
+      const d = dropped;
+      dropped = 0;
+      return d;
+    },
+    reset() {
+      inFlight = false;
+      sentAt = 0;
+      waiting = null;
+      dropped = 0;
+    },
+  };
 }

@@ -174,7 +174,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -286,6 +286,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let settings = readMatchSettings(readText(opts.file));
   // D7.4.3 (2026-11-01): the media layer declares the preview's stereo from this setting (and the ini on `auto`).
   opts.media?.setPreviewStereo?.(settings.previewStereo);
+  // D7.5.1 (2026-11-02): the layer camera's layer and the Match tab's Camera (decided at each attach, alpha-match.md §5a).
+  opts.media?.setCameraLayer?.(opts.vrLayer ?? null);
+  opts.media?.setCameraSource?.(settings.cameraSource);
   let active: Active | null = null;
   let connecting = false;
   let lastError: string | null = null;
@@ -367,7 +370,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const usesLayer = (a: RigRuntime): boolean => a.rig === 'vr_headset' && a.runtime !== null && a.runtime !== 'steamvr';
   const overlayFor = (a: RigRuntime): VrOverlay | undefined => (usesLayer(a) ? opts.vrLayer : opts.vrOverlay);
   const headsetPanel = (a: RigRuntime): boolean => a.rig === 'vr_headset';
-  const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a) });
+  const mediaRig = (a: Pick<Active, 'rig' | 'runtime'>): { inVr: boolean; headsetPanel: boolean; runtime: VrRuntime | null } => ({ inVr: a.rig === 'vr_headset', headsetPanel: headsetPanel(a), runtime: a.runtime });
   const nameIn = (c: ControllerStatus, id: string): string => c.participants.find((p) => p.playerId === id)?.displayName ?? id;
   const status = (): MatchStatus => {
     const a = active;
@@ -939,9 +942,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         opts.media?.setPreviewStereo?.(settings.previewStereo);
         log.info(`match: preview stereo set to ${settings.previewStereo} on the Match tab`);
       }
-      // D7.5: the media layer reads it at its next attach (the lead wires the live switch; alpha-match.md §5a).
+      // D7.5.1: the media layer reads it at its next attach, and while attached switches between balls (§5a).
       if (settings.cameraSource !== cameraBefore) {
-        log.info(`match: camera set to ${settings.cameraSource === 'layer' ? 'the VR layer' : 'the screen capture'} on the Match tab (takes effect at the next match)`);
+        log.info(`match: camera set to ${settings.cameraSource === 'layer' ? 'the VR layer' : 'the screen capture'} on the Match tab (${active ? 'takes effect between balls' : 'takes effect at the next match'})`);
+        opts.media?.setCameraSource?.(settings.cameraSource);
       }
       emit();
       return status();
