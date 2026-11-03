@@ -190,6 +190,17 @@ export function pickLanAddress(ifaces: Record<string, NetworkInterfaceInfo[] | u
 
 // --------------------------------------------------------------------------------- fingerprint --
 
+/** What `gameFingerprintFrom` names the table when the witness knows none. */
+export const NO_TABLE_NAME = 'no table open';
+
+/**
+ * A11 (2026-11-02): whether a lobby fingerprint says the player has a table open: a table hash, or at least a table
+ * name (the hash can come a moment after the name). The match starts from the host's table only when every one is.
+ */
+export function isTableOpen(game: GameFingerprint): boolean {
+  return game.tableHash !== ZERO_SHA256 || game.tableName !== NO_TABLE_NAME;
+}
+
 /**
  * §3: what this companion says about its table at HELLO. Only fields both rigs compute the same way for the same file
  * go in (a ROM or physics hash one side may lack would read as a different table): the table name and the original
@@ -197,7 +208,7 @@ export function pickLanAddress(ifaces: Record<string, NetworkInterfaceInfo[] | u
  */
 export function gameFingerprintFrom(status: WitnessStatus, recipeVersion: string): GameFingerprint {
   const id = status.currentIdentity;
-  const name = (id?.tableInfo?.tableName?.trim() || status.currentTable?.trim() || 'no table open').slice(0, 200);
+  const name = (id?.tableInfo?.tableName?.trim() || status.currentTable?.trim() || NO_TABLE_NAME).slice(0, 200);
   const sha = id?.sha256?.toLowerCase() ?? null;
   const vpx = status.currentAttestation?.build?.vpx?.version ?? null;
   const emulator = (vpx?.fileVersionText ?? vpx?.fileVersion ?? 'unknown').slice(0, 64);

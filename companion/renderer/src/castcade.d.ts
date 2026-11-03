@@ -393,9 +393,15 @@ interface PanelState {
   myTurn: boolean;
   ball: number | null;
   ballsPerGame: number;
-  players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected'> }>;
+  players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading'> }>;
   phase: 'idle' | 'playing' | 'paused' | 'over';
   result: Array<{ id: string; name: string; score: number; place: number }> | null;
+  /** A10: the game of the series, the series standings after the last result, and whether the series is over. */
+  game?: number;
+  series?: Array<{ id: string; name: string; wins: number; games: number; total: number; place: number }> | null;
+  seriesOver?: boolean;
+  /** A11: whole seconds until the match starts from the host's table, or null. */
+  countdown?: number | null;
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';
 }
@@ -458,6 +464,8 @@ interface MatchStatus {
   participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
   /** A8: a host transfer under way (names), else null. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
+  /** A10: the game being played or just played, whether the series is over, and why Next game cannot start (null: it can). */
+  series: { game: number; over: boolean; nextGameBlocker: string | null } | null;
   panel: PanelState | null;
   media: MediaStatus | null;
   /** D7.4.3: one line for a VR player about the picture sent, or null. */
@@ -515,9 +523,11 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
+    /** Host only: Start match in the lobby; A10: Next game between games. */
     start(): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
+    /** A10: the host's leave between games is End match (everyone is told). */
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;

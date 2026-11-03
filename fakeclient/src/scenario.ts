@@ -13,6 +13,8 @@ export interface PlayerScript {
   rig?: 'pc' | 'vr_headset' | 'real_cabinet';
   /** Cumulative score reported at the end of ball 1, 2, 3, ... */
   scores: number[];
+  /** A10: per game of a series, the `scores` of that game (game n uses entry n-1, else `scores`). */
+  seriesScores?: number[][];
   /** Balls on which the first BALL_END says shootAgain: true (the re-grant then ends the ball). */
   shootAgainOn?: number[];
   /** Send GAME_OVER right after this ball ends (must be below ballsPerGame to mean anything). */
@@ -40,6 +42,11 @@ export interface Scenario {
   description?: string;
   matchId: string;
   ballsPerGame: number;
+  /**
+   * A10 (2026-11-02): games in the series (default 1). The host starts the next game at each RESULT and ends the match
+   * (MATCH_END) at the last one; every player's outcome then holds one RESULT per game.
+   */
+  games?: number;
   host: PlayerId;
   players: PlayerScript[];
   transfer?: TransferScript;
@@ -79,6 +86,7 @@ export const SCENARIO_NAMES = [
   'silent-client-pause',
   'extra-ball',
   'game-over-early',
+  'two-game-series',
 ] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 

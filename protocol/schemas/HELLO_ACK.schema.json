@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v2/HELLO_ACK.schema.json",
+  "$id": "https://castcade.dev/protocol/v3/HELLO_ACK.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -231,6 +231,32 @@
         ],
         "additionalProperties": false
       }
+    },
+    "startsInMs": {
+      "default": null,
+      "description": "The host starts the match in this many ms (its first game on the table, A11); null when no start is under way. A duration, not a time: the two clocks need not agree.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "loading": {
+      "default": [],
+      "description": "Accepted participants whose table is not open yet, as the host judges from their fingerprint (A11): the match does not start from the table until this is empty.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9_.:-]+$",
+        "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+      }
     }
   },
   "required": [
@@ -238,7 +264,9 @@
     "hostPublicKey",
     "participants",
     "hostGame",
-    "tableMismatches"
+    "tableMismatches",
+    "startsInMs",
+    "loading"
   ],
   "additionalProperties": false,
   "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint."

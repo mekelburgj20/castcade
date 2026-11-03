@@ -1,0 +1,13 @@
+{
+  "name": "two-game-series",
+  "description": "A10: a 2-player, 2-ball series of two games in one match. p2 wins game 1, p1 wins game 2; 1-1 in wins, p1 ahead on total score. The host starts game 2 at game 1's RESULT and ends the match at game 2's.",
+  "matchId": "TD-SERIES",
+  "ballsPerGame": 2,
+  "games": 2,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Host One", "scores": [1000, 2000], "seriesScores": [[1000, 2000], [3000, 6000]] },
+    { "playerId": "p2", "displayName": "Player Two", "scores": [1500, 3000], "seriesScores": [[1500, 3000], [1000, 2500]] }
+  ],
+  "expect": { "winner": "p1", "ranks": { "p1": 1, "p2": 2 }, "hostTransfers": 0 }
+}

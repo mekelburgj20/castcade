@@ -204,10 +204,14 @@ export interface CastcadeApi {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: freeze the roster (two or more players) and issue the first grant. */
+    /**
+     * Host only: freeze the roster (two or more players) and issue the first grant. A10 (2026-11-02): between games of a
+     * series, Next game (NEXT_GAME, then grant 1 of it), the same as a game started on the host's table.
+     */
     start(): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
+    /** A10 (2026-11-02): the host's leave between games is End match: MATCH_END to everyone, then the teardown. */
     leave(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */

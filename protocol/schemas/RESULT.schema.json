@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v2/RESULT.schema.json",
+  "$id": "https://castcade.dev/protocol/v3/RESULT.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -136,12 +136,71 @@
     "startedAt": {
       "type": "integer",
       "minimum": -9007199254740991,
-      "maximum": 9007199254740991
+      "maximum": 9007199254740991,
+      "description": "ts of the entry that started this game (MATCH_READY, or its NEXT_GAME)."
     },
     "finishedAt": {
       "type": "integer",
       "minimum": -9007199254740991,
       "maximum": 9007199254740991
+    },
+    "game": {
+      "default": 1,
+      "description": "Which game of the series this result is for (A10). RESULT is not logged, so a default is harmless.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999
+    },
+    "series": {
+      "default": [],
+      "description": "The series standings after this game, every participant who played any game of it (A10).",
+      "maxItems": 4,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "games": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Games of the series this player was in."
+          },
+          "wins": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Games this player won outright (a tie for first is nobody's win)."
+          },
+          "totalScore": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "The sum of their scores over those games."
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "By wins, then total score; ties share a rank."
+          }
+        },
+        "required": [
+          "playerId",
+          "games",
+          "wins",
+          "totalScore",
+          "rank"
+        ],
+        "additionalProperties": false,
+        "description": "One player's standing in the series after this game."
+      }
     }
   },
   "required": [
@@ -154,8 +213,10 @@
     "signatures",
     "hostTransfers",
     "startedAt",
-    "finishedAt"
+    "finishedAt",
+    "game",
+    "series"
   ],
   "additionalProperties": false,
-  "description": "host -> all, and posted to ArcAid as the Throwdown result plus a castcade_matches record."
+  "description": "host -> all, once per game (A10): the game's entries, signed over the log head at that game's end, and the series so far. Posted to ArcAid as one result of the Throwdown plus a castcade_matches record."
 }

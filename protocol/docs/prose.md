@@ -45,6 +45,14 @@ base64-encoded.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
    `HELLO`s are refused with `match_started`.
 
+Starting from the host's table (A11, protocol 3): a host may announce the start before it sends `MATCH_READY`.
+It re-sends `HELLO_ACK` to every client with `startsInMs`, the time left until it starts (a duration, since the
+clocks need not agree; null when no start is under way), and sends `MATCH_READY` when it runs out, unless fewer
+than two participants are left. A second announcement while one runs changes nothing; the host may still start at
+once. `HELLO_ACK.loading` lists the accepted participants whose fingerprint says no table is open yet, as the host
+judges it; the companion starts the match from the host's table only when it is empty. Both fields are defaulted
+and never logged.
+
 A player may join before its table is open, so its `HELLO` can say `pc` and a fingerprint of no table (the
 first two-player match, 2026-10-31). While the match is in the lobby a client sends `PARTICIPANT_UPDATE` with
 its rig and/or fingerprint as they are now; the host replaces that participant's roster entry and
@@ -58,7 +66,8 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
 
 - Every participant plays their own one-player game of `ballsPerGame` balls (Architecture B). Grants go
   ball 1 to each player in `playerOrder`, then ball 2 to each, and so on.
-- A `TURN_GRANT` names the player and the ball and goes to **every** participant, not only the holder.
+- A `TURN_GRANT` names the player, the ball and (protocol 3) the `game` of the series, and goes to **every**
+  participant, not only the holder. A client drops a grant whose `game` is not the one its log is in.
   The signature is over `canonicalJson(grant)` with the host's key from `MATCH_READY` (or the key
   announced in an accepted `HOST_TRANSFER`). A client releases its input lock only for a grant that
   verifies, names itself, and carries a `grantSeq` greater than any it has seen. `grant.logHash` is the
@@ -85,19 +94,22 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
   appends the broadcast stream, in order, to its own append-only log, so host and clients hold the same
   entries without any further coordination.
 - Logged, in stream order: `MATCH_READY`, every `TURN_GRANT` the host issues, accepted `BALL_END`,
-  `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, and one derived `host_transfer` event per
-  accepted transfer (below). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the *other*
-  participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
-  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`, `MEDIA_SIGNAL` (forwarded to its `to`
-  only, see Media signalling).
+  `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, one derived `host_transfer` event per
+  accepted transfer (below), and `NEXT_GAME` (Series). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the
+  *other* participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
+  `HOST_TRANSFER_ACK`, `RECONNECT`, `RECONNECT_ACK`, `RESULT`, `MATCH_END`, `PARTICIPANT_UPDATE`,
+  `MEDIA_SIGNAL` (forwarded to its `to` only, see Media signalling).
 - Each entry is `{index, prevHash, ts, kind, from, message | event}` with
   `hash = sha256(canonicalJson(entry))` and `prevHash` the previous hash (64 zeros before the first
   entry). `ts` is always the message's own `ts`, never a local clock, so hashes agree across machines.
   `kind` is `grant` for a `TURN_GRANT`, `event` for the derived transfer entry, `msg` otherwise.
-- The log **freezes at the entry that ends the last game**. `LOG_SIGN` and `RESULT.logHash` refer to
-  that head; nothing is appended after it.
-- A client sends `LOG_SIGN` over `{matchId, logHash, logLength}` as soon as its own log shows every
-  game ended (every player finished or forfeited), using the head as *it* holds it. A client whose head
+- The log **holds still at the entry that ends the current game** (the last player's game of it ending).
+  `LOG_SIGN` and that game's `RESULT.logHash` refer to that head; nothing is appended after it until the host's
+  `NEXT_GAME` (Series), and nothing at all after the last game of the match.
+- A client that played the current game sends `LOG_SIGN` over `{matchId, logHash, logLength}` as soon as its own
+  log shows every player's game of it ended (finished or forfeited), using the head as *it* holds it; once per
+  game of a series. The host drops a `LOG_SIGN` whose `logLength` does not reach past the start of the current
+  game (a late one for an earlier game). A client whose head
   differs from the host's still signs its own; the host records the disagreement and `RESULT.signatures`
   carries what each participant actually signed. Mismatches are flagged on the ArcAid side, never
   rejected (badge, never gate).
@@ -174,8 +186,10 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
   may `RESUME`. A `RESUME` that clears a `disconnect` pause for a player who is still playing marks that
   player connected again; if it is still gone, the host pauses again at its next grant.
 - After an accepted `RECONNECT` the client unlocks input only for an outstanding grant that names it
-  and verifies, signs the log if every game has ended, and receives the `RESULT` again if the host has
-  already sent it.
+  and verifies, signs the log if the current game has ended and it played in it, and receives again every
+  `RESULT` the host has sent, oldest first, each in a new envelope (a frame resent with its old `seq` would fall
+  to the seq rule). A `RESULT` for a game before the current one is checked against the client's log entry at
+  `logLength`, not its head.
 - A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
   (`host_left`, above).
 
@@ -197,11 +211,31 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
 
 ## Result
 
-- `RESULT` lists every participant with score, balls played, status and rank (competition ranking: ties
-  share a rank, the next rank skips; `winner` is `null` on a tie for first), the frozen log hash and
-  length, the host's signature over `{matchId, logHash, logLength}`, and every `LOG_SIGN` received with
-  the head it signed. `RESULT` itself is not logged. The host posts the same object to ArcAid as the
-  Throwdown's scores plus a `castcade_matches` record.
+- `RESULT` is sent once per game. It lists every player of that game with score, balls played, status and rank
+  (competition ranking: ties share a rank, the next rank skips; `winner` is `null` on a tie for first), the log
+  hash and length at that game's end, the host's signature over `{matchId, logHash, logLength}`, every `LOG_SIGN`
+  received with the head it signed, `game` (1-based) and `series`, the standings after this game (below).
+  `RESULT` itself is not logged. The host posts the same object to ArcAid as one result of the Throwdown plus a
+  `castcade_matches` record.
+
+## Series (protocol 3, A10)
+
+- A match is a series of games in one log. Each game is played and ended as above, and its `RESULT` goes out.
+  Then the host either starts the next game or ends the match; it does neither before that game's `RESULT` went out.
+- `NEXT_GAME {game, playerOrder}` (host -> all, logged) starts game `game`, the previous one plus 1.
+  `playerOrder` is who plays it, in rotation order: the companion lists the roster's participants still
+  connected, the host first. Every listed player starts a fresh game (no balls played, score 0, playing); the
+  grant rotation starts again at ball 1 of `playerOrder[0]`; `grantSeq` keeps increasing across games. A client
+  drops a `NEXT_GAME` that arrives while a game is still being played or does not carry the next number.
+- A participant left out of a game is still in the roster: it may reconnect, and it receives the grants and
+  results, but it plays, signs and ranks only in the games it is listed for.
+- `RESULT.series`: per participant who played any game of the series, the games played, the outright wins (a
+  tie for first wins nobody that game) and the total of their scores, ranked by wins, then total score
+  (competition ranking). It is a fold over the log, so a host that took over mid-series sends the same table.
+- `MATCH_END {games, reason}` (host -> all, never logged) ends the series between games; the last `RESULT`
+  stands, nothing more is appended, and the host closes the match. A client does not reconnect to a host after
+  it, and a host that leaves between games without one ends the series for the others too (no transfer happens
+  between games: there is no game to hand over).
 
 ## Simultaneous mode (arcade)
 

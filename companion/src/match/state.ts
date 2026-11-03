@@ -3,9 +3,15 @@
  * match by applying every log entry through `applyEntry`, so `HostMatch.resumeFromLog` is
  * just `replayLog`, and any two participants holding the same log hold the same state.
  * Nothing here does I/O or reads a clock.
+ *
+ * A10 (2026-11-02): a match is a series of games in one log. `phase: 'ended'` means the CURRENT game has ended (its
+ * LOG_SIGN / RESULT are due, the log holds still); a logged NEXT_GAME folds that game's ranked entries into
+ * `pastGames`, resets every listed player to a fresh game and sets `phase` back to `running`. MATCH_END is not logged:
+ * after it the log simply stays at the last game's end.
  */
 import type { AnyMessage, GameFingerprint, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { LogEntry, MatchLog } from './log.js';
+import { rankEntries, type ResultEntry } from './result.js';
 
 export type PlayerStatus = 'playing' | 'finished' | 'forfeit';
 
@@ -60,8 +66,16 @@ export interface MatchState {
   paused: { reason: PayloadOf<'PAUSE'>['reason']; player: PlayerId | null } | null;
   pendingTransfer: PendingTransfer | null;
   hostTransfers: number;
+  /** ts of the entry that started the current game (MATCH_READY, then each NEXT_GAME). */
   startedAt: number | null;
+  /** ts of the entry that ended the current game; null while it runs. */
   endedAt: number | null;
+  /** A10: the current game of the series, 1-based (1 from MATCH_READY; each NEXT_GAME sets it). */
+  gameNumber: number;
+  /** A10: the log index of the entry that started the current game; a LOG_SIGN at or before it is a stale one. */
+  gameStartIndex: number;
+  /** A10: every finished game before the current one, with its ranked entries as its RESULT had them. */
+  pastGames: { game: number; entries: ResultEntry[] }[];
 }
 
 export function initialState(): MatchState {
@@ -84,6 +98,9 @@ export function initialState(): MatchState {
     hostTransfers: 0,
     startedAt: null,
     endedAt: null,
+    gameNumber: 0,
+    gameStartIndex: 0,
+    pastGames: [],
   };
 }
 
@@ -98,6 +115,7 @@ export function applyEntry(st: MatchState, entry: LogEntry): void {
     if (entry.event) applyEvent(st, entry.event);
   } else if (entry.message) {
     applyMessage(st, entry.message);
+    if (entry.message.type === 'MATCH_READY' || entry.message.type === 'NEXT_GAME') st.gameStartIndex = entry.index;
   }
   if (st.phase === 'running' && allGamesEnded(st)) {
     st.phase = 'ended';
@@ -126,6 +144,26 @@ function applyMessage(st: MatchState, msg: AnyMessage): void {
       st.players = {};
       for (const id of p.playerOrder) st.players[id] = { playerId: id, ballsPlayed: 0, score: 0, status: 'playing', connected: true };
       st.startedAt = msg.ts;
+      st.gameNumber = 1;
+      st.pastGames = [];
+      break;
+    }
+    case 'NEXT_GAME': {
+      // A10: only between games, and only the next number (the host checks both before it sends; a log that breaks
+      // this was not written by a protocol 3 host and is folded as if the entry were not there).
+      const p = msg.payload;
+      if (st.phase !== 'ended' || p.game !== st.gameNumber + 1) break;
+      st.pastGames.push({ game: st.gameNumber, entries: rankEntries(st) });
+      st.gameNumber = p.game;
+      st.playerOrder = [...p.playerOrder];
+      st.players = {};
+      for (const id of p.playerOrder) st.players[id] = { playerId: id, ballsPlayed: 0, score: 0, status: 'playing', connected: true };
+      st.currentGrant = null;
+      st.pendingReissue = null;
+      st.paused = null;
+      st.phase = 'running';
+      st.startedAt = msg.ts;
+      st.endedAt = null;
       break;
     }
     case 'TURN_GRANT': {

@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v2/HELLO.schema.json",
+  "$id": "https://castcade.dev/protocol/v3/HELLO.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "protocolVersion": {
       "type": "number",
-      "const": 2
+      "const": 3
     },
     "companionVersion": {
       "type": "string",

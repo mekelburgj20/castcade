@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v2/Envelope.schema.json",
+  "$id": "https://castcade.dev/protocol/v3/Envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "v": {
       "type": "number",
-      "const": 2,
+      "const": 3,
       "description": "Protocol version; peers with a different value refuse each other."
     },
     "type": {
@@ -31,7 +31,9 @@
         "RECONNECT",
         "RECONNECT_ACK",
         "MEDIA_SIGNAL",
-        "PARTICIPANT_UPDATE"
+        "PARTICIPANT_UPDATE",
+        "NEXT_GAME",
+        "MATCH_END"
       ]
     },
     "matchId": {
