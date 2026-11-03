@@ -218,6 +218,34 @@ library of its own (it calls the ones already in the host process).
    limitations under the License.
 ```
 
+## stb_image_write (Sean Barrett, nothings/stb)
+
+- What: `third_party/stb/stb_image_write.h` v1.16, vendored as is; only its baseline JPEG writer is compiled
+  (`src/jpeg_encode.cpp`, `STB_IMAGE_WRITE_STATIC`, `STBI_WRITE_NO_STDIO`), for the layer camera's frames (D7.5).
+- Source: https://github.com/nothings/stb, file `stb_image_write.h` at commit `d14d46f6b44456eb88beac58cba833a4135d4c89`
+  (2026-11-02; sha256 of the vendored file `cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05`).
+- Licence: dual MIT / public domain (Unlicense), at the author's choice of the user; used here as public domain. The
+  header carries both texts; the MIT alternative is reproduced below for completeness.
+
+```
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Microsoft C++ runtime
 
 The dll is built with MSVC and the static CRT (`/MT`); no Visual C++ redistributable is needed or shipped.

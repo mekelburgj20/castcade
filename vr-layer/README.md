@@ -108,17 +108,24 @@ create a short-lived session on its own D3D11 or Vulkan device before VPX's firs
 "not supported, this session passes through", which is expected. `XR_LOADER_DEBUG=all` in VPX's environment makes the
 loader itself print what it found.
 
-## The pipe (protocol 2, D7.4)
+## The pipe (protocol 3, D7.5; protocol 2, D7.4)
 
-`\\.\pipe\castcade-panel`, byte mode, one client at a time, local clients only. Little-endian throughout.
+`\\.\pipe\castcade-panel`, byte mode, one client at a time, local clients only. Little-endian throughout. The pipe is
+overlapped on the layer's side since D7.5 (the camera's worker writes while the reader thread waits for the companion;
+on a synchronous handle Windows would queue the write behind the read).
 
 | Direction | Magic | Then | Meaning |
 |---|---|---|---|
-| layer → companion, once on connect | `CVH1` | u32 protocol (2) | hello; a protocol-1 layer (0.2.26) sends none |
+| layer → companion, once on connect | `CVH1` | u32 protocol (3) | hello; a protocol-1 layer (0.2.26) sends none |
+| layer → companion (protocol 3) | `CVF1` | u32 byteLength, then u16 jsonLength, the UTF-8 JSON header, the eyes' JPEG payloads back to back | a camera frame ("The camera" below) |
+| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"` |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1; no companion sends it yet) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
+
+Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
+does not know and resyncs on the next magic it does.
 
 Video frames are RGBA because the companion reads them with canvas `getImageData`: no byte swap in JavaScript, and on
 OpenGL (the owner's rig) and a D3D11 `R8G8B8A8` swapchain none in the layer either.
@@ -126,7 +133,63 @@ OpenGL (the owner's rig) and a D3D11 `R8G8B8A8` swapchain none in the layer eith
 Compatibility: a protocol-1 layer drops the client on any magic but `CVO1`, so the companion sends `CVC1` and `CVO2`
 only after a hello of 2 or more; without one it sends panel frames only, as 0.2.26 did. A protocol-1 companion never
 reads the hello (8 bytes sit in its socket) and gets the default control: panel mode, placed low. The control goes
-back to that default when the companion disconnects.
+back to that default when the companion disconnects. The companion asks for the camera only after a hello of 3 or more
+(a protocol-2 layer would leave the key unread and send no frames, harmlessly); a protocol-2 companion never reads
+`CVF1` / `CVS1`, which a protocol-3 layer sends only once asked.
+
+## The camera (protocol 3, D7.5)
+
+A VR sender's picture used to be a screen capture of VPX's VR preview window, which needs a lit desktop, the window in
+front, smaller than the display and wholly on it, and still died on Krobs' rig once VPX had focus (D2.5, D7.4.4,
+D7.4.10). With the camera, the layer copies the two eye views VPX submits in its `XrCompositionLayerProjection` out of
+the frame itself: `VRPreview` becomes optional, the monitor may be off, and the resolution follows the headset.
+`src/camera.cpp`; the companion side is `companion/src/media/vr-layer.ts` (`setCamera`, `onCameraFrame`) and the policy
+`companion/src/media/layer-camera.ts`; the panel-page contract is `docs/design/alpha-match.md` §5a.
+
+How: the layer hooks `xrCreateSwapchain`, `xrEnumerateSwapchainImages`, `xrAcquireSwapchainImage` and
+`xrReleaseSwapchainImage`, so at `xrEndFrame` it knows each projection view's swapchain image (the one last released).
+On the render thread it only issues GPU work: OpenGL (the owner's rig: VPX through OpenComposite), a
+`glBlitFramebuffer` of each eye's crop into one small texture of ours (left | right, the blit does the scaling) and a
+`glReadPixels` of that into a pixel-pack buffer behind a fence; D3D11, a `CopySubresourceRegion` of each crop into a
+staging texture. One or two frames later, when the fence / `Map` says the copy is done, it maps the buffer and hands
+the pointer to a worker thread; it never waits on the GPU or on the worker. The worker copies the rows out (flipping
+OpenGL's bottom-up rows; box-averaging a D3D11 crop down to size), lets the slot go, encodes both eyes as JPEG at
+quality 85 (the right eye on a second thread; `third_party/stb/stb_image_write.h`), and writes one `CVF1`. Two slots:
+frames are dropped when both are busy, never queued.
+
+Crop and size: the control's `camera` is a per-eye box (the companion asks for 720x1440 at 30 fps by default: the
+portrait shape the runbook recommends for the preview window). Each eye is centre-cropped to the box's aspect, as VPX's
+own preview does (`Player::PrepareVideoBuffers`, never stretched), and scaled into the box, never up, to even sides.
+The frame carries what was done, so the receiver places each eye exactly (its stereo window no longer stands in with
+its own eyes).
+
+The `CVF1` header (JSON, integers and locale-free decimals only):
+
+```json
+{"n": 12, "t": 400123, "enc": "jpeg", "w": 720, "h": 1440,
+ "us": {"issue": 180, "map": 1200, "copy": 2100, "enc": 24000},
+ "eyes": [{"fov": [-0.907571, 0.785398, 0.872665, -0.959931], "rect": [720, 0, 1632, 3264], "render": [3072, 3264], "len": 210345},
+          {"fov": [-0.785398, 0.907571, 0.872665, -0.959931], "rect": [720, 0, 1632, 3264], "render": [3072, 3264], "len": 208811}]}
+```
+
+`n` counts issued frames (gaps = drops), `t` is microseconds since the camera started, `w` x `h` is each eye's JPEG
+size, `fov` is the view's `[angleLeft, angleRight, angleUp, angleDown]` in radians, `render` the view's `imageRect`
+size, `rect` the crop taken inside it (`[x, y, w, h]`, y from the top), `len` the eye's payload length; the payloads
+follow the header in eye order (left, right). `us` are that frame's render-thread issue, map, worker copy and encode
+microseconds.
+
+What it refuses, with one `camera: refused: …` log line and a `CVS1` `refused` (the companion then keeps the screen
+capture): a multisampled swapchain, a swapchain format that is not 8-bit RGBA / BGRA (sRGB or UNORM), an OpenGL
+context without framebuffer objects, pixel-pack buffers or fences (OpenGL 3.2), incomplete framebuffers, a session
+whose projection views use swapchains the layer did not see created (a VPX started before the layer loaded).
+
+Log lines to read after the first run (`vr-layer.log`):
+
+- `pipe: camera asked: each eye in a 720x1440 box at 30 fps` — the control arrived;
+- `camera: on (OpenGL): eye render 3072x3264 (rect 0,0 of a 3072x3264 swapchain, format 0x8c43 GL_SRGB8_ALPHA8, sRGB), crop 1632x3264 at 720,0 -> 720x1440 per eye at 30 fps, JPEG quality 85; …` — what is read and what is sent;
+- `camera: frame N: issue A us, ready after K tick(s), map B us, copy C us, encode D us (L x B, R y B), write E us; 720x1440 per eye` — the first 10 frames, then every 300th. `issue` + `map` is the render thread's cost per sent frame (at 30 fps of a 90 Hz loop, one frame in three); `copy`, `encode`, `write` are the worker's. An `encode` above about 30 000 us means the worker cannot keep 30 fps at this size: ask for a smaller box;
+- `camera: off (why): N frames sent in S s (F fps), D dropped (ring full a, worker behind b, write failed c); average …` — the summary, with the drops that say which side was slow;
+- `camera: refused: …` — why the companion fell back to the screen capture.
 
 ## What it does
 

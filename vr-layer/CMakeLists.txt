@@ -11,7 +11,8 @@
 # the app already loaded, so a D3D or Vulkan app never gets opengl32 pulled in by us).
 cmake_minimum_required(VERSION 3.20)
 # 0.2.0: D7.4, pipe protocol 2 (modes, theater). 0.3.0: D7.4.5 (the stereo window) and D7.3.3 (the build id in the log).
-project(castcade_vr_layer VERSION 0.3.0 LANGUAGES CXX)
+# 0.4.0: D7.5, pipe protocol 3 (the layer as the camera: CVF1 JPEG eye frames, CVS1 status; third_party/stb).
+project(castcade_vr_layer VERSION 0.4.0 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
@@ -44,8 +45,9 @@ if(NOT openxr_sdk_POPULATED)
   FetchContent_Populate(openxr_sdk)
 endif()
 
-add_library(XrApiLayer_castcade_panel SHARED src/layer.cpp src/panel_pipe.cpp src/layer_log.cpp)
-target_include_directories(XrApiLayer_castcade_panel PRIVATE "${openxr_sdk_SOURCE_DIR}/include")
+add_library(XrApiLayer_castcade_panel SHARED src/layer.cpp src/panel_pipe.cpp src/layer_log.cpp src/camera.cpp src/jpeg_encode.cpp)
+# third_party/stb: the vendored JPEG encoder (D7.5; THIRD-PARTY.md), compiled in jpeg_encode.cpp only.
+target_include_directories(XrApiLayer_castcade_panel PRIVATE "${openxr_sdk_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb")
 target_compile_features(XrApiLayer_castcade_panel PRIVATE cxx_std_17)
 target_compile_definitions(XrApiLayer_castcade_panel PRIVATE
   WIN32_LEAN_AND_MEAN NOMINMAX
