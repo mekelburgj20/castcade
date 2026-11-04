@@ -314,11 +314,17 @@ what the code changed in the contract.
 - **Live switch**: a Camera change while attached takes effect at once between balls, or when this rig's ball ends
   (`media: camera: the change takes effect when this ball ends`).
 - **Table sound's pid** comes from one window probe at the camera's start (no screen capture is opened).
-- **Item 3, the eyes on the wire: the sender sends them, the wire drops them.** The page's `stereo` signal carries
-  `eyes` (`stereoSignal`, re-sent when `eyesKey` changes), but `protocol/src/messages.ts` `MediaSignal` has no `eyes`
-  field and zod strips unknown keys when the client builds the frame, so no receiver sees them until D7.5.2 adds the
-  field to the protocol (additive, optional). The receiver side (`peerEyes`, `VideoFrame.eyes`, the control's `eyes`)
-  is D7.5.2.
+- **Item 3, the eyes on the wire (D7.5.2: the wire half in 0.2.33, the receiver half in 0.2.34).** The page's `stereo`
+  signal carries `eyes` (`stereoSignal`, re-sent when `eyesKey` changes; protocol 3's optional `MediaSignal.eyes`).
+  The receiver's page keeps them per peer (`peerEyes`) and hands them to main with every theater frame
+  (`VideoFrame.eyes`, checked by `eyeGeometryFrom`); `vr-layer.ts` puts them on the control (`eyes`, a protocol-3
+  layer only, re-sent when they change, dropped when the frames stop carrying them); layer 0.5.1 places each eye's
+  window from the sender's crop in the sender's fov (`eyeCrop` with a sender; exact for mixed headsets) and falls
+  back to VPX's centre-crop rule for a picture without eyes (the screen capture, an older sender). The bench passes
+  its camera's or clip's eyes the same way. **Why it had to land with D7.5.8:** the camera's crop is centred on the
+  eye's optical axis since layer 0.5.1 (`vr-layer/src/eye_crop.h`; the solo bench of 2026-11-03 showed the table
+  fusing but the two window frames 15° apart under the centre crop), so a receiver that still assumed the centre
+  crop would place a 0.2.34 sender's picture 15° off per eye; both rigs update through the updater as always.
 - **The log**, first run with Camera = VR layer: `media: camera: the VR layer (the VR layer, once it is on the pipe):
   each eye in a 720x1440 box at 30 fps; no screen capture`, `media: capture VR layer camera ready, both eyes side by
   side`, `media: sending 1440x1440 sbs at 8.0 Mbps`, `media: capture: from the VR layer camera, WxH (sbs)` when the

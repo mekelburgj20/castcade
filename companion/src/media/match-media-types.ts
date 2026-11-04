@@ -198,6 +198,12 @@ export interface VideoFrame {
   height: number;
   rgba: Uint8Array;
   stereo: VrStereo;
+  /**
+   * D7.5.2 (2026-11-03): on `sbs`, the sender's two eyes as its camera frames' headers carried them (left, right): the
+   * peer's stereo signal, or the bench's own camera / clip. Absent or null: a screen capture, placed by the layer's
+   * centre-crop rule.
+   */
+  eyes?: LayerCameraEyeGeometry[] | null;
 }
 
 export interface VideoFrameSource {

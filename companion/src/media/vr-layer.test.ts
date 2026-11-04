@@ -388,6 +388,30 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     expect(h.log.filter((l) => l.startsWith('theater: feeding'))).toHaveLength(1);
   });
 
+  it("D7.5.2: a theater frame's eyes go on a protocol-3 layer's control, once per change, and leave it when the frames stop carrying them", async () => {
+    const h = setup();
+    const v = videoSource();
+    await h.ov.start(h.src, v.src);
+    h.ov.setMode('theater');
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(3));
+    const eyes: NonNullable<VideoFrame['eyes']> = [
+      { fov: [-0.94, 0.7, 0.77, -0.96], rect: [348, 0, 1632, 3264], render: [3072, 3264] },
+      { fov: [-0.7, 0.94, 0.77, -0.96], rect: [1092, 0, 1632, 3264], render: [3072, 3264] },
+    ];
+    v.push({ ...vframe(1, 'sbs'), eyes });
+    v.push({ ...vframe(2, 'sbs'), eyes: eyes.map((e) => ({ ...e })) }); // the same eyes again: no control
+    const controls = () => messages(h.pipes[0]!).filter(([m]) => m === 'CVC1');
+    expect(controls()).toEqual([
+      ['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null }],
+      ['CVC1', { mode: 'theater', stereo: 'sbs', panelPos: 'low', theaterScale: 1, camera: null, eyes }],
+    ]);
+    expect(h.log.some((l) => l.includes("the sender's eyes (crop 1632x3264 at 348,0 / 1092,0 of 3072x3264)"))).toBe(true);
+    v.push(vframe(3, 'sbs')); // a picture without eyes (a screen capture): the control drops them
+    expect(controls().at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'sbs', panelPos: 'low', theaterScale: 1, camera: null }]);
+    expect(controls()).toHaveLength(3);
+  });
+
   it('a protocol-2 layer: the control after its hello, then on every change; video wanted and sent as CVO2 only in theater', async () => {
     const h = setup();
     const v = videoSource();

@@ -48,7 +48,7 @@ import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import { cameraRequestFor, cameraWatch, createFrameSlot, decideCamera, type CameraDecision, type CameraDecisionInput, type CameraSourceSetting } from './layer-camera.js';
-import type { LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
+import type { LayerCameraEyeGeometry, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -346,17 +346,37 @@ export function createVideoHub(onWanted: (on: boolean) => void): { source: Video
   };
 }
 
-/** A video frame from the page, checked: whole, RGBA-sized, inside the feed's limits. Null otherwise. */
+/**
+ * D7.5.2: the `eyes` on a page's video frame (two of fov[4], rect[4], render[2], all finite numbers), or null for
+ * anything else (the layer checks the geometry itself before placing a window from it).
+ */
+export function eyeGeometryFrom(x: unknown): LayerCameraEyeGeometry[] | null {
+  if (!Array.isArray(x) || x.length !== 2) return null;
+  const nums = (a: unknown, n: number): number[] | null =>
+    Array.isArray(a) && a.length === n && a.every((v) => typeof v === 'number' && Number.isFinite(v)) ? (a as number[]) : null;
+  const out: LayerCameraEyeGeometry[] = [];
+  for (const e of x as Array<{ fov?: unknown; rect?: unknown; render?: unknown } | null>) {
+    const fov = nums(e?.fov, 4);
+    const rect = nums(e?.rect, 4);
+    const render = nums(e?.render, 2);
+    if (!fov || !rect || !render) return null;
+    out.push({ fov: [fov[0]!, fov[1]!, fov[2]!, fov[3]!], rect: [rect[0]!, rect[1]!, rect[2]!, rect[3]!], render: [render[0]!, render[1]!] });
+  }
+  return out;
+}
+
+/** A video frame from the page, checked: whole, RGBA-sized, inside the feed's limits (D7.5.2: with its eyes when it has them). Null otherwise. */
 export function videoFrameFrom(m: unknown): VideoFrame | null {
   if (typeof m !== 'object' || m === null) return null;
-  const v = m as { width?: unknown; height?: unknown; rgba?: unknown; stereo?: unknown };
+  const v = m as { width?: unknown; height?: unknown; rgba?: unknown; stereo?: unknown; eyes?: unknown };
   const { width, height, rgba } = v;
   if (typeof width !== 'number' || typeof height !== 'number' || !Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) return null;
   const stereo = v.stereo === 'sbs' ? 'sbs' : 'mono';
   const max = stereo === 'sbs' ? VIDEO_FEED_MAX.sbs : VIDEO_FEED_MAX.mono;
   if (width > max.width || height > max.height) return null;
   if (!(rgba instanceof Uint8Array) || rgba.length !== width * height * 4) return null;
-  return { width, height, rgba, stereo };
+  const eyes = stereo === 'sbs' ? eyeGeometryFrom(v.eyes) : null;
+  return eyes ? { width, height, rgba, stereo, eyes } : { width, height, rgba, stereo };
 }
 
 /**

@@ -808,6 +808,8 @@ const reopens = new Map();
 // D7.4.3: this rig's declared stereo (undefined until a capture says; null = not known) and each peer's.
 let myStereo = undefined;
 const peerStereo = new Map();
+/** D7.5.2: a peer's eyes from its stereo signal (two of fov, rect, render) or null; handed to main with every theater frame. */
+const peerEyes = new Map();
 // D7.5.1: the capture is the VR layer camera (cap is cameraCapture(...)): main sends the eyes on C.cameraFrame and
 // they are drawn side by side onto the canvas; camFrames is the stall watch's mark, camBad the frames that did not
 // decode; myEyes / myEyesKey the eyes' geometry the stereo declaration carries.
@@ -1521,6 +1523,7 @@ function detach() {
   stageKey = null;
   myStereo = undefined;
   peerStereo.clear();
+  peerEyes.clear();
   reopens.clear();
   saveReq = null;
   stopBench();
@@ -1535,6 +1538,7 @@ ipcRenderer.on(C.signal, (_e, m) => {
   // D7.4.3: a peer's declared stereo is the page's, not the connection's; kept whether or not the peer is added yet.
   if (m.signal && m.signal.kind === 'stereo') {
     peerStereo.set(m.from, m.signal.stereo === 'sbs' || m.signal.stereo === 'mono' ? m.signal.stereo : null);
+    peerEyes.set(m.from, m.signal.stereo === 'sbs' && Array.isArray(m.signal.eyes) && m.signal.eyes.length === 2 ? m.signal.eyes : null);
     return;
   }
   if (mesh) void mesh.receive(m.from, m.signal);
@@ -1604,7 +1608,7 @@ function feedTick() {
   if (mark === feedLastFrame) return;
   const up = panel.players.find((p) => p.id === who);
   const stereo = stereoOf(peerStereo.get(who), up ? up.rig : undefined, v.videoWidth, v.videoHeight);
-  feedOut(v, v.videoWidth, v.videoHeight, mark, stereo, null, 'peer ' + who);
+  feedOut(v, v.videoWidth, v.videoHeight, mark, stereo, stereo === 'sbs' ? peerEyes.get(who) || null : null, 'peer ' + who);
 }
 
 /**
@@ -1628,7 +1632,7 @@ function feedOut(src, w, h, mark, stereo, eyes, source) {
     feedSent++;
     feedInFlight = true;
     feedSentAt = Date.now();
-    ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo });
+    ipcRenderer.send(C.video, { width: size.width, height: size.height, rgba: new Uint8Array(img.data.buffer, img.data.byteOffset, img.data.byteLength), stereo: stereo, eyes: eyes || null });
     saveFeedFrame(src, w, h, stereo, eyes, source);
     return size;
   } catch (e) {

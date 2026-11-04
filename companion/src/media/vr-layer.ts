@@ -44,6 +44,7 @@ import {
   VR_LAYER_CAMERA_STATUS_MAGIC,
   VR_LAYER_VIDEO_MAGIC,
   type LayerCameraEye,
+  type LayerCameraEyeGeometry,
   type LayerCameraFrame,
   type LayerCameraRequest,
   type LayerCameraStatus,
@@ -403,6 +404,9 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let mode: VrViewMode = 'panel';
   let stereo: VrStereo = 'mono';
   let theaterScale = 1;
+  /** D7.5.2: the sender's eyes on the theater frames (their JSON as the change key), on the control of a protocol-3 layer. */
+  let eyes: LayerCameraEyeGeometry[] | null = null;
+  let eyesKey = '';
   let fedSize = '';
   /** The connected layer's protocol: 1 until its hello says more. */
   let protocol = 1;
@@ -532,6 +536,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       theaterScale,
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL ? { camera: cameraReq } : {}),
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? { test } : {}),
+      // D7.5.2: the sender's eyes only while the frames carry them, so every other control is byte for byte as before.
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? { eyes } : {}),
     };
     const text = JSON.stringify(body);
     if (text === lastControl && !report) return false;
@@ -545,7 +551,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     if (!changed) return true;
     const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps` : 'off'}` : '';
     const pat = protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? ', calibration pattern' : '';
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat})`);
+    const eye = protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? `, the sender's eyes (crop ${eyes[0]!.rect[2]}x${eyes[0]!.rect[3]} at ${eyes[0]!.rect[0]},${eyes[0]!.rect[1]} / ${eyes[1]!.rect[0]},${eyes[1]!.rect[1]} of ${eyes[0]!.render[0]}x${eyes[0]!.render[1]})` : '';
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${eye})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
     return true;
   };
@@ -736,8 +743,12 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       video = videoSource ?? null;
       unsubscribeVideo =
         video?.onFrame((f) => {
-          if (f.stereo !== stereo) {
+          // D7.5.2: the eyes ride with the frames; the control carries them (and drops them) as they change.
+          const key = f.eyes && f.eyes.length === 2 ? JSON.stringify(f.eyes) : '';
+          if (f.stereo !== stereo || key !== eyesKey) {
             stereo = f.stereo;
+            eyesKey = key;
+            eyes = key ? (f.eyes ?? null) : null;
             sendControl();
           }
           if (mode === 'theater' && protocol >= 2) {

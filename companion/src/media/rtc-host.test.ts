@@ -1024,6 +1024,17 @@ describe('theater video, pure parts (D7.4)', () => {
     const ok = { width: 2, height: 1, rgba: new Uint8Array(8), stereo: 'mono' };
     expect(videoFrameFrom(ok)).toEqual(ok);
     expect(videoFrameFrom({ ...ok, stereo: 'weird' })).toEqual(ok);
+    // D7.5.2: the eyes ride along on sbs when they are whole; anything less is dropped, never half kept.
+    const eyes = [
+      { fov: [-0.94, 0.7, 0.77, -0.96], rect: [348, 0, 1632, 3264], render: [3072, 3264] },
+      { fov: [-0.7, 0.94, 0.77, -0.96], rect: [1092, 0, 1632, 3264], render: [3072, 3264] },
+    ];
+    expect(videoFrameFrom({ ...ok, stereo: 'sbs', eyes })).toEqual({ ...ok, stereo: 'sbs', eyes });
+    expect(videoFrameFrom({ ...ok, stereo: 'mono', eyes })).toEqual(ok); // mono: no eyes
+    expect(videoFrameFrom({ ...ok, stereo: 'sbs', eyes: [eyes[0]] })).toEqual({ ...ok, stereo: 'sbs' });
+    expect(videoFrameFrom({ ...ok, stereo: 'sbs', eyes: [eyes[0], { ...eyes[1], rect: [1, 2, 3] }] })).toEqual({ ...ok, stereo: 'sbs' });
+    expect(videoFrameFrom({ ...ok, stereo: 'sbs', eyes: [eyes[0], { ...eyes[1], fov: [0, 0, 0, 'x'] }] })).toEqual({ ...ok, stereo: 'sbs' });
+    expect(videoFrameFrom({ ...ok, stereo: 'sbs', eyes: null })).toEqual({ ...ok, stereo: 'sbs' });
     expect(videoFrameFrom({ ...ok, rgba: new Uint8Array(7) })).toBeNull();
     expect(videoFrameFrom({ ...ok, rgba: [0, 0, 0, 0, 0, 0, 0, 0] })).toBeNull();
     expect(videoFrameFrom({ ...ok, width: 1.5 })).toBeNull();
