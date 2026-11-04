@@ -7,6 +7,46 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.34] — 2026-11-03
+
+The owner's first solo run of the VR test bench on 0.2.33 (five minutes, no second player) returned two facts: straight
+to the layer the table fused but the two window frames stood 15° apart, and through the local WebRTC loop the picture
+was poor at the 8 Mbps cap. This build fixes the first and gives the bench what it needs to settle the second. Both rigs
+take it through the updater and must restart VPX afterwards (`vr-layer.log` says `build v0.2.34`); a 0.2.33 receiver
+would place a 0.2.34 sender's picture 15° off per eye.
+
+### The stereo window stands straight ahead (D7.5.8, D7.5.2; layer 0.5.1)
+- The camera crops each eye about the eye's optical axis instead of the render's centre. A Quest 3 eye sees 40° toward
+  the nose and 54° outward, so the centre of its render is 15° temporal of where the eye looks; the centre crop put the
+  right eye's window 15° right (black on the nasal side, the outer edge at the lens) and the left eye's 15° left: the
+  table fused, the frames did not. One rule, `axisCropX` in `vr-layer/src/eye_crop.h`, used by `camera.cpp`'s
+  `cropFor`; the crop stays centred vertically (both eyes share the up / down asymmetry, so a low window fuses, and the
+  full height keeps the flippers). `vr-layer.log` now says `crop 1632x3264 at 348,0` for the left eye and `at 1092,0`
+  for the right.
+- The receiver places the window from the sender's eyes (the D7.5.2 receiver half): the peer's `eyes` from its stereo
+  signal ride with every theater frame to main (`VideoFrame.eyes`, `eyeGeometryFrom`) and go on the layer's control
+  (`eyes`, a protocol-3 layer only, sent when they change, dropped when the frames stop carrying them); the layer's
+  `eyeCrop` takes the sender's fov, render and crop as they are (exact for mixed headsets) and falls back to VPX's
+  centre-crop rule for a picture without eyes (the screen capture, an older sender). The bench's own camera and clips
+  take the same path, so the bench shows exactly what a receiver would. The session report's theater block says
+  `cropFromSender`; `vr-layer.log` logs `pipe: the sender's eyes: …` when they change; the calibration pattern still
+  measures this headset's own geometry. `media/panel-page.ts` peerEyes / feedOut, `media/rtc-host.ts`,
+  `media/vr-layer.ts`, `vr-layer/src/panel_pipe.{h,cpp}` (`jsonEyes`, `readNumber`), `vr-layer/src/layer.cpp`;
+  `docs/design/alpha-match.md` §5a item 3.
+
+### The bench names the codec and lets the cap move (D7.6.8, D7.6.9)
+- The loop's readout and the `media: bench:` log line name the codec and encoder from the sender's stats (`codecId` →
+  mimeType, `encoderImplementation`, `(hw)` when the encoder is power-efficient): `encoder sent 1440x1440 at 7.8 Mbps
+  (cap 8.0 Mbps), 30 fps, VP8 via libvpx, limited by none`. `media/bench.ts`, `media/panel-page.ts` benchTick.
+- A Bitrate cap select on the bench card, shown on the loop path: the match's rule (8 Mbps for stereo), 16, 30 or
+  50 Mbps; the cap goes to the loop's sender and the start line says `cap 16 Mbps`. Save 2 s of frames pressed during
+  the loop keeps the frames as they came out of the loop. `renderer/src/views/TestBench.tsx`, `main/match-host.ts`,
+  `media/rtc-host.ts`, `media/bench.ts` (`benchRequestFrom` rejects a cap outside 1–100 Mbps).
+
+### Wire / journal
+- The layer pipe's `CVC1` control gains an optional `eyes` array (additive; pipe protocol stays 3; `vr-layer/README.md`).
+  The match protocol and the journal are unchanged.
+
 ## [0.2.33] — 2026-11-03
 
 Protocol 3. Five headset runs had each returned one fact, because every hypothesis needed a second player in a headset
