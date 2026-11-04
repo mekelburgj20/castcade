@@ -239,7 +239,7 @@ describe('the VR test bench in rtc-host (D7.6)', () => {
     expect(host.frames()).toBeNull(); // no headset panel on a PC
     expect(logs).toContain('media: bench: started: clip 2026-11-03-101500 (sender side, 3 frames at 30 fps), through a local WebRTC loop, the desktop panel');
     fromPage(w, PANEL_CHANNELS.ready);
-    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'loop', source: 'clip' }]);
+    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'loop', source: 'clip', bitrate: null }]);
     expect(sentOn(w, PANEL_CHANNELS.attach)).toEqual([]);
     const frames = () => sentOn(w, PANEL_CHANNELS.benchFrame) as Array<{ n: number; width: number; height: number; left: Uint8Array; right: Uint8Array | null; stereo: string }>;
     vi.advanceTimersByTime(20);
@@ -282,7 +282,7 @@ describe('the VR test bench in rtc-host (D7.6)', () => {
     host.videoFrames()!.setWanted(true); // the layer in theater wants the feed: queued until the page is ready
     cam.frame(1); // before ready: not sent
     fromPage(w, PANEL_CHANNELS.ready);
-    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'direct', source: 'live' }]);
+    expect(sentOn(w, PANEL_CHANNELS.bench)).toEqual([{ path: 'direct', source: 'live', bitrate: null }]);
     expect(sentOn(w, PANEL_CHANNELS.videoWant)).toEqual([true]);
     cam.frame(2);
     expect(sentOn(w, PANEL_CHANNELS.benchFrame)).toMatchObject([{ n: 2, width: 720, height: 1440, stereo: 'sbs' }]);

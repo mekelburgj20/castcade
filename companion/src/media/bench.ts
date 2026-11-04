@@ -19,24 +19,38 @@ export type BenchSource = 'clip' | 'live';
 export type BenchPath = 'direct' | 'loop';
 export type BenchView = 'theater' | 'direct';
 
-/** What the Match tab asks for. `clip`: a folder under `<logs>/frames` and the side to play (sender eyes or received frames). */
+/** D7.6.9 (2026-11-03): the bitrate cap override on the loop, in bits per second: 1 to 100 Mbps. */
+export const BENCH_BITRATE_MIN = 1_000_000;
+export const BENCH_BITRATE_MAX = 100_000_000;
+
+/**
+ * What the Match tab asks for. `clip`: a folder under `<logs>/frames` and the side to play (sender eyes or received
+ * frames). `bitrate` (D7.6.9): path `loop`'s cap in bits per second, or null for the match's rule (`videoBitrateFor`).
+ */
 export interface BenchRequest {
   source: BenchSource;
   path: BenchPath;
   clip: { name: string; side: 'sender' | 'receiver' } | null;
+  bitrate: number | null;
 }
 
 /** The request from the renderer, checked; a string says what is wrong. Clip names are folder names only (no path). */
 export function benchRequestFrom(raw: unknown): BenchRequest | string {
   if (typeof raw !== 'object' || raw === null) return 'No bench settings given';
-  const v = raw as { source?: unknown; path?: unknown; clip?: unknown };
+  const v = raw as { source?: unknown; path?: unknown; clip?: unknown; bitrate?: unknown };
   const source = v.source === 'live' ? 'live' : v.source === 'clip' ? 'clip' : null;
   if (!source) return 'Pick a source: a saved clip, or your own table live';
   const path = v.path === 'loop' ? 'loop' : 'direct';
-  if (source === 'live') return { source, path, clip: null };
+  // D7.6.9: the cap override is null (the match's rule) or a whole number of bits per second within the range.
+  const b = v.bitrate;
+  if (b !== undefined && b !== null && !(typeof b === 'number' && Number.isInteger(b) && b >= BENCH_BITRATE_MIN && b <= BENCH_BITRATE_MAX)) {
+    return `The bitrate cap must be between ${BENCH_BITRATE_MIN / 1e6} and ${BENCH_BITRATE_MAX / 1e6} Mbps, or the match's rule`;
+  }
+  const bitrate = typeof b === 'number' ? b : null;
+  if (source === 'live') return { source, path, clip: null, bitrate };
   const c = (typeof v.clip === 'object' && v.clip !== null ? v.clip : {}) as { name?: unknown; side?: unknown };
   if (typeof c.name !== 'string' || !/^\d{4}-\d{2}-\d{2}-\d{6}(-\d+)?$/.test(c.name)) return 'Pick a saved clip (Save 2 s of frames makes one)';
-  return { source, path, clip: { name: c.name, side: c.side === 'receiver' ? 'receiver' : 'sender' } };
+  return { source, path, clip: { name: c.name, side: c.side === 'receiver' ? 'receiver' : 'sender' }, bitrate };
 }
 
 export type BenchState = 'off' | 'starting' | 'running';
@@ -78,8 +92,13 @@ export interface BenchPageReport {
   /** The last picture handed to the layer, and how many in the last second. */
   fed: { width: number; height: number; stereo: VrStereo } | null;
   fedFrames: number;
-  /** Path `loop`: the sending connection's outbound video (getStats), and the cap set on it; null before stats. */
-  sent: { width: number; height: number; kbps: number | null; fps: number | null; limit: string } | null;
+  /**
+   * Path `loop`: the sending connection's outbound video (getStats), and the cap set on it; null before stats.
+   * D7.6.8 (2026-11-03): `codec` is the codec stat's mimeType without "video/" ("VP8", "H264", "AV1"); `encoder` is
+   * Chromium's `encoderImplementation` ("libvpx", "OpenH264", "MediaFoundationVideoEncodeAccelerator"...), " (hw)"
+   * appended when it reports `powerEfficientEncoder`; null when the engine does not say.
+   */
+  sent: { width: number; height: number; kbps: number | null; fps: number | null; limit: string; codec: string | null; encoder: string | null } | null;
   bitrate: number | null;
   /** The stage has a picture (path `loop`: the received track arrived). */
   loopUp: boolean;
@@ -99,7 +118,17 @@ export function benchReportFrom(m: unknown): BenchPageReport | null {
   const fed = fedSize ? { ...fedSize, stereo: (v.fed as { stereo?: unknown }).stereo === 'sbs' ? ('sbs' as const) : ('mono' as const) } : null;
   const s = v.sent as Record<string, unknown> | null | undefined;
   const sentSize = size(s);
-  const sent = s && sentSize ? { ...sentSize, kbps: typeof s.kbps === 'number' ? s.kbps : null, fps: typeof s.fps === 'number' ? s.fps : null, limit: typeof s.limit === 'string' ? s.limit.slice(0, 40) : 'none' } : null;
+  const sent =
+    s && sentSize
+      ? {
+          ...sentSize,
+          kbps: typeof s.kbps === 'number' ? s.kbps : null,
+          fps: typeof s.fps === 'number' ? s.fps : null,
+          limit: typeof s.limit === 'string' ? s.limit.slice(0, 40) : 'none',
+          codec: typeof s.codec === 'string' && s.codec ? s.codec.slice(0, 32) : null,
+          encoder: typeof s.encoder === 'string' && s.encoder ? s.encoder.slice(0, 64) : null,
+        }
+      : null;
   return {
     path: v.path === 'loop' ? 'loop' : 'direct',
     drawn: n(v.drawn),
@@ -114,10 +143,13 @@ export function benchReportFrom(m: unknown): BenchPageReport | null {
 }
 
 const mbps = (bits: number): string => `${(bits / 1e6).toFixed(1)} Mbps`;
+/** D7.6.9: the cap in the start line, without a forced decimal ("16 Mbps", "12.5 Mbps"). */
+const mbpsShort = (bits: number): string => `${Number((bits / 1e6).toFixed(1))} Mbps`;
 
 /**
  * The live readout line (the Match tab, and companion.log every 10 s): frames a second drawn, the size handed to the
- * layer and at what rate, and on path `loop` the encoder's sent size, bitrate, fps and `qualityLimitationReason`.
+ * layer and at what rate, and on path `loop` the encoder's sent size, bitrate, fps, codec and encoder (D7.6.8) and
+ * `qualityLimitationReason`.
  */
 export function benchReadout(i: { report: BenchPageReport | null; headset: boolean; path: BenchPath; source: BenchSource; camera?: { state: string; why: string | null } | null }): string {
   const parts: string[] = [];
@@ -130,7 +162,10 @@ export function benchReadout(i: { report: BenchPageReport | null; headset: boole
     else parts.push('nothing handed to the layer yet');
     if (i.path === 'loop') {
       const s = r.sent;
-      if (s && s.width > 0) parts.push(`encoder sent ${s.width}x${s.height}${s.kbps !== null ? ` at ${mbps(s.kbps * 1000)}` : ''}${r.bitrate ? ` (cap ${mbps(r.bitrate)})` : ''}${s.fps !== null ? `, ${Math.round(s.fps)} fps` : ''}, limited by ${s.limit}`);
+      if (s && s.width > 0) {
+        const codec = s.codec ? `, ${s.codec}${s.encoder ? ` via ${s.encoder}` : ''}` : '';
+        parts.push(`encoder sent ${s.width}x${s.height}${s.kbps !== null ? ` at ${mbps(s.kbps * 1000)}` : ''}${r.bitrate ? ` (cap ${mbps(r.bitrate)})` : ''}${s.fps !== null ? `, ${Math.round(s.fps)} fps` : ''}${codec}, limited by ${s.limit}`);
+      }
       else parts.push(r.loopUp ? 'encoder: no stats yet' : 'local WebRTC loop connecting');
     }
     if (r.error) parts.push(r.error);
@@ -162,9 +197,10 @@ export interface BenchStatus {
   hint: string;
 }
 
-/** The words for the start line in the log. */
-export function benchWords(o: { source: BenchSource; path: BenchPath; clip?: { name: string; side: string; frames: number; fps: number } | null; headset: boolean }): string {
+/** The words for the start line in the log. D7.6.9: the loop's cap override, when one is set. */
+export function benchWords(o: { source: BenchSource; path: BenchPath; clip?: { name: string; side: string; frames: number; fps: number } | null; headset: boolean; bitrate?: number | null }): string {
   const src = o.source === 'live' ? 'my own table, live (the layer camera)' : o.clip ? `clip ${o.clip.name} (${o.clip.side} side, ${o.clip.frames} frames at ${o.clip.fps} fps)` : 'a clip';
   const path = o.path === 'loop' ? 'through a local WebRTC loop' : 'straight to the layer';
-  return `${src}, ${path}, ${o.headset ? 'theater in the headset' : 'the desktop panel'}`;
+  const cap = o.path === 'loop' && o.bitrate ? `, cap ${mbpsShort(o.bitrate)}` : '';
+  return `${src}, ${path}, ${o.headset ? 'theater in the headset' : 'the desktop panel'}${cap}`;
 }

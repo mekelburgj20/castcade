@@ -28,6 +28,14 @@ function sourceOptions(clips: ClipSummary[]): Array<{ value: string; label: stri
   return out;
 }
 
+/** D7.6.9 (2026-11-03): the loop's bitrate cap: the match's rule, or a fixed cap to find where the picture stops looking bad. */
+const BITRATE_CAPS: Array<{ value: string; label: string; bitrate: number | null }> = [
+  { value: 'rule', label: "The match's rule (8 Mbps for stereo)", bitrate: null },
+  { value: '16', label: '16 Mbps', bitrate: 16_000_000 },
+  { value: '30', label: '30 Mbps', bitrate: 30_000_000 },
+  { value: '50', label: '50 Mbps', bitrate: 50_000_000 },
+];
+
 export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge; st: MatchStatus; bare?: boolean }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState<SaveFramesResult | null>(null);
@@ -35,6 +43,7 @@ export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge
   const [clips, setClips] = useState<ClipSummary[]>([]);
   const [source, setSource] = useState('live');
   const [path, setPath] = useState<'direct' | 'loop'>('direct');
+  const [cap, setCap] = useState('rule');
   const [busy, setBusy] = useState(false);
   const bench = st.bench;
   const inMatch = st.role !== 'none';
@@ -70,7 +79,8 @@ export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge
   };
   const start = () => {
     const p = chosen.pick;
-    act(() => bridge.match.benchStart({ source: p.kind, path, clip: p.kind === 'clip' ? { name: p.name, side: p.side } : null }));
+    const bitrate = path === 'loop' ? (BITRATE_CAPS.find((c) => c.value === cap)?.bitrate ?? null) : null;
+    act(() => bridge.match.benchStart({ source: p.kind, path, clip: p.kind === 'clip' ? { name: p.name, side: p.side } : null, bitrate }));
   };
 
   const body = (
@@ -93,6 +103,18 @@ export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge
             <option value="loop">Through a local WebRTC loop (the match's encoder and bitrate)</option>
           </select>
         </label>
+        {path === 'loop' && (
+          <label className="field">
+            <span>Bitrate cap</span>
+            <select value={cap} disabled={!!bench} onChange={(e) => setCap(e.target.value)}>
+              {BITRATE_CAPS.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
       <div className="row">
         {bench ? (
@@ -132,7 +154,9 @@ export function TestBench({ bridge, st, bare = false }: { bridge: CastcadeBridge
       )}
       <small>
         Save 2 s of frames writes your VR layer camera's eye frames (while it runs: Camera = VR layer in a match, or the bench on your own table) and the theater
-        frames handed to your headset (while theater shows) to the logs folder, at most 120 of each; the bench can play them back.
+        frames handed to your headset (while theater shows) to the logs folder, at most 120 of each; the bench can play them back. Pressed while the
+        bench runs through the local WebRTC loop, it keeps the encoded picture (the frames as they came out of the loop), so the encoder's work can be
+        looked at offline.
       </small>
       {saved && (
         <small>

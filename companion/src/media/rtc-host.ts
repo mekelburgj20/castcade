@@ -51,7 +51,7 @@ import { cameraRequestFor, cameraWatch, createFrameSlot, decideCamera, type Came
 import type { LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, playbackIndex, receivedFrameFrom, savedLine, type FrameSaver, type Playback, type SaveFramesResult } from './frame-clip.js';
 import { benchReadout, benchReportFrom, benchWords, type BenchPageReport, type BenchPath, type BenchSource } from './bench.js';
 import { UNCOVER_MS } from './stream-engine.js';
@@ -156,6 +156,8 @@ export interface RtcBenchStart {
   inVr: boolean;
   /** The offscreen panel for the headset (the OpenXR layer takes its frames); false: the desktop window, shown. */
   headsetPanel: boolean;
+  /** D7.6.9 (2026-11-03): path `loop`'s bitrate cap in bits per second; null: the match's rule (`videoBitrateFor`). */
+  bitrate: number | null;
 }
 
 /** D7.6: the bench now: what runs, the page's last readout, the layer camera's state (source live), the readout line. */
@@ -588,7 +590,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     // D7.6: a bench page gets the bench instead of an attach.
     if (benchRun) {
       if (!benchSent) {
-        post(PANEL_CHANNELS.bench, { path: benchRun.cfg.path, source: benchRun.cfg.source });
+        post(PANEL_CHANNELS.bench, { path: benchRun.cfg.path, source: benchRun.cfg.source, bitrate: benchRun.cfg.bitrate ?? null } satisfies PanelBench);
         benchSent = true;
       }
     } else if (!attachMsg) return;
@@ -1298,7 +1300,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       }, Math.max(10, Math.round(1000 / clip.fps / 2)));
     }
     const clipWords = o.clip && o.clipName ? { name: o.clipName, side: o.clip.side, frames: o.clip.frames.length, fps: o.clip.fps } : null;
-    log.info(`media: bench: started: ${benchWords({ source: o.source, path: o.path, clip: clipWords, headset })}`);
+    log.info(`media: bench: started: ${benchWords({ source: o.source, path: o.path, clip: clipWords, headset, bitrate: o.bitrate ?? null })}`);
     emitBench();
   };
 

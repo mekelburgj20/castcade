@@ -226,8 +226,11 @@ export interface CastcadeApi {
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
     saveFrames(): Promise<SaveFramesResult>;
-    /** D7.6 (2026-11-03): the VR test bench: start (refused during a match), stop, theater or VPX's own view, the saved clips. */
-    benchStart(req: { source: 'clip' | 'live'; path: 'direct' | 'loop'; clip: { name: string; side: 'sender' | 'receiver' } | null }): Promise<MatchStatus>;
+    /**
+     * D7.6 (2026-11-03): the VR test bench: start (refused during a match), stop, theater or VPX's own view, the saved
+     * clips. `bitrate` (D7.6.9): the loop's cap in bits per second (1 to 100 Mbps), null or absent for the match's rule.
+     */
+    benchStart(req: { source: 'clip' | 'live'; path: 'direct' | 'loop'; clip: { name: string; side: 'sender' | 'receiver' } | null; bitrate?: number | null }): Promise<MatchStatus>;
     benchStop(): Promise<MatchStatus>;
     benchView(view: 'theater' | 'direct'): Promise<MatchStatus>;
     benchClips(): Promise<ClipSummary[]>;
