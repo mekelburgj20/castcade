@@ -15,6 +15,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -150,12 +151,10 @@ std::string jsonString(const std::string& body, const char* key) {
   return end == std::string::npos ? "" : body.substr(i + 1, end - i - 1);
 }
 
-// The number value of "key" in a flat JSON object: true with `out` set, or false (no key, not a plain decimal).
-// Parsed by hand, not with strtod: strtod follows the process's locale, and in a locale with a decimal comma VPX's
-// process would read "1.5" as 1.
-bool jsonNumber(const std::string& body, const char* key, double& out) {
-  size_t i = valueAt(body, key);
-  if (i == std::string::npos) return false;
+// A JSON number at `i` (an optional '-', digits, an optional '.digits', an optional exponent, which JSON.stringify
+// writes for values under 1e-6): true with `out` set and `i` past it. Parsed by hand, not with strtod: strtod follows
+// the process's locale, and in a locale with a decimal comma VPX's process would read "1.5" as 1.
+bool readNumber(const std::string& body, size_t& i, double& out) {
   bool negative = false;
   if (i < body.size() && body[i] == '-') negative = true, i++;
   double v = 0.0;
@@ -166,9 +165,40 @@ bool jsonNumber(const std::string& body, const char* key, double& out) {
     for (i++; i < body.size() && body[i] >= '0' && body[i] <= '9'; i++) v += (body[i] - '0') * place, place *= 0.1, digits = true;
   }
   if (!digits) return false;
-  if (i < body.size() && (body[i] == 'e' || body[i] == 'E')) return false;  // no exponent in a scale: the field stays as it was
+  if (i < body.size() && (body[i] == 'e' || body[i] == 'E')) {
+    i++;
+    bool eneg = false;
+    if (i < body.size() && (body[i] == '-' || body[i] == '+')) eneg = body[i] == '-', i++;
+    int ex = 0;
+    bool ed = false;
+    for (; i < body.size() && body[i] >= '0' && body[i] <= '9' && ex < 1000; i++) ex = ex * 10 + (body[i] - '0'), ed = true;
+    if (!ed) return false;
+    v *= std::pow(10.0, eneg ? -ex : ex);
+  }
   out = negative ? -v : v;
   return true;
+}
+
+// The number value of "key" in a flat JSON object: true with `out` set, or false (no key, not a number).
+bool jsonNumber(const std::string& body, const char* key, double& out) {
+  size_t i = valueAt(body, key);
+  return i != std::string::npos && readNumber(body, i, out);
+}
+
+// D7.5.2: the numbers of the JSON array at `i` ('[' expected), at most `max` of them: the count read, 0 when it is not
+// an array of that many plain numbers or fewer.
+size_t jsonNumbers(const std::string& body, size_t i, double* out, size_t max) {
+  i = skipSpace(body, i);
+  if (i >= body.size() || body[i] != '[') return 0;
+  size_t n = 0;
+  i = skipSpace(body, i + 1);
+  while (i < body.size() && body[i] != ']') {
+    if (n >= max || !readNumber(body, i, out[n])) return 0;
+    n++;
+    i = skipSpace(body, i);
+    if (i < body.size() && body[i] == ',') i = skipSpace(body, i + 1);
+  }
+  return i < body.size() ? n : 0;
 }
 
 // D7.6.2: "key": true in a flat JSON object (anything else, or no key: false).
@@ -197,6 +227,49 @@ bool jsonCamera(const std::string& body, CameraRequest& out) {
   return true;
 }
 
+// D7.5.2: "eyes" in the control: an array of two objects {"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}
+// (panel_pipe.h EyeGeometry). True with `out` filled when both are whole and plausible: a finite fov under 89 degrees
+// each way with left < right and down < up, a render of 1..16384 a side, a rect inside it. Anything else, absent or
+// null: false (not known; never a window placed from half a geometry).
+bool jsonEyes(const std::string& body, EyeGeometry* out) {
+  size_t i = valueAt(body, "eyes");
+  if (i == std::string::npos || i >= body.size() || body[i] != '[') return false;
+  i++;
+  for (int e = 0; e < 2; e++) {
+    i = skipSpace(body, i);
+    if (i >= body.size() || body[i] != '{') return false;
+    const size_t end = body.find('}', i);
+    if (end == std::string::npos) return false;
+    const std::string obj = body.substr(i, end - i + 1);
+    double fov[4] = {0, 0, 0, 0}, rect[4] = {0, 0, 0, 0}, render[2] = {0, 0};
+    const size_t f = valueAt(obj, "fov"), r = valueAt(obj, "rect"), s = valueAt(obj, "render");
+    if (f == std::string::npos || r == std::string::npos || s == std::string::npos) return false;
+    if (jsonNumbers(obj, f, fov, 4) != 4 || jsonNumbers(obj, r, rect, 4) != 4 || jsonNumbers(obj, s, render, 2) != 2) return false;
+    const double lim = 1.553343;  // 89 degrees
+    for (double v : fov)
+      if (!std::isfinite(v) || std::fabs(v) > lim) return false;
+    if (!(fov[0] < fov[1] && fov[3] < fov[2])) return false;
+    if (!(render[0] >= 1 && render[0] <= 16384 && render[1] >= 1 && render[1] <= 16384)) return false;
+    if (!(rect[2] >= 1 && rect[3] >= 1 && rect[0] >= 0 && rect[1] >= 0 && rect[0] + rect[2] <= render[0] && rect[1] + rect[3] <= render[1])) return false;
+    for (int k = 0; k < 4; k++) out[e].fov[k] = static_cast<float>(fov[k]), out[e].rect[k] = static_cast<int32_t>(rect[k]);
+    out[e].render[0] = static_cast<int32_t>(render[0]), out[e].render[1] = static_cast<int32_t>(render[1]);
+    i = skipSpace(body, end + 1);
+    if (e == 0) {
+      if (i >= body.size() || body[i] != ',') return false;
+      i++;
+    }
+  }
+  i = skipSpace(body, i);
+  return i < body.size() && body[i] == ']';
+}
+
+std::string eyeText(const EyeGeometry& g) {
+  const auto deg = [](float rad) { return std::to_string(static_cast<int>(std::lround(rad * 57.29578f))); };
+  return "fov " + deg(g.fov[0]) + ".." + deg(g.fov[1]) + " across, " + deg(g.fov[3]) + ".." + deg(g.fov[2]) + " up deg, crop " + std::to_string(g.rect[2]) + "x" +
+         std::to_string(g.rect[3]) + " at " + std::to_string(g.rect[0]) + "," + std::to_string(g.rect[1]) + " of " + std::to_string(g.render[0]) + "x" +
+         std::to_string(g.render[1]);
+}
+
 void applyControl(const std::string& body) {
   State& st = state();
   Control c;
@@ -220,14 +293,24 @@ void applyControl(const std::string& body) {
   if (jsonCamera(body, cam)) c.camera = cam;
   // D7.6.1: the companion sends its whole control every time, so a control without "test" turns the pattern off.
   c.test = jsonString(body, "test") == "pattern" ? TestPattern::Pattern : TestPattern::None;
-  bool changed = false, cameraChanged = false, testChanged = false;
+  // D7.5.2: likewise, a control without "eyes" means the sender's eyes are not known.
+  EyeGeometry eyes[2];
+  c.eyesKnown = jsonEyes(body, eyes);
+  c.eyes[0] = c.eyesKnown ? eyes[0] : EyeGeometry{};
+  c.eyes[1] = c.eyesKnown ? eyes[1] : EyeGeometry{};
+  bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
     changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre ||
               st.control.theaterScale != c.theaterScale;
     cameraChanged = st.control.camera != c.camera;
     testChanged = st.control.test != c.test;
+    eyesChanged = st.control.eyesKnown != c.eyesKnown || st.control.eyes[0] != c.eyes[0] || st.control.eyes[1] != c.eyes[1];
     st.control = c;
+  }
+  if (eyesChanged) {
+    logLine(c.eyesKnown ? "pipe: the sender's eyes: left " + eyeText(c.eyes[0]) + "; right " + eyeText(c.eyes[1])
+                        : std::string("pipe: the sender's eyes not given (VPX's centre-crop rule places the stereo window)"));
   }
   if (testChanged) logLine(c.test == TestPattern::Pattern ? "pipe: calibration pattern asked" : "pipe: calibration pattern off");
   // D7.6.2: a request, not a state: every control that carries it asks again.

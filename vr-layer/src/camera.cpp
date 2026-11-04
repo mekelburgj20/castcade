@@ -1,5 +1,6 @@
 // See camera.h.
 #include "camera.h"
+#include "eye_crop.h"
 
 #include "jpeg_encode.h"
 #include "layer_log.h"
@@ -245,7 +246,9 @@ struct Crop {
   int32_t x = 0, y = 0, w = 0, h = 0;
 };
 
-// The largest rect of aspect arW:arH centred in the view's rect (VPX's own preview rule: crop, never stretch).
+// The largest rect of aspect arW:arH in the view's rect (VPX's own preview rule: crop, never stretch), centred on the
+// eye's optical axis horizontally and in the rect vertically (eye_crop.h, D7.5.8, 0.5.1; 0.5.0 took the rect's centre,
+// which stood the two windows 15 degrees apart on a Quest 3). The frame header's `rect` tells the receiver what was done.
 Crop cropFor(const CameraView& v, uint32_t arW, uint32_t arH) {
   Crop c;
   const int64_t rw = v.rectW > 0 ? v.rectW : 1, rh = v.rectH > 0 ? v.rectH : 1;
@@ -256,7 +259,7 @@ Crop cropFor(const CameraView& v, uint32_t arW, uint32_t arH) {
     c.w = static_cast<int32_t>(rw);
     c.h = static_cast<int32_t>(std::max<int64_t>(1, rw * arH / arW));
   }
-  c.x = v.rectX + static_cast<int32_t>((rw - c.w) / 2);
+  c.x = v.rectX + static_cast<int32_t>(std::lround(axisCropX(static_cast<double>(rw), static_cast<double>(c.w), std::tan(v.fovLeft), std::tan(v.fovRight))));
   c.y = v.rectY + static_cast<int32_t>((rh - c.h) / 2);
   return c;
 }

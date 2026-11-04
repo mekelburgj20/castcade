@@ -121,7 +121,7 @@ on a synchronous handle Windows would queue the write behind the read).
 | layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`; or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -208,8 +208,11 @@ quality 85 (the right eye on a second thread; `third_party/stb/stb_image_write.h
 frames are dropped when both are busy, never queued.
 
 Crop and size: the control's `camera` is a per-eye box (the companion asks for 720x1440 at 30 fps by default: the
-portrait shape the runbook recommends for the preview window). Each eye is centre-cropped to the box's aspect, as VPX's
-own preview does (`Player::PrepareVideoBuffers`, never stretched), and scaled into the box, never up, to even sides.
+portrait shape the runbook recommends for the preview window). Each eye is cropped to the box's aspect about the eye's optical
+axis (0.5.1, D7.5.8, `eye_crop.h`: centred horizontally on the column where the fov's tangent is 0, clamped inside the
+render, centred vertically; 0.5.0 took the render's centre as VPX's own preview does (`Player::PrepareVideoBuffers`),
+which stood the two windows about 15° apart on a Quest 3), never stretched, and scaled into the box, never up, to even
+sides.
 The frame carries what was done, so the receiver places each eye exactly (its stereo window no longer stands in with
 its own eyes).
 

@@ -13,8 +13,9 @@
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
 //     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}, optionally the
 //       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5),
-//       "report": true (D7.6.2: send the session report now; a request, never a state) and "test": "pattern" (D7.6.1:
-//       the calibration pattern in theater; a control without it = off): the control;
+//       "report": true (D7.6.2: send the session report now; a request, never a state), "test": "pattern" (D7.6.1:
+//       the calibration pattern in theater; a control without it = off) and "eyes": [{fov, rect, render} x 2]
+//       (D7.5.2, layer 0.5.1: the sender's eye geometry for the stereo window; absent = not known): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -63,6 +64,23 @@ constexpr uint32_t kCameraMaxFps = 60;
 // (layer.cpp drawPatternEye), shown in theater whatever the mode while asked; a control without "test" = None.
 enum class TestPattern { None, Pattern };
 
+// D7.5.2 (2026-11-03, layer 0.5.1): the sender's eye geometry for a side-by-side picture, from the control's "eyes"
+// (two objects, left then right: "fov" [left, right, up, down] in radians with OpenXR's signs, "rect" [x, y, w, h] the
+// crop taken inside the render with y from the top, "render" [w, h]): theater places each eye's window from the crop
+// the sender took, in the sender's fov (layer.cpp eyeCrop), instead of assuming the sender's eyes are this headset's
+// and the crop VPX's preview takes. Absent, null or malformed: not known, and the centre-crop rule places the window.
+struct EyeGeometry {
+  float fov[4] = {0, 0, 0, 0};
+  int32_t rect[4] = {0, 0, 0, 0};
+  int32_t render[2] = {0, 0};
+  bool operator==(const EyeGeometry& o) const {
+    for (int i = 0; i < 4; i++)
+      if (fov[i] != o.fov[i] || rect[i] != o.rect[i]) return false;
+    return render[0] == o.render[0] && render[1] == o.render[1];
+  }
+  bool operator!=(const EyeGeometry& o) const { return !(*this == o); }
+};
+
 struct Control {
   ViewMode mode = ViewMode::Panel;
   bool sbs = false;          // the video frame is left eye | right eye side by side
@@ -72,6 +90,8 @@ struct Control {
   float theaterScale = kTheaterScale;
   CameraRequest camera;  // D7.5
   TestPattern test = TestPattern::None;  // D7.6.1
+  bool eyesKnown = false;                // D7.5.2: `eyes` holds the sender's two eyes
+  EyeGeometry eyes[2];
 };
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;

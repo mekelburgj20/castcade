@@ -65,6 +65,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "eye_crop.h"
 #include "layer_log.h"
 #include "panel_pipe.h"
 
@@ -226,7 +227,7 @@ struct Surface {
 };
 
 // The geometry theater assumes for one eye of a side-by-side picture (eyeCrop, above placeWindows): the fov used and
-// where it came from, the render size, VPX's centre crop of it and that crop's tangent rect.
+// where it came from, the render size, the crop of it (the sender's, else VPX's centre crop) and that crop's tangent rect.
 struct EyeCrop {
   XrFovf fov{};
   const char* fovFrom = "assumed";
@@ -274,6 +275,8 @@ struct Session {
   bool windowDirty = true;
   uint32_t windowW = 0, windowH = 0;
   float windowScale = 0.0f;
+  bool windowEyesKnown = false;  // D7.5.2: the window was placed from the control's eyes (below)
+  std::array<EyeGeometry, 2> windowEyes{};
   std::array<XrPosef, 2> windowPose{};
   std::array<XrExtent2Df, 2> windowSize{};
   std::string windowLog;
@@ -662,8 +665,12 @@ void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) 
 
 // ---- the stereo window (D7.4.5) ---------------------------------------------------------------------------------------
 //
-// A side-by-side picture is the sender's VPX "both eyes" preview: each half is what one of the sender's eyes rendered.
-// VPX 10.8.0 (Player::PrepareVideoBuffers, ShrinkPreview off) fills each half with a CENTRE CROP of that eye's whole
+// A side-by-side picture is the sender's two eye renders, each cropped: each half is what one of the sender's eyes
+// rendered. Since 0.5.1 (D7.5.2) the control's "eyes" say which crop of which fov and render each half is, and the
+// window is placed from that (exact for any pair of headsets and any crop rule; the layer camera crops about the
+// eye's optical axis since D7.5.8, eye_crop.h). Without them the picture is taken for VPX's own "both eyes" preview
+// (the screen capture, or a 0.5.0 camera), which VPX 10.8.0 (Player::PrepareVideoBuffers, ShrinkPreview off) fills
+// with a CENTRE CROP of that eye's whole
 // render, cut to the half's aspect and scaled to it: render w x h, half aspect outAr; ar = w / h > outAr crops the
 // sides (fw = h * outAr, x = (w - fw) / 2, full height), else top and bottom (fh = w / outAr, y = (h - fh) / 2, full
 // width). The eye render covers that eye's frustum, which is asymmetric (wider on the outer side), so the render's
@@ -691,7 +698,7 @@ void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) 
 //      yaw then pitch, never its roll, as the mono screen: D7.4.7). Position = head + R_f (eye + R_eye (S D cx, S D
 //      cy, -D)); orientation = R_f R_eye; size =
 //      (S D (tR' - tL'), S D (tU' - tD')).
-// Assumptions: the sender's eyes had the receiver's fov and render aspect (the video carries neither; the same headset
+// Assumptions, without the control's eyes: the sender's eyes had the receiver's fov and render aspect (the same headset
 // model on both ends makes it exact), and the receiver's head stays about where it was at the recentre (the window is
 // fixed in the room, so moving the head moves the eyes against it, as with a real window).
 // Fallbacks, never dark: no fov from VPX → the fov xrLocateViews gave; neither → ±45° each way; no eye poses → ±0.0315 m.
@@ -811,11 +818,28 @@ void locateEyes(Session& s, XrTime when) {
                                    ") differs from xrLocateViews' (" + fovText(s.locatedFov[e]) + "); the stereo window uses VPX's");
 }
 
-// Steps 1 and 2 above for eye `e` of a picture whose eye is `outAr` wide per unit of height: the fov (VPX's, else
-// xrLocateViews', else assumed), the render size, VPX's centre crop and the crop's tangent rect. placeWindows places
-// the quads from it; the calibration pattern (D7.6.1) is drawn from the same numbers.
-EyeCrop eyeCrop(const Session& s, size_t e, float outAr) {
+// Steps 1 and 2 above for eye `e` of a picture whose eye is `outAr` wide per unit of height. With `sender` (D7.5.2, the
+// control's eyes): the sender's fov, render and crop as they are. Without: the fov (VPX's, else xrLocateViews', else
+// assumed), the render size, VPX's centre crop and the crop's tangent rect. placeWindows places the quads from it;
+// the calibration pattern (D7.6.1) is drawn from the same numbers, always without a sender (it measures this headset).
+EyeCrop eyeCrop(const Session& s, size_t e, float outAr, const EyeGeometry* sender) {
   EyeCrop c;
+  if (sender) {
+    c.fov = {sender->fov[0], sender->fov[1], sender->fov[2], sender->fov[3]};
+    c.fovFrom = "the sender";
+    c.rectKnown = true;
+    c.w = static_cast<float>(sender->render[0]), c.h = static_cast<float>(sender->render[1]);
+    c.fw = static_cast<float>(sender->rect[2]), c.fh = static_cast<float>(sender->rect[3]);
+    // The rect's y runs from the top; the tangent rows (step 1) run from the bottom, tD .. tU.
+    c.x = static_cast<float>(sender->rect[0]), c.y = c.h - static_cast<float>(sender->rect[1]) - c.fh;
+    const float tL = std::tan(c.fov.angleLeft), tR = std::tan(c.fov.angleRight), tD = std::tan(c.fov.angleDown), tU = std::tan(c.fov.angleUp);
+    c.l = tL + (c.x / c.w) * (tR - tL), c.r = tL + ((c.x + c.fw) / c.w) * (tR - tL);
+    c.d = tD + (c.y / c.h) * (tU - tD), c.u = tD + ((c.y + c.fh) / c.h) * (tU - tD);
+    const float ar = c.fw / (c.fh > 0.0f ? c.fh : 1.0f);
+    if (std::fabs(ar - outAr) > 0.03f * outAr)
+      logOnce("sender_aspect", fmt("theater: the sender's crop is %.3f wide per unit of height but the picture's eye is %.3f: the window keeps the crop's angles", ar, outAr));
+    return c;
+  }
   c.fov = fallbackFov();
   if (s.appViewsSeen && fovUsable(s.appFov[e])) c.fov = s.appFov[e], c.fovFrom = "VPX's frame";
   else if (s.eyesLocated && fovUsable(s.locatedFov[e])) c.fov = s.locatedFov[e], c.fovFrom = "xrLocateViews";
@@ -834,15 +858,18 @@ EyeCrop eyeCrop(const Session& s, size_t e, float outAr) {
   return c;
 }
 
-// The two eye quads for a side-by-side picture of picW x picH (each eye picW / 2 wide), at scale `scale`.
-void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
+// The two eye quads for a side-by-side picture of picW x picH (each eye picW / 2 wide), at scale `scale`; `sender` is
+// the control's two eyes (D7.5.2) or null.
+void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale, const EyeGeometry* sender) {
   s.windowDirty = false;
   s.windowW = picW, s.windowH = picH, s.windowScale = scale;
+  s.windowEyesKnown = sender != nullptr;
+  if (sender) s.windowEyes = {sender[0], sender[1]};
   const float outAr = static_cast<float>(picW / 2) / static_cast<float>(picH > 0 ? picH : 1);
   const float D = kScreenDistanceM, SD = scale * kScreenDistanceM;
   std::string eyes[2];
   for (size_t e = 0; e < 2; e++) {
-    const EyeCrop c = eyeCrop(s, e, outAr);
+    const EyeCrop c = eyeCrop(s, e, outAr, sender ? &sender[e] : nullptr);
     s.windowCrop[e] = c;
     const XrFovf& f = c.fov;
     const char* fovFrom = c.fovFrom;
@@ -868,7 +895,7 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale) {
   const XrVector3f b = s.eyesLocated ? s.eyePose[1].position : XrVector3f{kFallbackHalfIpdM, 0.0f, 0.0f};
   const float ipd = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
   const std::string line = "theater: stereo window, scale " + fmt("%.2f", scale) + (scale == 1.0f ? " (life size)" : "") + ", " + fmt("%.2f", D) +
-                           " m ahead, video eye " + std::to_string(picW / 2) + "x" + std::to_string(picH) + ", eyes from " +
+                           " m ahead, video eye " + std::to_string(picW / 2) + "x" + std::to_string(picH) + (sender ? ", crop from the sender" : "") + ", eyes from " +
                            (s.eyesLocated ? "xrLocateViews" : "assumed") + fmt(", IPD %.1f mm", ipd * 1000.0f) + "; " + eyes[0] + "; " + eyes[1];
   if (line == s.windowLog) return;
   s.windowLog = line;
@@ -1022,7 +1049,7 @@ void patternTick(Session& s, std::unique_ptr<GlContextScope>& scope) {
   }
   const uint32_t eyeH = kPatternEyeH;
   const float outAr = static_cast<float>(eyeW) / static_cast<float>(eyeH);
-  const std::array<EyeCrop, 2> crops = {eyeCrop(s, 0, outAr), eyeCrop(s, 1, outAr)};
+  const std::array<EyeCrop, 2> crops = {eyeCrop(s, 0, outAr, nullptr), eyeCrop(s, 1, outAr, nullptr)};
   bool same = s.pattern.released && s.patternEyeW == eyeW && s.patternEyeH == eyeH;
   for (size_t e = 0; e < 2 && same; e++) {
     const EyeCrop& a = crops[e];
@@ -1530,7 +1557,7 @@ std::vector<Fact> sessionFacts(const Session& s) {
                        jpair(s.windowSize[e].width, s.windowSize[e].height, 3) + ",\"position\":" + vec3(s.windowPose[e].position) + "}");
       }
       window = "{\"scale\":" + fixed(s.windowScale, 2) + ",\"distanceM\":" + fixed(kScreenDistanceM, 2) + ",\"picture\":" + jpair(s.windowW, s.windowH) +
-               ",\"eyesFrom\":" + jstr(s.eyesLocated ? "xrLocateViews" : "assumed") + ",\"ipdMm\":" + fixed(ipd * 1000.0f, 1) + ",\"eyes\":" + jlist(eyes) + "}";
+               ",\"eyesFrom\":" + jstr(s.eyesLocated ? "xrLocateViews" : "assumed") + ",\"cropFromSender\":" + std::string(s.windowEyesKnown ? "true" : "false") + ",\"ipdMm\":" + fixed(ipd * 1000.0f, 1) + ",\"eyes\":" + jlist(eyes) + "}";
     }
     text = std::string("theater: shown ") + modeName(s.shown) +
            (s.theaterPlaced ? fmt(", last placed at yaw %.1f pitch %.1f deg in LOCAL", s.theaterYawDeg, s.theaterPitchDeg) : std::string(", never placed in this session")) +
@@ -1715,7 +1742,11 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
       // D7.4.3: landscape (or square) eyes are width-led as before; portrait eyes height-led (see kScreenHeightM).
       const XrExtent2Df size = eyeW >= eyeH ? XrExtent2Df{kScreenWidthM, kScreenWidthM * eyeH / eyeW} : XrExtent2Df{kScreenHeightM * eyeW / eyeH, kScreenHeightM};
       if (sbs) {
-        if (s.windowDirty || s.windowW != pic.width || s.windowH != pic.height || s.windowScale != c.theaterScale) placeWindows(s, pic.width, pic.height, c.theaterScale);
+        // D7.5.2: the sender's eyes place the video's window; the pattern is always this headset's own geometry.
+        const EyeGeometry* sender = !patternUp && c.eyesKnown ? c.eyes : nullptr;
+        const bool eyesDiffer = s.windowEyesKnown != (sender != nullptr) || (sender && (s.windowEyes[0] != sender[0] || s.windowEyes[1] != sender[1]));
+        if (s.windowDirty || eyesDiffer || s.windowW != pic.width || s.windowH != pic.height || s.windowScale != c.theaterScale)
+          placeWindows(s, pic.width, pic.height, c.theaterScale, sender);
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.windowPose[0], s.windowSize[0], false));
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.windowPose[1], s.windowSize[1], false));
       } else {

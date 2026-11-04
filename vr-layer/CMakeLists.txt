@@ -13,7 +13,9 @@ cmake_minimum_required(VERSION 3.20)
 # 0.2.0: D7.4, pipe protocol 2 (modes, theater). 0.3.0: D7.4.5 (the stereo window) and D7.3.3 (the build id in the log).
 # 0.4.0: D7.5, pipe protocol 3 (the layer as the camera: CVF1 JPEG eye frames, CVS1 status; third_party/stb).
 # 0.5.0: D7.6, the test bench: the session report (CVS1 "session", control "report"), the calibration pattern (control "test").
-project(castcade_vr_layer VERSION 0.5.0 LANGUAGES CXX)
+# 0.5.1: D7.5.8, the camera crops each eye about its optical axis (eye_crop.h); D7.5.2, the control's "eyes" place the stereo
+#        window from the sender's fov and crop.
+project(castcade_vr_layer VERSION 0.5.1 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
