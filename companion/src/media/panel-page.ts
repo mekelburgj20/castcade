@@ -74,10 +74,11 @@ export const PANEL_CHANNELS = {
   benchStatus: 'castcade-panel:bench-status',
 } as const;
 
-/** D7.6: the bench as the page runs it. */
+/** D7.6: the bench as the page runs it. `bitrate` (D7.6.9): path loop's cap override in bits per second, null for the match's rule. */
 export interface PanelBench {
   path: 'direct' | 'loop';
   source: 'clip' | 'live';
+  bitrate: number | null;
 }
 
 /**
@@ -1705,7 +1706,9 @@ function startBench(cfg) {
     const c = document.createElement('canvas');
     c.width = 2;
     c.height = 2;
-    const b = { path: cfg.path === 'loop' ? 'loop' : 'direct', canvas: c, ctx: c.getContext('2d', { alpha: false }), drawn: 0, drawnSec: 0, bad: 0, stereo: 'sbs', eyes: null, track: null, stageStream: null, streamN: 0, a: null, b: null, sender: null, bitrate: null, fed: null, fedSec: 0, outBytes: -1, outAt: 0, error: null };
+    // D7.6.9: bitrateOverride is the Match tab's cap for the loop (bits per second), or null for the match's rule.
+    const override = typeof cfg.bitrate === 'number' && cfg.bitrate > 0 ? cfg.bitrate : null;
+    const b = { path: cfg.path === 'loop' ? 'loop' : 'direct', canvas: c, ctx: c.getContext('2d', { alpha: false }), drawn: 0, drawnSec: 0, bad: 0, stereo: 'sbs', eyes: null, track: null, stageStream: null, streamN: 0, a: null, b: null, sender: null, bitrate: null, bitrateOverride: override, fed: null, fedSec: 0, outBytes: -1, outAt: 0, error: null };
     const t = c.captureStream(VIDEO.fps).getVideoTracks()[0] || null;
     if (!t) b.error = 'The bench canvas gave no video track.';
     else {
@@ -1760,10 +1763,13 @@ async function openLoop(b) {
     render();
   }
 }
-/** The match's rule (videoBitrateFor, D7.4.6) on the loop's sender, from the canvas's size and the frames' stereo. */
+/**
+ * The match's rule (videoBitrateFor, D7.4.6) on the loop's sender, from the canvas's size and the frames' stereo; or the
+ * Match tab's cap override when one is set (D7.6.9), whatever the size.
+ */
 async function applyBenchBitrate(b) {
   if (!b.sender) return;
-  const want = videoBitrateFor({ width: b.canvas.width, height: b.canvas.height, stereo: b.stereo });
+  const want = b.bitrateOverride !== null && b.bitrateOverride !== undefined ? b.bitrateOverride : videoBitrateFor({ width: b.canvas.width, height: b.canvas.height, stereo: b.stereo });
   b.bitrate = want;
   try {
     const p = b.sender.getParameters();
@@ -1848,7 +1854,13 @@ async function benchTick() {
         const kbps = b.outBytes >= 0 && s.bytesSent >= b.outBytes && now > b.outAt ? Math.round(((s.bytesSent - b.outBytes) * 8) / (now - b.outAt)) : null;
         b.outBytes = s.bytesSent;
         b.outAt = now;
-        sent = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, fps: typeof s.framesPerSecond === 'number' ? s.framesPerSecond : null, limit: s.qualityLimitationReason || 'none' };
+        // D7.6.8: the codec (its stat, by codecId) and Chromium's encoder implementation, " (hw)" when power efficient.
+        const codecStat = s.codecId ? rep.get(s.codecId) : null;
+        const mime = codecStat && typeof codecStat.mimeType === 'string' ? codecStat.mimeType : '';
+        const codec = mime ? mime.replace(/^video\//i, '') : null;
+        const impl = typeof s.encoderImplementation === 'string' && s.encoderImplementation ? s.encoderImplementation : null;
+        const encoder = impl ? impl + (s.powerEfficientEncoder === true ? ' (hw)' : '') : null;
+        sent = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, fps: typeof s.framesPerSecond === 'number' ? s.framesPerSecond : null, limit: s.qualityLimitationReason || 'none', codec: codec, encoder: encoder };
         break;
       }
     } catch (e) { /* no stats yet */ }

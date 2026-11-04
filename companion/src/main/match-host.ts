@@ -797,7 +797,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       bench = b;
       emit();
       try {
-        await media.startBench({ source: req.source, path: req.path, clip, clipDir, clipName: req.clip?.name ?? null, inVr: d.rig === 'vr_headset', headsetPanel: !!layer });
+        await media.startBench({ source: req.source, path: req.path, clip, clipDir, clipName: req.clip?.name ?? null, inVr: d.rig === 'vr_headset', headsetPanel: !!layer, bitrate: req.bitrate });
       } catch (e) {
         bench = null;
         return fail(e);

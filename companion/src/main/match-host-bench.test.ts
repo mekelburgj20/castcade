@@ -41,7 +41,7 @@ const witness = {
 
 function fakeMedia() {
   const calls: string[] = [];
-  let bench: { source: string; path: string; headsetPanel: boolean } | null = null;
+  let bench: { source: string; path: string; headsetPanel: boolean; bitrate?: number | null } | null = null;
   const source = { onFrame: () => () => undefined };
   const video = { onFrame: () => () => undefined, setWanted: () => undefined };
   const media = {
@@ -58,8 +58,8 @@ function fakeMedia() {
     showPanel: () => void calls.push('showPanel'),
     detach: async () => void calls.push('detach'),
     setVr: async () => undefined,
-    async startBench(o: { source: string; path: string; headsetPanel: boolean; clip: { frames: unknown[] } | null; clipName: string | null }) {
-      calls.push(`startBench ${o.source} ${o.path} ${o.headsetPanel ? 'headset' : 'desktop'}${o.clip ? ` ${o.clipName} ${o.clip.frames.length}` : ''}`);
+    async startBench(o: { source: string; path: string; headsetPanel: boolean; clip: { frames: unknown[] } | null; clipName: string | null; bitrate: number | null }) {
+      calls.push(`startBench ${o.source} ${o.path} ${o.headsetPanel ? 'headset' : 'desktop'}${o.clip ? ` ${o.clipName} ${o.clip.frames.length}` : ''}${o.bitrate ? ` cap ${o.bitrate}` : ''}`);
       bench = o;
     },
     async stopBench() {
@@ -161,6 +161,11 @@ describe('the VR test bench in the match host (D7.6)', () => {
     await expect(mh.startBench({ source: 'live' })).rejects.toThrow(/needs VPX running in VR/);
     await expect(mh.startBench({ source: 'clip', clip: { name: '2026-11-03-101500' } })).rejects.toThrow(/has no eye frames to play/);
     await expect(mh.startBench({ source: 'nothing' })).rejects.toThrow(/Pick a source/);
+    // D7.6.9: the loop's bitrate cap is null (the match's rule) or a whole number of bits per second, 1 to 100 Mbps.
+    await expect(mh.startBench({ source: 'live', path: 'loop', bitrate: 500_000 })).rejects.toThrow("The bitrate cap must be between 1 and 100 Mbps, or the match's rule");
+    await expect(mh.startBench({ source: 'live', path: 'loop', bitrate: 200_000_000 })).rejects.toThrow(/bitrate cap/);
+    await expect(mh.startBench({ source: 'live', path: 'loop', bitrate: '16000000' })).rejects.toThrow(/bitrate cap/);
+    expect(mh.status().bench).toBeNull();
     const s = createFrameSaver({ dir: join(dir, 'logs', 'frames', '2026-11-03-101500'), folder: '2026-11-03-101500', settings: {} });
     s.receiverFrame({ jpeg: new Uint8Array([0xff, 0xd8]), width: 1440, height: 1440, stereo: 'sbs', eyes: null, at: Date.now(), source: 'peer krobs', skipped: 0 });
     await s.finish();
@@ -173,6 +178,18 @@ describe('the VR test bench in the match host (D7.6)', () => {
     await mh.stopBench();
     expect(layer.modes).toEqual([]);
     expect(lines).toContain('bench: stopped (Stop on the Match tab)');
+  });
+
+  it('the loop’s bitrate cap override reaches the media layer; null is the match’s rule (D7.6.9)', async () => {
+    const m = fakeMedia();
+    const layer = fakeLayer();
+    const { mh } = make({ media: m.media, vrLayer: layer.overlay, rig: VD_RIG });
+    await mh.startBench({ source: 'live', path: 'loop', bitrate: 16_000_000 });
+    expect(m.calls).toEqual(['startBench live loop headset cap 16000000']);
+    await mh.stopBench();
+    await mh.startBench({ source: 'live', path: 'loop', bitrate: null });
+    expect(m.calls.at(-1)).toBe('startBench live loop headset');
+    await mh.stopBench();
   });
 
   it('refused while a match is on; a match hosted stops a running bench first', async () => {

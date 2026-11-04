@@ -141,7 +141,11 @@ class PC {
   async getStats() {
     this.bytes += 1_000_000;
     const m = new Map<string, Record<string, unknown>>();
-    if (this.senders.length) m.set('o', { type: 'outbound-rtp', kind: 'video', frameWidth: 1440, frameHeight: 1440, bytesSent: this.bytes, framesPerSecond: 30, qualityLimitationReason: 'bandwidth' });
+    if (this.senders.length) {
+      // D7.6.8: the codec stat by codecId and Chromium's encoder implementation, as the readout names them.
+      m.set('c', { type: 'codec', mimeType: 'video/VP8', clockRate: 90000 });
+      m.set('o', { type: 'outbound-rtp', kind: 'video', codecId: 'c', encoderImplementation: 'libvpx', powerEfficientEncoder: false, frameWidth: 1440, frameHeight: 1440, bytesSent: this.bytes, framesPerSecond: 30, qualityLimitationReason: 'bandwidth' });
+    }
     return m;
   }
   close(): void {
@@ -268,10 +272,25 @@ describe('the VR test bench in the panel page (D7.6)', () => {
     await settle();
     p.tick(1000);
     await settle();
-    const r = p.on(PANEL_CHANNELS.benchStatus).at(-1) as { path: string; sent: { width: number; kbps: number | null; fps: number; limit: string }; bitrate: number; loopUp: boolean };
-    expect(r).toMatchObject({ path: 'loop', bitrate: 8_000_000, loopUp: true, sent: { width: 1440, fps: 30, limit: 'bandwidth' } });
+    const r = p.on(PANEL_CHANNELS.benchStatus).at(-1) as { path: string; sent: { width: number; kbps: number | null; fps: number; limit: string; codec: string | null; encoder: string | null }; bitrate: number; loopUp: boolean };
+    expect(r).toMatchObject({ path: 'loop', bitrate: 8_000_000, loopUp: true, sent: { width: 1440, fps: 30, limit: 'bandwidth', codec: 'VP8', encoder: 'libvpx' } });
     p.emit(PANEL_CHANNELS.bench, null);
     expect(a.closed && b.closed).toBe(true);
+  });
+
+  it('path loop with a bitrate cap override: the cap is set on the sender whatever the size, and the readout reports it (D7.6.9)', async () => {
+    const p = loadPage();
+    p.emit(PANEL_CHANNELS.bench, { path: 'loop', source: 'live', bitrate: 16_000_000 });
+    await settle();
+    const [a] = PC.all as [PC, PC];
+    expect(a.senders[0]!.params.encodings[0]).toMatchObject({ maxBitrate: 16_000_000, maxFramerate: 30 });
+    p.emit(PANEL_CHANNELS.benchFrame, frame(1, { width: 720, height: 1440 }));
+    await settle();
+    expect(a.senders[0]!.params.encodings[0]!.maxBitrate).toBe(16_000_000); // not the rule's 8 Mbps for 1440x1440 sbs
+    p.tick(1000);
+    await settle();
+    expect(p.on(PANEL_CHANNELS.benchStatus).at(-1)).toMatchObject({ path: 'loop', bitrate: 16_000_000 });
+    p.emit(PANEL_CHANNELS.bench, null);
   });
 });
 
