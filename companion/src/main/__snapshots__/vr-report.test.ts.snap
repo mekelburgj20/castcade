@@ -38,6 +38,15 @@ exports[`vr-report (D7.6.2) > the markdown has every section, one fact per line 
 
 - located: unknown
 
+### window
+
+- window.scale: 1
+- window.distanceM: 2.6
+- window.cropFromSender: true
+- window depth: 2.6 m
+- vertical offset: left +0.5°, right -0.5°
+- feather: 3%
+
 ## Rig
 
 - rig: vr_headset
@@ -55,6 +64,10 @@ exports[`vr-report (D7.6.2) > the markdown has every section, one fact per line 
 - phase: lobby
 - settings.theaterScale: 1
 - settings.cameraSource: screen
+- Camera view: whole
+- Window depth: infinity
+- Vertical offset: left +0.0°, right +0.0°
+- Soft edge: 3%
 - media.attached: true
 - media.sending: false
 - media.captureSource: Visual Pinball Player

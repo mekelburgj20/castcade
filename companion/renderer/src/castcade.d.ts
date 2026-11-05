@@ -479,6 +479,14 @@ interface MatchSettings {
   theaterScale: number;
   /** D7.5: a VR sender's picture: the screen capture of the preview window, or the OpenXR layer's copy of the eye views (experimental). */
   cameraSource: 'screen' | 'layer';
+  /** D7.5.9: what the layer camera sends per eye: the whole render (the picture fills the headset), or the 1:2 centre crop of 0.2.34. */
+  cameraView: 'whole' | 'window';
+  /** D7.5.10: the stereo window's depth in metres (0.3–100), null = infinity (as rendered). */
+  windowDepthM: number | null;
+  /** D7.5.10: a vertical offset per eye in degrees (±10), left then right. */
+  eyeOffsetDeg: [number, number];
+  /** D7.5.11: the window's soft edge, 0–0.25 of one eye's half width. */
+  softEdge: number;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cameraFallback,
   cameraRequestFor,
+  cameraViewWords,
   cameraWatch,
   createFrameSlot,
   decideCamera,
@@ -49,6 +50,16 @@ describe('cameraRequestFor (D7.5)', () => {
     expect(cameraRequestFor({ sourceEye: { width: 3072, height: 3264 } })).toEqual({ width: 720, height: 1440, fps: 30 });
     expect(cameraRequestFor({ eyeHeight: 1081 })).toEqual({ width: 540, height: 1080, fps: 30 });
     expect(cameraRequestFor({ eyeHeight: 3 })).toEqual({ width: 2, height: 2, fps: 30 });
+  });
+
+  it('D7.5.9: the whole view: a square box with whole: true, never taller than the eye render; the window view is the 1:2 crop', () => {
+    expect(cameraRequestFor({ view: 'whole' })).toEqual({ width: 1440, height: 1440, fps: 30, whole: true });
+    expect(cameraRequestFor({ view: 'whole', sourceEye: { width: 2064, height: 1100 } })).toEqual({ width: 1100, height: 1100, fps: 30, whole: true });
+    expect(cameraRequestFor({ view: 'whole', eyeHeight: 1081 })).toEqual({ width: 1080, height: 1080, fps: 30, whole: true });
+    expect(cameraRequestFor({ view: 'window' })).toEqual({ width: 720, height: 1440, fps: 30 });
+    expect(cameraViewWords(cameraRequestFor({ view: 'whole' }))).toBe('whole view');
+    expect(cameraViewWords(cameraRequestFor({ view: 'window' }))).toBe('window view');
+    expect(cameraViewWords('whole')).toBe('whole view');
   });
 
   it('fps clamped to 1..60', () => {

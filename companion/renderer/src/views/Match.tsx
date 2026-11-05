@@ -77,7 +77,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'cameraView' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -407,6 +407,18 @@ export function Match({ state }: { state: CastcadeState }) {
               needs the layer from this Castcade version in VPX (restart VPX after updating) and falls back to the screen capture on PC and SteamVR rigs.
             </small>
           </label>
+          {/* D7.5.9 (2026-11-04): the whole render per eye puts the window's frame at the lens edges (the 1:2 crop's frame doubled at infinity). */}
+          <label className="field">
+            <span>Camera view</span>
+            <select value={st.settings.cameraView} onChange={(e) => setView({ cameraView: e.target.value === 'window' ? 'window' : 'whole' })}>
+              <option value="whole">Whole view (each eye's whole render; the picture fills the headset)</option>
+              <option value="window">Window (a tall centre crop, 1:2, as 0.2.34)</option>
+            </select>
+            <small>
+              With the VR layer camera: the whole view sends everything each eye sees, so the other player's headset shows no frame in the shared field;
+              the window keeps the tall crop. Takes effect at once, in a match and on the bench.
+            </small>
+          </label>
         </div>
       </div>
 
@@ -491,7 +503,7 @@ function VrBenchCard({ bridge, bench, onStatus, st }: { bridge: CastcadeBridge; 
     <div className="card">
       <strong>VR test bench</strong>
       {/* D7.6: theater alone (a clip or my own table, straight to the layer or through a local WebRTC loop), Save 2 s of frames. */}
-      <TestBench bridge={bridge} st={st} bare />
+      <TestBench bridge={bridge} st={st} onStatus={onStatus} bare />
       {/* D7.6.1: the calibration pattern the layer draws itself; D7.6.2: the VR report. */}
       <label className="check">
         <input type="checkbox" checked={pattern} disabled={blocker !== null && !pattern} onChange={(e) => togglePattern(e.target.checked)} />

@@ -1162,6 +1162,13 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     const { host, cam, w } = await cameraHost({ setting: 'layer' });
     expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }]);
     expect(logs).toContain('media: camera: the VR layer (the VR layer): each eye in a 720x1440 box at 30 fps; no screen capture');
+    // D7.5.9: the Camera view re-asks the running match camera with the new box, live (whatever the ball); not when nothing changed.
+    host.setCameraView('whole');
+    host.setCameraView('whole');
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }, { width: 1440, height: 1440, fps: 30, whole: true }]);
+    host.setCameraView('window');
+    expect(cam.asks).toHaveLength(3);
+    expect(cam.asks.at(-1)).toEqual({ width: 720, height: 1440, fps: 30 });
     expect((w.webContents.sent[0]?.[1] as { capture: unknown }).capture).toEqual(CAMERA);
     expect(CAMERA).toMatchObject({ sourceId: 'layer-camera', label: 'VR layer camera', out: { width: 1440, height: 1440 }, stereo: 'sbs' });
     expect(logs).toContain('media: sending 1440x1440 sbs at 8.0 Mbps');

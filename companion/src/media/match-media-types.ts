@@ -242,11 +242,25 @@ export interface VrOverlayStatus {
  * D7.5 (2026-11-02): the layer camera (vr-layer/README.md "The camera"; docs/design/alpha-match.md §5a). What the
  * companion asks the OpenXR layer for: each of VPX's two eye views, centre-cropped to this box's aspect and scaled into
  * it (never up), at most `fps` frames a second, as JPEG over the pipe. `media/layer-camera.ts` picks the numbers.
+ * D7.5.9 (2026-11-04): `whole` asks for each eye's whole render instead of a crop (scaled into the box, never up; the
+ * frame header's `rect` is then the whole render), so the window's frame lands at the lens edges in the receiver's
+ * headset. Only a protocol-3 layer reads it, as the `camera` object itself.
  */
 export interface LayerCameraRequest {
   width: number;
   height: number;
   fps: number;
+  whole?: boolean;
+}
+
+/**
+ * D7.5.10 (2026-11-04): the stereo window's tuning on the layer's control: its depth in metres (null = infinity, the
+ * layer's default; the layer clamps 0.3–100) and a vertical offset per eye in degrees (left, right; the layer clamps
+ * ±10). The owner's live sliders for the geometry reports; protocol 3 only.
+ */
+export interface VrWindowTune {
+  depthM: number | null;
+  dyDeg: [number, number];
 }
 
 /** D7.5: one eye's geometry as the sender's VPX rendered it: enough to place its picture from the sender's eye, not the receiver's. */
@@ -307,6 +321,10 @@ export interface VrOverlay {
   setMode(mode: VrViewMode): void;
   /** D7.4.9: the theater window's size against life size (0.25–4); the OpenXR layer only. Idempotent. */
   setTheaterScale?(scale: number): void;
+  /** D7.5.10 (2026-11-04): the stereo window's depth and per-eye vertical offset (`tune` on a protocol-3 control); the OpenXR layer only. Idempotent. */
+  setWindowTune?(tune: VrWindowTune): void;
+  /** D7.5.11 (2026-11-04): the window's soft edge, 0–0.25 of one eye's half width (`feather` on a protocol-3 control); the OpenXR layer only. Idempotent. */
+  setSoftEdge?(feather: number): void;
   stop(): Promise<void>;
   status(): VrOverlayStatus;
   onStatus(cb: (s: VrOverlayStatus) => void): () => void;

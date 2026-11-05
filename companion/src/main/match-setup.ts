@@ -52,6 +52,21 @@ export interface MatchSettings {
    * (experimental; falls back to the screen capture on PC rigs, SteamVR rigs and a layer that cannot read the frame).
    */
   cameraSource: 'screen' | 'layer';
+  /**
+   * D7.5.9 (2026-11-04): what the layer camera crops per eye: `whole`, each eye's whole render (the frame's edges land
+   * at the lens edges, so no frame sits in the shared field: the owner's 0.2.34 finding was the window's frame
+   * doubling while the eyes converged on the table); `window`, the tall 1:2 centre crop of 0.2.34.
+   */
+  cameraView: 'whole' | 'window';
+  /**
+   * D7.5.10 (2026-11-04): the stereo window's depth in metres (0.3–100), or null for infinity (the layer's default,
+   * as rendered). Sent in the layer's control `tune`; a tuning knob for the owner's geometry reports.
+   */
+  windowDepthM: number | null;
+  /** D7.5.10: a vertical offset per eye in degrees (±10, left then right); a non-zero value needed to fuse says the reported field of view is off. */
+  eyeOffsetDeg: [number, number];
+  /** D7.5.11 (2026-11-04): the fraction of one eye's half width over which the window fades to black at its edges (0–0.25). */
+  softEdge: number;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -67,6 +82,10 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   tableHearOthers: true,
   theaterScale: 1,
   cameraSource: 'screen',
+  cameraView: 'whole',
+  windowDepthM: null,
+  eyeOffsetDeg: [0, 0],
+  softEdge: 0.03,
 };
 
 export function cleanPort(v: unknown): number | null {
@@ -78,6 +97,29 @@ export function cleanPort(v: unknown): number | null {
 export function cleanTheaterScale(v: unknown): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;
   return Math.round(Math.min(4, Math.max(0.25, v)) * 100) / 100;
+}
+
+/** D7.5.10: a finite number in the layer's 0.3–100 m range (two decimals), else null (infinity). */
+export function cleanWindowDepth(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0.3 || v > 100) return null;
+  return Math.round(v * 100) / 100;
+}
+
+/** D7.5.10: two finite degrees, each clamped to ±10 and rounded to a tenth; null when the pair is not one. */
+export function cleanEyeOffset(v: unknown): [number, number] | null {
+  if (!Array.isArray(v) || v.length !== 2) return null;
+  const out: number[] = [];
+  for (const d of v as unknown[]) {
+    if (typeof d !== 'number' || !Number.isFinite(d)) return null;
+    out.push(Math.round(Math.min(10, Math.max(-10, d)) * 10) / 10 + 0); // + 0: never -0
+  }
+  return [out[0]!, out[1]!];
+}
+
+/** D7.5.11: a finite fraction clamped to 0–0.25 (three decimals), else null. */
+export function cleanSoftEdge(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.round(Math.min(0.25, Math.max(0, v)) * 1000) / 1000;
 }
 
 /** ParticipantInfo.displayName: 1–64 characters. */
@@ -102,6 +144,11 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (typeof p.tableHearOthers === 'boolean') next.tableHearOthers = p.tableHearOthers;
   if ('theaterScale' in p) next.theaterScale = cleanTheaterScale(p.theaterScale) ?? current.theaterScale;
   if (p.cameraSource === 'screen' || p.cameraSource === 'layer') next.cameraSource = p.cameraSource;
+  if (p.cameraView === 'whole' || p.cameraView === 'window') next.cameraView = p.cameraView;
+  // D7.5.10: a depth outside the range (or null, or not a number) is infinity: the knob's own "as rendered".
+  if ('windowDepthM' in p) next.windowDepthM = cleanWindowDepth(p.windowDepthM);
+  if ('eyeOffsetDeg' in p) next.eyeOffsetDeg = cleanEyeOffset(p.eyeOffsetDeg) ?? current.eyeOffsetDeg;
+  if ('softEdge' in p) next.softEdge = cleanSoftEdge(p.softEdge) ?? current.softEdge;
   return next;
 }
 

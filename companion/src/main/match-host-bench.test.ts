@@ -58,6 +58,7 @@ function fakeMedia() {
     showPanel: () => void calls.push('showPanel'),
     detach: async () => void calls.push('detach'),
     setVr: async () => undefined,
+    setCameraView: (v: string) => void calls.push(`setCameraView ${v}`),
     async startBench(o: { source: string; path: string; headsetPanel: boolean; clip: { frames: unknown[] } | null; clipName: string | null; bitrate: number | null }) {
       calls.push(`startBench ${o.source} ${o.path} ${o.headsetPanel ? 'headset' : 'desktop'}${o.clip ? ` ${o.clipName} ${o.clip.frames.length}` : ''}${o.bitrate ? ` cap ${o.bitrate}` : ''}`);
       bench = o;
@@ -75,6 +76,8 @@ function fakeMedia() {
 function fakeLayer() {
   const modes: string[] = [];
   const scales: number[] = [];
+  /** D7.6.10: the window tuning and soft edge pushed, as words (depth / left / right / feather). */
+  const tunes: string[] = [];
   const started: unknown[] = [];
   let stops = 0;
   const overlay = {
@@ -89,8 +92,10 @@ function fakeLayer() {
     onStatus: () => () => undefined,
     setMode: (m: string) => void modes.push(m),
     setTheaterScale: (s: number) => void scales.push(s),
+    setWindowTune: (t: { depthM: number | null; dyDeg: [number, number] }) => void tunes.push(`tune ${t.depthM ?? 'inf'} ${t.dyDeg[0]} ${t.dyDeg[1]}`),
+    setSoftEdge: (f: number) => void tunes.push(`feather ${f}`),
   };
-  return { overlay: overlay as unknown as NonNullable<Opts['vrLayer']>, modes, scales, started, stops: () => stops };
+  return { overlay: overlay as unknown as NonNullable<Opts['vrLayer']>, modes, scales, tunes, started, stops: () => stops };
 }
 
 const dirs: string[] = [];
@@ -130,16 +135,29 @@ describe('the VR test bench in the match host (D7.6)', () => {
     const layer = fakeLayer();
     const { mh } = make({ media: m.media, vrLayer: layer.overlay, rig: VD_RIG });
     const st = await mh.startBench({ source: 'live', path: 'loop' });
-    expect(m.calls).toEqual(['startBench live loop headset']);
+    expect(m.calls).toEqual(['setCameraView whole', 'startBench live loop headset']);
     expect(layer.started).toEqual([[m.source, m.video]]);
     expect(layer.modes).toEqual(['theater']);
     expect(layer.scales[0]).toBe(1);
     expect(st.bench).toMatchObject({ state: 'running', source: 'live', path: 'loop', headset: true, view: 'theater', readout: '30 fps drawn' });
     expect(st.bench!.hint).toBe('In the headset: a single window straight ahead, life size at Theater size 1; the picture should fuse without effort; compare detail with the direct view.');
-    expect(lines).toContain('bench: running (vr_headset via virtual-desktop; theater in the headset)');
+    expect(lines).toContain('bench: running (vr_headset via virtual-desktop; theater in the headset; whole view, soft edge 3%)');
+    // D7.6.10: the window's tuning went with Theater size at the start (the defaults: infinity, no offset, 3 % soft edge).
+    expect(layer.tunes.slice(0, 2)).toEqual(['tune inf 0 0', 'feather 0.03']);
     // Theater size applies at once.
     mh.setSettings({ theaterScale: 0.8 });
     expect(layer.scales.at(-1)).toBe(0.8);
+    // D7.6.10: so do the window depth, the eye offsets and the soft edge, each pushed on every settings change.
+    layer.tunes.length = 0;
+    mh.setSettings({ windowDepthM: 2.6, eyeOffsetDeg: [0.5, -0.5], softEdge: 0.06 });
+    expect(layer.tunes).toEqual(['tune 2.6 0.5 -0.5', 'feather 0.06']);
+    expect(lines).toContain('match: stereo window, window depth 2.6 m, vertical offset L +0.5 R -0.5 deg, soft edge 6% on the Match tab');
+    mh.setSettings({ windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0 });
+    expect(lines).toContain('match: stereo window: depth infinity, no vertical offset, hard edges on the Match tab');
+    // D7.5.9: the camera view reaches the media layer, live.
+    mh.setSettings({ cameraView: 'window' });
+    expect(m.calls.at(-1)).toBe('setCameraView window');
+    expect(lines).toContain('match: camera view set to the 1:2 window crop on the Match tab');
     // VPX's own view to compare, and back.
     expect(mh.setBenchView('direct').bench).toMatchObject({ view: 'direct' });
     mh.setBenchView('theater');
@@ -171,7 +189,7 @@ describe('the VR test bench in the match host (D7.6)', () => {
     await s.finish();
     expect(mh.benchClips()).toMatchObject([{ name: '2026-11-03-101500', sender: null, receiver: { count: 1 } }]);
     const st = await mh.startBench({ source: 'clip', path: 'direct', clip: { name: '2026-11-03-101500', side: 'receiver' } });
-    expect(m.calls).toEqual(['startBench clip direct desktop 2026-11-03-101500 1', 'showPanel']);
+    expect(m.calls).toEqual(['setCameraView whole', 'startBench clip direct desktop 2026-11-03-101500 1', 'showPanel']);
     expect(layer.started).toEqual([]);
     expect(st.bench).toMatchObject({ state: 'running', headset: false, clip: '2026-11-03-101500 (received frames)' });
     expect(st.bench!.hint).toMatch(/desktop panel window/);
@@ -185,7 +203,7 @@ describe('the VR test bench in the match host (D7.6)', () => {
     const layer = fakeLayer();
     const { mh } = make({ media: m.media, vrLayer: layer.overlay, rig: VD_RIG });
     await mh.startBench({ source: 'live', path: 'loop', bitrate: 16_000_000 });
-    expect(m.calls).toEqual(['startBench live loop headset cap 16000000']);
+    expect(m.calls).toEqual(['setCameraView whole', 'startBench live loop headset cap 16000000']);
     await mh.stopBench();
     await mh.startBench({ source: 'live', path: 'loop', bitrate: null });
     expect(m.calls.at(-1)).toBe('startBench live loop headset');
@@ -198,7 +216,7 @@ describe('the VR test bench in the match host (D7.6)', () => {
     const { mh } = make({ media: m.media, vrLayer: layer.overlay, rig: VD_RIG });
     await mh.startBench({ source: 'live' });
     await mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
-    expect(m.calls.slice(0, 3)).toEqual(['startBench live direct headset', 'stopBench', 'attach']);
+    expect(m.calls.slice(0, 4)).toEqual(['setCameraView whole', 'startBench live direct headset', 'stopBench', 'attach']);
     expect(lines).toContain("bench: stopped (a match is hosted); VPX's own view is back");
     expect(mh.status().bench).toBeNull();
     await expect(mh.startBench({ source: 'live' })).rejects.toThrow('A match is on: the VR test bench runs only without a match. Leave the match first.');

@@ -197,9 +197,13 @@ export interface BenchStatus {
   hint: string;
 }
 
-/** The words for the start line in the log. D7.6.9: the loop's cap override, when one is set. */
-export function benchWords(o: { source: BenchSource; path: BenchPath; clip?: { name: string; side: string; frames: number; fps: number } | null; headset: boolean; bitrate?: number | null }): string {
-  const src = o.source === 'live' ? 'my own table, live (the layer camera)' : o.clip ? `clip ${o.clip.name} (${o.clip.side} side, ${o.clip.frames} frames at ${o.clip.fps} fps)` : 'a clip';
+/**
+ * The words for the start line in the log. D7.6.9: the loop's cap override, when one is set. D7.5.9 (2026-11-04):
+ * the camera's view on "my own table, live" (`view`, null when the source is a clip).
+ */
+export function benchWords(o: { source: BenchSource; path: BenchPath; clip?: { name: string; side: string; frames: number; fps: number } | null; headset: boolean; bitrate?: number | null; view?: 'whole' | 'window' | null }): string {
+  const view = o.source === 'live' && o.view ? `, ${o.view} view` : '';
+  const src = o.source === 'live' ? `my own table, live (the layer camera${view})` : o.clip ? `clip ${o.clip.name} (${o.clip.side} side, ${o.clip.frames} frames at ${o.clip.fps} fps)` : 'a clip';
   const path = o.path === 'loop' ? 'through a local WebRTC loop' : 'straight to the layer';
   const cap = o.path === 'loop' && o.bitrate ? `, cap ${mbpsShort(o.bitrate)}` : '';
   return `${src}, ${path}, ${o.headset ? 'theater in the headset' : 'the desktop panel'}${cap}`;

@@ -97,5 +97,9 @@ describe('the VR test bench, pure parts (D7.6)', () => {
     expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: 12_500_000 })).toBe('my own table, live (the layer camera), through a local WebRTC loop, theater in the headset, cap 12.5 Mbps');
     expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: null })).toBe('my own table, live (the layer camera), through a local WebRTC loop, theater in the headset');
     expect(benchWords({ source: 'live', path: 'direct', headset: true, bitrate: 16_000_000 })).toBe('my own table, live (the layer camera), straight to the layer, theater in the headset');
+    // D7.5.9: the camera's view on the live source only.
+    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'whole' })).toBe('my own table, live (the layer camera, whole view), straight to the layer, theater in the headset');
+    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'window' })).toBe('my own table, live (the layer camera, window view), straight to the layer, theater in the headset');
+    expect(benchWords({ source: 'clip', path: 'direct', headset: true, view: 'whole' })).toBe('a clip, straight to the layer, theater in the headset');
   });
 });

@@ -388,6 +388,46 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     expect(h.log.filter((l) => l.startsWith('theater: feeding'))).toHaveLength(1);
   });
 
+  it('D7.6.10: the window tuning and soft edge go on a protocol-3 control only when set (not the defaults), live and once per change; a protocol-2 layer never sees them', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    await h.ov.start(h.src, null);
+    h.ov.setMode('theater');
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(3));
+    const controls = () => messages(h.pipes[0]!).filter(([m]) => m === 'CVC1');
+    // The defaults: nothing added to the control, and no control sent.
+    h.ov.setWindowTune?.({ depthM: null, dyDeg: [0, 0] });
+    h.ov.setSoftEdge?.(0);
+    expect(controls()).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null }]]);
+    h.ov.setWindowTune?.({ depthM: 2.6, dyDeg: [0.5, -0.5] });
+    h.ov.setWindowTune?.({ depthM: 2.6, dyDeg: [0.5, -0.5] }); // the same again: no control
+    expect(controls().at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null, tune: { depthM: 2.6, dyDeg: [0.5, -0.5] } }]);
+    expect(controls()).toHaveLength(2);
+    expect(h.log).toContain('vr-layer: mode theater (mono, camera off, window depth 2.6 m, vertical offset L +0.5 R -0.5 deg)');
+    h.ov.setSoftEdge?.(0.03);
+    expect(controls().at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null, tune: { depthM: 2.6, dyDeg: [0.5, -0.5] }, feather: 0.03 }]);
+    expect(h.log).toContain('vr-layer: mode theater (mono, camera off, window depth 2.6 m, vertical offset L +0.5 R -0.5 deg, soft edge 3%)');
+    // Clamped and rounded on this side too (the layer clamps again): 500 m -> 100 m, 12 deg -> 10, 0.9 -> 0.25.
+    h.ov.setWindowTune?.({ depthM: 500, dyDeg: [12, -0.04] });
+    h.ov.setSoftEdge?.(0.9);
+    expect(controls().at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null, tune: { depthM: 100, dyDeg: [10, 0] }, feather: 0.25 }]);
+    // Back to the defaults: the fields leave the control.
+    h.ov.setWindowTune?.({ depthM: null, dyDeg: [0, 0] });
+    h.ov.setSoftEdge?.(0);
+    expect(controls().at(-1)).toEqual(['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null }]);
+    expect(controls()).toHaveLength(7);
+    // A protocol-2 layer on the next connection: the tuning is set, but its control is byte for byte the 0.2.26 one.
+    h.ov.setWindowTune?.({ depthM: 1, dyDeg: [0, 0] });
+    h.ov.setSoftEdge?.(0.1);
+    h.pipes[0]!.hangUp();
+    h.advance(CONNECT_RETRY_MS);
+    h.pipes[1]!.answer();
+    h.pipes[1]!.emit('data', hello(2));
+    expect(messages(h.pipes[1]!).filter(([m]) => m === 'CVC1')).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 }]]);
+    expect(h.log.filter((l) => l.startsWith('vr-layer: mode')).at(-1)).toBe('vr-layer: mode theater (mono)');
+  });
+
   it("D7.5.2: a theater frame's eyes go on a protocol-3 layer's control, once per change, and leave it when the frames stop carrying them", async () => {
     const h = setup();
     const v = videoSource();

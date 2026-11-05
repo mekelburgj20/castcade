@@ -52,7 +52,7 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'screen' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'screen', cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03 });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     // D7.5: the camera source: screen by default, layer on request, anything else ignored.
     expect(patchMatchSettings(s, { cameraSource: 'layer' }).cameraSource).toBe('layer');
@@ -84,6 +84,39 @@ describe('match setup (A6)', () => {
     expect(patchMatchSettings(s, { theaterScale: 'big' } as never).theaterScale).toBe(0.8);
     expect(patchMatchSettings(s, { theaterScale: NaN }).theaterScale).toBe(0.8);
     expect(readMatchSettings(writeMatchSettings(s)).theaterScale).toBe(0.8);
+  });
+
+  it('D7.5.9-D7.5.11: camera view, window depth, eye offsets and soft edge default, clean, round-trip; an old match.json gets the defaults', () => {
+    expect(DEFAULT_MATCH_SETTINGS).toMatchObject({ cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03 });
+    // The view: two words, anything else keeps the current one.
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { cameraView: 'window' }).cameraView).toBe('window');
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { cameraView: 'crop' } as never).cameraView).toBe('whole');
+    // The depth: 0.3-100 m to two decimals; out of range, null or not a number is infinity.
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { windowDepthM: 2.6 }).windowDepthM).toBe(2.6);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { windowDepthM: 1.23456 }).windowDepthM).toBe(1.23);
+    const near = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { windowDepthM: 0.7 });
+    expect(patchMatchSettings(near, { windowDepthM: null }).windowDepthM).toBeNull();
+    expect(patchMatchSettings(near, { windowDepthM: 0.1 }).windowDepthM).toBeNull();
+    expect(patchMatchSettings(near, { windowDepthM: 500 }).windowDepthM).toBeNull();
+    expect(patchMatchSettings(near, { windowDepthM: 'far' } as never).windowDepthM).toBeNull();
+    expect(patchMatchSettings(near, {}).windowDepthM).toBe(0.7);
+    // The offsets: a pair of degrees, clamped to ±10, a tenth; a bad pair keeps the current one.
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { eyeOffsetDeg: [0.55, -12] }).eyeOffsetDeg).toEqual([0.6, -10]);
+    const off = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { eyeOffsetDeg: [0.5, -0.5] });
+    expect(patchMatchSettings(off, { eyeOffsetDeg: [1] } as never).eyeOffsetDeg).toEqual([0.5, -0.5]);
+    expect(patchMatchSettings(off, { eyeOffsetDeg: ['up', 0] } as never).eyeOffsetDeg).toEqual([0.5, -0.5]);
+    expect(patchMatchSettings(off, { eyeOffsetDeg: [NaN, 0] }).eyeOffsetDeg).toEqual([0.5, -0.5]);
+    expect(Object.is(patchMatchSettings(off, { eyeOffsetDeg: [-0.01, 0] }).eyeOffsetDeg[0], 0)).toBe(true); // never -0
+    // The soft edge: 0-0.25 to three decimals; not a number keeps the current one.
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { softEdge: 0.1 }).softEdge).toBe(0.1);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { softEdge: 0.9 }).softEdge).toBe(0.25);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { softEdge: -1 }).softEdge).toBe(0);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { softEdge: 0.03333 }).softEdge).toBe(0.033);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { softEdge: 'soft' } as never).softEdge).toBe(0.03);
+    const all = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { cameraView: 'window', windowDepthM: 2.6, eyeOffsetDeg: [0.5, -0.5], softEdge: 0.06 });
+    expect(readMatchSettings(writeMatchSettings(all))).toEqual(all);
+    // A match.json from 0.2.34 (no window keys) reads with the defaults.
+    expect(readMatchSettings('{"v":1,"port":27401,"ballsPerGame":3,"displayName":null,"cueVolume":80,"theaterScale":0.8,"cameraSource":"layer"}')).toEqual({ ...DEFAULT_MATCH_SETTINGS, theaterScale: 0.8, cameraSource: 'layer' });
   });
 
   it('D2.8: the three table-sound settings, on by default, booleans only, saved and read back', () => {
