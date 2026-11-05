@@ -363,6 +363,13 @@ and frame rate on one rig in five minutes, and saved frames give the real images
   media layer `media: bench: started: <source>, <path>, <where>` and every 10 s `media: bench: 30 fps drawn · 1440x1440
   sbs to the layer at 30 fps[ · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none]`, plus the
   layer's own `theater: feeding 1440x1440 (sbs) to the layer` and `vr-layer camera: …` lines.
+- **Window tuning (0.2.35, D7.6.10; layer 0.5.2)**: the bench card's **Window depth**, **Vertical offset** per eye and **Soft edge** are match
+  settings (`windowDepthM`, `eyeOffsetDeg`, `softEdge`) that ride on every control to a protocol-3 layer (`tune`, `feather`;
+  `main/match-host.ts` `syncWindowTune`), bench and match alike, so the owner can tune by eye and the VR report reads the values
+  back. They exist because the owner's 0.2.34 check showed the window's frame doubling at its edges while the picture fused: a
+  frame at infinity seen while converged on the table. The cure is the Match tab's **Camera view** = whole (D7.5.10: the camera
+  sends each eye's whole render, so the frame falls outside the shared field); the sliders measure what remains, and the
+  pattern follows them too.
 
 ## 6. Checks only the rig can answer (run before the first match)
 

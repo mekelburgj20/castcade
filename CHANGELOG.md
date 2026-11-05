@@ -7,6 +7,51 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.35] — 2026-11-04
+
+The owner's solo check on 0.2.34 (2026-11-04): the calibration pattern's grids fuse into one and the table fuses, so
+the stereo window's placement is right; but the window's FRAME still doubled at its edges. The two frames are placed
+with zero disparity (at infinity) while the eyes converge on the table about a metre away: three to four degrees of
+uncrossed disparity, and no fixed offset cures it (a frame at any one depth doubles against content at another). This
+build removes the frame from the shared field, softens what remains, and gives the bench sliders to tune and read back
+the geometry. Both rigs take it through the updater and must restart VPX afterwards (`vr-layer.log` says
+`build v0.2.35`); the control's new fields are additive, so an older layer simply keeps the 0.2.34 behaviour.
+
+### Full view: each eye's whole render (D7.5.10; layer 0.5.2)
+- The layer camera can send each eye's whole render instead of a 1:2 crop (control `camera.whole`; `camera.cpp`
+  `cropFor` returns the eye's whole rect, scaled into the box, never up: a 3072x3264 Quest 3 eye in a 1440x1440 box
+  gives 1354x1440). The receiver places it from the sender's eyes as any crop (D7.5.2), so the frame's edges land where
+  the sender's eye's own view ended, outside the part of the field both eyes share (each eye's nasal edge lies where
+  only the other eye sees content, as in native VR): nothing is left to double. The match setting `cameraView`
+  (`whole`, the default, or `window`, the 1:2 crop of 0.2.34) is the Match tab's **Camera view**, applied live to a
+  running match camera and to the bench (`RtcHost.setCameraView`). The side-by-side picture is about twice the pixels
+  (2708x1440 against 1440x1440), so the cap / codec decision (D7.6.9's gate) is now the real gate for a match; the
+  bitrate rule is unchanged. `media/layer-camera.ts` (`cameraRequestFor({ view })`), `media/rtc-host.ts`,
+  `media/vr-layer.ts`, `main/match-setup.ts`, `main/match-host.ts`, `renderer/src/views/Match.tsx`.
+
+### Window depth, vertical offsets and soft edges (D7.5.9, D7.5.11, D7.6.10; layer 0.5.2)
+- Control `tune`: `depthM` places the window's frame at a distance instead of infinity (each eye's tangent rect shifted
+  by -eye.x / D, toward the nose: an uncrossed disparity of IPD / D; null = infinity) and `dyDeg` lifts or lowers one
+  eye's picture in degrees; both apply to the video and to the calibration pattern, so the sliders can be watched.
+  Control `feather` ramps the video window's alpha to the black backdrop over a fraction of the eye's width on all four
+  edges (the window quads blend when it is on; the pattern, the mono screen and the panel stay hard), so an edge that
+  still doubles (the window view, or a sender with a narrower field of view than the receiver) is a soft gradient, not
+  a line. `vr-layer/src/panel_pipe.{h,cpp}` (`jsonTune`, `jsonFeather`), `vr-layer/src/layer.cpp` (`placeWindows`,
+  `featherEdges`, `uploadVideo`); the session report's window block says `tune` and `feather`; `vr-layer.log` logs
+  `pipe: tune: …`, `pipe: window edges feathered over N% of the eye's width`, and the `theater: stereo window` line
+  carries the depth and offsets.
+- Match settings `windowDepthM` (default null = infinity), `eyeOffsetDeg` (default [0, 0]) and `softEdge` (default
+  0.03) ride on every control to a protocol-3 layer (omitted at their defaults), in a match and on the bench alike, and
+  are changed live from the bench card: **Window depth** (infinity / 5 / 2.6 / 1.5 / 1 / 0.7 m), **Vertical offset**
+  per eye (degrees, ±3), **Soft edge** (off / 1 / 3 / 6 / 10 %). The VR report prints them in words (settings) and what
+  the layer applied (the layer section's `window` block). `renderer/src/views/TestBench.tsx` (`WindowTuning`),
+  `main/match-host.ts` (`syncWindowTune`), `media/vr-layer.ts` (`setWindowTune`, `setSoftEdge`, `tuneWords`),
+  `main/vr-report.ts`.
+
+### Wire / journal
+- The layer pipe's `CVC1` control gains `camera.whole`, `tune` and `feather`; the `CVS1` camera status gains `whole`
+  (additive; pipe protocol stays 3; `vr-layer/README.md`). The match protocol and the journal are unchanged.
+
 ## [0.2.34] — 2026-11-03
 
 The owner's first solo run of the VR test bench on 0.2.33 (five minutes, no second player) returned two facts: straight
