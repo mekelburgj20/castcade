@@ -90,6 +90,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | **Functionality before ease of setup.** VPX users accept complex setup; never drop a capability (multiplayer streaming, voice, fairness) to save a setup step. Within that, make install and setup as easy as possible: automate it, or walk the user through it. | 2026-10-27 | 0007 |
 | A **sanctioned VPX build** (our fork, Sanctioned mode enforced in-process) is a per-tournament requirement for Sanctioned play; ArcAid trusts its signature and Legends Unchained's (Mox's), no other build. Castcade on stock VPX stays the app for Open play and everything else. | 2026-10-30 | 0008 |
 | Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
+| **Spectating is 2D.** The player who is up is shown to everyone else as flat video (one eye, or the desktop window) on a screen in the headset, the desktop panel, or a cabinet's playfield display; never a stereo or head-tracked view. The stereo window of 0.2.27–0.2.35 stays in the code untouched; no further work on it. State streaming in VPX is shelved; the VPinMAME shared machine is separate research (I10). | 2026-11-04 | 0009 |
 
 ## Repo layout
 

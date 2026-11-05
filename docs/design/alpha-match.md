@@ -119,6 +119,12 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   headset. In VR the window is created `show: false` with `webPreferences.offscreen: true` and its `paint` events
   (`setFrameRate(20)`) feed `PanelFrameSource`; on the desktop it is a normal always-on-top window.
 
+> **2026-11-04, ADR 0009: spectating is 2D.** The stereo window described from D7.4.5 onward in §5, §5a and §5b
+> (both eyes placed per eye, `camera.whole`, window depth, soft edges, the calibration pattern, the tuning sliders)
+> is withdrawn: it stays in the code as shipped in 0.2.35 and gets no more work. The theater is the flat mono screen
+> of D7.4 (one of the sender's eyes on a 2.4 m screen 2.6 m ahead), the layer camera becomes a one-eye camera, and
+> the open work is WORK section D8. The sections below are kept as the record of what was built and measured.
+
 ## 5. VR overlay helper (D7)
 
 - `vr-overlay/` C++17, CMake, MSVC; OpenVR SDK pinned by tag + sha256 (`openvr.h`, `openvr_api.dll`, `.lib`; BSD-3,

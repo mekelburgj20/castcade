@@ -15,8 +15,9 @@ never deleted: a superseded ADR gets a `**Superseded by:**` line and stays in th
 | 0006 | [One live work tracker per repo: `WORK.md`, lanes, claims, a board](0006-one-live-work-tracker.md) | Accepted | 2026-10-21 |
 | 0007 | [Functionality before ease of setup](0007-functionality-before-ease-of-setup.md) | Accepted | 2026-10-27 |
 | 0008 | [A sanctioned VPX build for Sanctioned play; Castcade stays for everything else](0008-sanctioned-vpx-build.md) | Accepted (mechanism open) | 2026-10-30 |
+| 0009 | [Spectating is 2D: flat video on a screen, never a stereo or head-tracked view](0009-spectating-is-2d.md) | Accepted | 2026-11-04 |
 
-**Next free number: 0009.**
+**Next free number: 0010.**
 
 ## Convention
 
