@@ -118,10 +118,10 @@ on a synchronous handle Windows would queue the write behind the read).
 |---|---|---|---|
 | layer → companion, once on connect | `CVH1` | u32 protocol (3) | hello; a protocol-1 layer (0.2.26) sends none |
 | layer → companion (protocol 3) | `CVF1` | u32 byteLength, then u16 jsonLength, the UTF-8 JSON header, the eyes' JPEG payloads back to back | a camera frame ("The camera" below) |
-| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`; or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
+| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`, `"whole"` (layer 0.5.2: true when the whole render is sent); or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it). Layer 0.5.2, the window's frame (all optional; absent = as before): `"camera": {…, "whole": true}` (D7.5.10: each eye's whole render scaled into the box, no crop; the frame header's `rect` is then `[0, 0, render w, render h]`), `"tune": {"depthM": <m> \| null, "dyDeg": [left, right]}` (D7.5.9 / D7.6.10: the distance the stereo window's frame is placed at, 0.3–100 m, null or 0 = infinity as before; and a vertical offset per eye in degrees, ±10, that moves that eye's quad up or down; the calibration pattern follows both) and `"feather": <0–0.25>` (D7.5.11: the fraction of one eye's half width over which the side-by-side video window's alpha ramps from 0 at each edge to 1, so the frame fades into the black behind it; 0 = hard edges; the pattern, the mono screen and the panel are never feathered) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -159,7 +159,7 @@ after every new pipe connection (at the next frame) and on a control with `"repo
 | `located` | each eye's pose and fov from `xrLocateViews` at the last recentre (null before theater) |
 | `swapchains` | VPX's swapchains in this session: format (hex and name), size, array, faces, mips, samples, usage flags, image count |
 | `lastFrame` | VPX's last `xrEndFrame`: layer count and types, each projection view's swapchain (index into `swapchains`), image rect and array index |
-| `theater` | the mode shown, the last recentre's yaw and pitch, the last stereo window (scale, distance, picture size, IPD, per eye: fov and its source, render, crop, tangent rect, quad size, position), the window log line |
+| `theater` | the mode shown, the last recentre's yaw and pitch, the last stereo window (scale, distance, picture size, whether the crop came from the sender, the `tune` it was placed with (`depthM`, null = infinity, and `dyDeg`) and the `feather` on the last video frame (layer 0.5.2), IPD, per eye: fov and its source, render, crop, tangent rect, quad size, position), the window log line |
 | `openComposite` | a verdict (its name on the instance; a module named after it; `openvr_api.dll` without SteamVR's `vrclient`) and the marks behind it |
 | `modules` | the VR-related modules in VPX's process (full paths) |
 
@@ -215,6 +215,13 @@ which stood the two windows about 15° apart on a Quest 3), never stretched, and
 sides.
 The frame carries what was done, so the receiver places each eye exactly (its stereo window no longer stands in with
 its own eyes).
+
+`"whole": true` in the control's `camera` (layer 0.5.2, D7.5.10) takes no crop: each eye's whole render is scaled into
+the box (never up, even sides: a 3072x3264 render in a 1440x1440 box gives 1354x1440 per eye), and the header's
+`rect` is `[0, 0, render w, render h]`. The receiver's window then shows everything the sender's eye saw, and the
+window's frame falls where the sender's view ended, outside the part of the field both eyes share, so it no longer
+doubles against the table (a crop's frame stood inside that part, at infinity, while the eyes converged on the table a
+metre away). The `camera: on` line says `(whole)` after the crop, the `on` status carries `"whole": true`.
 
 The `CVF1` header (JSON, integers and locale-free decimals only):
 
@@ -284,7 +291,16 @@ Log lines to read after the first run (`vr-layer.log`):
       assumes the sender's headset has the receiver's fov (the same model on both ends makes it exact). A `theaterScale`
       in the control scales its angles (0.25–4, default 1; not sent by the companion yet). The derivation is in
       `src/layer.cpp` above `placeWindows`. Until D7.4.4 both halves sat at one pose as a 2.4 m screen: it did not fuse
-      (the far edges doubled; "you see them as separate views").
+      (the far edges doubled; "you see them as separate views"). With the picture fused (0.2.34), the window's FRAME
+      still doubled: its edge sits at one tangent in both eyes (infinity) while the eyes converge on the table a metre
+      away. Layer 0.5.2 (D7.5.9 / D7.6.10 / D7.5.11) answers with the control's `tune` (the frame placed at
+      `depthM`: each eye's quad shifted toward the nose by its eye offset over that depth; `dyDeg` lifts one eye's quad
+      against the other's; the calibration pattern follows both, so the bench's sliders can be watched) and `feather`
+      (the video window's edges fade to the black behind them over that fraction of an eye's half width; the two quads
+      then blend instead of being opaque), and the camera's `whole` removes the frame from the shared field altogether.
+      The `stereo window` log line names the tune when it is not zero (`window depth 2.60 m`, `vertical offset left +0.5
+      deg right -0.5 deg`); `pipe: tune: …` and `pipe: window edges feathered over N% of the eye's width` / `hard` say
+      when the control changed them.
     - Mono (a mono sender, or no live video frame while the panel is live: the panel frame instead of black): one quad
       for both eyes, 2.6 m ahead, whose longer side is 2.4 m (D7.4.3, 2026-11-01: 2.4 m wide for a landscape picture,
       2.4 m tall for a portrait one, the other side from its aspect).

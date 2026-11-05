@@ -275,6 +275,11 @@ struct Session {
   bool windowDirty = true;
   uint32_t windowW = 0, windowH = 0;
   float windowScale = 0.0f;
+  // D7.5.9 / D7.6.10 (0.5.2): the tune the window was last placed with (Control::tuneDepthM, tuneDyDeg).
+  float windowDepthM = 0.0f;
+  std::array<float, 2> windowDyDeg{};
+  // D7.5.11 (0.5.2): the feather applied to the last video frame uploaded (0: hard edges, or not side by side).
+  float videoFeather = 0.0f;
   bool windowEyesKnown = false;  // D7.5.2: the window was placed from the control's eyes (below)
   std::array<EyeGeometry, 2> windowEyes{};
   std::array<XrPosef, 2> windowPose{};
@@ -653,6 +658,59 @@ void uploadStream(Session& s, Surface& surf, Stream stream, std::unique_ptr<GlCo
   upload(s, surf, scope, s.pixels.data(), s.pixelsW, s.pixelsH);
 }
 
+// D7.5.11 (0.5.2): a side-by-side video frame's edges softened in place before its upload. In each eye's half (`half`
+// columns for the left eye, the rest for the right, as the window quads cut it), the alpha ramps linearly from 0 at
+// each of the four edges to 1 over n = round(feather * half) pixels; R, G, B and A alike, since the pixels are
+// premultiplied (a faded pixel is darker, never greyer), and a pixel in a side ramp and a top or bottom ramp gets the
+// product. Only ramp pixels are touched. `px` is the layer's own buffer (panelPipeTake swapped it out of the inbox,
+// and the reader never hands it back as a frame), edited before the runtime sees a byte of it.
+void featherEdges(uint8_t* px, uint32_t w, uint32_t h, float feather) {
+  const uint32_t half = w / 2;
+  const uint32_t n = static_cast<uint32_t>(std::lround(feather * static_cast<float>(half)));
+  if (n == 0 || half == 0 || h == 0) return;
+  // The ramp in 8.8 fixed point: pixel k from an edge (its centre k + 0.5 pixels in) keeps (k + 0.5) / n of itself;
+  // 256 = untouched, exact in `scale`.
+  std::vector<uint32_t> ramp(n);
+  for (uint32_t k = 0; k < n; k++) ramp[k] = static_cast<uint32_t>(std::lround((static_cast<float>(k) + 0.5f) / static_cast<float>(n) * 256.0f));
+  const auto scale = [](uint8_t* p, uint32_t m) {
+    for (int i = 0; i < 4; i++) p[i] = static_cast<uint8_t>((static_cast<uint32_t>(p[i]) * m + 128u) >> 8);
+  };
+  const size_t rowBytes = static_cast<size_t>(w) * 4;
+  for (uint32_t y = 0; y < h; y++) {
+    uint32_t ay = 256;
+    if (y < n) ay = ramp[y];
+    if (h - 1 - y < n) ay = (ay * ramp[h - 1 - y]) >> 8;
+    uint8_t* line = px + rowBytes * y;
+    for (int e = 0; e < 2; e++) {
+      const uint32_t x0 = e == 0 ? 0u : half, ew = e == 0 ? half : w - half;
+      if (ay < 256) {
+        // A row in a top or bottom ramp: every pixel of this eye's half, the side ramps on top of it.
+        for (uint32_t x = 0; x < ew; x++) {
+          uint32_t a = ay;
+          if (x < n) a = (a * ramp[x]) >> 8;
+          if (ew - 1 - x < n) a = (a * ramp[ew - 1 - x]) >> 8;
+          scale(line + static_cast<size_t>(x0 + x) * 4, a);
+        }
+        continue;
+      }
+      // Any other row: the side ramps only (the left one, then the right; both when a half is under 2 n wide).
+      for (uint32_t k = 0; k < n && k < ew; k++) scale(line + static_cast<size_t>(x0 + k) * 4, ramp[k]);
+      for (uint32_t k = 0; k < n && k < ew; k++) scale(line + static_cast<size_t>(x0 + ew - 1 - k) * 4, ramp[k]);
+    }
+  }
+}
+
+// The newest video frame (if any) into its surface, its edges feathered first when the control asks and the picture
+// is side by side (D7.5.11; the mono screen keeps hard edges). Applied to every frame taken: each upload is a fresh
+// frame from the companion (it re-sends a still picture every 2 s), never one the runtime already holds.
+void uploadVideo(Session& s, const Control& c, std::unique_ptr<GlContextScope>& scope) {
+  if (!panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH)) return;
+  const bool feather = c.feather > 0.0f && c.sbs && s.pixelsW >= 2 && s.pixels.size() >= static_cast<size_t>(s.pixelsW) * s.pixelsH * 4;
+  if (feather) featherEdges(s.pixels.data(), s.pixelsW, s.pixelsH, c.feather);
+  s.videoFeather = feather ? c.feather : 0.0f;
+  upload(s, s.video, scope, s.pixels.data(), s.pixelsW, s.pixelsH);
+}
+
 // The shade at `level` / kShadeLevels alpha, premultiplied black (0, 0, 0, a): only when the level changed.
 void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) {
   if (level == s.shadeLevel && s.shade.released) return;
@@ -702,6 +760,18 @@ void uploadShade(Session& s, int level, std::unique_ptr<GlContextScope>& scope) 
 // model on both ends makes it exact), and the receiver's head stays about where it was at the recentre (the window is
 // fixed in the room, so moving the head moves the eyes against it, as with a real window).
 // Fallbacks, never dark: no fov from VPX → the fov xrLocateViews gave; neither → ±45° each way; no eye poses → ±0.0315 m.
+//
+// The frame (0.5.2: D7.5.9, D7.5.10, D7.5.11; the owner on 0.2.34, 2026-11-04): with the picture fused (the pattern's
+// grids coincide, the table fuses), the WINDOW'S FRAME still doubled at its edges. Step 3 puts the same tangent in
+// each eye on the same pixel, so the frame's edge sits at one tangent in both eyes: zero disparity, a frame at
+// infinity, while the eyes converge on the table about a metre away, three to four degrees of uncrossed disparity
+// against it. Three controls act on that. Control::tuneDepthM places the frame at a distance (each eye's tangent rect
+// shifted by -ex / D, toward the nose: the derivation is in placeWindows) and Control::tuneDyDeg lifts or lowers one
+// eye's rect against the other's, both for the video and the calibration pattern, so the bench's sliders can be
+// watched. The camera's `whole` (camera.cpp cropFor) sends the eye's whole render instead of a crop, so the frame
+// falls where the sender's eye's own view ended, outside the part of the field both eyes share: no frame is left to
+// double. Control::feather fades what remains of the frame into the black behind it (uploadVideo), so an edge that
+// still doubles is a soft gradient rather than a line.
 
 constexpr float kDegPerRad = 57.29578f;
 constexpr float kFallbackHalfFovRad = 0.7853982f;  // 45°
@@ -859,10 +929,13 @@ EyeCrop eyeCrop(const Session& s, size_t e, float outAr, const EyeGeometry* send
 }
 
 // The two eye quads for a side-by-side picture of picW x picH (each eye picW / 2 wide), at scale `scale`; `sender` is
-// the control's two eyes (D7.5.2) or null.
-void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale, const EyeGeometry* sender) {
+// the control's two eyes (D7.5.2) or null; `depthM` and `dyDeg` (left, right) are the control's tune (D7.5.9 / D7.6.10,
+// 0.5.2: 0 = the frame at infinity, no offset: the placement of 0.5.1).
+void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale, const EyeGeometry* sender, float depthM, const float dyDeg[2]) {
   s.windowDirty = false;
   s.windowW = picW, s.windowH = picH, s.windowScale = scale;
+  s.windowDepthM = depthM;
+  s.windowDyDeg = {dyDeg[0], dyDeg[1]};
   s.windowEyesKnown = sender != nullptr;
   if (sender) s.windowEyes = {sender[0], sender[1]};
   const float outAr = static_cast<float>(picW / 2) / static_cast<float>(picH > 0 ? picH : 1);
@@ -879,7 +952,15 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale, const E
     if (s.eyesLocated) eye = s.eyePose[e];
     const bool rectKnown = c.rectKnown;
     const float w = c.w, h = c.h, x = c.x, y = c.y, fw = c.fw, fh = c.fh;
-    const float l = c.l, r = c.r, d = c.d, u = c.u;
+    // D7.5.9: the frame at depth D. A frame edge at x = X in head space, D ahead, is seen by an eye at x = ex at the
+    // tangent (X - ex) / D. The placement above shows the edge at one tangent t in both eyes (X = t D, D infinite);
+    // to put it at D the eye's tangent becomes t - ex / D. The left eye (ex < 0) moves its rect right, toward the
+    // nose, the right eye left: an uncrossed disparity of IPD / D, the frame at D. D7.6.10: the vertical offset
+    // moves eye e's rect up (positive) or down by dyDeg[e]. A shift moves the quad's centre only (size is a
+    // difference of tangents), so every pixel keeps its angular size.
+    const float shiftX = depthM > 0.0f ? -eye.position.x / depthM : 0.0f;
+    const float shiftY = std::tan(dyDeg[e] / kDegPerRad);
+    const float l = c.l + shiftX, r = c.r + shiftX, d = c.d + shiftY, u = c.u + shiftY;
     const float cx = (l + r) * 0.5f, cy = (d + u) * 0.5f;
     const XrVector3f onAxis = quatRotate(eye.orientation, {SD * cx, SD * cy, -D});
     const XrVector3f inHead = {eye.position.x + onAxis.x, eye.position.y + onAxis.y, eye.position.z + onAxis.z};
@@ -896,7 +977,10 @@ void placeWindows(Session& s, uint32_t picW, uint32_t picH, float scale, const E
   const float ipd = std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
   const std::string line = "theater: stereo window, scale " + fmt("%.2f", scale) + (scale == 1.0f ? " (life size)" : "") + ", " + fmt("%.2f", D) +
                            " m ahead, video eye " + std::to_string(picW / 2) + "x" + std::to_string(picH) + (sender ? ", crop from the sender" : "") + ", eyes from " +
-                           (s.eyesLocated ? "xrLocateViews" : "assumed") + fmt(", IPD %.1f mm", ipd * 1000.0f) + "; " + eyes[0] + "; " + eyes[1];
+                           (s.eyesLocated ? "xrLocateViews" : "assumed") + fmt(", IPD %.1f mm", ipd * 1000.0f) +
+                           (depthM > 0.0f ? fmt(", window depth %.2f m", depthM) : std::string()) +
+                           (dyDeg[0] != 0.0f || dyDeg[1] != 0.0f ? fmt(", vertical offset left %+.1f deg right %+.1f deg", dyDeg[0], dyDeg[1]) : std::string()) +
+                           "; " + eyes[0] + "; " + eyes[1];
   if (line == s.windowLog) return;
   s.windowLog = line;
   if (s.windowLogs < kMaxWindowLogs) {
@@ -1556,11 +1640,16 @@ std::vector<Fact> sessionFacts(const Session& s) {
                        "],\"tangents\":[" + fixed(c.l, 4) + "," + fixed(c.r, 4) + "," + fixed(c.d, 4) + "," + fixed(c.u, 4) + "],\"quadM\":" +
                        jpair(s.windowSize[e].width, s.windowSize[e].height, 3) + ",\"position\":" + vec3(s.windowPose[e].position) + "}");
       }
+      // 0.5.2: the tune the window was placed with (D7.5.9 / D7.6.10) and the feather on the last video frame (D7.5.11).
       window = "{\"scale\":" + fixed(s.windowScale, 2) + ",\"distanceM\":" + fixed(kScreenDistanceM, 2) + ",\"picture\":" + jpair(s.windowW, s.windowH) +
-               ",\"eyesFrom\":" + jstr(s.eyesLocated ? "xrLocateViews" : "assumed") + ",\"cropFromSender\":" + std::string(s.windowEyesKnown ? "true" : "false") + ",\"ipdMm\":" + fixed(ipd * 1000.0f, 1) + ",\"eyes\":" + jlist(eyes) + "}";
+               ",\"eyesFrom\":" + jstr(s.eyesLocated ? "xrLocateViews" : "assumed") + ",\"cropFromSender\":" + std::string(s.windowEyesKnown ? "true" : "false") +
+               ",\"tune\":{\"depthM\":" + (s.windowDepthM > 0.0f ? fixed(s.windowDepthM, 2) : std::string("null")) + ",\"dyDeg\":" +
+               jpair(s.windowDyDeg[0], s.windowDyDeg[1], 2) + "},\"feather\":" + fixed(s.videoFeather, 3) + ",\"ipdMm\":" + fixed(ipd * 1000.0f, 1) +
+               ",\"eyes\":" + jlist(eyes) + "}";
     }
     text = std::string("theater: shown ") + modeName(s.shown) +
            (s.theaterPlaced ? fmt(", last placed at yaw %.1f pitch %.1f deg in LOCAL", s.theaterYawDeg, s.theaterPitchDeg) : std::string(", never placed in this session")) +
+           (s.videoFeather > 0.0f ? "; video window edges feathered over " + std::to_string(std::lround(s.videoFeather * 100.0f)) + "% of the eye's width" : std::string()) +
            (s.windowLog.empty() ? std::string("; no stereo window placed yet") : "; last " + s.windowLog);
     add("theater",
         std::string("{\"shown\":") + jstr(modeName(s.shown)) + ",\"placed\":" +
@@ -1696,7 +1785,7 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   }
   if (pattern) patternTick(s, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
-  if (c.mode == ViewMode::Theater && !pattern) uploadStream(s, s.video, Stream::Video, scope);
+  if (c.mode == ViewMode::Theater && !pattern) uploadVideo(s, c, scope);
   else panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH);
   if (s.off) return false;
   stepMode(s, wantedMode(s, c), info.displayTime);
@@ -1745,10 +1834,15 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
         // D7.5.2: the sender's eyes place the video's window; the pattern is always this headset's own geometry.
         const EyeGeometry* sender = !patternUp && c.eyesKnown ? c.eyes : nullptr;
         const bool eyesDiffer = s.windowEyesKnown != (sender != nullptr) || (sender && (s.windowEyes[0] != sender[0] || s.windowEyes[1] != sender[1]));
-        if (s.windowDirty || eyesDiffer || s.windowW != pic.width || s.windowH != pic.height || s.windowScale != c.theaterScale)
-          placeWindows(s, pic.width, pic.height, c.theaterScale, sender);
-        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.windowPose[0], s.windowSize[0], false));
-        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.windowPose[1], s.windowSize[1], false));
+        // D7.5.9 / D7.6.10: the tune re-places the window too (the pattern as well, so the sliders can be watched).
+        const bool tuneDiffers = s.windowDepthM != c.tuneDepthM || s.windowDyDeg[0] != c.tuneDyDeg[0] || s.windowDyDeg[1] != c.tuneDyDeg[1];
+        if (s.windowDirty || eyesDiffer || tuneDiffers || s.windowW != pic.width || s.windowH != pic.height || s.windowScale != c.theaterScale)
+          placeWindows(s, pic.width, pic.height, c.theaterScale, sender, c.tuneDepthM, c.tuneDyDeg);
+        // D7.5.11: a feathered video window blends over the black backdrop behind it (its edges fade to black); the
+        // pattern, and a video with hard edges, stay opaque.
+        const bool blend = videoUp && c.feather > 0.0f;
+        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_LEFT, 0, half, s.windowPose[0], s.windowSize[0], blend));
+        add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_RIGHT, half, w(pic) - half, s.windowPose[1], s.windowSize[1], blend));
       } else {
         // The panel frame has transparent corners (Chromium's paint): blended over the black; the video is opaque.
         add(quadAt(s, used++, s.local, pic, XR_EYE_VISIBILITY_BOTH, 0, w(pic), s.screenPose, size, !videoUp));

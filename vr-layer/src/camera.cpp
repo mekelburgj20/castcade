@@ -248,10 +248,17 @@ struct Crop {
 
 // The largest rect of aspect arW:arH in the view's rect (VPX's own preview rule: crop, never stretch), centred on the
 // eye's optical axis horizontally and in the rect vertically (eye_crop.h, D7.5.8, 0.5.1; 0.5.0 took the rect's centre,
-// which stood the two windows 15 degrees apart on a Quest 3). The frame header's `rect` tells the receiver what was done.
-Crop cropFor(const CameraView& v, uint32_t arW, uint32_t arH) {
+// which stood the two windows 15 degrees apart on a Quest 3). With `whole` (D7.5.10, 0.5.2) no crop at all: the view's
+// whole rect, for both eyes, so the receiver gets everything the eye rendered and the window's frame falls where the
+// headset's own view ends, outside what the two eyes share (the frame of a crop stood inside it and doubled against
+// the table: layer.cpp "the stereo window"). The frame header's `rect` tells the receiver what was done either way.
+Crop cropFor(const CameraView& v, uint32_t arW, uint32_t arH, bool whole) {
   Crop c;
   const int64_t rw = v.rectW > 0 ? v.rectW : 1, rh = v.rectH > 0 ? v.rectH : 1;
+  if (whole) {
+    c.x = v.rectX, c.y = v.rectY, c.w = static_cast<int32_t>(rw), c.h = static_cast<int32_t>(rh);
+    return c;
+  }
   if (rw * static_cast<int64_t>(arH) > rh * static_cast<int64_t>(arW)) {
     c.h = static_cast<int32_t>(rh);
     c.w = static_cast<int32_t>(std::max<int64_t>(1, rh * arW / arH));
@@ -270,9 +277,10 @@ uint32_t even(double v) {
   return n < 2 ? 2 : n;
 }
 
-// The output size per eye: the box's aspect cropped from eye 0, scaled into the box, never up, even sides.
+// The output size per eye: the box's aspect cropped from eye 0 (or, `whole`, eye 0's whole rect), scaled into the box,
+// never up, even sides (a 3072x3264 whole render in a 1440x1440 box gives 1354x1440).
 void planOutput(const CameraView& eye0, const CameraRequest& req, uint32_t& ow, uint32_t& oh) {
-  const Crop c = cropFor(eye0, req.width, req.height);
+  const Crop c = cropFor(eye0, req.width, req.height, req.whole);
   const double scale = std::min(1.0, std::min(static_cast<double>(req.width) / c.w, static_cast<double>(req.height) / c.h));
   ow = even(c.w * scale);
   oh = even(c.h * scale);
@@ -635,7 +643,7 @@ struct Camera::Impl {
         }
         fboChecked = true;
       }
-      const Crop c = cropFor(v, outW, outH);
+      const Crop c = cropFor(v, outW, outH, req.whole);
       gl.blitFramebuffer(c.x, c.y, c.x + c.w, c.y + c.h, static_cast<GLint>(e * outW), 0, static_cast<GLint>((e + 1) * outW), static_cast<GLint>(outH),
                          GL_COLOR_BUFFER_BIT_, GL_LINEAR_);
       EyeMeta& m = slot.eye[e];
@@ -776,7 +784,7 @@ struct Camera::Impl {
       ID3D11Texture2D* src = sc.d3dImages[static_cast<size_t>(sc.lastReleased)];
       D3D11_TEXTURE2D_DESC sd{};
       src->GetDesc(&sd);
-      const Crop c = cropFor(v, outW, outH);
+      const Crop c = cropFor(v, outW, outH, req.whole);
       if (!ensureStaging(slot, e, device, static_cast<uint32_t>(c.w), static_cast<uint32_t>(c.h), sd.Format)) {
         refuse("CreateTexture2D for the staging copy failed");
         ok = false;
@@ -926,16 +934,17 @@ struct Camera::Impl {
     fboChecked = false;
     running = true;
     refused = false;
-    const Crop c = cropFor(views[0], outW, outH);
+    const Crop c = cropFor(views[0], outW, outH, req.whole);
     const CameraView& v = views[0];
     logLine("camera: on (" + apiName + "): eye render " + std::to_string(v.rectW) + "x" + std::to_string(v.rectH) + " (rect " + std::to_string(v.rectX) + "," +
             std::to_string(v.rectY) + " of a " + std::to_string(v.swapchain.width) + "x" + std::to_string(v.swapchain.height) + " swapchain, format " +
             hex(v.swapchain.format) + " " + f.name + (f.srgb ? ", sRGB" : ", linear-tagged") + "), crop " + std::to_string(c.w) + "x" + std::to_string(c.h) +
-            " at " + std::to_string(c.x) + "," + std::to_string(c.y) + " -> " + std::to_string(outW) + "x" + std::to_string(outH) + " per eye at " +
-            std::to_string(req.fps) + " fps, JPEG quality " + std::to_string(kJpegQuality) + "; frame times follow (the first " + std::to_string(kLogFirst) +
-            ", then every " + std::to_string(kLogEvery) + "th)");
+            " at " + std::to_string(c.x) + "," + std::to_string(c.y) + (req.whole ? " (whole)" : "") + " -> " + std::to_string(outW) + "x" +
+            std::to_string(outH) + " per eye at " + std::to_string(req.fps) + " fps, JPEG quality " + std::to_string(kJpegQuality) +
+            "; frame times follow (the first " + std::to_string(kLogFirst) + ", then every " + std::to_string(kLogEvery) + "th)");
     panelPipeSendStatus("on", "", ",\"api\":\"" + apiName + "\",\"source\":[" + std::to_string(v.rectW) + "," + std::to_string(v.rectH) + "],\"size\":[" +
-                                    std::to_string(outW) + "," + std::to_string(outH) + "],\"fps\":" + std::to_string(req.fps));
+                                    std::to_string(outW) + "," + std::to_string(outH) + "],\"fps\":" + std::to_string(req.fps) +
+                                    ",\"whole\":" + (req.whole ? "true" : "false"));
     return true;
   }
 

@@ -208,7 +208,8 @@ bool jsonTrue(const std::string& body, const char* key) {
 }
 
 // D7.5: "camera" in the control. Absent → unchanged (false). null → off. An object → its width / height / fps, each a
-// plain number inside the braces; a malformed object → off (never a camera the companion did not shape).
+// plain number inside the braces, and (D7.5.10) "whole": true for the eye's whole render instead of a crop; a
+// malformed object → off (never a camera the companion did not shape).
 bool jsonCamera(const std::string& body, CameraRequest& out) {
   const size_t i = valueAt(body, "camera");
   if (i == std::string::npos || i >= body.size()) return false;
@@ -224,7 +225,58 @@ bool jsonCamera(const std::string& body, CameraRequest& out) {
   out.width = static_cast<uint32_t>(w);
   out.height = static_cast<uint32_t>(h);
   out.fps = static_cast<uint32_t>(fps);
+  out.whole = jsonTrue(obj, "whole");
   return true;
+}
+
+// D7.5.9 / D7.6.10: "tune" in the control: {"depthM": <m> | null, "dyDeg": [left, right]}. `depthM` absent, null, not
+// a number, not finite or 0 or less → 0 (infinity), else clamped to [kTuneDepthMinM, kTuneDepthMaxM]; `dyDeg` absent
+// or not two numbers → {0, 0}, each not finite → 0, else clamped to ±kTuneDyMaxDeg. No "tune" at all (an older
+// companion, or one that sends none): everything 0, the placement of 0.5.1.
+void jsonTune(const std::string& body, float& depthM, float dyDeg[2]) {
+  depthM = 0.0f;
+  dyDeg[0] = dyDeg[1] = 0.0f;
+  const size_t i = valueAt(body, "tune");
+  if (i == std::string::npos || i >= body.size() || body[i] != '{') return;
+  const size_t end = body.find('}', i);
+  if (end == std::string::npos) return;
+  const std::string obj = body.substr(i, end - i + 1);
+  double d = 0.0;
+  if (jsonNumber(obj, "depthM", d) && std::isfinite(d) && d > 0.0) {
+    depthM = static_cast<float>(d < kTuneDepthMinM ? kTuneDepthMinM : d > kTuneDepthMaxM ? kTuneDepthMaxM : d);
+  }
+  double dy[2] = {0.0, 0.0};
+  const size_t at = valueAt(obj, "dyDeg");
+  if (at != std::string::npos && jsonNumbers(obj, at, dy, 2) == 2) {
+    for (int e = 0; e < 2; e++) {
+      if (!std::isfinite(dy[e])) continue;
+      dyDeg[e] = static_cast<float>(dy[e] < -kTuneDyMaxDeg ? -kTuneDyMaxDeg : dy[e] > kTuneDyMaxDeg ? kTuneDyMaxDeg : dy[e]);
+    }
+  }
+}
+
+// D7.5.11: "feather" in the control: a number, clamped to [0, kFeatherMax]; absent, not a number, not finite or
+// negative → 0 (hard edges).
+float jsonFeather(const std::string& body) {
+  double f = 0.0;
+  if (!jsonNumber(body, "feather", f) || !std::isfinite(f) || f <= 0.0) return 0.0f;
+  return static_cast<float>(f > kFeatherMax ? kFeatherMax : f);
+}
+
+// `v` with `places` decimals for a log line, locale-free (std::to_string and printf's %f follow the process's locale,
+// and VPX's may carry a decimal comma; layer.cpp's `fixed` is the same rule for its JSON).
+std::string fixed(double v, int places) {
+  if (!std::isfinite(v)) return "?";
+  long long scale = 1;
+  for (int i = 0; i < places; i++) scale *= 10;
+  const long long n = std::llround(std::fabs(v) * static_cast<double>(scale));
+  std::string out = (v < 0.0 && n != 0 ? "-" : "") + std::to_string(n / scale);
+  if (places > 0) {
+    std::string frac = std::to_string(n % scale);
+    while (frac.size() < static_cast<size_t>(places)) frac = "0" + frac;
+    out += "." + frac;
+  }
+  return out;
 }
 
 // D7.5.2: "eyes" in the control: an array of two objects {"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}
@@ -298,7 +350,10 @@ void applyControl(const std::string& body) {
   c.eyesKnown = jsonEyes(body, eyes);
   c.eyes[0] = c.eyesKnown ? eyes[0] : EyeGeometry{};
   c.eyes[1] = c.eyesKnown ? eyes[1] : EyeGeometry{};
-  bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false;
+  // D7.5.9, D7.5.11 (layer 0.5.2): likewise, a control without "tune" / "feather" means none.
+  jsonTune(body, c.tuneDepthM, c.tuneDyDeg);
+  c.feather = jsonFeather(body);
+  bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false, tuneChanged = false, featherChanged = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
     changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre ||
@@ -306,6 +361,8 @@ void applyControl(const std::string& body) {
     cameraChanged = st.control.camera != c.camera;
     testChanged = st.control.test != c.test;
     eyesChanged = st.control.eyesKnown != c.eyesKnown || st.control.eyes[0] != c.eyes[0] || st.control.eyes[1] != c.eyes[1];
+    tuneChanged = st.control.tuneDepthM != c.tuneDepthM || st.control.tuneDyDeg[0] != c.tuneDyDeg[0] || st.control.tuneDyDeg[1] != c.tuneDyDeg[1];
+    featherChanged = st.control.feather != c.feather;
     st.control = c;
   }
   if (eyesChanged) {
@@ -313,6 +370,14 @@ void applyControl(const std::string& body) {
                         : std::string("pipe: the sender's eyes not given (VPX's centre-crop rule places the stereo window)"));
   }
   if (testChanged) logLine(c.test == TestPattern::Pattern ? "pipe: calibration pattern asked" : "pipe: calibration pattern off");
+  if (tuneChanged) {
+    logLine("pipe: tune: window depth " + (c.tuneDepthM > 0.0f ? fixed(c.tuneDepthM, 2) + " m" : std::string("infinity")) + ", vertical offset left " +
+            fixed(c.tuneDyDeg[0], 2) + " deg, right " + fixed(c.tuneDyDeg[1], 2) + " deg");
+  }
+  if (featherChanged) {
+    logLine(c.feather > 0.0f ? "pipe: window edges feathered over " + std::to_string(std::lround(c.feather * 100.0f)) + "% of the eye's width"
+                             : std::string("pipe: window edges hard"));
+  }
   // D7.6.2: a request, not a state: every control that carries it asks again.
   if (jsonTrue(body, "report")) {
     g_reportSerial.fetch_add(1);
@@ -325,7 +390,7 @@ void applyControl(const std::string& body) {
   }
   if (cameraChanged) {
     logLine(c.camera.on ? "pipe: camera asked: each eye in a " + std::to_string(c.camera.width) + "x" + std::to_string(c.camera.height) + " box at " +
-                              std::to_string(c.camera.fps) + " fps"
+                              std::to_string(c.camera.fps) + " fps" + (c.camera.whole ? ", the whole render (no crop)" : "")
                         : std::string("pipe: camera off"));
   }
 }

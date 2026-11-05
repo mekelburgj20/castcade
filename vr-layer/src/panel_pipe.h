@@ -12,10 +12,15 @@
 //       page's paint; the SteamVR helper's stdin format, so a protocol-1 companion still works);
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
 //     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}, optionally the
-//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps"} | null (D7.5),
+//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps","whole"} | null (D7.5;
+//       "whole": true since layer 0.5.2, D7.5.10: each eye's whole render, scaled into the box, no crop),
 //       "report": true (D7.6.2: send the session report now; a request, never a state), "test": "pattern" (D7.6.1:
-//       the calibration pattern in theater; a control without it = off) and "eyes": [{fov, rect, render} x 2]
-//       (D7.5.2, layer 0.5.1: the sender's eye geometry for the stereo window; absent = not known): the control;
+//       the calibration pattern in theater; a control without it = off), "eyes": [{fov, rect, render} x 2]
+//       (D7.5.2, layer 0.5.1: the sender's eye geometry for the stereo window; absent = not known), and, layer 0.5.2,
+//       "tune": {"depthM": <m> | null, "dyDeg": [left, right]} (D7.5.9 / D7.6.10: the distance the stereo window's
+//       frame is placed at, null = infinity, and a vertical offset per eye in degrees; absent = none) and
+//       "feather": <0..0.25> (D7.5.11: the fraction of one eye's half width over which the video window's edges fade
+//       to the black behind them; absent or 0 = hard edges): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -47,14 +52,17 @@ enum class Stream { Panel = 0, Video = 1 };
 enum class ViewMode { Hidden, Panel, Theater };
 constexpr float kTheaterScale = 1.0f;  // D7.4.5: life size (layer.cpp, "the stereo window")
 
-// D7.5: the camera the companion asks for: each eye of VPX's frame, centre-cropped to the box's aspect and scaled into
-// it (never up), at most `fps` frames a second, as JPEG over the pipe (camera.h). `on` false = no camera (the default,
-// and "camera": null).
+// D7.5: the camera the companion asks for: each eye of VPX's frame, cropped to the box's aspect about the eye's axis
+// and scaled into it (never up), at most `fps` frames a second, as JPEG over the pipe (camera.h). `on` false = no
+// camera (the default, and "camera": null). `whole` (D7.5.10, layer 0.5.2): no crop at all, the eye's whole render
+// scaled into the box (never up, even sides), so the receiver's window shows everything the sender's eye saw and the
+// window's frame leaves the part of the view both eyes share.
 struct CameraRequest {
   bool on = false;
   uint32_t width = 0, height = 0;  // the box, per eye
   uint32_t fps = 0;
-  bool operator==(const CameraRequest& o) const { return on == o.on && width == o.width && height == o.height && fps == o.fps; }
+  bool whole = false;
+  bool operator==(const CameraRequest& o) const { return on == o.on && width == o.width && height == o.height && fps == o.fps && whole == o.whole; }
   bool operator!=(const CameraRequest& o) const { return !(*this == o); }
 };
 constexpr uint32_t kCameraMaxSide = 4096;
@@ -92,9 +100,23 @@ struct Control {
   TestPattern test = TestPattern::None;  // D7.6.1
   bool eyesKnown = false;                // D7.5.2: `eyes` holds the sender's two eyes
   EyeGeometry eyes[2];
+  // D7.5.9 / D7.6.10 (layer 0.5.2), the control's "tune": the distance in metres the stereo window's FRAME is placed
+  // at (0 = infinity, the placement until 0.5.1: each eye's quad centred on the same tangent, so the frame doubles
+  // against a table the eyes converge on a metre away; layer.cpp "the stereo window"), and a vertical offset per eye
+  // (left, right) in degrees that moves that eye's quad up (positive) or down. Absent in the control = all zero.
+  float tuneDepthM = 0.0f;
+  float tuneDyDeg[2] = {0.0f, 0.0f};
+  // D7.5.11 (layer 0.5.2), the control's "feather": the fraction of one eye's half width over which the side-by-side
+  // video window's alpha ramps from 0 at each of its four edges to 1 (the frame fades into the black behind it instead
+  // of ending on a hard line). 0 = hard edges (the default); the pattern, the mono screen and the panel are never feathered.
+  float feather = 0.0f;
 };
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;
+constexpr float kTuneDepthMinM = 0.3f;
+constexpr float kTuneDepthMaxM = 100.0f;
+constexpr float kTuneDyMaxDeg = 10.0f;
+constexpr float kFeatherMax = 0.25f;
 
 // Starts the server thread once per process (later calls do nothing) and pins this dll in memory, so the thread can
 // never outlive the code it runs when the loader unloads the layer at xrDestroyInstance.
