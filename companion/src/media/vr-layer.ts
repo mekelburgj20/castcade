@@ -33,7 +33,13 @@
  *     the runtime, the system and VPX's frames (it sends one after every connection and on request); `requestSession`
  *     asks for a fresh one with `report: true` on a control (a request, so it never enters the dedup of controls);
  *     `probeLayerSession` reads one over a short connection of its own when no match holds the pipe. `bench` is what
- *     the test bench shows: connected, protocol, the last report and the last `BENCH_CONTROLS` controls sent.
+ *     the test bench shows: connected, protocol, the last report and the last `BENCH_CONTROLS` controls sent;
+ *   - D7.5.9 / D7.5.10 / D7.5.11 (2026-11-04), still protocol 3 (all additive): the camera request's `whole` asks for
+ *     each eye's whole render; `setWindowTune` puts `tune` (depth in metres, a vertical offset per eye) and
+ *     `setSoftEdge` puts `feather` on the control, each only when not the layer's default. The owner's 0.2.34
+ *     finding: the window fused but its frame doubled at the edges (the frames sat at infinity while the eyes
+ *     converged on the table); the whole view puts the frame at the lens edges, the feather hides what is left, and
+ *     the tuning gives live sliders for the geometry reports.
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -57,6 +63,7 @@ import {
   type VrOverlayStatus,
   type VrStereo,
   type VrViewMode,
+  type VrWindowTune,
 } from './match-media-types.js';
 import { controlMessage, createPanelFrameWriter, type FrameStream } from './panel-frame-writer.js';
 import type { VrOverlayPathInput } from './vr-overlay.js';
@@ -275,7 +282,30 @@ export function createLayerReader(): LayerReader {
 }
 
 const sameRequest = (a: LayerCameraRequest | null, b: LayerCameraRequest | null): boolean =>
-  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps);
+  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps && (a.whole === true) === (b.whole === true));
+
+/**
+ * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning as the control carries it: `tune` only when a value is not
+ * the layer's default (infinity, no offset), `feather` only when above 0, both to a protocol-3 layer only, so every
+ * other control is byte for byte as before. The layer clamps (0.3–100 m, ±10°, 0–0.25); this side rounds.
+ */
+export const VR_LAYER_TUNE_DEFAULT: VrWindowTune = { depthM: null, dyDeg: [0, 0] };
+const cleanTune = (t: VrWindowTune): VrWindowTune => {
+  const depthM = typeof t.depthM === 'number' && Number.isFinite(t.depthM) && t.depthM > 0 ? Math.round(Math.min(100, Math.max(0.3, t.depthM)) * 100) / 100 : null;
+  const dy = (v: number): number => (Number.isFinite(v) ? Math.round(Math.min(10, Math.max(-10, v)) * 10) / 10 + 0 : 0);
+  return { depthM, dyDeg: [dy(t.dyDeg?.[0] ?? 0), dy(t.dyDeg?.[1] ?? 0)] };
+};
+const tuneIsDefault = (t: VrWindowTune): boolean => t.depthM === null && t.dyDeg[0] === 0 && t.dyDeg[1] === 0;
+const cleanFeather = (f: number): number => (Number.isFinite(f) ? Math.round(Math.min(0.25, Math.max(0, f)) * 1000) / 1000 : 0);
+const signed = (v: number): string => `${v < 0 ? '-' : '+'}${Math.abs(v).toFixed(1)}`;
+/** The tuning in words for the control's log line: ", window depth 2.6 m, vertical offset L +0.5 R -0.5 deg, soft edge 3%". */
+export function tuneWords(t: VrWindowTune, feather: number): string {
+  const parts: string[] = [];
+  if (t.depthM !== null) parts.push(`window depth ${t.depthM} m`);
+  if (t.dyDeg[0] !== 0 || t.dyDeg[1] !== 0) parts.push(`vertical offset L ${signed(t.dyDeg[0])} R ${signed(t.dyDeg[1])} deg`);
+  if (feather > 0) parts.push(`soft edge ${Math.round(feather * 1000) / 10}%`);
+  return parts.length ? `, ${parts.join(', ')}` : '';
+}
 
 /**
  * Where the layer's manifest is: packaged, `resources/vr-layer/` (fetch-vr-layer.mjs, shipped by electron-builder.yml);
@@ -404,6 +434,9 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let mode: VrViewMode = 'panel';
   let stereo: VrStereo = 'mono';
   let theaterScale = 1;
+  /** D7.5.10 / D7.5.11: the window's depth and per-eye offset, and its soft edge; on a protocol-3 control only when not the defaults. */
+  let tune: VrWindowTune = VR_LAYER_TUNE_DEFAULT;
+  let feather = 0;
   /** D7.5.2: the sender's eyes on the theater frames (their JSON as the change key), on the control of a protocol-3 layer. */
   let eyes: LayerCameraEyeGeometry[] | null = null;
   let eyesKey = '';
@@ -538,6 +571,9 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? { test } : {}),
       // D7.5.2: the sender's eyes only while the frames carry them, so every other control is byte for byte as before.
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? { eyes } : {}),
+      // D7.5.10 / D7.5.11: the window's tuning and soft edge only when set, to a protocol-3 layer only (omitted = defaults).
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && !tuneIsDefault(tune) ? { tune } : {}),
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && feather > 0 ? { feather } : {}),
     };
     const text = JSON.stringify(body);
     if (text === lastControl && !report) return false;
@@ -549,10 +585,11 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     sentControls = [...sentControls, { at: now(), text: report ? JSON.stringify(sent) : text }].slice(-BENCH_CONTROLS);
     if (report) opts.log('vr-layer: asked the layer for its session report');
     if (!changed) return true;
-    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps` : 'off'}` : '';
+    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps${cameraReq.whole ? ', whole view' : ''}` : 'off'}` : '';
     const pat = protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? ', calibration pattern' : '';
     const eye = protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? `, the sender's eyes (crop ${eyes[0]!.rect[2]}x${eyes[0]!.rect[3]} at ${eyes[0]!.rect[0]},${eyes[0]!.rect[1]} / ${eyes[1]!.rect[0]},${eyes[1]!.rect[1]} of ${eyes[0]!.render[0]}x${eyes[0]!.render[1]})` : '';
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${eye})`);
+    const tuned = protocol >= VR_LAYER_CAMERA_PROTOCOL ? tuneWords(tune, feather) : '';
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${eye}${tuned})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
     return true;
   };
@@ -797,6 +834,22 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       sendControl();
     },
 
+    // D7.5.10: the window's depth and per-eye vertical offset, live like Theater size (the control dedups the text).
+    setWindowTune(next) {
+      const t = cleanTune(next);
+      if (t.depthM === tune.depthM && t.dyDeg[0] === tune.dyDeg[0] && t.dyDeg[1] === tune.dyDeg[1]) return;
+      tune = t;
+      sendControl();
+    },
+
+    // D7.5.11: the window's soft edge.
+    setSoftEdge(next) {
+      const f = cleanFeather(next);
+      if (f === feather) return;
+      feather = f;
+      sendControl();
+    },
+
     status: visible,
 
     onStatus(cb) {
@@ -810,7 +863,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       cameraReq = req;
       counted = { frames: 0, bytes: 0, lastN: -1, gaps: 0, garbage: 0, bad: 0, width: 0, height: 0 };
       if (req) {
-        opts.log(`vr-layer camera: asked: each eye in a ${req.width}x${req.height} box at ${req.fps} fps`);
+        opts.log(`vr-layer camera: asked: each eye${req.whole ? "'s whole render" : ''} in a ${req.width}x${req.height} box at ${req.fps} fps`);
         setCameraStatus({ state: 'asked', why: null, lastFrameAt: null, frames: 0 });
         startCounters();
         if (socket && protocol >= 2 && protocol < VR_LAYER_CAMERA_PROTOCOL && !oldCameraLogged) {

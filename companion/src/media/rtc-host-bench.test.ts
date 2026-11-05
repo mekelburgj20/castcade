@@ -287,6 +287,11 @@ describe('the VR test bench in rtc-host (D7.6)', () => {
     cam.frame(2);
     expect(sentOn(w, PANEL_CHANNELS.benchFrame)).toMatchObject([{ n: 2, width: 720, height: 1440, stereo: 'sbs' }]);
     expect(host.benchStatus()).toMatchObject({ source: 'live', headset: true, camera: { state: 'on' } });
+    // D7.5.9: the Camera view changes the running bench camera's box at once; the same view again asks nothing.
+    host.setCameraView('whole');
+    host.setCameraView('whole');
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }, { width: 1440, height: 1440, fps: 30, whole: true }]);
+    expect(logs).toContain("media: camera: whole view on the Match tab: each eye's whole render in a 1440x1440 box at 30 fps");
     await host.stopBench();
     expect(cam.asks.at(-1)).toBeNull();
     expect(cam.listening()).toBe(0);

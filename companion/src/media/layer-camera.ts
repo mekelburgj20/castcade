@@ -9,10 +9,14 @@
  *   - the screen capture is the default (`match.json` `cameraSource: 'screen'`); the layer is asked only when the
  *     player chose it, the rig is a headset on an OpenXR runtime that is not SteamVR (the layer is in VPX only there;
  *     on SteamVR the OpenVR helper draws and no layer loads) and the layer on the pipe speaks protocol 3 or more;
- *   - the request is a per-eye BOX, portrait 1:2 (the shape the runbook recommends for the preview window, and what
- *     the receiver's stereo window expects: VPX's own both-eyes preview centre-crops each eye the same way), as tall as
- *     the receiver's side-by-side feed box allows (`LAYER_CAMERA_EYE_HEIGHT`, D7.4.9) and never taller than the eye
- *     render, at the match video's 30 fps;
+ *   - the request is a per-eye BOX, as tall as the receiver's side-by-side feed box allows (`LAYER_CAMERA_EYE_HEIGHT`,
+ *     D7.4.9) and never taller than the eye render, at the match video's 30 fps. D7.5.9 (2026-11-04): its shape follows
+ *     the Match tab's Camera view: `whole` (the default) is a square box with `whole: true`, each eye's whole render
+ *     scaled into it, so the window's frame lands at the lens edges in the receiver's headset (the 0.2.34 finding: a
+ *     1:2 crop's frame sat at infinity and doubled while the eyes converged on the table); `window` is the 0.2.34
+ *     portrait 1:2 centre crop (the shape the runbook recommends for the preview window; VPX's own both-eyes preview
+ *     centre-crops each eye the same way). A 1440x1440 eye makes a 2880x1440 side-by-side picture, inside the
+ *     receiver's 3840x1440 feed box (panel-page.ts VIDEO_FEED_MAX);
  *   - fall back to the screen capture, and say why, when the layer refuses, when it stops the camera on its own, when
  *     nothing arrives within `LAYER_CAMERA_FALLBACK_MS` of asking, or when frames stop for `LAYER_CAMERA_STALL_MS`
  *     while sending (the capture watch's rule, D7.4.4). Never silently: every fallback is one log line and a status.
@@ -21,6 +25,8 @@ import type { LayerCameraRequest, LayerCameraStatus } from './match-media-types.
 
 export type CameraSourceSetting = 'screen' | 'layer';
 export type CameraSource = 'screen' | 'layer';
+/** D7.5.9: the Match tab's Camera view (match settings `cameraView`): each eye's whole render, or the 1:2 centre crop. */
+export type CameraViewSetting = 'whole' | 'window';
 
 /** The receiver's side-by-side feed box is 1440 high (D7.4.9): a taller eye would be scaled down there anyway. */
 export const LAYER_CAMERA_EYE_HEIGHT = 1440;
@@ -63,17 +69,27 @@ export function decideCamera(i: CameraDecisionInput): CameraDecision {
 }
 
 /**
- * The box to ask for per eye: 1:2 portrait, `eyeHeight` tall (default 1440) but never taller than the eye render when
- * that is known (the layer never scales up anyway; asking for less keeps the JPEG small), even sides, at 30 fps.
+ * The box to ask for per eye: `eyeHeight` tall (default 1440) but never taller than the eye render when that is known
+ * (the layer never scales up anyway; asking for less keeps the JPEG small), even sides, at 30 fps. The shape is the
+ * view's (D7.5.9): `window` (the default here, so the 0.2.34 callers and tests read as before) a 1:2 portrait crop;
+ * `whole` a square box with `whole: true`, each eye's whole render scaled into it (the layer fits the render's aspect
+ * inside the box; a square wastes nothing on a 2064x2208 eye and keeps the side-by-side picture inside the feed box).
  */
-export function cameraRequestFor(opts: { eyeHeight?: number; fps?: number; sourceEye?: { width: number; height: number } | null } = {}): LayerCameraRequest {
+export function cameraRequestFor(opts: { eyeHeight?: number; fps?: number; sourceEye?: { width: number; height: number } | null; view?: CameraViewSetting } = {}): LayerCameraRequest {
   let height = Math.max(2, Math.floor(opts.eyeHeight ?? LAYER_CAMERA_EYE_HEIGHT));
   if (opts.sourceEye && opts.sourceEye.height >= 2) height = Math.min(height, Math.floor(opts.sourceEye.height));
   height &= ~1;
-  let width = Math.round(height * LAYER_CAMERA_EYE_ASPECT) & ~1;
+  const whole = opts.view === 'whole';
+  let width = whole ? height : Math.round(height * LAYER_CAMERA_EYE_ASPECT) & ~1;
   if (width < 2) width = 2;
   const fps = Math.min(60, Math.max(1, Math.round(opts.fps ?? LAYER_CAMERA_FPS)));
-  return { width, height, fps };
+  return whole ? { width, height, fps, whole: true } : { width, height, fps };
+}
+
+/** D7.5.9: the request's view in a word, for log lines ("whole view" / "window view"). */
+export function cameraViewWords(req: Pick<LayerCameraRequest, 'whole'> | CameraViewSetting): string {
+  const whole = typeof req === 'string' ? req === 'whole' : req.whole === true;
+  return whole ? 'whole view' : 'window view';
 }
 
 export interface CameraFallback {

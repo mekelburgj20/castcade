@@ -13,6 +13,9 @@
  *     and its fit on its display (`capture-crop.ts` cropFit / fitWarning), and the `[PlayerVR]` keys of VPX's ini.
  *
  * Pure: the builders here take a fact object; `vr-report-host.ts` gathers the facts and writes the files.
+ * D7.5.9–D7.5.11 (2026-11-04): the stereo window's settings (camera view, depth, vertical offset, soft edge) print in
+ * words in the settings section, and the layer's `window.tune` / `window.feather` (what it applied) in the layer
+ * section, so a geometry report from the owner's sliders reads without decoding JSON.
  */
 import { cropFit, fitWarning, type CropFit } from '../media/capture-crop.js';
 import type { LayerCameraStatus, MediaStatus, VrOverlayStatus } from '../media/match-media-types.js';
@@ -138,6 +141,48 @@ export function flattenFacts(value: unknown, prefix: string): string[] {
 const rect = (r: Rect): string => `${r.width}x${r.height} at ${r.left},${r.top}`;
 const block = (lines: string[], none: string): string[] => (lines.length ? ['```', ...lines, '```'] : [`- ${none}`]);
 
+const signedDeg = (v: unknown): string => (typeof v === 'number' && Number.isFinite(v) ? `${v < 0 ? '-' : '+'}${Math.abs(v).toFixed(1)}°` : 'unknown');
+const metres = (v: unknown): string => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? `${v} m` : 'infinity');
+const percent = (v: unknown): string => (typeof v === 'number' && Number.isFinite(v) ? `${Math.round(v * 1000) / 10}%` : 'unknown');
+const isTune = (v: unknown): v is { depthM?: unknown; dyDeg?: unknown } => typeof v === 'object' && v !== null;
+const pair = (v: unknown): [unknown, unknown] => (Array.isArray(v) && v.length === 2 ? [v[0], v[1]] : [undefined, undefined]);
+
+/**
+ * D7.5.9–D7.5.11 (2026-11-04): the four window settings in words (`Camera view: whole`, `Window depth: infinity | 2.6 m`,
+ * `Vertical offset: left +0.0°, right +0.0°`, `Soft edge: 3%`), each only when the settings carry its key; the raw keys
+ * leave the flattened list so each fact is on one line.
+ */
+export function windowSettingsLines(settings: Record<string, unknown>): { rest: Record<string, unknown>; lines: string[] } {
+  const { cameraView, windowDepthM, eyeOffsetDeg, softEdge, ...rest } = settings;
+  const lines: string[] = [];
+  if ('cameraView' in settings) lines.push(`- Camera view: ${typeof cameraView === 'string' ? cameraView : 'unknown'}`);
+  if ('windowDepthM' in settings) lines.push(`- Window depth: ${metres(windowDepthM)}`);
+  if ('eyeOffsetDeg' in settings) {
+    const [l, r] = pair(eyeOffsetDeg);
+    lines.push(`- Vertical offset: left ${signedDeg(l)}, right ${signedDeg(r)}`);
+  }
+  if ('softEdge' in settings) lines.push(`- Soft edge: ${percent(softEdge)}`);
+  return { rest, lines };
+}
+
+/**
+ * D7.5.10 / D7.5.11: the layer's session `window` block may carry `tune` and `feather` (what the layer applied, after
+ * its clamps); they print in words beside the block's other facts, and leave the flattened list.
+ */
+export function windowTuneLines(window: unknown): { rest: unknown; lines: string[] } {
+  if (typeof window !== 'object' || window === null || Array.isArray(window)) return { rest: window, lines: [] };
+  const { tune, feather, ...rest } = window as Record<string, unknown>;
+  const lines: string[] = [];
+  if ('tune' in window) {
+    const t = isTune(tune) ? tune : {};
+    const [l, r] = pair(t.dyDeg);
+    lines.push(`- window depth: ${tune === null ? 'infinity (default)' : metres(t.depthM)}`);
+    lines.push(`- vertical offset: ${tune === null ? 'none (default)' : `left ${signedDeg(l)}, right ${signedDeg(r)}`}`);
+  }
+  if ('feather' in window) lines.push(`- feather: ${feather === null ? 'none (default)' : percent(feather)}`);
+  return { rest, lines };
+}
+
 /** The person's report: sections, one fact per line. */
 export function buildVrReportMarkdown(f: VrReportFacts): string {
   const L: string[] = [];
@@ -153,7 +198,10 @@ export function buildVrReportMarkdown(f: VrReportFacts): string {
   if (f.layer.session) {
     for (const [key, value] of Object.entries(f.layer.session)) {
       L.push('', `### ${key}`, '');
-      L.push(...flattenFacts(value, key));
+      if (key === 'window') {
+        const w = windowTuneLines(value);
+        L.push(...flattenFacts(w.rest, key), ...w.lines);
+      } else L.push(...flattenFacts(value, key));
     }
   }
   L.push('');
@@ -167,7 +215,10 @@ export function buildVrReportMarkdown(f: VrReportFacts): string {
 
   L.push('## Match', '');
   L.push(`- role: ${f.match.role}`, `- phase: ${f.match.phase}`);
-  L.push(...(f.match.settings ? flattenFacts(f.match.settings, 'settings') : ['- settings: unknown (no match host)']));
+  if (f.match.settings) {
+    const w = windowSettingsLines(f.match.settings);
+    L.push(...flattenFacts(w.rest, 'settings'), ...w.lines);
+  } else L.push('- settings: unknown (no match host)');
   L.push(...(f.media ? flattenFacts(f.media, 'media') : ['- media: not attached']));
   L.push('');
 

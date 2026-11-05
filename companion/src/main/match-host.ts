@@ -39,6 +39,7 @@ import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
+import { tuneWords } from '../media/vr-layer.js';
 import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
@@ -205,7 +206,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'setCameraView' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -299,6 +300,11 @@ async function ipifyPublicIp(): Promise<string | null> {
   }
 }
 
+/** D7.5.10 / D7.5.11: the stereo window's tuning in words for the log (empty at the defaults), as the layer control's line says it. */
+export function windowTuneWords(s: Pick<MatchSettings, 'windowDepthM' | 'eyeOffsetDeg' | 'softEdge'>): string {
+  return tuneWords({ depthM: s.windowDepthM, dyDeg: s.eyeOffsetDeg }, s.softEdge);
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${what} (no answer in ${Math.round(ms / 1000)} s)`)), ms);
@@ -324,6 +330,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   // D7.5.1 (2026-11-02): the layer camera's layer and the Match tab's Camera (decided at each attach, alpha-match.md §5a).
   opts.media?.setCameraLayer?.(opts.vrLayer ?? null);
   opts.media?.setCameraSource?.(settings.cameraSource);
+  // D7.5.9 (2026-11-04): the camera's view (whole render or the 1:2 crop); applied live to a running camera.
+  opts.media?.setCameraView?.(settings.cameraView);
+  /**
+   * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning and soft edge go to an overlay with Theater size: the
+   * match's and the bench's, on every settings change (each setter is idempotent and the control dedups).
+   */
+  const syncWindowTune = (to: VrOverlay | null | undefined): void => {
+    if (!to) return;
+    to.setTheaterScale?.(settings.theaterScale);
+    to.setWindowTune?.({ depthM: settings.windowDepthM, dyDeg: settings.eyeOffsetDeg });
+    to.setSoftEdge?.(settings.softEdge);
+  };
   let active: Active | null = null;
   let connecting = false;
   /** D7.6: the VR test bench (null: off). `overlay`: the OpenXR layer it put in theater, else the desktop panel shows it. */
@@ -488,7 +506,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const syncVrMode = (a: Active): void => {
     const to = a.overlay;
     if (!to) return;
-    to.setTheaterScale?.(settings.theaterScale);
+    syncWindowTune(to);
     const mode = vrViewMode(a.controller.panel(), settings);
     if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
     a.vrMode = { mode, to };
@@ -529,8 +547,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       syncVrMode(active);
       scheduleSeriesEnd(active);
     }
-    // D7.6: Theater size applies to the bench live, as in a match.
-    bench?.overlay?.setTheaterScale?.(settings.theaterScale);
+    // D7.6: Theater size applies to the bench live, as in a match; D7.5.10 / D7.5.11: the window's tuning and soft edge too.
+    syncWindowTune(bench?.overlay);
     syncTableAudio();
     const s = status();
     for (const l of [...listeners]) l(s);
@@ -806,11 +824,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const frames = media.frames();
         if (frames) {
           b.overlay = layer;
-          layer.setTheaterScale?.(settings.theaterScale);
+          syncWindowTune(layer);
           layer.setMode('theater');
           try {
             const st = await layer.start(frames, media.videoFrames?.() ?? null);
-            log.info(`bench: the OpenXR layer ${st.state}${st.reason ? ` (${st.reason})` : ''}, theater at Theater size ${settings.theaterScale}`);
+            log.info(`bench: the OpenXR layer ${st.state}${st.reason ? ` (${st.reason})` : ''}, theater at Theater size ${settings.theaterScale}${windowTuneWords(settings)}`);
           } catch (e) {
             log.warn(`bench: the OpenXR layer did not start: ${describeError(e)}`);
           }
@@ -818,7 +836,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       } else media.showPanel();
       if (bench !== b) return status();
       b.state = benchStep(b.state, { kind: 'started' }).state;
-      log.info(`bench: running (${d.rig}${d.runtime ? ` via ${d.runtime}` : ''}; ${b.overlay ? 'theater in the headset' : 'the desktop panel'})`);
+      // D7.5.9: the camera's view when the source is the layer camera; D7.5.10 / D7.5.11: the tuning when not the defaults.
+      const view = b.source === 'live' ? `; ${settings.cameraView} view` : '';
+      log.info(`bench: running (${d.rig}${d.runtime ? ` via ${d.runtime}` : ''}; ${b.overlay ? 'theater in the headset' : 'the desktop panel'}${view}${windowTuneWords(settings)})`);
       emit();
       return status();
     });
@@ -1069,6 +1089,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     setSettings(patch) {
       const before = settings.previewStereo;
       const cameraBefore = settings.cameraSource;
+      const viewBefore = settings.cameraView;
+      const tuneBefore = windowTuneWords(settings);
       saveSettings(patchMatchSettings(settings, patch));
       if (settings.previewStereo !== before) {
         opts.media?.setPreviewStereo?.(settings.previewStereo);
@@ -1079,6 +1101,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         log.info(`match: camera set to ${settings.cameraSource === 'layer' ? 'the VR layer' : 'the screen capture'} on the Match tab (${active ? 'takes effect between balls' : 'takes effect at the next match'})`);
         opts.media?.setCameraSource?.(settings.cameraSource);
       }
+      // D7.5.9: the view applies to a running camera at once (the media layer asks the layer again).
+      if (settings.cameraView !== viewBefore) {
+        log.info(`match: camera view set to ${settings.cameraView === 'whole' ? "each eye's whole render" : 'the 1:2 window crop'} on the Match tab`);
+        opts.media?.setCameraView?.(settings.cameraView);
+      }
+      // D7.5.10 / D7.5.11: the window's tuning reaches the overlays in `emit` (syncWindowTune); one line when it changed.
+      if (windowTuneWords(settings) !== tuneBefore) log.info(`match: stereo window${windowTuneWords(settings) || ': depth infinity, no vertical offset, hard edges'} on the Match tab`);
       emit();
       return status();
     },

@@ -27,7 +27,8 @@
  * The layer camera (D7.5.1, 2026-11-02; docs/design/alpha-match.md §5a): with the Match tab's Camera on `VR layer`, a
  * VR rig on an OpenXR runtime other than SteamVR sends what the Castcade OpenXR layer copies out of VPX's own frame
  * instead of a screen capture. Each attach decides (`layer-camera.ts` decideCamera); for the layer, the camera is asked
- * (`setCamera(cameraRequestFor())`), no screen capture is opened, and the page is given a synthetic capture
+ * (`setCamera(cameraRequestFor({ view }))`, the Match tab's Camera view: each eye's whole render by default, D7.5.9,
+ * 2026-11-04, or the 1:2 crop; `setCameraView` re-asks live), no screen capture is opened, and the page is given a synthetic capture
  * (`cameraCapture`, `sourceId: 'layer-camera'`) and the frames (both eyes' JPEGs, one in flight, newest wins; one a
  * second while another player is up). A 1 s tick and every camera status run `cameraWatch`; on a fallback the camera
  * is stopped, logged (`media: camera: back to the screen capture: <reason>`) and the screen capture picked as usual.
@@ -47,7 +48,7 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import { cameraRequestFor, cameraWatch, createFrameSlot, decideCamera, type CameraDecision, type CameraDecisionInput, type CameraSourceSetting } from './layer-camera.js';
+import { cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, type CameraDecision, type CameraDecisionInput, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
 import type { LayerCameraEyeGeometry, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
@@ -107,6 +108,12 @@ export interface RtcHost extends MatchMedia {
    * effect at once between balls, or when this rig's ball ends.
    */
   setCameraSource(setting: CameraSourceSetting): void;
+  /**
+   * D7.5.9 (2026-11-04): the Match tab's Camera view (match settings `cameraView`): each eye's whole render, or the
+   * 1:2 centre crop. Applied live: a running match camera and a running bench on "my own table, live" are asked
+   * again with the new box (the layer switches between frames; the capture's size follows the next frame).
+   */
+  setCameraView(view: CameraViewSetting): void;
   /**
    * B22 (2026-10-31): list the microphones before a match (the panel page lists them only once it opens, so a tester
    * saw "Windows default" alone at Host / Join). A hidden page in the panel's partition enumerates them, opening the
@@ -544,6 +551,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   // ---- D7.5.1: the layer camera ----
   let cameraLayer: VrOverlay | null = null;
   let cameraSetting: CameraSourceSetting = 'screen';
+  /** D7.5.9: the box's shape (`window` here until the match host says, so a bare RtcHost asks as 0.2.34 did). */
+  let cameraView: CameraViewSetting = 'window';
   let vrRuntime: CameraDecisionInput['runtime'] = null;
   /** The camera feeding this attach (null: the screen capture path, as before D7.5.1). */
   type CameraRun = { gen: number; askedAt: number; connectedAt: number | null; off: Array<() => void>; timer: ReturnType<typeof setInterval>; lastPostAt: number };
@@ -1148,8 +1157,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const startCamera = (gen: number, reason: string): void => {
     if (!cameraUsable(cameraLayer)) return;
     const layer = cameraLayer;
-    const req = cameraRequestFor();
-    log.info(`media: camera: the VR layer (${reason}): each eye in a ${req.width}x${req.height} box at ${req.fps} fps; no screen capture`);
+    const req = cameraRequestFor({ view: cameraView });
+    log.info(`media: camera: the VR layer (${reason}): each eye${req.whole ? "'s whole render" : ''} in a ${req.width}x${req.height} box at ${req.fps} fps; no screen capture`);
     camSlot.reset();
     const run: CameraRun = { gen, askedAt: Date.now(), connectedAt: null, off: [], timer: setInterval(() => checkCamera(run), CAMERA_WATCH_MS), lastPostAt: 0 };
     cam = run;
@@ -1300,7 +1309,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     }
     if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
     if (o.source === 'live' && cameraUsable(cameraLayer)) {
-      const req = cameraRequestFor();
+      const req = cameraRequestFor({ view: cameraView });
       run.off.push(
         cameraLayer.onCameraFrame((f) => {
           const pf = benchRun === run ? cameraPageFrame(f) : null;
@@ -1320,7 +1329,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       }, Math.max(10, Math.round(1000 / clip.fps / 2)));
     }
     const clipWords = o.clip && o.clipName ? { name: o.clipName, side: o.clip.side, frames: o.clip.frames.length, fps: o.clip.fps } : null;
-    log.info(`media: bench: started: ${benchWords({ source: o.source, path: o.path, clip: clipWords, headset, bitrate: o.bitrate ?? null })}`);
+    log.info(`media: bench: started: ${benchWords({ source: o.source, path: o.path, clip: clipWords, headset, bitrate: o.bitrate ?? null, view: o.source === 'live' ? cameraView : null })}`);
     emitBench();
   };
 
@@ -1555,7 +1564,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const saver = createFrameSaver({
         dir: o.dir,
         folder: o.folder,
-        settings: { ...o.settings, cameraRequest: cam || camOn ? cameraRequestFor() : null, feedMax: VIDEO_FEED_MAX, previewStereo: previewSetting, cameraSetting, capture: capture ? { label: capture.label, out: capture.out, stereo: capture.stereo ?? null } : null },
+        settings: { ...o.settings, cameraRequest: cam || camOn ? cameraRequestFor({ view: cameraView }) : null, feedMax: VIDEO_FEED_MAX, previewStereo: previewSetting, cameraSetting, capture: capture ? { label: capture.label, out: capture.out, stereo: capture.stereo ?? null } : null },
       });
       saving = saver;
       const off = camOn && cameraUsable(cameraLayer) ? cameraLayer.onCameraFrame((f) => saver.senderFrame(f)) : null;
@@ -1578,6 +1587,17 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     },
     setCameraLayer(layer) {
       cameraLayer = layer;
+    },
+    // D7.5.9: the view changes the box, live: the match camera (while asked) and the bench's camera are asked again.
+    setCameraView(view) {
+      if (view === cameraView) return;
+      cameraView = view;
+      if (!cameraUsable(cameraLayer)) return;
+      const live = cam !== null || benchRun?.cfg.source === 'live';
+      if (!live) return;
+      const req = cameraRequestFor({ view });
+      log.info(`media: camera: ${cameraViewWords(req)} on the Match tab: each eye${req.whole ? "'s whole render" : ''} in a ${req.width}x${req.height} box at ${req.fps} fps`);
+      cameraLayer.setCamera(req);
     },
     setCameraSource(setting) {
       if (setting === cameraSetting) return;
