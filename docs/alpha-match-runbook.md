@@ -11,7 +11,9 @@ Table: ________ (ROM ______)
 - [ ] **Castcade 0.2.22 or newer**, from the GitHub releases page
   (<https://github.com/mekelburgj20/castcade/releases>). An installed copy updates itself; check
   the version on the Status tab. After an update, restart VPX: a VPX left running keeps the older headset layer (the
-  Match tab says "VPX started before this layer was registered").
+  Match tab says "VPX started before this layer was registered"). From 0.2.36 the camera is the VR layer sending one
+  eye (ADR 0009): no preview window is captured on a VR rig, so PuP and DMD windows may sit anywhere; the first start
+  after the update migrates your match settings once (`match: match.json from before 0.2.36` in the log).
 - [ ] **The same table file on both PCs**: the table and ROM written in the line at the top. Copy the file, do not
   download it twice from different places. Castcade compares the two files and warns "different table file" if they differ.
 - [ ] **Patched**: Castcade, Settings, **Import tables for live scores**, Browse to your `tables` folder,
@@ -110,6 +112,20 @@ table-sound helper (`castcade-audio.exe`, installed with Castcade; nothing to se
 - **"Table sound unavailable"** on the Match tab means the helper is not in this build or did not start: every
   player hears their own table, as before, and the match is otherwise unaffected. **"Sending your table needs
   Windows 10 2004 or newer"**: your VPX is still muted on their ball, but the others cannot hear your table.
+
+### Voice over the game (D2.10, 0.2.36)
+
+Both of you heard the table over the other player's voice on 2026-11-04. Three sliders on the Match tab, under
+"Voice and table sound", are saved and take effect at once, mid-match:
+
+- **Voice volume** (default 150 %; above 100 is a boost): how loud the other players' voices play on your PC.
+- **Their table sound** (default 100 %): the player up's table as you hear it on their ball.
+- **My table while I play** (default 100 % = untouched): Castcade lowers your own VPX to this while you are up, so
+  the voices sit over your game, and puts it back after your ball (and if Castcade quits or crashes).
+- **While playing, with VPX in focus:** Ctrl+Alt+Up / Down changes the voice volume in steps of 10, Ctrl+Alt+Left /
+  Right lowers / raises your table while you play. Each press ticks at the turn-cue volume so you hear where it is
+  without looking; the Match tab's sliders follow. If a chord does nothing, another program holds it (the log says
+  `match: Control+Alt+Up is held by another app`); tell the lead which one.
 
 ## 4. If something goes wrong
 

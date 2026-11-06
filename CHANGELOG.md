@@ -7,6 +7,67 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.36] — 2026-11-05
+
+The first build under ADR 0009 (spectating is 2D, owner and Krobs 2026-11-04): the player up is flat video on a screen
+for everyone, never a stereo window. The stereo window of 0.2.27–0.2.35 stays in the code untouched and leaves the UI.
+Both rigs take this through the updater and must restart VPX afterwards (`vr-layer.log` says `build v0.2.36`, layer
+0.5.3; the table-sound helper is 0.2.0). An existing `match.json` is migrated once: the camera becomes the VR layer
+sending one eye (`settingsVersion` 2).
+
+### One eye from the VR layer, the default camera (D8.1; layer 0.5.3)
+- The OpenXR layer camera sends ONE eye (control `camera.eye: "left" | "right"`; a one-entry `eyes` array and one JPEG
+  per `CVF1` frame; half the GPU readback, JPEG work and pipe traffic; the helper thread is not started). The companion
+  asks for the left eye by default (`cameraEyes: 'one'`), accepts a one- or two-eye frame (a 0.5.2 layer still sends
+  both; the other eye is dropped), draws it as a `w x h` mono capture and declares `mono`, so the receivers show the
+  flat theater screen. `cameraSource` now defaults to `'layer'` (the screen capture of VPX's preview window stays the
+  fallback and the monitor rig's camera, every fallback logged); the preview window is no longer captured on a VR rig,
+  so PuP and DMD windows can sit anywhere (Krobs' DMD sat over his preview on 2026-11-04). `VIDEO_FEED_MAX.mono` is
+  1920x1440 so the 1354x1440 eye reaches the layer unscaled. `vr-layer/src/camera.cpp`, `panel_pipe.cpp`,
+  `media/layer-camera.ts`, `vr-layer.ts`, `panel-page.ts`, `rtc-host.ts`, `frame-clip.ts`, `main/match-setup.ts`
+  (`loadMatchSettings`, the migration), `main/match-host.ts`, `main/vr-report.ts`.
+
+### Hardware H.264, started at the cap (D8.3)
+- Every video sender prefers H.264 (`preferH264`: packetization-mode 1, 42e01f then 640032; VP8/VP9/AV1 kept after
+  as the fallback) through `setCodecPreferences`, so Chromium's Media Foundation encoder (NVENC on both rigs) carries
+  the match instead of software VP8. Every remote description gets `x-google-start-bitrate` at the sender's cap and
+  `x-google-min-bitrate` at 40 % of it (`withBitrateHints`), so the picture starts at the cap instead of ramping from a
+  low guess for ten seconds after each turn (the 2026-11-04 series: 9–25 fps after every switch, 5–7 Mbps VP8). The
+  codec and encoder are logged: `media: encoder: H264 via MediaFoundationVideoEncodeAccelerator` once known, and on
+  every `media: capture:` line. The bitrate rule (`videoBitrateFor`, 8 Mbps ceiling) is unchanged; D8.2 replaces it
+  with presets. `media/panel-page.ts`, `rtc-host.ts`.
+
+### The Match tab and the bench speak 2D (D8.7)
+- Camera view, window depth, the per-eye vertical offsets, soft edge and the calibration pattern leave the Match tab
+  and the bench card (their settings, IPC and layer controls stay; a hand-edited `match.json` still reaches them).
+  Hints rewritten for the flat screen; Theater size is a legitimate 2D control again (Life size, Krobs' choice, the
+  default). `previewStereo: auto` declares one eye unless VPX's ini plainly says Both Eyes, and the tab then tells the
+  player to turn it off; the runbook no longer asks for Both Eyes. `renderer/src/views/Match.tsx`, `TestBench.tsx`,
+  `media/preview-stereo.ts`, `media/bench.ts`, `docs/alpha-match-runbook.md`.
+
+### Voice over the game (D2.10; helper 0.2.0)
+- Both testers heard the table over the other player's voice. Three Match tab sliders, saved and applied live:
+  **Voice volume** (0–300 %, default 150; a GainNode on each peer's voice in the panel page, the media element muted
+  so the track is not played twice), **Their table sound** (0–100 %), **My table while I play** (10–100 %, default
+  100: the helper's new `level <pid> <percent>` sets the VPX session volume while this rig is up and `unlevel`
+  restores it; the `--state` recovery restores levels like mutes). Global shortcuts while in a match: Ctrl+Alt+Up /
+  Down change the voice volume, Ctrl+Alt+Left / Right my table while I play, each press saved, pushed live, logged and
+  ticked at the cue volume. A 0.1.0 helper is told once that it cannot level. `media/panel-page.ts` (`volumeGains`),
+  `rtc-host.ts` (`setVolume`), `audio-helper.ts`, `table-audio-policy.ts`, `main/match-host.ts`, `main/index.ts`,
+  `audio-helper/src/main.cpp`.
+
+### No game before the match (A12)
+- The owner pressed Start before the other player joined and nothing could start. New setting **Before the match**:
+  *Free play until someone joins* (the default: when the lobby completes while a game runs on the host's table, the
+  match waits for that game to end, says so on the host's panel, and starts at the next Start; a game started with
+  fewer than two in the lobby is never game 1) or *Table locked until someone joins* (the turn lock holds the host's
+  table until the lobby is complete, re-locks if it empties; a client's table is never locked before the match).
+  `match/controller.ts`, `main/match-setup.ts`, `main/match-host.ts`, `renderer/src/views/Match.tsx`.
+
+### Housekeeping
+- `witness.test.ts` waits for the unpatched notice instead of assuming six flush rounds (the first cold read of the
+  maps corpus on an ubuntu runner outran them: main CI red on two of three runs).
+
 ## [0.2.35] — 2026-11-04
 
 The owner's solo check on 0.2.34 (2026-11-04): the calibration pattern's grids fuse into one and the table fuses, so
