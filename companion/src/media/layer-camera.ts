@@ -6,8 +6,8 @@
  * 1 s tick and on every camera status, `createFrameSlot` for the frames it hands the panel page.
  *
  * Rules:
- *   - the screen capture is the default (`match.json` `cameraSource: 'screen'`); the layer is asked only when the
- *     player chose it, the rig is a headset on an OpenXR runtime that is not SteamVR (the layer is in VPX only there;
+ *   - the layer is the default since D8.1 (`match.json` `cameraSource: 'layer'`; `screen` before); it is asked only
+ *     when the setting says so, the rig is a headset on an OpenXR runtime that is not SteamVR (the layer is in VPX only there;
  *     on SteamVR the OpenVR helper draws and no layer loads) and the layer on the pipe speaks protocol 3 or more;
  *   - the request is a per-eye BOX, as tall as the receiver's side-by-side feed box allows (`LAYER_CAMERA_EYE_HEIGHT`,
  *     D7.4.9) and never taller than the eye render, at the match video's 30 fps. D7.5.9 (2026-11-04): its shape follows
@@ -20,16 +20,30 @@
  *   - fall back to the screen capture, and say why, when the layer refuses, when it stops the camera on its own, when
  *     nothing arrives within `LAYER_CAMERA_FALLBACK_MS` of asking, or when frames stop for `LAYER_CAMERA_STALL_MS`
  *     while sending (the capture watch's rule, D7.4.4). Never silently: every fallback is one log line and a status.
+ *
+ * D8.1 (2026-11-05, ADR 0009: spectating is 2D): the layer camera is the default on VR rigs (`cameraSource: 'layer'`)
+ * and asks for ONE eye (`cameraEyes: 'one'`: the request's `eye`, the left one), sent as a flat picture; a one-eye
+ * frame from the layer, or the asked eye out of a two-eye frame from a layer that predates `eye`. The two-eye path
+ * (`cameraEyes: 'both'`, the stereo window) stays as shipped in 0.2.35. The rules above are unchanged.
  */
-import type { LayerCameraRequest, LayerCameraStatus } from './match-media-types.js';
+import type { LayerCameraEyeSide, LayerCameraRequest, LayerCameraStatus } from './match-media-types.js';
 
 export type CameraSourceSetting = 'screen' | 'layer';
 export type CameraSource = 'screen' | 'layer';
 /** D7.5.9: the Match tab's Camera view (match settings `cameraView`): each eye's whole render, or the 1:2 centre crop. */
 export type CameraViewSetting = 'whole' | 'window';
+/** D8.1: the Match tab's Camera eyes (match settings `cameraEyes`): one eye as a flat picture (the default), or both side by side. */
+export type CameraEyesSetting = 'one' | 'both';
 
 /** The receiver's side-by-side feed box is 1440 high (D7.4.9): a taller eye would be scaled down there anyway. */
 export const LAYER_CAMERA_EYE_HEIGHT = 1440;
+/** D8.1: the eye a one-eye camera sends. */
+export const LAYER_CAMERA_DEFAULT_EYE: LayerCameraEyeSide = 'left';
+
+/** D8.1: the request's `eye` for a Camera eyes setting: the left eye for `one`, none (both eyes) for `both`. */
+export function cameraEyeFor(setting: CameraEyesSetting): LayerCameraEyeSide | null {
+  return setting === 'one' ? LAYER_CAMERA_DEFAULT_EYE : null;
+}
 /** Portrait 1:2 per eye (720x1440 by default): the preview window's recommended shape, tall like pinball. */
 export const LAYER_CAMERA_EYE_ASPECT = 0.5;
 export const LAYER_CAMERA_FPS = 30;
@@ -74,8 +88,10 @@ export function decideCamera(i: CameraDecisionInput): CameraDecision {
  * view's (D7.5.9): `window` (the default here, so the 0.2.34 callers and tests read as before) a 1:2 portrait crop;
  * `whole` a square box with `whole: true`, each eye's whole render scaled into it (the layer fits the render's aspect
  * inside the box; a square wastes nothing on a 2064x2208 eye and keeps the side-by-side picture inside the feed box).
+ * D8.1 (2026-11-05): `eye` asks for that one eye (the request carries it; a layer before 0.5.3 ignores it and sends
+ * both). The box is the same per eye whatever the count: `eyeHeight` is the one knob a quality preset (D8.2) turns.
  */
-export function cameraRequestFor(opts: { eyeHeight?: number; fps?: number; sourceEye?: { width: number; height: number } | null; view?: CameraViewSetting } = {}): LayerCameraRequest {
+export function cameraRequestFor(opts: { eyeHeight?: number; fps?: number; sourceEye?: { width: number; height: number } | null; view?: CameraViewSetting; eye?: LayerCameraEyeSide | null } = {}): LayerCameraRequest {
   let height = Math.max(2, Math.floor(opts.eyeHeight ?? LAYER_CAMERA_EYE_HEIGHT));
   if (opts.sourceEye && opts.sourceEye.height >= 2) height = Math.min(height, Math.floor(opts.sourceEye.height));
   height &= ~1;
@@ -83,13 +99,37 @@ export function cameraRequestFor(opts: { eyeHeight?: number; fps?: number; sourc
   let width = whole ? height : Math.round(height * LAYER_CAMERA_EYE_ASPECT) & ~1;
   if (width < 2) width = 2;
   const fps = Math.min(60, Math.max(1, Math.round(opts.fps ?? LAYER_CAMERA_FPS)));
-  return whole ? { width, height, fps, whole: true } : { width, height, fps };
+  const req: LayerCameraRequest = whole ? { width, height, fps, whole: true } : { width, height, fps };
+  if (opts.eye === 'left' || opts.eye === 'right') req.eye = opts.eye;
+  return req;
 }
 
 /** D7.5.9: the request's view in a word, for log lines ("whole view" / "window view"). */
 export function cameraViewWords(req: Pick<LayerCameraRequest, 'whole'> | CameraViewSetting): string {
   const whole = typeof req === 'string' ? req === 'whole' : req.whole === true;
   return whole ? 'whole view' : 'window view';
+}
+
+/** D8.1: the request's eyes in words, for log lines: `one eye (left)` or `both eyes`. */
+export function cameraEyesWords(req: Pick<LayerCameraRequest, 'eye'> | LayerCameraEyeSide | null | undefined): string {
+  const eye = typeof req === 'string' ? req : req?.eye;
+  return eye === 'left' || eye === 'right' ? `one eye (${eye})` : 'both eyes';
+}
+
+/**
+ * D8.1: the eye(s) the page gets out of a layer frame, for the request's `eye`: both wanted → the frame's two eyes
+ * (null when it has not got two); one wanted → that eye out of a two-eye frame (left is `eyes[0]`, right `eyes[1]`),
+ * or the single entry of a one-eye frame (the layer sent what was asked; it cannot be told apart from the other eye, so
+ * it is taken as asked). Null when the frame has neither.
+ */
+export function cameraFrameEyes<E>(eyes: readonly E[], eye: LayerCameraEyeSide | null): { left: E | null; right: E | null } | null {
+  if (eye === null) {
+    const [l, r] = eyes;
+    return l && r && eyes.length === 2 ? { left: l, right: r } : null;
+  }
+  const one = eyes.length === 2 ? eyes[eye === 'left' ? 0 : 1] : eyes.length === 1 ? eyes[0] : undefined;
+  if (!one) return null;
+  return eye === 'left' ? { left: one, right: null } : { left: null, right: one };
 }
 
 export interface CameraFallback {

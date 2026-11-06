@@ -245,13 +245,20 @@ export interface VrOverlayStatus {
  * D7.5.9 (2026-11-04): `whole` asks for each eye's whole render instead of a crop (scaled into the box, never up; the
  * frame header's `rect` is then the whole render), so the window's frame lands at the lens edges in the receiver's
  * headset. Only a protocol-3 layer reads it, as the `camera` object itself.
+ * D8.1 (2026-11-05, ADR 0009): `eye` asks for ONE eye: the layer (0.5.3) then sends frames whose `eyes` array has one
+ * entry, that eye, and the companion sends it as a flat (mono) picture. A layer that does not know the field (0.5.2)
+ * ignores it and sends both; the companion then keeps the asked eye and drops the other. Absent: both eyes, as before.
  */
 export interface LayerCameraRequest {
   width: number;
   height: number;
   fps: number;
   whole?: boolean;
+  eye?: LayerCameraEyeSide;
 }
+
+/** D8.1: which eye a one-eye camera request asks for. */
+export type LayerCameraEyeSide = 'left' | 'right';
 
 /**
  * D7.5.10 (2026-11-04): the stereo window's tuning on the layer's control: its depth in metres (null = infinity, the
@@ -278,7 +285,10 @@ export interface LayerCameraEye extends LayerCameraEyeGeometry {
   data: Uint8Array;
 }
 
-/** D7.5: one camera frame off the pipe (`VrOverlay.onCameraFrame`): both eyes, left then right, each `width` x `height`. */
+/**
+ * D7.5: one camera frame off the pipe (`VrOverlay.onCameraFrame`): both eyes, left then right, each `width` x `height`.
+ * D8.1 (2026-11-05): or ONE eye (a one-entry `eyes`), the one the request's `eye` asked for, from a layer that honours it.
+ */
 export interface LayerCameraFrame {
   /** The layer's frame counter (issued frames: a gap is a drop on its side). */
   n: number;
@@ -287,6 +297,7 @@ export interface LayerCameraFrame {
   encoding: 'jpeg';
   width: number;
   height: number;
+  /** Two eyes (left, right), or one (D8.1). */
   eyes: LayerCameraEye[];
   /** The layer's own timings for this frame, microseconds (render thread: issue, map; worker: copy, encode). */
   us?: { issue: number; map: number; copy: number; enc: number } | null;

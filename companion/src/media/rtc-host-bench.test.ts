@@ -274,6 +274,7 @@ describe('the VR test bench in rtc-host (D7.6)', () => {
     const cam = fakeLayer();
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
     host.setCameraLayer(cam.layer);
+    host.setCameraEyes('both'); // D8.1: the stereo bench of 0.2.35; the one-eye bench is checked at the end
     await host.startBench({ source: 'live', path: 'direct', clip: null, clipDir: null, clipName: null, inVr: true, headsetPanel: true });
     const w = fake.FakeWindow.all.at(-1)!;
     expect((w.opts.webPreferences as { offscreen: boolean }).offscreen).toBe(true);
@@ -291,7 +292,14 @@ describe('the VR test bench in rtc-host (D7.6)', () => {
     host.setCameraView('whole');
     host.setCameraView('whole');
     expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }, { width: 1440, height: 1440, fps: 30, whole: true }]);
-    expect(logs).toContain("media: camera: whole view on the Match tab: each eye's whole render in a 1440x1440 box at 30 fps");
+    expect(logs).toContain("media: camera: whole view on the Match tab: both eyes, each eye's whole render in a 1440x1440 box at 30 fps");
+    // D8.1: Camera eyes = one re-asks the running bench camera with `eye`; its frames play as mono (the flat screen), whatever the layer sends.
+    host.setCameraEyes('one');
+    expect(cam.asks.at(-1)).toEqual({ width: 1440, height: 1440, fps: 30, whole: true, eye: 'left' });
+    expect(logs).toContain("media: camera: one eye (left) on the Match tab: one eye (left), its whole render in a 1440x1440 box at 30 fps");
+    fromPage(w, PANEL_CHANNELS.benchAck);
+    cam.frame(3);
+    expect(sentOn(w, PANEL_CHANNELS.benchFrame).at(-1)).toMatchObject({ n: 3, stereo: 'mono', right: null, eyes: null });
     await host.stopBench();
     expect(cam.asks.at(-1)).toBeNull();
     expect(cam.listening()).toBe(0);

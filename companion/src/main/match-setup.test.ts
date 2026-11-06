@@ -12,7 +12,9 @@ import {
   decideRig,
   formatInvite,
   gameFingerprintFrom,
+  loadMatchSettings,
   lockPathFrom,
+  MATCH_SETTINGS_VERSION,
   matchSignalling,
   newMatchCode,
   newMatchIdentity,
@@ -52,15 +54,41 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'screen', cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free' });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     // A12 (2026-11-05): the host's table before the match: free by default, locked on request, anything else ignored.
     expect(patchMatchSettings(s, { preMatchPlay: 'locked' }).preMatchPlay).toBe('locked');
     expect(patchMatchSettings(s, { preMatchPlay: 'open' }).preMatchPlay).toBe('free');
-    // D7.5: the camera source: screen by default, layer on request, anything else ignored.
-    expect(patchMatchSettings(s, { cameraSource: 'layer' }).cameraSource).toBe('layer');
-    expect(patchMatchSettings(s, { cameraSource: 'webcam' }).cameraSource).toBe('screen');
+    // D7.5: the camera source: the layer by default (D8.1; the screen before), the screen on request, anything else ignored.
+    expect(patchMatchSettings(s, { cameraSource: 'screen' }).cameraSource).toBe('screen');
+    expect(patchMatchSettings(s, { cameraSource: 'webcam' }).cameraSource).toBe('layer');
     expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
+  });
+
+  it('D8.1 (ADR 0009): cameraEyes defaults to one, takes one or both; settingsVersion is 2 and never patched; a match.json without it is migrated once to the layer camera, one eye', () => {
+    expect(DEFAULT_MATCH_SETTINGS).toMatchObject({ cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2 });
+    expect(MATCH_SETTINGS_VERSION).toBe(2);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { cameraEyes: 'both' }).cameraEyes).toBe('both');
+    const both = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { cameraEyes: 'both' });
+    expect(patchMatchSettings(both, { cameraEyes: 'three' } as never).cameraEyes).toBe('both');
+    expect(patchMatchSettings(both, { settingsVersion: 1 }).settingsVersion).toBe(2);
+    expect(readMatchSettings(writeMatchSettings(both))).toEqual(both);
+    expect(writeMatchSettings(both)).toContain('"settingsVersion": 2');
+    // No file, or not JSON: the defaults, nothing to migrate.
+    expect(loadMatchSettings(null)).toEqual({ settings: DEFAULT_MATCH_SETTINGS, migrated: null });
+    expect(loadMatchSettings('{').migrated).toBeNull();
+    // A 0.2.35 file (no settingsVersion) that says screen capture: the layer, one eye, version 2, said once.
+    const old = '{"v":1,"port":27401,"ballsPerGame":3,"displayName":null,"cueVolume":80,"theaterScale":0.8,"cameraSource":"screen","cameraView":"window"}';
+    const m = loadMatchSettings(old);
+    expect(m.settings).toEqual({ ...DEFAULT_MATCH_SETTINGS, theaterScale: 0.8, cameraView: 'window', cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2 });
+    expect(m.migrated).toBe('match.json from before 0.2.36 (settings version 1): camera set to the VR layer, one eye (ADR 0009); saved as version 2');
+    expect(loadMatchSettings('{"v":1,"settingsVersion":1,"cameraSource":"screen"}').settings.cameraSource).toBe('layer');
+    // Saved back at version 2: read again, nothing is migrated and the player's later choices stand.
+    const saved = patchMatchSettings(m.settings, { cameraSource: 'screen', cameraEyes: 'both' });
+    expect(loadMatchSettings(writeMatchSettings(saved))).toEqual({ settings: saved, migrated: null });
+    expect(loadMatchSettings('{"v":1,"settingsVersion":2,"cameraSource":"screen","cameraEyes":"both"}').settings).toMatchObject({ cameraSource: 'screen', cameraEyes: 'both' });
+    // A version from the future reads as current (never migrated down).
+    expect(loadMatchSettings('{"v":1,"settingsVersion":9,"cameraSource":"screen"}')).toMatchObject({ settings: { cameraSource: 'screen', settingsVersion: 2 }, migrated: null });
   });
 
   it('D7.4: the headset settings default to hidden on my ball and theater on theirs; only their values patch; they round-trip', () => {

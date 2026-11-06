@@ -138,6 +138,26 @@ describe('the frame saver (D7.6.3)', () => {
     expect(savedLine(dir, null)).toBe('media: frames: nothing saved (no layer camera frame and no theater frame in 2 s)');
   });
 
+  it('D8.1: a one-eye frame saves only the eye it has (as -L.jpg), its header with the one eye, right: null in the index; it plays back mono', async () => {
+    const dir = tmp();
+    const s = createFrameSaver({ dir, folder: 'one', settings: {}, now: () => 1_000_000 });
+    const one = (n: number) => camFrame(n, n * 33_333, { eyes: [{ ...GEO, data: Buffer.from([0xff, 0xd8, n, 9]) }] });
+    expect(s.senderFrame(one(1))).toBe(true);
+    expect(s.senderFrame(one(2))).toBe(true);
+    expect(s.senderFrame(camFrame(3, 99_999, { eyes: [] }))).toBe(false); // no eye at all: nothing to save
+    const index = (await s.finish())!;
+    expect(readdirSync(dir).sort()).toEqual(['0000-L.jpg', '0000.json', '0001-L.jpg', '0001.json', 'clip.json']);
+    expect(readFileSync(join(dir, '0001-L.jpg'))).toEqual(Buffer.from([0xff, 0xd8, 2, 9]));
+    expect(JSON.parse(readFileSync(join(dir, '0000.json'), 'utf8'))).toMatchObject({ n: 1, w: 720, h: 1440, eyes: [GEO] });
+    expect(index.sender).toMatchObject({ count: 2, eye: { width: 720, height: 1440 } });
+    expect(index.sender!.frames[0]).toMatchObject({ i: 0, left: '0000-L.jpg', right: null, header: '0000.json' });
+    const play = loadClip(dir, 'sender')!;
+    expect(play.frames.map((f) => [f.left, f.right, f.stereo, f.eyes])).toEqual([
+      ['0000-L.jpg', null, 'mono', null],
+      ['0001-L.jpg', null, 'mono', null],
+    ]);
+  });
+
   it('copies the eyes at once: the pipe buffer they view may be reused', async () => {
     const root = tmp();
     const dir = join(root, 'copy');
@@ -151,10 +171,11 @@ describe('the frame saver (D7.6.3)', () => {
 });
 
 describe('saved clips read back (D7.6 bench)', () => {
-  it('frame ordering by name: sender frames need both eyes, the header optional; receiver frames; the rest ignored', () => {
-    const o = orderFrames(['0010-L.jpg', '0002-L.jpg', '0002-R.jpg', '0002.json', '0010-R.jpg', '0003-L.jpg', 'in-0001.jpg', 'in-0000.jpg', 'in-0000.json', 'clip.json', 'notes.txt']);
+  it('frame ordering by name: sender frames by their -L.jpg (with -R.jpg for both eyes, D8.1: without for one), the header optional; receiver frames; the rest ignored', () => {
+    const o = orderFrames(['0010-L.jpg', '0002-L.jpg', '0002-R.jpg', '0002.json', '0010-R.jpg', '0003-L.jpg', '0004-R.jpg', 'in-0001.jpg', 'in-0000.jpg', 'in-0000.json', 'clip.json', 'notes.txt']);
     expect(o.sender).toEqual([
       { i: 2, left: '0002-L.jpg', right: '0002-R.jpg', header: '0002.json' },
+      { i: 3, left: '0003-L.jpg', right: null, header: null },
       { i: 10, left: '0010-L.jpg', right: '0010-R.jpg', header: null },
     ]);
     expect(o.receiver).toEqual([
@@ -166,6 +187,9 @@ describe('saved clips read back (D7.6 bench)', () => {
   it('clip.json is checked: format, version, safe file names', () => {
     const ok = { format: 'castcade-frames', version: 1, folder: 'x', sender: { frames: [{ i: 0, n: 0, t: 0, left: '0000-L.jpg', right: '0000-R.jpg', header: '0000.json' }] }, receiver: null };
     expect(parseClipIndex(JSON.stringify(ok))).not.toBeNull();
+    // D8.1: a one-eye frame lists right: null; anything else for right is refused.
+    expect(parseClipIndex(JSON.stringify({ ...ok, sender: { frames: [{ ...ok.sender.frames[0], right: null }] } }))).not.toBeNull();
+    expect(parseClipIndex(JSON.stringify({ ...ok, sender: { frames: [{ ...ok.sender.frames[0], right: 7 }] } }))).toBeNull();
     expect(parseClipIndex('not json')).toBeNull();
     expect(parseClipIndex(JSON.stringify({ ...ok, version: 2 }))).toBeNull();
     expect(parseClipIndex(JSON.stringify({ ...ok, sender: { frames: [{ ...ok.sender.frames[0], left: '..\\..\\secret.jpg' }] } }))).toBeNull();
@@ -201,13 +225,16 @@ describe('saved clips read back (D7.6 bench)', () => {
     }
     await s.finish();
     rmSync(join(dir, '0001-R.jpg'));
+    rmSync(join(dir, '0002-L.jpg'));
     const send = loadClip(dir, 'sender')!;
     expect(send.fps).toBe(20);
+    // D8.1: a frame whose -R.jpg is gone plays as one eye (mono, no eye geometry); one whose -L.jpg is gone is not played.
     expect(send.frames.map((f) => [f.i, f.left, f.right, f.width, f.height, f.stereo])).toEqual([
       [0, '0000-L.jpg', '0000-R.jpg', 720, 1440, 'sbs'],
-      [2, '0002-L.jpg', '0002-R.jpg', 720, 1440, 'sbs'],
+      [1, '0001-L.jpg', null, 720, 1440, 'mono'],
     ]);
     expect(send.frames[0]!.eyes).toEqual([GEO, GEO]);
+    expect(send.frames[1]!.eyes).toBeNull();
     const recv = loadClip(dir, 'receiver')!;
     expect(recv.frames.map((f) => [f.left, f.right, f.width, f.height, f.stereo])).toEqual([
       ['in-0000.jpg', null, 1280, 720, 'mono'],

@@ -413,8 +413,8 @@ export function Match({ state }: { state: CastcadeState }) {
           <label className="field">
             <span>Camera</span>
             <select value={st.settings.cameraSource} onChange={(e) => setView({ cameraSource: e.target.value === 'layer' ? 'layer' : 'screen' })}>
+              <option value="layer">VR layer (the default: no preview window needed)</option>
               <option value="screen">Screen capture of the VR preview window</option>
-              <option value="layer">VR layer (experimental)</option>
             </select>
             <small>
               VR layer: Castcade reads the picture from VPX's headset view, no preview window needed (it needs the layer from this Castcade version in VPX:

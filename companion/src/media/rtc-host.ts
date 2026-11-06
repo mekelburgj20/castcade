@@ -33,7 +33,11 @@
  * second while another player is up). A 1 s tick and every camera status run `cameraWatch`; on a fallback the camera
  * is stopped, logged (`media: camera: back to the screen capture: <reason>`) and the screen capture picked as usual.
  * Nothing falls forward to the layer again within the match, except the player choosing it again on the Match tab
- * (taken between balls). With the setting on `screen` (the default) none of this runs: the capture path, its log lines
+ * (taken between balls). D8.1 (2026-11-05, ADR 0009): the layer is the default on VR rigs and asks for ONE eye
+ * (`setCameraEyes`, match settings `cameraEyes`, `one` by default: the request's `eye: 'left'`); the capture is then
+ * mono (`cameraCapture(w, h, 'mono')`), each frame carries that eye alone (`cameraPageFrame` keeps the asked eye out
+ * of a two-eye frame from a layer that predates `eye`), and the receivers show it as the flat screen. `both` is the
+ * 0.2.35 side-by-side path, untouched. With the setting on `screen` none of this runs: the capture path, its log lines
  * and its page messages are those of 0.2.32.
  *
  * The VR test bench and saved frames (D7.6, D7.6.3, 2026-11-03; alpha-match.md §5b): `startBench` opens the panel page
@@ -48,8 +52,8 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import { cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, type CameraDecision, type CameraDecisionInput, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
-import type { LayerCameraEyeGeometry, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
+import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
+import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -114,6 +118,12 @@ export interface RtcHost extends MatchMedia {
    * again with the new box (the layer switches between frames; the capture's size follows the next frame).
    */
   setCameraView(view: CameraViewSetting): void;
+  /**
+   * D8.1 (2026-11-05): the Match tab's Camera eyes (match settings `cameraEyes`): one eye as a flat picture (the
+   * default) or both side by side. Applied live like the view: a running match camera and a running bench are asked
+   * again; a running match capture is replaced (its shape and declaration change) and the page told.
+   */
+  setCameraEyes(setting: CameraEyesSetting): void;
   /**
    * B22 (2026-10-31): list the microphones before a match (the panel page lists them only once it opens, so a tester
    * saw "Windows default" alone at Host / Join). A hidden page in the panel's partition enumerates them, opening the
@@ -447,16 +457,21 @@ function isSignal(v: unknown): v is { to: MatchPlayerId; signal: MediaSignal } {
 
 const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** D7.5.1: a layer camera frame as the page gets it: the two JPEG views (no copy here) and the eyes' geometry. */
-export function cameraPageFrame(f: LayerCameraFrame): PanelCameraFrame | null {
-  const [l, r] = f.eyes;
-  if (!l || !r || f.eyes.length !== 2) return null;
-  const geometry = (e: typeof l) => ({ fov: e.fov, rect: e.rect, render: e.render });
-  return { n: f.n, width: f.width, height: f.height, left: l.data, right: r.data, eyes: [geometry(l), geometry(r)] };
+/**
+ * D7.5.1: a layer camera frame as the page gets it: the two JPEG views (no copy here) and the eyes' geometry. D8.1
+ * (2026-11-05): with `eye`, that one view only (out of a one-eye frame, or picked from a two-eye frame: the other eye
+ * is dropped here, before the IPC copy), the other null.
+ */
+export function cameraPageFrame(f: LayerCameraFrame, eye: LayerCameraEyeSide | null = null): PanelCameraFrame | null {
+  const picked = cameraFrameEyes(f.eyes, eye);
+  if (!picked) return null;
+  const geometry = (e: LayerCameraFrame['eyes'][number]) => ({ fov: e.fov, rect: e.rect, render: e.render });
+  const eyes = [picked.left, picked.right].filter((e) => e !== null).map(geometry);
+  return { n: f.n, width: f.width, height: f.height, left: picked.left?.data ?? null, right: picked.right?.data ?? null, eyes };
 }
 
-/** D7.5.1: what the `capture:` lines say about a layer camera capture: `from the VR layer camera, 1440x1440 (sbs)`. */
-export const cameraWords = (c: Pick<PanelCapture, 'out'>): string => `from the VR layer camera, ${c.out.width}x${c.out.height} (sbs)`;
+/** D7.5.1: what the `capture:` lines say about a layer camera capture: `from the VR layer camera, 1440x1440 (sbs)`; D8.1: `(mono)` for one eye. */
+export const cameraWords = (c: Pick<PanelCapture, 'out' | 'stereo'>): string => `from the VR layer camera, ${c.out.width}x${c.out.height} (${c.stereo === 'mono' ? 'mono' : 'sbs'})`;
 
 /** D7.4.3: the declared stereo for the log. */
 export const stereoWords = (s: VrStereo | null | undefined): string =>
@@ -553,6 +568,14 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let cameraSetting: CameraSourceSetting = 'screen';
   /** D7.5.9: the box's shape (`window` here until the match host says, so a bare RtcHost asks as 0.2.34 did). */
   let cameraView: CameraViewSetting = 'window';
+  /** D8.1: one eye (the default, as the setting's) or both; the match host says at start and on every change. */
+  let cameraEyes: CameraEyesSetting = 'one';
+  /** D8.1: the box's height per eye: the one knob a quality preset (D8.2) will turn; the request path reads only this. */
+  const cameraEyeHeight = LAYER_CAMERA_EYE_HEIGHT;
+  /** D8.1: the request for the settings in force (view, eyes, height): the match camera, the bench and the frames saver all ask with it. */
+  const cameraRequest = () => cameraRequestFor({ view: cameraView, eye: cameraEyeFor(cameraEyes), eyeHeight: cameraEyeHeight });
+  /** D8.1: what a camera capture declares for the eyes setting: one eye is a flat picture, both are side by side. */
+  const cameraStereo = (): VrStereo => (cameraEyeFor(cameraEyes) ? 'mono' : 'sbs');
   let vrRuntime: CameraDecisionInput['runtime'] = null;
   /** The camera feeding this attach (null: the screen capture path, as before D7.5.1). */
   type CameraRun = { gen: number; askedAt: number; connectedAt: number | null; off: Array<() => void>; timer: ReturnType<typeof setInterval>; lastPostAt: number };
@@ -1104,6 +1127,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const cameraUsable = (l: VrOverlay | null): l is VrOverlay & Required<Pick<VrOverlay, 'setCamera' | 'onCameraFrame' | 'cameraStatus' | 'onCameraStatus'>> =>
     !!l && !!l.setCamera && !!l.onCameraFrame && !!l.cameraStatus && !!l.onCameraStatus;
   /**
+   * D8.1: what the `media: camera:` lines say was asked: `one eye (left), its whole render in a 1440x1440 box at 30 fps`
+   * or `both eyes, each eye's whole render in a 1440x1440 box at 30 fps` (`in a 720x1440 box` for the window view).
+   */
+  const cameraAskWords = (req: ReturnType<typeof cameraRequest>): string =>
+    `${cameraEyesWords(req)}, ${req.eye ? 'its' : "each eye's"}${req.whole ? ' whole render' : ' view'} in a ${req.width}x${req.height} box at ${req.fps} fps`;
+  /**
    * The source for this attach: null with the setting on `screen` (nothing said: the 0.2.32 path), else the decision,
    * logged. The screen whenever the layer cannot be the camera, or already failed in this match.
    */
@@ -1128,8 +1157,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** The camera's size changed (or its first frame came): the capture main holds follows, logged once per change. */
   const cameraSize = (width: number, height: number): void => {
     if (!capture || !isCameraCapture(capture)) return;
-    if (capture.out.width === width * 2 && capture.out.height === height) return;
-    capture = cameraCapture(width, height);
+    // D8.1: the capture keeps its declaration (mono for one eye, sbs for both); only the box follows the frame.
+    const stereo: VrStereo = capture.stereo === 'mono' ? 'mono' : 'sbs';
+    if (capture.out.width === width * (stereo === 'mono' ? 1 : 2) && capture.out.height === height) return;
+    capture = cameraCapture(width, height, stereo);
     announced = capture;
     log.info(`media: capture: ${cameraWords(capture)}`);
     log.info(sendingLine(capture));
@@ -1137,7 +1168,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   };
   const cameraFrame = (c: CameraRun, f: LayerCameraFrame): void => {
     if (cam !== c || !attached) return;
-    const pf = cameraPageFrame(f);
+    // D8.1: one eye wanted: that eye only goes to the page (a two-eye frame from an older layer loses the other here).
+    const pf = cameraPageFrame(f, cameraEyeFor(cameraEyes));
     if (!pf) return;
     cameraSize(f.width, f.height);
     if (!ready || !attachSent) return;
@@ -1159,8 +1191,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const startCamera = (gen: number, reason: string): void => {
     if (!cameraUsable(cameraLayer)) return;
     const layer = cameraLayer;
-    const req = cameraRequestFor({ view: cameraView });
-    log.info(`media: camera: the VR layer (${reason}): each eye${req.whole ? "'s whole render" : ''} in a ${req.width}x${req.height} box at ${req.fps} fps; no screen capture`);
+    const req = cameraRequest();
+    log.info(`media: camera: the VR layer (${reason}): ${cameraAskWords(req)}; no screen capture`);
     camSlot.reset();
     const run: CameraRun = { gen, askedAt: Date.now(), connectedAt: null, off: [], timer: setInterval(() => checkCamera(run), CAMERA_WATCH_MS), lastPostAt: 0 };
     cam = run;
@@ -1168,7 +1200,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     run.off.push(layer.onCameraStatus(() => checkCamera(run)));
     captureSrc = null;
     captureError = null;
-    capture = cameraCapture(req.width, req.height);
+    capture = cameraCapture(req.width, req.height, cameraStereo());
     layer.setCamera(req);
     void (async () => {
       try {
@@ -1253,6 +1285,11 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const out = benchSlot.offer(f, Date.now());
     if (out) postBench(out);
   };
+  /** D8.1: a camera page frame as a bench frame: two eyes side by side, or the one eye (whichever it is) as a mono picture. */
+  const benchFrameOf = (pf: PanelCameraFrame): PanelBenchFrame => {
+    const both = !!pf.left && !!pf.right;
+    return { n: pf.n, width: pf.width, height: pf.height, left: (pf.left ?? pf.right)!, right: both ? pf.right : null, stereo: both ? 'sbs' : 'mono', eyes: both ? pf.eyes : null };
+  };
   /** One saved frame read from the clip folder (null when a file went missing: that frame is skipped). */
   const clipFrame = (run: BenchRun, i: number): PanelBenchFrame | null => {
     const p = run.cfg.clip?.frames[i];
@@ -1311,11 +1348,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     }
     if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
     if (o.source === 'live' && cameraUsable(cameraLayer)) {
-      const req = cameraRequestFor({ view: cameraView });
+      const req = cameraRequest();
       run.off.push(
         cameraLayer.onCameraFrame((f) => {
-          const pf = benchRun === run ? cameraPageFrame(f) : null;
-          if (pf) offerBench({ ...pf, stereo: 'sbs' });
+          // D8.1: the bench follows the eyes setting too: one eye plays as a mono frame (the flat screen), both as before.
+          const pf = benchRun === run ? cameraPageFrame(f, cameraEyeFor(cameraEyes)) : null;
+          if (pf) offerBench(benchFrameOf(pf));
         }),
       );
       cameraLayer.setCamera(req);
@@ -1566,7 +1604,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const saver = createFrameSaver({
         dir: o.dir,
         folder: o.folder,
-        settings: { ...o.settings, cameraRequest: cam || camOn ? cameraRequestFor({ view: cameraView }) : null, feedMax: VIDEO_FEED_MAX, previewStereo: previewSetting, cameraSetting, capture: capture ? { label: capture.label, out: capture.out, stereo: capture.stereo ?? null } : null },
+        settings: { ...o.settings, cameraRequest: cam || camOn ? cameraRequest() : null, cameraEyes, feedMax: VIDEO_FEED_MAX, previewStereo: previewSetting, cameraSetting, capture: capture ? { label: capture.label, out: capture.out, stereo: capture.stereo ?? null } : null },
       });
       saving = saver;
       const off = camOn && cameraUsable(cameraLayer) ? cameraLayer.onCameraFrame((f) => saver.senderFrame(f)) : null;
@@ -1597,9 +1635,29 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (!cameraUsable(cameraLayer)) return;
       const live = cam !== null || benchRun?.cfg.source === 'live';
       if (!live) return;
-      const req = cameraRequestFor({ view });
-      log.info(`media: camera: ${cameraViewWords(req)} on the Match tab: each eye${req.whole ? "'s whole render" : ''} in a ${req.width}x${req.height} box at ${req.fps} fps`);
+      const req = cameraRequest();
+      log.info(`media: camera: ${cameraViewWords(req)} on the Match tab: ${cameraAskWords(req)}`);
       cameraLayer.setCamera(req);
+    },
+    // D8.1: the eyes change the request and the capture's shape and declaration, live: the layer is asked again and a
+    // running match capture is replaced (the page reopens its camera mode on the new capture; the canvas track stays).
+    setCameraEyes(setting) {
+      if (setting === cameraEyes) return;
+      cameraEyes = setting;
+      if (!cameraUsable(cameraLayer)) return;
+      const live = cam !== null || benchRun?.cfg.source === 'live';
+      if (!live) return;
+      const req = cameraRequest();
+      log.info(`media: camera: ${cameraEyesWords(req)} on the Match tab: ${cameraAskWords(req)}`);
+      cameraLayer.setCamera(req);
+      if (!cam || !attached || !capture || !isCameraCapture(capture)) return;
+      camSlot.reset();
+      capture = cameraCapture(req.width, req.height, cameraStereo());
+      announced = capture;
+      log.info(`media: capture ${capture.label} ready, ${stereoWords(capture.stereo)}`);
+      log.info(sendingLine(capture));
+      toPage(PANEL_CHANNELS.capture, capture);
+      emitStatus();
     },
     setCameraSource(setting) {
       if (setting === cameraSetting) return;

@@ -336,7 +336,45 @@ what the code changed in the contract.
   side`, `media: sending 1440x1440 sbs at 8.0 Mbps`, `media: capture: from the VR layer camera, WxH (sbs)` when the
   first frame's size differs from the request (once per change), and every 10 s while up `media: capture: N frames in
   10 s from the VR layer camera, 1440x1440 (sbs)[, K unreadable][, D dropped before the panel (newest wins)], sent …`.
-  With Camera = screen (the default) none of these lines, messages or code paths occur.
+  With Camera = screen none of these lines, messages or code paths occur.
+
+### D8.1 (2026-11-05, ADR 0009): the one-eye camera, the layer as the default
+
+Spectating is 2D (ADR 0009): the player up is shown as one flat eye. The two-eye contract above stays in the code as
+shipped in 0.2.35 (Camera eyes = **both**) and gets no more work; what changed:
+
+- **The request asks for one eye.** `LayerCameraRequest.eye?: 'left' | 'right'` rides on the control's `camera`
+  object (`"camera": {"width": 1440, "height": 1440, "fps": 30, "whole": true, "eye": "left"}`); the companion asks
+  for `left` (`cameraEyeFor('one')`, `LAYER_CAMERA_DEFAULT_EYE`). A layer that honours it (0.5.3) sends `CVF1`
+  frames whose `eyes` array has ONE entry, that eye, with its fov / rect / render as before; a layer that does not
+  know the field (0.5.2) sends both. `parseCameraFrame` (`vr-layer.ts`) accepts one or two eyes; `cameraFrameEyes`
+  (`layer-camera.ts`) picks: one wanted and two came → the asked eye (left = `eyes[0]`), the other dropped in main
+  before the IPC copy; one came → taken as the asked eye (a one-entry frame carries no side). A one-eye frame while
+  both are wanted is not a frame for the page. The box is the same per eye whatever the count (`cameraRequestFor`'s
+  `eyeHeight`, 1440, is the one knob D8.2's quality presets will turn; `rtc-host.ts` reads it through one
+  `cameraRequest()`), so a 3072x3264 eye gives 1354x1440.
+- **A mono camera capture.** `cameraCapture(w, h, 'mono')` is a `w x h` canvas declared `mono`; `PanelCameraFrame`
+  carries `left` or `right` (the other null) and `cameraFrameSize` says `{width, height, stereo}`; `drawCamera` draws
+  the one eye at (0, 0) and `noteStereo('mono', null)`: no eye geometry, so the receivers place it as the flat theater
+  screen (`vr-layer: mode theater (mono …)`, `theater: feeding 1354x1440 (mono)`), never from the sender's eyes. The
+  receiver side needed no change: `stereoSignal('mono', …)` already drops the eyes, `peerEyes` is null for a mono
+  peer, `feedOut` feeds mono. `VIDEO_FEED_MAX.mono` is 1920x1440 now (was 1080 high) so the portrait one-eye picture
+  reaches the layer unscaled; `videoBitrateFor` rates 1354x1440 mono by the pixel rule, 7.6 Mbps (720x1440: 4.0).
+- **Settings** (`match-setup.ts`): `cameraSource` defaults to **`layer`** (the 2026-11-04 run captured the tester's
+  PuP DMD window over his preview; the layer needs no desktop window); new `cameraEyes: 'one' | 'both'` (default
+  `one`; the Match tab's **Camera eyes**, applied live like the view: `RtcHost.setCameraEyes`, the layer re-asked and a
+  running match capture replaced); new `settingsVersion` (2). `loadMatchSettings` migrates a `match.json` without one
+  (0.2.35 and before) to `cameraSource: 'layer'`, `cameraEyes: 'one'` once (`match: match.json from before 0.2.36 …`)
+  and the match host saves it at version 2, so the testers who set the screen capture by hand for the 2D test get the
+  layer camera; their later choices stand. `decideCamera`'s fallbacks (PC rig, SteamVR, a protocol-2 layer, refusals,
+  the watch) are unchanged and still logged.
+- **Logs.** `vr-layer: mode … (…, camera 1440x1440 at 30 fps, whole view, one eye (left))` / `…, both eyes)`;
+  `media: camera: the VR layer (…): one eye (left), its whole render in a 1440x1440 box at 30 fps; no screen capture`
+  / `both eyes, each eye's whole render in …`; `media: capture VR layer camera ready, one picture`; `media: sending
+  1354x1440 mono at 7.6 Mbps`; `media: capture: from the VR layer camera, 1354x1440 (mono)`. The VR report prints
+  `- Camera eyes: one (left) | both`. The frames saver writes a one-eye frame as `NNNN-L.jpg` only (whichever eye it
+  is; the index lists `right: null`, the header's `eyes` has one entry) and the bench plays it back as a mono picture;
+  the bench on "my own table, live" follows the eyes setting too.
 
 ## 5b. The VR test bench and saved frames (D7.6, D7.6.3, 2026-11-03)
 

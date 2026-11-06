@@ -153,9 +153,11 @@ const pair = (v: unknown): [unknown, unknown] => (Array.isArray(v) && v.length =
  * leave the flattened list so each fact is on one line.
  */
 export function windowSettingsLines(settings: Record<string, unknown>): { rest: Record<string, unknown>; lines: string[] } {
-  const { cameraView, windowDepthM, eyeOffsetDeg, softEdge, ...rest } = settings;
+  const { cameraView, cameraEyes, windowDepthM, eyeOffsetDeg, softEdge, ...rest } = settings;
   const lines: string[] = [];
   if ('cameraView' in settings) lines.push(`- Camera view: ${typeof cameraView === 'string' ? cameraView : 'unknown'}`);
+  // D8.1 (2026-11-05): `Camera eyes: one (left) | both`.
+  if ('cameraEyes' in settings) lines.push(`- Camera eyes: ${cameraEyes === 'one' ? 'one (left)' : cameraEyes === 'both' ? 'both' : 'unknown'}`);
   if ('windowDepthM' in settings) lines.push(`- Window depth: ${metres(windowDepthM)}`);
   if ('eyeOffsetDeg' in settings) {
     const [l, r] = pair(eyeOffsetDeg);

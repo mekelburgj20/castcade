@@ -48,10 +48,21 @@ export interface MatchSettings {
   theaterScale: number;
   /**
    * D7.5 (2026-11-02): where a VR sender's picture comes from (media/layer-camera.ts): `screen`, the screen capture of
-   * VPX's VR preview window (the default); `layer`, the Castcade OpenXR layer copies the eye views out of VPX's frame
-   * (experimental; falls back to the screen capture on PC rigs, SteamVR rigs and a layer that cannot read the frame).
+   * VPX's VR preview window; `layer`, the Castcade OpenXR layer copies the eye views out of VPX's frame (falls back to
+   * the screen capture on PC rigs, SteamVR rigs and a layer that cannot read the frame). D8.1 (2026-11-05, ADR 0009):
+   * `layer` is the default (no desktop window is needed; the 2026-11-04 run captured a PuP DMD over the preview).
    */
   cameraSource: 'screen' | 'layer';
+  /**
+   * D8.1 (2026-11-05, ADR 0009: spectating is 2D): what the layer camera sends: `one`, one eye (the left) as a flat
+   * picture (the default); `both`, both eyes side by side (the stereo window of 0.2.35, kept as shipped).
+   */
+  cameraEyes: 'one' | 'both';
+  /**
+   * D8.1: the settings' version, for one-time migrations at load (`loadMatchSettings`): absent or 1 = a `match.json`
+   * from 0.2.35 or before (its `cameraSource` is set to `layer` and `cameraEyes` to `one` once); 2 = current.
+   */
+  settingsVersion: number;
   /**
    * D7.5.9 (2026-11-04): what the layer camera crops per eye: `whole`, each eye's whole render (the frame's edges land
    * at the lens edges, so no frame sits in the shared field: the owner's 0.2.34 finding was the window's frame
@@ -85,7 +96,9 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   tableSendMine: true,
   tableHearOthers: true,
   theaterScale: 1,
-  cameraSource: 'screen',
+  cameraSource: 'layer',
+  cameraEyes: 'one',
+  settingsVersion: 2,
   cameraView: 'whole',
   windowDepthM: null,
   eyeOffsetDeg: [0, 0],
@@ -93,6 +106,9 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   // A12 (2026-11-05)
   preMatchPlay: 'free',
 };
+
+/** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
+export const MATCH_SETTINGS_VERSION = 2;
 
 export function cleanPort(v: unknown): number | null {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
@@ -150,6 +166,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (typeof p.tableHearOthers === 'boolean') next.tableHearOthers = p.tableHearOthers;
   if ('theaterScale' in p) next.theaterScale = cleanTheaterScale(p.theaterScale) ?? current.theaterScale;
   if (p.cameraSource === 'screen' || p.cameraSource === 'layer') next.cameraSource = p.cameraSource;
+  // D8.1: the eyes: two words, anything else keeps the current one. `settingsVersion` is never patched: the loader owns it.
+  if (p.cameraEyes === 'one' || p.cameraEyes === 'both') next.cameraEyes = p.cameraEyes;
   if (p.cameraView === 'whole' || p.cameraView === 'window') next.cameraView = p.cameraView;
   // D7.5.10: a depth outside the range (or null, or not a number) is infinity: the knob's own "as rendered".
   if ('windowDepthM' in p) next.windowDepthM = cleanWindowDepth(p.windowDepthM);
@@ -160,13 +178,35 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   return next;
 }
 
+/** The settings in `match.json`, migrated (D8.1); `loadMatchSettings` says whether they were. */
 export function readMatchSettings(text: string | null): MatchSettings {
-  if (!text) return { ...DEFAULT_MATCH_SETTINGS };
+  return loadMatchSettings(text).settings;
+}
+
+/**
+ * D8.1 (2026-11-05): `match.json` read, with the one-time migrations its `settingsVersion` calls for. A file without
+ * one (0.2.35 and before: the testers set Camera to the screen capture by hand for the 2D test, and would otherwise keep
+ * the old camera; and `cameraEyes` did not exist) gets `cameraSource: 'layer'` and `cameraEyes: 'one'` once and is
+ * saved at version 2 by the match host; `migrated` is the sentence for the log, or null when nothing changed. No file,
+ * or an unreadable one: the defaults, which are already current.
+ */
+export function loadMatchSettings(text: string | null): { settings: MatchSettings; migrated: string | null } {
+  if (!text) return { settings: { ...DEFAULT_MATCH_SETTINGS }, migrated: null };
+  let raw: unknown;
   try {
-    return patchMatchSettings(DEFAULT_MATCH_SETTINGS, JSON.parse(text));
+    raw = JSON.parse(text);
   } catch {
-    return { ...DEFAULT_MATCH_SETTINGS };
+    return { settings: { ...DEFAULT_MATCH_SETTINGS }, migrated: null };
   }
+  const settings = patchMatchSettings(DEFAULT_MATCH_SETTINGS, raw);
+  const v = typeof raw === 'object' && raw !== null ? (raw as { settingsVersion?: unknown }).settingsVersion : undefined;
+  const version = typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : 1;
+  settings.settingsVersion = MATCH_SETTINGS_VERSION;
+  if (version >= 2) return { settings, migrated: null };
+  // Version 1 → 2 (ADR 0009): the layer camera, one eye, whatever the file said.
+  settings.cameraSource = 'layer';
+  settings.cameraEyes = 'one';
+  return { settings, migrated: `match.json from before 0.2.36 (settings version ${version}): camera set to the VR layer, one eye (ADR 0009); saved as version ${MATCH_SETTINGS_VERSION}` };
 }
 
 export function writeMatchSettings(s: MatchSettings): string {

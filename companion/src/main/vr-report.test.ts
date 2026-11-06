@@ -104,6 +104,10 @@ describe('vr-report (D7.6.2)', () => {
     expect(md).not.toContain('window.tune');
     expect(windowSettingsLines({ theaterScale: 1, windowDepthM: 1.5, eyeOffsetDeg: [-1, 0.2], softEdge: 0 })).toEqual({ rest: { theaterScale: 1 }, lines: ['- Window depth: 1.5 m', '- Vertical offset: left -1.0°, right +0.2°', '- Soft edge: 0%'] });
     expect(windowSettingsLines({ theaterScale: 1 })).toEqual({ rest: { theaterScale: 1 }, lines: [] });
+    // D8.1: the camera's eyes in words.
+    expect(windowSettingsLines({ cameraEyes: 'one' })).toEqual({ rest: {}, lines: ['- Camera eyes: one (left)'] });
+    expect(windowSettingsLines({ cameraEyes: 'both' }).lines).toEqual(['- Camera eyes: both']);
+    expect(windowSettingsLines({ cameraEyes: 3 }).lines).toEqual(['- Camera eyes: unknown']);
     // An older layer's window block (no tune / feather): the block prints as before.
     expect(windowTuneLines({ scale: 1 })).toEqual({ rest: { scale: 1 }, lines: [] });
     expect(windowTuneLines({ scale: 1, tune: null, feather: null })).toEqual({ rest: { scale: 1 }, lines: ['- window depth: infinity (default)', '- vertical offset: none (default)', '- feather: none (default)'] });

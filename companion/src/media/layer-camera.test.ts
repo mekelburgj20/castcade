@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  cameraEyeFor,
+  cameraEyesWords,
   cameraFallback,
+  cameraFrameEyes,
   cameraRequestFor,
   cameraViewWords,
   cameraWatch,
   createFrameSlot,
   decideCamera,
+  LAYER_CAMERA_DEFAULT_EYE,
   LAYER_CAMERA_DEFAULT_REQUEST,
   LAYER_CAMERA_FALLBACK_MS,
   LAYER_CAMERA_PIPE_WAIT_MS,
@@ -66,6 +70,38 @@ describe('cameraRequestFor (D7.5)', () => {
     expect(cameraRequestFor({ fps: 0 }).fps).toBe(1);
     expect(cameraRequestFor({ fps: 144 }).fps).toBe(60);
     expect(cameraRequestFor({ fps: 24.4 }).fps).toBe(24);
+  });
+
+  it('D8.1: `eye` asks for one eye (the request carries it, the box is the same per eye); none or null asks for both', () => {
+    expect(cameraRequestFor({ view: 'whole', eye: 'left' })).toEqual({ width: 1440, height: 1440, fps: 30, whole: true, eye: 'left' });
+    expect(cameraRequestFor({ eye: 'right' })).toEqual({ width: 720, height: 1440, fps: 30, eye: 'right' });
+    expect(cameraRequestFor({ eye: null })).toEqual({ width: 720, height: 1440, fps: 30 });
+    expect('eye' in cameraRequestFor({ view: 'whole' })).toBe(false);
+    // The eye height stays the one knob (D8.2 will turn it): a 1080 box per eye, one eye asked.
+    expect(cameraRequestFor({ view: 'whole', eye: 'left', eyeHeight: 1080 })).toEqual({ width: 1080, height: 1080, fps: 30, whole: true, eye: 'left' });
+  });
+});
+
+describe('the one-eye camera (D8.1, 2026-11-05)', () => {
+  it('the setting picks the eye: one = the left eye, both = none; the words for the log', () => {
+    expect(LAYER_CAMERA_DEFAULT_EYE).toBe('left');
+    expect(cameraEyeFor('one')).toBe('left');
+    expect(cameraEyeFor('both')).toBeNull();
+    expect(cameraEyesWords({ eye: 'left' })).toBe('one eye (left)');
+    expect(cameraEyesWords('right')).toBe('one eye (right)');
+    expect(cameraEyesWords({})).toBe('both eyes');
+    expect(cameraEyesWords(null)).toBe('both eyes');
+  });
+
+  it('the eyes out of a frame: both wanted needs two; one wanted takes it out of two (left = eyes[0]) or the single entry of a one-eye frame', () => {
+    expect(cameraFrameEyes(['L', 'R'], null)).toEqual({ left: 'L', right: 'R' });
+    expect(cameraFrameEyes(['L'], null)).toBeNull();
+    expect(cameraFrameEyes(['L', 'R'], 'left')).toEqual({ left: 'L', right: null });
+    expect(cameraFrameEyes(['L', 'R'], 'right')).toEqual({ left: null, right: 'R' });
+    expect(cameraFrameEyes(['X'], 'left')).toEqual({ left: 'X', right: null }); // a 0.5.3 layer sent the eye asked
+    expect(cameraFrameEyes(['X'], 'right')).toEqual({ left: null, right: 'X' });
+    expect(cameraFrameEyes([], 'left')).toBeNull();
+    expect(cameraFrameEyes(['A', 'B', 'C'], 'left')).toBeNull();
   });
 });
 

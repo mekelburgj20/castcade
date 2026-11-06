@@ -28,7 +28,8 @@
  *     byte for byte what it was); the layer's answers come back on the same pipe as messages shaped magic + u32
  *     length + payload (`createLayerReader` cuts them out of the byte stream, whatever the chunking, and resyncs on
  *     garbage): `CVS1` status (on / off / refused, `cameraStatus`) and `CVF1` frames (`onCameraFrame`: both eyes as
- *     JPEG with their fov and crop). Counters go to the log every 10 s while the camera is asked, like the capture's;
+ *     JPEG with their fov and crop; D8.1, 2026-11-05: or the one eye the request's `eye` asked for, from layer 0.5.3
+ *     on). Counters go to the log every 10 s while the camera is asked, like the capture's;
  *   - D7.6.2 (2026-11-03), the session report: a `CVS1` whose JSON has `"kind": "session"` is the layer's report on
  *     the runtime, the system and VPX's frames (it sends one after every connection and on request); `requestSession`
  *     asks for a fresh one with `report: true` on a control (a request, so it never enters the dedup of controls);
@@ -65,6 +66,7 @@ import {
   type VrViewMode,
   type VrWindowTune,
 } from './match-media-types.js';
+import { cameraEyesWords } from './layer-camera.js';
 import { controlMessage, createPanelFrameWriter, type FrameStream } from './panel-frame-writer.js';
 import type { VrOverlayPathInput } from './vr-overlay.js';
 import type { LayerAge } from './vr-layer-stage.js';
@@ -129,8 +131,9 @@ const isNums = (v: unknown, n: number): v is number[] => Array.isArray(v) && v.l
 
 /**
  * D7.5: a CVF1 payload (vr-layer/README.md "The camera"): u16 jsonLength, the JSON header, the eyes' JPEG bytes back to
- * back. Null when it does not parse (a length that does not add up, a header without two eyes). The eyes' `data` are
- * views into `body` (no copy): the caller hands over the buffer.
+ * back. Null when it does not parse (a length that does not add up, a header with no eye or more than two). The eyes'
+ * `data` are views into `body` (no copy): the caller hands over the buffer. D8.1 (2026-11-05): one eye is a frame too
+ * (a layer honouring the request's `eye` sends only that one).
  */
 export function parseCameraFrame(body: Buffer): LayerCameraFrame | null {
   if (body.length < 2) return null;
@@ -144,7 +147,7 @@ export function parseCameraFrame(body: Buffer): LayerCameraFrame | null {
   } catch {
     return null;
   }
-  if (h.enc !== 'jpeg' || !isInt(h.n) || !isInt(h.t) || !isInt(h.w, 1) || !isInt(h.h, 1) || !Array.isArray(h.eyes) || h.eyes.length !== 2) return null;
+  if (h.enc !== 'jpeg' || !isInt(h.n) || !isInt(h.t) || !isInt(h.w, 1) || !isInt(h.h, 1) || !Array.isArray(h.eyes) || h.eyes.length < 1 || h.eyes.length > 2) return null;
   const eyes: LayerCameraEye[] = [];
   let at = 2 + jsonLen;
   for (const raw of h.eyes as unknown[]) {
@@ -281,8 +284,9 @@ export function createLayerReader(): LayerReader {
   };
 }
 
+// D8.1: `eye` is part of the request (one eye asked or both), so a change of it reaches the layer.
 const sameRequest = (a: LayerCameraRequest | null, b: LayerCameraRequest | null): boolean =>
-  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps && (a.whole === true) === (b.whole === true));
+  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps && (a.whole === true) === (b.whole === true) && (a.eye ?? null) === (b.eye ?? null));
 
 /**
  * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning as the control carries it: `tune` only when a value is not
@@ -585,7 +589,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     sentControls = [...sentControls, { at: now(), text: report ? JSON.stringify(sent) : text }].slice(-BENCH_CONTROLS);
     if (report) opts.log('vr-layer: asked the layer for its session report');
     if (!changed) return true;
-    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps${cameraReq.whole ? ', whole view' : ''}` : 'off'}` : '';
+    // D8.1: the eyes asked for (`one eye (left)` / `both eyes`) are on the line.
+    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps${cameraReq.whole ? ', whole view' : ''}, ${cameraEyesWords(cameraReq)}` : 'off'}` : '';
     const pat = protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? ', calibration pattern' : '';
     const eye = protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? `, the sender's eyes (crop ${eyes[0]!.rect[2]}x${eyes[0]!.rect[3]} at ${eyes[0]!.rect[0]},${eyes[0]!.rect[1]} / ${eyes[1]!.rect[0]},${eyes[1]!.rect[1]} of ${eyes[0]!.render[0]}x${eyes[0]!.render[1]})` : '';
     const tuned = protocol >= VR_LAYER_CAMERA_PROTOCOL ? tuneWords(tune, feather) : '';

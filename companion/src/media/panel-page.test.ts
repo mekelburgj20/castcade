@@ -604,8 +604,8 @@ describe('the theater feed (D7.4, 2026-10-31)', () => {
     expect(FakePeerConnection.all[0]?.remoteDescription).toBeNull();
   });
 
-  it('the feed is the video at its own size, scaled down into 1920x1080 (a side-by-side one into 3840x1080), even sides', () => {
-    expect(VIDEO_FEED_MAX).toEqual({ mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1440 }, fps: 30 });
+  it('the feed is the video at its own size, scaled down into 1920x1440 (a side-by-side one into 3840x1440), even sides', () => {
+    expect(VIDEO_FEED_MAX).toEqual({ mono: { width: 1920, height: 1440 }, sbs: { width: 3840, height: 1440 }, fps: 30 });
     expect(feedSize(1280, 720, 'mono')).toEqual({ width: 1280, height: 720 });
     expect(feedSize(2560, 1440, 'mono')).toEqual({ width: 1920, height: 1080 });
     expect(feedSize(1281, 721, 'mono')).toEqual({ width: 1280, height: 720 });
@@ -614,7 +614,10 @@ describe('the theater feed (D7.4, 2026-10-31)', () => {
     // D7.4.9: the owner's both-eyes window (1440x1392) lands whole; a taller one scales into 1440 high
     expect(feedSize(1440, 1392, 'sbs')).toEqual({ width: 1440, height: 1392 });
     expect(feedSize(2880, 1600, 'sbs')).toEqual({ width: 2592, height: 1440 });
-    expect(feedSize(1440, 1392, 'mono')).toEqual({ width: 1116, height: 1080 });
+    // D8.1: a mono picture may be 1440 high too: the one-eye layer camera's 1354x1440 lands whole; taller scales into 1440
+    expect(feedSize(1440, 1392, 'mono')).toEqual({ width: 1440, height: 1392 });
+    expect(feedSize(1354, 1440, 'mono')).toEqual({ width: 1354, height: 1440 });
+    expect(feedSize(1080, 1920, 'mono')).toEqual({ width: 810, height: 1440 });
     expect(feedSize(0, 0, 'mono')).toBeNull();
   });
 
@@ -836,6 +839,9 @@ describe('videoBitrateFor (D7.4.6)', () => {
     expect(videoBitrateFor({ width: 2560, height: 720, stereo: 'sbs' })).toBe(7_200_000);
     expect(videoBitrateFor({ width: 1440, height: 1392, stereo: 'sbs' })).toBe(7_800_000);
     expect(videoBitrateFor({ width: 1080, height: 1920, stereo: 'mono' })).toBe(8_000_000);
+    // D8.1: the one-eye layer camera's portrait picture (a 3072x3264 eye in the 1440 box) is rated by the pixel rule: 7.6 Mbps
+    expect(videoBitrateFor({ width: 1354, height: 1440, stereo: 'mono' })).toBe(7_600_000);
+    expect(videoBitrateFor({ width: 720, height: 1440, stereo: 'mono' })).toBe(4_000_000);
     expect(videoBitrateFor({ width: 720, height: 1280, stereo: 'mono' })).toBe(3_600_000);
     expect(videoBitrateFor({ width: 1280, height: 720, stereo: 'sbs' })).toBe(3_600_000);
   });
@@ -1152,11 +1158,20 @@ describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {
     expect(isCameraCapture(CAP)).toBe(false);
     expect(isCameraCapture(null)).toBe(false);
     const jpg = new Uint8Array([1, 2]);
-    expect(cameraFrameSize({ width: 720, height: 1440, left: jpg, right: jpg })).toEqual({ width: 720, height: 1440 });
+    expect(cameraFrameSize({ width: 720, height: 1440, left: jpg, right: jpg })).toEqual({ width: 720, height: 1440, stereo: 'sbs' });
     expect(cameraFrameSize({ width: 720, height: 1440, left: new Uint8Array(0), right: jpg })).toBeNull();
     expect(cameraFrameSize({ width: 0, height: 1440, left: jpg, right: jpg })).toBeNull();
     expect(cameraFrameSize({ width: 5000, height: 1440, left: jpg, right: jpg })).toBeNull();
     expect(cameraFrameSize(null)).toBeNull();
+    // D8.1: one eye (the other null or absent) is a mono frame; two empty eyes are not a frame.
+    expect(cameraFrameSize({ width: 1354, height: 1440, left: jpg, right: null })).toEqual({ width: 1354, height: 1440, stereo: 'mono' });
+    expect(cameraFrameSize({ width: 1354, height: 1440, left: null, right: jpg })).toEqual({ width: 1354, height: 1440, stereo: 'mono' });
+    expect(cameraFrameSize({ width: 1354, height: 1440, left: jpg })).toEqual({ width: 1354, height: 1440, stereo: 'mono' });
+    expect(cameraFrameSize({ width: 1354, height: 1440, left: null, right: null })).toBeNull();
+    expect(cameraFrameSize({ width: 1354, height: 1440, left: new Uint8Array(0), right: null })).toBeNull();
+    const MONO = cameraCapture(1354, 1440, 'mono');
+    expect(MONO).toEqual({ sourceId: 'layer-camera', label: 'VR layer camera', screen: { width: 1354, height: 1440 }, crop: { x: 0, y: 0, width: 1354, height: 1440 }, out: { width: 1354, height: 1440 }, stereo: 'mono' });
+    expect(cameraCapture(720, 1440, 'sbs')).toEqual(CAMERA);
     expect(eyesKey([GEO, GEO])).toBe(eyesKey([{ ...GEO, fov: [-0.90001, 0.8, 0.9, -0.95] }, GEO]));
     expect(eyesKey([GEO, GEO])).not.toBe(eyesKey([{ ...GEO, rect: [449, 0, 900, 1800] }, GEO]));
     expect(eyesKey([GEO])).toBeNull();
@@ -1169,7 +1184,7 @@ describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {
     expect(PANEL_CHANNELS.cameraAck).toBe('castcade-panel:camera-ack');
   });
 
-  async function cameraPage() {
+  async function cameraPage(capture = CAMERA) {
     const bitmaps: Array<{ width: number; height: number; closed: boolean }> = [];
     const fail = { next: false };
     vi.stubGlobal('createImageBitmap', async (b: Blob) => {
@@ -1179,7 +1194,7 @@ describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {
       return bm;
     });
     const p = loadPage({ mic: true, capture: true });
-    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAMERA, micDeviceId: null, muted: false, sending: true });
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture, micDeviceId: null, muted: false, sending: true });
     await settle();
     const jpg = new Uint8Array([0xff, 0xd8, 0xff]);
     const frame = (n: number, o: Partial<{ width: number; height: number; left: Uint8Array; eyes: unknown[] }> = {}) => ({ n, width: 720, height: 1440, left: jpg, right: jpg, eyes: [GEO, GEO], ...o });
@@ -1219,6 +1234,39 @@ describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {
       expect(p.canvas.streams).toHaveLength(1);
       expect(sender()!.track).toBe(track);
       expect(p.canvas.ctx.calls.at(-1)).toEqual(['drawImage', 0, 0, 720, 1440, 540, 0, 540, 1080]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('D8.1: a mono camera capture (one eye): the canvas is w x h, the declaration mono without eyes, each one-eye frame drawn alone at (0, 0); a two-eye frame after it goes back to side by side', async () => {
+    try {
+      const { p, bitmaps, frame, acks, stereoSignals, sender } = await cameraPage(cameraCapture(1354, 1440, 'mono'));
+      expect(p.captures).toHaveLength(0);
+      expect([p.canvas.width, p.canvas.height]).toEqual([1354, 1440]);
+      const track = sender()!.track;
+      expect(stereoSignals()).toEqual([{ kind: 'stereo', stereo: 'mono' }]);
+      p.canvas.ctx.calls.length = 0;
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(1, { width: 1354, height: 1440, right: null, eyes: [GEO] } as never));
+      await settle();
+      expect(p.canvas.ctx.calls).toEqual([['drawImage', 0, 0, 720, 1440, 0, 0, 1354, 1440]]);
+      expect(bitmaps).toHaveLength(1); // one decode per frame
+      expect(bitmaps.every((b) => b.closed)).toBe(true);
+      expect(acks()).toBe(1);
+      expect(stereoSignals()).toEqual([{ kind: 'stereo', stereo: 'mono' }]); // nothing new to say: mono carries no eyes
+      // The right eye alone is a mono frame too, drawn the same.
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(2, { width: 1354, height: 1440, left: null, eyes: [GEO] } as never));
+      await settle();
+      expect(p.canvas.ctx.calls.at(-1)).toEqual(['drawImage', 0, 0, 720, 1440, 0, 0, 1354, 1440]);
+      expect(acks()).toBe(2);
+      // The bitrate cap follows the mono shape (the pixel rule: 1354x1440 is 7.6 Mbps).
+      expect(sender()!.params.encodings[0]!.maxBitrate).toBe(7_600_000);
+      // Both eyes again (the Match tab's Camera eyes): the canvas doubles, the declaration carries the eyes; same track.
+      p.emit(PANEL_CHANNELS.cameraFrame, frame(3, { width: 720, height: 1440 }));
+      await settle();
+      expect([p.canvas.width, p.canvas.height]).toEqual([1440, 1440]);
+      expect(sender()!.track).toBe(track);
+      expect(stereoSignals().at(-1)).toEqual({ kind: 'stereo', stereo: 'sbs', eyes: [GEO, GEO] });
     } finally {
       vi.unstubAllGlobals();
     }
