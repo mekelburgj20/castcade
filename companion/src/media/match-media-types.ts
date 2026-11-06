@@ -143,6 +143,17 @@ export interface TableAudioFlags {
   hear: boolean;
 }
 
+/**
+ * D2.10 (2026-11-05): the panel page's playback volumes, in percent as the match settings hold them: `voice`, the
+ * other players' voices (0–300; over 100 is a boost); `table`, the up player's table sound (0–100). `note`: a short
+ * line the page shows for a moment ("Voice 160 %") when a shortcut changed one mid-match; null or absent otherwise.
+ */
+export interface PanelVolume {
+  voice: number;
+  table: number;
+  note?: string | null;
+}
+
 /** What the match controller drives (implemented by `media/rtc-host.ts`, D2). */
 export interface MatchMedia {
   /** Called at MATCH_READY with every other participant; opens the mesh. */
@@ -173,6 +184,8 @@ export interface MatchMedia {
   pushTableAudio?(pcm: Uint8Array): void;
   /** D2.8: the pid of the window the capture sends (the "Visual Pinball Player" window's VPX), or null with no capture. */
   capturePid?(): number | null;
+  /** D2.10 (2026-11-05): the playback volumes (kept for the next attach; applied live to a page that is up). Absent in fakes before D2.10. */
+  setVolume?(volume: PanelVolume): void;
   detach(): Promise<void>;
 }
 

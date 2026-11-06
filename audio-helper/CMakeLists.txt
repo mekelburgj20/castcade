@@ -1,5 +1,5 @@
-# castcade-audio: table sound for a Castcade match (D2.8): mutes this rig's VPX while another player is up and captures
-# its sound (process loopback) while this rig is up (audio-helper/README.md).
+# castcade-audio: table sound for a Castcade match (D2.8): mutes this rig's VPX while another player is up, captures
+# its sound (process loopback) while this rig is up and (D2.10) sets its volume under the voices (audio-helper/README.md).
 #
 #   cmake -B build -A x64                       (any Visual Studio generator; x64)
 #   cmake --build build --config Release        → build/Release/castcade-audio.exe
@@ -7,7 +7,7 @@
 # Windows x64, MSVC, no dependency but the Windows SDK (CoreAudio). Process loopback needs Windows 10 2004+ at run
 # time only: ActivateAudioInterfaceAsync is looked up at run time, so the exe starts (and mutes) on older Windows.
 cmake_minimum_required(VERSION 3.20)
-project(castcade_audio VERSION 0.1.0 LANGUAGES CXX)
+project(castcade_audio VERSION 0.2.0 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "castcade-audio builds for Windows x64 only")

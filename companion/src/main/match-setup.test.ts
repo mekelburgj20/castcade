@@ -8,6 +8,7 @@ import { MemoryBus } from '../match/transport.js';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import {
+  cleanPercent,
   DEFAULT_MATCH_SETTINGS,
   decideRig,
   formatInvite,
@@ -24,12 +25,36 @@ import {
   rigFrom,
   rigFromStatus,
   serializeMatchIdentity,
+  VOLUME_RANGE,
   writeMatchSettings,
   ZERO_SHA256,
 } from './match-setup.js';
 
 const status = (over: Partial<WitnessStatus> = {}): WitnessStatus =>
   ({ paired: true, running: true, currentTable: null, currentIdentity: null, currentAttestation: null, ...over }) as WitnessStatus;
+
+describe('match settings: voice over the game (D2.10)', () => {
+  it('the three volumes: whole percents clamped to their ranges; defaults 150 / 100 / 100', () => {
+    expect(DEFAULT_MATCH_SETTINGS).toMatchObject({ voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100 });
+    expect(VOLUME_RANGE).toEqual({ voiceVolume: [0, 300], othersTableVolume: [0, 100], myTableWhileUp: [10, 100] });
+    const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { voiceVolume: 160.4, othersTableVolume: 55, myTableWhileUp: 80 });
+    expect(s).toMatchObject({ voiceVolume: 160, othersTableVolume: 55, myTableWhileUp: 80 });
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { voiceVolume: 999 }).voiceVolume).toBe(300);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { voiceVolume: -5 }).voiceVolume).toBe(0);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { othersTableVolume: 140 }).othersTableVolume).toBe(100);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { myTableWhileUp: 0 }).myTableWhileUp).toBe(10);
+    expect(patchMatchSettings(DEFAULT_MATCH_SETTINGS, { myTableWhileUp: 250 }).myTableWhileUp).toBe(100);
+    // Not a number: the current value stays.
+    expect(patchMatchSettings(s, { voiceVolume: 'loud', othersTableVolume: null, myTableWhileUp: Number.NaN } as never)).toMatchObject({ voiceVolume: 160, othersTableVolume: 55, myTableWhileUp: 80 });
+    expect(cleanPercent(49.5, 0, 100)).toBe(50);
+    expect(cleanPercent(Number.POSITIVE_INFINITY, 0, 100)).toBeNull();
+    expect(cleanPercent('50', 0, 100)).toBeNull();
+    // A match.json from before D2.10 reads with the defaults; one with a value keeps it.
+    expect(readMatchSettings('{"v":1,"port":27401,"cueVolume":80}')).toEqual({ ...DEFAULT_MATCH_SETTINGS, cueVolume: 80 });
+    expect(readMatchSettings('{"v":1,"voiceVolume":200,"myTableWhileUp":40}')).toEqual({ ...DEFAULT_MATCH_SETTINGS, voiceVolume: 200, myTableWhileUp: 40 });
+    expect(readMatchSettings(writeMatchSettings(s))).toEqual(s);
+  });
+});
 
 describe('match setup (A6)', () => {
   it('invites round-trip, tolerate the wrapping a chat adds, and refuse anything else', () => {
@@ -52,7 +77,7 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'screen', cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03 });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'screen', cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100 });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     // D7.5: the camera source: screen by default, layer on request, anything else ignored.
     expect(patchMatchSettings(s, { cameraSource: 'layer' }).cameraSource).toBe('layer');

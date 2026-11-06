@@ -487,6 +487,12 @@ interface MatchSettings {
   eyeOffsetDeg: [number, number];
   /** D7.5.11: the window's soft edge, 0–0.25 of one eye's half width. */
   softEdge: number;
+  /** D2.10: the other players' voices, 0–300 % (over 100 is a boost). */
+  voiceVolume: number;
+  /** D2.10: the up player's table sound as this rig plays it, 0–100 %. */
+  othersTableVolume: number;
+  /** D2.10: this rig's own VPX volume while this player is up, 10–100 % (100 = untouched). */
+  myTableWhileUp: number;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

@@ -7,7 +7,7 @@
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -94,6 +94,8 @@ if (argv.includes('--smoke')) {
     quitting = true;
     updater?.stop();
   });
+  // D2.10: the match's volume keys are released at teardown; this covers a quit that skips it.
+  app.on('will-quit', () => globalShortcut.unregisterAll());
   void app.whenReady().then(main);
 }
 
@@ -576,6 +578,8 @@ async function main(): Promise<void> {
       tableAudio: tableAudio ?? undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),
+      // D2.10: the in-game volume keys (Ctrl+Alt+arrows), held only while a match is on.
+      shortcuts: globalShortcut,
       appVersion,
       log: logger,
     });
