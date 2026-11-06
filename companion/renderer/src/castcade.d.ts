@@ -477,8 +477,12 @@ interface MatchSettings {
   tableHearOthers: boolean;
   /** D7.4.9: the theater window's size against life size (0.25–4). */
   theaterScale: number;
-  /** D7.5: a VR sender's picture: the screen capture of the preview window, or the OpenXR layer's copy of the eye views (experimental). */
+  /** D7.5: a VR sender's picture: the OpenXR layer's copy of the eye views (the default since D8.1), or the screen capture of the preview window. */
   cameraSource: 'screen' | 'layer';
+  /** D8.1 (ADR 0009): what the layer camera sends: one eye as a flat picture (the default), or both side by side (the 0.2.35 stereo window). */
+  cameraEyes: 'one' | 'both';
+  /** D8.1: the settings' version (migrations at load; main owns it). */
+  settingsVersion: number;
   /** D7.5.9: what the layer camera sends per eye: the whole render (the picture fills the headset), or the 1:2 centre crop of 0.2.34. */
   cameraView: 'whole' | 'window';
   /** D7.5.10: the stereo window's depth in metres (0.3–100), null = infinity (as rendered). */

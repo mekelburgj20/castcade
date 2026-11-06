@@ -73,7 +73,7 @@ describe('parseCameraFrame (D7.5)', () => {
     expect(f!.eyes[1]!.render).toEqual([3072, 3264]);
   });
 
-  it('refuses what does not add up: short, a header longer than the body, lengths off, one eye, not jpeg', () => {
+  it('refuses what does not add up: short, a header longer than the body, lengths off, no eye or three, not jpeg; D8.1: one eye is a frame', () => {
     expect(parseCameraFrame(Buffer.alloc(1))).toBeNull();
     const tooLong = Buffer.alloc(6);
     tooLong.writeUInt16LE(100, 0);
@@ -81,8 +81,15 @@ describe('parseCameraFrame (D7.5)', () => {
     const good = frameBody(1, jpeg(1), jpeg(2));
     expect(parseCameraFrame(good.subarray(0, good.length - 1))).toBeNull(); // a byte short
     expect(parseCameraFrame(Buffer.concat([good, Buffer.from([0])]))).toBeNull(); // a byte over
+    // D8.1 (2026-11-05): a one-eye frame (layer 0.5.3 honouring the request's `eye`) parses to one eye.
     const oneEye = { n: 1, t: 0, enc: 'jpeg', w: 2, h: 2, eyes: [eyeJson(6, 'L')] };
-    expect(parseCameraFrame(frameBody(1, jpeg(1), Buffer.alloc(0), oneEye))).toBeNull();
+    const one = parseCameraFrame(frameBody(1, jpeg(1), Buffer.alloc(0), oneEye));
+    expect(one!.eyes).toHaveLength(1);
+    expect(one!.eyes[0]!.data.length).toBe(6);
+    const noEye = { n: 1, t: 0, enc: 'jpeg', w: 2, h: 2, eyes: [] };
+    expect(parseCameraFrame(frameBody(1, Buffer.alloc(0), Buffer.alloc(0), noEye))).toBeNull();
+    const threeEyes = { n: 1, t: 0, enc: 'jpeg', w: 2, h: 2, eyes: [eyeJson(6, 'L'), eyeJson(6, 'R'), eyeJson(6, 'L')] };
+    expect(parseCameraFrame(frameBody(1, jpeg(1), Buffer.concat([jpeg(2), jpeg(3)]), threeEyes))).toBeNull();
     const png = { n: 1, t: 0, enc: 'png', w: 2, h: 2, eyes: [eyeJson(6, 'L'), eyeJson(6, 'R')] };
     expect(parseCameraFrame(frameBody(1, jpeg(1), jpeg(2), png))).toBeNull();
     const notJson = Buffer.alloc(4);
@@ -275,6 +282,29 @@ describe('createVrLayerOverlay: the camera (D7.5)', () => {
     p.emit('data', frameMessage(6));
     expect(h.frames).toHaveLength(3);
     expect(h.ov.cameraStatus!().state).toBe('off');
+  });
+
+  it('D8.1: `eye` rides on the control; a change of eye alone is a new control, and the log says one eye / both eyes', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    await h.ov.start(h.src);
+    const p = h.pipes[0]!;
+    p.answer();
+    p.emit('data', hello(3));
+    h.ov.setCamera!({ width: 1440, height: 1440, fps: 30, whole: true, eye: 'left' });
+    expect(p.controls()[1]).toEqual({ mode: 'panel', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: { width: 1440, height: 1440, fps: 30, whole: true, eye: 'left' } });
+    expect(h.log.at(-1)).toBe('vr-layer: mode panel (mono, panel low, camera 1440x1440 at 30 fps, whole view, one eye (left))');
+    h.ov.setCamera!({ width: 1440, height: 1440, fps: 30, whole: true, eye: 'left' }); // the same again: nothing written
+    expect(p.controls()).toHaveLength(2);
+    h.ov.setCamera!({ width: 1440, height: 1440, fps: 30, whole: true }); // both eyes: a new control
+    expect(p.controls()).toHaveLength(3);
+    expect(p.controls()[2]!.camera).toEqual({ width: 1440, height: 1440, fps: 30, whole: true });
+    expect(h.log.at(-1)).toBe('vr-layer: mode panel (mono, panel low, camera 1440x1440 at 30 fps, whole view, both eyes)');
+    // A one-eye frame is counted and handed on like a two-eye one.
+    const oneEye = { n: 1, t: 0, enc: 'jpeg', w: 1440, h: 1440, eyes: [eyeJson(6, 'L')] };
+    p.emit('data', message('CVF1', frameBody(1, jpeg(1), Buffer.alloc(0), oneEye)));
+    expect(h.frames.map((f) => f.eyes.length)).toEqual([1]);
+    expect(h.log.some((l) => l.startsWith('vr-layer camera: first frame: 1440x1440 per eye, 6 bytes'))).toBe(true);
   });
 
   it('refused by the layer: the status says so with the reason; the next connection asks again', async () => {

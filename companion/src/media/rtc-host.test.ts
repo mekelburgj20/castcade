@@ -1100,9 +1100,10 @@ function fakeLayer(protocol: number | null = 3) {
     asks,
     proto,
     listening: () => frameCbs.size,
-    frame(n: number, width = 720, height = 1440): LayerCameraFrame {
+    /** D8.1: `count` 1 is a one-eye frame (a layer honouring the request's `eye`). */
+    frame(n: number, width = 720, height = 1440, count: 1 | 2 = 2): LayerCameraFrame {
       st = { ...st, state: 'on', why: null, lastFrameAt: Date.now(), frames: st.frames + 1 };
-      const f: LayerCameraFrame = { n, t: n * 33_000, encoding: 'jpeg', width, height, eyes: [eye(450), eye(450)], us: null };
+      const f: LayerCameraFrame = { n, t: n * 33_000, encoding: 'jpeg', width, height, eyes: count === 2 ? [eye(450), eye(450)] : [eye(450)], us: null };
       frameCbs.forEach((cb) => cb(f));
       emitStatus();
       return f;
@@ -1136,10 +1137,12 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
   const sentOn = (w: InstanceType<typeof fake.FakeWindow>, ch: string) => w.webContents.sent.filter(([c]) => c === ch).map(([, p]) => p);
   const live: PanelPageStatus = { sending: false, peers: {}, mic: 'open', capturing: true, error: null };
 
-  async function cameraHost(o: { setting?: 'screen' | 'layer'; rig?: { inVr: boolean; headsetPanel: boolean; runtime?: 'virtual-desktop' | 'steamvr' | null }; protocol?: number | null } = {}) {
+  async function cameraHost(o: { setting?: 'screen' | 'layer'; rig?: { inVr: boolean; headsetPanel: boolean; runtime?: 'virtual-desktop' | 'steamvr' | null }; protocol?: number | null; eyes?: 'one' | 'both' } = {}) {
     const cam = fakeLayer(o.protocol === undefined ? 3 : o.protocol);
     const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
     host.setCameraLayer(cam.layer);
+    // D8.1: these tests are the two-eye (0.2.35) path unless said; the one-eye default has its own test below.
+    host.setCameraEyes(o.eyes ?? 'both');
     if (o.setting) host.setCameraSource(o.setting);
     await host.setVr(o.rig ?? VD);
     await host.attach(signalling('owner').sig, ['krobs']);
@@ -1161,7 +1164,7 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
   it('a VR rig off SteamVR on `layer`: the camera is asked, no screen capture is opened, the page gets the synthetic capture; the status names it', async () => {
     const { host, cam, w } = await cameraHost({ setting: 'layer' });
     expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30 }]);
-    expect(logs).toContain('media: camera: the VR layer (the VR layer): each eye in a 720x1440 box at 30 fps; no screen capture');
+    expect(logs).toContain("media: camera: the VR layer (the VR layer): both eyes, each eye's view in a 720x1440 box at 30 fps; no screen capture");
     // D7.5.9: the Camera view re-asks the running match camera with the new box, live (whatever the ball); not when nothing changed.
     host.setCameraView('whole');
     host.setCameraView('whole');
@@ -1210,6 +1213,56 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     expect(logs).toContain('media: capture: 290 frames in 10 s from the VR layer camera, 1280x1280 (sbs), 2 unreadable, 1 dropped before the panel (newest wins), sent 1280x1280 at 7.6 Mbps, limited by none');
     expect(host.status().captureCrop).toEqual({ width: 1280, height: 1280 });
     await host.detach();
+  });
+
+  it('D8.1 (ADR 0009): the default asks for one eye (left): a mono capture, each frame carries that eye alone (a two-eye frame from an old layer loses the other); Camera eyes switches live', async () => {
+    const { host, cam, w } = await cameraHost({ setting: 'layer', eyes: 'one' });
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30, eye: 'left' }]);
+    expect(logs).toContain('media: camera: the VR layer (the VR layer): one eye (left), its view in a 720x1440 box at 30 fps; no screen capture');
+    const MONO = cameraCapture(720, 1440, 'mono');
+    expect((w.webContents.sent[0]?.[1] as { capture: unknown }).capture).toEqual(MONO);
+    expect(MONO).toMatchObject({ out: { width: 720, height: 1440 }, stereo: 'mono' });
+    expect(logs).toContain('media: capture VR layer camera ready, one picture');
+    expect(logs).toContain('media: sending 720x1440 mono at 4.0 Mbps');
+    fromPage(w, PANEL_CHANNELS.status, live);
+    expect(host.status()).toMatchObject({ captureSource: 'VR layer camera', captureCrop: { width: 720, height: 1440 }, captureStereo: 'mono' });
+    const frames = () => sentOn(w, PANEL_CHANNELS.cameraFrame) as Array<{ n: number; left: Uint8Array | null; right: Uint8Array | null; eyes: unknown[] }>;
+    host.setSending(true);
+    // A layer that honours `eye`: one eye in the frame.
+    cam.frame(1, 720, 1440, 1);
+    expect(frames().map((f) => [f.n, !!f.left, f.right, f.eyes.length])).toEqual([[1, true, null, 1]]);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    // A 0.5.2 layer sends both: the left one goes, the right one is dropped before the IPC copy.
+    const two = cam.frame(2);
+    expect(frames().map((f) => [f.n, f.right, f.eyes.length])).toEqual([[1, null, 1], [2, null, 1]]);
+    expect(frames()[1]!.left).toBe(two.eyes[0]!.data);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    // A new size keeps the mono declaration: the capture is w x h, said once.
+    cam.frame(3, 1354, 1440, 1);
+    expect(logs.filter((l) => l.startsWith('media: capture: from'))).toEqual(['media: capture: from the VR layer camera, 1354x1440 (mono)']);
+    expect(host.status().captureCrop).toEqual({ width: 1354, height: 1440 });
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    // Camera eyes = both on the Match tab, live: the layer is asked again without `eye`, the capture becomes side by side and the page is told.
+    host.setCameraEyes('both');
+    expect(cam.asks.at(-1)).toEqual({ width: 720, height: 1440, fps: 30 });
+    expect(logs).toContain("media: camera: both eyes on the Match tab: both eyes, each eye's view in a 720x1440 box at 30 fps");
+    expect(sentOn(w, PANEL_CHANNELS.capture).at(-1)).toEqual(cameraCapture(720, 1440));
+    expect(host.status()).toMatchObject({ captureCrop: { width: 1440, height: 1440 }, captureStereo: 'sbs' });
+    cam.frame(4);
+    expect(frames().at(-1)).toMatchObject({ n: 4, eyes: [expect.anything(), expect.anything()] });
+    expect(frames().at(-1)!.right).toBeInstanceOf(Uint8Array);
+    fromPage(w, PANEL_CHANNELS.cameraAck);
+    // A one-eye frame while both are wanted (a layer still switching) is not a frame for the page.
+    cam.frame(5, 720, 1440, 1);
+    expect(frames().at(-1)!.n).toBe(4);
+    // And back to one eye: the same again asks nothing.
+    host.setCameraEyes('one');
+    host.setCameraEyes('one');
+    expect(cam.asks.at(-1)).toEqual({ width: 720, height: 1440, fps: 30, eye: 'left' });
+    expect(cam.asks).toHaveLength(3);
+    expect(sentOn(w, PANEL_CHANNELS.capture).at(-1)).toEqual(MONO);
+    await host.detach();
+    expect(cam.asks.at(-1)).toBeNull();
   });
 
   it('refused → back to the screen capture once, the camera stopped, the page handed the screen; a re-attach in the same match stays on the screen', async () => {

@@ -59,8 +59,8 @@ import {
   parseInvite,
   parseMatchIdentity,
   patchMatchSettings,
+  loadMatchSettings,
   pickLanAddress,
-  readMatchSettings,
   rigFrom,
   rigFromStatus,
   serializeMatchIdentity,
@@ -206,7 +206,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'setCameraView' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'setCameraView' | 'setCameraEyes' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -324,7 +324,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const { log, witness } = opts;
   const listeners = new Set<(s: MatchStatus) => void>();
-  let settings = readMatchSettings(readText(opts.file));
+  // D8.1 (2026-11-05): a match.json from before 0.2.36 is migrated once (the layer camera, one eye) and saved below.
+  const loaded = loadMatchSettings(readText(opts.file));
+  let settings = loaded.settings;
   // D7.4.3 (2026-11-01): the media layer declares the preview's stereo from this setting (and the ini on `auto`).
   opts.media?.setPreviewStereo?.(settings.previewStereo);
   // D7.5.1 (2026-11-02): the layer camera's layer and the Match tab's Camera (decided at each attach, alpha-match.md §5a).
@@ -332,6 +334,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   opts.media?.setCameraSource?.(settings.cameraSource);
   // D7.5.9 (2026-11-04): the camera's view (whole render or the 1:2 crop); applied live to a running camera.
   opts.media?.setCameraView?.(settings.cameraView);
+  // D8.1: the camera's eyes (one as a flat picture, or both side by side); applied live to a running camera.
+  opts.media?.setCameraEyes?.(settings.cameraEyes);
   /**
    * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning and soft edge go to an overlay with Theater size: the
    * match's and the bench's, on every settings change (each setter is idempotent and the control dedups).
@@ -410,6 +414,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.warn(`match: could not save ${opts.file}: ${describeError(e)}`);
     }
   };
+  if (loaded.migrated) {
+    log.info(`match: ${loaded.migrated}`);
+    saveSettings(settings);
+  }
 
   // ---- status ----
   const idleRig = (): RigDecision => {
@@ -1090,6 +1098,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const before = settings.previewStereo;
       const cameraBefore = settings.cameraSource;
       const viewBefore = settings.cameraView;
+      const eyesBefore = settings.cameraEyes;
       const tuneBefore = windowTuneWords(settings);
       saveSettings(patchMatchSettings(settings, patch));
       if (settings.previewStereo !== before) {
@@ -1105,6 +1114,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (settings.cameraView !== viewBefore) {
         log.info(`match: camera view set to ${settings.cameraView === 'whole' ? "each eye's whole render" : 'the 1:2 window crop'} on the Match tab`);
         opts.media?.setCameraView?.(settings.cameraView);
+      }
+      // D8.1: the eyes apply to a running camera at once too (the media layer asks the layer again, the capture follows).
+      if (settings.cameraEyes !== eyesBefore) {
+        log.info(`match: camera eyes set to ${settings.cameraEyes === 'one' ? 'one eye (a flat picture)' : 'both eyes (side by side)'} on the Match tab`);
+        opts.media?.setCameraEyes?.(settings.cameraEyes);
       }
       // D7.5.10 / D7.5.11: the window's tuning reaches the overlays in `emit` (syncWindowTune); one line when it changed.
       if (windowTuneWords(settings) !== tuneBefore) log.info(`match: stereo window${windowTuneWords(settings) || ': depth infinity, no vertical offset, hard edges'} on the Match tab`);

@@ -4,6 +4,8 @@
  *
  *   - the sender side, every layer-camera frame for 2 s: `NNNN-L.jpg`, `NNNN-R.jpg` (the layer's own JPEGs, as they came
  *     off the pipe) and `NNNN.json` (the frame header: `n`, `t`, `w`, `h`, `us`, `eyes` with fov / rect / render);
+ *     D8.1 (2026-11-05): a one-eye frame (the one-eye camera) saves only the eye it has, as `NNNN-L.jpg` (whichever
+ *     eye it is; the index lists `right: null`), and plays back as a mono picture;
  *   - the receiver side, every decoded incoming frame the panel page handed to the layer as the theater feed (from a
  *     peer or from the bench), encoded to JPEG in the page (quality 90): `in-NNNN.jpg` and `in-NNNN.json` (width,
  *     height, stereo, eyes if known, the time);
@@ -111,7 +113,8 @@ export interface ClipSenderFrame {
   /** Microseconds since the layer's camera started (the header's `t`). */
   t: number;
   left: string;
-  right: string;
+  /** D8.1: null for a one-eye frame (its one JPEG is `left`). */
+  right: string | null;
   header: string;
 }
 
@@ -255,8 +258,9 @@ export function createFrameSaver(o: {
   return {
     senderFrame(f) {
       if (!open()) return false;
+      // D8.1: one eye or two; a one-eye frame saves the eye it has (as `-L.jpg`) and no `-R.jpg`.
       const [l, r] = f.eyes;
-      if (!l || !r) return false;
+      if (!l) return false;
       if (sender.length >= max) {
         capped.sender++;
         return false;
@@ -265,9 +269,9 @@ export function createFrameSaver(o: {
       const files = senderFiles(i);
       const h = senderHeader(f);
       senderFirst ??= h;
-      sender.push({ i, n: f.n, t: f.t, ...files });
+      sender.push({ i, n: f.n, t: f.t, left: files.left, right: r ? files.right : null, header: files.header });
       write(files.left, Uint8Array.from(l.data));
-      write(files.right, Uint8Array.from(r.data));
+      if (r) write(files.right, Uint8Array.from(r.data));
       write(files.header, JSON.stringify(h, null, 1));
       return true;
     },
@@ -347,7 +351,7 @@ export function parseClipIndex(text: string): ClipIndex | null {
   if (c.format !== CLIP_FORMAT || c.version !== CLIP_VERSION || typeof c.folder !== 'string') return null;
   const okSender = (f: unknown): f is ClipSenderFrame => {
     const x = f as ClipSenderFrame;
-    return !!x && isNum(x.i) && isNum(x.t) && isStr(x.left) && isStr(x.right) && isStr(x.header);
+    return !!x && isNum(x.i) && isNum(x.t) && isStr(x.left) && (x.right === null || isStr(x.right)) && isStr(x.header);
   };
   const okReceiver = (f: unknown): f is ClipReceiverFrame => {
     const x = f as ClipReceiverFrame;
@@ -359,18 +363,19 @@ export function parseClipIndex(text: string): ClipIndex | null {
 }
 
 /**
- * The frames a folder holds, by their names alone, in order: sender frames with both eyes (`NNNN-L.jpg` + `NNNN-R.jpg`;
- * the header may be missing), receiver frames (`in-NNNN.jpg`). Anything else is ignored.
+ * The frames a folder holds, by their names alone, in order: sender frames (`NNNN-L.jpg`, with `NNNN-R.jpg` for both
+ * eyes; D8.1: without it, a one-eye frame; the header may be missing), receiver frames (`in-NNNN.jpg`). Anything else
+ * is ignored.
  */
-export function orderFrames(names: readonly string[]): { sender: Array<{ i: number; left: string; right: string; header: string | null }>; receiver: Array<{ i: number; image: string; header: string | null }> } {
+export function orderFrames(names: readonly string[]): { sender: Array<{ i: number; left: string; right: string | null; header: string | null }>; receiver: Array<{ i: number; image: string; header: string | null }> } {
   const set = new Set(names);
-  const sender: Array<{ i: number; left: string; right: string; header: string | null }> = [];
+  const sender: Array<{ i: number; left: string; right: string | null; header: string | null }> = [];
   const receiver: Array<{ i: number; image: string; header: string | null }> = [];
   for (const n of names) {
     let m = /^(\d{4,})-L\.jpg$/.exec(n);
     if (m) {
       const b = m[1]!;
-      if (set.has(`${b}-R.jpg`)) sender.push({ i: Number(b), left: n, right: `${b}-R.jpg`, header: set.has(`${b}.json`) ? `${b}.json` : null });
+      sender.push({ i: Number(b), left: n, right: set.has(`${b}-R.jpg`) ? `${b}-R.jpg` : null, header: set.has(`${b}.json`) ? `${b}.json` : null });
       continue;
     }
     m = /^in-(\d{4,})\.jpg$/.exec(n);
@@ -485,7 +490,9 @@ export function loadClip(dir: string, side: 'sender' | 'receiver', fs: ClipFs = 
       const w = isNum(h?.w) ? h.w : (s.eye?.width ?? 0);
       const hh = isNum(h?.h) ? h.h : (s.eye?.height ?? 0);
       if (!(w > 0 && hh > 0)) continue;
-      frames.push({ i: f.i, left: f.left, right: f.right, width: w, height: hh, stereo: 'sbs', eyes: eyesOf(h?.eyes) ?? s.eyes });
+      // D8.1: a frame without its `-R.jpg` is one eye: a mono picture, placed as a flat screen (no eye geometry).
+      const both = !!f.right;
+      frames.push({ i: f.i, left: f.left, right: f.right, width: w, height: hh, stereo: both ? 'sbs' : 'mono', eyes: both ? (eyesOf(h?.eyes) ?? s.eyes) : null });
     }
     return frames.length ? { side, fps: playbackFps(s.fps), frames } : null;
   }

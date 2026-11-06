@@ -100,10 +100,12 @@ export const PANEL_VIDEO = { width: 1280, height: 720, fps: 30, maxBitrate: 2_50
 
 /**
  * D7.4 (2026-10-31): the video the headset's theater mode gets, at the received size up to these (a larger one is
- * scaled down, aspect kept): a mono picture up to 1080p, a side-by-side one up to two 1080p halves. Each frame is a
- * copy (getImageData, IPC, the pipe), so at most `fps` a second and only when the video has a new frame.
+ * scaled down, aspect kept): a mono picture up to 1920 wide and (D8.1, 2026-11-05) 1440 high, so the one-eye layer
+ * camera's portrait picture (1354x1440 from a 3072x3264 eye in the 1440 box) reaches the flat screen unscaled; a
+ * side-by-side one up to two 1080p halves. Each frame is a copy (getImageData, IPC, the pipe), so at most `fps` a
+ * second and only when the video has a new frame.
  */
-export const VIDEO_FEED_MAX = { mono: { width: 1920, height: 1080 }, sbs: { width: 3840, height: 1440 }, fps: 30 } as const;
+export const VIDEO_FEED_MAX = { mono: { width: 1920, height: 1440 }, sbs: { width: 3840, height: 1440 }, fps: 30 } as const;
 /** Two 16:9 eyes side by side are 32:9; no single picture a player sends is 3:1 or wider. */
 export const SBS_MIN_ASPECT = 3;
 
@@ -137,18 +139,22 @@ export interface PanelCapture {
 
 /**
  * D7.5.1 (2026-11-02): the capture is the VR layer camera (alpha-match.md §5a) when its `sourceId` is this: no screen is
- * opened, the page draws the two eyes main sends on `cameraFrame` side by side onto the same canvas.
+ * opened, the page draws the two eyes main sends on `cameraFrame` side by side onto the same canvas. D8.1 (2026-11-05):
+ * or the one eye main sends (a mono capture), drawn alone as a flat picture.
  */
 export const LAYER_CAMERA_SOURCE_ID = 'layer-camera';
 
-/** D7.5.1: one camera frame, main -> page: each eye `width` x `height` as JPEG, left then right, and their geometry. */
+/**
+ * D7.5.1: one camera frame, main -> page: each eye `width` x `height` as JPEG, left then right, and their geometry.
+ * D8.1 (2026-11-05): one eye only (the other null) when the camera sends one eye; the page draws it alone at (0, 0).
+ */
 export interface PanelCameraFrame {
   n: number;
   width: number;
   height: number;
-  left: Uint8Array;
-  right: Uint8Array;
-  /** Left then right: fov, crop, render (the stereo declaration carries them, D7.5.2). */
+  left: Uint8Array | null;
+  right: Uint8Array | null;
+  /** Left then right: fov, crop, render (the stereo declaration carries them, D7.5.2); one entry for a one-eye frame. */
   eyes: LayerCameraEyeGeometry[];
 }
 
@@ -374,11 +380,14 @@ export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeigh
  * D7.5.1 (2026-11-02): the capture main and the page hold while the layer camera feeds (alpha-match.md §5a): no screen,
  * the two eyes side by side, `2 * eyeWidth` x `eyeHeight`, declared side by side. `report()`, the Match tab's capture
  * fields and the `capture:` counters read it as they read a screen capture's. (Inlined source id: embedded by source.)
+ * D8.1 (2026-11-05): `mono` is the one-eye camera: `eyeWidth` x `eyeHeight`, declared mono (a flat picture on the
+ * receiver's screen, never placed from the sender's eyes).
  */
-export function cameraCapture(eyeWidth: number, eyeHeight: number): PanelCapture {
-  const w = Math.max(1, Math.round(eyeWidth)) * 2;
+export function cameraCapture(eyeWidth: number, eyeHeight: number, stereo: 'mono' | 'sbs' = 'sbs'): PanelCapture {
+  const mono = stereo === 'mono';
+  const w = Math.max(1, Math.round(eyeWidth)) * (mono ? 1 : 2);
   const h = Math.max(1, Math.round(eyeHeight));
-  return { sourceId: 'layer-camera', label: 'VR layer camera', screen: { width: w, height: h }, crop: { x: 0, y: 0, width: w, height: h }, out: { width: w, height: h }, stereo: 'sbs' };
+  return { sourceId: 'layer-camera', label: 'VR layer camera', screen: { width: w, height: h }, crop: { x: 0, y: 0, width: w, height: h }, out: { width: w, height: h }, stereo: mono ? 'mono' : 'sbs' };
 }
 
 /** D7.5.1: the capture is the layer camera (`cameraCapture`), not a screen. */
@@ -386,14 +395,22 @@ export function isCameraCapture(c: { sourceId?: unknown } | null | undefined): b
   return !!c && c.sourceId === 'layer-camera';
 }
 
-/** D7.5.1: a camera frame from main, checked: each eye's size (1–4096, whole) and two non-empty JPEGs; else null. */
-export function cameraFrameSize(f: unknown): { width: number; height: number } | null {
+/**
+ * D7.5.1: a camera frame from main, checked: each eye's size (1–4096, whole) and two non-empty JPEGs, `sbs`; D8.1:
+ * or one non-empty JPEG (`left` or `right`, the other null or absent), `mono`. Null otherwise.
+ */
+export function cameraFrameSize(f: unknown): { width: number; height: number; stereo: 'mono' | 'sbs' } | null {
   if (typeof f !== 'object' || f === null) return null;
   const v = f as { width?: unknown; height?: unknown; left?: { byteLength?: unknown } | null; right?: { byteLength?: unknown } | null };
   const ok = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= 4096;
   const bytes = (b: { byteLength?: unknown } | null | undefined): boolean => !!b && typeof b.byteLength === 'number' && b.byteLength > 0;
-  if (!ok(v.width) || !ok(v.height) || !bytes(v.left) || !bytes(v.right)) return null;
-  return { width: v.width, height: v.height };
+  const empty = (b: unknown): boolean => b === null || b === undefined;
+  if (!ok(v.width) || !ok(v.height)) return null;
+  const l = bytes(v.left);
+  const r = bytes(v.right);
+  if (l && r) return { width: v.width, height: v.height, stereo: 'sbs' };
+  if ((l && empty(v.right)) || (r && empty(v.left))) return { width: v.width, height: v.height, stereo: 'mono' };
+  return null;
 }
 
 /**
@@ -437,10 +454,10 @@ export function stereoOf(declared: string | null | undefined, rig: string | unde
   return rig === 'vr_headset' && videoHeight > 0 && videoWidth / videoHeight >= 3 ? 'sbs' : 'mono';
 }
 
-/** D7.4: the size the theater feed is read at: the video's own, scaled down into the limit for its kind, even sides. */
+/** D7.4: the size the theater feed is read at: the video's own, scaled down into the limit for its kind, even sides (VIDEO_FEED_MAX, inlined). */
 export function feedSize(videoWidth: number, videoHeight: number, stereo: 'mono' | 'sbs'): { width: number; height: number } | null {
   if (!(videoWidth >= 2 && videoHeight >= 2)) return null;
-  const max = stereo === 'sbs' ? { width: 3840, height: 1440 } : { width: 1920, height: 1080 };
+  const max = stereo === 'sbs' ? { width: 3840, height: 1440 } : { width: 1920, height: 1440 };
   const k = Math.min(1, max.width / videoWidth, max.height / videoHeight);
   return { width: Math.max(2, Math.round(videoWidth * k) & ~1), height: Math.max(2, Math.round(videoHeight * k) & ~1) };
 }
@@ -1035,7 +1052,8 @@ function ensureVideoTrack(label) {
 /**
  * D7.5.1 (2026-11-02): the capture is the VR layer camera. No screen is opened (a live one is stopped); the canvas
  * keeps its track and takes the camera's size (2w x h), so the peers keep their sender; the declaration is side by
- * side whatever the preview setting says. Frames arrive on C.cameraFrame.
+ * side whatever the preview setting says. Frames arrive on C.cameraFrame. D8.1 (2026-11-05): a mono camera capture
+ * (one eye, w x h) declares mono with no eyes: the receivers show it as the flat screen.
  */
 function openCamera(c) {
   const fresh = !camMode;
@@ -1051,7 +1069,8 @@ function openCamera(c) {
     watch = { mark: 0, at: Date.now() };
     applyStall(false);
   }
-  noteStereo('sbs', myEyes);
+  if (c.stereo === 'mono') noteStereo('mono', null);
+  else noteStereo('sbs', myEyes);
   setCrop(c);
   if (!ensureVideoTrack(c.label)) return;
   if (localError && localError.indexOf('Could not capture') === 0) localError = null;
@@ -1059,7 +1078,10 @@ function openCamera(c) {
   render();
 }
 
-/** D7.5.1: one camera frame: both JPEGs decoded, drawn left | right, counted; the ack goes whatever happened. */
+/**
+ * D7.5.1: one camera frame: both JPEGs decoded, drawn left | right, counted; the ack goes whatever happened. D8.1: a
+ * one-eye frame (the other eye null) is drawn alone at (0, 0) on a w x h canvas and declared mono without eye geometry.
+ */
 async function drawCamera(f) {
   const size = cameraFrameSize(f);
   if (!camMode || !ctx || !size || typeof createImageBitmap !== 'function') {
@@ -1067,23 +1089,26 @@ async function drawCamera(f) {
     ipcRenderer.send(C.cameraAck);
     return;
   }
+  const mono = size.stereo === 'mono';
   let l = null;
   let r = null;
   try {
     const both = await Promise.all([
-      createImageBitmap(new Blob([f.left], { type: 'image/jpeg' })),
-      createImageBitmap(new Blob([f.right], { type: 'image/jpeg' })),
+      createImageBitmap(new Blob([mono ? f.left || f.right : f.left], { type: 'image/jpeg' })),
+      mono ? Promise.resolve(null) : createImageBitmap(new Blob([f.right], { type: 'image/jpeg' })),
     ]);
     l = both[0];
     r = both[1];
     if (camMode) {
       const w = size.width;
       const h = size.height;
-      if (!cap || cap.out.width !== 2 * w || cap.out.height !== h) setCrop(cameraCapture(w, h));
+      const W = mono ? w : 2 * w;
+      if (!cap || cap.out.width !== W || cap.out.height !== h || (cap.stereo === 'mono') !== mono) setCrop(cameraCapture(w, h, size.stereo));
       ctx.drawImage(l, 0, 0, l.width || w, l.height || h, 0, 0, w, h);
-      ctx.drawImage(r, 0, 0, r.width || w, r.height || h, w, 0, w, h);
+      if (r) ctx.drawImage(r, 0, 0, r.width || w, r.height || h, w, 0, w, h);
       camFrames++;
-      noteStereo('sbs', f.eyes || null);
+      if (mono) noteStereo('mono', null);
+      else noteStereo('sbs', f.eyes || null);
     }
   } catch (e) {
     camBad++;

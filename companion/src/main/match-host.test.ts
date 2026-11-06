@@ -3,7 +3,7 @@
  * join with a different table file (accepted by the host's `advise` policy and flagged on both sides: the client from
  * HELLO_ACK's hostGame), start, the turn lock file on each rig, leave.
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -786,5 +786,26 @@ describe('match host: the VR test bench (D7.6.1, 2026-11-03)', () => {
     expect(H.mh.setVrTest('pattern').vrBench).toEqual({ connected: true, protocol: 3, pattern: true });
     H.mh.setVrTest(null);
     expect(tests).toEqual(['pattern', null]);
+  });
+});
+
+describe('match host: the settings migration (D8.1, 2026-11-05)', () => {
+  it('a match.json from 0.2.35 (no settingsVersion, screen capture by hand) is set to the VR layer, one eye, once, and saved at version 2; a current file is left alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-match-migrate-'));
+    dirs.push(dir);
+    const file = join(dir, 'match.json');
+    writeFileSync(file, '{"v":1,"port":27401,"ballsPerGame":3,"displayName":"Krobs","cueVolume":80,"theaterScale":0.8,"cameraSource":"screen","cameraView":"window"}\n');
+    const media = { setCameraEyes: vi.fn(), setCameraSource: vi.fn(), onStatus: () => () => undefined, status: () => null };
+    const a = make('migrate', 'ab'.repeat(32), { file, media: media as never });
+    expect(a.mh.status().settings).toMatchObject({ displayName: 'Krobs', theaterScale: 0.8, cameraView: 'window', cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2 });
+    expect(media.setCameraSource).toHaveBeenCalledWith('layer');
+    expect(media.setCameraEyes).toHaveBeenCalledWith('one');
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+    expect(saved).toMatchObject({ settingsVersion: 2, cameraSource: 'layer', cameraEyes: 'one', theaterScale: 0.8 });
+    // The player goes back to the screen capture, both eyes: a second start keeps that (version 2 is not migrated again).
+    a.mh.setSettings({ cameraSource: 'screen', cameraEyes: 'both' });
+    expect(media.setCameraEyes).toHaveBeenLastCalledWith('both');
+    const b = make('migrate2', 'ab'.repeat(32), { file });
+    expect(b.mh.status().settings).toMatchObject({ cameraSource: 'screen', cameraEyes: 'both', settingsVersion: 2 });
   });
 });
