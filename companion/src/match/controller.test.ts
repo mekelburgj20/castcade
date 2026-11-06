@@ -9,7 +9,7 @@ import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../me
 import { headerText } from '../media/panel-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, vrViewMode, type ControllerFeed, type CueKind } from './controller.js';
+import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -80,7 +80,7 @@ interface Seat {
   logs: string[];
 }
 
-function seat(role: HostMatch | ClientMatch, clock: ManualClock, ballsPerGame?: number): Seat {
+function seat(role: HostMatch | ClientMatch, clock: ManualClock, ballsPerGame?: number, extra: Partial<MatchControllerOptions> = {}): Seat {
   const locks: Seat['locks'] = [];
   const cues: CueKind[] = [];
   const media = new FakeMedia();
@@ -96,6 +96,7 @@ function seat(role: HostMatch | ClientMatch, clock: ManualClock, ballsPerGame?: 
     clearTimeout: (h) => clock.clearTimeout(h),
     log: (l) => logs.push(l),
     ballsPerGame,
+    ...extra,
   });
   return { ctl, locks, cues, media, logs };
 }
@@ -747,5 +748,167 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     await flush();
     expect(host.countdownRemaining()).toBeNull();
     expect(H.media.panel.message).toBe('Everyone in? Start a game on your table (or press Start match)');
+  });
+});
+
+describe('A12 (2026-11-05): no game before the match', () => {
+  const gameStart: ControllerFeed = { kind: 'game_start', t: 0, players: 1 };
+
+  /** A host alone in its lobby (`rig()` joins the client at once); the client is made with `join()`. */
+  function lobby(preMatchPlay?: 'free' | 'locked') {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const H = seat(host, clock, 1, { preMatchPlay });
+    const join = async (clientGame: GameFingerprint = game) => {
+      const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'A', hostId: 'h', clock });
+      const C = seat(client, clock, undefined, { preMatchPlay });
+      await C.ctl.open();
+      client.join();
+      await flush();
+      return { client, C };
+    };
+    return { bus, clock, host, H, join };
+  }
+
+  it("free play (default): the host's game started before the join is never game 1; the join waits for it to end, the next Start counts down", async () => {
+    const { clock, host, H, join } = lobby();
+    await H.ctl.open();
+    expect(H.locks).toEqual([]);
+    H.ctl.feed(gameStart);
+    expect(H.logs).toContain('match: a game started on the table, but nobody has joined yet; the match does not start');
+    const { client, C } = await join();
+    // The lobby is complete, but the host's game runs: nothing starts, nothing is locked; the host's panel says why.
+    expect(host.countdownRemaining()).toBeNull();
+    expect(H.ctl.status()).toMatchObject({ phase: 'lobby', locked: false, waitingForHostGame: true });
+    expect(H.logs).toContain("match: the lobby is complete, but a game is running on the host's table; the match starts at the next Start after it ends");
+    expect(H.media.panel.message).toBe('Everyone is in: finish the game on your table, then press Start on it to start the match');
+    expect(C.media.panel.message).toBe('Waiting for Hosty to start a game on the table');
+    expect(H.locks).toEqual([]);
+    expect(C.locks).toEqual([]);
+    // The host's game ends: the usual "press Start" line; nothing started.
+    H.ctl.feed(gameEnd(1200));
+    expect(H.ctl.status().waitingForHostGame).toBe(false);
+    expect(H.logs).toContain("match: the game on the host's table ended; the next Start on the table starts the match");
+    expect(H.media.panel.message).toBe('Everyone in? Start a game on your table (or press Start match)');
+    expect(host.countdownRemaining()).toBeNull();
+    // The next Start: the A11 countdown, then the match, with the host up on ball 1 of a fresh game.
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(host.countdownRemaining()).toBe(5000);
+    expect(headerText(C.media.panel)).toBe('STARTING IN 5');
+    clock.advance(5000);
+    await flush();
+    expect(host.state.phase).toBe('running');
+    expect(client.state.phase).toBe('running');
+    expect(H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, waitingForHostGame: false });
+    expect(H.locks).toEqual(['lock', 'unlock']);
+    expect(C.locks).toEqual(['lock']);
+  });
+
+  it('free play: a second game_start with no game_end between is the start; a leave while waiting drops the wait', async () => {
+    const { host, H, join } = lobby('free');
+    await H.ctl.open();
+    H.ctl.feed(gameStart);
+    await join();
+    expect(H.ctl.status().waitingForHostGame).toBe(true);
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(H.logs).toContain('match: a new game started on the table while the lobby waited for the last one to end; taking it as the start');
+    expect(H.ctl.status().waitingForHostGame).toBe(false);
+    expect(host.countdownRemaining()).toBe(5000);
+
+    // Another lobby: waiting, then the client leaves: back to "Waiting for players"; a game still runs on the table.
+    const second = lobby('free');
+    await second.H.ctl.open();
+    second.H.ctl.feed(gameStart);
+    await second.join();
+    expect(second.H.ctl.status().waitingForHostGame).toBe(true);
+    second.bus.disconnect('c');
+    await flush();
+    expect(second.H.ctl.status().waitingForHostGame).toBe(false);
+    expect(second.H.media.panel.message).toBe('Waiting for players');
+  });
+
+  it('a game already running at host time (the witness says so) is waited out the same way', async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const H = seat(host, clock, 1, { tableGameRunning: true });
+    await H.ctl.open();
+    const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'A', hostId: 'h', clock });
+    const C = seat(client, clock);
+    await C.ctl.open();
+    client.join();
+    await flush();
+    expect(H.ctl.status().waitingForHostGame).toBe(true);
+    H.ctl.feed(gameEnd(5));
+    H.ctl.feed(gameStart);
+    expect(host.countdownRemaining()).toBe(5000);
+  });
+
+  it('locked: the host\'s table is locked from Host, unlocked when the lobby is complete, locked again on a leave; a client\'s never', async () => {
+    const { bus, clock, host, H, join } = lobby('locked');
+    await H.ctl.open();
+    expect(H.locks).toEqual(['lock']);
+    expect(H.ctl.status().locked).toBe(true);
+    expect(H.media.panel.message).toBe('Waiting for players — the table unlocks when someone joins');
+    expect(H.logs).toContain('match: your table is locked until the lobby is complete (Before the match: locked)');
+    const { C } = await join();
+    expect(H.locks).toEqual(['lock', 'unlock']);
+    expect(H.ctl.status().locked).toBe(false);
+    expect(H.media.panel.message).toBe('Everyone in? Start a game on your table (or press Start match)');
+    expect(C.locks).toEqual([]);
+    expect(C.ctl.status().locked).toBe(false);
+    expect(C.media.panel.message).toBe('Waiting for Hosty to start a game on the table');
+    // The client leaves before the countdown: locked again.
+    bus.disconnect('c');
+    await flush();
+    expect(H.locks).toEqual(['lock', 'unlock', 'lock']);
+    expect(H.media.panel.message).toBe('Waiting for players — the table unlocks when someone joins');
+    // A second client joins; the Start press starts the countdown as in A11; MATCH_READY locks as always, grant 1 unlocks.
+    const k2 = generateKeys();
+    const c2 = new ClientMatch({ transport: bus.transport('c2'), keys: k2, participant: { ...participant('c2', k2), displayName: 'Bea' }, game, throwdownCode: 'A', hostId: 'h', clock });
+    const C2 = seat(c2, clock, undefined, { preMatchPlay: 'locked' });
+    await C2.ctl.open();
+    c2.join();
+    await flush();
+    expect(H.locks).toEqual(['lock', 'unlock', 'lock', 'unlock']);
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(host.countdownRemaining()).toBe(5000);
+    clock.advance(5000);
+    await flush();
+    expect(host.state.phase).toBe('running');
+    expect(H.locks).toEqual(['lock', 'unlock', 'lock', 'unlock', 'lock', 'unlock']);
+    expect(C2.locks).toEqual(['lock']);
+  });
+
+  it('locked: a joined player whose table is still loading keeps the lock; the setting switched in the lobby takes effect at once', async () => {
+    const noTable: GameFingerprint = { ...game, tableName: 'no table open', tableHash: '0'.repeat(64) };
+    const { H, join } = lobby('locked');
+    await H.ctl.open();
+    const { client } = await join(noTable);
+    expect(H.locks).toEqual(['lock']);
+    expect(H.media.panel.message).toBe("Waiting for Krobs's table to open; your table unlocks then");
+    client.updateParticipant({ game });
+    await flush();
+    expect(H.locks).toEqual(['lock', 'unlock']);
+    // Back to free play then locked again, with the lobby complete: nothing to lock.
+    H.ctl.setPreMatchPlay('free');
+    H.ctl.setPreMatchPlay('locked');
+    expect(H.locks).toEqual(['lock', 'unlock']);
+
+    const alone = lobby('free');
+    await alone.H.ctl.open();
+    alone.H.ctl.setPreMatchPlay('locked');
+    expect(alone.H.locks).toEqual(['lock']);
+    alone.H.ctl.setPreMatchPlay('free');
+    expect(alone.H.locks).toEqual(['lock', 'unlock']);
+    expect(alone.H.media.panel.message).toBe('Waiting for players');
   });
 });

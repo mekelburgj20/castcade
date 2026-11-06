@@ -67,6 +67,10 @@ export interface MatchSettings {
   eyeOffsetDeg: [number, number];
   /** D7.5.11 (2026-11-04): the fraction of one eye's half width over which the window fades to black at its edges (0–0.25). */
   softEdge: number;
+  // A12 (2026-11-05): the host's table before the match: free play until the lobby is complete (then the running
+  // game must end before the Start that begins the match), or locked until someone joins. The owner's 2026-11-05
+  // match: Start pressed before the other player joined, the join started nothing, host again.
+  preMatchPlay: 'free' | 'locked';
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -86,6 +90,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   windowDepthM: null,
   eyeOffsetDeg: [0, 0],
   softEdge: 0.03,
+  // A12 (2026-11-05)
+  preMatchPlay: 'free',
 };
 
 export function cleanPort(v: unknown): number | null {
@@ -149,6 +155,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('windowDepthM' in p) next.windowDepthM = cleanWindowDepth(p.windowDepthM);
   if ('eyeOffsetDeg' in p) next.eyeOffsetDeg = cleanEyeOffset(p.eyeOffsetDeg) ?? current.eyeOffsetDeg;
   if ('softEdge' in p) next.softEdge = cleanSoftEdge(p.softEdge) ?? current.softEdge;
+  // A12 (2026-11-05)
+  if (p.preMatchPlay === 'free' || p.preMatchPlay === 'locked') next.preMatchPlay = p.preMatchPlay;
   return next;
 }
 

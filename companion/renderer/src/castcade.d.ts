@@ -487,6 +487,8 @@ interface MatchSettings {
   eyeOffsetDeg: [number, number];
   /** D7.5.11: the window's soft edge, 0–0.25 of one eye's half width. */
   softEdge: number;
+  /** A12 (2026-11-05): the host's table before the match: free play until the lobby is complete, or locked until then. */
+  preMatchPlay: 'free' | 'locked';
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
