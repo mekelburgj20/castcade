@@ -158,6 +158,20 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     }
   };
   const paths = (suffix: string) => calls.filter((c) => c.path.endsWith(suffix));
+  /**
+   * H (2026-11-05): wait for a condition that a launch's chain reaches only after real I/O (the first read of the maps
+   * corpus on a cold CI runner is a disk macrotask that `flush`'s fixed rounds can outrun: `witness.test.ts` failed on
+   * ubuntu twice in three runs with `expected [] to have a length of 1`). Flushes until `pred` holds, with a short
+   * real timer between rounds; throws after `maxMs` so a wrong expectation still fails fast.
+   */
+  const until = async (pred: () => boolean, maxMs = 5000): Promise<void> => {
+    const start = Date.now();
+    while (!pred()) {
+      if (Date.now() - start > maxMs) throw new Error(`until: the condition did not hold within ${maxMs} ms`);
+      await flush();
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+  };
   return {
     clock,
     fs,
@@ -171,6 +185,7 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     errors,
     notices,
     flush,
+    until,
     paths,
     setRespond(fn: typeof respond) {
       respond = fn;
@@ -1560,6 +1575,7 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     // The same table again this run: no second balloon, the Status line still says so.
     await h.exit();
     await h.launch();
+    await h.until(() => h.notices.length >= 1);
     expect(h.notices).toHaveLength(1);
     expect(h.witness.status().note).toMatch(/not patched/);
   });
@@ -1570,6 +1586,7 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     h.fs.put(MM_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(script)), record('ENDB', new Uint8Array(0))) }));
     await h.witness.start();
     await h.launch();
+    await h.until(() => h.notices.length >= 1);
     expect(h.notices).toHaveLength(1);
     expect(h.notices[0]).toMatchObject({ kind: 'unpatched', table: MM_TABLE, patchable: false, title: 'Castcade: basic mode' });
     expect(h.notices[0]?.message).toMatch(/live score can't be read yet \(no NVRAM map for this ROM\)/);
@@ -1586,6 +1603,7 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     h.fs.put(MM_PATH, buildVpx({ gameData: concat(record('LEFT', u32le(0)), floatRecord('GAVT', 1.75), codeRecord(ascii(original)), record('ENDB', new Uint8Array(0))) }));
     await h.witness.start();
     await h.launch();
+    await h.until(() => h.notices.length >= 1);
     expect(h.notices).toHaveLength(1);
     expect(h.notices[0]).toMatchObject({ kind: 'unpatched', table: MM_TABLE, patchable: false, title: 'Castcade: score not read' });
     expect(h.notices[0]?.message).toMatch(/original table \(no ROM\).*won't post/);
