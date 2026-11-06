@@ -14,6 +14,10 @@ Table: ________ (ROM ______)
   Match tab says "VPX started before this layer was registered"). From 0.2.36 the camera is the VR layer sending one
   eye (ADR 0009): no preview window is captured on a VR rig, so PuP and DMD windows may sit anywhere; the first start
   after the update migrates your match settings once (`match: match.json from before 0.2.36` in the log).
+- [ ] **VPX not as administrator.** A VPX run elevated hides its modules from Castcade: the Match tab reads
+  "monitor (desktop panel) … vrclient not loaded, compositor not running" whatever the headset does. Untick *Run this
+  program as an administrator* (the VPX exe → Properties → Compatibility), then **restart VPX**: the change applies
+  to the next launch only (two joins on 2026-11-06 probed the old, still-elevated VPX).
 - [ ] **The same table file on both PCs**: the table and ROM written in the line at the top. Copy the file, do not
   download it twice from different places. Castcade compares the two files and warns "different table file" if they differ.
 - [ ] **Patched**: Castcade, Settings, **Import tables for live scores**, Browse to your `tables` folder,
@@ -33,6 +37,9 @@ Table: ________ (ROM ______)
 - [ ] **SteamVR running** (the headset panel is drawn through it).
 - [ ] **A headset microphone chosen** on the Castcade **Match** tab. Do not leave it on "default": in VR the Windows
   default is often a virtual device (Steam Streaming Microphone, Virtual Desktop Audio) that records silence.
+  On Virtual Desktop the headset microphone is "Microphone (Virtual Desktop Audio)" and only exists while microphone
+  passthrough is on in the Virtual Desktop settings (the Streamer or the in-headset menu); reconnect the headset after
+  turning it on.
 - [ ] **Host only:** forward **TCP 27401** to your PC in your router. In a typical router page this is under
   "Port forwarding", "Virtual server" or "NAT"; add a rule, TCP, port 27401, to your PC's local address. Know your
   public IP (Castcade shows it in the invite; <https://api.ipify.org> also tells you).
