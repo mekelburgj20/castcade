@@ -19,30 +19,99 @@ export type Newline = '\r\n' | '\n';
 
 export interface ScriptLines {
   lines: string[];
+  /**
+   * The ending that followed each line as found (`\r\n`, `\n` or `\r`; `''` for a last line without one), one
+   * per line. A script with mixed endings (VPW multi-author scripts: Krobs' Twilight Zone, 2026-11-06, C13) keeps
+   * every line's own ending through a render and an unpatch, so the round trip stays byte-exact.
+   */
+  endings: string[];
+  /** The dominant newline (CRLF when at least half the LFs are CRLFs): what inserted lines get. */
   newline: Newline;
-  /** Whether the text ended with `newline` (so the render can end the same way). */
+  /** Whether the text ended with a newline (so the render can end the same way). */
   trailingNewline: boolean;
 }
 
-function count(text: string, needle: string): number {
-  let n = 0;
-  for (let i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + needle.length)) n++;
-  return n;
-}
+const NEWLINE_RX = /\r\n|\r|\n/g;
 
-/** Split on the dominant newline (CRLF when at least half the LFs are CRLFs), dropping one trailing empty line. */
+/**
+ * Split on every newline (`\r\n`, `\n` or `\r`), so no logical line ever hides inside another: splitting on the
+ * dominant newline alone (0.2.11–0.2.36) folded an LF-only run of a CRLF script into one chunk, where `^` could not
+ * match and the first comment apostrophe cut the rest off, and the classifier refused the table with "no _KeyDown
+ * handler". One trailing empty line is dropped and remembered as `trailingNewline`.
+ */
 export function splitScript(text: string): ScriptLines {
-  const crlf = count(text, '\r\n');
-  const lf = count(text, '\n');
-  const newline: Newline = crlf > 0 && crlf >= Math.floor(lf / 2) ? '\r\n' : '\n';
-  const lines = text.split(newline);
-  const trailingNewline = lines.length > 1 && lines[lines.length - 1] === '';
-  if (trailingNewline) lines.pop();
-  return { lines, newline, trailingNewline };
+  const lines: string[] = [];
+  const endings: string[] = [];
+  let crlf = 0;
+  let lf = 0;
+  let last = 0;
+  NEWLINE_RX.lastIndex = 0;
+  for (let m = NEWLINE_RX.exec(text); m !== null; m = NEWLINE_RX.exec(text)) {
+    lines.push(text.slice(last, m.index));
+    endings.push(m[0]);
+    if (m[0] === '\r\n') crlf++;
+    else if (m[0] === '\n') lf++;
+    last = m.index + m[0].length;
+  }
+  const tail = text.slice(last);
+  const trailingNewline = lines.length > 0 && tail === '';
+  if (!trailingNewline) {
+    lines.push(tail);
+    endings.push('');
+  }
+  // `lf` here is the bare LFs; the rule counts every LF as before (CRLF when at least half of all LFs are CRLFs).
+  const newline: Newline = crlf > 0 && crlf >= Math.floor((crlf + lf) / 2) ? '\r\n' : '\n';
+  return { lines, endings, newline, trailingNewline };
 }
 
-export function joinScript(s: ScriptLines): string {
-  return s.lines.join(s.newline) + (s.trailingNewline ? s.newline : '');
+/**
+ * Join lines back to text: each line with its own ending where one is known (`endings[i]`, the same index as
+ * `lines[i]`), the dominant `newline` for a line without one (an inserted line, or a last line that had none when
+ * `trailingNewline` asks for one). The last line gets no ending unless `trailingNewline`.
+ */
+export function joinScript(s: Omit<ScriptLines, 'endings'> & { endings?: readonly string[] }): string {
+  const n = s.lines.length;
+  const parts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    parts.push(s.lines[i] ?? '');
+    if (i < n - 1 || s.trailingNewline) parts.push(s.endings?.[i] || s.newline);
+  }
+  return parts.join('');
+}
+
+/**
+ * True when the decoded text is UTF-16 rather than the ANSI VPX writes: a byte-order mark, or NULs through the
+ * first 4 KB (every other byte of ASCII text). Decoded as latin1 such a script classifies as X with a misleading
+ * "no _KeyDown handler"; the classifier names the encoding instead (C13).
+ */
+export function looksUtf16(text: string): boolean {
+  if (text.startsWith('\u00ff\u00fe') || text.startsWith('\u00fe\u00ff')) return true;
+  const head = text.slice(0, 4096);
+  if (head.length < 16) return false;
+  let nul = 0;
+  for (let i = 0; i < head.length; i++) if (head.charCodeAt(i) === 0) nul++;
+  return nul * 5 >= head.length;
+}
+
+/** What a refusal log names about a script's bytes, so the next odd script is readable from companion.log (C13). */
+export function describeScriptText(text: string): string {
+  let crlf = 0;
+  let lf = 0;
+  let cr = 0;
+  let nul = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x0d) {
+      if (text.charCodeAt(i + 1) === 0x0a) {
+        crlf++;
+        i++;
+      } else cr++;
+    } else if (c === 0x0a) lf++;
+    else if (c === 0) nul++;
+  }
+  const first = text.split(NEWLINE_RX).find((l) => l.trim() !== '') ?? '';
+  const shown = first.trim().slice(0, 60).replace(/[^\x20-\x7e]/g, '?');
+  return `script ${text.length} bytes, ${crlf} CRLF / ${lf} LF / ${cr} CR / ${nul} NUL; first line "${shown}"`;
 }
 
 /** The code part of a VBScript line: the text before a `'` that is outside a string literal. */

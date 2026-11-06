@@ -93,7 +93,7 @@ describe('planImport (dry run)', () => {
     const foreign = byPath(plan.items, FOREIGN);
     expect(foreign).toMatchObject({ action: 'foreign', cls: null });
     expect(foreign.reason).toMatch(/not Castcade's; left alone/);
-    expect(byPath(plan.items, NOKEYS)).toMatchObject({ action: 'unsupported', cls: 'X', reason: 'no _KeyDown handler' });
+    expect(byPath(plan.items, NOKEYS)).toMatchObject({ action: 'unsupported', cls: 'X', reason: expect.stringMatching(/^no _KeyDown handler \(script \d+ bytes, \d+ CRLF \/ \d+ LF \/ 0 CR \/ 0 NUL; first line "/) });
     const broken = byPath(plan.items, BROKEN);
     expect(broken.action).toBe('unsupported');
     expect(broken.reason).toMatch(/cannot read the table/);

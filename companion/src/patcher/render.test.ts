@@ -4,7 +4,7 @@ import { classifyScript } from './classify.js';
 import { libraryVersionOf } from './import.js';
 import { LIB_VERSION, RECIPE_VERSION, STUB, formatLocalStamp, isOurSidecar, parseSidecarMarker, renderRecipeA, unpatchRecipeA, type RenderOptions } from './render.js';
 import { decodeScript, encodeScript, splitScript } from './script-text.js';
-import { ORIGINAL_B_SCRIPT, PATCHED_VPM_SCRIPT, VPM_DECLARED_SCRIPT, VPM_NO_LOADVPM_SCRIPT, VPM_SCRIPT, crlf, lf } from './test-scripts.test-support.js';
+import { ORIGINAL_B_SCRIPT, PATCHED_VPM_SCRIPT, VPM_DECLARED_SCRIPT, VPM_NO_LOADVPM_SCRIPT, VPM_SCRIPT, crlf, lf, mixed } from './test-scripts.test-support.js';
 
 const MTIME = new Date(2026, 9, 21, 13, 5, 9).getTime(); // local 2026-10-21 13:05:09
 
@@ -177,11 +177,23 @@ describe('unpatchRecipeA (F5: our own patch is exempt by content)', () => {
   const trimEnd = (t: string) => t.replace(/(\r?\n)+$/, '');
   const roundTrip = (text: string, opts: RenderOptions = OPTS) => unpatchRecipeA(decodeScript(renderRecipeA(text, classifyScript(text), opts).bytes));
 
-  it('render then unpatch gives back the original script, CRLF or LF, with or without the optional lines', () => {
-    for (const script of [crlf(VPM_SCRIPT), lf(VPM_SCRIPT), crlf(VPM_DECLARED_SCRIPT), crlf(VPM_NO_LOADVPM_SCRIPT)]) {
+  it('render then unpatch gives back the original script, CRLF, LF or mixed, with or without the optional lines', () => {
+    for (const script of [crlf(VPM_SCRIPT), lf(VPM_SCRIPT), mixed(VPM_SCRIPT, 7, 25), crlf(VPM_DECLARED_SCRIPT), crlf(VPM_NO_LOADVPM_SCRIPT)]) {
       expect(trimEnd(roundTrip(script)!)).toBe(trimEnd(script));
       expect(trimEnd(roundTrip(script, { ...OPTS, watchOffsets: [5792, 141], extraKeys: ['LeftMagnaSave'] })!)).toBe(trimEnd(script));
     }
+  });
+
+  it('a mixed-ending script keeps every line\'s own ending and our lines get the dominant one (C13)', () => {
+    const script = mixed(VPM_SCRIPT, 7, 18); // 11 LF lines in 33: CRLF stays dominant
+    const rendered = decodeScript(renderRecipeA(script, classifyScript(script), OPTS).bytes);
+    expect(roundTrip(script)).toBe(script);
+    // the table's LF lines are still LF, its CRLF lines still CRLF, in the sidecar
+    expect(rendered).toContain('LoadVPM "01560000", "WPC.VBS", 3.26\n');
+    expect(rendered).toContain('Option Explicit\r\n');
+    // ours: the dominant newline (CRLF here), including the lines inserted inside the LF run
+    expect(rendered).toMatch(/Castcade_RegisterNVRAM {3}' Castcade:[^\r\n]*\r\n/);
+    expect(rendered).toMatch(/' --- end Castcade ---\r\n$/);
   });
 
   it('a hand edit in our sidecar survives the unpatch, and nothing else does', () => {

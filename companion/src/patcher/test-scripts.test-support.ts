@@ -319,3 +319,6 @@ export const PATCHED_VPM_SCRIPT = [
 
 export const crlf = (lines: readonly string[]): string => lines.join('\r\n') + '\r\n';
 export const lf = (lines: readonly string[]): string => lines.join('\n') + '\n';
+/** CRLF throughout except lines `[from, to)`, which end in LF: a VPW multi-author script's shape (C13). */
+export const mixed = (lines: readonly string[], from: number, to: number): string =>
+  lines.map((l, i) => l + (i >= from && i < to ? '\n' : '\r\n')).join('');

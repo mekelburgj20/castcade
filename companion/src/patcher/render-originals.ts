@@ -229,6 +229,8 @@ interface Insert {
 
 class Render {
   readonly out: string[];
+  /** `out[i]`'s line ending: the table's own for its lines, the dominant newline for ours (C13). */
+  readonly endings: string[];
   readonly inserts: Insert[] = [];
   readonly warnings: string[] = [];
   readonly partial: string[] = [];
@@ -237,8 +239,17 @@ class Render {
   constructor(
     readonly recipe: OriginalRecipe,
     readonly lines: readonly string[],
+    endings: readonly string[] = [],
+    readonly newline: string = '\r\n',
   ) {
     this.out = [...lines];
+    this.endings = lines.map((_, i) => endings[i] ?? '');
+  }
+
+  /** Put `block` into `out` at `idx` with the dominant newline on each line. */
+  splice(idx: number, block: readonly string[]): void {
+    this.out.splice(idx, 0, ...block);
+    this.endings.splice(idx, 0, ...block.map(() => this.newline));
   }
 
   call(fn: string): string {
@@ -298,7 +309,7 @@ function renderOriginal(recipe: OriginalRecipe, scriptText: string, cls: Classif
   if (!T || !f.keyDownLine) throw new Error(`${fn}: no _KeyDown handler`);
 
   const split = splitScript(scriptText);
-  const r = new Render(recipe, split.lines);
+  const r = new Render(recipe, split.lines, split.endings, split.newline);
 
   // block 0, the handler renames and the wrappers: exactly recipe A's
   const oe = f.optionExplicitLine ?? 0;
@@ -322,14 +333,14 @@ function renderOriginal(recipe: OriginalRecipe, scriptText: string, cls: Classif
 
   // Bottom-up so earlier indexes stay valid; at one index the first-placed line stays first. Every anchor is in a sub,
   // so below Option Explicit: block 0 goes in last.
-  for (const ins of [...r.inserts].sort((a, b) => b.idx - a.idx || b.seq - a.seq)) r.out.splice(ins.idx, 0, ins.line);
-  r.out.splice(oe > 0 ? oe : 0, 0, ...block0(recipe, opts));
+  for (const ins of [...r.inserts].sort((a, b) => b.idx - a.idx || b.seq - a.seq)) r.splice(ins.idx, [ins.line]);
+  r.splice(oe > 0 ? oe : 0, block0(recipe, opts));
   const w = wrappers(T, Boolean(f.keyUpLine), Boolean(f.exitLine));
-  r.out.push(...w, '', originalsBlockStart(recipe), ...tail, originalsBlockEnd(recipe));
+  r.splice(r.out.length, [...w, '', originalsBlockStart(recipe), ...tail, originalsBlockEnd(recipe)]);
   r.anchors['wrappers'] = `appended (${w.length} lines)`;
   r.anchors['recipe'] = `recipe ${recipe} block appended (${tail.length + 2} lines)`;
 
-  const bytes = encodeScript(joinScript({ lines: r.out, newline: split.newline, trailingNewline: true }));
+  const bytes = encodeScript(joinScript({ lines: r.out, endings: r.endings, newline: split.newline, trailingNewline: true }));
   return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), warnings: r.warnings, anchors: r.anchors, partial: r.partial };
 }
 

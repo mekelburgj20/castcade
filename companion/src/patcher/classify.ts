@@ -3,7 +3,7 @@
  * `classify()` in `vpx-hook/spike/render-sidecar.py` (the Phase 0 renderer). Regex + anchors over the
  * code part of each line (comments stripped, string literals kept); no VBScript parser.
  */
-import { escapeRegExp, findLine, findSub, hasIdent, splitScript, stripComment } from './script-text.js';
+import { escapeRegExp, findLine, findSub, hasIdent, looksUtf16, splitScript, stripComment } from './script-text.js';
 
 export type ScriptClass = 'A' | 'B' | 'C' | 'D' | 'E' | 'X';
 
@@ -46,6 +46,9 @@ export interface ClassifyResult {
 const lineNo = (idx: number): number | null => (idx < 0 ? null : idx + 1);
 
 export function classifyScript(text: string): ClassifyResult {
+  if (looksUtf16(text)) {
+    return { cls: 'X', facts: { reason: 'script is UTF-16 text, not the ANSI VPX writes; re-save the table from the VPX editor' } };
+  }
   return classifyLines(splitScript(text).lines);
 }
 

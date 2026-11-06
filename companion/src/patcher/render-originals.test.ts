@@ -14,6 +14,7 @@ import {
   SCORESERVER_D_UNKNOWN_SCRIPT,
   VPM_SCRIPT,
   crlf,
+  mixed,
   lf,
 } from './test-scripts.test-support.js';
 
@@ -206,8 +207,8 @@ describe('renderRecipeB (JPSalas original)', () => {
     expect(() => renderSidecar(e, classifyScript(e), OPTS)).toThrow(/class E has no recipe/);
   });
 
-  it('is deterministic, and the undo gives back the table script byte for byte (CRLF and LF)', () => {
-    for (const text of [crlf(JPSALAS_B_SCRIPT), lf(JPSALAS_B_SCRIPT), crlf(ORIGINAL_B_SCRIPT)]) {
+  it('is deterministic, and the undo gives back the table script byte for byte (CRLF, LF and mixed)', () => {
+    for (const text of [crlf(JPSALAS_B_SCRIPT), lf(JPSALAS_B_SCRIPT), mixed(JPSALAS_B_SCRIPT, 5, 30), crlf(ORIGINAL_B_SCRIPT)]) {
       const a = render(JPSALAS_B_SCRIPT, text);
       const b = render(JPSALAS_B_SCRIPT, text);
       expect(b.r.sha256).toBe(a.r.sha256);

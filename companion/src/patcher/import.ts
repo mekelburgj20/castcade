@@ -22,7 +22,7 @@ import { readManifest, writeManifest, type Manifest } from './manifest.js';
 import { basenameOf, isVpxName, joinPath, manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor, vpxPathForSidecar } from './paths.js';
 import { GUARD_MTIME_TOLERANCE_SEC, LIB_VERSION, isOurSidecar, recipeVersionFor, unpatchSidecar } from './render.js';
 import { recipeFor, renderSidecar } from './render-originals.js';
-import { decodeScript } from './script-text.js';
+import { decodeScript, describeScriptText } from './script-text.js';
 
 export type PlanAction = 'patch' | 'repatch' | 'already' | 'skip' | 'foreign' | 'unsupported' | 'unreadable';
 
@@ -225,7 +225,8 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   const { cls, facts } = classified;
   const rom = facts.rom ?? null;
   const sidecarNote = check.state === 'none' || check.state === 'disabled' ? '' : '; an existing Castcade sidecar remains (remove-all deletes it)';
-  if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'}${sidecarNote}`);
+  // C13: a class X refusal names the script's bytes, so a mixed-ending or UTF-16 script is readable from the log.
+  if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'} (${describeScriptText(source.text)})${sidecarNote}`);
   const recipe = recipeFor(cls);
   if (recipe === null) return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe E needs a guided pick of the scoring Sub, not built yet${sidecarNote}`);
   if (facts.alreadyPatched) return item('already', cls, rom, 'the embedded script already contains Castcade_Init');

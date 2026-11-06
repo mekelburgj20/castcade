@@ -176,6 +176,7 @@ export function renderRecipeA(scriptText: string, cls: ClassifyResult, opts: Ren
 
   const split = splitScript(scriptText);
   const out = [...split.lines];
+  const endings = [...split.endings];
   const warnings: string[] = [];
   const anchors: Record<string, string> = {};
   const inserts: { idx: number; block: string[] }[] = [];
@@ -218,13 +219,18 @@ export function renderRecipeA(scriptText: string, cls: ClassifyResult, opts: Ren
 
   // apply inserts bottom-up so earlier indexes stay valid
   inserts.sort((a, b) => b.idx - a.idx);
-  for (const { idx, block } of inserts) out.splice(idx, 0, ...block);
+  for (const { idx, block } of inserts) {
+    out.splice(idx, 0, ...block);
+    endings.splice(idx, 0, ...block.map(() => split.newline));
+  }
 
   const tail = wrappers(T, Boolean(f.keyUpLine), Boolean(f.exitLine));
   out.push(...tail);
+  endings.push(...tail.map(() => split.newline));
   anchors['wrappers'] = `appended (${tail.length} lines)`;
 
-  const bytes = encodeScript(joinScript({ lines: out, newline: split.newline, trailingNewline: true }));
+  // The table's own lines keep their own endings (C13); every inserted line gets the dominant one.
+  const bytes = encodeScript(joinScript({ lines: out, endings, newline: split.newline, trailingNewline: true }));
   return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), warnings, anchors };
 }
 
@@ -298,7 +304,8 @@ export function unpatchSidecar(text: string): string | null {
     .filter((_, i) => !drop.has(i))
     .map((l) => (tableObject ? l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, `$1${tableObject}_$2`) : l))
     .map((l) => (recipe === 'A' ? l : l.replace(ORIGINAL_EXIT_INSERT, '').split(SCORE_SERVER_SHIM_CALL).join(SCORE_SERVER_CREATE)));
-  return joinScript({ lines: kept, newline: split.newline, trailingNewline: split.trailingNewline });
+  const endings = split.endings.filter((_, i) => !drop.has(i));
+  return joinScript({ lines: kept, endings, newline: split.newline, trailingNewline: split.trailingNewline });
 }
 
 /** The historical name (recipe A was the only recipe): undoes every recipe now, see `unpatchSidecar`. */

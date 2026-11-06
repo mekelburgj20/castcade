@@ -3,7 +3,7 @@
  * classifier, the recipe renderers (A for VPM tables, B/C/D for originals), the manifest, and the folder import (plan / apply / stale
  * guard / remove-all). All I/O goes through a `WitnessFs`; nothing here ever modifies a `.vpx`.
  */
-export { decodeScript, encodeScript, splitScript, joinScript, stripComment, vbStringLiteral, type ScriptLines, type Newline } from './script-text.js';
+export { decodeScript, encodeScript, splitScript, joinScript, stripComment, vbStringLiteral, looksUtf16, describeScriptText, type ScriptLines, type Newline } from './script-text.js';
 export { classifyScript, classifyLines, describeClass, type ScriptClass, type ClassifyResult, type ScriptFacts, type ScorbitAnchor, type OriginalSub } from './classify.js';
 export {
   renderRecipeA,

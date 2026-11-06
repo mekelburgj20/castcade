@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { classifyScript } from './classify.js';
-import { decodeScript, encodeScript, splitScript, stripComment, vbStringLiteral } from './script-text.js';
+import { decodeScript, describeScriptText, encodeScript, joinScript, looksUtf16, splitScript, stripComment, vbStringLiteral } from './script-text.js';
 import {
   COMMENTED_LOADVPM_SCRIPT,
   JPSALAS_B_SCRIPT,
@@ -17,6 +17,7 @@ import {
   VPM_SCRIPT,
   crlf,
   lf,
+  mixed,
 } from './test-scripts.test-support.js';
 
 describe('script text', () => {
@@ -25,10 +26,30 @@ describe('script text', () => {
     expect(encodeScript(decodeScript(bytes))).toEqual(bytes);
   });
 
-  it('splits on the dominant newline and remembers it', () => {
-    expect(splitScript('a\r\nb\r\n')).toEqual({ lines: ['a', 'b'], newline: '\r\n', trailingNewline: true });
-    expect(splitScript('a\nb')).toEqual({ lines: ['a', 'b'], newline: '\n', trailingNewline: false });
+  it('splits on every newline, keeps each line\'s own ending and remembers the dominant one', () => {
+    expect(splitScript('a\r\nb\r\n')).toEqual({ lines: ['a', 'b'], endings: ['\r\n', '\r\n'], newline: '\r\n', trailingNewline: true });
+    expect(splitScript('a\nb')).toEqual({ lines: ['a', 'b'], endings: ['\n', ''], newline: '\n', trailingNewline: false });
     expect(splitScript('a\r\nb\nc\r\n').newline).toBe('\r\n');
+    expect(splitScript('a\r\nb\nc\rd')).toEqual({ lines: ['a', 'b', 'c', 'd'], endings: ['\r\n', '\n', '\r', ''], newline: '\r\n', trailingNewline: false });
+    expect(splitScript('')).toEqual({ lines: [''], endings: [''], newline: '\n', trailingNewline: false });
+    // C13: a CRLF-majority script's LF-only run is lines, not one chunk.
+    expect(splitScript('a\r\nb\nc\nd\r\n').lines).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('joinScript gives back mixed endings byte for byte, and the dominant newline to a line without one', () => {
+    for (const t of ['a\r\nb\nc\rd', 'a\r\nb\nc\nd\r\n', 'x', '', '\n', 'a\n\n\nb']) expect(joinScript(splitScript(t))).toBe(t);
+    // one CRLF in four is not dominant (the rule: CRLF when at least half of all LFs are CRLFs); the new line gets LF
+    const s = splitScript('a\nb\nc\nd\r\ne');
+    expect(s.newline).toBe('\n');
+    expect(joinScript({ ...s, lines: [...s.lines, 'new'], endings: [...s.endings], trailingNewline: true })).toBe('a\nb\nc\nd\r\ne\nnew\n');
+    expect(joinScript({ lines: ['a', 'b'], newline: '\r\n', trailingNewline: true })).toBe('a\r\nb\r\n');
+  });
+
+  it('names a script\'s bytes for the refusal log, and spots UTF-16', () => {
+    expect(describeScriptText('\r\n  Option Explicit\r\nx\ny\rz')).toBe('script 26 bytes, 2 CRLF / 1 LF / 1 CR / 0 NUL; first line "Option Explicit"');
+    expect(looksUtf16(crlf(VPM_SCRIPT))).toBe(false);
+    expect(looksUtf16(decodeScript(new Uint8Array(Buffer.from(crlf(VPM_SCRIPT), 'utf16le'))))).toBe(true);
+    expect(looksUtf16('\u00ff\u00fe' + 'x')).toBe(true);
   });
 
   it('strips a comment outside a string only', () => {
@@ -87,6 +108,24 @@ describe('classifyScript', () => {
 
   it('Scorbit call sites make class C', () => {
     expect(classifyScript(lf(ORIGINAL_C_SCRIPT)).cls).toBe('C');
+  });
+
+  it('a CRLF script with an LF-only run through the KEYS section is still class A (C13, Krobs\' Twilight Zone)', () => {
+    const kd = VPM_SCRIPT.findIndex((l) => l.startsWith('Sub Table1_KeyDown'));
+    const text = mixed(VPM_SCRIPT, kd - 2, kd + 9);
+    const r = classifyScript(text);
+    expect(r.cls).toBe('A');
+    expect(r.facts.keyDownLine).toBe(kd + 1);
+    expect(r.facts.tableObject).toBe('Table1');
+    // The other shapes the ArcAid session reproduced: an LF run at the top, CRLF scattered through an LF script.
+    expect(classifyScript(mixed(VPM_SCRIPT, 0, 12)).cls).toBe('A');
+    expect(classifyScript(VPM_SCRIPT.map((l, i) => l + (i % 3 === 0 ? '\r\n' : '\n')).join('')).cls).toBe('A');
+  });
+
+  it('a UTF-16 script is refused for its encoding, never as "no _KeyDown handler"', () => {
+    const r = classifyScript(decodeScript(new Uint8Array(Buffer.from('\ufeff' + crlf(VPM_SCRIPT), 'utf16le'))));
+    expect(r.cls).toBe('X');
+    expect(r.facts.reason).toMatch(/UTF-16/);
   });
 
   it('no _KeyDown handler is class X', () => {
