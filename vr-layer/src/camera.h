@@ -3,7 +3,9 @@
 // the display and wholly on it, and still stalled on Krobs' rig: D2.5, D7.4.4, D7.4.10), the layer copies the two eye
 // views VPX submits in its XrCompositionLayerProjection, each centre-cropped to the companion's box aspect and scaled
 // into it, encodes them as JPEG and writes them to the pipe as CVF1 frames, with each eye's fov and crop so the
-// receiver's stereo window can use the sender's eyes rather than its own.
+// receiver's stereo window can use the sender's eyes rather than its own. D8.1 (0.5.3; ADR 0009, spectating is 2D):
+// with "eye": "left" | "right" in the request, one eye only is copied, encoded (no helper thread) and sent, the frame's
+// `eyes` array one entry long; without it, both as before.
 //
 // Rules:
 //   - the render thread (inside xrEndFrame) only ISSUES GPU work: OpenGL, a glBlitFramebuffer of the crop into a small

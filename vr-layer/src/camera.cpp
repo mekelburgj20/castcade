@@ -318,6 +318,9 @@ struct Slot {
   uint64_t issueUs = 0, mapUs = 0;
   uint32_t late = 0;  // ticks the fence / Map was not ready
   uint32_t outW = 0, outH = 0;
+  // D8.1 (0.5.3): how many eyes this frame carries (2: left then right at index 0 and 1, as before; 1: one eye at index
+  // 0 only, the second index unused) and which view index 0 holds (0 = left, 1 = right).
+  int eyes = 2, eye0 = 0;
   EyeMeta eye[2];
   // What the worker reads once `state` is Mapped: per eye, rows of dataW pixels at `pitch` bytes.
   const uint8_t* data[2] = {nullptr, nullptr};
@@ -400,13 +403,16 @@ void put32(uint8_t* p, uint32_t v) {
   for (int i = 0; i < 4; i++) p[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
 }
 
-// The CVF1 header: see vr-layer/README.md "The camera". Integers and locale-free fixed-point only.
-std::string frameJson(uint64_t n, uint64_t tUs, uint32_t w, uint32_t h, const EyeMeta eye[2], const size_t len[2], uint64_t issueUs, uint64_t mapUs,
-                      uint64_t copyUs, uint64_t encUs) {
+const char* eyeName(int e) { return e == 0 ? "left" : "right"; }
+
+// The CVF1 header: see vr-layer/README.md "The camera". Integers and locale-free fixed-point only. `eyes` entries
+// (2, or 1 for a one-eye frame, D8.1), each with its payload length.
+std::string frameJson(uint64_t n, uint64_t tUs, uint32_t w, uint32_t h, const EyeMeta eye[2], const size_t len[2], int eyes, uint64_t issueUs,
+                      uint64_t mapUs, uint64_t copyUs, uint64_t encUs) {
   std::string j = "{\"n\":" + std::to_string(n) + ",\"t\":" + std::to_string(tUs) + ",\"enc\":\"jpeg\",\"w\":" + std::to_string(w) + ",\"h\":" +
                   std::to_string(h) + ",\"us\":{\"issue\":" + std::to_string(issueUs) + ",\"map\":" + std::to_string(mapUs) + ",\"copy\":" +
                   std::to_string(copyUs) + ",\"enc\":" + std::to_string(encUs) + "},\"eyes\":[";
-  for (int e = 0; e < 2; e++) {
+  for (int e = 0; e < eyes; e++) {
     const EyeMeta& m = eye[e];
     j += std::string(e == 0 ? "{" : ",{") + "\"fov\":[" + fixed(m.fov[0], 6) + "," + fixed(m.fov[1], 6) + "," + fixed(m.fov[2], 6) + "," + fixed(m.fov[3], 6) +
          "],\"rect\":[" + std::to_string(m.rect[0]) + "," + std::to_string(m.rect[1]) + "," + std::to_string(m.rect[2]) + "," + std::to_string(m.rect[3]) +
@@ -462,34 +468,38 @@ void workerMain(std::shared_ptr<Shared> sh) {
       if (!slot) continue;
       // Out of the mapped memory first (the render thread may then unmap it), then the slow work on our own copies.
       const int64_t t0 = qpc();
-      for (int e = 0; e < 2; e++) packRgba(slot->data[e], slot->pitch[e], slot->dataW[e], slot->dataH[e], slot->bottomUp, slot->swapRB, slot->outW, slot->outH, sh->packed[e]);
+      const int eyes = slot->eyes, eye0 = slot->eye0;
+      for (int e = 0; e < eyes; e++) packRgba(slot->data[e], slot->pitch[e], slot->dataW[e], slot->dataH[e], slot->bottomUp, slot->swapRB, slot->outW, slot->outH, sh->packed[e]);
       const uint64_t n = slot->n, issueUs = slot->issueUs, mapUs = slot->mapUs, late = slot->late;
       const uint32_t ow = slot->outW, oh = slot->outH;
       const uint64_t tUs = usBetween(sh->startQpc, slot->issuedQpc);
       EyeMeta eye[2] = {slot->eye[0], slot->eye[1]};
       slot->state.store(Consumed);
       const int64_t t1 = qpc();
-      {
-        std::lock_guard<std::mutex> lk(sh->hm);
-        sh->helperW = ow;
-        sh->helperH = oh;
-        sh->helperJob = true;
-        sh->helperDone = false;
+      // The second eye to the helper (D8.1: none for a one-eye frame; the helper was not started).
+      if (eyes == 2) {
+        {
+          std::lock_guard<std::mutex> lk(sh->hm);
+          sh->helperW = ow;
+          sh->helperH = oh;
+          sh->helperJob = true;
+          sh->helperDone = false;
+        }
+        sh->hcv.notify_all();
       }
-      sh->hcv.notify_all();
-      const bool leftOk = encodeJpeg(sh->packed[0].data(), ow, oh, kJpegQuality, sh->jpeg[0]);
-      {
+      const bool firstOk = encodeJpeg(sh->packed[0].data(), ow, oh, kJpegQuality, sh->jpeg[0]);
+      if (eyes == 2) {
         std::unique_lock<std::mutex> lk(sh->hm);
         sh->hcv.wait(lk, [&] { return sh->helperDone || sh->stop.load(); });
       }
       if (sh->stop.load()) break;
       const int64_t t2 = qpc();
-      if (!leftOk || sh->jpeg[1].empty()) {
+      if (!firstOk || (eyes == 2 && sh->jpeg[1].empty())) {
         logOnce("camera_encode_failed", "camera: the JPEG encoder refused a " + std::to_string(ow) + "x" + std::to_string(oh) + " eye; frames are dropped");
         continue;
       }
-      const size_t len[2] = {sh->jpeg[0].size(), sh->jpeg[1].size()};
-      const std::string json = frameJson(n, tUs, ow, oh, eye, len, issueUs, mapUs, usBetween(t0, t1), usBetween(t1, t2));
+      const size_t len[2] = {sh->jpeg[0].size(), eyes == 2 ? sh->jpeg[1].size() : 0};
+      const std::string json = frameJson(n, tUs, ow, oh, eye, len, eyes, issueUs, mapUs, usBetween(t0, t1), usBetween(t1, t2));
       const size_t body = 2 + json.size() + len[0] + len[1];
       if (json.size() > 0xffff || body > kMaxFrameBytes) {
         logOnce("camera_frame_too_big", "camera: a frame of " + std::to_string(body) + " bytes is over the pipe's limit; frames are dropped");
@@ -501,7 +511,7 @@ void workerMain(std::shared_ptr<Shared> sh) {
       put16(msg.data() + 8, static_cast<uint32_t>(json.size()));
       std::memcpy(msg.data() + 10, json.data(), json.size());
       std::memcpy(msg.data() + 10 + json.size(), sh->jpeg[0].data(), len[0]);
-      std::memcpy(msg.data() + 10 + json.size() + len[0], sh->jpeg[1].data(), len[1]);
+      if (eyes == 2) std::memcpy(msg.data() + 10 + json.size() + len[0], sh->jpeg[1].data(), len[1]);
       const bool wrote = panelPipeSend(msg.data(), msg.size());
       const int64_t t3 = qpc();
       if (!wrote) {
@@ -517,9 +527,9 @@ void workerMain(std::shared_ptr<Shared> sh) {
       sh->sumBytes += body;
       if (sent <= kLogFirst || sent % kLogEvery == 0) {
         logLine("camera: frame " + std::to_string(n) + ": issue " + std::to_string(issueUs) + " us, ready after " + std::to_string(late) + " tick(s), map " +
-                std::to_string(mapUs) + " us, copy " + std::to_string(usBetween(t0, t1)) + " us, encode " + std::to_string(usBetween(t1, t2)) + " us (L " +
-                std::to_string(len[0]) + " B, R " + std::to_string(len[1]) + " B), write " + std::to_string(usBetween(t2, t3)) + " us; " + std::to_string(ow) + "x" +
-                std::to_string(oh) + " per eye");
+                std::to_string(mapUs) + " us, copy " + std::to_string(usBetween(t0, t1)) + " us, encode " + std::to_string(usBetween(t1, t2)) + " us (" +
+                (eyes == 2 ? "L " + std::to_string(len[0]) + " B, R " + std::to_string(len[1]) + " B" : std::string(eyeName(eye0)) + " " + std::to_string(len[0]) + " B") +
+                "), write " + std::to_string(usBetween(t2, t3)) + " us; " + std::to_string(ow) + "x" + std::to_string(oh) + " per eye");
       }
     }
   } catch (...) {
@@ -543,6 +553,9 @@ struct Camera::Impl {
   int64_t texFormat = 0;
   bool fboChecked = false;
   uint32_t outW = 0, outH = 0;
+  // D8.1 (0.5.3): the eyes sent, as view indices (0 = left, 1 = right) in slot order: {0, 1} for both, {req.eye} for one.
+  int nEyes = 2;
+  int eyeView[2] = {0, 1};
   bool srcBgra = false;
   int64_t nextDueQpc = 0, intervalQpc = 0, startedQpc = 0;
   uint64_t frameNo = 0;
@@ -558,7 +571,7 @@ struct Camera::Impl {
   // ---- OpenGL ----
 
   bool ensureTexture(const FormatInfo& f) {
-    const uint32_t w = outW * 2, h = outH;
+    const uint32_t w = outW * static_cast<uint32_t>(nEyes), h = outH;
     const int64_t fmt = f.srgb ? GL_SRGB8_ALPHA8_ : GL_RGBA8_;
     if (tex && texW == w && texH == h && texFormat == fmt) return true;
     GLint prevTex = 0;
@@ -613,15 +626,16 @@ struct Camera::Impl {
     for (int i = 0; i < 16 && gl.getError() != GL_NO_ERROR_; i++) {
     }
     bool ok = true;
-    const size_t bytes = static_cast<size_t>(outW) * 2 * outH * 4;
+    const uint32_t stripW = outW * static_cast<uint32_t>(nEyes);  // the texture: the eyes side by side (one eye: just it)
+    const size_t bytes = static_cast<size_t>(stripW) * outH * 4;
     if (!slot.pbo) gl.genBuffers(1, &slot.pbo);
     gl.bindBuffer(GL_PIXEL_PACK_BUFFER_, slot.pbo);
     if (slot.pboBytes != bytes) {
       gl.bufferData(GL_PIXEL_PACK_BUFFER_, static_cast<GLsizeiptr>(bytes), nullptr, GL_STREAM_READ_);
       slot.pboBytes = bytes;
     }
-    for (int e = 0; e < 2 && ok; e++) {
-      const CameraView& v = views[e];
+    for (int e = 0; e < nEyes && ok; e++) {
+      const CameraView& v = views[eyeView[e]];
       const AppSwapchain& sc = v.swapchain;
       if (sc.lastReleased < 0 || static_cast<size_t>(sc.lastReleased) >= sc.glImages.size()) {
         ok = false;
@@ -659,7 +673,7 @@ struct Camera::Impl {
       gl.pixelStorei(GL_PACK_ROW_LENGTH_, 0);
       gl.pixelStorei(GL_PACK_SKIP_ROWS_, 0);
       gl.pixelStorei(GL_PACK_SKIP_PIXELS_, 0);
-      gl.readPixels(0, 0, static_cast<GLsizei>(outW * 2), static_cast<GLsizei>(outH), GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
+      gl.readPixels(0, 0, static_cast<GLsizei>(stripW), static_cast<GLsizei>(outH), GL_RGBA_, GL_UNSIGNED_BYTE_, nullptr);
       slot.fence = gl.fenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE_, 0);
       gl.flush();
       const GLenum err = gl.getError();
@@ -684,9 +698,9 @@ struct Camera::Impl {
       if (slot.fence) gl.deleteSync(slot.fence), slot.fence = nullptr;
       return false;
     }
-    for (int e = 0; e < 2; e++) {
+    for (int e = 0; e < nEyes; e++) {
       slot.dataW[e] = outW, slot.dataH[e] = outH;
-      slot.pitch[e] = static_cast<size_t>(outW) * 2 * 4;
+      slot.pitch[e] = static_cast<size_t>(stripW) * 4;
     }
     slot.bottomUp = true;
     slot.swapRB = false;
@@ -719,7 +733,7 @@ struct Camera::Impl {
       s.state.store(Free);
       return;
     }
-    for (int e = 0; e < 2; e++) s.data[e] = base + static_cast<size_t>(e) * outW * 4;
+    for (int e = 0; e < 2; e++) s.data[e] = e < nEyes ? base + static_cast<size_t>(e) * outW * 4 : nullptr;
     s.mapUs = usBetween(t0, qpc());
     handOver(s);
   }
@@ -774,8 +788,8 @@ struct Camera::Impl {
     device->GetImmediateContext(&ctx);
     if (!ctx) return false;
     bool ok = true;
-    for (int e = 0; e < 2 && ok; e++) {
-      const CameraView& v = views[e];
+    for (int e = 0; e < nEyes && ok; e++) {
+      const CameraView& v = views[eyeView[e]];
       const AppSwapchain& sc = v.swapchain;
       if (sc.lastReleased < 0 || static_cast<size_t>(sc.lastReleased) >= sc.d3dImages.size() || !sc.d3dImages[static_cast<size_t>(sc.lastReleased)]) {
         ok = false;
@@ -822,7 +836,7 @@ struct Camera::Impl {
     if (!ctx) return;
     const int64_t t0 = qpc();
     bool all = true;
-    for (int e = 0; e < 2 && all; e++) {
+    for (int e = 0; e < nEyes && all; e++) {
       if (s.mapped[e]) continue;
       D3D11_MAPPED_SUBRESOURCE m{};
       const HRESULT hr = ctx->Map(s.staging[e], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
@@ -870,20 +884,25 @@ struct Camera::Impl {
   bool start(ID3D11Device* device, const CameraView* views) {
     std::string source;
     FormatInfo f;
+    // D8.1: one eye (the request's) or both; the first slot index holds the eye everything below is planned from.
+    nEyes = req.eye >= 0 ? 1 : 2;
+    eyeView[0] = req.eye == 1 ? 1 : 0;
+    eyeView[1] = 1;
+    const CameraView& v0 = views[eyeView[0]];
     if (api == CameraApi::OpenGL) {
       if (!glLoadTried) gl = loadGl(), glLoadTried = true;
       if (!gl.loaded || !gl.ext()) {
         refuse("this OpenGL context has no framebuffer objects, pixel-pack buffers or fences (OpenGL 3.2 is needed)");
         return false;
       }
-      f = glFormat(views[0].swapchain.format);
+      f = glFormat(v0.swapchain.format);
       apiName = "OpenGL";
     } else {
       if (!device) {
         refuse("the D3D11 session has no device");
         return false;
       }
-      const AppSwapchain& sc = views[0].swapchain;
+      const AppSwapchain& sc = v0.swapchain;
       if (sc.lastReleased < 0 || static_cast<size_t>(sc.lastReleased) >= sc.d3dImages.size() || !sc.d3dImages[static_cast<size_t>(sc.lastReleased)]) {
         refuse("the D3D11 swapchain's images are not known to the layer");
         return false;
@@ -910,23 +929,23 @@ struct Camera::Impl {
       }
     }
     if (!f.ok) {
-      refuse("swapchain format " + hex(views[0].swapchain.format) + " is not an 8-bit RGBA format the layer camera reads");
+      refuse("swapchain format " + hex(v0.swapchain.format) + " is not an 8-bit RGBA format the layer camera reads");
       return false;
     }
-    planOutput(views[0], req, outW, outH);
+    planOutput(v0, req, outW, outH);
     if (api == CameraApi::OpenGL) {
       if (!readFbo) gl.genFramebuffers(1, &readFbo);
       if (!drawFbo) gl.genFramebuffers(1, &drawFbo);
       if (!readFbo || !drawFbo || !ensureTexture(f)) {
-        refuse("could not create the framebuffers or the " + std::to_string(outW * 2) + "x" + std::to_string(outH) + " texture for the eye copy (OpenGL error " +
-               hex(gl.getError()) + ")");
+        refuse("could not create the framebuffers or the " + std::to_string(outW * static_cast<uint32_t>(nEyes)) + "x" + std::to_string(outH) +
+               " texture for the eye copy (OpenGL error " + hex(gl.getError()) + ")");
         return false;
       }
     }
     sh = std::make_shared<Shared>();
     sh->startQpc = qpc();
     std::thread(workerMain, sh).detach();
-    std::thread(helperMain, sh).detach();
+    if (nEyes == 2) std::thread(helperMain, sh).detach();  // the right eye's encoder: nothing for it with one eye (D8.1)
     intervalQpc = qpcFreq() / static_cast<int64_t>(req.fps > 0 ? req.fps : 30);
     nextDueQpc = qpc();
     startedQpc = nextDueQpc;
@@ -934,17 +953,19 @@ struct Camera::Impl {
     fboChecked = false;
     running = true;
     refused = false;
-    const Crop c = cropFor(views[0], outW, outH, req.whole);
-    const CameraView& v = views[0];
+    const Crop c = cropFor(v0, outW, outH, req.whole);
+    const CameraView& v = v0;
+    const std::string eyesText = nEyes == 2 ? std::string("both eyes") : std::string("one eye (") + eyeName(eyeView[0]) + ")";
     logLine("camera: on (" + apiName + "): eye render " + std::to_string(v.rectW) + "x" + std::to_string(v.rectH) + " (rect " + std::to_string(v.rectX) + "," +
             std::to_string(v.rectY) + " of a " + std::to_string(v.swapchain.width) + "x" + std::to_string(v.swapchain.height) + " swapchain, format " +
             hex(v.swapchain.format) + " " + f.name + (f.srgb ? ", sRGB" : ", linear-tagged") + "), crop " + std::to_string(c.w) + "x" + std::to_string(c.h) +
             " at " + std::to_string(c.x) + "," + std::to_string(c.y) + (req.whole ? " (whole)" : "") + " -> " + std::to_string(outW) + "x" +
-            std::to_string(outH) + " per eye at " + std::to_string(req.fps) + " fps, JPEG quality " + std::to_string(kJpegQuality) +
+            std::to_string(outH) + " per eye at " + std::to_string(req.fps) + " fps, " + eyesText + ", JPEG quality " + std::to_string(kJpegQuality) +
             "; frame times follow (the first " + std::to_string(kLogFirst) + ", then every " + std::to_string(kLogEvery) + "th)");
     panelPipeSendStatus("on", "", ",\"api\":\"" + apiName + "\",\"source\":[" + std::to_string(v.rectW) + "," + std::to_string(v.rectH) + "],\"size\":[" +
                                     std::to_string(outW) + "," + std::to_string(outH) + "],\"fps\":" + std::to_string(req.fps) +
-                                    ",\"whole\":" + (req.whole ? "true" : "false"));
+                                    ",\"whole\":" + (req.whole ? "true" : "false") +
+                                    (nEyes == 1 ? std::string(",\"eye\":\"") + eyeName(eyeView[0]) + "\"" : std::string()));
     return true;
   }
 
@@ -1049,6 +1070,7 @@ void Camera::tick(const CameraRequest& req, CameraApi api, ID3D11Device* device,
   }
   const int64_t t0 = qpc();
   slot->outW = I.outW, slot->outH = I.outH;
+  slot->eyes = I.nEyes, slot->eye0 = I.eyeView[0];
   slot->late = 0;
   slot->mapUs = 0;
   const bool ok = I.api == CameraApi::OpenGL ? I.issueGl(*slot, views) : I.issueD3d(*slot, device, views);

@@ -12,8 +12,9 @@
 //       page's paint; the SteamVR helper's stdin format, so a protocol-1 companion still works);
 //     "CVO2", same header, then RGBA top-down: a video frame (the opponent's feed, theater mode);
 //     "CVC1", u32 byteLength (≤ kMaxMessageBytes), then UTF-8 JSON {"mode","stereo","panelPos"}, optionally the
-//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps","whole"} | null (D7.5;
-//       "whole": true since layer 0.5.2, D7.5.10: each eye's whole render, scaled into the box, no crop),
+//       number "theaterScale" (D7.4.5) and, protocol 3, "camera": {"width","height","fps","whole","eye"} | null (D7.5;
+//       "whole": true since layer 0.5.2, D7.5.10: each eye's whole render, scaled into the box, no crop; "eye":
+//       "left" | "right" since layer 0.5.3, D8.1: that one eye only, absent = both),
 //       "report": true (D7.6.2: send the session report now; a request, never a state), "test": "pattern" (D7.6.1:
 //       the calibration pattern in theater; a control without it = off), "eyes": [{fov, rect, render} x 2]
 //       (D7.5.2, layer 0.5.1: the sender's eye geometry for the stereo window; absent = not known), and, layer 0.5.2,
@@ -56,13 +57,18 @@ constexpr float kTheaterScale = 1.0f;  // D7.4.5: life size (layer.cpp, "the ste
 // and scaled into it (never up), at most `fps` frames a second, as JPEG over the pipe (camera.h). `on` false = no
 // camera (the default, and "camera": null). `whole` (D7.5.10, layer 0.5.2): no crop at all, the eye's whole render
 // scaled into the box (never up, even sides), so the receiver's window shows everything the sender's eye saw and the
-// window's frame leaves the part of the view both eyes share.
+// window's frame leaves the part of the view both eyes share. `eye` (D8.1, layer 0.5.3; ADR 0009, spectating is 2D):
+// -1 = both eyes, as before; 0 = the left eye only, 1 = the right eye only: one eye copied, encoded and sent, the
+// frame's `eyes` array one entry long.
 struct CameraRequest {
   bool on = false;
   uint32_t width = 0, height = 0;  // the box, per eye
   uint32_t fps = 0;
   bool whole = false;
-  bool operator==(const CameraRequest& o) const { return on == o.on && width == o.width && height == o.height && fps == o.fps && whole == o.whole; }
+  int eye = -1;
+  bool operator==(const CameraRequest& o) const {
+    return on == o.on && width == o.width && height == o.height && fps == o.fps && whole == o.whole && eye == o.eye;
+  }
   bool operator!=(const CameraRequest& o) const { return !(*this == o); }
 };
 constexpr uint32_t kCameraMaxSide = 4096;

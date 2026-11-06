@@ -18,7 +18,9 @@ cmake_minimum_required(VERSION 3.20)
 # 0.5.2: the window's frame: D7.5.10, the camera sends each eye's whole render (control "camera": {"whole": true}); D7.5.9 /
 #        D7.6.10, the control's "tune" places the frame at a depth and offsets each eye vertically; D7.5.11, "feather" fades
 #        the video window's edges into the black behind them.
-project(castcade_vr_layer VERSION 0.5.2 LANGUAGES CXX)
+# 0.5.3: D8.1, one eye: control "camera": {"eye": "left" | "right"} copies, encodes and sends that eye only (the CVF1 header's
+#        "eyes" one entry long; the "on" status says "eye"); absent = both eyes as before. Pipe protocol stays 3 (ADR 0009).
+project(castcade_vr_layer VERSION 0.5.3 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".

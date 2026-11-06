@@ -208,8 +208,9 @@ bool jsonTrue(const std::string& body, const char* key) {
 }
 
 // D7.5: "camera" in the control. Absent → unchanged (false). null → off. An object → its width / height / fps, each a
-// plain number inside the braces, and (D7.5.10) "whole": true for the eye's whole render instead of a crop; a
-// malformed object → off (never a camera the companion did not shape).
+// plain number inside the braces, (D7.5.10) "whole": true for the eye's whole render instead of a crop, and (D8.1,
+// layer 0.5.3) "eye": "left" | "right" for that one eye only (absent or anything else: both); a malformed object →
+// off (never a camera the companion did not shape).
 bool jsonCamera(const std::string& body, CameraRequest& out) {
   const size_t i = valueAt(body, "camera");
   if (i == std::string::npos || i >= body.size()) return false;
@@ -226,6 +227,8 @@ bool jsonCamera(const std::string& body, CameraRequest& out) {
   out.height = static_cast<uint32_t>(h);
   out.fps = static_cast<uint32_t>(fps);
   out.whole = jsonTrue(obj, "whole");
+  const std::string eye = jsonString(obj, "eye");
+  out.eye = eye == "left" ? 0 : eye == "right" ? 1 : -1;
   return true;
 }
 
@@ -390,7 +393,8 @@ void applyControl(const std::string& body) {
   }
   if (cameraChanged) {
     logLine(c.camera.on ? "pipe: camera asked: each eye in a " + std::to_string(c.camera.width) + "x" + std::to_string(c.camera.height) + " box at " +
-                              std::to_string(c.camera.fps) + " fps" + (c.camera.whole ? ", the whole render (no crop)" : "")
+                              std::to_string(c.camera.fps) + " fps" + (c.camera.whole ? ", the whole render (no crop)" : "") +
+                              (c.camera.eye >= 0 ? std::string(", one eye (") + (c.camera.eye == 0 ? "left" : "right") + ")" : std::string(", both eyes"))
                         : std::string("pipe: camera off"));
   }
 }
