@@ -205,8 +205,12 @@ export interface PanelStats {
   /** Frames the stage video decoded, and how many of them went to the layer, while theater wanted the feed; else null. */
   decoded: number | null;
   toLayer: number | null;
-  /** D7.4.6: the outbound video as the first peer's connection reports it (the tick before's reading); absent before one. */
-  sent?: { width: number; height: number; kbps: number | null; limit: string };
+  /**
+   * D7.4.6: the outbound video as the first peer's connection reports it (the tick before's reading); absent before one.
+   * D8.3: `codec` is the codec stat's mimeType without "video/" ("H264", "VP8"), `encoder` Chromium's
+   * `encoderImplementation` ("MediaFoundationVideoEncodeAccelerator", "libvpx", "OpenH264"...); null while not known.
+   */
+  sent?: { width: number; height: number; kbps: number | null; limit: string; codec?: string | null; encoder?: string | null };
   /** D7.4.6: the stage video's decoded frame size, while theater wanted the feed. */
   decodedSize?: { width: number; height: number };
   /** D7.5.1: `capture` counted layer camera frames drawn; `unreadable`: frames whose JPEGs did not decode, skipped. */
@@ -500,6 +504,94 @@ export function outgoingSdp(sdp: string, tableStreamId: string | null): string {
     .join('');
 }
 
+/** D8.3: a codec as `RTCRtpSender.getCapabilities('video').codecs` lists it (the DOM's RTCRtpCodecCapability). */
+export interface VideoCodecCapability {
+  mimeType: string;
+  clockRate?: number;
+  channels?: number;
+  sdpFmtpLine?: string;
+}
+
+/**
+ * D8.3 (2026-11-05, the owner's 2026-11-04 log): the match video was Chromium's default, VP8 in software, too soft at
+ * 5–7 Mbps to read lit rollovers at the top of the playfield. Both rigs have NVIDIA GPUs, and Chromium encodes H.264
+ * in hardware through Media Foundation, so the video transceiver's codec preferences put H.264 first: packetization
+ * mode 1 before 0; within a mode constrained baseline (`profile-level-id=42e01f`) first, then high level 5 (`640032`),
+ * then the other high profiles, then the rest of H.264. Everything else (VP8, VP9, AV1, and the rtx / red / fec entries,
+ * which `setCodecPreferences` wants kept) follows in the order given, so a peer without H.264 still negotiates. Pure:
+ * the capability entries in, the same entries reordered out (Chromium needs the very objects it listed).
+ */
+export function preferH264<T extends VideoCodecCapability>(codecs: readonly T[]): T[] {
+  const rank = (c: T): number => {
+    if (!/^video\/h264$/i.test(c.mimeType)) return -1;
+    const f = (c.sdpFmtpLine || '').toLowerCase();
+    const mode1 = /(^|;)\s*packetization-mode=1\s*(;|$)/.test(f);
+    const m = /(^|;)\s*profile-level-id=([0-9a-f]{6})/.exec(f);
+    const profile = (m && m[2]) || '';
+    const p = profile === '42e01f' ? 0 : profile === '640032' ? 1 : profile.slice(0, 2) === '64' ? 2 : 3;
+    return (mode1 ? 0 : 4) + p;
+  };
+  const h264: Array<{ c: T; i: number; r: number }> = [];
+  const rest: T[] = [];
+  codecs.forEach((c, i) => {
+    const r = rank(c);
+    if (r < 0) rest.push(c);
+    else h264.push({ c: c, i: i, r: r });
+  });
+  h264.sort((a, b) => a.r - b.r || a.i - b.i);
+  return h264.map((x) => x.c).concat(rest);
+}
+
+/** D8.3: the fmtp hints for a sender capped at `bps` (`videoBitrateFor`): start at the cap, never below 40 % of it. */
+export function bitrateHintsFor(bps: number): { startKbps: number; minKbps: number } {
+  const kbps = Math.max(1, Math.round(bps / 1000));
+  return { startKbps: kbps, minKbps: Math.max(1, Math.round(kbps * 0.4)) };
+}
+
+/**
+ * D8.3: Chromium's bandwidth estimation starts a sender low and ramps (the loop test read 6.5 Mbps under a 50 Mbps cap
+ * ten seconds in; the first ten seconds after every turn switch arrived at 9–25 fps). It reads `x-google-start-bitrate`,
+ * `x-google-min-bitrate` and `x-google-max-bitrate` (kbps) from the fmtp line of the video codec in the REMOTE
+ * description the sender applies, so the page hints the remote description before `setRemoteDescription`, offer and
+ * answer alike (both sides run this code). Every codec of every m=video section gets the hints on its fmtp line (one is
+ * added to a payload type that has none; rtx / red / fec payloads are not codecs and get none); audio and everything
+ * else are untouched; hints already there are replaced, so hinting twice is the same as once. No other munging:
+ * `outgoingSdp` is still the only change to what is sent.
+ */
+export function withBitrateHints(sdp: string, hints: { startKbps: number; minKbps?: number; maxKbps?: number }): string {
+  const eol = sdp.indexOf('\r\n') >= 0 ? '\r\n' : '\n';
+  const add: string[] = ['x-google-start-bitrate=' + Math.round(hints.startKbps)];
+  if (typeof hints.minKbps === 'number') add.push('x-google-min-bitrate=' + Math.round(hints.minKbps));
+  if (typeof hints.maxKbps === 'number') add.push('x-google-max-bitrate=' + Math.round(hints.maxKbps));
+  const isHint = (param: string): boolean => /^\s*x-google-(start|min|max)-bitrate=/i.test(param);
+  return sdp
+    .split(/(?=\r?\nm=)/)
+    .map((sec) => {
+      if (!/^\r?\nm=video/.test(sec)) return sec;
+      const pts: string[] = [];
+      const rtpmap = /a=rtpmap:(\d+) ([^/\r\n]+)\//g;
+      let m: RegExpExecArray | null;
+      while ((m = rtpmap.exec(sec)) !== null) {
+        const pt = m[1] || '';
+        if (pt && !/^(rtx|red|ulpfec|flexfec-03)$/i.test(m[2] || '')) pts.push(pt);
+      }
+      let out = sec;
+      for (const pt of pts) {
+        const fmtp = new RegExp('(^|\\n)(a=fmtp:' + pt + ' )([^\\r\\n]*)');
+        if (fmtp.test(out)) {
+          out = out.replace(fmtp, (_m: string, lead: string, head: string, params: string) => {
+            const kept = params.split(';').filter((p) => p !== '' && !isHint(p));
+            return lead + head + kept.concat(add).join(';');
+          });
+        } else {
+          out = out.replace(new RegExp('(a=rtpmap:' + pt + ' [^\\r\\n]*)'), (line: string) => line + eol + 'a=fmtp:' + pt + ' ' + add.join(';'));
+        }
+      }
+      return out;
+    })
+    .join('');
+}
+
 /**
  * D2.9 (2026-11-02, EFUKTZ: ICE sat in `checking` for ever on one rig and went `disconnected` after 15 s on the other;
  * `failed` never came while the players waited). The watchdog's timings: a connection stuck (`checking`, `disconnected`,
@@ -673,7 +765,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1258,10 +1350,27 @@ async function probeStats() {
       if (s.type !== 'outbound-rtp' || s.kind !== 'video') continue;
       const kbps = outBytes >= 0 && s.bytesSent >= outBytes ? Math.round(((s.bytesSent - outBytes) * 8) / (STATS_MS / 1000) / 1000) : null;
       outBytes = s.bytesSent;
-      outInfo = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, limit: s.qualityLimitationReason || 'none' };
+      // D8.3: the codec (its stat, by codecId) and Chromium's encoder implementation ('unknown' until a frame is encoded).
+      const codecStat = s.codecId && typeof rep.get === 'function' ? rep.get(s.codecId) : null;
+      const mime = codecStat && typeof codecStat.mimeType === 'string' ? codecStat.mimeType : '';
+      const codec = mime ? mime.replace(/^video\//i, '') : null;
+      const impl = typeof s.encoderImplementation === 'string' ? s.encoderImplementation : '';
+      const encoder = impl && impl !== 'unknown' ? impl : null;
+      outInfo = { width: s.frameWidth || 0, height: s.frameHeight || 0, kbps: kbps, limit: s.qualityLimitationReason || 'none', codec: codec, encoder: encoder };
+      noteEncoder(codec, encoder);
       return;
     }
   } catch (e) { /* no stats yet */ }
+}
+// D8.3: one line in companion.log when the match's codec and encoder become known or change (the item's gate:
+// "media: encoder: H264 via MediaFoundationVideoEncodeAccelerator" on both rigs); again after the next attach.
+let encoderKey = null;
+function noteEncoder(codec, encoder) {
+  if (!codec) return;
+  const text = codec + (encoder ? ' via ' + encoder : '');
+  if (text === encoderKey) return;
+  encoderKey = text;
+  logLine('encoder: ' + text);
 }
 setInterval(statsTick, STATS_MS);
 
@@ -1377,8 +1486,38 @@ function attachAudio(r) {
 function attachVideo(r) {
   if (!videoTrack) return;
   if (r.videoSender) void r.videoSender.replaceTrack(videoTrack);
-  else r.videoSender = r.pc.addTrack(videoTrack, localStream);
+  else {
+    r.videoSender = r.pc.addTrack(videoTrack, localStream);
+    preferVideoCodecs(r.pc, r.videoSender);
+  }
   void applyBitrate(r);
+}
+
+/**
+ * D8.3: H.264 first on the video transceiver (preferH264), set once when the sender is added, before the offer the
+ * browser asks for. Codec preferences belong to the transceiver, so every renegotiation on it (an ICE restart, a
+ * crossed offer, an answer to the peer's offer, which reuses the addTrack transceiver) keeps them; a connection the
+ * mesh reopens (a reset, a stale offer) comes back through attachVideo and gets them again. A browser without
+ * setCodecPreferences, or a peer without H.264, negotiates as before (VP8 stays in the list, after H.264).
+ */
+function preferVideoCodecs(pc, sender) {
+  try {
+    if (typeof RTCRtpSender === 'undefined' || typeof RTCRtpSender.getCapabilities !== 'function' || typeof pc.getTransceivers !== 'function') return;
+    const caps = RTCRtpSender.getCapabilities('video');
+    const tr = pc.getTransceivers().find((t) => t.sender === sender);
+    if (!caps || !caps.codecs || !tr || typeof tr.setCodecPreferences !== 'function') return;
+    tr.setCodecPreferences(preferH264(caps.codecs));
+  } catch (e) {
+    /* the browser's own order then */
+  }
+}
+
+/**
+ * D7.4.6 / D8.3: the cap (bits a second) on what this rig sends: the rule from the crop actually sent (it changes when
+ * the window does); VIDEO.maxBitrate before the capture is known (the rule's own floor, so the hints match the cap).
+ */
+function wantedBitrate() {
+  return cap ? videoBitrateFor({ width: cap.out.width, height: cap.out.height, stereo: myStereo }) : VIDEO.maxBitrate;
 }
 
 async function applyBitrate(r) {
@@ -1387,8 +1526,7 @@ async function applyBitrate(r) {
   try {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) return;
-    // D7.4.6: a cap per shape, from the crop actually sent (it changes when the window does).
-    const want = cap ? videoBitrateFor({ width: cap.out.width, height: cap.out.height, stereo: myStereo }) : VIDEO.maxBitrate;
+    const want = wantedBitrate();
     if (p.encodings[0].maxBitrate === want) return;
     p.encodings[0].maxBitrate = want;
     p.encodings[0].maxFramerate = VIDEO.fps;
@@ -1413,6 +1551,11 @@ function closeRemote(peer) {
 function openPeer(peer) {
   closeRemote(peer);
   const pc = new RTCPeerConnection({ iceServers: ice, bundlePolicy: 'max-bundle' });
+  // D8.3: every remote description this connection applies (the negotiator's offer and answer paths both land here, on
+  // every renegotiation) carries the start / min bitrate hints for the cap of the moment (withBitrateHints), so the
+  // encoder starts at the cap instead of ramping from a low guess. The cap itself stays with setParameters (applyBitrate).
+  const setRemote = pc.setRemoteDescription.bind(pc);
+  pc.setRemoteDescription = (d) => setRemote(d && typeof d.sdp === 'string' ? Object.assign({}, d, { sdp: withBitrateHints(d.sdp, bitrateHintsFor(wantedBitrate())) }) : d);
   const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), pairKey: null, pairText: null };
   r.audio.autoplay = true;
   r.audio.srcObject = r.stream;
@@ -1509,6 +1652,7 @@ function detach() {
   videoTrack = null;
   srcTrack = null;
   cap = null;
+  encoderKey = null;
   camMode = false;
   camFrames = 0;
   camBad = 0;
@@ -1755,12 +1899,14 @@ async function openLoop(b) {
     r.addEventListener('icecandidate', (e) => { if (e.candidate) void Promise.resolve(a.addIceCandidate(e.candidate)).catch(() => undefined); });
     r.addEventListener('track', (e) => setBenchStream(b, new MediaStream([e.track])));
     b.sender = a.addTrack(b.track, new MediaStream([b.track]));
+    // D8.3: as the match does: H.264 first, and the sender's remote description hinted to start at the cap.
+    preferVideoCodecs(a, b.sender);
     const offer = await a.createOffer();
     await a.setLocalDescription(offer);
     await r.setRemoteDescription(offer);
     const answer = await r.createAnswer();
     await r.setLocalDescription(answer);
-    await a.setRemoteDescription(answer);
+    await a.setRemoteDescription({ type: answer.type, sdp: withBitrateHints(answer.sdp, bitrateHintsFor(benchBitrate(b))) });
     await applyBenchBitrate(b);
   } catch (e) {
     if (bench === b) b.error = 'The local WebRTC loop did not start (' + errText(e) + ').';
@@ -1771,9 +1917,12 @@ async function openLoop(b) {
  * The match's rule (videoBitrateFor, D7.4.6) on the loop's sender, from the canvas's size and the frames' stereo; or the
  * Match tab's cap override when one is set (D7.6.9), whatever the size.
  */
+function benchBitrate(b) {
+  return b.bitrateOverride !== null && b.bitrateOverride !== undefined ? b.bitrateOverride : videoBitrateFor({ width: b.canvas.width, height: b.canvas.height, stereo: b.stereo });
+}
 async function applyBenchBitrate(b) {
   if (!b.sender) return;
-  const want = b.bitrateOverride !== null && b.bitrateOverride !== undefined ? b.bitrateOverride : videoBitrateFor({ width: b.canvas.width, height: b.canvas.height, stereo: b.stereo });
+  const want = benchBitrate(b);
   b.bitrate = want;
   try {
     const p = b.sender.getParameters();

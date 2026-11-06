@@ -1209,6 +1209,11 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     expect(logs.filter((l) => l.startsWith('media: capture: from'))).toHaveLength(1);
     fromPage(w, PANEL_CHANNELS.status, { ...live, sending: true, stats: { seq: 1, capture: 290, decoded: null, toLayer: null, camera: { unreadable: 2 }, sent: { width: 1280, height: 1280, kbps: 7600, limit: 'none' } } });
     expect(logs).toContain('media: capture: 290 frames in 10 s from the VR layer camera, 1280x1280 (sbs), 2 unreadable, 1 dropped before the panel (newest wins), sent 1280x1280 at 7.6 Mbps, limited by none');
+    // D8.3: the codec and encoder on the line once the page names them; the page's own encoder line passes through as is.
+    fromPage(w, PANEL_CHANNELS.status, { ...live, sending: true, stats: { seq: 2, capture: 230, decoded: null, toLayer: null, sent: { width: 1354, height: 1440, kbps: 7400, limit: 'none', codec: 'H264', encoder: 'MediaFoundationVideoEncodeAccelerator' } } });
+    expect(logs).toContain('media: capture: 230 frames in 10 s from the VR layer camera, 1280x1280 (sbs), sent 1354x1440 at 7.4 Mbps, limited by none, H264 via MediaFoundationVideoEncodeAccelerator');
+    fromPage(w, PANEL_CHANNELS.log, 'encoder: H264 via MediaFoundationVideoEncodeAccelerator');
+    expect(logs).toContain('media: encoder: H264 via MediaFoundationVideoEncodeAccelerator');
     expect(host.status().captureCrop).toEqual({ width: 1280, height: 1280 });
     await host.detach();
   });
