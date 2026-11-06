@@ -32,6 +32,14 @@
  *   is open, a 5 s countdown (`HostMatch.startIn`) the whole lobby sees ("Starting the match: <names>"); a second
  *   `game_start` changes nothing. With a table still loading the start is armed and fires once the last one opens;
  *   the host's game ending in the lobby disarms it. The desktop Start button works throughout.
+ * - A12 (2026-11-05): no game before the match. The owner pressed Start before the other player joined; the join then
+ *   started nothing. `preMatchPlay` decides the host's table in the lobby: `free` (default), the host may play, and a
+ *   game running when the lobby becomes complete (two or more in, every table open) is never the match's game 1: the
+ *   panel waits for it to end (`waitingForHostGame`), then the next `game_start` starts the countdown as in A11 (a
+ *   second `game_start` with no `game_end` between is taken as that next game); `locked`, the host's table is locked
+ *   from Host until the lobby is complete, locked again when it falls apart, and the lock rule above takes over at
+ *   MATCH_READY. A client's table is never locked in the lobby. The A11 armed start (the host's press with everyone in
+ *   and a table still loading) keeps its meaning: that game is game 1.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
@@ -76,6 +84,11 @@ export interface ControllerStatus {
   tableMismatch: PlayerId[];
   /** The GameFingerprint fields that differ from the host's, per player (none: agrees); `mismatchWords` words them. */
   mismatches: Record<PlayerId, string[]>;
+  /**
+   * A12 (2026-11-05): the lobby is complete, but a game is running on the host's table (free play); the match starts
+   * at the host's next Start after it ends. On the host only: the lobby's HELLO_ACK has no field for it.
+   */
+  waitingForHostGame: boolean;
   /** A8 (2026-10-31): a HOST_TRANSFER proposed and not committed yet (the log's `pendingTransfer`), else null. */
   transfer: { proposer: PlayerId; newHost: PlayerId | null; reason: 'host_left' | 'host_requested' } | null;
   /**
@@ -106,7 +119,14 @@ export interface MatchControllerOptions {
   ballsPerGame?: number;
   /** A11: the countdown before a start from the host's table. Default 5 s. */
   startCountdownMs?: number;
+  /** A12 (2026-11-05): the host's table in the lobby: free play (default) or locked until the lobby is complete. */
+  preMatchPlay?: PreMatchPlay;
+  /** A12: a game is already running on this player's table when the controller is made (the witness's live game). */
+  tableGameRunning?: boolean;
 }
+
+/** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
+export type PreMatchPlay = 'free' | 'locked';
 
 /**
  * D2.5 (2026-10-31, the second two-player match): what a fingerprint difference means to a player. The two rigs ran
@@ -228,6 +248,13 @@ export class MatchController {
   private startArmed = false;
   /** A11: lobby players whose table is not open (the host's `loading()`, a client's last HELLO_ACK). */
   private loadingIds: PlayerId[] = [];
+  /** A12: a game is running on this player's own table (the hook's `game_start` until its `game_end`), any phase. */
+  private tableGameRunning: boolean;
+  /** A12: free play: the lobby is complete while the host's game runs; the match starts at the next Start after it ends. */
+  private waitingForHostGame = false;
+  /** A12: the host's table is locked by the lobby rule (`preMatchPlay: 'locked'`, lobby not complete). */
+  private lobbyLocked = false;
+  private preMatchPlay: PreMatchPlay;
 
   constructor(opts: MatchControllerOptions) {
     this.opts = opts;
@@ -235,7 +262,18 @@ export class MatchController {
     this.localId = opts.localId;
     this.settleMs = opts.ballEndSettleMs ?? DEFAULT_SETTLE_MS;
     this.stateIntervalMs = opts.stateIntervalMs ?? DEFAULT_STATE_INTERVAL_MS;
+    this.tableGameRunning = opts.tableGameRunning ?? false;
+    this.preMatchPlay = opts.preMatchPlay ?? 'free';
     this.bind(opts.role);
+  }
+
+  /** A12: the Match tab changed the setting during a lobby: the lobby lock follows at once. */
+  setPreMatchPlay(mode: PreMatchPlay): void {
+    if (this.closed || this.preMatchPlay === mode) return;
+    this.preMatchPlay = mode;
+    const r = this.role;
+    if (isHostRole(r)) this.syncLobby(r);
+    this.push();
   }
 
   /** The role in charge now (it changes after a host transfer). */
@@ -258,6 +296,7 @@ export class MatchController {
       hostId: this.hostId,
       tableMismatch: [...this.mismatch].filter(([, f]) => mismatchWords(f).table !== null).map(([id]) => id),
       mismatches: Object.fromEntries([...this.mismatch].map(([id, f]) => [id, [...f]])),
+      waitingForHostGame: this.waitingForHostGame,
       transfer: this.transfer(),
       series: { game: this.gameNumber(), over: this.seriesOver, nextGameBlocker: this.nextGameBlocker() },
       panel: this.panel(),
@@ -341,6 +380,9 @@ export class MatchController {
 
   feed(ev: ControllerFeed): void {
     if (this.closed) return;
+    // A12: this player's own table game, any phase (the lobby rules read it).
+    if (ev.kind === 'game_start') this.tableGameRunning = true;
+    else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.tableGameRunning = false;
     switch (ev.kind) {
       case 'game_start':
         this.onTableGameStart();
@@ -369,7 +411,10 @@ export class MatchController {
         return;
       }
       case 'game_end': {
-        if (this.phase === 'lobby') this.disarmStart('the game on your table ended');
+        if (this.phase === 'lobby') {
+          this.disarmStart('the game on your table ended');
+          this.onLobbyGameEnded();
+        }
         if (!this.inPlay()) return;
         const score = cleanScore(ev.scores[0]);
         if (score !== null) {
@@ -383,7 +428,10 @@ export class MatchController {
       }
       case 'game_abandoned':
       case 'table_exit': {
-        if (this.phase === 'lobby') this.disarmStart(ev.kind === 'table_exit' ? 'your table closed' : 'the game on your table ended');
+        if (this.phase === 'lobby') {
+          this.disarmStart(ev.kind === 'table_exit' ? 'your table closed' : 'the game on your table ended');
+          this.onLobbyGameEnded();
+        }
         if (!this.inPlay() || this.myGameDone()) return;
         this.forfeit('table closed');
         return;
@@ -437,6 +485,12 @@ export class MatchController {
     }
     if (!isHostRole(r)) return;
     if (this.phase === 'lobby') {
+      // A12: a second game_start with no game_end between (the detector missed the end, or a restart): this is the
+      // next game, the one the lobby waited for.
+      if (this.waitingForHostGame) {
+        this.waitingForHostGame = false;
+        this.opts.log('match: a new game started on the table while the lobby waited for the last one to end; taking it as the start');
+      }
       this.tryStartFromTable(r, true);
       return;
     }
@@ -489,6 +543,45 @@ export class MatchController {
     if (!this.startArmed) return;
     this.startArmed = false;
     this.opts.log(`match: the start from the table is off: ${why}`);
+    this.push();
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // A12: the host's table before the match
+  // ------------------------------------------------------------------------------------------
+
+  /** A12: two or more in and every table open (A11's condition for a start from the table). */
+  private lobbyComplete(h: HostRole): boolean {
+    return h.state.phase === 'lobby' && h.roster().length >= 2 && h.loading().length === 0;
+  }
+
+  /**
+   * A12: the lobby rules after any lobby change (a join, a leave, a table opened, the setting changed). Free play: a
+   * game running on the host's table when the lobby becomes complete is waited out (never game 1), unless the host
+   * armed the start itself (A11: everyone in, a table loading: that game is game 1). Locked: the host's table is locked
+   * until the lobby is complete, and again when it falls apart. Never for a client.
+   */
+  private syncLobby(h: HostRole): void {
+    if (this.phase !== 'lobby' || h.state.phase !== 'lobby') return;
+    const complete = this.lobbyComplete(h);
+    const wait = complete && this.tableGameRunning && !this.startArmed && this.countdownEnd === null;
+    if (wait !== this.waitingForHostGame) {
+      this.waitingForHostGame = wait;
+      if (wait) this.opts.log("match: the lobby is complete, but a game is running on the host's table; the match starts at the next Start after it ends");
+    }
+    const lock = this.preMatchPlay === 'locked' && !complete;
+    if (lock !== this.lobbyLocked) {
+      this.lobbyLocked = lock;
+      this.setLocked(lock);
+      this.opts.log(lock ? 'match: your table is locked until the lobby is complete (Before the match: locked)' : 'match: the lobby is complete; your table is unlocked');
+    }
+  }
+
+  /** A12: the host's game ended in the lobby: the lobby, if complete, now waits for the Start that begins the match. */
+  private onLobbyGameEnded(): void {
+    if (!this.waitingForHostGame) return;
+    this.waitingForHostGame = false;
+    this.opts.log("match: the game on the host's table ended; the next Start on the table starts the match");
     this.push();
   }
 
@@ -550,6 +643,7 @@ export class MatchController {
     this.hostId = this.localId;
     this.lobby = h.roster();
     this.noteLoading(h.loading());
+    this.syncLobby(h);
     const offs = this.offs;
     offs.push(h.on('joined', () => this.onHostLobby(h)));
     // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
@@ -669,8 +763,9 @@ export class MatchController {
   /** A host's lobby changed (a join, a leave, a table loaded): the roster, who is loading, and an armed start (A11). */
   private onHostLobby(h: HostRole): void {
     this.noteLoading(h.loading());
-    this.onLobby(h.roster());
     if (this.startArmed) this.tryStartFromTable(h, false);
+    this.syncLobby(h);
+    this.onLobby(h.roster());
   }
 
   private onClientAck(ack: PayloadOf<'HELLO_ACK'>): void {
@@ -722,6 +817,8 @@ export class MatchController {
   private onReady(p: PayloadOf<'MATCH_READY'>): void {
     this.clearCountdown();
     this.startArmed = false;
+    this.waitingForHostGame = false;
+    this.lobbyLocked = false;
     this.loadingIds = [];
     this.phase = 'playing';
     this.hostId = p.hostPlayerId;
@@ -1089,11 +1186,15 @@ export class MatchController {
   private lobbyMessage(): string {
     const host = isHostRole(this.role);
     const loading = this.loadingIds.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`));
+    // A12: the host's table before the match (the lobby lock, the wait for the host's own game to end).
+    if (host && this.lobbyLocked && this.participants().length < 2) return 'Waiting for players — the table unlocks when someone joins';
     if (this.participants().length < 2) return host ? 'Waiting for players' : 'Waiting for the host to start';
     if (loading.length > 0) {
       const tables = `${loading.join(', ')} table${loading.length > 1 ? 's' : ''}`;
-      return host && this.startArmed ? `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open` : `Waiting for ${tables} to open`;
+      if (host && this.startArmed) return `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open`;
+      return `Waiting for ${tables} to open${this.lobbyLocked ? '; your table unlocks then' : ''}`;
     }
+    if (host && this.waitingForHostGame) return 'Everyone is in: finish the game on your table, then press Start on it to start the match';
     return host ? 'Everyone in? Start a game on your table (or press Start match)' : `Waiting for ${this.nameOf(this.hostId)} to start a game on the table`;
   }
 

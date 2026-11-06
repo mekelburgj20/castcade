@@ -77,7 +77,9 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'cameraView' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
+  const setView = (
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'cameraView' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay'>>,
+  ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -129,6 +131,15 @@ export function Match({ state }: { state: CastcadeState }) {
                     <option value={3}>3</option>
                     <option value={5}>5</option>
                   </select>
+                </label>
+                {/* A12 (2026-11-05): the host's table before the match (saved at once; the lobby follows it live). */}
+                <label className="field">
+                  <span>Before the match</span>
+                  <select value={st.settings.preMatchPlay} onChange={(e) => setView({ preMatchPlay: e.target.value === 'locked' ? 'locked' : 'free' })}>
+                    <option value="free">Free play until someone joins</option>
+                    <option value="locked">Table locked until someone joins</option>
+                  </select>
+                  <small>Free play: a game running when the others join must end first; your next Start on the table then starts the match.</small>
                 </label>
               </div>
               <button type="button" className="primary" onClick={() => void run(() => bridge.match.host({ port: Number(portText), ballsPerGame, displayName }))}>

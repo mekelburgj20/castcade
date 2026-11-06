@@ -616,9 +616,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
       log: (line) => log.info(line),
       ballsPerGame,
+      // A12 (2026-11-05): the host's table before the match, and whether a game is already running on it.
+      preMatchPlay: settings.preMatchPlay,
+      tableGameRunning: liveGameRunning(),
     });
     controller.onChange(() => emit());
     return controller;
+  };
+
+  /** A12: the witness's live game says a game is on this rig's table now (a test witness may not have `liveGame`). */
+  const liveGameRunning = (): boolean => {
+    try {
+      return witness.liveGame()?.inGame ?? false;
+    } catch {
+      return false;
+    }
   };
 
   /** D7.3: the overlay the panel needs is not the one this rig has been using (VPX moved between SteamVR and OpenXR). */
@@ -1091,7 +1103,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const cameraBefore = settings.cameraSource;
       const viewBefore = settings.cameraView;
       const tuneBefore = windowTuneWords(settings);
+      const preMatchBefore = settings.preMatchPlay;
       saveSettings(patchMatchSettings(settings, patch));
+      // A12 (2026-11-05): the host's table before the match; a lobby under way follows the new choice at once.
+      if (settings.preMatchPlay !== preMatchBefore) {
+        log.info(`match: before the match: ${settings.preMatchPlay === 'locked' ? 'the table is locked until someone joins' : 'free play until someone joins'} (Match tab)`);
+        active?.controller.setPreMatchPlay(settings.preMatchPlay);
+      }
       if (settings.previewStereo !== before) {
         opts.media?.setPreviewStereo?.(settings.previewStereo);
         log.info(`match: preview stereo set to ${settings.previewStereo} on the Match tab`);
