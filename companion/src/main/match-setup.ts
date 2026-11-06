@@ -115,14 +115,14 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   softEdge: 0.03,
   // A12 (2026-11-05)
   preMatchPlay: 'free',
-};
-
-/** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
-export const MATCH_SETTINGS_VERSION = 2;
+  // D2.10 (2026-11-05)
   voiceVolume: 150,
   othersTableVolume: 100,
   myTableWhileUp: 100,
 };
+
+/** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
+export const MATCH_SETTINGS_VERSION = 2;
 
 /** D2.10: the three volume settings' ranges, in percent. */
 export const VOLUME_RANGE = { voiceVolume: [0, 300], othersTableVolume: [0, 100], myTableWhileUp: [10, 100] } as const;
