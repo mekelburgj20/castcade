@@ -19,20 +19,15 @@ Table: ________ (ROM ______)
 - [ ] **VPX in VR** with the preview window on. In your `VPinballX.ini`, under `[PlayerVR]`, set
   `VRPreview = 1`, `PreviewWidth = 1280`, `PreviewHeight = 720`. The other player sees this window, so a small
   window means a poor picture.
-- [ ] **Stereo for the other headset (optional, D7.4.3):** set VPX's VR preview to "both eyes" so the other player
-  sees your table in stereo in theater mode: Preferences → VR → Preview: **Both Eyes**, or in `[PlayerVR]`
-  `VRPreview = 3`, with the preview window **nearly as tall as your monitor and about as wide, never its full
-  size, and wholly on the screen**: `PreviewWidth = 960`, `PreviewHeight = 960` on a 1080p monitor (the owner's
-  1440x1392 on 1440p). VPX cuts each eye from its half of the window without stretching it, so that window gives
-  two tall eyes (480x960 each), the view pinball wants; a 16:9 window gives two narrow slices. A window the size
-  of the monitor (1920x1080 on 1080p) is presented full screen once VPX has focus and the screen capture then
-  stops at one frame (Krobs' rig, 2026-11-02: D7.4.10), and rows of a window hanging below the screen are not
-  sent (his 1080-row window lost its bottom 168 rows). The Match tab warns in both cases. Castcade reads
-  `VRPreview` from your `VPinballX.ini` (the one beside VPX's exe, else `%APPDATA%\VPinballX`) and tells the
-  other player's headset; if it cannot, or you start VPX with `-Ini <another file>`, pick it on the Match tab under
-  **Your preview** (one eye / both eyes). The Match tab says when your rig sends one eye, or both eyes in a 16:9
-  window. The match video is sent at the window's own size up to 1080x1920 (a 1280x1080 or 1440x1392 window as is; the bitrate
-  scales with it, up to 8 Mbps): sharper in depth, softer in detail than the one-eye picture. Try both and say which you prefer.
+- [ ] **One eye, not Both Eyes (ADR 0009, 2026-11-04):** the other player sees your table as a flat screen, so keep
+  VPX's VR preview on **Left Eye** (`VRPreview = 1`, as above). Both Eyes (`VRPreview = 3`) sends two pictures side
+  by side and the Match tab tells you to switch back. A window the size of the monitor (1920x1080 on 1080p) is
+  presented full screen once VPX has focus and the screen capture then stops at one frame (Krobs' rig, 2026-11-02:
+  D7.4.10), and rows of a window hanging below the screen are not sent (his 1080-row window lost its bottom 168
+  rows); the Match tab warns in both cases. Castcade reads `VRPreview` from your `VPinballX.ini` (the one beside
+  VPX's exe, else `%APPDATA%\VPinballX`); if you start VPX with `-Ini <another file>`, pick what the window shows on
+  the Match tab under **Your preview**. With **Camera: VR layer** none of this matters: the picture comes out of VPX's
+  headset view, no preview window needed.
 - [ ] **SteamVR running** (the headset panel is drawn through it).
 - [ ] **A headset microphone chosen** on the Castcade **Match** tab. Do not leave it on "default": in VR the Windows
   default is often a virtual device (Steam Streaming Microphone, Virtual Desktop Audio) that records silence.
@@ -79,11 +74,9 @@ Run these a day or more before the match. If one fails, stop and send what is li
    - **Theater (D7.4, Virtual Desktop / Oculus rigs, the Castcade OpenXR layer):** when the other player's ball
      starts, your view dips to black for a moment and their table appears in front of you, where yours was, in the
      dark: straight ahead of where you are looking then, tilted down with your gaze (D7.4.7), so keep looking at
-     your playfield as their ball starts. When their VPX preview shows both eyes it is in stereo and life size (D7.4.5): a window onto their view,
-     each eye getting what their eye saw, so it should look like standing at their table, not like a screen; it fills
-     about your view and stays put in the room when you turn your head. If it does not fuse at your normal focus, or
-     looks the wrong size, note it with the `theater: stereo window` line of `vr-layer.log` (in
-     `%LOCALAPPDATA%\Castcade\logs`). A one-eye preview shows on a big flat screen instead. On your ball it dips again
+     your playfield as their ball starts. It is a flat screen (ADR 0009: 2D, one of their eyes or their player
+     window), life size by default, and it stays put in the room when you turn your head; the view around it is
+     dark. The Match tab's **Theater size** makes it smaller (and sharper). On your ball it dips again
      and your own table is back with nothing over it. In the lobby
      and at the end the panel sits low in your view, under the playfield. The Match tab has a setting for each
      ("In the headset on your ball", "on their ball") if you would rather have the panel. If theater does not

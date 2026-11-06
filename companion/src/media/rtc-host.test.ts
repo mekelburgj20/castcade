@@ -320,8 +320,8 @@ describe('createRtcHost (D2)', () => {
       localId: 'owner',
       peers: ['krobs'],
       ice: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-      // D7.4.3: a VR rig on `auto` with no ini reader: not known
-      capture: { ...CAPTURE, stereo: null },
+      // D7.4.3: a VR rig on `auto` with no ini reader; D8.7 (ADR 0009): one eye, VPX's default, not "unknown"
+      capture: { ...CAPTURE, stereo: 'mono' },
       micDeviceId: 'headset',
       muted: false,
       sending: false,
@@ -701,8 +701,9 @@ describe('createRtcHost (D2)', () => {
     host.setPreviewStereo('auto');
     ini = null;
     await settle();
-    expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { ...CAPTURE, stereo: null }]);
-    expect(host.status().captureStereo).toBeNull();
+    // D8.7 (ADR 0009): `auto` with no ini is one eye (VPX's default), the same as `mono` was: no change to tell the page.
+    expect(w.webContents.sent.at(-1)).toEqual([PANEL_CHANNELS.capture, { ...CAPTURE, stereo: 'mono' }]);
+    expect(host.status().captureStereo).toBe('mono');
     await host.detach();
 
     // A monitor rig on `auto` sends one picture and never reads the ini.
