@@ -7,6 +7,18 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scripts with mixed line endings were refused as "no _KeyDown handler" (C13).** Krobs' Twilight Zone (VPW 1.0),
+  Mustang 1.27 and Time Machine 2.4.1 each ran unpatched in basic mode, so only the last game of a session posted.
+  The patcher split a script on its one dominant newline, so an LF-only run inside a CRLF script (VPW multi-author
+  scripts; 44 of the owner's 142 tables mix endings) collapsed into one chunk where no anchor could be found. It now
+  splits on every newline and keeps each line's own ending through a patch and its undo (the round trip stays
+  byte-exact; Castcade's own lines take the dominant ending). A UTF-16 script is refused by name ("script is UTF-16
+  text, not the ANSI VPX writes"), and every refusal of an unclassifiable script logs its byte length, CRLF / LF / CR
+  / NUL counts and first line, so the next odd script is readable from `companion.log`. Found and reproduced by the
+  ArcAid session (ArcAid W94).
+
 ## [0.2.36] — 2026-11-05
 
 The first build under ADR 0009 (spectating is 2D, owner and Krobs 2026-11-04): the player up is flat video on a screen
