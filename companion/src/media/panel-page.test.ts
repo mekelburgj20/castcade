@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, type Paint2D } from './panel-page.js';
+import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -192,10 +192,21 @@ class FakePeerConnection {
   onnegotiationneeded: (() => void) | null = null;
   onicecandidate: unknown = null;
   senders: { track: FakeTrack; params: { encodings: { maxBitrate?: number; maxFramerate?: number }[] } }[] = [];
+  /** D8.3: one transceiver per sender, recording the codec preferences set on it. */
+  transceivers: { sender: unknown; preferences: unknown[] | null; setCodecPreferences(c: unknown[]): void }[] = [];
+  /** D8.3: what `getStats` answers (a Map of stats entries by id); absent, no getStats at all (the browser before one). */
+  stats: Map<string, Record<string, unknown>> | null = null;
   closed = false;
   candidates: unknown[] = [];
   constructor(readonly config: unknown) {
     FakePeerConnection.all.push(this);
+  }
+  getTransceivers() {
+    return this.transceivers;
+  }
+  async getStats(): Promise<Map<string, Record<string, unknown>>> {
+    if (!this.stats) throw new Error('no stats');
+    return this.stats;
   }
   /** D2.7: the remote connection a description came from (`session:<x>` in the fake SDP), as Chromium tells them apart. */
   static session(sdp: string | undefined): string | null {
@@ -215,6 +226,8 @@ class FakePeerConnection {
       },
     };
     this.senders.push(s);
+    const tr = { sender: s, preferences: null as unknown[] | null, setCodecPreferences: (c: unknown[]) => void (tr.preferences = c) };
+    this.transceivers.push(tr);
     return s;
   }
   async setLocalDescription(d?: { type: string }): Promise<void> {
@@ -828,6 +841,180 @@ describe('videoBitrateFor (D7.4.6)', () => {
   });
   it('a size not known gets the base rate', () => {
     expect(videoBitrateFor({ width: 0, height: 0, stereo: 'mono' })).toBe(2_500_000);
+  });
+});
+
+describe('hardware H.264 and a start bitrate at the cap (D8.3, 2026-11-05)', () => {
+  // Chromium's video capabilities on an NVIDIA rig, in its own order (VP8 first), with the rtx / red / fec entries.
+  const h264 = (profile: string, mode: 0 | 1) => ({ mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: `level-asymmetry-allowed=1;packetization-mode=${mode};profile-level-id=${profile}` });
+  const CAPS: { mimeType: string; clockRate: number; sdpFmtpLine?: string }[] = [
+    { mimeType: 'video/VP8', clockRate: 90000 },
+    { mimeType: 'video/rtx', clockRate: 90000, sdpFmtpLine: 'apt=96' },
+    { mimeType: 'video/VP9', clockRate: 90000, sdpFmtpLine: 'profile-id=0' },
+    h264('42001f', 1),
+    h264('42001f', 0),
+    h264('42e01f', 1),
+    h264('42e01f', 0),
+    h264('4d001f', 1),
+    h264('640032', 1),
+    h264('64001f', 1),
+    { mimeType: 'video/AV1', clockRate: 90000 },
+    { mimeType: 'video/red', clockRate: 90000 },
+    { mimeType: 'video/ulpfec', clockRate: 90000 },
+    { mimeType: 'video/flexfec-03', clockRate: 90000, sdpFmtpLine: 'repair-window=10000000' },
+  ];
+
+  it('preferH264: H.264 first (mode 1 before 0; 42e01f, then 640032, then other high, then the rest), everything else in its order', () => {
+    const out = preferH264(CAPS);
+    expect(out.map((c) => (c.mimeType === 'video/H264' ? c.sdpFmtpLine!.replace('level-asymmetry-allowed=1;', '') : c.mimeType))).toEqual([
+      'packetization-mode=1;profile-level-id=42e01f',
+      'packetization-mode=1;profile-level-id=640032',
+      'packetization-mode=1;profile-level-id=64001f',
+      'packetization-mode=1;profile-level-id=42001f',
+      'packetization-mode=1;profile-level-id=4d001f',
+      'packetization-mode=0;profile-level-id=42e01f',
+      'packetization-mode=0;profile-level-id=42001f',
+      'video/VP8',
+      'video/rtx',
+      'video/VP9',
+      'video/AV1',
+      'video/red',
+      'video/ulpfec',
+      'video/flexfec-03',
+    ]);
+    // The very objects Chromium listed, each once; the mime type's case does not matter; no H.264 at all: as given.
+    expect(out).toHaveLength(CAPS.length);
+    for (const c of out) expect(CAPS.includes(c)).toBe(true);
+    expect(preferH264([{ mimeType: 'video/VP8' }, { mimeType: 'video/h264', sdpFmtpLine: 'profile-level-id=42E01F;packetization-mode=1' }]).map((c) => c.mimeType)).toEqual(['video/h264', 'video/VP8']);
+    expect(preferH264([{ mimeType: 'video/VP8' }, { mimeType: 'video/VP9' }]).map((c) => c.mimeType)).toEqual(['video/VP8', 'video/VP9']);
+    expect(preferH264([])).toEqual([]);
+  });
+
+  it('bitrateHintsFor: the cap in kbps as the start, 40 % of it as the floor', () => {
+    expect(bitrateHintsFor(2_500_000)).toEqual({ startKbps: 2500, minKbps: 1000 });
+    expect(bitrateHintsFor(7_800_000)).toEqual({ startKbps: 7800, minKbps: 3120 });
+    expect(bitrateHintsFor(8_000_000)).toEqual({ startKbps: 8000, minKbps: 3200 });
+    expect(bitrateHintsFor(0)).toEqual({ startKbps: 1, minKbps: 1 });
+  });
+
+  // A Chromium answer: voice, two video codecs with fmtp lines, one without, rtx / red / fec payloads, then the table sound.
+  const SDP = [
+    'v=0',
+    'o=- 1 2 IN IP4 127.0.0.1',
+    's=-',
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+    'a=mid:0',
+    'a=rtpmap:111 opus/48000/2',
+    'a=fmtp:111 minptime=10;useinbandfec=1',
+    'm=video 9 UDP/TLS/RTP/SAVPF 102 103 96 97 98 99 100',
+    'a=mid:1',
+    'a=rtpmap:102 H264/90000',
+    'a=rtcp-fb:102 nack',
+    'a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f',
+    'a=rtpmap:103 rtx/90000',
+    'a=fmtp:103 apt=102',
+    'a=rtpmap:96 VP8/90000',
+    'a=rtcp-fb:96 nack',
+    'a=rtpmap:97 rtx/90000',
+    'a=fmtp:97 apt=96',
+    'a=rtpmap:98 VP9/90000',
+    'a=fmtp:98 profile-id=0',
+    'a=rtpmap:99 red/90000',
+    'a=rtpmap:100 ulpfec/90000',
+    'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+    'a=mid:2',
+    'a=rtpmap:111 opus/48000/2',
+    'a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1',
+    '',
+  ].join('\r\n');
+
+  it('withBitrateHints: every video codec of the m=video section gets the hints on its fmtp line (one added where there is none); rtx / red / fec and audio untouched', () => {
+    const out = withBitrateHints(SDP, { startKbps: 5400, minKbps: 2160 });
+    const lines = out.split('\r\n');
+    expect(lines).toContain('a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;x-google-start-bitrate=5400;x-google-min-bitrate=2160');
+    expect(lines).toContain('a=fmtp:98 profile-id=0;x-google-start-bitrate=5400;x-google-min-bitrate=2160');
+    // VP8 had no fmtp line: one follows its rtpmap.
+    expect(lines.indexOf('a=fmtp:96 x-google-start-bitrate=5400;x-google-min-bitrate=2160')).toBe(lines.indexOf('a=rtpmap:96 VP8/90000') + 1);
+    expect(lines).toContain('a=fmtp:103 apt=102');
+    expect(lines).toContain('a=fmtp:97 apt=96');
+    expect(lines.filter((l) => l.startsWith('a=fmtp:99') || l.startsWith('a=fmtp:100'))).toEqual([]);
+    expect(lines.filter((l) => l.startsWith('a=fmtp:111'))).toEqual(['a=fmtp:111 minptime=10;useinbandfec=1', 'a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1']);
+    // Nothing else changed: the lines without hints are the input's, in order; the line ending is kept.
+    expect(lines.filter((l) => l.indexOf('x-google') < 0)).toEqual(SDP.split('\r\n').filter((l) => !l.startsWith('a=fmtp:102') && !l.startsWith('a=fmtp:98')));
+    expect(out.indexOf('\n')).toBeGreaterThan(0);
+    expect(out.split('\n').every((l, i, all) => i === all.length - 1 || l.endsWith('\r'))).toBe(true);
+    // The max only when asked; the start alone otherwise.
+    expect(withBitrateHints('v=0\nm=video 9 RTP 96\na=rtpmap:96 VP8/90000\n', { startKbps: 2500, maxKbps: 8000 })).toBe('v=0\nm=video 9 RTP 96\na=rtpmap:96 VP8/90000\na=fmtp:96 x-google-start-bitrate=2500;x-google-max-bitrate=8000\n');
+    expect(withBitrateHints('v=0\nm=video 9 RTP 96\na=rtpmap:96 VP8/90000\n', { startKbps: 2500 })).toBe('v=0\nm=video 9 RTP 96\na=rtpmap:96 VP8/90000\na=fmtp:96 x-google-start-bitrate=2500\n');
+  });
+
+  it('withBitrateHints: hinting again replaces the hints (idempotent, a new cap wins); several m=video sections; no video: as given', () => {
+    const once = withBitrateHints(SDP, { startKbps: 5400, minKbps: 2160 });
+    expect(withBitrateHints(once, { startKbps: 5400, minKbps: 2160 })).toBe(once);
+    const again = withBitrateHints(once, { startKbps: 8000, minKbps: 3200 });
+    expect(again).toBe(withBitrateHints(SDP, { startKbps: 8000, minKbps: 3200 }));
+    expect(again).not.toContain('5400');
+    expect(again.split('\r\n')).toContain('a=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f;x-google-start-bitrate=8000;x-google-min-bitrate=3200');
+    const two = SDP + 'm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=mid:3\r\na=rtpmap:96 VP8/90000\r\na=fmtp:96 x-google-start-bitrate=300\r\n';
+    const out = withBitrateHints(two, { startKbps: 2500, minKbps: 1000 }).split('\r\n');
+    expect(out.filter((l) => l.startsWith('a=fmtp:96'))).toEqual(['a=fmtp:96 x-google-start-bitrate=2500;x-google-min-bitrate=1000', 'a=fmtp:96 x-google-start-bitrate=2500;x-google-min-bitrate=1000']);
+    const audioOnly = 'v=0\r\nm=audio 9 RTP 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10\r\n';
+    expect(withBitrateHints(audioOnly, { startKbps: 2500, minKbps: 1000 })).toBe(audioOnly);
+    expect(withBitrateHints('answer-sdp', { startKbps: 2500 })).toBe('answer-sdp');
+  });
+
+  it('on the page: H.264 first on the video transceiver when the sender is added, the hints at the cap on every remote description, the encoder reported and logged once', async () => {
+    const g = globalThis as { RTCRtpSender?: unknown };
+    g.RTCRtpSender = { getCapabilities: (kind: string) => (kind === 'video' ? { codecs: CAPS } : { codecs: [] }) };
+    try {
+      const p = loadPage({ mic: true, capture: true });
+      p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: true });
+      await settle();
+      const pc = FakePeerConnection.all[0]!;
+      const video = pc.senders.find((s) => s.track.kind === 'video')!;
+      const tr = pc.transceivers.find((t) => t.sender === video)!;
+      expect((tr.preferences as { mimeType: string }[]).slice(0, 2).map((c) => c.mimeType)).toEqual(['video/H264', 'video/H264']);
+      expect(tr.preferences).toEqual(preferH264(CAPS));
+      expect(pc.transceivers.find((t) => t.sender === pc.senders[0])!.preferences).toBeNull(); // the mic's: untouched
+      // The answer the peer sends: its VP8 gets the start / min hints at this sender's cap (CAP is 1280x720 mono: 2.5 Mbps).
+      pc.onnegotiationneeded?.();
+      await settle();
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'v=0\r\nm=video 9 RTP 96\r\na=rtpmap:96 VP8/90000\r\n' } });
+      await settle();
+      expect(pc.remoteDescription).toEqual({ type: 'answer', sdp: 'v=0\r\nm=video 9 RTP 96\r\na=rtpmap:96 VP8/90000\r\na=fmtp:96 x-google-start-bitrate=2500;x-google-min-bitrate=1000\r\n' });
+      expect(video.params.encodings[0]).toEqual({ maxBitrate: 2_500_000, maxFramerate: 30 });
+      // The peer's offer (an ICE restart of its own) goes through the same door.
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'offer', sdp: 'v=0\r\nm=video 9 RTP 102\r\na=rtpmap:102 H264/90000\r\na=fmtp:102 packetization-mode=1\r\n' } });
+      await settle();
+      expect(pc.remoteDescription?.sdp).toBe('v=0\r\nm=video 9 RTP 102\r\na=rtpmap:102 H264/90000\r\na=fmtp:102 packetization-mode=1;x-google-start-bitrate=2500;x-google-min-bitrate=1000\r\n');
+      // The stats tick: the codec by codecId and the encoder on `sent`; one log line when they become known, none while repeated.
+      const stats = p.intervals.find((i) => i.ms === STATS_MS)!;
+      const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string).filter((l) => l.startsWith('encoder'));
+      const last = () => (p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { stats: { sent?: unknown } | null }).stats;
+      pc.stats = new Map<string, Record<string, unknown>>([
+        ['c1', { type: 'codec', mimeType: 'video/H264', clockRate: 90000 }],
+        ['o1', { type: 'outbound-rtp', kind: 'video', codecId: 'c1', encoderImplementation: 'unknown', frameWidth: 1280, frameHeight: 720, bytesSent: 0, qualityLimitationReason: 'none' }],
+      ]);
+      stats.cb();
+      await settle();
+      expect(logs()).toEqual(['encoder: H264']);
+      pc.stats.set('o1', { type: 'outbound-rtp', kind: 'video', codecId: 'c1', encoderImplementation: 'MediaFoundationVideoEncodeAccelerator', frameWidth: 1280, frameHeight: 720, bytesSent: 9_250_000, qualityLimitationReason: 'none' });
+      stats.cb();
+      await settle();
+      stats.cb();
+      await settle();
+      expect(last()?.sent).toEqual({ width: 1280, height: 720, kbps: 7400, limit: 'none', codec: 'H264', encoder: 'MediaFoundationVideoEncodeAccelerator' });
+      expect(logs()).toEqual(['encoder: H264', 'encoder: H264 via MediaFoundationVideoEncodeAccelerator']);
+      // A page without RTCRtpSender (or a connection without transceivers) sets no preference and still negotiates.
+      delete g.RTCRtpSender;
+      p.emit(PANEL_CHANNELS.addPeer, 'third');
+      await settle();
+      const third = FakePeerConnection.all[1]!;
+      expect(third.senders.map((s) => s.track.kind)).toContain('video');
+      expect(third.transceivers.every((t) => t.preferences === null)).toBe(true);
+    } finally {
+      delete g.RTCRtpSender;
+    }
   });
 });
 

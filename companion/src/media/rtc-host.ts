@@ -659,7 +659,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const st = s.stats;
       if (st.capture !== null) {
         const o = st.sent;
-        const out = o && o.width > 0 ? `, sent ${o.width}x${o.height}${o.kbps !== null ? ` at ${(o.kbps / 1000).toFixed(1)} Mbps` : ''}, limited by ${o.limit}` : '';
+        // D8.3: the codec and encoder ("H264 via MediaFoundationVideoEncodeAccelerator") once the page's stats name them.
+        const enc = o?.codec ? `, ${o.codec}${o.encoder ? ` via ${o.encoder}` : ''}` : '';
+        const out = o && o.width > 0 ? `, sent ${o.width}x${o.height}${o.kbps !== null ? ` at ${(o.kbps / 1000).toFixed(1)} Mbps` : ''}, limited by ${o.limit}${enc}` : '';
         // D7.5.1: where the picture comes from, when it is the layer camera (the screen capture's line is unchanged).
         const from = capture && isCameraCapture(capture) ? ` ${cameraWords(capture)}${st.camera?.unreadable ? `, ${st.camera.unreadable} unreadable` : ''}${cameraDropped(true)}` : '';
         log.info(`media: capture: ${st.capture} frames in 10 s${from}${out}`);
