@@ -140,7 +140,7 @@ describe('the VR test bench in the match host (D7.6)', () => {
     expect(layer.modes).toEqual(['theater']);
     expect(layer.scales[0]).toBe(1);
     expect(st.bench).toMatchObject({ state: 'running', source: 'live', path: 'loop', headset: true, view: 'theater', readout: '30 fps drawn' });
-    expect(st.bench!.hint).toBe('In the headset: a single window straight ahead, life size at Theater size 1; the picture should fuse without effort; compare detail with the direct view.');
+    expect(st.bench!.hint).toBe('In the headset: your table as a flat screen straight ahead, as the other players will see it (Life size at Theater size); compare detail with the direct view.');
     expect(lines).toContain('bench: running (vr_headset via virtual-desktop; theater in the headset; whole view, soft edge 3%)');
     // D7.6.10: the window's tuning went with Theater size at the start (the defaults: infinity, no offset, 3 % soft edge).
     expect(layer.tunes.slice(0, 2)).toEqual(['tune inf 0 0', 'feather 0.03']);

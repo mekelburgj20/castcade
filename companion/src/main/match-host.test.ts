@@ -414,11 +414,12 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     expect(told).toEqual(['auto']);
     expect(H.mh.status().previewAdvice).toBeNull(); // no match: no picture sent
     await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
-    expect(H.mh.status().previewAdvice).toMatch(/^Both eyes is on but the window is 16:9 \(1920x1080\)/);
+    // D8.7 (ADR 0009): both eyes gets told to set one eye, whatever the window; one eye is right and gets nothing.
+    expect(H.mh.status().previewAdvice).toMatch(/^You are sending both eyes side by side/);
     media = { captureCrop: { width: 1440, height: 1392 }, captureStereo: 'sbs' };
-    expect(H.mh.status().previewAdvice).toBeNull();
+    expect(H.mh.status().previewAdvice).toMatch(/^You are sending both eyes side by side/);
     media = { captureCrop: { width: 1280, height: 720 }, captureStereo: 'mono' };
-    expect(H.mh.status().previewAdvice).toMatch(/^You are sending one eye/);
+    expect(H.mh.status().previewAdvice).toBeNull();
     H.mh.setSettings({ previewStereo: 'sbs' });
     H.mh.setSettings({ previewStereo: 'sbs' });
     expect(told).toEqual(['auto', 'sbs']);

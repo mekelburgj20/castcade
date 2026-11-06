@@ -63,20 +63,20 @@ describe('the VR test bench, pure parts (D7.6)', () => {
   });
 
   it('the readout: fps drawn, the size handed to the layer, the encoder on the loop path (with its codec, D7.6.8); the layer camera while not on', () => {
-    expect(benchReadout({ report: report(), headset: true, path: 'direct', source: 'clip' })).toBe('30 fps drawn · 1440x1440 sbs to the layer at 29 fps');
+    expect(benchReadout({ report: report(), headset: true, path: 'direct', source: 'clip' })).toBe('30 fps drawn · 1440x1440 both eyes to the layer at 29 fps');
     expect(benchReadout({ report: report({ path: 'loop', sent: { width: 1440, height: 1440, kbps: 7812, fps: 29.6, limit: 'none', codec: null, encoder: null }, bitrate: 8_000_000 }), headset: true, path: 'loop', source: 'clip' })).toBe(
-      '30 fps drawn · 1440x1440 sbs to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none',
+      '30 fps drawn · 1440x1440 both eyes to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none',
     );
     expect(benchReadout({ report: report({ path: 'loop', sent: { width: 1440, height: 1440, kbps: 7812, fps: 29.6, limit: 'none', codec: 'VP8', encoder: 'libvpx' }, bitrate: 8_000_000 }), headset: true, path: 'loop', source: 'clip' })).toBe(
-      '30 fps drawn · 1440x1440 sbs to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, VP8 via libvpx, limited by none',
+      '30 fps drawn · 1440x1440 both eyes to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, VP8 via libvpx, limited by none',
     );
     // The codec alone when the engine names no encoder; the cap override shows as the cap (D7.6.9).
     expect(benchReadout({ report: report({ path: 'loop', sent: { width: 1440, height: 1440, kbps: 15_600, fps: 30, limit: 'cpu', codec: 'H264', encoder: null }, bitrate: 16_000_000 }), headset: true, path: 'loop', source: 'live' })).toBe(
-      '30 fps drawn · 1440x1440 sbs to the layer at 29 fps · encoder sent 1440x1440 at 15.6 Mbps (cap 16.0 Mbps), 30 fps, H264, limited by cpu',
+      '30 fps drawn · 1440x1440 both eyes to the layer at 29 fps · encoder sent 1440x1440 at 15.6 Mbps (cap 16.0 Mbps), 30 fps, H264, limited by cpu',
     );
     // No codec: nothing about it (an encoder name alone is not printed).
     expect(benchReadout({ report: report({ path: 'loop', sent: { width: 1440, height: 1440, kbps: 7812, fps: 30, limit: 'none', codec: null, encoder: 'libvpx' }, bitrate: 8_000_000 }), headset: true, path: 'loop', source: 'clip' })).toBe(
-      '30 fps drawn · 1440x1440 sbs to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none',
+      '30 fps drawn · 1440x1440 both eyes to the layer at 29 fps · encoder sent 1440x1440 at 7.8 Mbps (cap 8.0 Mbps), 30 fps, limited by none',
     );
     expect(benchReadout({ report: report({ path: 'loop', loopUp: false, fed: null }), headset: true, path: 'loop', source: 'clip' })).toBe('30 fps drawn · nothing handed to the layer yet · local WebRTC loop connecting');
     expect(benchReadout({ report: report({ drawn: 0, bad: 2 }), headset: false, path: 'direct', source: 'live', camera: { state: 'asked', why: 'pipe closed' } })).toBe(
@@ -86,20 +86,20 @@ describe('the VR test bench, pure parts (D7.6)', () => {
   });
 
   it('the hint: the owner’s words in the headset, the desktop panel on a PC, the direct view while compared', () => {
-    expect(BENCH_HEADSET_HINT).toBe('In the headset: a single window straight ahead, life size at Theater size 1; the picture should fuse without effort; compare detail with the direct view.');
+    expect(BENCH_HEADSET_HINT).toBe('In the headset: your table as a flat screen straight ahead, as the other players will see it (Life size at Theater size); compare detail with the direct view.');
     expect(benchHint(true, 'theater')).toBe(BENCH_HEADSET_HINT);
     expect(benchHint(false, 'theater')).toBe(BENCH_DESKTOP_HINT);
     expect(benchHint(true, 'direct')).toMatch(/VPX's own view is showing now/);
     expect(benchWords({ source: 'clip', path: 'loop', clip: { name: '2026-11-03-101500', side: 'sender', frames: 60, fps: 30 }, headset: true })).toBe('clip 2026-11-03-101500 (sender side, 60 frames at 30 fps), through a local WebRTC loop, theater in the headset');
-    expect(benchWords({ source: 'live', path: 'direct', headset: false })).toBe('my own table, live (the layer camera), straight to the layer, the desktop panel');
+    expect(benchWords({ source: 'live', path: 'direct', headset: false })).toBe('my own table, live, as the other players see it (the layer camera), straight to the layer, the desktop panel');
     // D7.6.9: the loop's cap override is in the start line; not when it is the match's rule, not on the direct path.
-    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: 16_000_000 })).toBe('my own table, live (the layer camera), through a local WebRTC loop, theater in the headset, cap 16 Mbps');
-    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: 12_500_000 })).toBe('my own table, live (the layer camera), through a local WebRTC loop, theater in the headset, cap 12.5 Mbps');
-    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: null })).toBe('my own table, live (the layer camera), through a local WebRTC loop, theater in the headset');
-    expect(benchWords({ source: 'live', path: 'direct', headset: true, bitrate: 16_000_000 })).toBe('my own table, live (the layer camera), straight to the layer, theater in the headset');
+    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: 16_000_000 })).toBe('my own table, live, as the other players see it (the layer camera), through a local WebRTC loop, theater in the headset, cap 16 Mbps');
+    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: 12_500_000 })).toBe('my own table, live, as the other players see it (the layer camera), through a local WebRTC loop, theater in the headset, cap 12.5 Mbps');
+    expect(benchWords({ source: 'live', path: 'loop', headset: true, bitrate: null })).toBe('my own table, live, as the other players see it (the layer camera), through a local WebRTC loop, theater in the headset');
+    expect(benchWords({ source: 'live', path: 'direct', headset: true, bitrate: 16_000_000 })).toBe('my own table, live, as the other players see it (the layer camera), straight to the layer, theater in the headset');
     // D7.5.9: the camera's view on the live source only.
-    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'whole' })).toBe('my own table, live (the layer camera, whole view), straight to the layer, theater in the headset');
-    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'window' })).toBe('my own table, live (the layer camera, window view), straight to the layer, theater in the headset');
+    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'whole' })).toBe('my own table, live, as the other players see it (the layer camera, whole view), straight to the layer, theater in the headset');
+    expect(benchWords({ source: 'live', path: 'direct', headset: true, view: 'window' })).toBe('my own table, live, as the other players see it (the layer camera, window view), straight to the layer, theater in the headset');
     expect(benchWords({ source: 'clip', path: 'direct', headset: true, view: 'whole' })).toBe('a clip, straight to the layer, theater in the headset');
   });
 });

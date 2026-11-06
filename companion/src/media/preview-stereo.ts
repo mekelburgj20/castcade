@@ -9,7 +9,14 @@
  * The declaration: the Match tab's setting (`previewStereo`) when it names one; on `auto`, a rig on the monitor sends
  * one picture, and a VR rig reads `[PlayerVR] VRPreview` from the active `VPinballX.ini` (the one beside the exe wins,
  * else `%APPDATA%\VPinballX\VPinballX.ini`, as `locateMainIni` resolves it; `-Ini` on VPX's command line is not
- * seen here): 3 is both eyes. Null when no ini is found: the receivers then guess as before. No Electron import.
+ * seen here): 3 is both eyes. No Electron import.
+ *
+ * D8.7 (2026-11-05, ADR 0009): spectating is 2D, so one eye is the right preview and `auto` resolves to it: a VR rig
+ * whose ini cannot be found declares one eye (VPX's default, the left) instead of leaving the receivers to guess, and
+ * the advice now runs the other way (both eyes on: set VPX to one eye; one eye: nothing to say). The declaration still
+ * follows the ini when it plainly says both eyes: Castcade never writes VPX's ini, and a receiver places what it is
+ * told, so a both-eyes picture declared as one would show two pictures side by side on the screen. This only concerns
+ * the screen capture: the layer camera says what it sends with each frame (rtc-host.ts `videoFrameFrom`).
  */
 import { iniNumber, locateMainIni, parseIni } from '../witness/ini-attestation.js';
 import { isNotFound, type WitnessFs } from '../witness/fs.js';
@@ -51,31 +58,24 @@ export async function readIniStereo(opts: { fs: WitnessFs; exe: string | null; e
   }
 }
 
-/** What this rig declares: the setting when it names a kind; on `auto`, one picture on the monitor, the ini in VR. */
-export function declaredStereo(setting: PreviewStereoSetting, inVr: boolean, ini: VrStereo | null): VrStereo | null {
+/**
+ * What this rig declares: the setting when it names a kind; on `auto`, one picture on the monitor, and in VR the ini
+ * when it says both eyes, else one eye (VPX's default when the key, or the ini itself, is missing: ADR 0009).
+ */
+export function declaredStereo(setting: PreviewStereoSetting, inVr: boolean, ini: VrStereo | null): VrStereo {
   if (setting === 'mono' || setting === 'sbs') return setting;
-  return inVr ? ini : 'mono';
+  return inVr && ini === 'sbs' ? 'sbs' : 'mono';
 }
-
-/** A both-eyes crop wider than this (width / height) is landscape: two 8:9 eyes or wider, a narrow sliver of the table. */
-export const SQUARE_ENOUGH = 1.2;
 
 /**
  * The Match tab's advice to a VR player about the picture it sends (null: nothing to say). `crop` is the window region
- * sent (`MediaStatus.captureCrop`), `declared` what this rig tells the others (`MediaStatus.captureStereo`).
+ * sent (`MediaStatus.captureCrop`), `declared` what this rig tells the others (`MediaStatus.captureStereo`). Under
+ * ADR 0009 the only advice is to stop sending both eyes: the receivers then get the withdrawn stereo window of 0.2.35
+ * instead of the flat screen.
  */
 export function previewAdvice(o: { inVr: boolean; declared: VrStereo | null | undefined; crop: { width: number; height: number } | null | undefined }): string | null {
   const c = o.crop;
   if (!o.inVr || !c || !(c.width > 0 && c.height > 0)) return null;
-  const window = 'a preview window as tall as your monitor and about as wide (1080x1080 on a 1080p monitor): each eye is then a tall view of the table';
-  if (o.declared === 'sbs') {
-    if (c.width / c.height <= SQUARE_ENOUGH) return null;
-    const a = c.width / c.height;
-    const shape = a >= 1.7 && a <= 1.8 ? `16:9 (${c.width}x${c.height})` : `wider than tall (${c.width}x${c.height})`;
-    return `Both eyes is on but the window is ${shape}, so each eye is a narrow slice of your table. Use ${window}.`;
-  }
-  if (o.declared === 'mono') {
-    return `You are sending one eye. Set VPX's VR preview to both eyes (Preferences → VR → Preview: Both Eyes) so the other player sees your table in stereo, with ${window}.`;
-  }
-  return "Castcade could not read VPX's VR preview setting (no VPinballX.ini found): pick what your preview shows under \"Your preview\" below, so the other player's headset shows it right.";
+  if (o.declared !== 'sbs') return null;
+  return "You are sending both eyes side by side (VPX's VR preview is on Both Eyes), so the other players do not get the flat screen. Set it to one eye (Preferences → VR → Preview: Left Eye, or VRPreview = 1 under [PlayerVR] in VPinballX.ini) and restart the table, or switch Camera to the VR layer.";
 }

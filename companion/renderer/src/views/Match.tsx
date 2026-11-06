@@ -20,7 +20,10 @@ const RIG_LABEL: Record<MatchStatus['participants'][number]['rig'], string> = { 
  * src/core/player.h, combo labels in dialogs/VROptionsDialog.cpp, vpinball v10.8.0-2051-28dd6c3) draws the left eye in
  * the window's left half and the right eye in its right half, each centre-cropped to its half's aspect. D7.4.3
  * (2026-11-01): this rig declares it to the others (media/preview-stereo.ts) and main words the advice
- * (`previewAdvice`: both eyes in a 16:9 window, one eye only); the "Your preview" setting overrides the ini.
+ * (`previewAdvice`); the "Your preview" setting overrides the ini.
+ * D8.7 (2026-11-05, ADR 0009): spectating is 2D. The other player's table is a flat screen in the headset; the stereo
+ * window's controls (Camera view, window depth, the eye offsets, the soft edge, the calibration pattern) are withdrawn
+ * from this tab but their settings, IPC and layer protocol stay as 0.2.35 shipped them. One eye is the right preview.
  */
 
 export function Match({ state }: { state: CastcadeState }) {
@@ -77,7 +80,7 @@ export function Match({ state }: { state: CastcadeState }) {
       (e: unknown) => setError(describe(e)),
     );
   };
-  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'cameraView' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
+  const setView = (patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers'>>) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
   const commitVolume = () => {
@@ -370,7 +373,7 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="theater">Their table where yours was (theater)</option>
               <option value="panel">The match panel, low in view</option>
             </select>
-            <small>Theater replaces your view with the other player's table on a big screen; it needs the Castcade OpenXR layer (not SteamVR).</small>
+            <small>Theater: their table as a flat screen in front of you, where yours was; the view around it goes dark. Needs the Castcade OpenXR layer (not SteamVR).</small>
           </label>
           <label className="field">
             <span>Theater size</span>
@@ -379,7 +382,7 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="0.8">80 %</option>
               <option value="0.6">60 %</option>
             </select>
-            <small>Smaller is sharper: the same picture over less of your view. Takes effect at once.</small>
+            <small>How big the screen is. Life size is the default; smaller puts the same picture over less of your view, so it looks sharper. Takes effect at once.</small>
           </label>
           <label className="field">
             <span>Your preview</span>
@@ -392,8 +395,8 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="sbs">Both eyes</option>
             </select>
             <small>
-              What your VR preview window shows, told to the other player's headset. Both eyes in a window as tall as your monitor and about as wide (1080x1080 on
-              1080p) shows them your table in stereo, tall like pinball.
+              Only used when the camera is the screen capture: what your VR preview window shows, told to the other players. One eye is right for 2D (VPX's
+              default, Left Eye); Auto reads VPX's setting and this tab says so when it is Both Eyes.
             </small>
           </label>
           <label className="field">
@@ -403,26 +406,15 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="layer">VR layer (experimental)</option>
             </select>
             <small>
-              VR layer: the Castcade OpenXR layer sends your two eye views straight out of VPX, so no preview window is needed and your monitor may be off; it
-              needs the layer from this Castcade version in VPX (restart VPX after updating) and falls back to the screen capture on PC and SteamVR rigs.
-            </small>
-          </label>
-          {/* D7.5.9 (2026-11-04): the whole render per eye puts the window's frame at the lens edges (the 1:2 crop's frame doubled at infinity). */}
-          <label className="field">
-            <span>Camera view</span>
-            <select value={st.settings.cameraView} onChange={(e) => setView({ cameraView: e.target.value === 'window' ? 'window' : 'whole' })}>
-              <option value="whole">Whole view (each eye's whole render; the picture fills the headset)</option>
-              <option value="window">Window (a tall centre crop, 1:2, as 0.2.34)</option>
-            </select>
-            <small>
-              With the VR layer camera: the whole view sends everything each eye sees, so the other player's headset shows no frame in the shared field;
-              the window keeps the tall crop. Takes effect at once, in a match and on the bench.
+              VR layer: Castcade reads the picture from VPX's headset view, no preview window needed (it needs the layer from this Castcade version in VPX:
+              restart VPX after updating; PC and SteamVR rigs fall back to the screen capture). Screen capture: VPX's preview window on your desktop (keep
+              other windows off it).
             </small>
           </label>
         </div>
       </div>
 
-      <VrBenchCard bridge={bridge} bench={st.vrBench} onStatus={setSt} st={st} />
+      <VrBenchCard bridge={bridge} onStatus={setSt} st={st} />
 
       <div className="card">
         <strong>Table sound</strong>
@@ -467,21 +459,10 @@ export function Match({ state }: { state: CastcadeState }) {
 /**
  * D7.6 (2026-11-03): the VR test bench: checks a player can run alone in the headset. D7.6.2: "Write VR report" writes
  * the whole picture of how VPX reaches the headset (the layer's session report, the settings, the counters, the
- * preview window) beside companion.log and shows where. D7.6.1: "Show calibration pattern" puts the layer's own stereo
- * grid in theater (it needs the layer connected on pipe protocol 3: in a match, VPX in VR with this version's layer).
+ * preview window) beside companion.log and shows where. D7.6.1's calibration pattern (the layer's own stereo grid) is
+ * withdrawn from the tab under ADR 0009; `setVrTest` and `vrBench.pattern` stay in the IPC and main.
  */
-const PATTERN_HINT =
-  'In the headset: one grid, the L and R labels in their corners, the circles round and single. Doubled lines mean the geometry is off: note the angle label where it starts.';
-
-/** D7.6.1: why the pattern switch is off, or null when it can be used. */
-function patternBlocker(bench: MatchStatus['vrBench']): string | null {
-  if (!bench) return 'This build has no OpenXR layer.';
-  if (!bench.connected) return 'Needs the Castcade layer connected: host or join a match with VPX running in VR.';
-  if (bench.protocol < 3) return `The layer in VPX is older (pipe protocol ${bench.protocol}): restart VPX after updating Castcade.`;
-  return null;
-}
-
-function VrBenchCard({ bridge, bench, onStatus, st }: { bridge: CastcadeBridge; bench: MatchStatus['vrBench']; onStatus: (s: MatchStatus) => void; st: MatchStatus }) {
+function VrBenchCard({ bridge, onStatus, st }: { bridge: CastcadeBridge; onStatus: (s: MatchStatus) => void; st: MatchStatus }) {
   const [busy, setBusy] = useState(false);
   const [written, setWritten] = useState<{ md: string; json: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -493,27 +474,12 @@ function VrBenchCard({ bridge, bench, onStatus, st }: { bridge: CastcadeBridge; 
       .then(setWritten, (e: unknown) => setError(describe(e)))
       .finally(() => setBusy(false));
   };
-  const blocker = patternBlocker(bench);
-  const pattern = bench?.pattern ?? false;
-  const togglePattern = (on: boolean) => {
-    setError(null);
-    void bridge.match.setVrTest(on ? 'pattern' : null).then(onStatus, (e: unknown) => setError(describe(e)));
-  };
   return (
     <div className="card">
       <strong>VR test bench</strong>
       {/* D7.6: theater alone (a clip or my own table, straight to the layer or through a local WebRTC loop), Save 2 s of frames. */}
       <TestBench bridge={bridge} st={st} onStatus={onStatus} bare />
-      {/* D7.6.1: the calibration pattern the layer draws itself; D7.6.2: the VR report. */}
-      <label className="check">
-        <input type="checkbox" checked={pattern} disabled={blocker !== null && !pattern} onChange={(e) => togglePattern(e.target.checked)} />
-        Show calibration pattern
-      </label>
-      <small>
-        {pattern
-          ? PATTERN_HINT
-          : (blocker ?? 'Replaces theater with a test grid drawn by the layer, at the Theater size above: checks the stereo geometry alone, no second player needed.')}
-      </small>
+      {/* D7.6.2: the VR report. */}
       <div className="row">
         <button type="button" className="small" disabled={busy} onClick={writeReport}>
           {busy ? 'Writing the VR report…' : 'Write VR report'}

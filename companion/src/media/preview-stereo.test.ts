@@ -28,22 +28,21 @@ describe('the sender declares its stereo (D7.4.3, 2026-11-01)', () => {
     expect(await readIniStereo({ fs, exe: EXE, env })).toEqual({ stereo: 'mono', ini: 'C:\\VPX\\VPinballX.ini' });
   });
 
-  it('the Match-tab setting wins; on auto a monitor rig sends one picture and a VR rig says what its ini says', () => {
+  it('the Match-tab setting wins; on auto a monitor rig sends one picture, a VR rig both eyes only when its ini says so, else one eye (ADR 0009)', () => {
     expect(declaredStereo('sbs', false, null)).toBe('sbs');
     expect(declaredStereo('mono', true, 'sbs')).toBe('mono');
     expect(declaredStereo('auto', false, 'sbs')).toBe('mono');
-    expect(declaredStereo('auto', true, 'sbs')).toBe('sbs');
-    expect(declaredStereo('auto', true, null)).toBeNull();
+    expect(declaredStereo('auto', true, 'sbs')).toBe('sbs'); // the picture really is both eyes: the receiver must place it so
+    expect(declaredStereo('auto', true, 'mono')).toBe('mono');
+    expect(declaredStereo('auto', true, null)).toBe('mono'); // no ini found: VPX's default is the left eye, the receivers no longer guess
   });
 
-  it('the Match-tab advice: both eyes in a 16:9 window says so; a tall-enough window says nothing; one eye asks for both', () => {
-    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1920, height: 1080 } })).toMatch(/^Both eyes is on but the window is 16:9 \(1920x1080\).*as tall as your monitor and about as wide/);
-    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1920, height: 540 } })).toMatch(/^Both eyes is on but the window is wider than tall \(1920x540\)/);
-    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1440, height: 1392 } })).toBeNull(); // the owner's
-    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1080, height: 1080 } })).toBeNull();
-    expect(previewAdvice({ inVr: true, declared: 'mono', crop: { width: 1280, height: 720 } })).toMatch(/^You are sending one eye\. Set VPX's VR preview to both eyes/);
-    expect(previewAdvice({ inVr: true, declared: null, crop: { width: 1280, height: 720 } })).toMatch(/could not read VPX's VR preview setting/);
-    expect(previewAdvice({ inVr: false, declared: 'mono', crop: { width: 1280, height: 720 } })).toBeNull();
-    expect(previewAdvice({ inVr: true, declared: 'mono', crop: null })).toBeNull();
+  it('the Match-tab advice (ADR 0009): both eyes asks for one eye whatever the window; one eye, or no picture, says nothing', () => {
+    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1920, height: 1080 } })).toMatch(/^You are sending both eyes side by side.*Preview: Left Eye.*switch Camera to the VR layer\.$/);
+    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: { width: 1440, height: 1392 } })).toMatch(/^You are sending both eyes side by side/); // the owner's 0.2.35 window: still both eyes
+    expect(previewAdvice({ inVr: true, declared: 'mono', crop: { width: 1280, height: 720 } })).toBeNull();
+    expect(previewAdvice({ inVr: true, declared: null, crop: { width: 1280, height: 720 } })).toBeNull();
+    expect(previewAdvice({ inVr: false, declared: 'sbs', crop: { width: 1920, height: 1080 } })).toBeNull(); // a monitor rig is never advised
+    expect(previewAdvice({ inVr: true, declared: 'sbs', crop: null })).toBeNull();
   });
 });

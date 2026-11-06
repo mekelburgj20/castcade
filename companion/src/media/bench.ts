@@ -158,7 +158,7 @@ export function benchReadout(i: { report: BenchPageReport | null; headset: boole
   else {
     parts.push(r.drawn > 0 ? `${r.drawn} fps drawn${r.bad ? ` (${r.bad} unreadable)` : ''}` : `no frame drawn${r.bad ? ` (${r.bad} unreadable)` : ''}`);
     if (!i.headset) parts.push('no headset layer: the picture is in the desktop panel');
-    else if (r.fed) parts.push(`${r.fed.width}x${r.fed.height} ${r.fed.stereo} to the layer at ${r.fedFrames} fps`);
+    else if (r.fed) parts.push(`${r.fed.width}x${r.fed.height}${r.fed.stereo === 'sbs' ? ' both eyes' : ''} to the layer at ${r.fedFrames} fps`);
     else parts.push('nothing handed to the layer yet');
     if (i.path === 'loop') {
       const s = r.sent;
@@ -176,7 +176,7 @@ export function benchReadout(i: { report: BenchPageReport | null; headset: boole
 }
 
 /** What to look at while the bench runs (the owner's words, 2026-11-03). */
-export const BENCH_HEADSET_HINT = 'In the headset: a single window straight ahead, life size at Theater size 1; the picture should fuse without effort; compare detail with the direct view.';
+export const BENCH_HEADSET_HINT = 'In the headset: your table as a flat screen straight ahead, as the other players will see it (Life size at Theater size); compare detail with the direct view.';
 export const BENCH_DESKTOP_HINT = 'On this PC the picture shows in the desktop panel window ("Castcade match"); theater in the headset needs VPX in VR with the Castcade OpenXR layer.';
 
 export function benchHint(headset: boolean, view: BenchView): string {
@@ -203,7 +203,7 @@ export interface BenchStatus {
  */
 export function benchWords(o: { source: BenchSource; path: BenchPath; clip?: { name: string; side: string; frames: number; fps: number } | null; headset: boolean; bitrate?: number | null; view?: 'whole' | 'window' | null }): string {
   const view = o.source === 'live' && o.view ? `, ${o.view} view` : '';
-  const src = o.source === 'live' ? `my own table, live (the layer camera${view})` : o.clip ? `clip ${o.clip.name} (${o.clip.side} side, ${o.clip.frames} frames at ${o.clip.fps} fps)` : 'a clip';
+  const src = o.source === 'live' ? `my own table, live, as the other players see it (the layer camera${view})` : o.clip ? `clip ${o.clip.name} (${o.clip.side} side, ${o.clip.frames} frames at ${o.clip.fps} fps)` : 'a clip';
   const path = o.path === 'loop' ? 'through a local WebRTC loop' : 'straight to the layer';
   const cap = o.path === 'loop' && o.bitrate ? `, cap ${mbpsShort(o.bitrate)}` : '';
   return `${src}, ${path}, ${o.headset ? 'theater in the headset' : 'the desktop panel'}${cap}`;
