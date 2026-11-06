@@ -294,6 +294,72 @@ describe('createTableAudioHelper (D2.8)', () => {
     expect(s.helpers).toHaveLength(1);
   });
 
+  it('D2.10: level and unlevel go out as differences, follow the pid, and are replayed to a restarted helper', () => {
+    const s = setup();
+    s.ta.level(42, 60);
+    const h = s.last();
+    expect(h.stdin.lines).toEqual([]); // starts the helper, waits for ready
+    h.say('ready 0.2.0');
+    expect(s.log).toHaveBeenCalledWith('audio: helper 0.2.0 ready');
+    expect(h.stdin.lines).toEqual(['level 42 60']);
+    h.say('leveled 42 2');
+    expect(s.log).toHaveBeenCalledWith('audio: my table at 60 % (VPX pid 42, 2 sessions)');
+    s.ta.level(42, 60);
+    expect(h.stdin.lines).toEqual(['level 42 60']); // the same again: nothing
+    s.ta.level(42, 80);
+    expect(h.stdin.lines.slice(-1)).toEqual(['level 42 80']); // a new percent on the same pid: no unlevel first
+    s.ta.level(7, 80.4);
+    expect(h.stdin.lines.slice(-2)).toEqual(['unlevel 42', 'level 7 80']); // another VPX: the old tree restored first
+    s.ta.level(7, 3);
+    expect(h.stdin.lines.slice(-1)).toEqual(['level 7 10']); // clamped to the helper's range
+    s.ta.unlevel(42);
+    expect(h.stdin.lines.slice(-1)).toEqual(['level 7 10']); // not the pid levelled: a no-op
+    s.ta.unlevel(7);
+    expect(h.stdin.lines.slice(-1)).toEqual(['unlevel 7']);
+    h.say('unleveled 7 1');
+    expect(s.log).toHaveBeenCalledWith('audio: my table back to its own volume (VPX pid 7, 1 session)');
+    s.ta.unlevel();
+    expect(h.stdin.lines.slice(-1)).toEqual(['unlevel 7']); // nothing levelled: nothing said
+    // A crash while a level is wanted: the new helper is told it again, with the mute.
+    s.ta.apply({ mutePid: 9, tapPid: null });
+    s.ta.level(42, 50);
+    s.advance(RESTART_MIN_MS);
+    h.exit(3221225477);
+    s.advance(RESTART_MIN_MS);
+    s.last().say('ready 0.2.0');
+    expect(s.last().stdin.lines).toEqual(['mute 9', 'level 42 50']);
+  });
+
+  it('D2.10: a helper without level (0.1.0) is told once and asked no more; a later unlevel sends nothing', () => {
+    const s = setup();
+    s.ta.level(42, 60);
+    const h = s.last();
+    h.say('ready 0.1.0');
+    expect(h.stdin.lines).toEqual(['level 42 60']);
+    h.say('error unknown_command level');
+    expect(s.log).toHaveBeenCalledWith("audio: this helper (0.1.0) cannot change my table's volume; castcade-audio 0.2.0 or newer does");
+    s.ta.level(42, 70);
+    s.ta.unlevel();
+    s.ta.level(7, 70);
+    expect(h.stdin.lines).toEqual(['level 42 60']);
+    h.say('error unknown_command level');
+    expect(s.log.mock.calls.filter((c) => String(c[0]).includes('cannot change'))).toHaveLength(1);
+    // Other errors still reach the log as before.
+    h.say('error bad_pid mute');
+    expect(s.log).toHaveBeenCalledWith('audio: error bad_pid mute');
+    // The mute still works.
+    s.ta.apply({ mutePid: 9, tapPid: null });
+    expect(h.stdin.lines.slice(-1)).toEqual(['mute 9']);
+  });
+
+  it('D2.10: no exe: level is harmless and spawns nothing', () => {
+    const s = setup(null);
+    s.ta.level(5, 50);
+    s.ta.unlevel();
+    expect(s.helpers).toHaveLength(0);
+    expect(s.ta.status()).toMatchObject({ helper: 'unavailable', reason: 'helper_missing' });
+  });
+
   it('stderr lines reach the log with the audio: prefix, once', () => {
     const s = setup();
     s.ta.apply({ mutePid: 1, tapPid: null });

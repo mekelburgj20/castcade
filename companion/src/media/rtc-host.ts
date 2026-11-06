@@ -53,7 +53,7 @@ import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
-import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
+import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -145,6 +145,8 @@ export interface RtcHost extends MatchMedia {
   setTableAudio(flags: TableAudioFlags): void;
   pushTableAudio(pcm: Uint8Array): void;
   capturePid(): number | null;
+  /** D2.10 (2026-11-05): the playback volumes (MatchMedia); kept for a new page, sent live to one that is up, the note only live. */
+  setVolume(volume: PanelVolume): void;
   /**
    * D7.6.3 (2026-11-03): save the next 2 s of frames into `dir` (`frame-clip.ts`): every layer-camera frame while the
    * camera runs (the sender side), and every theater frame the panel page hands to the layer while it does (the receiver
@@ -555,6 +557,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** D2.8: the table-sound flags the match host gave (replayed to a new page), and the pid of the window being sent. */
   let tableFlags: TableAudioFlags | null = null;
   let capturePidNow: number | null = null;
+  /** D2.10: the volumes the match host gave (replayed to a new page without the note). */
+  let volume: { voice: number; table: number } | null = null;
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -630,6 +634,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     PANEL_CHANNELS.microphone,
     PANEL_CHANNELS.videoWant,
     PANEL_CHANNELS.tableAudio,
+    PANEL_CHANNELS.volume,
   ]);
   const toPage = (channel: string, payload?: unknown): void => {
     if (win && ready && (attachSent || benchSent)) return post(channel, payload);
@@ -1438,6 +1443,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     offSignal = sig.onSignal((from, signal) => toPage(PANEL_CHANNELS.signal, { from, signal }));
     if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
     if (tableFlags) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
+    if (volume) toPage(PANEL_CHANNELS.volume, { ...volume, note: null } satisfies PanelVolume);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -1582,6 +1588,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       post(PANEL_CHANNELS.tablePcm, pcm);
     },
     capturePid: () => (attached ? capturePidNow : null),
+    setVolume(v) {
+      const note = typeof v.note === 'string' && v.note ? v.note : null;
+      if (volume && volume.voice === v.voice && volume.table === v.table && !note) return;
+      volume = { voice: v.voice, table: v.table };
+      if (attached) toPage(PANEL_CHANNELS.volume, { ...volume, note } satisfies PanelVolume);
+    },
     startBench,
     async stopBench() {
       if (!benchRun) return;

@@ -37,6 +37,10 @@ export function Match({ state }: { state: CastcadeState }) {
   const [invite, setInvite] = useState('');
   const [copied, setCopied] = useState(false);
   const [volume, setVolume] = useState<number | null>(null);
+  // D2.10 (2026-11-05): the three volume sliders while being dragged; null shows the saved setting (a key press moves it too).
+  const [voice, setVoice] = useState<number | null>(null);
+  const [theirTable, setTheirTable] = useState<number | null>(null);
+  const [myTable, setMyTable] = useState<number | null>(null);
 
   useEffect(() => {
     if (!bridge) return;
@@ -87,6 +91,21 @@ export function Match({ state }: { state: CastcadeState }) {
   };
   const commitVolume = () => {
     if (volume !== null && volume !== st.settings.cueVolume) void bridge.match.setSettings({ cueVolume: volume }).then(setSt, (e: unknown) => setError(describe(e)));
+  };
+  // D2.10: on release, what moved is saved; the sliders then show the setting again, so a Ctrl+Alt press shows too.
+  const commitLevels = () => {
+    const patch: Partial<MatchSettings> = {};
+    if (voice !== null && voice !== st.settings.voiceVolume) patch.voiceVolume = voice;
+    if (theirTable !== null && theirTable !== st.settings.othersTableVolume) patch.othersTableVolume = theirTable;
+    if (myTable !== null && myTable !== st.settings.myTableWhileUp) patch.myTableWhileUp = myTable;
+    const done = (s: MatchStatus) => {
+      setSt(s);
+      setVoice(null);
+      setTheirTable(null);
+      setMyTable(null);
+    };
+    if (Object.keys(patch).length === 0) done(st);
+    else void bridge.match.setSettings(patch).then(done, (e: unknown) => setError(describe(e)));
   };
   const pickMic = (deviceId: string) => {
     void bridge.match.setMicrophone(deviceId === '' ? null : deviceId).then(setSt, (e: unknown) => setError(describe(e)));
@@ -445,6 +464,55 @@ export function Match({ state }: { state: CastcadeState }) {
           On your ball the others hear your table; on theirs you hear the player up, and your own VPX stays quiet (its backglass and PinUP too).
           {tableSoundLine(st)}
         </small>
+      </div>
+
+      <div className="card">
+        <strong>Voice and table sound</strong>
+        <label className="field">
+          <span>Voice volume ({voice ?? st.settings.voiceVolume} %)</span>
+          <input
+            type="range"
+            min={0}
+            max={300}
+            step={10}
+            value={voice ?? st.settings.voiceVolume}
+            onChange={(e) => setVoice(Number(e.target.value))}
+            onMouseUp={commitLevels}
+            onKeyUp={commitLevels}
+            onBlur={commitLevels}
+          />
+          <small>The other players' voices; above 100 % is a boost. Ctrl+Alt+Up / Down changes the voice volume while you play.</small>
+        </label>
+        <label className="field">
+          <span>Their table sound ({theirTable ?? st.settings.othersTableVolume} %)</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={10}
+            value={theirTable ?? st.settings.othersTableVolume}
+            onChange={(e) => setTheirTable(Number(e.target.value))}
+            onMouseUp={commitLevels}
+            onKeyUp={commitLevels}
+            onBlur={commitLevels}
+          />
+          <small>The player up's table as you hear it, under their voice.</small>
+        </label>
+        <label className="field">
+          <span>My table while I play ({myTable ?? st.settings.myTableWhileUp} %)</span>
+          <input
+            type="range"
+            min={10}
+            max={100}
+            step={10}
+            value={myTable ?? st.settings.myTableWhileUp}
+            onChange={(e) => setMyTable(Number(e.target.value))}
+            onMouseUp={commitLevels}
+            onKeyUp={commitLevels}
+            onBlur={commitLevels}
+          />
+          <small>Your own VPX's volume on your ball (its own volume again after it); needs the table-sound helper. Ctrl+Alt+Left / Right changes it while you play.</small>
+        </label>
       </div>
 
       <div className="card">

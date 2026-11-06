@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, type Paint2D } from './panel-page.js';
+import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -16,6 +16,20 @@ const state = (o: Partial<PanelState> = {}): PanelState => ({
   message: null,
   mic: 'open',
   ...o,
+});
+
+describe('volumeGains (D2.10)', () => {
+  it('percent to gain: the voice 0–3 (a boost past 1), the table 0–1; defaults 1.5 and 1 for anything else', () => {
+    expect(volumeGains({ voice: 150, table: 100 })).toEqual({ voice: 1.5, table: 1 });
+    expect(volumeGains({ voice: 300, table: 40 })).toEqual({ voice: 3, table: 0.4 });
+    expect(volumeGains({ voice: 900, table: 250 })).toEqual({ voice: 3, table: 1 });
+    expect(volumeGains({ voice: -20, table: -1 })).toEqual({ voice: 0, table: 0 });
+    expect(volumeGains({ voice: Number.NaN, table: 'loud' as never })).toEqual({ voice: 1.5, table: 1 });
+    expect(volumeGains(null)).toEqual({ voice: 1.5, table: 1 });
+    expect(volumeGains(undefined)).toEqual({ voice: 1.5, table: 1 });
+    expect(volumeGains({ voice: 100, table: 100, note: 'Voice 100 %' })).toEqual({ voice: 1, table: 1 });
+    expect(VOLUME_NOTE_MS).toBe(2000);
+  });
 });
 
 describe('panel text (D2)', () => {
@@ -350,7 +364,7 @@ describe('panel page script (D2)', () => {
     const { html, script } = loadPage({ mic: true, capture: true });
     expect(html).toContain('<body class="vr">');
     expect(panelPageHtml({ vr: false })).toContain('<body class="desktop">');
-    for (const name of ['function headerText', 'function stripRows', 'function videoCropRect', 'function paintFrame', 'class PeerNegotiator', 'class SignalingMesh', 'function isPolite']) expect(script).toContain(name);
+    for (const name of ['function headerText', 'function stripRows', 'function videoCropRect', 'function paintFrame', 'function volumeGains', 'class PeerNegotiator', 'class SignalingMesh', 'function isPolite']) expect(script).toContain(name);
     expect(script).toContain(PANEL_CHANNELS.attach);
     expect(script).not.toContain('innerHTML');
   });

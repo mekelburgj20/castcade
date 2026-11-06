@@ -22,6 +22,12 @@
  * Next game between games; the host's `leave()` between games is End match (MATCH_END first, then the teardown). A
  * client whose series is over (MATCH_END, or the host gone between games) keeps the final standings up for
  * `SERIES_OVER_LINGER_MS` and then tears down by itself, so the headset does not keep a dead panel.
+ *
+ * D2.10 (2026-11-05): voice over the game. Three volume settings: the others' voices and the up player's table go to
+ * the panel page (`media.setVolume`, live), my own table while I am up goes to the helper (`level`, through
+ * `syncTableAudio`). While a match is on, `Control+Alt+Up` / `Down` step the voice and `Control+Alt+Left` / `Right`
+ * my table (`VOLUME_SHORTCUTS`, global shortcuts registered at `openPanel`, released at `teardown` and on quit); a press
+ * saves the setting, pushes it live, ticks the cue and shows the new level on the panel for a moment.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -32,7 +38,7 @@ import { ClientMatch } from '../match/client.js';
 import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
-import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
+import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import type { MediaSettingsStore, TurnServer } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
@@ -229,7 +235,25 @@ export interface MatchHostOptions {
   rig?: () => Promise<RigDecision>;
   /** D7.6.3: where saved frames go. Default `<userData>/logs/frames` (beside companion.log; `file`'s folder is userData). */
   framesDir?: string;
+  /** D2.10 (2026-11-05): Electron's `globalShortcut` in the app (the in-game volume keys); absent → no keys (tests pass a fake). */
+  shortcuts?: ShortcutRegistrar;
 }
+
+/** D2.10: what `globalShortcut` offers: `register` is false when another app holds the key. */
+export interface ShortcutRegistrar {
+  register(accelerator: string, callback: () => void): boolean;
+  unregister(accelerator: string): void;
+}
+
+/** D2.10: the in-game volume keys (Electron accelerators), registered only while a match is on. */
+export const VOLUME_SHORTCUTS = {
+  voiceUp: 'Control+Alt+Up',
+  voiceDown: 'Control+Alt+Down',
+  tableDown: 'Control+Alt+Left',
+  tableUp: 'Control+Alt+Right',
+} as const;
+/** D2.10: one press moves a volume by this many percent. */
+export const VOLUME_STEP = 10;
 
 const CUE_CHANNEL = 'castcade-cue:play';
 const CUE_STATUS_CHANNEL = 'castcade-cue:status';
@@ -336,6 +360,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   opts.media?.setCameraView?.(settings.cameraView);
   // D8.1: the camera's eyes (one as a flat picture, or both side by side); applied live to a running camera.
   opts.media?.setCameraEyes?.(settings.cameraEyes);
+  // D2.10: the page's playback volumes (the media layer keeps them for its next attach; a page that is up gets them now).
+  const pushVolume = (note: string | null = null): void => {
+    opts.media?.setVolume?.({ voice: settings.voiceVolume, table: settings.othersTableVolume, note } satisfies PanelVolume);
+  };
+  pushVolume();
   /**
    * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning and soft edge go to an overlay with Theater size: the
    * match's and the bench's, on every settings change (each setter is idempotent and the control dedups).
@@ -531,8 +560,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const plan = tableAudioPlan(a ? a.controller.panel() : null, settings);
     const pid = a ? tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.()) : null;
     opts.tableAudio?.apply({ mutePid: plan.muteMine ? pid : null, tapPid: plan.tapMine ? pid : null });
+    // D2.10: my table under my voice while I am up; back to its own volume the moment I am not.
+    if (plan.levelMine !== null && pid !== null) opts.tableAudio?.level(pid, plan.levelMine);
+    else opts.tableAudio?.unlevel();
     opts.media?.setTableAudio?.({ send: plan.tapMine && pid !== null, hear: plan.playTableOf !== null });
-    const words = `mute ${plan.muteMine ? 'on' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, VPX pid ${pid ?? 'unknown'}`;
+    const words = `mute ${plan.muteMine ? 'on' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, mine at ${plan.levelMine ?? 100} %, VPX pid ${pid ?? 'unknown'}`;
     if (opts.tableAudio && a && words !== tableLogged) {
       tableLogged = words;
       log.info(`match: table sound: ${words}`);
@@ -667,10 +699,58 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     emit();
   };
 
+  // ---- D2.10: the in-game volume keys ----
+  let keysHeld = false;
+  /** One press: the setting moves a step (clamped by `patchMatchSettings`), is saved, pushed live, ticked and shown. */
+  const nudge = (key: 'voiceVolume' | 'myTableWhileUp', delta: number, accelerator: string): void => {
+    const before = settings[key];
+    saveSettings(patchMatchSettings(settings, { [key]: before + delta }));
+    const now = settings[key];
+    const what = key === 'voiceVolume' ? 'voice volume' : 'my table while I play';
+    log.info(`match: ${what} ${now} % (${accelerator}${now === before ? ', at the limit' : ''})`);
+    pushVolume(key === 'voiceVolume' ? `Voice ${now} %` : `My table ${now} %`);
+    cue.play('tick');
+    // The Match tab's sliders follow; for my table, `syncTableAudio` levels the helper.
+    emit();
+  };
+  const registerKeys = (): void => {
+    const reg = opts.shortcuts;
+    if (!reg || keysHeld) return;
+    keysHeld = true;
+    const bind = (acc: string, fn: () => void): void => {
+      let ok: boolean;
+      try {
+        ok = reg.register(acc, fn);
+      } catch (e) {
+        log.warn(`match: ${acc} could not be registered: ${describeError(e)}`);
+        return;
+      }
+      if (!ok) log.warn(`match: ${acc} is held by another app; that volume key is off this match`);
+    };
+    bind(VOLUME_SHORTCUTS.voiceUp, () => nudge('voiceVolume', VOLUME_STEP, VOLUME_SHORTCUTS.voiceUp));
+    bind(VOLUME_SHORTCUTS.voiceDown, () => nudge('voiceVolume', -VOLUME_STEP, VOLUME_SHORTCUTS.voiceDown));
+    bind(VOLUME_SHORTCUTS.tableUp, () => nudge('myTableWhileUp', VOLUME_STEP, VOLUME_SHORTCUTS.tableUp));
+    bind(VOLUME_SHORTCUTS.tableDown, () => nudge('myTableWhileUp', -VOLUME_STEP, VOLUME_SHORTCUTS.tableDown));
+    log.info('match: volume keys on while the match runs: Ctrl+Alt+Up / Down the voice, Ctrl+Alt+Left / Right my table while I play');
+  };
+  const unregisterKeys = (): void => {
+    if (!keysHeld) return;
+    keysHeld = false;
+    for (const acc of Object.values(VOLUME_SHORTCUTS)) {
+      try {
+        opts.shortcuts?.unregister(acc);
+      } catch {
+        /* already gone */
+      }
+    }
+  };
+
   /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts, of the kind decided then. */
   const openPanel = async (a: Active): Promise<void> => {
     // D2.8: the helper starts with the match, so "table sound unavailable" shows before the first ball.
     opts.tableAudio?.start();
+    // D2.10: the volume keys live as long as the match.
+    registerKeys();
     await opts.media?.setVr?.(mediaRig(a));
     await a.controller.open();
     if (headsetPanel(a)) await startOverlay(a);
@@ -1035,8 +1115,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (a.endTimer) clearTimeout(a.endTimer);
     a.endTimer = null;
     for (const off of a.offs) off();
+    unregisterKeys();
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
     opts.tableAudio?.apply({ mutePid: null, tapPid: null });
+    opts.tableAudio?.unlevel();
     tableLogged = '';
     if (a.overlay) await a.overlay.stop().catch((e: unknown) => log.warn(`match: overlay stop: ${describeError(e)}`));
     const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
@@ -1113,11 +1195,17 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const eyesBefore = settings.cameraEyes;
       const tuneBefore = windowTuneWords(settings);
       const preMatchBefore = settings.preMatchPlay;
+      const volumeBefore = `${settings.voiceVolume}/${settings.othersTableVolume}/${settings.myTableWhileUp}`;
       saveSettings(patchMatchSettings(settings, patch));
       // A12 (2026-11-05): the host's table before the match; a lobby under way follows the new choice at once.
       if (settings.preMatchPlay !== preMatchBefore) {
         log.info(`match: before the match: ${settings.preMatchPlay === 'locked' ? 'the table is locked until someone joins' : 'free play until someone joins'} (Match tab)`);
         active?.controller.setPreMatchPlay(settings.preMatchPlay);
+      }
+      // D2.10: the page's volumes go live at once; my table while I play reaches the helper in `emit` (syncTableAudio).
+      if (`${settings.voiceVolume}/${settings.othersTableVolume}/${settings.myTableWhileUp}` !== volumeBefore) {
+        pushVolume();
+        log.info(`match: volumes on the Match tab: voice ${settings.voiceVolume} %, their table ${settings.othersTableVolume} %, my table while I play ${settings.myTableWhileUp} %`);
       }
       if (settings.previewStereo !== before) {
         opts.media?.setPreviewStereo?.(settings.previewStereo);
@@ -1244,6 +1332,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     async stop() {
       await endBench('Castcade quits');
       await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
+      unregisterKeys();
       cue.destroy();
     },
   };
@@ -1261,10 +1350,11 @@ function readText(file: string): string | null {
 
 /**
  * §3: a hidden window synthesises the cues (no asset): two rising tones for "your ball", one low tone for "opponent
- * up", a chord for "match over". It plays on the default output, which in VR is the headset. A file page with node
- * integration, like `stream-host.ts`'s audio page; autoplay allowed so the first cue sounds without a click.
+ * up", a chord for "match over"; D2.10: a short `tick` for a volume key press. It plays on the default output, which
+ * in VR is the headset. A file page with node integration, like `stream-host.ts`'s audio page; autoplay allowed so
+ * the first cue sounds without a click.
  */
-function createCue(page: string, volume: () => number, log: Logger): { play(kind: CueKind): void; destroy(): void } {
+function createCue(page: string, volume: () => number, log: Logger): { play(kind: CueKind | 'tick'): void; destroy(): void } {
   let win: BrowserWindow | null = null;
   let ready: Promise<void> | null = null;
   ipcMain.on(CUE_STATUS_CHANNEL, (e, s: unknown) => {
@@ -1328,6 +1418,7 @@ ipcRenderer.on('${CUE_CHANNEL}', async (_e, kind, volume) => {
     if (kind === 'your_turn') { tone(660, 0, 0.18, v, 'triangle'); tone(990, 0.2, 0.32, v, 'triangle'); }
     else if (kind === 'opponent_turn') { tone(262, 0, 0.4, v * 0.8, 'sine'); }
     else if (kind === 'match_over') { for (const f of [523.25, 659.25, 783.99]) tone(f, 0, 1.3, v * 0.45, 'triangle'); tone(1046.5, 0.12, 1.1, v * 0.3, 'sine'); }
+    else if (kind === 'tick') { tone(880, 0, 0.06, v * 0.7, 'triangle'); }
   } catch (e) { ipcRenderer.send('${CUE_STATUS_CHANNEL}', { error: String(e) }); }
 });
 </script>`;

@@ -8,7 +8,9 @@ cannot do:
 - **mute** this rig's VPX (its process tree, plus the table's COM-launched side processes `PinUpPlayer.exe` and
   `B2SBackglassServerEXE.exe`) in the Windows audio engine while another player is up, and put it back afterwards;
 - **tap** the VPX process tree's own sound (process loopback) while this rig is up, so the companion can send it to the
-  other players as a second WebRTC audio track next to the voice.
+  other players as a second WebRTC audio track next to the voice;
+- **level** (D2.10, 0.2.0) the same tree's session volume while this rig is up, so the player's own table sits under the
+  other players' voices ("My table while I play" on the Match tab, Ctrl+Alt+Left / Right in the game), and put it back.
 
 Nothing runs inside VPX (ADR 0001) and nothing is installed: the helper uses CoreAudio from outside the process. The
 companion side is `companion/src/media/audio-helper.ts` (spawn, commands, frame parser) and
@@ -42,9 +44,10 @@ Studio: `zig c++ -target x86_64-windows-gnu -std=c++17 -Wall -Wextra src/main.cp
 castcade-audio.exe [--state <file>] [--version] [-help]
 ```
 
-`--state <file>`: where the helper records the sessions it muted (one session instance id per line; deleted when it
-holds none). A run that finds the file at start unmutes those sessions first, so a helper killed while it held a mute
-(a crash, Task Manager) leaves nothing muted past its next start. The companion passes
+`--state <file>`: where the helper records the sessions it muted (one session instance id per line) and levelled
+(`level <previous volume> <session instance id>`); deleted when it holds none. A run that finds the file at start
+unmutes those sessions and puts the levelled ones back to their recorded volume first, so a helper killed while it
+held a mute or a level (a crash, Task Manager) leaves nothing changed past its next start. The companion passes
 `<userData>/castcade-audio-state.txt`.
 
 Exit codes: 0 normal (also after `quit` or stdin EOF); 2 COM or the CoreAudio device enumerator did not start; 64 bad
@@ -60,9 +63,13 @@ One per line, ASCII, `\n` or `\r\n`:
 | `unmute <pid>` | Unmutes exactly the sessions this helper muted for `pid` (a session the player unmuted meanwhile is left as it is). Answers `unmuted <pid> <n>`. |
 | `tap <pid>` | Starts the process-loopback capture of `pid`'s tree (`ActivateAudioInterfaceAsync` on `VAD\Process_Loopback` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK`, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`): 48 kHz, 2 channels, float32 (16-bit PCM converted here if the client refuses float). Replaces a tap of another pid. Answers `tap-on <pid>`, `tap-error <reason>` or `tap-unavailable <reason>`. |
 | `untap` | Stops the capture. Answers `tap-off` (nothing when no tap ran). |
-| `quit` | Untaps, unmutes everything it muted, exits 0. **stdin EOF does the same**, so a companion that dies (or is killed) never leaves VPX muted; so does a broken stdout and a console close / logoff / shutdown event. |
+| `level <pid> <percent>` | 0.2.0 (D2.10). Sets every audio session of `pid`'s tree (the same walk as `mute`, side processes included) to `percent` (10–100) of full volume: `ISimpleAudioVolume::SetMasterVolume(percent / 100)`, remembering each session's own volume first. Rescanned every 2 s like a mute, so a session that opens later gets it too; a new percent for the same pid moves the sessions already set. Answers `leveled <pid> <n>`, and again whenever a rescan sets more. A level and a mute may both hold the same session (the helper restores each on its own). |
+| `unlevel <pid>` | Puts back exactly the sessions this helper levelled for `pid`, each to the volume it had, unless the player moved it meanwhile (then it is theirs). Answers `unleveled <pid> <n>`. |
+| `quit` | Untaps, unmutes everything it muted, puts back everything it levelled, exits 0. **stdin EOF does the same**, so a companion that dies (or is killed) never leaves VPX muted or turned down; so does a broken stdout and a console close / logoff / shutdown event. |
 
-A malformed line answers `error bad_pid <command>` or `error unknown_command <word>`; the helper carries on.
+A malformed line answers `error bad_pid <command>`, `error bad_percent level` or `error unknown_command <word>`; the
+helper carries on. A 0.1.0 helper answers `level` with `error unknown_command level`, which the companion reads as "no
+level here" and logs once.
 
 ## stdout: events and frames
 
@@ -74,6 +81,7 @@ with the magic `CAU1`; an event line never does.
 | `ready <version>` | Started (after any recovery from `--state`). First line. |
 | `tap-unavailable <reason>` | Process loopback cannot run here: `windows_too_old:<build>` (before 19041, Windows 10 2004) or `no_activate_audio_interface`. Sent once at start, before any frame, and again in answer to every `tap`. Muting keeps working. |
 | `muted <pid> <n>` / `unmuted <pid> <n>` | `n` sessions are held muted for `pid` (on `unmuted`: were released). |
+| `leveled <pid> <n>` / `unleveled <pid> <n>` | 0.2.0: `n` sessions are held at the level for `pid` (on `unleveled`: were put back). |
 | `tap-on <pid>` / `tap-off` | The capture runs / stopped. |
 | `tap-error <reason>` | The capture could not start (`activate_failed:0x…`, `activate_timeout`, `initialize_failed:0x…`, `start_failed:0x…`) or stopped on its own (`capture_failed:0x…`, e.g. the target exited). |
 | `error <what> <detail>` | A command it could not read. |

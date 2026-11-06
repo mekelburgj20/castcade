@@ -13,7 +13,10 @@
  *   - a `tap-error` is retried after `RESTART_MIN_MS` while the tap is still wanted; `tap-unavailable` (Windows before
  *     10 2004) is final for this run and shows in `reason` while muting carries on;
  *   - `stop()` ends stdin: the helper unmutes everything it muted and exits; killed after `STOP_GRACE_MS`. Killing the
- *     companion closes the pipe the same way, and the helper's `--state` file covers a helper that was killed itself.
+ *     companion closes the pipe the same way, and the helper's `--state` file covers a helper that was killed itself;
+ *   - D2.10 (2026-11-05): `level(pid, percent)` / `unlevel()` set and restore the session volume of that VPX's tree
+ *     (helper 0.2.0's `level` / `unlevel`); the same difference-only sync and restart replay. A helper that does not
+ *     know the command (0.1.0 answers `error unknown_command level`) is told once in the log and asked no more.
  * Nothing here ever blocks a match: every failure is a status.
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
@@ -148,11 +151,21 @@ export interface TableAudioWant {
   tapPid: number | null;
 }
 
+/** D2.10: a session level wanted on a VPX's tree: `percent` 10–100 of the sessions' own volume. */
+export interface TableAudioLevel {
+  pid: number;
+  percent: number;
+}
+
 export interface TableAudioHelper {
   /** Starts the helper if it is not running (idempotent); its availability shows in `status()`. */
   start(): void;
-  /** The whole wanted state; starts the helper when needed. */
+  /** The whole wanted state (mute and tap); starts the helper when needed. */
   apply(want: TableAudioWant): void;
+  /** D2.10: set the session volume of `pid`'s tree to `percent` (10–100) until `unlevel`; starts the helper when needed. */
+  level(pid: number, percent: number): void;
+  /** D2.10: restore the levelled sessions; with a pid, only when that is the pid levelled (a no-op otherwise). */
+  unlevel(pid?: number): void;
   status(): TableAudioStatus;
   onStatus(cb: (s: TableAudioStatus) => void): () => void;
   /** Frames while tapping: float32 stereo 48 kHz, 10 ms each. */
@@ -187,6 +200,12 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
   let want: TableAudioWant = { ...NOTHING };
   /** What the running helper was told. */
   let told: TableAudioWant = { ...NOTHING };
+  /** D2.10: the level wanted and the one the running helper was told. */
+  let wantLevel: TableAudioLevel | null = null;
+  let toldLevel: TableAudioLevel | null = null;
+  /** D2.10: the helper answered `error unknown_command level` (a 0.1.0 helper): asked no more this run. */
+  let levelUnavailable = false;
+  let helperVersion: string | null = null;
   let child: ChildProcess | null = null;
   let ready = false;
   let stopping = false;
@@ -233,6 +252,12 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
       else if (!tapUnavailable) write(`tap ${want.tapPid}`);
       told = { ...told, tapPid: want.tapPid };
     }
+    // D2.10: a changed pid restores the old tree first; a changed percent on the same pid is one `level` again.
+    if (wantLevel?.pid !== toldLevel?.pid || wantLevel?.percent !== toldLevel?.percent) {
+      if (toldLevel && wantLevel?.pid !== toldLevel.pid) write(`unlevel ${toldLevel.pid}`);
+      if (wantLevel && !levelUnavailable) write(`level ${wantLevel.pid} ${wantLevel.percent}`);
+      toldLevel = wantLevel && !levelUnavailable ? { ...wantLevel } : null;
+    }
     emit();
   };
 
@@ -242,6 +267,9 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
       case 'ready':
         ready = true;
         told = { ...NOTHING };
+        toldLevel = null;
+        helperVersion = a ?? null;
+        opts.log(`audio: helper ${helperVersion ?? '(no version)'} ready`);
         sync();
         break;
       case 'muted': {
@@ -268,6 +296,25 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
       case 'tap-off':
         if (tapping) opts.log('audio: tap off');
         tapping = false;
+        break;
+      case 'leveled': {
+        const n = Number(b);
+        opts.log(`audio: my table at ${toldLevel?.percent ?? '?'} % (VPX pid ${Number(a)}, ${n} session${n === 1 ? '' : 's'})`);
+        break;
+      }
+      case 'unleveled': {
+        const n = Number(b);
+        opts.log(`audio: my table back to its own volume (VPX pid ${Number(a)}, ${n} session${n === 1 ? '' : 's'})`);
+        break;
+      }
+      case 'error':
+        if (a === 'unknown_command' && (b === 'level' || b === 'unlevel')) {
+          if (!levelUnavailable) opts.log(`audio: this helper (${helperVersion ?? 'unknown version'}) cannot change my table's volume; castcade-audio 0.2.0 or newer does`);
+          levelUnavailable = true;
+          toldLevel = null;
+          break;
+        }
+        opts.log(`audio: ${text}`);
         break;
       case 'tap-unavailable':
         if (tapUnavailable === null) opts.log(`audio: sending table sound is unavailable here (${a ?? 'unknown'}); muting still works`);
@@ -337,6 +384,7 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
       child = null;
       ready = false;
       told = { ...NOTHING };
+      toldLevel = null;
       mutedPid = null;
       mutedCount = 0;
       tapping = false;
@@ -394,6 +442,19 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
       if (want.mutePid !== null || want.tapPid !== null) start();
       sync();
     },
+    level(pid, percent) {
+      const pct = Math.min(100, Math.max(10, Math.round(percent)));
+      if (!Number.isInteger(pid) || pid <= 0) return;
+      if (wantLevel?.pid === pid && wantLevel.percent === pct) return;
+      wantLevel = { pid, percent: pct };
+      start();
+      sync();
+    },
+    unlevel(pid) {
+      if (!wantLevel || (pid !== undefined && wantLevel.pid !== pid)) return;
+      wantLevel = null;
+      sync();
+    },
     status: () => current,
     onStatus(cb) {
       statusListeners.add(cb);
@@ -405,6 +466,7 @@ export function createTableAudioHelper(opts: TableAudioHelperOptions): TableAudi
     },
     async stop() {
       want = { ...NOTHING };
+      wantLevel = null;
       stopping = true;
       if (restartTimer) cancel(restartTimer);
       if (tapRetry) cancel(tapRetry);

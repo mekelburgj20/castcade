@@ -2,15 +2,19 @@
 // VPX per player, so each rig hears its own table even while another player is up. This process does the two things
 // Electron cannot: it mutes this rig's VPX (and the table's side processes) in the Windows audio engine while another
 // player is up, and it captures the VPX process tree's own sound (process loopback) while this rig is up, so the
-// companion can send it to the others as a second WebRTC audio track. Nothing runs inside VPX (ADR 0001).
+// companion can send it to the others as a second WebRTC audio track. Nothing runs inside VPX (ADR 0001). D2.10
+// (2026-11-05, 0.2.0): it also sets the session volume of the tree (`level`) while this rig is up, so the player's own
+// table sits under the other players' voices, and puts it back (`unlevel`).
 //
 //   castcade-audio.exe [--state <file>] [--version] [-help]
 //
-// stdin: one text command per line: `mute <pid>`, `unmute <pid>`, `tap <pid>`, `untap`, `quit`.
-// stdout: text event lines (`ready`, `muted`, `unmuted`, `tap-on`, `tap-off`, `tap-unavailable`, `tap-error`, `error`)
-// and binary audio frames: "CAU1" + u32 LE byteLength + byteLength bytes of float32 interleaved stereo at 48 kHz
-// (10 ms = 3840 bytes). stderr: log lines. On stdin EOF, `quit`, a broken stdout or a fatal error every session this
-// process muted is unmuted before it exits; `--state` records them on disk so a later run unmutes what a crash left.
+// stdin: one text command per line: `mute <pid>`, `unmute <pid>`, `tap <pid>`, `untap`, `level <pid> <percent>`,
+// `unlevel <pid>`, `quit`.
+// stdout: text event lines (`ready`, `muted`, `unmuted`, `tap-on`, `tap-off`, `tap-unavailable`, `tap-error`,
+// `leveled`, `unleveled`, `error`) and binary audio frames: "CAU1" + u32 LE byteLength + byteLength bytes of float32
+// interleaved stereo at 48 kHz (10 ms = 3840 bytes). stderr: log lines. On stdin EOF, `quit`, a broken stdout or a
+// fatal error every session this process muted is unmuted and every one it levelled is put back before it exits;
+// `--state` records them on disk so a later run restores what a crash left.
 // Exit codes: 0 normal, 2 COM / CoreAudio could not start, 64 bad arguments.
 #include <windows.h>
 
@@ -34,6 +38,7 @@
 #include <atomic>
 #include <chrono>
 #include <cerrno>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
@@ -545,27 +550,53 @@ class Engine {
   Engine(IMMDeviceEnumerator* devices, std::string stateFile, ActivateAudioInterfaceAsyncFn activate, std::string tapUnavailable)
       : devices_(devices), stateFile_(std::move(stateFile)), tap_(activate), tapUnavailable_(std::move(tapUnavailable)) {}
 
-  // A crash of an earlier run left sessions muted: the state file names them.
+  // A crash of an earlier run left sessions muted or levelled: the state file names them (saveState's format).
   void recover() {
     if (stateFile_.empty()) return;
     std::set<std::wstring> ids;
+    std::map<std::wstring, float> levels;
     {
       std::ifstream in(stateFile_, std::ios::binary);
       std::string line;
       while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!line.empty()) ids.insert(widen(line));
+        if (line.empty()) continue;
+        if (line.rfind("level ", 0) == 0) {
+          // `level <previous volume> <session id>` (the id may hold spaces, so it comes last).
+          const size_t sp = line.find(' ', 6);
+          if (sp == std::string::npos) continue;
+          const float previous = static_cast<float>(std::atof(line.substr(6, sp - 6).c_str()));
+          const std::string id = line.substr(sp + 1);
+          if (!id.empty() && previous >= 0.0f && previous <= 1.0f) levels.emplace(widen(id), previous);
+          continue;
+        }
+        ids.insert(widen(line));
       }
     }
-    if (ids.empty()) return;
+    if (ids.empty() && levels.empty()) return;
     int restored = 0;
+    int releveled = 0;
     for (SessionRef& s : allSessions(devices_)) {
-      if (!ids.count(s.id)) continue;
-      BOOL m = FALSE;
-      if (SUCCEEDED(s.volume->GetMute(&m)) && m && SUCCEEDED(s.volume->SetMute(FALSE, nullptr))) restored++;
+      if (ids.count(s.id)) {
+        BOOL m = FALSE;
+        if (SUCCEEDED(s.volume->GetMute(&m)) && m && SUCCEEDED(s.volume->SetMute(FALSE, nullptr))) restored++;
+      }
+      const auto lv = levels.find(s.id);
+      if (lv != levels.end() && SUCCEEDED(s.volume->SetMasterVolume(lv->second, nullptr))) releveled++;
     }
-    logLine("audio: unmuted " + std::to_string(restored) + " session(s) an earlier run left muted (" + std::to_string(ids.size()) + " recorded)");
+    logLine("audio: unmuted " + std::to_string(restored) + " session(s) an earlier run left muted (" + std::to_string(ids.size()) +
+            " recorded); put back the volume of " + std::to_string(releveled) + " (" + std::to_string(levels.size()) + " recorded)");
     saveState();
+  }
+
+  // `<pid>` as the commands carry it: decimal, non-zero, fits a DWORD.
+  static bool parsePid(const std::string& arg, DWORD& pid) {
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long v = std::strtoull(arg.c_str(), &end, 10);
+    if (arg.empty() || arg[0] < '0' || arg[0] > '9' || !end || *end != '\0' || errno == ERANGE || v == 0 || v > 0xffffffffULL) return false;
+    pid = static_cast<DWORD>(v);
+    return true;
   }
 
   // One command line; false on quit.
@@ -582,18 +613,40 @@ class Engine {
       untap();
       return true;
     }
-    if (cmd == "mute" || cmd == "unmute" || cmd == "tap") {
-      char* end = nullptr;
-      errno = 0;
-      const unsigned long long v = std::strtoull(arg.c_str(), &end, 10);
-      if (arg.empty() || arg[0] < '0' || arg[0] > '9' || !end || *end != '\0' || errno == ERANGE || v == 0 || v > 0xffffffffULL) {
+    if (cmd == "mute" || cmd == "unmute" || cmd == "tap" || cmd == "unlevel") {
+      DWORD pid = 0;
+      if (!parsePid(arg, pid)) {
         say("error bad_pid " + cmd);
         return true;
       }
-      const DWORD pid = static_cast<DWORD>(v);
       if (cmd == "mute") mute(pid);
       else if (cmd == "unmute") unmute(pid);
+      else if (cmd == "unlevel") unlevel(pid);
       else tap(pid);
+      return true;
+    }
+    if (cmd == "level") {
+      // `level <pid> <percent>`, the percent 10–100.
+      std::string pidText = arg;
+      std::string pctText;
+      const size_t sp2 = arg.find(' ');
+      if (sp2 != std::string::npos) {
+        pidText = arg.substr(0, sp2);
+        pctText = arg.substr(sp2 + 1);
+      }
+      DWORD pid = 0;
+      if (!parsePid(pidText, pid)) {
+        say("error bad_pid " + cmd);
+        return true;
+      }
+      char* end = nullptr;
+      errno = 0;
+      const long pct = std::strtol(pctText.c_str(), &end, 10);
+      if (pctText.empty() || pctText[0] < '0' || pctText[0] > '9' || !end || *end != '\0' || errno == ERANGE || pct < 10 || pct > 100) {
+        say("error bad_percent " + cmd);
+        return true;
+      }
+      level(pid, static_cast<float>(pct) / 100.0f);
       return true;
     }
     if (!cmd.empty()) say("error unknown_command " + cmd);
@@ -602,6 +655,7 @@ class Engine {
 
   void rescan() {
     for (DWORD pid : std::vector<DWORD>(targets_.begin(), targets_.end())) scanTarget(pid, false);
+    for (DWORD pid : levelPids()) scanLevel(pid, false);
     std::string failure;
     if (tap_.failed(failure)) {
       const DWORD pid = tap_.pid();
@@ -614,9 +668,12 @@ class Engine {
   void shutdown() {
     untap();
     for (DWORD pid : std::vector<DWORD>(targets_.begin(), targets_.end())) unmute(pid);
+    for (DWORD pid : levelPids()) unlevel(pid);
     // Sessions recorded under no target any more (none, normally).
     for (auto& kv : muted_) kv.second.volume->SetMute(FALSE, nullptr);
     muted_.clear();
+    for (auto& kv : leveled_) restoreLevel(kv.second);
+    leveled_.clear();
     saveState();
   }
 
@@ -626,9 +683,94 @@ class Engine {
     DWORD pid = 0;
     Com<ISimpleAudioVolume> volume;
   };
+  // D2.10: a session whose volume this helper set; `previous` is what it had, `set` what we gave it last.
+  struct Leveled {
+    DWORD target = 0;
+    DWORD pid = 0;
+    float previous = 1.0f;
+    float set = 1.0f;
+    Com<ISimpleAudioVolume> volume;
+  };
 
   size_t countFor(DWORD target) const {
     return static_cast<size_t>(std::count_if(muted_.begin(), muted_.end(), [target](const auto& kv) { return kv.second.target == target; }));
+  }
+
+  size_t countLeveled(DWORD target) const {
+    return static_cast<size_t>(std::count_if(leveled_.begin(), leveled_.end(), [target](const auto& kv) { return kv.second.target == target; }));
+  }
+
+  std::vector<DWORD> levelPids() const {
+    std::vector<DWORD> out;
+    for (const auto& kv : levelTargets_) out.push_back(kv.first);
+    return out;
+  }
+
+  static bool sameLevel(float a, float b) { return std::fabs(a - b) < 0.005f; }
+
+  // Back to the volume it had, unless the player moved it meanwhile (then it is theirs, as with a mute).
+  static void restoreLevel(Leveled& l) {
+    float now = 0.0f;
+    if (SUCCEEDED(l.volume->GetMasterVolume(&now)) && sameLevel(now, l.set)) l.volume->SetMasterVolume(l.previous, nullptr);
+  }
+
+  void level(DWORD pid, float gain) {
+    const bool fresh = levelTargets_.insert_or_assign(pid, gain).second;
+    scanLevel(pid, true);
+    if (fresh) {
+      logLine("audio: setting pid " + std::to_string(pid) + " and its children to " + std::to_string(static_cast<int>(gain * 100.0f + 0.5f)) +
+              " % of their volume; rescanning every 2 s");
+    }
+  }
+
+  // Sets every not-yet-recorded session of the tree to the target's gain (remembering what it had), and follows a
+  // changed gain on the sessions already recorded. `always`: report even when nothing changed.
+  void scanLevel(DWORD target, bool always) {
+    const auto it = levelTargets_.find(target);
+    if (it == levelTargets_.end()) return;
+    const float gain = it->second;
+    const std::set<DWORD> tree = processTree(target);
+    size_t changed = 0;
+    for (auto& kv : leveled_) {
+      Leveled& l = kv.second;
+      if (l.target != target || sameLevel(l.set, gain)) continue;
+      if (SUCCEEDED(l.volume->SetMasterVolume(gain, nullptr))) {
+        l.set = gain;
+        changed++;
+      }
+    }
+    for (SessionRef& s : allSessions(devices_)) {
+      if (!tree.count(s.pid) || leveled_.count(s.id)) continue;
+      float previous = 1.0f;
+      if (FAILED(s.volume->GetMasterVolume(&previous))) continue;
+      if (FAILED(s.volume->SetMasterVolume(gain, nullptr))) continue;
+      Leveled l;
+      l.target = target;
+      l.pid = s.pid;
+      l.previous = previous;
+      l.set = gain;
+      l.volume = std::move(s.volume);
+      leveled_.emplace(s.id, std::move(l));
+      changed++;
+    }
+    if (changed > 0) saveState();
+    if (changed > 0 || always) say("leveled " + std::to_string(target) + " " + std::to_string(countLeveled(target)));
+  }
+
+  void unlevel(DWORD target) {
+    levelTargets_.erase(target);
+    size_t n = 0;
+    for (auto it = leveled_.begin(); it != leveled_.end();) {
+      if (it->second.target != target) {
+        ++it;
+        continue;
+      }
+      restoreLevel(it->second);
+      it = leveled_.erase(it);
+      n++;
+    }
+    saveState();
+    say("unleveled " + std::to_string(target) + " " + std::to_string(n));
   }
 
   void mute(DWORD pid) {
@@ -701,14 +843,20 @@ class Engine {
     say("tap-off");
   }
 
+  // One line per session held: a muted one is its id alone; a levelled one is `level <previous volume> <id>`.
   void saveState() {
     if (stateFile_.empty()) return;
-    if (muted_.empty()) {
+    if (muted_.empty() && leveled_.empty()) {
       DeleteFileW(widen(stateFile_).c_str());
       return;
     }
     std::ofstream out(stateFile_, std::ios::binary | std::ios::trunc);
     for (const auto& kv : muted_) out << narrow(kv.first) << "\n";
+    for (const auto& kv : leveled_) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%.4f", static_cast<double>(kv.second.previous));
+      out << "level " << buf << " " << narrow(kv.first) << "\n";
+    }
   }
 
   IMMDeviceEnumerator* devices_;
@@ -717,13 +865,16 @@ class Engine {
   std::string tapUnavailable_;
   std::set<DWORD> targets_;
   std::map<std::wstring, Muted> muted_;
+  // D2.10: the pids whose tree is levelled (pid -> gain 0.1–1.0) and the sessions set so far.
+  std::map<DWORD, float> levelTargets_;
+  std::map<std::wstring, Leveled> leveled_;
 };
 
 void usage() {
   std::printf(
-      "castcade-audio %s: table sound for a Castcade match (mute this rig's VPX, capture its sound).\n"
+      "castcade-audio %s: table sound for a Castcade match (mute this rig's VPX, capture its sound, set its volume).\n"
       "usage: castcade-audio.exe [--state <file>] [--version] [-help]\n"
-      "stdin, one per line: mute <pid> | unmute <pid> | tap <pid> | untap | quit\n"
+      "stdin, one per line: mute <pid> | unmute <pid> | tap <pid> | untap | level <pid> <percent> | unlevel <pid> | quit\n"
       "stdout: event lines and \"CAU1\" + u32 LE byteLength + float32 stereo 48 kHz frames; stderr: log.\n",
       CASTCADE_AUDIO_VERSION);
 }

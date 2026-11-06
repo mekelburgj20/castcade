@@ -493,6 +493,12 @@ interface MatchSettings {
   softEdge: number;
   /** A12 (2026-11-05): the host's table before the match: free play until the lobby is complete, or locked until then. */
   preMatchPlay: 'free' | 'locked';
+  /** D2.10: the other players' voices, 0–300 % (over 100 is a boost). */
+  voiceVolume: number;
+  /** D2.10: the up player's table sound as this rig plays it, 0–100 %. */
+  othersTableVolume: number;
+  /** D2.10: this rig's own VPX volume while this player is up, 10–100 % (100 = untouched). */
+  myTableWhileUp: number;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

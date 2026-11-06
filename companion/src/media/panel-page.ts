@@ -12,6 +12,7 @@
  */
 import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
+import type { PanelVolume } from './match-media-types.js';
 import { IN_JPEG_QUALITY } from './frame-clip.js';
 import { negotiationSource } from './rtc-signaling.js';
 
@@ -38,6 +39,11 @@ export const PANEL_CHANNELS = {
   tableAudio: 'castcade-panel:table-audio',
   /** D2.8: one 10 ms frame of this rig's VPX sound (float32 stereo 48 kHz, a Uint8Array), only while sending. */
   tablePcm: 'castcade-panel:table-pcm',
+  /**
+   * D2.10 (2026-11-05): `PanelVolume` (percent): the other players' voices and the up player's table as this page plays
+   * them; applied at once to every connection (`volumeGains`). With a `note`, the footer shows it for `VOLUME_NOTE_MS`.
+   */
+  volume: 'castcade-panel:volume',
   /**
    * D7.5.1: one frame of the layer camera (`PanelCameraFrame`: both eyes' JPEGs), only while the capture is the
    * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
@@ -497,6 +503,18 @@ export function tablePlays(s: PanelState | null, peer: MatchPlayerId, hear: bool
   return !!hear && !!s && videoPeer(s) === peer;
 }
 
+/** D2.10: how long the footer shows a volume note ("Voice 160 %") after a shortcut press. */
+export const VOLUME_NOTE_MS = 2000;
+
+/**
+ * D2.10: the page's gains from a `PanelVolume` in percent: the voice 0–3 (past 1 is a boost, the GainNode's range is
+ * open) and the table 0–1 (an element's volume); the defaults (150 %, 100 %) for a field that is not a finite number.
+ */
+export function volumeGains(v: Partial<PanelVolume> | null | undefined): { voice: number; table: number } {
+  const gain = (x: unknown, max: number, dflt: number): number => (typeof x === 'number' && Number.isFinite(x) ? Math.min(max, Math.max(0, x / 100)) : dflt);
+  return { voice: gain(v ? v.voice : undefined, 3, 1.5), table: gain(v ? v.table : undefined, 1, 1) };
+}
+
 /**
  * D2.8: an SDP this page sends. The table stream's own id becomes `castcade-table-audio`; the m-section that carries
  * it asks for stereo Opus (`stereo=1;sprop-stereo=1` on its fmtp: a table is mixed in stereo, and the receiver's SDP is
@@ -782,7 +800,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -832,6 +850,7 @@ const STATS_MS = ${STATS_MS};
 const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
 const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
 const SAVE_QUALITY = ${IN_JPEG_QUALITY};
+const VOLUME_NOTE_MS = ${VOLUME_NOTE_MS};
 ${helpers}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -883,7 +902,8 @@ async function inputs() {
  * The page's own logic (plain JS; no template literals, so nothing here is interpolated by the TS template above).
  * Media: one local MediaStream (mic + capture), `addTrack` on every connection (addTrack transceivers are reused when
  * offers cross; addTransceiver ones are not), the video track enabled only while sending, `maxBitrate` set once the
- * sender has encodings, remote audio played by one muted-free <audio> per peer, the stage <video> muted.
+ * sender has encodings, remote audio played through one GainNode per peer (D2.10; its <audio> stays attached but muted,
+ * see routeVoice), the stage <video> muted.
  */
 const PAGE_SCRIPT = String.raw`
 let mesh = null;
@@ -929,6 +949,10 @@ let myEyes = null;
 let myEyesKey = null;
 // D7.6: the VR test bench (startBench); null outside it. A page runs either a bench or an attach, never both.
 let bench = null;
+// D2.10: the playback gains (volumeGains, from main's C.volume) and the footer's short-lived note after a shortcut press.
+let gains = volumeGains(null);
+let volumeNote = null;
+let volumeNoteTimer = null;
 const $ = (id) => document.getElementById(id);
 const errText = (e) => (e && e.message ? e.message : String(e));
 
@@ -1014,7 +1038,7 @@ function render() {
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
-  $('msg').textContent = (bench && bench.error) || noPathMessage() || (panel && panel.message) || localError || '';
+  $('msg').textContent = volumeNote || (bench && bench.error) || noPathMessage() || (panel && panel.message) || localError || '';
   routeTable();
 }
 
@@ -1568,6 +1592,12 @@ function closeRemote(peer) {
   clearInterval(r.retry);
   r.audio.srcObject = null;
   r.tableAudio.srcObject = null;
+  // D2.10: the voice graph of this peer goes with it (the AudioContext stays: one per page).
+  try { if (r.voiceSource) r.voiceSource.disconnect(); } catch (e) { /* gone */ }
+  try { if (r.voiceGain) r.voiceGain.disconnect(); } catch (e) { /* gone */ }
+  r.voiceSource = null;
+  r.voiceGain = null;
+  r.voiceTrack = null;
   try { r.pc.close(); } catch (e) { /* closed */ }
   if (stageKey === 'peer:' + peer) stageKey = null;
 }
@@ -1581,13 +1611,19 @@ function openPeer(peer) {
   // encoder starts at the cap instead of ramping from a low guess. The cap itself stays with setParameters (applyBitrate).
   const setRemote = pc.setRemoteDescription.bind(pc);
   pc.setRemoteDescription = (d) => setRemote(d && typeof d.sdp === 'string' ? Object.assign({}, d, { sdp: withBitrateHints(d.sdp, bitrateHintsFor(wantedBitrate())) }) : d);
-  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), pairKey: null, pairText: null };
+  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), pairKey: null, pairText: null, voiceSource: null, voiceGain: null, voiceTrack: null };
   r.audio.autoplay = true;
   r.audio.srcObject = r.stream;
+  // D2.10: the voice plays through a GainNode (routeVoice, once its track is here) so it can go past 100 %; the element
+  // keeps the stream but is muted then: Chromium feeds a remote track into Web Audio only while a media element also
+  // consumes it (crbug.com/121673), and an unmuted element would play it a second time. Without Web Audio the element
+  // plays it at the voice volume, capped at 100 %.
+  r.audio.muted = true;
   // D2.8: the peer's table sound plays from its own element, muted unless that peer is up (routeTable).
   r.tableAudio.autoplay = true;
   r.tableAudio.muted = true;
   r.tableAudio.srcObject = r.tableStream;
+  r.tableAudio.volume = gains.table;
   pc.addEventListener('track', (e) => {
     const t = e.track;
     if (trackRole(t.kind, (e.streams || []).map((s) => s.id)) === 'table') {
@@ -1603,6 +1639,7 @@ function openPeer(peer) {
     r.stream.addTrack(t);
     t.addEventListener('mute', () => { report(); render(); });
     t.addEventListener('unmute', () => { report(); render(); });
+    if (t.kind === 'audio') routeVoice(r);
     void r.audio.play().catch(() => undefined);
     if (stageKey === 'peer:' + peer) stageKey = null;
     report();
@@ -1695,6 +1732,9 @@ function detach() {
   peerEyes.clear();
   reopens.clear();
   saveReq = null;
+  if (volumeNoteTimer) clearTimeout(volumeNoteTimer);
+  volumeNoteTimer = null;
+  volumeNote = null;
   stopBench();
   // D2.8: the table track outlives an attach (one AudioContext per page); it goes quiet until main says send again.
   setTableSend(false);
@@ -2063,15 +2103,27 @@ ipcRenderer.on(C.benchFrame, (_e, f) => void drawBench(f));
  */
 let tableSend = false;
 let tableHear = true;
+// The page's one AudioContext (D2.10 plays the voices through it too, routeVoice); null where there is none.
 let tableCtx = null;
 let tableDest = null;
 let tableNode = null;
 let tableTrack = null;
-function ensureTableTrack() {
-  if (tableTrack || tableCtx) return tableTrack;
-  if (typeof AudioContext !== 'function' || typeof AudioWorkletNode !== 'function') return null;
+let tableTried = false;
+function ensureAudioCtx() {
+  if (tableCtx) return tableCtx;
+  if (typeof AudioContext !== 'function') return null;
   try {
     tableCtx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+  } catch (e) {
+    tableCtx = null;
+  }
+  return tableCtx;
+}
+function ensureTableTrack() {
+  if (tableTrack || tableTried) return tableTrack;
+  if (typeof AudioWorkletNode !== 'function' || !ensureAudioCtx()) return null;
+  tableTried = true;
+  try {
     tableDest = tableCtx.createMediaStreamDestination();
     try { tableDest.channelCount = 2; } catch (e) { /* fixed on some engines */ }
     tableTrack = tableDest.stream.getAudioTracks()[0] || null;
@@ -2127,6 +2179,61 @@ ipcRenderer.on(C.tablePcm, (_e, pcm) => {
   const copy = new Float32Array(pcm.byteLength >> 2);
   new Uint8Array(copy.buffer).set(new Uint8Array(pcm.buffer, pcm.byteOffset, copy.byteLength));
   tableNode.port.postMessage(copy.buffer, [copy.buffer]);
+});
+
+/**
+ * D2.10 (2026-11-05): voice over the game. A peer's voice: its stream -> MediaStreamAudioSourceNode -> GainNode (the
+ * voice volume, past 1 for a boost) -> the context's destination (the default output: the headset in VR). The source
+ * node follows the stream's first audio track at its creation, so a replaced track (a reopened connection keeps the
+ * stream object) gets a new source. The element that holds the stream stays muted (see openPeer); where Web Audio is
+ * missing or refuses the stream the element plays it instead, at the voice volume capped at 1.
+ */
+function routeVoice(r) {
+  const ctx = ensureAudioCtx();
+  const track = r.stream.getAudioTracks()[0] || null;
+  if (ctx && typeof ctx.createMediaStreamSource === 'function' && typeof ctx.createGain === 'function') {
+    try {
+      if (!r.voiceGain) {
+        r.voiceGain = ctx.createGain();
+        r.voiceGain.connect(ctx.destination);
+      }
+      r.voiceGain.gain.value = gains.voice;
+      if (track && r.voiceTrack !== track) {
+        try { if (r.voiceSource) r.voiceSource.disconnect(); } catch (e) { /* gone */ }
+        r.voiceSource = ctx.createMediaStreamSource(r.stream);
+        r.voiceSource.connect(r.voiceGain);
+        r.voiceTrack = track;
+      }
+      r.audio.muted = true;
+      if (ctx.state !== 'running') void Promise.resolve(ctx.resume()).catch(() => undefined);
+      return;
+    } catch (e) {
+      /* no Web Audio for this stream: the element plays it */
+    }
+  }
+  r.audio.muted = false;
+  r.audio.volume = Math.min(1, gains.voice);
+}
+function applyVolume() {
+  for (const r of remote.values()) {
+    routeVoice(r);
+    r.tableAudio.volume = gains.table;
+  }
+}
+ipcRenderer.on(C.volume, (_e, v) => {
+  gains = volumeGains(v);
+  applyVolume();
+  const note = v && typeof v.note === 'string' && v.note ? v.note : null;
+  if (note) {
+    volumeNote = note;
+    if (volumeNoteTimer) clearTimeout(volumeNoteTimer);
+    volumeNoteTimer = setTimeout(() => {
+      volumeNoteTimer = null;
+      volumeNote = null;
+      render();
+    }, VOLUME_NOTE_MS);
+  }
+  render();
 });
 setInterval(report, 2000);
 render();

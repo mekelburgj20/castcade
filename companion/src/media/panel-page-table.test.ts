@@ -4,9 +4,9 @@
  * playing only the up player's table). Its own fakes, apart from panel-page.test.ts's, with event listeners on the
  * connection and a fake AudioContext.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { createTableRing, outgoingSdp, PANEL_CHANNELS, panelPageHtml, TABLE_AUDIO_STREAM_ID, TABLE_RING, tablePlays, tableWorkletSource, trackRole } from './panel-page.js';
+import { createTableRing, outgoingSdp, PANEL_CHANNELS, panelPageHtml, TABLE_AUDIO_STREAM_ID, TABLE_RING, tablePlays, tableWorkletSource, trackRole, VOLUME_NOTE_MS } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -254,6 +254,7 @@ class FakeAudio {
   static all: FakeAudio[] = [];
   autoplay = false;
   muted = false;
+  volume = 1;
   srcObject: unknown = null;
   plays = 0;
   play = async (): Promise<void> => {
@@ -264,11 +265,53 @@ class FakeAudio {
   }
 }
 
+/** D2.10: a source or gain node of the voice graph: what it is connected to, and whether it was disconnected. */
+interface FakeNode {
+  to: unknown;
+  disconnected: boolean;
+  connect(to: unknown): void;
+  disconnect(): void;
+}
+
 class FakeAudioContext {
   static all: FakeAudioContext[] = [];
   state = 'running';
   dest = { channelCount: 1, stream: new FakeStream([new FakeTrack('audio')], '{tbl-stream}') };
+  destination = { kind: 'destination' };
+  sources: Array<FakeNode & { stream: FakeStream }> = [];
+  gainNodes: Array<FakeNode & { gain: { value: number } }> = [];
   modules: string[] = [];
+  createMediaStreamSource(stream: FakeStream): FakeNode {
+    if (stream.getAudioTracks().length === 0) throw new Error('InvalidStateError: no audio track');
+    const s = {
+      stream,
+      to: null as unknown,
+      disconnected: false,
+      connect(to: unknown) {
+        s.to = to;
+      },
+      disconnect() {
+        s.disconnected = true;
+      },
+    };
+    this.sources.push(s);
+    return s;
+  }
+  createGain(): FakeNode & { gain: { value: number } } {
+    const g = {
+      gain: { value: 1 },
+      to: null as unknown,
+      disconnected: false,
+      connect(to: unknown) {
+        g.to = to;
+      },
+      disconnect() {
+        g.disconnected = true;
+      },
+    };
+    this.gainNodes.push(g);
+    return g;
+  }
   audioWorklet = {
     addModule: async (url: string) => {
       this.modules.push(url);
@@ -371,7 +414,7 @@ function loadPage(audio = true) {
     },
   );
   const emit = (ch: string, arg?: unknown): void => handlers.get(ch)?.({}, arg);
-  return { sent, emit };
+  return { sent, emit, el: (id: string) => document.getElementById(id) };
 }
 
 const settle = async (): Promise<void> => {
@@ -485,6 +528,69 @@ describe('panel page table sound (D2.8)', () => {
     expect(elementOf(kTable)?.muted).toBe(false);
     p.emit(PANEL_CHANNELS.tableAudio, { send: false, hear: false });
     expect(elementOf(kTable)?.muted).toBe(true);
+  });
+
+  it("D2.10: a peer's voice plays through a GainNode at the voice volume, its element muted; C.volume moves it live and shows a note", async () => {
+    const p = loadPage();
+    p.emit(PANEL_CHANNELS.attach, ATTACH);
+    await settle();
+    const [krobs] = FakePeerConnection.all as [FakePeerConnection];
+    const voice = new FakeTrack('audio');
+    krobs.fire('track', { track: voice, streams: [new FakeStream([], '{their-voice}')] });
+    expect(FakeAudioContext.all).toHaveLength(1); // the page's one context, shared with the table track
+    const ctx = FakeAudioContext.all[0]!;
+    expect(ctx.sources).toHaveLength(1);
+    expect(ctx.sources[0]!.stream.tracks).toContain(voice);
+    expect(ctx.gainNodes).toHaveLength(1);
+    expect(ctx.gainNodes[0]!.gain.value).toBe(1.5); // the default voice volume, 150 %
+    expect(ctx.sources[0]!.to).toBe(ctx.gainNodes[0]);
+    expect(ctx.gainNodes[0]!.to).toBe(ctx.destination);
+    const holding = FakeAudio.all.find((a) => (a.srcObject as FakeStream | null)?.tracks.includes(voice))!;
+    expect(holding.muted).toBe(true); // attached (Chromium feeds Web Audio only then) but silent
+    expect(holding.plays).toBeGreaterThan(0);
+    // Live: the gain and every table element follow; the note shows in the footer, then goes.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      p.emit(PANEL_CHANNELS.volume, { voice: 200, table: 40, note: 'Voice 200 %' });
+      expect(ctx.gainNodes[0]!.gain.value).toBe(2);
+      expect(FakeAudio.all.filter((a) => a.volume === 0.4)).toHaveLength(2); // the two peers' table elements
+      expect(holding.volume).toBe(1); // the muted voice element is not what plays
+      expect(p.el('msg').textContent).toBe('Voice 200 %');
+      vi.advanceTimersByTime(VOLUME_NOTE_MS);
+      expect(p.el('msg').textContent).toBe('');
+      // Without a note nothing shows; the gains still apply.
+      p.emit(PANEL_CHANNELS.volume, { voice: 50, table: 100 });
+      expect(ctx.gainNodes[0]!.gain.value).toBe(0.5);
+      expect(p.el('msg').textContent).toBe('');
+    } finally {
+      vi.useRealTimers();
+    }
+    // A replaced voice track (a reopened connection) gets a new source on the same gain; the old one is disconnected.
+    const again = new FakeTrack('audio');
+    krobs.fire('track', { track: again, streams: [new FakeStream([], '{their-voice}')] });
+    expect(ctx.sources).toHaveLength(2);
+    expect(ctx.sources[0]!.disconnected).toBe(true);
+    expect(ctx.sources[1]!.to).toBe(ctx.gainNodes[0]);
+    expect(ctx.gainNodes).toHaveLength(2); // krobs's, and third's from the volume change (its source waits for a track)
+    // The peer leaving takes its graph with it.
+    p.emit(PANEL_CHANNELS.removePeer, 'krobs');
+    expect(ctx.sources[1]!.disconnected).toBe(true);
+    expect(ctx.gainNodes[0]!.disconnected).toBe(true);
+  });
+
+  it('D2.10: no AudioContext: the element plays the voice itself, at the voice volume capped at 100 %', async () => {
+    const p = loadPage(false);
+    p.emit(PANEL_CHANNELS.attach, ATTACH);
+    await settle();
+    const [krobs] = FakePeerConnection.all as [FakePeerConnection];
+    const voice = new FakeTrack('audio');
+    krobs.fire('track', { track: voice, streams: [new FakeStream([], '{their-voice}')] });
+    const holding = FakeAudio.all.find((a) => (a.srcObject as FakeStream | null)?.tracks.includes(voice))!;
+    expect(holding.muted).toBe(false);
+    expect(holding.volume).toBe(1); // 150 % capped
+    p.emit(PANEL_CHANNELS.volume, { voice: 50, table: 70 });
+    expect(holding.volume).toBe(0.5);
+    expect(FakeAudio.all.filter((a) => a.volume === 0.7)).toHaveLength(2);
   });
 
   it('no AudioContext (an older engine): the match runs as before, without a table track', async () => {

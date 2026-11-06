@@ -67,6 +67,29 @@ function make(name: string, sha: string, extra: Partial<Parameters<typeof create
   return { mh, lock };
 }
 
+/** D2.8 / D2.10: a table-sound helper that records what it is told. */
+type Want = { mutePid: number | null; tapPid: number | null };
+const fakeAudio = () => {
+  const wants: Want[] = [];
+  const levels: string[] = [];
+  let started = 0;
+  const ta = {
+    start: () => void started++,
+    apply: (w: Want) => void wants.push({ ...w }),
+    level: (pid: number, pct: number) => {
+      if (levels.at(-1) !== `level ${pid} ${pct}`) levels.push(`level ${pid} ${pct}`);
+    },
+    unlevel: () => {
+      if (levels.length > 0 && levels.at(-1) !== 'unlevel') levels.push('unlevel');
+    },
+    status: () => ({ helper: 'ready' as const, reason: null, muted: false, tapping: false }),
+    onStatus: () => () => undefined,
+    onFrame: () => () => undefined,
+    stop: async () => undefined,
+  };
+  return { ta, wants, levels: () => levels, last: () => wants.at(-1), started: () => started };
+};
+
 const until = async (cond: () => boolean, ms = 3000): Promise<void> => {
   const end = Date.now() + ms;
   while (!cond()) {
@@ -116,20 +139,6 @@ describe('match host (A6)', () => {
   }, 15_000);
 
   it('D2.8 (2026-11-01): table sound follows the turn: the player up taps, the other is muted; leaving unmutes', async () => {
-    type Want = { mutePid: number | null; tapPid: number | null };
-    const fakeAudio = () => {
-      const wants: Want[] = [];
-      let started = 0;
-      const ta = {
-        start: () => void started++,
-        apply: (w: Want) => void wants.push({ ...w }),
-        status: () => ({ helper: 'ready' as const, reason: null, muted: false, tapping: false }),
-        onStatus: () => () => undefined,
-        onFrame: () => () => undefined,
-        stop: async () => undefined,
-      };
-      return { ta, wants, last: () => wants.at(-1), started: () => started };
-    };
     const withPid = (sha: string, pid: number): WitnessHost => ({ ...witness(sha), vpxPid: () => pid }) as unknown as WitnessHost;
     const ha = fakeAudio();
     const ca = fakeAudio();
@@ -153,6 +162,76 @@ describe('match host (A6)', () => {
     expect(ca.last()).toEqual({ mutePid: 222, tapPid: null });
     await C.mh.leave();
     expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
+  }, 15_000);
+
+  it('D2.10 (2026-11-05): voice over the game: the volumes reach the media layer, my table is levelled on my ball, the keys live with the match', async () => {
+    type Volume = { voice: number; table: number; note?: string | null };
+    const volumes: Volume[] = [];
+    const media = {
+      attach: async () => undefined,
+      addPeer: () => undefined,
+      removePeer: () => undefined,
+      setSending: () => undefined,
+      setPanelState: () => undefined,
+      setMuted: () => undefined,
+      status: () => ({ attached: false, sending: false, peers: {}, mic: 'unavailable' as const, captureSource: null, lastError: null }),
+      onStatus: () => () => undefined,
+      frames: () => null,
+      showPanel: () => undefined,
+      setVolume: (v: Volume) => void volumes.push({ ...v }),
+      detach: async () => undefined,
+    };
+    const held = new Map<string, () => void>();
+    const shortcuts = {
+      register: (acc: string, cb: () => void) => {
+        if (acc === 'Control+Alt+Down') return false; // another app holds it: logged, the rest still work
+        held.set(acc, cb);
+        return true;
+      },
+      unregister: (acc: string) => void held.delete(acc),
+    };
+    const withPid = (sha: string, pid: number): WitnessHost => ({ ...witness(sha), vpxPid: () => pid }) as unknown as WitnessHost;
+    const ha = fakeAudio();
+    const ca = fakeAudio();
+    const H = make('vol-host', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 111), tableAudio: ha.ta, media: media as never, shortcuts });
+    const C = make('vol-client', 'ab'.repeat(32), { witness: withPid('ab'.repeat(32), 222), tableAudio: ca.ta });
+    // The defaults reach the media layer at creation; a Match tab change goes live and is saved.
+    expect(volumes).toEqual([{ voice: 150, table: 100, note: null }]);
+    expect(held.size).toBe(0);
+    H.mh.setSettings({ voiceVolume: 120, othersTableVolume: 60, myTableWhileUp: 40 });
+    expect(volumes.at(-1)).toEqual({ voice: 120, table: 60, note: null });
+    expect(ha.levels()).toEqual([]); // no match: nothing levelled
+    const port = 43000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    expect([...held.keys()].sort()).toEqual(['Control+Alt+Left', 'Control+Alt+Right', 'Control+Alt+Up']);
+    await C.mh.join(hs.invite!, 'Krobs');
+    await H.mh.start();
+    await until(() => H.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+    // The host's ball: its VPX goes to 40 %; the client's (not up) is not levelled.
+    await until(() => ha.levels().at(-1) === 'level 111 40');
+    expect(ca.levels()).toEqual([]);
+    // Ctrl+Alt+Right: 50 %, saved, pushed with a note, the helper told; Ctrl+Alt+Up: the voice 130 %.
+    held.get('Control+Alt+Right')!();
+    expect(H.mh.status().settings.myTableWhileUp).toBe(50);
+    expect(volumes.at(-1)).toEqual({ voice: 120, table: 60, note: 'My table 50 %' });
+    expect(ha.levels().at(-1)).toBe('level 111 50');
+    held.get('Control+Alt+Up')!();
+    expect(H.mh.status().settings.voiceVolume).toBe(130);
+    expect(volumes.at(-1)).toEqual({ voice: 130, table: 60, note: 'Voice 130 %' });
+    // At the limit the press is harmless.
+    for (let i = 0; i < 40; i++) held.get('Control+Alt+Up')!();
+    expect(H.mh.status().settings.voiceVolume).toBe(300);
+    // 100 % on the Match tab: the level is lifted while still up.
+    H.mh.setSettings({ myTableWhileUp: 100 });
+    expect(ha.levels().at(-1)).toBe('unlevel');
+    H.mh.setSettings({ myTableWhileUp: 70 });
+    expect(ha.levels().at(-1)).toBe('level 111 70');
+    // Leaving lifts it and releases the keys.
+    await H.mh.leave();
+    expect(ha.levels().at(-1)).toBe('unlevel');
+    expect(held.size).toBe(0);
+    const saved = JSON.parse(readFileSync(join(dirs[dirs.length - 2]!, 'match.json'), 'utf8')) as { voiceVolume: number; myTableWhileUp: number };
+    expect(saved).toMatchObject({ voiceVolume: 300, myTableWhileUp: 70 });
   }, 15_000);
 
   it('D2.9: the TURN relay is saved in media.json; the status shows url and username, never the credential', () => {

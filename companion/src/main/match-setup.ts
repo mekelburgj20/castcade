@@ -82,6 +82,16 @@ export interface MatchSettings {
   // game must end before the Start that begins the match), or locked until someone joins. The owner's 2026-11-05
   // match: Start pressed before the other player joined, the join started nothing, host again.
   preMatchPlay: 'free' | 'locked';
+  /*
+   * D2.10 (2026-11-05): voice over the game. Both testers heard the table over the other player's voice; these three
+   * are percentages, saved like the rest and applied live mid-match (Ctrl+Alt+arrows while playing, match-host.ts).
+   */
+  /** The other players' voices as this rig plays them, 0–300 (above 100 is a boost: a GainNode on the panel page). */
+  voiceVolume: number;
+  /** The up player's table sound as this rig plays it, 0–100 (the table element's volume). */
+  othersTableVolume: number;
+  /** This rig's own VPX session volume while this player is up, 10–100 (100 = untouched; the helper's `level`). */
+  myTableWhileUp: number;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -109,6 +119,19 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
 export const MATCH_SETTINGS_VERSION = 2;
+  voiceVolume: 150,
+  othersTableVolume: 100,
+  myTableWhileUp: 100,
+};
+
+/** D2.10: the three volume settings' ranges, in percent. */
+export const VOLUME_RANGE = { voiceVolume: [0, 300], othersTableVolume: [0, 100], myTableWhileUp: [10, 100] } as const;
+
+/** D2.10: a finite number rounded and clamped to `[lo, hi]`, else null. */
+export function cleanPercent(v: unknown, lo: number, hi: number): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.min(hi, Math.max(lo, Math.round(v)));
+}
 
 export function cleanPort(v: unknown): number | null {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
@@ -175,6 +198,10 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('softEdge' in p) next.softEdge = cleanSoftEdge(p.softEdge) ?? current.softEdge;
   // A12 (2026-11-05)
   if (p.preMatchPlay === 'free' || p.preMatchPlay === 'locked') next.preMatchPlay = p.preMatchPlay;
+  // D2.10: the three volumes, each clamped to its range; anything that is not a number keeps the current value.
+  for (const k of ['voiceVolume', 'othersTableVolume', 'myTableWhileUp'] as const) {
+    if (k in p) next[k] = cleanPercent(p[k], VOLUME_RANGE[k][0], VOLUME_RANGE[k][1]) ?? current[k];
+  }
   return next;
 }
 
