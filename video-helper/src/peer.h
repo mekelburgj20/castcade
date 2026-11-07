@@ -1,10 +1,13 @@
 // castcade-video: one libwebrtc PeerConnection per remote player (§6.2 `peer`): one sendrecv H.264 transceiver, the
-// initiator offers at creation, trickle ICE both ways through the companion's MEDIA_SIGNAL, real ICE (the default
-// network manager: host + srflx from the `ice` command's STUN, relay when a TURN entry is given). One PC per pair for
-// the match; nothing is renegotiated. PeerFactory is the process-wide part: libwebrtc's threads, the environment and
-// the one VideoTrackSource every peer's sender track reads. D10.5: each Peer gets its own PeerConnectionFactory on the
-// shared threads, so its encoder factory is bound to that peer's RungTarget (the rung the controller chose for it), and
-// a `castcade-feedback` data channel on the same connection carries the receiver's decode fps and freeze time back.
+// initiator offers at creation, trickle ICE both ways through the companion's MEDIA_SIGNAL, real ICE (host + srflx
+// from the `ice` command's STUN, relay when a TURN entry is given) over the filtered adapter list of network_filter.h.
+// One PC per pair for the match; the only renegotiation is an ICE restart (D10.3.5): the initiator offers again
+// whenever libwebrtc says negotiation is needed, the answerer answers any offer, and the initiator's watchdog restarts
+// ICE on a stuck connection after 10 s, 20 s more and 40 s more (the companion's D2.9 cadence), then gives up with
+// `restarts_exhausted`. PeerFactory is the process-wide part: libwebrtc's threads, the environment and the one
+// VideoTrackSource every peer's sender track reads. D10.5: each Peer gets its own PeerConnectionFactory on the shared
+// threads, so its encoder factory is bound to that peer's RungTarget (the rung the controller chose for it), and a
+// `castcade-feedback` data channel on the same connection carries the receiver's decode fps and freeze time back.
 #pragma once
 
 #include <atomic>
@@ -37,9 +40,20 @@ struct IceServerSpec {
 struct PeerEvents {
   std::function<void(const std::string& id, const std::string& kind, const std::string& sdp)> on_sdp;  // offer | answer
   std::function<void(const std::string& id, const std::string& candidate, const std::string& mid, int mline)> on_candidate;
-  std::function<void(const std::string& id, const std::string& ice_state, const Json& pair)> on_ice;  // pair: object or null
+  // pair: object or null. extra: an object of additive `peer` event fields (D10.3.5: `restarts` once a restart
+  // happened in this stuck spell, `restarts_exhausted: true` with the final `failed`), or null.
+  std::function<void(const std::string& id, const std::string& ice_state, const Json& pair, const Json& extra)> on_ice;
   std::function<void(const std::string& id, const std::string& code, const std::string& text)> on_error;
 };
+
+// D10.3.5: the initiator's ICE restart cadence, the companion's D2.9 (panel-page.ts ICE_WATCH): a restart after
+// 10 s stuck, the next 20 s after that, the next 40 s after that; 40 s after the third it gives up. The tick is 1 s.
+constexpr int kIceRestartBackoffMs[] = {10000, 20000, 40000};
+constexpr int kIceRestartMax = 3;
+constexpr int kIceWatchTickMs = 1000;
+// The answerer never restarts (the lead does); it gives up 5 s after the lead's whole budget, so both companions
+// can fall back at about the same time.
+constexpr int kIceAnswererGiveUpMs = 10000 + 20000 + 40000 + 40000 + 5000;
 
 // The bitrate envelope handed to libwebrtc with each new peer (x-google-*-bitrate in the remote SDP's H264 fmtp and
 // the encoding's max_bitrate_bps). `rungs` moves max_kbps (the ceiling) on the live peers; the rung's own kbps is the
@@ -88,9 +102,13 @@ class PeerFactory {
   bool Init(const CodecOptions& codecs, bool allow_loopback, std::string* error);
   void Shutdown();
   // A PeerConnectionFactory on the shared threads whose encoder factory applies `target` (null: frames as they come).
-  webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> CreateFactory(std::shared_ptr<RungTarget> target, std::string* error);
+  // `peer_tag` non-empty: the factory's network manager is the adapter filter of network_filter.h (D10.3.5), logging
+  // its verdict under that peer id; empty: libwebrtc's default (the codec smoke-test factory never gathers).
+  webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> CreateFactory(std::shared_ptr<RungTarget> target, const std::string& peer_tag, std::string* error);
   webrtc::PeerConnectionFactoryInterface* factory() { return factory_.get(); }
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source();
+  // D10.3.5: where a peer's renegotiation and watchdog tasks run.
+  webrtc::Thread* signaling_thread() { return sig_.get(); }
   // The source's frames, to every peer's sender track (encoded by each active sender's own encoder).
   void PushFrame(const webrtc::scoped_refptr<webrtc::NV12Buffer>& nv12);
 
@@ -113,9 +131,11 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   bool initiator() const { return initiator_; }
 
   // Creates the factory, the PC and the transceiver; the initiator also makes the feedback channel and offers now
-  // (the offer arrives through on_sdp).
+  // (the offer arrives through on_sdp), and starts the ICE watchdog.
   bool Start(std::string* error);
-  // The remote side's signals (§6.2 `signal`), in arrival order; candidates before the remote description wait.
+  // The remote side's signals (§6.2 `signal`), in arrival order; candidates before the remote description wait. The
+  // answerer answers every offer, also on an established connection (an ICE restart is an ordinary renegotiation);
+  // the initiator logs and ignores an offer (our protocol never sends it one).
   void OnRemoteSdp(const std::string& kind, const std::string& sdp);
   void OnRemoteCandidate(const std::string& candidate, const std::string& mid, int mline);
   // `send`: the sender's encoding active or not (off = the track is paused, the transceiver stays).
@@ -129,6 +149,7 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   std::string ice_state();
   bool connected();  // ice connected or completed
   Json pair();  // the selected candidate pair as the `peer` event carries it, or null
+  int restarts();  // D10.3.5: ICE restarts in the current stuck spell (0 once connected)
 
   // D10.5: the rung this peer's encoder applies (the controller or the pin writes it).
   const std::shared_ptr<RungTarget>& target() const { return target_; }
@@ -146,7 +167,8 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   RungGeometry applied;                                 // the rung geometry last announced for this peer
 
   // PeerConnectionObserver (signaling thread)
-  void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState) override {}
+  void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState state) override;
+  void OnRenegotiationNeeded() override;
   void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override;
   void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState) override {}
   void OnIceCandidate(const webrtc::IceCandidate* candidate) override;
@@ -167,6 +189,13 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   void DrainCandidates();
   std::string RemoteSdpWithLimits(const std::string& sdp) const;
   void AdoptChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
+  // D10.3.5 (signaling thread): an offer now if the connection is stable and none is in flight, else one is queued
+  // for the next return to stable.
+  void OfferWhenStable();
+  // D10.3.5 (signaling thread, every kIceWatchTickMs from Start): the restart cadence.
+  void ScheduleWatch();
+  void WatchTick();
+  void EmitIce(const std::string& state, const Json& pair, int restarts, bool exhausted);
 
   PeerFactory& pf_;
   const std::string id_;
@@ -180,7 +209,7 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
   webrtc::scoped_refptr<webrtc::DataChannelInterface> dc_;
   bool remote_set_ = false;
-  bool closed_ = false;
+  std::atomic<bool> closed_{false};
   struct Cand { std::string candidate, mid; int mline; };
   std::deque<Cand> queued_;
   std::mutex mu_;
@@ -188,4 +217,16 @@ class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataCha
   Json pair_;
   PeerFeedback feedback_;
   bool dc_open_ = false;
+  // D10.3.5, signaling thread only: renegotiation and the watchdog.
+  bool started_ = false;        // Start() done: OnRenegotiationNeeded counts from here (the first offer is explicit)
+  bool making_offer_ = false;   // an offer between CreateOffer and SetLocalDescription's completion
+  bool offer_pending_ = false;  // negotiation was needed while not stable: offer at the next stable
+  bool offer_due_ = false;      // RestartIce() was called and no offer followed yet (the next tick offers if still so)
+  struct IceWatch {
+    int64_t since_us = 0;        // when the connection got stuck (0 = not stuck)
+    int64_t last_restart_us = 0;
+    int restarts = 0;
+    bool gave_up = false;
+  } watch_;
+  std::atomic<int> restarts_{0};  // watch_.restarts, readable from any thread
 };

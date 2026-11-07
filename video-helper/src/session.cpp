@@ -144,10 +144,13 @@ class Session {
         j.Set("event", Json::String("signal")).Set("id", Json::String(id)).Set("kind", Json::String("ice")).Set("candidate", cj);
         ipc_.Emit(j);
       };
-      ev.on_ice = [this](const std::string& id, const std::string& state, const Json& pair) {
+      ev.on_ice = [this](const std::string& id, const std::string& state, const Json& pair, const Json& extra) {
         Json j = Json::Object();
         j.Set("event", Json::String("peer")).Set("id", Json::String(id)).Set("ice", Json::String(state));
         if (pair.is_object()) j.Set("pair", pair);
+        // D10.3.5: `restarts` (ICE restarts in this stuck spell) and `restarts_exhausted: true` (the watchdog gave up).
+        if (extra.is_object())
+          for (const auto& m : extra.members()) j.Set(m.first, m.second);
         ipc_.Emit(j);
       };
       ev.on_error = [this](const std::string& id, const std::string& code, const std::string& text) {
