@@ -24,10 +24,13 @@ void BenchPattern(uint64_t n, int width, int height, uint8_t* bgra, int stride);
 int64_t ConvertBgraToNv12(const uint8_t* bgra, int stride, int width, int height, webrtc::NV12Buffer* dst);
 
 struct SourceConfig {
-  enum class Kind { kNone, kRing, kBench };
+  enum class Kind { kNone, kRing, kBench, kWgc };
   Kind kind = Kind::kNone;
   std::string token;
-  int width = 1354, height = 1440, fps = 60;  // the bench picture; for a ring the box the layer was asked for (informational)
+  int width = 1354, height = 1440, fps = 60;  // the bench picture; for a ring the box the layer was asked for (informational); for wgc the fit box and the push rate
+  // D10.6 `wgc` (source_wgc.h): the window's process (0: any) and the title words it must contain.
+  int pid = 0;
+  std::string title;
 };
 const char* SourceKindName(SourceConfig::Kind k);
 
@@ -57,12 +60,16 @@ class Source {
     std::lock_guard<std::mutex> l(mu_);
     return last_fps_in_;
   }
+  // D10.6: the window a `wgc` source is capturing (`"title" WxH (pid n)`), "" while none.
+  std::string window() const;
 
   void Stop();
 
  private:
   void Run(SourceConfig cfg, uint64_t generation);
+  void RunWgc(SourceConfig cfg, uint64_t generation);  // source_wgc.cpp
   void SetState(const std::string& s);
+  void SetWindow(const std::string& w);
   void Count(int64_t convert_us);
 
   FrameFn on_frame_;
@@ -70,6 +77,7 @@ class Source {
   mutable std::mutex mu_;
   SourceConfig cfg_;
   std::string state_ = "none";
+  std::string window_;
   std::atomic<bool> enabled_{false};
   std::atomic<uint64_t> generation_{0};
   std::thread thread_;

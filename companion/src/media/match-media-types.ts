@@ -179,8 +179,12 @@ export interface NativeVideoStatus {
   decoder: string | null;
   /** This rig is the player up: the encoder runs and the video sender is active. */
   sending: boolean;
-  /** Where this rig's frames come from, as last told, and the ring's health as the helper reports it. */
-  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  /**
+   * Where this rig's frames come from, as last told, and the source's health as the helper reports it. D10.6
+   * (2026-11-07): `wgc` = the helper captures the VPX window itself (desktop rigs); `window` names the window it has
+   * (`"<title>" WxH (pid n)`), null while none.
+   */
+  source: { kind: 'ring' | 'bench' | 'wgc' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null; window?: string | null };
   sink: 'ring' | 'window' | 'none';
   /**
    * D10.5: the ladder for this rig's source (the design's 1354x1440 until the source box is known), the ceiling the

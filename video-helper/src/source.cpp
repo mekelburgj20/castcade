@@ -86,6 +86,7 @@ const char* SourceKindName(SourceConfig::Kind k) {
   switch (k) {
     case SourceConfig::Kind::kRing: return "ring";
     case SourceConfig::Kind::kBench: return "bench";
+    case SourceConfig::Kind::kWgc: return "wgc";
     default: return "none";
   }
 }
@@ -99,7 +100,8 @@ void Source::Configure(const SourceConfig& cfg) {
   {
     std::lock_guard<std::mutex> l(mu_);
     cfg_ = cfg;
-    state_ = cfg.kind == SourceConfig::Kind::kNone ? "none" : (cfg.kind == SourceConfig::Kind::kRing ? "missing" : "ok");
+    state_ = cfg.kind == SourceConfig::Kind::kNone ? "none" : (cfg.kind == SourceConfig::Kind::kBench ? "ok" : "missing");
+    window_.clear();
     win_frames_ = win_convert_us_ = 0;
     win_start_us_ = NowUs();
   }
@@ -128,6 +130,16 @@ void Source::SetState(const std::string& s) {
   }
   LogLine("source: %s", s.c_str());
   if (on_state_) on_state_(s);
+}
+
+std::string Source::window() const {
+  std::lock_guard<std::mutex> l(mu_);
+  return window_;
+}
+
+void Source::SetWindow(const std::string& w) {
+  std::lock_guard<std::mutex> l(mu_);
+  window_ = w;
 }
 
 void Source::Count(int64_t convert_us) {
@@ -159,6 +171,7 @@ void Source::Stop() {
 
 void Source::Run(SourceConfig cfg, uint64_t gen) {
   auto live = [&] { return generation_.load() == gen; };
+  if (cfg.kind == SourceConfig::Kind::kWgc) return RunWgc(cfg, gen);  // D10.6, source_wgc.cpp
   if (cfg.kind == SourceConfig::Kind::kBench) {
     const int stride = cfg.width * 4;
     std::vector<uint8_t> bgra((size_t)stride * cfg.height);

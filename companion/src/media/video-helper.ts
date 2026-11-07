@@ -67,8 +67,17 @@ export interface VideoSignalBody {
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null };
 }
 
-/** Where the frames this rig sends come from. */
-export type VideoSource = { kind: 'ring'; token: string; width: number; height: number; fps: number } | { kind: 'bench'; width: number; height: number; fps: number } | { kind: 'none' };
+/**
+ * Where the frames this rig sends come from. D10.6 (2026-11-07): `wgc` is the VPX window itself, captured by the
+ * helper with Windows Graphics Capture (video-helper/src/source_wgc.cpp): `pid` its process, `title` the words its
+ * title must contain (the ones `pickCaptureWindow` matched), `width` x `height` the box the picture is scaled to fit
+ * (never upscaled, aspect kept), `fps` the push rate. The helper looks for the window every second while it is missing.
+ */
+export type VideoSource =
+  | { kind: 'ring'; token: string; width: number; height: number; fps: number }
+  | { kind: 'bench'; width: number; height: number; fps: number }
+  | { kind: 'wgc'; pid: number; title: string; width: number; height: number; fps: number }
+  | { kind: 'none' };
 
 /** Where decoded frames go. */
 export type VideoSink = { kind: 'ring'; token: string } | { kind: 'window' } | { kind: 'none' };
@@ -133,7 +142,8 @@ export type VideoHelperEvent =
   | { event: 'peer'; id: string; ice: VideoIceState; pair?: string | null }
   | VideoStatsEvent
   | VideoRungEvent
-  | { event: 'source'; kind: VideoSource['kind']; state: 'ok' | 'missing' | 'dead'; fps_in: number }
+  /** `window` (D10.6): the window a `wgc` source is capturing, `"<title>" WxH (pid n)`, while it has one. */
+  | { event: 'source'; kind: VideoSource['kind']; state: 'ok' | 'missing' | 'dead'; fps_in: number; window?: string | null }
   | { event: 'error'; code: string; text?: string }
   | { event: 'log'; level: 'info' | 'warn'; text: string };
 

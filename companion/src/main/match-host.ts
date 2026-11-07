@@ -42,7 +42,7 @@ import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume,
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
-import type { RtcHost } from '../media/rtc-host.js';
+import type { NativeVideoHook, RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
 import type { VideoHelper, VideoSink } from '../media/video-helper.js';
 import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
@@ -743,7 +743,25 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     );
     mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
     mesh.setRungs(videoRungs());
-    opts.media?.setNativeVideo?.({ ring: nv.sendRing, onSource: (box) => mesh.setSource(box ? { kind: 'ring', token: nv.sendRing, ...box } : { kind: 'none' }) });
+    const hook: NativeVideoHook = {
+      ring: nv.sendRing,
+      onSource: (box) => mesh.setSource(box ? { kind: 'ring', token: nv.sendRing, ...box } : { kind: 'none' }),
+      // D10.6: the screen capture's pick (a desktop rig, SteamVR, the Match tab on screen capture, a camera fallback):
+      // the helper captures that window itself (`source wgc`) in the box and at the fps the Electron capture would use.
+      onWindow: (w) => mesh.setSource(w ? { kind: 'wgc', ...w } : { kind: 'none' }),
+    };
+    // The hook (the camera asked with the ring, the window handed over, the page's video track held back) only while
+    // the helper is ready: a helper that is missing, failed or restarting leaves the Electron video flowing meanwhile.
+    let hooked = false;
+    const syncHook = (): void => {
+      const ready = nv.helper.status().helper === 'ready';
+      if (ready === hooked) return;
+      hooked = ready;
+      opts.media?.setNativeVideo?.(ready ? hook : null);
+      if (!ready) log.info('match: native video: the helper is not ready; the Electron video serves until it is');
+    };
+    a.offs.push(nv.helper.onStatus(() => void (active === a && a.video === mesh && syncHook())));
+    syncHook();
     const h = nv.helper.status();
     log.info(`match: native video: on for this match (helper ${h.helper}${h.reason ? `, ${h.reason}` : ''}; send ring ${nv.sendRing}, recv ring ${nv.recvRing})`);
     syncNativeVideo(a);

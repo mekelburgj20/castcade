@@ -11,3 +11,8 @@ int RunRingSelftest();
 int RunLoopbackSelftest(int seconds);
 // D10.5: the rung controller, the ladder's geometry and the decimator through scripted input sequences (no libwebrtc).
 int RunControllerSelftest();
+
+// `--window-selftest`: opens the sink window and feeds it the bench picture at 60 fps for `seconds`; prints the
+// presented count and the mean upload / upload+present time. `warp` skips the hardware device (what a GPU-less CI
+// runner falls back to on its own). Non-zero when the window did not open or nothing was presented.
+int RunWindowSelftest(int seconds, bool warp);

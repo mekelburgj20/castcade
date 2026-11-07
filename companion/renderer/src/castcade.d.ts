@@ -452,7 +452,7 @@ interface NativeVideoStatus {
   encoder: string | null;
   decoder: string | null;
   sending: boolean;
-  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  source: { kind: 'ring' | 'bench' | 'wgc' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null; window?: string | null };
   sink: 'ring' | 'window' | 'none';
   /** D10.5: the ladder for this rig's source, the ceiling told to the helper (kbps) and the pin (null = auto). */
   ladder: NativeVideoRung[];

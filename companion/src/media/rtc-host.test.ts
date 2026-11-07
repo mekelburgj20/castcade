@@ -1224,6 +1224,58 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     await host.detach();
   });
 
+  it('D10.6 (2026-11-07): a desktop rig on the native path: the picked VPX window goes to the hook for the helper to capture, the page never sends video; the window gone → null and the page sends again; off → the 0.2.36 path', async () => {
+    const boxes: unknown[] = [];
+    const windows: Array<{ pid: number; title: string; width: number; height: number; fps: number } | null> = [];
+    const hook = { ring: 'send_tok_ABCDEFGH', onSource: (b: unknown) => void boxes.push(b), onWindow: (w: (typeof windows)[number]) => void windows.push(w) };
+    let probed: VpxWindow[] = [PLAYER];
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: probed }), settings: store() });
+    host.setNativeVideo(hook);
+    expect(windows).toEqual([]);
+    await host.setVr({ inVr: false, headsetPanel: false });
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    await settle();
+    // The capture is the screen as in 0.2.36 (the page gets it, disabled until the turn), and the hook hears the window
+    // the pick found: its pid, the title words matched, the crop's out size and the page's frame rate.
+    expect((w.webContents.sent[0]?.[1] as { capture: unknown; sending: boolean }).capture).toEqual(CAPTURE);
+    expect(windows).toEqual([{ pid: 7, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 }]);
+    expect(boxes).toEqual([]);
+    expect(logs).toContain('media: native video: the helper captures "Visual Pinball Player" (pid 7) into a 1280x720 box at 30 fps; the panel\'s video track is held back');
+    expect((w.webContents.sent[0]?.[1] as { sending: boolean }).sending).toBe(false);
+    // This rig's turn: the status says sending, the page is never told to (the helper's sender runs instead).
+    host.setSending(true);
+    expect(host.status().sending).toBe(true);
+    expect(host.capturePid()).toBe(7);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([]);
+    // The table closes: the page's capture ends, the window is looked for again; the hook hears null and, this rig
+    // still being up, the page is told to send (nothing to send yet; the 0.2.36 behaviour while no window exists).
+    probed = [];
+    fromPage(w, PANEL_CHANNELS.status, { sending: true, peers: {}, mic: 'open', capturing: true, error: null });
+    fromPage(w, PANEL_CHANNELS.status, { sending: true, peers: {}, mic: 'open', capturing: false, error: null });
+    expect(windows.at(-1)).toBeNull();
+    expect(logs).toContain('media: native video: no VPX window for the helper to capture');
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true]);
+    // The window is back: the next turn looks at once (sending on, no capture), finds it, hands it over and holds the
+    // page back again (the page sent for the moment of the look, as 0.2.36 did while no window existed).
+    probed = [PLAYER];
+    host.setSending(false);
+    host.setSending(true);
+    await settle();
+    expect(windows.at(-1)).toEqual({ pid: 7, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false, true, false]);
+    // Off, live: the hook loses the window and the page sends as in 0.2.36.
+    host.setNativeVideo(null);
+    expect(windows.at(-1)).toBeNull();
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false, true, false, true]);
+    host.setNativeVideo(hook);
+    expect(windows.at(-1)).toEqual({ pid: 7, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false, true, false, true, false]);
+    await host.detach();
+    expect(windows.at(-1)).toBeNull();
+  });
+
   it('the default (screen): the layer is never asked and the attach is the screen capture, with no camera line', async () => {
     const { host, cam, w } = await cameraHost();
     expect(cam.asks).toEqual([]);

@@ -199,7 +199,7 @@ describe('match host (A6)', () => {
       const of = (cmd: string) => sent.filter((c) => c.cmd === cmd);
       return { helper, sent, of, started: () => started };
     };
-    const hooks: Array<{ ring: string; onSource: (b: { width: number; height: number; fps: number } | null) => void } | null> = [];
+    const hooks: Array<{ ring: string; onSource: (b: { width: number; height: number; fps: number } | null) => void; onWindow?: (w: { pid: number; title: string; width: number; height: number; fps: number } | null) => void } | null> = [];
     const media = {
       attach: async () => undefined,
       addPeer: () => undefined,
@@ -252,6 +252,13 @@ describe('match host (A6)', () => {
     hooks[0]?.onSource({ width: 1440, height: 1440, fps: 60 });
     expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'ring', token: 'HOSTsend_ABCDEFG', width: 1440, height: 1440, fps: 60 });
     expect(H.mh.status().media?.nativeVideo?.source).toMatchObject({ kind: 'ring', width: 1440, height: 1440, fps: 60 });
+    // D10.6: the screen capture's pick on a desktop rig: the helper captures that window itself; gone → none.
+    hooks[0]?.onWindow?.({ pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'wgc', pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(H.mh.status().media?.nativeVideo?.source).toMatchObject({ kind: 'wgc', width: 1280, height: 720, fps: 30 });
+    hooks[0]?.onWindow?.(null);
+    expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'none' });
+    hooks[0]?.onSource({ width: 1440, height: 1440, fps: 60 });
     // The turn: the host has ball 1, so its sender is on; the client's never was.
     await H.mh.start();
     await until(() => hv.of('send').some((s) => s.on === true));

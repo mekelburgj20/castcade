@@ -18,6 +18,7 @@
 #include "peer.h"
 #include "sink.h"
 #include "source.h"
+#include "source_wgc.h"
 #include "util.h"
 
 namespace {
@@ -44,6 +45,15 @@ class Session {
     source_ = std::make_unique<Source>(
         [this](const webrtc::scoped_refptr<webrtc::NV12Buffer>& buf, int64_t) { pf_.PushFrame(buf); },
         [this](const std::string& state) { EmitSource(state); });
+    // The window sink's `open` / `closed` (the latter from the window thread when the watcher closes it: the
+    // companion learns the sink is gone and where the window was).
+    sink_.SetWindowEvents([this](const std::string& state, const WindowPlacement& p, const std::string& driver) {
+      Json j = Json::Object();
+      j.Set("event", Json::String("sink")).Set("kind", Json::String("window")).Set("state", Json::String(state));
+      j.Set("driver", Json::String(driver));
+      j.Set("x", Json::Int(p.x)).Set("y", Json::Int(p.y)).Set("width", Json::Int(p.width)).Set("height", Json::Int(p.height));
+      ipc_.Emit(j);
+    });
     {
       Json j = Json::Object();
       j.Set("event", Json::String("ready")).Set("version", Json::String(CASTCADE_VIDEO_VERSION));
@@ -217,7 +227,11 @@ class Session {
     if (kind == "ring") cfg.kind = SourceConfig::Kind::kRing;
     else if (kind == "bench") cfg.kind = SourceConfig::Kind::kBench;
     else if (kind == "none") cfg.kind = SourceConfig::Kind::kNone;
-    else return ipc_.EmitError("bad_command", "source: kind is ring, bench or none");
+    else if (kind == "wgc") {  // D10.6: the VPX window itself, source_wgc.cpp
+      std::string err;
+      if (!ParseWgcSource(c, &cfg, &err)) return ipc_.EmitError("bad_command", err);
+    } else return ipc_.EmitError("bad_command", "source: kind is ring, bench, wgc or none");
+    if (cfg.kind != SourceConfig::Kind::kWgc) {
     cfg.token = c.GetString("token");
     cfg.width = c.GetInt("width", 1354);
     cfg.height = c.GetInt("height", 1440);
@@ -225,6 +239,7 @@ class Session {
     if (cfg.kind == SourceConfig::Kind::kRing && cfg.token.empty()) return ipc_.EmitError("bad_command", "source ring: token missing");
     if (cfg.kind == SourceConfig::Kind::kBench && (cfg.width < 480 || cfg.height < 300 || (cfg.width & 1) || (cfg.height & 1) || cfg.fps < 1 || cfg.fps > 120))
       return ipc_.EmitError("bad_command", "source bench: bad width / height / fps");
+    }
     LogLine("source: %s%s %dx%d @%d", kind.c_str(), cfg.token.empty() ? "" : (" " + cfg.token).c_str(), cfg.width, cfg.height, cfg.fps);
     source_->Configure(cfg);
     source_->SetEnabled(send_on_);
@@ -267,15 +282,33 @@ class Session {
     const std::string kind = c.GetString("kind");
     SinkConfig cfg;
     if (kind == "ring") cfg.kind = SinkConfig::Kind::kRing;
-    else if (kind == "window") return ipc_.EmitError("not_yet", "window");
+    else if (kind == "window") cfg.kind = SinkConfig::Kind::kWindow;
     else if (kind == "none") cfg.kind = SinkConfig::Kind::kNone;
     else return ipc_.EmitError("bad_command", "sink: kind is ring, window or none");
     cfg.token = c.GetString("token");
-    if (c.Has("width")) cfg.max_width = static_cast<uint32_t>(c.GetInt("width", 2048));
-    if (c.Has("height")) cfg.max_height = static_cast<uint32_t>(c.GetInt("height", 2048));
-    if (cfg.kind == SinkConfig::Kind::kRing && cfg.token.empty()) return ipc_.EmitError("bad_command", "sink ring: token missing");
+    if (cfg.kind == SinkConfig::Kind::kRing) {
+      if (c.Has("width")) cfg.max_width = static_cast<uint32_t>(c.GetInt("width", 2048));
+      if (c.Has("height")) cfg.max_height = static_cast<uint32_t>(c.GetInt("height", 2048));
+      if (cfg.token.empty()) return ipc_.EmitError("bad_command", "sink ring: token missing");
+    } else if (cfg.kind == SinkConfig::Kind::kWindow) {
+      // D10.4, all optional: title, topmost, monitor (0 = primary, n = the n-th display), and a remembered
+      // placement (x, y, width, height together; width and height alone = that size, centred).
+      cfg.window.title = c.GetString("title");
+      const Json* top = c.Get("topmost");
+      cfg.window.topmost = top && top->is_bool() && top->as_bool();
+      cfg.window.monitor = c.GetInt("monitor", 0);
+      if (c.Has("x") && c.Has("y") && c.Has("width") && c.Has("height"))
+        cfg.window.placement = WindowPlacement{c.GetInt("x", 0), c.GetInt("y", 0), c.GetInt("width", 0), c.GetInt("height", 0)};
+      else if (c.Has("width") && c.Has("height")) {
+        cfg.window.width = c.GetInt("width", 0);
+        cfg.window.height = c.GetInt("height", 0);
+      }
+    }
     std::string err;
-    if (!sink_.Configure(cfg, &err)) ipc_.EmitError("ring_open_failed", "recv ring " + cfg.token + ": " + err);
+    if (!sink_.Configure(cfg, &err)) {
+      if (cfg.kind == SinkConfig::Kind::kWindow) ipc_.EmitError("window_open_failed", "window: " + err);
+      else ipc_.EmitError("ring_open_failed", "recv ring " + cfg.token + ": " + err);
+    }
   }
 
   // The ceiling: libwebrtc's max_bitrate_bps. The pin is the controller's business (the encoder's clamp is the
@@ -357,6 +390,8 @@ class Session {
     j.Set("event", Json::String("source")).Set("kind", Json::String(SourceKindName(cfg.kind))).Set("state", Json::String(state));
     j.Set("fps_in", Json::Number(std::round(r.fps_in * 10) / 10)).Set("convert_us", Json::Int(static_cast<int64_t>(r.convert_us)));
     if (r.skipped_total) j.Set("skipped", Json::Int(r.skipped_total));
+    const std::string window = source_->window();  // D10.6: the window a wgc source captures
+    if (!window.empty()) j.Set("window", Json::String(window));
     ipc_.Emit(j);
   }
 
@@ -426,7 +461,11 @@ class Session {
       if (s.jitter_buffer_emitted_count > p.jitter_buffer_emitted_count)
         r.Set("jitter_ms", Json::Number(std::round((s.jitter_buffer_delay_s - p.jitter_buffer_delay_s) * 1e4 / (s.jitter_buffer_emitted_count - p.jitter_buffer_emitted_count)) / 10));
       if (!s.decoder_implementation.empty()) r.Set("decoder", Json::String(s.decoder_implementation));
-      if (scfg.kind == SinkConfig::Kind::kRing) r.Set("conv_us", Json::Int(static_cast<int64_t>(sr.convert_us)));
+      if (scfg.kind != SinkConfig::Kind::kNone) r.Set("conv_us", Json::Int(static_cast<int64_t>(sr.convert_us)));
+      if (scfg.kind == SinkConfig::Kind::kWindow) {
+        r.Set("presented_fps", Json::Number(std::round(sr.presented_fps * 10) / 10));
+        r.Set("present_us", Json::Int(static_cast<int64_t>(sr.present_us)));
+      }
       ipc_.Emit(r);
       // D10.5: what we see of their picture, back to them over the feedback channel (their controller's receiver inputs).
       peer.SendFeedback(static_cast<double>(s.frames_decoded) - p.frames_decoded, (s.total_freezes_duration_s - p.total_freezes_duration_s) * 1000,

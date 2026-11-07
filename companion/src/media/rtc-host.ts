@@ -56,7 +56,7 @@ import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, camer
 import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, PANEL_VIDEO, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, playbackIndex, receivedFrameFrom, savedLine, type FrameSaver, type Playback, type SaveFramesResult } from './frame-clip.js';
 import { benchReadout, benchReportFrom, benchWords, type BenchPageReport, type BenchPath, type BenchSource } from './bench.js';
 import { UNCOVER_MS } from './stream-engine.js';
@@ -85,10 +85,29 @@ export interface RtcHostOptions {
   iniStereo?: () => Promise<VrStereo | null>;
 }
 
-/** D10.3: see `RtcHost.setNativeVideo`. `ring`: the `send` ring's token (one per companion start). */
+/**
+ * D10.6 (2026-11-07): the VPX window the screen capture picked, for the helper's own Windows Graphics Capture of it:
+ * the pid and the title words `pickCaptureWindow` matched ("Visual Pinball Player", or the fallback window's own
+ * title), the box the Electron capture would have sent (`PanelCapture.out`) and its frame rate.
+ */
+export interface NativeVideoWindow {
+  pid: number;
+  title: string;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+/**
+ * D10.3: see `RtcHost.setNativeVideo`. `ring`: the `send` ring's token (one per companion start). D10.6: `onWindow`,
+ * when the match host gives it, hears the VPX window whenever the screen capture (not the layer camera) is the capture
+ * and it was picked, changed or lost (null): the helper captures that window itself, and the page's video track is
+ * held back meanwhile. Without `onWindow` the screen capture flows through Electron as in 0.2.36.
+ */
 export interface NativeVideoHook {
   ring: string;
   onSource(box: { width: number; height: number; fps: number } | null): void;
+  onWindow?(win: NativeVideoWindow | null): void;
 }
 
 /** `MatchMedia` plus the microphone picker the Match tab needs (the panel page lists the devices). */
@@ -119,8 +138,10 @@ export interface RtcHost extends MatchMedia {
    * `onSource` is told the box the camera was asked for whenever a camera run starts, changes or stops (null), so the
    * match host can point the helper at the ring; and while the camera is the capture, the panel page's VIDEO track is
    * held back (the page is told `sending` false on this rig's turn; voice and table sound are untouched). With the
-   * screen capture (a desktop rig, SteamVR, the Match tab on screen capture, a camera fallback) the Electron video
-   * keeps flowing as in 0.2.36, since the helper has nothing to send from this rig yet (D10.6). Null: the 0.2.36 path.
+   * screen capture (a desktop rig, SteamVR, the Match tab on screen capture, a camera fallback) and a hook with
+   * `onWindow` (D10.6), the picked VPX window goes to the hook for the helper's own capture of it and the page's video
+   * track is held back the same way; without `onWindow` the Electron video keeps flowing as in 0.2.36. Null: the
+   * 0.2.36 path.
    */
   setNativeVideo(hook: NativeVideoHook | null): void;
   /**
@@ -573,6 +594,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   /** D2.8: the table-sound flags the match host gave (replayed to a new page), and the pid of the window being sent. */
   let tableFlags: TableAudioFlags | null = null;
   let capturePidNow: number | null = null;
+  /** D10.6: the title words the capture pick matched (`PLAYER_TITLE`, or the fallback window's own title). */
+  let captureTitleNow: string | null = null;
   /** D2.10: the volumes the match host gave (replayed to a new page without the note). */
   let volume: { voice: number; table: number } | null = null;
   /** D10.5: the native video's footer line (`setVideoLine`); null = none shown. */
@@ -628,6 +651,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const status = (): MediaStatus =>
     mergeStatus(page, { attached, sending, captureLabel: capture?.label ?? null, captureCrop: capture?.crop ?? null, captureStereo: capture ? (capture.stereo ?? null) : undefined, captureWarning: capture?.warning ?? null, error: panelError ?? captureError, panelWindow: panelWindow() });
   const emitStatus = (): void => {
+    syncNativeWindow();
     const s = status();
     for (const l of statusListeners) l(s);
   };
@@ -687,9 +711,25 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
 
   /**
    * D10.3: what the page is told about sending: this rig is up, unless the native helper carries the picture (the
-   * layer camera feeds its ring): then the page's video track stays disabled and the helper's sender runs instead.
+   * layer camera feeds its ring, or, D10.6, the helper captures the picked VPX window itself): then the page's video
+   * track stays disabled and the helper's sender runs instead.
    */
-  const pageSending = (): boolean => sending && !(native !== null && cam !== null);
+  const pageSending = (): boolean => sending && !(native !== null && (cam !== null || nativeWindowTold !== null));
+  /** D10.6: the window the hook was last given (null: none); only a change is said. */
+  let nativeWindowTold: NativeVideoWindow | null = null;
+  /** The VPX window the helper should capture now: the screen capture's pick (never the layer camera's), while attached. */
+  const wantNativeWindow = (): NativeVideoWindow | null => {
+    if (!native?.onWindow || !attached || cam || !capture || !captureSrc || capturePidNow === null || captureTitleNow === null) return null;
+    return { pid: capturePidNow, title: captureTitleNow, width: capture.out.width, height: capture.out.height, fps: PANEL_VIDEO.fps };
+  };
+  function syncNativeWindow(): void {
+    const want = wantNativeWindow();
+    if (JSON.stringify(want) === JSON.stringify(nativeWindowTold)) return;
+    nativeWindowTold = want;
+    log.info(want ? `media: native video: the helper captures "${want.title}" (pid ${want.pid}) into a ${want.width}x${want.height} box at ${want.fps} fps; the panel's video track is held back` : 'media: native video: no VPX window for the helper to capture');
+    native?.onWindow?.(want);
+    syncPageSending();
+  }
   /**
    * The page's `sending` follows the turn and the native path; said only when it changes (queued latest-wins before
    * the page is up, as 0.2.36 did). Before the attach message exists it is that message's field; nothing is posted.
@@ -1028,6 +1068,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
         captureSrc = r.src;
         capture = r.capture;
         capturePidNow = r.pick.window.pid;
+        captureTitleNow = r.pick.fallback ? r.pick.window.title : PLAYER_TITLE;
         captureError = null;
         if (r.pick.fallback) log.warn(`media: no "${PLAYER_TITLE}" window; sending the largest VPX window instead: ${capture.label}`);
         if (capture.warning && capture.warning !== fitWarned) {
@@ -1079,6 +1120,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   function dropCapture(tellPage: boolean): void {
     capture = null;
     capturePidNow = null;
+    captureTitleNow = null;
     captureSrc = null;
     announced = null;
     stopLive();
@@ -1123,6 +1165,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       captureSrc = r.src;
       capture = r.capture;
       capturePidNow = r.pick.window.pid;
+      captureTitleNow = r.pick.fallback ? r.pick.window.title : PLAYER_TITLE;
       announced = capture;
       toPage(PANEL_CHANNELS.capture, capture);
       emitStatus();
@@ -1454,6 +1497,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     queue = [];
     capture = null;
     capturePidNow = null;
+    captureTitleNow = null;
     captureSrc = null;
     announced = null;
     stopCaptureTimer();
@@ -1705,12 +1749,18 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const was = native;
       native = hook;
       log.info(`media: native video ${hook ? `on (send ring ${hook.ring})` : 'off (the Electron video path)'}`);
+      // D10.6: the old hook loses the window it had; the new one hears the current pick (syncNativeWindow).
+      if (was && was !== hook && nativeWindowTold) {
+        was.onWindow?.(null);
+        nativeWindowTold = null;
+      }
       if (cam && attached && cameraUsable(cameraLayer)) {
         const req = cameraRequest();
         cameraLayer.setCamera(req);
         if (was && was !== hook) was.onSource(null);
         hook?.onSource(boxOf(req));
       } else if (was && was !== hook) was.onSource(null);
+      syncNativeWindow();
       syncPageSending();
     },
     // D7.5.9: the view changes the box, live: the match camera (while asked) and the bench's camera are asked again.
