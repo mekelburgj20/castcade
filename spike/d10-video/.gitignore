@@ -1,0 +1,10 @@
+# downloads and build output of the D10.0.1 spike; code and measurements are tracked
+deps/
+target/
+build/
+*.zip
+*.exe
+*.dll
+*.lib
+*.pdb
+results/*.raw
