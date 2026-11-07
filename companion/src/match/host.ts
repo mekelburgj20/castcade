@@ -44,6 +44,7 @@ import {
   type Message,
   type MessageType,
   type ParticipantInfo,
+  type PayloadInput,
   type PayloadOf,
   type PlayerId,
 } from '@castcade/protocol';
@@ -172,8 +173,11 @@ export interface HostEvents extends Record<string, unknown> {
   countdownCancelled: { reason: string };
 }
 
-/** What the media layer hands over to send; the engine adds `to` and the envelope (D2). */
-export type OutgoingMediaSignal = Omit<PayloadOf<'MEDIA_SIGNAL'>, 'to'>;
+/**
+ * What the media layer hands over to send; the engine adds `to` and the envelope (D2). The schema's input shape
+ * (D10.3): `channel` is optional here, and the build defaults it to `rtc`.
+ */
+export type OutgoingMediaSignal = Omit<PayloadInput<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
