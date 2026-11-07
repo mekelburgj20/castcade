@@ -39,10 +39,13 @@ import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type
 import { HostMatch } from '../match/host.js';
 import { WsPeerTransport } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
-import type { MediaSettingsStore, TurnServer } from '../media/media-settings.js';
+import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
+import { splitSignalling } from '../media/rtc-signaling.js';
+import type { VideoHelper, VideoSink } from '../media/video-helper.js';
+import { createVideoMesh, type VideoMesh } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import { tuneWords } from '../media/vr-layer.js';
@@ -145,6 +148,11 @@ export interface MatchStatus {
    * used from the next match on. Null: none (STUN only).
    */
   turn: { url: string; username: string; credentialSet: boolean } | null;
+  /**
+   * D10.3 (2026-11-07): which path carries the spectator video (media.json `videoPath`): the native helper
+   * (`castcade-video.exe`, the default) or the 0.2.36 Electron path; used from the next match on.
+   */
+  videoPath: VideoPath;
   locked: boolean;
   settings: MatchSettings;
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
@@ -172,6 +180,8 @@ export interface MatchHost {
    * it; a null credential keeps the saved one. Throws on a url that is not `turn:` / `turns:`.
    */
   setTurn(turn: { url: string; username: string; credential: string | null } | null): MatchStatus;
+  /** D10.3 (2026-11-07): the spectator video path (saved in media.json, used from the next match on). */
+  setVideoPath(path: VideoPath): MatchStatus;
   /** D2.6 (2026-11-01): the Match tab's Show panel / Hide panel for the desktop panel window; a no-op without one. */
   showPanel(): MatchStatus;
   hidePanel(): MatchStatus;
@@ -212,7 +222,7 @@ export interface MatchHostOptions {
   /** The pairing facts: the device id is the player id while paired (§3); the label is the default name. */
   device: () => { deviceId: string; deviceLabel: string };
   /** `RtcHost` (D2) in the app; the microphone picker and `setVr` are optional so tests can pass a bare `MatchMedia`. */
-  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'setCameraView' | 'setCameraEyes' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
+  media?: MatchMedia & Partial<Pick<RtcHost, 'microphones' | 'onMicrophones' | 'setMicrophone' | 'setVr' | 'refreshMicrophones' | 'setPreviewStereo' | 'setCameraLayer' | 'setCameraSource' | 'setCameraView' | 'setCameraEyes' | 'setNativeVideo' | 'saveFrames' | 'startBench' | 'stopBench' | 'benchStatus' | 'onBenchStatus'>>;
   /** `<userData>/media.json`: the microphone and mute choices, kept even when the media layer did not start. */
   mediaSettings?: MediaSettingsStore;
   /** The SteamVR overlay helper (`media/vr-overlay.ts`, D7): the panel in the headset when VPX runs on SteamVR. */
@@ -223,6 +233,12 @@ export interface MatchHostOptions {
   tableAudio?: TableAudioHelper;
   /** MEDIA_SIGNAL over the match transport (D2); absent → the media layer gets a mute signalling. */
   signalling?: (role: HostMatch | ClientMatch, localId: string) => MediaSignalling;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.4): the native spectator-video helper (`media/video-helper.ts`)
+   * and the two frame-ring tokens of this companion run (`send`: the layer camera → the helper; `recv`: the helper →
+   * the layer's theater), one pair per start. Absent → the Electron video path only.
+   */
+  nativeVideo?: { helper: VideoHelper; sendRing: string; recvRing: string };
   appVersion: string;
   log: Logger;
   /** Test seam: the public IPv4, or null. Default: one GET to api.ipify.org, 4 s. */
@@ -300,6 +316,8 @@ interface Active {
   /** A10: a client's teardown after the series ended, once scheduled. */
   endTimer: ReturnType<typeof setTimeout> | null;
   offs: (() => void)[];
+  /** D10.3: the native video mesh of this match (`openVideo`), null on the Electron path or without the helper. */
+  video: VideoMesh | null;
 }
 
 /** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
@@ -477,7 +495,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const phase: MatchPhase = connecting ? 'connecting' : c ? c.phase : 'none';
     const r = a ? { rig: a.rig, rigReason: a.rigReason, runtime: a.runtime } : rigOf(idleRig());
     const rawMedia = a && opts.media ? opts.media.status() : null;
-    const media = rawMedia && opts.tableAudio ? { ...rawMedia, tableAudio: opts.tableAudio.status() } : rawMedia;
+    const withAudio = rawMedia && opts.tableAudio ? { ...rawMedia, tableAudio: opts.tableAudio.status() } : rawMedia;
+    // D10.3: the native video block, like table sound: only while this match runs it.
+    const media = withAudio && a?.video ? { ...withAudio, nativeVideo: a.video.status() } : withAudio;
     return {
       role: a ? a.role : 'none',
       phase,
@@ -519,6 +539,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       micDeviceId: opts.mediaSettings?.get().micDeviceId ?? null,
       muted: opts.mediaSettings?.get().muted ?? false,
       turn: turnView(opts.mediaSettings?.get().turn ?? null),
+      videoPath: videoPath(),
       locked,
       settings: { ...settings },
       defaultName: defaultName(),
@@ -585,6 +606,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const emit = (): void => {
     if (active) {
       syncVrMode(active);
+      // D10.3: the native sender follows the turn beside the headset mode.
+      syncNativeVideo(active);
       scheduleSeriesEnd(active);
     }
     // D7.6: Theater size applies to the bench live, as in a match; D7.5.10 / D7.5.11: the window's tuning and soft edge too.
@@ -644,13 +667,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   });
 
   const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number): MatchController => {
+    // D10.3: the match signalling split by channel: the panel page's mesh gets `rtc`, the native video mesh `video`.
+    const sig = opts.signalling?.(engine, engine.localId);
+    const split = sig ? splitSignalling(sig) : null;
     const controller = new MatchController({
       role: engine,
       localId: engine.localId,
       lock,
       cue: { play: (k) => cue.play(k) },
       media: opts.media,
-      signalling: opts.signalling?.(engine, engine.localId),
+      signalling: split?.rtc,
       now: () => Date.now(),
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -661,7 +687,64 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       tableGameRunning: liveGameRunning(),
     });
     controller.onChange(() => emit());
+    if (split) videoSides.set(controller, split.video);
     return controller;
+  };
+
+  // ---- D10.3: the native spectator video (spectator-video-native.md §6.4) ----
+  /** The `video` side of each controller's signalling, for the mesh `openVideo` makes once the panel is up. */
+  const videoSides = new WeakMap<MatchController, MediaSignalling>();
+  const videoPath = (): VideoPath => opts.mediaSettings?.get().videoPath ?? DEFAULT_MEDIA_SETTINGS.videoPath;
+  /** Where decoded frames go on this rig: the layer's `recv` ring on an OpenXR rig (theater draws it), the helper's own window elsewhere. */
+  const videoSink = (a: RigRuntime): VideoSink => (usesLayer(a) && opts.nativeVideo ? { kind: 'ring', token: opts.nativeVideo.recvRing } : { kind: 'window' });
+  /**
+   * At host / join with the setting on `native` and a helper in the build: start the helper (its availability shows
+   * on the Match tab before the first ball), one mesh for the match on the `video` signalling, the media layer told
+   * the send ring (it asks the layer camera with it and points the helper at the box the camera fills), the ICE list
+   * from media.json. `syncNativeVideo` then follows the roster, the turn and the rig on every emit.
+   */
+  const openVideo = (a: Active): void => {
+    const nv = opts.nativeVideo;
+    if (!nv || a.video || videoPath() !== 'native') return;
+    const side = videoSides.get(a.controller);
+    if (!side) return;
+    nv.helper.start();
+    const mesh = createVideoMesh({ helper: nv.helper, localId: a.engine.localId, sendSignal: (to, s) => side.send(to, s), log: (l) => log.info(l) });
+    a.video = mesh;
+    a.offs.push(side.onSignal((from, s) => mesh.onSignal(from, s)));
+    a.offs.push(
+      mesh.onStatus(() => {
+        if (active === a) emit();
+      }),
+    );
+    mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
+    opts.media?.setNativeVideo?.({ ring: nv.sendRing, onSource: (box) => mesh.setSource(box ? { kind: 'ring', token: nv.sendRing, ...box } : { kind: 'none' }) });
+    const h = nv.helper.status();
+    log.info(`match: native video: on for this match (helper ${h.helper}${h.reason ? `, ${h.reason}` : ''}; send ring ${nv.sendRing}, recv ring ${nv.recvRing})`);
+    syncNativeVideo(a);
+  };
+  /**
+   * The mesh follows the match: a helper peer per other participant; `send` on exactly when the headset would be
+   * hidden for this rig's own ball (the same panel state `syncVrMode` reads: playing and my turn); the sink and the
+   * layer's `video.ring` from the rig as it is now (a desktop rig that moves into the headset switches to the ring).
+   */
+  const syncNativeVideo = (a: Active): void => {
+    const mesh = a.video;
+    if (!mesh) return;
+    const c = a.controller.status();
+    mesh.setPeers(c.participants.map((p) => p.playerId).filter((id) => id !== a.engine.localId));
+    const panel = a.controller.panel();
+    mesh.setSending(panel.phase === 'playing' && panel.myTurn);
+    const sink = videoSink(a);
+    mesh.setSink(sink);
+    opts.vrLayer?.setVideoRing?.(sink.kind === 'ring' ? sink.token : null);
+  };
+  const closeVideo = (a: Active): void => {
+    if (!a.video) return;
+    a.video.close();
+    a.video = null;
+    opts.media?.setNativeVideo?.(null);
+    opts.vrLayer?.setVideoRing?.(null);
   };
 
   /** A12: the witness's live game says a game is on this rig's table now (a test witness may not have `liveGame`). */
@@ -749,6 +832,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const openPanel = async (a: Active): Promise<void> => {
     // D2.8: the helper starts with the match, so "table sound unavailable" shows before the first ball.
     opts.tableAudio?.start();
+    // D10.3: the native video helper and this match's mesh, before the media attaches (it asks the camera with the ring).
+    openVideo(a);
     // D2.10: the volume keys live as long as the match.
     registerKeys();
     await opts.media?.setVr?.(mediaRig(a));
@@ -994,6 +1079,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         refreshAgain: false,
         endTimer: null,
         offs: [],
+        video: null,
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
       active = a;
@@ -1093,6 +1179,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           refreshAgain: false,
           endTimer: null,
           offs: [],
+          video: null,
         };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
         active = a;
@@ -1116,6 +1203,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.endTimer = null;
     for (const off of a.offs) off();
     unregisterKeys();
+    // D10.3: the helper's peers are closed and the rings let go; the helper itself stays for the next match.
+    closeVideo(a);
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
     opts.tableAudio?.apply({ mutePid: null, tapPid: null });
     opts.tableAudio?.unlevel();
@@ -1256,6 +1345,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         }
         // Never the credential (media-settings.ts).
         log.info(`match: TURN relay set to ${got.url} on the Match tab (used from the next match)`);
+      }
+      // D10.3: the helper takes the list for every peer made after this (a running match's peers keep theirs).
+      active?.video?.setIce(iceServers(store.get()));
+      emit();
+      return status();
+    },
+    setVideoPath(path) {
+      const store = opts.mediaSettings;
+      if (!store) throw new Error('media settings are not available in this build');
+      const next: VideoPath = path === 'electron' ? 'electron' : 'native';
+      if (store.get().videoPath !== next) {
+        store.patch({ videoPath: next });
+        log.info(`match: spectator video set to ${next === 'native' ? 'the native helper' : 'the Electron path (0.2.36)'} on the Match tab (used from the next match)`);
       }
       emit();
       return status();

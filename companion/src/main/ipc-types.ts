@@ -65,6 +65,8 @@ export const IPC = {
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
   matchSetTurn: 'match:setTurn',
+  /** D10.3: the spectator video path (native helper / Electron), saved in media.json. */
+  matchSetVideoPath: 'match:setVideoPath',
   matchShowPanel: 'match:showPanel',
   matchHidePanel: 'match:hidePanel',
   /** D7.6.2: write the VR report (vr-report-<date>.md / .json beside companion.log). */
@@ -242,6 +244,8 @@ export interface CastcadeApi {
     setMuted(muted: boolean): Promise<MatchStatus>;
     /** D2.9: the TURN relay; null (or an empty url) clears it, a null credential keeps the saved one. */
     setTurn(turn: { url: string; username: string; credential: string | null } | null): Promise<MatchStatus>;
+    /** D10.3: the spectator video path: the native helper (`castcade-video.exe`) or the 0.2.36 Electron path; used from the next match. */
+    setVideoPath(path: 'native' | 'electron'): Promise<MatchStatus>;
     /** D2.6: show or hide the desktop match panel window (a separate window beside this one). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;

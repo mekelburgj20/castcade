@@ -421,7 +421,29 @@ interface MediaStatus {
   captureWarning?: string | null;
   /** D2.8: table sound: the helper, why not, and whether this rig's VPX is muted / being sent now. */
   tableAudio?: { helper: 'ready' | 'unavailable'; reason: string | null; muted: boolean; tapping: boolean };
+  /** D10.3: the native spectator video (castcade-video.exe) while this match runs it (media/match-media-types.ts NativeVideoStatus). */
+  nativeVideo?: NativeVideoStatus;
   lastError: string | null;
+}
+interface NativeVideoStats {
+  fps: number;
+  kbps: number;
+  width: number;
+  height: number;
+  rttMs?: number | null;
+  lossPct?: number | null;
+  bweKbps?: number | null;
+  qualityLimitation?: string | null;
+}
+interface NativeVideoStatus {
+  helper: 'ready' | 'starting' | 'stopped' | 'unavailable';
+  reason: string | null;
+  encoder: string | null;
+  decoder: string | null;
+  sending: boolean;
+  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  sink: 'ring' | 'window' | 'none';
+  peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;
 }
 interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
@@ -533,6 +555,8 @@ interface MatchStatus {
   muted: boolean;
   /** D2.9: the TURN relay saved in media.json (the credential only as "set"); null = none. */
   turn: { url: string; username: string; credentialSet: boolean } | null;
+  /** D10.3: which path carries the spectator video (media.json): the native helper or the 0.2.36 Electron path. */
+  videoPath: 'native' | 'electron';
   locked: boolean;
   settings: MatchSettings;
   defaultName: string;
@@ -599,6 +623,8 @@ interface CastcadeBridge {
     setMuted(muted: boolean): Promise<MatchStatus>;
     /** D2.9: the TURN relay; null (or an empty url) clears it, a null credential keeps the saved one. */
     setTurn(turn: { url: string; username: string; credential: string | null } | null): Promise<MatchStatus>;
+    /** D10.3: the spectator video path (native helper / Electron), used from the next match. */
+    setVideoPath(path: 'native' | 'electron'): Promise<MatchStatus>;
     /** D2.6: the desktop match panel window (no-op in VR). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;

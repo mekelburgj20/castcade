@@ -25,6 +25,7 @@ vi.mock('electron', () => {
 
 const { createMatchHost } = await import('./match-host.js');
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
+const { matchSignalling } = await import('./match-setup.js');
 type MatchHost = ReturnType<typeof createMatchHost>;
 type WitnessHost = Parameters<typeof createMatchHost>[0]['witness'];
 type Logger = Parameters<typeof createMatchHost>[0]['log'];
@@ -162,6 +163,113 @@ describe('match host (A6)', () => {
     expect(ca.last()).toEqual({ mutePid: 222, tapPid: null });
     await C.mh.leave();
     expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
+  }, 15_000);
+
+  it('D10.3 (2026-11-07): native video: one helper peer per rig over the real signalling (channel video), the lower id offers, send follows the turn, the rings reach the media layer; the setting is saved', async () => {
+    type Cmd = Record<string, unknown> & { cmd: string };
+    type Ev = Record<string, unknown> & { event: string };
+    /** A helper that is ready at once and answers like the fake exe: an offer when it initiates, an answer + connected on an offer. */
+    const stubHelper = () => {
+      const sent: Cmd[] = [];
+      const eventCbs = new Set<(e: Ev) => void>();
+      let started = 0;
+      const say = (e: Ev) => eventCbs.forEach((cb) => cb(e));
+      const helper = {
+        start: () => void started++,
+        stop: async () => undefined,
+        send(cmd: Cmd) {
+          sent.push(cmd);
+          if (cmd.cmd === 'peer' && cmd.initiator) setImmediate(() => say({ event: 'signal', id: cmd.id, kind: 'offer', sdp: `v=0 offer to ${String(cmd.id)}` }));
+          if (cmd.cmd === 'signal' && cmd.kind === 'offer') {
+            setImmediate(() => {
+              say({ event: 'signal', id: cmd.id, kind: 'answer', sdp: 'v=0 answer' });
+              say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' });
+            });
+          }
+          if (cmd.cmd === 'signal' && cmd.kind === 'answer') setImmediate(() => say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' }));
+          return true;
+        },
+        onEvent: (cb: (e: Ev) => void) => {
+          eventCbs.add(cb);
+          return () => void eventCbs.delete(cb);
+        },
+        status: () => ({ helper: 'ready' as const, reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' }),
+        onStatus: () => () => undefined,
+      };
+      const of = (cmd: string) => sent.filter((c) => c.cmd === cmd);
+      return { helper, sent, of, started: () => started };
+    };
+    const hooks: Array<{ ring: string; onSource: (b: { width: number; height: number; fps: number } | null) => void } | null> = [];
+    const media = {
+      attach: async () => undefined,
+      addPeer: () => undefined,
+      removePeer: () => undefined,
+      setSending: () => undefined,
+      setPanelState: () => undefined,
+      setMuted: () => undefined,
+      status: () => ({ attached: true, sending: false, peers: {}, mic: 'unavailable' as const, captureSource: null, lastError: null }),
+      onStatus: () => () => undefined,
+      frames: () => null,
+      showPanel: () => undefined,
+      setNativeVideo: (h: (typeof hooks)[number]) => void hooks.push(h),
+      detach: async () => undefined,
+    };
+    const hv = stubHelper();
+    const cv = stubHelper();
+    const hdir = mkdtempSync(join(tmpdir(), 'castcade-video-h-'));
+    dirs.push(hdir);
+    const hostSettings = createMediaSettingsStore(join(hdir, 'media.json'));
+    // The real signalling over the match socket (match-setup.ts), as the shell wires it.
+    const signalling = (role: Parameters<typeof matchSignalling>[0], id: string) => matchSignalling(role, id);
+    const H = make('vid-host', 'ab'.repeat(32), { media: media as never, mediaSettings: hostSettings, signalling, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
+    const C = make('vid-client', 'ab'.repeat(32), { signalling, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
+    const port = 41000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    expect(hs.videoPath).toBe('native');
+    // The helper comes up with the match; the media layer is told the send ring; no sink ring without the OpenXR layer.
+    expect(hv.started()).toBe(1);
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]?.ring).toBe('HOSTsend_ABCDEFG');
+    // (A ready helper is told the whole empty state at creation, then each setting once: the last of each is the rig's.)
+    expect(hv.of('sink').at(-1)).toEqual({ cmd: 'sink', kind: 'window' });
+    expect(hv.of('ice').at(-1)).toEqual({ cmd: 'ice', servers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] });
+    expect(hs.media?.nativeVideo).toMatchObject({ helper: 'ready', encoder: 'h264_nvenc', sending: false, sink: 'window', peers: {} });
+    await C.mh.join(hs.invite!, 'Krobs');
+    // One peer each; the lower id (a per-run player id while unpaired) offers and the other waits; the offer and the
+    // answer crossed the match socket as MEDIA_SIGNAL {channel: 'video'} and both helpers report connected.
+    const hid = H.mh.status().localId!;
+    const cid = C.mh.status().localId!;
+    const clientOffers = cid < hid;
+    const [offerer, offeree, offereeId] = clientOffers ? [cv, hv, hid] : [hv, cv, cid];
+    await until(() => hv.of('peer').length === 1 && cv.of('peer').length === 1);
+    expect(hv.of('peer')).toEqual([{ cmd: 'peer', id: cid, initiator: !clientOffers }]);
+    expect(cv.of('peer')).toEqual([{ cmd: 'peer', id: hid, initiator: clientOffers }]);
+    await until(() => offeree.of('signal').some((s) => s.kind === 'offer') && offerer.of('signal').some((s) => s.kind === 'answer'));
+    expect(offeree.of('signal')[0]).toMatchObject({ kind: 'offer', sdp: `v=0 offer to ${offereeId}` });
+    await until(() => H.mh.status().media?.nativeVideo?.peers[cid]?.ice === 'connected' && C.mh.status().media === null);
+    expect(H.mh.status().media?.nativeVideo?.peers[cid]).toMatchObject({ ice: 'connected', pair: 'host↔host' });
+    // The media layer's camera feeds the ring: the helper is pointed at the box.
+    hooks[0]?.onSource({ width: 1440, height: 1440, fps: 60 });
+    expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'ring', token: 'HOSTsend_ABCDEFG', width: 1440, height: 1440, fps: 60 });
+    expect(H.mh.status().media?.nativeVideo?.source).toMatchObject({ kind: 'ring', width: 1440, height: 1440, fps: 60 });
+    // The turn: the host has ball 1, so its sender is on; the client's never was.
+    await H.mh.start();
+    await until(() => hv.of('send').some((s) => s.on === true));
+    expect(cv.of('send').map((s) => s.on)).toEqual([false]);
+    expect(H.mh.status().media?.nativeVideo?.sending).toBe(true);
+    // The setting is saved and shown; it takes effect at the next match.
+    expect(H.mh.setVideoPath('electron').videoPath).toBe('electron');
+    expect(hostSettings.get().videoPath).toBe('electron');
+    expect(H.mh.status().media?.nativeVideo).toBeDefined();
+    H.mh.setVideoPath('native');
+    // Leaving closes the peer, stops sending and clears the rings; the helper itself is left for the next match.
+    await C.mh.leave();
+    expect(cv.of('close')).toEqual([{ cmd: 'close', id: hid }]);
+    expect(cv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'none' });
+    await H.mh.leave();
+    expect(hooks.at(-1)).toBeNull();
+    expect(hv.of('send').at(-1)).toEqual({ cmd: 'send', on: false });
+    expect(hv.of('close')).toEqual([{ cmd: 'close', id: cid }]);
   }, 15_000);
 
   it('D2.10 (2026-11-05): voice over the game: the volumes reach the media layer, my table is levelled on my ball, the keys live with the match', async () => {

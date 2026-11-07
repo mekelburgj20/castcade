@@ -260,7 +260,10 @@ describe('the mesh and a helper that restarts', () => {
     const g = stubHelper();
     g.ready();
     const second = createVideoMesh({ helper: g.helper, localId: 'bbb', sendSignal: () => undefined, log: () => undefined });
+    // The whole (empty) state at creation, then each setting as a single command.
+    expect(g.sent).toEqual([{ cmd: 'ice', servers: [] }, { cmd: 'source', kind: 'none' }, { cmd: 'sink', kind: 'none' }, { cmd: 'rungs', max_kbps: 20_000 }, { cmd: 'send', on: false }]);
     second.setPeers(['aaa']);
-    expect(g.sent).toEqual([{ cmd: 'ice', servers: [] }, { cmd: 'source', kind: 'none' }, { cmd: 'sink', kind: 'none' }, { cmd: 'rungs', max_kbps: 20_000 }, { cmd: 'send', on: false }, { cmd: 'peer', id: 'aaa', initiator: false }]);
+    second.setSink({ kind: 'window' });
+    expect(g.sent.slice(5)).toEqual([{ cmd: 'peer', id: 'aaa', initiator: false }, { cmd: 'sink', kind: 'window' }]);
   });
 });

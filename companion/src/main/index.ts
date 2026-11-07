@@ -8,7 +8,7 @@
  * ends the process.
  */
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -45,6 +45,7 @@ import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createTableAudioHelper, resolveAudioHelper, type TableAudioHelper } from '../media/audio-helper.js';
+import { createVideoHelper, resolveVideoHelper, type VideoHelper } from '../media/video-helper.js';
 import { createVrLayerOverlay, registerVrLayer, resolveVrLayer } from '../media/vr-layer.js';
 import { createLayerAgeWatch, readRegisteredAt, sha256File, stageVrLayer, versionText, VR_LAYER_DLL, vrLayerStageRoot, writeRegisteredAt } from '../media/vr-layer-stage.js';
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
@@ -76,6 +77,10 @@ let matchOverlay: VrOverlay | null = null;
 let matchLayer: VrOverlay | null = null;
 /** D2.8: the table-sound helper (mute this rig's VPX while another player is up, tap its sound while this rig is up). */
 let tableAudio: TableAudioHelper | null = null;
+/** D10.3: the native spectator-video helper (`castcade-video.exe`), started by the first match that wants it. */
+let videoHelper: VideoHelper | null = null;
+/** D10.3 (§6.1): a frame-ring token: 16 characters of `[A-Za-z0-9_-]` (12 random bytes, base64url), fresh per companion start. */
+const ringToken = (): string => randomBytes(12).toString('base64url');
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
@@ -214,6 +219,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
   await tableAudio?.stop().catch(() => undefined); // ends the helper's stdin: it unmutes everything it muted and exits
+  await videoHelper?.stop().catch(() => undefined); // D10.3: `quit` and the end of its stdin; the match closed its peers already
   await host.stop();
   if (install && updater?.pendingVersion()) {
     log?.info('quit: restarting to install the update');
@@ -381,6 +387,7 @@ function registerIpc(
     if (typeof v.url !== 'string' || v.url.trim() === '') return mh().setTurn(null);
     return mh().setTurn({ url: v.url, username: typeof v.username === 'string' ? v.username : '', credential: typeof v.credential === 'string' ? v.credential : null });
   });
+  ipcMain.handle(IPC.matchSetVideoPath, (_e, path: unknown) => mh().setVideoPath(path === 'electron' ? 'electron' : 'native'));
   ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
   ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
   ipcMain.handle(IPC.matchSetVrTest, (_e, test: unknown) => mh().setVrTest(test === 'pattern' ? 'pattern' : null));
@@ -560,6 +567,18 @@ async function main(): Promise<void> {
     logger.error(`audio: could not set up (${describeError(e)}); every rig hears its own table this run`);
   }
 
+  // D10.3 (spectator-video-native.md §6.4): the native spectator video. The helper is spawned by the first match whose
+  // media setting `videoPath` is `native`; a missing helper only means the Electron video path, as 0.2.36. The two
+  // frame-ring tokens are fresh per companion start (§6.1: a stale layer in a running VPX never meets a new helper's ring).
+  const videoRings = { sendRing: ringToken(), recvRing: ringToken() };
+  try {
+    const exe = resolveVideoHelper({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
+    videoHelper = createVideoHelper({ exe, log: (line) => logger.info(line) });
+    if (!exe) logger.info('video: no spectator-video helper in this build; matches use the Electron video path');
+  } catch (e) {
+    logger.error(`video: could not set up (${describeError(e)}); matches use the Electron video path this run`);
+  }
+
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   try {
@@ -576,6 +595,8 @@ async function main(): Promise<void> {
       vrOverlay: matchOverlay ?? undefined,
       vrLayer: matchLayer ?? undefined,
       tableAudio: tableAudio ?? undefined,
+      // D10.3: the native spectator video: the helper and this run's frame-ring tokens.
+      nativeVideo: videoHelper ? { helper: videoHelper, ...videoRings } : undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),
       // D2.10: the in-game volume keys (Ctrl+Alt+arrows), held only while a match is on.

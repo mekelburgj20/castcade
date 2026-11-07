@@ -251,11 +251,9 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     }
     emit();
   });
-  // A helper that is ready already (a second match in one run): told everything at the first sync.
-  if (helperStatus.helper === 'ready') {
-    toldPeers.clear();
-    sync();
-  }
+  // A helper that is ready already (a second match in one run): told the whole (empty) state now, as a helper that
+  // becomes ready later is told it all at its `ready`; the match host's own settings follow as single commands.
+  if (helperStatus.helper === 'ready') sync();
 
   return {
     setPeers(ids) {
