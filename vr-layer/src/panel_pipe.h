@@ -21,7 +21,10 @@
 //       "tune": {"depthM": <m> | null, "dyDeg": [left, right]} (D7.5.9 / D7.6.10: the distance the stereo window's
 //       frame is placed at, null = infinity, and a vertical offset per eye in degrees; absent = none) and
 //       "feather": <0..0.25> (D7.5.11: the fraction of one eye's half width over which the video window's edges fade
-//       to the black behind them; absent or 0 = hard edges): the control;
+//       to the black behind them; absent or 0 = hard edges), and, layer 0.6.0 (D10.2), "camera": {…, "ring": "<token>"}
+//       (the eye goes into the send ring Local\castcade-video-send-<token> as BGRA instead of CVF1 JPEG; absent = JPEG)
+//       and "video": {"ring": "<token>"} (theater takes its picture from the recv ring Local\castcade-video-recv-<token>
+//       instead of CVO2; absent or null = CVO2): the control;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -59,15 +62,18 @@ constexpr float kTheaterScale = 1.0f;  // D7.4.5: life size (layer.cpp, "the ste
 // scaled into the box (never up, even sides), so the receiver's window shows everything the sender's eye saw and the
 // window's frame leaves the part of the view both eyes share. `eye` (D8.1, layer 0.5.3; ADR 0009, spectating is 2D):
 // -1 = both eyes, as before; 0 = the left eye only, 1 = the right eye only: one eye copied, encoded and sent, the
-// frame's `eyes` array one entry long.
+// frame's `eyes` array one entry long. `ring` (D10.2, layer 0.6.0): the token of the send ring (frame_ring.h) the eye
+// goes into as BGRA instead of being JPEG-encoded into CVF1 frames; empty = JPEG over the pipe, as before. A new token
+// or a new box restarts the camera and so re-creates the ring.
 struct CameraRequest {
   bool on = false;
   uint32_t width = 0, height = 0;  // the box, per eye
   uint32_t fps = 0;
   bool whole = false;
   int eye = -1;
+  std::string ring;
   bool operator==(const CameraRequest& o) const {
-    return on == o.on && width == o.width && height == o.height && fps == o.fps && whole == o.whole && eye == o.eye;
+    return on == o.on && width == o.width && height == o.height && fps == o.fps && whole == o.whole && eye == o.eye && ring == o.ring;
   }
   bool operator!=(const CameraRequest& o) const { return !(*this == o); }
 };
@@ -116,6 +122,9 @@ struct Control {
   // video window's alpha ramps from 0 at each of its four edges to 1 (the frame fades into the black behind it instead
   // of ending on a hard line). 0 = hard edges (the default); the pattern, the mono screen and the panel are never feathered.
   float feather = 0.0f;
+  // D10.2 (layer 0.6.0), the control's "video": {"ring": "<token>"}: theater takes its picture from the recv ring of that
+  // token (frame_ring.h RingConsumer, filled by the video helper) instead of CVO2 frames. Empty (absent or null) = CVO2.
+  std::string videoRing;
 };
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;

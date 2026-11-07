@@ -118,10 +118,10 @@ on a synchronous handle Windows would queue the write behind the read).
 |---|---|---|---|
 | layer → companion, once on connect | `CVH1` | u32 protocol (3) | hello; a protocol-1 layer (0.2.26) sends none |
 | layer → companion (protocol 3) | `CVF1` | u32 byteLength, then u16 jsonLength, the UTF-8 JSON header, the eyes' JPEG payloads back to back | a camera frame ("The camera" below) |
-| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`, `"whole"` (layer 0.5.2: true when the whole render is sent), `"eye": "left"\|"right"` (layer 0.5.3, D8.1: only when one eye is sent; absent for both); or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
+| layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`, `"whole"` (layer 0.5.2: true when the whole render is sent), `"eye": "left"\|"right"` (layer 0.5.3, D8.1: only when one eye is sent; absent for both), `"ring": "<token>"`, `"ringState": "ok"\|"failed"` and, failed, `"ringWhy"` (layer 0.6.0, D10.2: only when a ring was asked; "The rings" below); or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it). Layer 0.5.2, the window's frame (all optional; absent = as before): `"camera": {…, "whole": true}` (D7.5.10: each eye's whole render scaled into the box, no crop; the frame header's `rect` is then `[0, 0, render w, render h]`), `"tune": {"depthM": <m> \| null, "dyDeg": [left, right]}` (D7.5.9 / D7.6.10: the distance the stereo window's frame is placed at, 0.3–100 m, null or 0 = infinity as before; and a vertical offset per eye in degrees, ±10, that moves that eye's quad up or down; the calibration pattern follows both) and `"feather": <0–0.25>` (D7.5.11: the fraction of one eye's half width over which the side-by-side video window's alpha ramps from 0 at each edge to 1, so the frame fades into the black behind it; 0 = hard edges; the pattern, the mono screen and the panel are never feathered). Layer 0.5.3 (D8.1, ADR 0009): `"camera": {…, "eye": "left" \| "right"}` sends that one eye only (the frame header's `eyes` has one entry, one payload follows); absent or any other value = both eyes, as before |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it). Layer 0.5.2, the window's frame (all optional; absent = as before): `"camera": {…, "whole": true}` (D7.5.10: each eye's whole render scaled into the box, no crop; the frame header's `rect` is then `[0, 0, render w, render h]`), `"tune": {"depthM": <m> \| null, "dyDeg": [left, right]}` (D7.5.9 / D7.6.10: the distance the stereo window's frame is placed at, 0.3–100 m, null or 0 = infinity as before; and a vertical offset per eye in degrees, ±10, that moves that eye's quad up or down; the calibration pattern follows both) and `"feather": <0–0.25>` (D7.5.11: the fraction of one eye's half width over which the side-by-side video window's alpha ramps from 0 at each edge to 1, so the frame fades into the black behind it; 0 = hard edges; the pattern, the mono screen and the panel are never feathered). Layer 0.5.3 (D8.1, ADR 0009): `"camera": {…, "eye": "left" \| "right"}` sends that one eye only (the frame header's `eyes` has one entry, one payload follows); absent or any other value = both eyes, as before. Layer 0.6.0 (D10.2): `"camera": {…, "ring": "<token>"}` publishes the eye as BGRA into the send ring instead of `CVF1` JPEG, and `"video": {"ring": "<token>"}` draws theater from the recv ring instead of `CVO2` ("The rings" below; absent = as before) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -259,6 +259,86 @@ Log lines to read after the first run (`vr-layer.log`):
 - `camera: frame N: issue A us, ready after K tick(s), map B us, copy C us, encode D us (L x B, R y B), write E us; 720x1440 per eye` (one eye: `(left x B)`) — the first 10 frames, then every 300th. `issue` + `map` is the render thread's cost per sent frame (at 30 fps of a 90 Hz loop, one frame in three); `copy`, `encode`, `write` are the worker's. An `encode` above about 30 000 us means the worker cannot keep 30 fps at this size: ask for a smaller box;
 - `camera: off (why): N frames sent in S s (F fps), D dropped (ring full a, worker behind b, write failed c); average …` — the summary, with the drops that say which side was slow;
 - `camera: refused: …` — why the companion fell back to the screen capture.
+
+## The rings (layer 0.6.0, D10.2)
+
+The native video path (`docs/design/spectator-video-native.md` §3, §6; ADR 0010) moves the pixels out of the pipe: the
+layer and the video helper (`video-helper/`, `castcade-video.exe`) share two frame rings, one per direction, each a
+named shared-memory section plus a named event, three slots, newest wins (a slow side skips frames, nothing queues).
+The contract is `video-helper/include/castcade_frame_ring.h` (byte for byte; the helper is built from the same header
+and no code); the layer's side is `src/frame_ring.{h,cpp}` (`RingProducer`, `RingConsumer`). Names:
+`Local\castcade-video-<role>-<token>` and `…-<token>-event`, role `send` (layer → helper: the eye this rig sends) or
+`recv` (helper → layer: the decoded picture of the player who is up); the companion hands both sides the token (a fresh
+one per companion start; `[A-Za-z0-9_-]{1,64}`, checked before it goes into a kernel object name). Pixels are BGRA
+8-bit top-down, stride = width x 4, up to 4096 a side. The pipe protocol stays 3: a companion that sends no token gets
+the 0.5.3 behaviour exactly.
+
+**The send ring (the camera).** `"camera": {…, "ring": "<token>"}` in the control: the layer creates
+`Local\castcade-video-send-<token>` sized for the box (`width` x `height`; both eyes asked = `2 width` x `height`, the
+eyes side by side, left | right) and the worker that used to JPEG-encode the copied-out eye publishes its BGRA rows
+into the ring instead, at the frame's capture moment as `ptsUs` (the QPC time the copy was issued, in µs). No `CVF1`
+frame is written while a ring is in use (the eye's fov / crop / render are what the receiver's stereo window used; the
+2D path of ADR 0009 needs none, and the companion still gets the `on` status). The crop, the `whole` scaling, the one-eye
+rule, the OpenGL row flip and the D3D11 downsizing are untouched: the branch is at the point where the BGRA box is
+complete in the worker (`camera.cpp`, `workerMain`, after `packRgba`). The `on` status (`CVS1`) says what happened:
+
+| Field | Values | Meaning |
+|---|---|---|
+| `"ring"` | the token | present when a ring was asked |
+| `"ringState"` | `"ok"` \| `"failed"` | the ring is up, or could not be made: frames then go as `CVF1` JPEG over the pipe exactly as without a token, and the companion should not expect anything in the ring |
+| `"ringWhy"` | text | with `failed` only: the reason (a bad token; a section of this name that still exists with another geometry, see below; a Win32 error) |
+
+One ring per request: a new token, a new box, a new `eye` or a new fps restarts the camera (`off (a new request)`, then
+`on`) and re-creates the ring; `camera: null` or a disconnect stops the camera, and the ring goes with the worker.
+Windows keeps a named section alive while any handle to it is open, so a helper still holding the old ring when the
+camera restarts under the same token meets the same section again: the layer adopts it when its header has the same
+geometry (`adopted: it existed already` on the `camera: on` line; `seq` carries on) and refuses it when the geometry
+differs (`ringState: failed`, `ringWhy: a ring of this name exists already with another geometry …`). So the companion
+sends a **new token with a new box size**; the same token is fine for a restart at the same box. The `camera: on` line
+says `BGRA into the send ring '<token>' (up to WxH)` in place of `JPEG quality 85`; the periodic frame line says `ring
+publish N us (seq S)` in place of the encode and write times; the `off` summary says `frames published to the send
+ring`. The heartbeat (`producerAliveUs`) is refreshed by every publish and by the render thread at least every 250 ms
+while the camera runs, so a helper reads a layer whose VPX is gone within 3 s.
+
+**The recv ring (theater).** `"video": {"ring": "<token>"}` in the control: theater takes its picture from
+`Local\castcade-video-recv-<token>` (which the helper creates) instead of `CVO2` frames. Absent or `null` = `CVO2` as
+before; the companion sends its whole control every time, so a control without the key releases the ring. The layer
+opens the ring lazily (every second while it is missing: `video: waiting for the helper's recv ring '<token>'`, then
+`video: recv ring '<token>' open: up to WxH BGRA, producer pid N`), takes the newest unseen frame at each `xrEndFrame`
+in theater, and uploads it as any video frame (the feather applies; a frame of a different size makes a new video
+swapchain, as a `CVO2` size change always has, so the sender's rung may change resolution at will). The video surface
+takes its source's byte order (BGRA from the ring, RGBA from the pipe; the swapchain is re-made at a switch: it is the
+panel's path, proven on every rig). `CVO2` frames that arrive while a ring is named are drained, never shown. Liveness
+for the "video is up" decision (theater needs a live picture; without one for 5 s the mode is hidden, whatever the
+companion asked) comes from the ring: a frame taken within the last 5 s, **or** a producer whose heartbeat is under 3 s
+old (a paused stream keeps its last picture; a dead helper hides theater within 3 s, as a crashed companion does). A
+producer silent for 3 s is closed (`video: the recv ring's producer … has not touched it for 3 s: closed`) so the name
+can go, and the ring is tried again every second; a control without the key or with another token, and a disconnect
+(the control resets), release it (`video: recv ring released`). `pipe: theater video from the recv ring '<token>'` /
+`… from the pipe (CVO2)` say what the control asked.
+
+**What the header left open, settled here** (the helper's author should read `src/frame_ring.cpp`'s head comment): the
+event is auto-reset and a hint only (a consumer polls `latest` on its own clock as well); the consumer opens the header
+for writing when it can (the `reading` protocol needs it) and read-only when it cannot (an elevated producer), then
+risks being lapped, which the `seq` re-check after its copy catches; the producer stores `seq = 0` into a slot before
+writing its pixels; the producer prefers the slot `(latest + 1) % 3` so `seq = latest + 1` whenever that slot is not
+being read, and steps `seq` on by one when it is (a consumer finds the frame in `latest % 3` first, then by scanning
+for `seq == latest`, so either reading of the header works); a section that already exists under the name is adopted
+when its geometry matches and refused when it does not.
+
+**`ring_feed.exe`** (`tools/ring_feed.cpp`; built beside the dll, never shipped) plays either side from the console, so
+the helper and the layer can be tested on a desk without VPX:
+
+```powershell
+ring_feed --send t1 --width 1354 --height 1440 --fps 60 [--seconds 30]   # the layer's camera: a moving pattern into the send ring
+ring_feed --recv t1 [--seconds 30]                                       # the layer's theater: reads the recv ring, one line a second
+ring_feed --send t1 --recv t1 --recv-role send --seconds 10              # loopback: a consumer on the send ring (--send-role recv plays the helper's side)
+```
+
+The receiver prints per second: frames taken, skipped (published but never taken), lapped (torn by the producer
+mid-read and dropped), the size, the mean age (now − `ptsUs`) and whether the producer is alive; a consumer started
+before the producer waits and connects. At 1354x1440 60 fps the loopback on the dev machine runs 60 taken a second, 0
+skipped, publish 0.45 ms a frame.
 
 ## What it does
 
