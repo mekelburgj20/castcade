@@ -34,3 +34,4 @@ companion/resources/
 # Claude Code agent worktrees and local settings (.claude/commands is tracked: /work, /wrap, /release-docs)
 .claude/worktrees/
 .claude/settings.local.json
+video-helper/deps/
