@@ -364,8 +364,7 @@ std::vector<webrtc::SdpVideoFormat> HarnessH264Formats() {
   // the bitstream against them). High first: NVENC's default profile.
   return {H264Format(webrtc::H264Profile::kProfileHigh, webrtc::H264Level::kLevel5_1),
           H264Format(webrtc::H264Profile::kProfileMain, webrtc::H264Level::kLevel5_1),
-          H264Format(webrtc::H264Profile::kProfileConstrainedBaseline, webrtc::H264Level::kLevel5_1),
-          H264Format(webrtc::H264Profile::kProfileConstrainedBaseline, webrtc::H264Level::kLevel3_1)};
+          H264Format(webrtc::H264Profile::kProfileConstrainedBaseline, webrtc::H264Level::kLevel5_1)};
 }
 
 std::unique_ptr<webrtc::VideoEncoderFactory> CreateHarnessEncoderFactory(const HarnessCodecOptions& o) {

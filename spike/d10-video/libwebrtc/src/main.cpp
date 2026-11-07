@@ -162,6 +162,11 @@ std::string Timestamp() {
   return buf;
 }
 
+class StderrLogSink final : public webrtc::LogSink {
+ public:
+  void OnLogMessage(const std::string& message) override { fputs(message.c_str(), stderr); }
+};
+
 // The frames the sender pushes: a VideoTrackSource fed from our producer thread.
 class PushSource : public webrtc::VideoTrackSource {
  public:
@@ -233,9 +238,14 @@ int main(int argc, char** argv) {
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
   timeBeginPeriod(1);
-  webrtc::LogMessage::LogToDebug(a.verbose ? webrtc::LS_INFO : webrtc::LS_WARNING);
+  // libwebrtc's own stderr output ignores the LogToDebug threshold in this build; route it through
+  // our sink instead (warnings and errors, everything with --verbose).
+  webrtc::LogMessage::LogToDebug(webrtc::LS_NONE);
+  webrtc::LogMessage::SetLogToStderr(false);
   webrtc::LogMessage::LogTimestamps(true);
   webrtc::LogMessage::LogThreads(true);
+  StderrLogSink log_sink;
+  webrtc::LogMessage::AddLogToStream(&log_sink, a.verbose ? webrtc::LS_INFO : webrtc::LS_WARNING);
   webrtc::InitializeSSL();
 
   const std::string exe_dir = ExeDir();
@@ -535,6 +545,7 @@ int main(int argc, char** argv) {
   sender.Close();
   receiver.Close();
   if (src) harness.source_close(src);
+  webrtc::LogMessage::RemoveLogToStream(&log_sink);
   webrtc::CleanupSSL();
   timeEndPeriod(1);
   return 0;
