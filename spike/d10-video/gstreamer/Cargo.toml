@@ -1,0 +1,17 @@
+# D10.0.1 GStreamer candidate (scratch, not shipped). Build with env.ps1 dot-sourced: PKG_CONFIG and
+# PKG_CONFIG_PATH point at the portable 1.28.8 runtime's pkg-config files, PATH at its bin/.
+[package]
+name = "spike-gst"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gstreamer = { version = "0.25", features = ["v1_26"] }
+gstreamer-app = { version = "0.25", features = ["v1_26"] }
+gstreamer-video = { version = "0.25", features = ["v1_26"] }
+libloading = "0.9"
+
+[profile.release]
+opt-level = 2
+debug = 1
