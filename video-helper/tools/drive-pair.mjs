@@ -10,6 +10,7 @@
 //   vr-layer\build\Release\ring_feed.exe --send tokS --width 1354 --height 1440 --fps 60 --seconds 30
 //   vr-layer\build\Release\ring_feed.exe --recv tokR --seconds 30
 import { spawn } from 'node:child_process';
+import { setTimeout } from 'node:timers';
 import { existsSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { resolve, dirname } from 'node:path';
