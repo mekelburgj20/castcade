@@ -1,6 +1,8 @@
 // spike_bench: the harness dll's smoke test. Encodes 600 synthetic frames at 1354x1440 / 60 fps / 20 Mbps,
 // then decodes them and checks the burned-in counters read back.
-//   spike_bench [--encoder <name>] [--decoder h264_cuvid|d3d11va|h264] [--frames 600] [--kbps 20000]
+//   spike_bench [--encoder <name>] [--decoder h264_cuvid|d3d11va|h264] [--frames 600] [--kbps 20000] [--pace]
+// --pace encodes in real time (one frame every 1/60 s, the GPU otherwise idle, as the candidates do) and prints
+// the mean encode cost once a second, to see the encoder's behaviour over time rather than back to back.
 #include "spike_harness.h"
 
 #include <cstdio>
@@ -13,8 +15,10 @@ int main(int argc, char** argv) {
   const char* enc_force = nullptr;
   const char* dec_force = nullptr;
   int frames = 600, kbps = 20000, W = 1354, H = 1440, FPS = 60;
+  bool pace = false;
   for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "--encoder") && i + 1 < argc) enc_force = argv[++i];
+    if (!strcmp(argv[i], "--pace")) pace = true;
+    else if (!strcmp(argv[i], "--encoder") && i + 1 < argc) enc_force = argv[++i];
     else if (!strcmp(argv[i], "--decoder") && i + 1 < argc) dec_force = argv[++i];
     else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
     else if (!strcmp(argv[i], "--kbps") && i + 1 < argc) kbps = atoi(argv[++i]);
@@ -32,7 +36,13 @@ int main(int argc, char** argv) {
   aus.reserve(frames);
   int64_t total_bytes = 0, cost_sum = 0, cost_max = 0, buffered = 0, idrs = 0;
   const int64_t t_start = spike_now_us();
+  int64_t sec_cost = 0; int sec_n = 0;
   for (int n = 0; n < frames; n++) {
+    if (pace) {
+      const int64_t due = t_start + (int64_t)n * 1000000 / FPS;
+      while (spike_now_us() < due) {}
+      if (n && n % FPS == 0) { printf("  t=%ds mean encode cost %lld us\n", n / FPS, (long long)(sec_cost / (sec_n ? sec_n : 1))); sec_cost = 0; sec_n = 0; }
+    }
     spike_source_frame(src, (uint64_t)n, nv12.data(), nv12.size());
     if (n == frames / 2) spike_encoder_set_bitrate(enc, kbps / 2);  // exercise the live change
     if (n == frames * 3 / 4) spike_encoder_set_bitrate(enc, kbps);
@@ -43,6 +53,7 @@ int main(int argc, char** argv) {
     if (r == 1) { buffered++; continue; }
     const int64_t c = spike_encoder_last_cost_us(enc);
     cost_sum += c; if (c > cost_max) cost_max = c;
+    sec_cost += c; sec_n++;
     total_bytes += (int64_t)size; idrs += key;
     if (key) printf("IDR at frame %d (%zu bytes)\n", n, size);
     aus.emplace_back(out, out + size);
