@@ -7,6 +7,32 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.38] — 2026-11-07
+
+The fix round from the first 0.2.37 match (owner + ChuckRibbits, 2026-11-07 17:33Z): no native video reached either
+rig, and nothing fell back to the 0.2.36 picture. Three causes, three fixes; helper 0.2.0.
+
+### Fixed
+
+- **The companion told the helper its state twice and replaced a peer mid-handshake (D10.3.4).** The helper's `ready`
+  reached the mesh once as a status change and once as an event 200 ms later; the second pass re-sent `peer`, the
+  helper replaced the connection that had already answered, and both sides ended `ice failed`. The helper status now
+  carries a `generation` (one per spawn) and the mesh syncs once per generation (`video-helper.ts`, `video-mesh.ts`).
+- **The helper never restarted ICE (D10.3.5).** Between the two rigs' routers the Electron voice peer connected only
+  after one ICE restart in every session, the companion's D2.9 policy since 0.2.33; the helper's single attempt timed
+  out after 20 s. The helper now renegotiates: the offering side restarts ICE after 10, 20 and 40 s of checking,
+  the answering side answers any new offer, candidates are gathered continually, and `peer` events carry `restarts`
+  and, when the three are spent, `restarts_exhausted`. Its candidate gathering also skips virtual and link-local
+  adapters (the owner's WSL vEthernet, a 169.254 USB adapter and IPv6 unique-local addresses had STUN timing out).
+  `--restart-selftest` holds every candidate for 12 s and must connect through restart 1 (`video-helper/src/peer.cpp`,
+  `network_filter.h`).
+- **Nothing fell back (D10.3.6).** On the native path the Electron video track is held back, so a failed helper
+  connection meant voice and no picture. Now a match falls back to the Electron video, for the rest of that match, when
+  a helper peer is not connected 25 s after it was told, when the helper gives a peer up, or when the helper is
+  unavailable; the log says `native video failed to connect … the Electron video serves this match` and the Match tab
+  reads the same (`video-mesh.ts`, `main/match-host.ts`, `Match.tsx`).
+
+
 ## [0.2.37] — 2026-11-07
 
 The first native spectator-video build (D10, ADR 0010): the player up's picture is encoded on the GPU in a native
