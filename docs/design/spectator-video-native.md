@@ -145,7 +145,7 @@ Events (helper → companion):
 |---|---|
 | `ready` | `version`, `encoder` (the probe's choice: `h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`), `decoder` |
 | `signal` | `id`, `kind`, `sdp?`, `candidate?` — to be wrapped in `MEDIA_SIGNAL {channel: "video", to: id}` |
-| `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line) |
+| `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line); D10.3.5: `restarts?` (ICE restarts so far, on `connected`) and `restarts_exhausted?: true` on the final `failed` (the initiator restarts ICE after 10, 20 and 40 s of checking, as the companion's Electron peer does, D2.9) |
 | `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?` |
 | `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the ring's health |
 | `error` | `code` (`bad_command`, `peer_unknown`, `ring_open_failed`, `encoder_failed`, …), `text` |
@@ -163,7 +163,10 @@ to the helper manager instead of the panel page.
 
 `video-helper.ts` is `audio-helper.ts`'s twin: resolve the exe (`resources/video-helper/`, dev: `video-helper/build/
 Release/`), spawn, JSON lines both ways, restart once per 5 s on an exit we did not ask for, every failure a status
-never a blocker. `video-mesh.ts` owns the peers: one per remote participant for the match's life, `initiator` =
+never a blocker; its status carries a `generation` (one per spawn) so the mesh tells a helper its state once per
+generation (D10.3.4). The mesh falls the match back to the Electron video, for the rest of that match, when a helper
+peer is not connected 25 s after it was told, when the helper reports a peer failed with its restarts exhausted, or
+when the helper is unavailable (D10.3.6); the Match tab says so. `video-mesh.ts` owns the peers: one per remote participant for the match's life, `initiator` =
 the lower player id (the rule `isPolite` in rtc-signaling.ts already encodes), `send on` when this rig is the player
 up, `sink ring` on VR rigs (the token also goes to the layer in the `CVC1` control as `"video": {"ring": token}` and
 the camera request as `"ring": token`, both additive on pipe protocol 3), `sink window` on desktop rigs. The Electron
