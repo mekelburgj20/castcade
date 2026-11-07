@@ -15,6 +15,7 @@
 #include "frame_ring.h"
 #include "peer.h"
 #include "sink.h"
+#include "sink_window.h"
 #include "source.h"
 #include "util.h"
 
@@ -204,4 +205,62 @@ int RunLoopbackSelftest(int seconds) {
   b.reset();
   pf.Shutdown();
   return fin.frames_total > 0 ? 0 : 1;
+}
+
+int RunWindowSelftest(int seconds, bool warp) {
+  const int W = 1354, H = 1440, FPS = 60;
+  WindowSink win;
+  WindowOptions o;
+  o.title = "Castcade \xE2\x80\x94 window selftest";
+  o.force_warp = warp;
+  std::atomic<bool> closed{false};
+  std::string err;
+  if (!win.Open(o, [&](const WindowPlacement&) { closed = true; }, &err)) {
+    fprintf(stderr, "castcade-video: window open failed: %s\n", err.c_str());
+    return 1;
+  }
+  const std::string driver = win.driver();
+  const int64_t period_us = 1000000 / FPS;
+  const int64_t total = (int64_t)seconds * FPS;
+  const int64_t t0 = NowUs();
+  int64_t fed = 0, presented = 0, upload_sum = 0, present_sum = 0;
+  int sec = 1;
+  printf("t,driver,fed,presented,upload_us,present_us\n");
+  int64_t w_fed = 0;
+  for (int64_t n = 0; n < total && !closed; n++) {
+    const int64_t due = t0 + n * period_us;
+    for (;;) {
+      const int64_t wait = due - NowUs();
+      if (wait <= 0) break;
+      std::this_thread::sleep_for(std::chrono::microseconds(std::min<int64_t>(wait, 1500)));
+    }
+    uint8_t* dst;
+    uint32_t stride;
+    if (win.Begin(W, H, &dst, &stride)) {
+      BenchPattern((uint64_t)n, W, H, dst, (int)stride);
+      win.Commit();
+      fed++;
+      w_fed++;
+    }
+    if (NowUs() - t0 >= (int64_t)sec * 1000000 || n + 1 == total) {
+      const WindowSink::Readout r = win.Snapshot();
+      presented += r.presented;
+      upload_sum += (int64_t)(r.upload_us * r.presented);
+      present_sum += (int64_t)(r.present_us * r.presented);
+      printf("%d,%s,%lld,%lld,%lld,%lld\n", sec, driver.c_str(), (long long)w_fed, (long long)r.presented, (long long)r.upload_us, (long long)r.present_us);
+      fflush(stdout);
+      w_fed = 0;
+      sec++;
+    }
+  }
+  const WindowSink::Readout last = win.Snapshot();
+  presented += last.presented;
+  upload_sum += (int64_t)(last.upload_us * last.presented);
+  present_sum += (int64_t)(last.present_us * last.presented);
+  printf("window-selftest: driver=%s fed=%lld presented=%lld upload_us_avg=%lld present_us_avg=%lld%s (%d s, %dx%d @%d bench pattern)\n",
+         driver.c_str(), (long long)fed, (long long)presented, (long long)(presented ? upload_sum / presented : 0),
+         (long long)(presented ? present_sum / presented : 0), closed ? " closed_by_user" : "", seconds, W, H, FPS);
+  fflush(stdout);
+  win.Close();
+  return presented > 0 ? 0 : 1;
 }

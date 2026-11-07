@@ -9,3 +9,8 @@ int RunRingSelftest();
 // `--loopback-selftest`: two peers in one process (bench source → encoder → libwebrtc → decoder, no rings) for
 // `seconds`; prints the receiver's fps and kbps once a second and a summary. Non-zero when nothing arrived.
 int RunLoopbackSelftest(int seconds);
+
+// `--window-selftest`: opens the sink window and feeds it the bench picture at 60 fps for `seconds`; prints the
+// presented count and the mean upload / upload+present time. `warp` skips the hardware device (what a GPU-less CI
+// runner falls back to on its own). Non-zero when the window did not open or nothing was presented.
+int RunWindowSelftest(int seconds, bool warp);
