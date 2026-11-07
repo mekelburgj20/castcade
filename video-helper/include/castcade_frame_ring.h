@@ -15,13 +15,19 @@
  *
  * Protocol (all fields little-endian, written with release / read with acquire semantics on x64 = plain aligned stores
  * and loads, Interlocked* for the sequence):
- *   - the producer picks a slot that is neither `latest % slots` nor `reading % slots` (with 3 slots one always
- *     exists), writes the pixels, fills the slot's `seq` (= latest + 1), `ptsUs` (QueryPerformanceCounter in µs,
- *     the moment the pixels were captured), `width`/`height` (the frame's own size: it may differ from the header's
- *     when a size change is in flight; a consumer that cannot take the new size drops the frame), then publishes
- *     `latest = seq` and sets the event;
- *   - the consumer reads `latest`, stores `reading = latest`, checks the slot's `seq == latest` (else the producer
- *     lapped it: retry once, then skip), uses the pixels, and when done stores `reading = 0` (0 = not reading);
+ *   - the producer takes seq = latest + 1 and prefers slot `seq % slots`; if that slot is the one the consumer is
+ *     `reading`, it steps seq on by one (so the slot is always `seq % slots`, and with 3 slots a free one always
+ *     exists). It stores `seq = 0` into the slot first, writes the pixels, fills `ptsUs` (QueryPerformanceCounter in
+ *     µs, the moment the pixels were captured), `width`/`height` (the frame's own size: it may differ from the
+ *     header's maximum when a size change is in flight; a consumer that cannot take it drops the frame), then the
+ *     slot's `seq`, then publishes `latest = seq` and sets the event;
+ *   - the consumer reads `latest`, stores `reading = latest`, finds the slot (`latest % slots` first, else the slot
+ *     whose `seq == latest`), copies or uses the pixels, re-checks `seq == latest` afterwards (else the producer
+ *     lapped it: skip the frame), and when done stores `reading = 0` (0 = not reading). The consumer maps the header
+ *     read/write (the `reading` field is its); if it can only map read-only (an elevated producer) it relies on the
+ *     post-copy check alone;
+ *   - a section that already exists under the name is adopted by a producer when magic, version, format, slots,
+ *     slotBytes and the maxima match (seq carries on from its `latest`), refused otherwise: a new box needs a new token;
  *   - a frame whose `seq` is not greater than the last one the consumer used is a repeat (the event was set twice):
  *     skip it;
  *   - `producerAliveUs` is refreshed by the producer every frame and at least every 500 ms while idle; a consumer that
