@@ -52,6 +52,11 @@ class Source {
     int64_t skipped_total = 0;  // ring frames the producer lapped
   };
   Readout Snapshot();  // the last window; resets it
+  // D10.5: the fps_in of the last Snapshot window (the controller's "captured fps"), without resetting anything.
+  double last_fps_in() const {
+    std::lock_guard<std::mutex> l(mu_);
+    return last_fps_in_;
+  }
 
   void Stop();
 
@@ -69,5 +74,6 @@ class Source {
   std::atomic<uint64_t> generation_{0};
   std::thread thread_;
   int64_t win_frames_ = 0, win_convert_us_ = 0, win_start_us_ = 0, frames_total_ = 0;
+  double last_fps_in_ = 0;
   std::atomic<int64_t> skipped_total_{0};
 };

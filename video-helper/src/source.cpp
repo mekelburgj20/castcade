@@ -146,6 +146,7 @@ Source::Readout Source::Snapshot() {
   r.convert_us = win_frames_ ? (double)win_convert_us_ / win_frames_ : 0;
   r.frames_total = frames_total_;
   r.skipped_total = skipped_total_.load();
+  if (secs >= 0.5) last_fps_in_ = r.fps_in;  // a window too short to mean anything (a reconfigure) keeps the last value
   win_frames_ = win_convert_us_ = 0;
   win_start_us_ = now;
   return r;

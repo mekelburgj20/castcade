@@ -1,8 +1,10 @@
 // castcade-video: one libwebrtc PeerConnection per remote player (§6.2 `peer`): one sendrecv H.264 transceiver, the
 // initiator offers at creation, trickle ICE both ways through the companion's MEDIA_SIGNAL, real ICE (the default
 // network manager: host + srflx from the `ice` command's STUN, relay when a TURN entry is given). One PC per pair for
-// the match; nothing is renegotiated. PeerFactory is the process-wide part: libwebrtc's threads, the factory with our
-// codec factories, and the one VideoTrackSource every peer's sender track reads.
+// the match; nothing is renegotiated. PeerFactory is the process-wide part: libwebrtc's threads, the environment and
+// the one VideoTrackSource every peer's sender track reads. D10.5: each Peer gets its own PeerConnectionFactory on the
+// shared threads, so its encoder factory is bound to that peer's RungTarget (the rung the controller chose for it), and
+// a `castcade-feedback` data channel on the same connection carries the receiver's decode fps and freeze time back.
 #pragma once
 
 #include <atomic>
@@ -14,14 +16,17 @@
 #include <string>
 #include <vector>
 
+#include "api/data_channel_interface.h"
 #include "api/environment/environment.h"
 #include "api/peer_connection_interface.h"
 #include "api/scoped_refptr.h"
 #include "api/video/nv12_buffer.h"
 #include "rtc_base/thread.h"
 
+#include "controller.h"
 #include "factories.h"
 #include "json.h"
+#include "ladder.h"
 
 struct IceServerSpec {
   std::vector<std::string> urls;
@@ -37,7 +42,8 @@ struct PeerEvents {
 };
 
 // The bitrate envelope handed to libwebrtc with each new peer (x-google-*-bitrate in the remote SDP's H264 fmtp and
-// the encoding's max_bitrate_bps); `rungs` moves max_kbps on the live peers.
+// the encoding's max_bitrate_bps). `rungs` moves max_kbps (the ceiling) on the live peers; the rung's own kbps is the
+// encoder's clamp (ladder.h), below the ceiling, so the stack's estimate can still probe above the rung (D10.1.3).
 struct PeerLimits {
   int start_kbps = 4000;
   int min_kbps = 500;
@@ -68,13 +74,21 @@ struct StatsSnapshot {
   std::string decoder_implementation;
 };
 
+// What the other side says about the picture it gets from us (the `castcade-feedback` channel, once a second).
+struct PeerFeedback {
+  std::optional<double> decode_fps, freeze_ms, presented_fps;
+  int64_t at_us = 0;  // NowUs() of the last message; 0 = never
+};
+
 class PeerFactory {
  public:
   ~PeerFactory() { Shutdown(); }
-  // Starts libwebrtc (threads, SSL, the factory with our codecs). allow_loopback lets the 127.0.0.1 adapter gather
-  // candidates (the in-process self test only; a match never needs it).
+  // Starts libwebrtc (threads, SSL, the environment) and builds one factory as the smoke test of the codecs. allow_loopback
+  // lets the 127.0.0.1 adapter gather candidates (the in-process self test only; a match never needs it).
   bool Init(const CodecOptions& codecs, bool allow_loopback, std::string* error);
   void Shutdown();
+  // A PeerConnectionFactory on the shared threads whose encoder factory applies `target` (null: frames as they come).
+  webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> CreateFactory(std::shared_ptr<RungTarget> target, std::string* error);
   webrtc::PeerConnectionFactoryInterface* factory() { return factory_.get(); }
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source();
   // The source's frames, to every peer's sender track (encoded by each active sender's own encoder).
@@ -85,10 +99,12 @@ class PeerFactory {
   std::optional<webrtc::Environment> env_;
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> factory_;
   webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> source_;
+  CodecOptions codecs_;
+  bool allow_loopback_ = false;
   bool ssl_ = false;
 };
 
-class Peer final : public webrtc::PeerConnectionObserver, public std::enable_shared_from_this<Peer> {
+class Peer final : public webrtc::PeerConnectionObserver, public webrtc::DataChannelObserver, public std::enable_shared_from_this<Peer> {
  public:
   Peer(PeerFactory& pf, std::string id, bool initiator, std::vector<IceServerSpec> servers, PeerLimits limits, PeerEvents events);
   ~Peer() override;
@@ -96,27 +112,42 @@ class Peer final : public webrtc::PeerConnectionObserver, public std::enable_sha
   const std::string& id() const { return id_; }
   bool initiator() const { return initiator_; }
 
-  // Creates the PC and the transceiver; the initiator also offers now (the offer arrives through on_sdp).
+  // Creates the factory, the PC and the transceiver; the initiator also makes the feedback channel and offers now
+  // (the offer arrives through on_sdp).
   bool Start(std::string* error);
   // The remote side's signals (§6.2 `signal`), in arrival order; candidates before the remote description wait.
   void OnRemoteSdp(const std::string& kind, const std::string& sdp);
   void OnRemoteCandidate(const std::string& candidate, const std::string& mid, int mline);
   // `send`: the sender's encoding active or not (off = the track is paused, the transceiver stays).
   void SetSendActive(bool on);
-  // `rungs`: the live ceiling on the encoding.
+  // `rungs`: the live ceiling on the encoding (max_bitrate_bps).
   void SetMaxKbps(int max_kbps);
   // Asynchronous GetStats; the callback runs on the signaling thread.
   void GetStats(std::function<void(const StatsSnapshot&)> cb);
   void Close();
 
   std::string ice_state();
+  bool connected();  // ice connected or completed
   Json pair();  // the selected candidate pair as the `peer` event carries it, or null
-  // The previous snapshot the stats loop keeps per peer (its own bookkeeping).
-  StatsSnapshot prev;
+
+  // D10.5: the rung this peer's encoder applies (the controller or the pin writes it).
+  const std::shared_ptr<RungTarget>& target() const { return target_; }
+  // What the other side reports about our picture; `at_us` 0 until the channel carried something.
+  PeerFeedback feedback();
+  // Our report about their picture, once a second from the stats loop; dropped when the channel is not open.
+  void SendFeedback(double decode_fps, double freeze_ms, std::optional<double> presented_fps);
+  bool feedback_open();
+
+  // Bookkeeping the session keeps per peer (the stats loop's threads only).
+  StatsSnapshot prev;                                   // the previous 1 Hz snapshot
+  RungController ctrl;                                  // the controller for the frames we send this peer
+  std::deque<std::pair<int64_t, uint32_t>> ctrl_win;    // (ms, frames_sent) over the last second
+  bool ctrl_sending = false;
+  RungGeometry applied;                                 // the rung geometry last announced for this peer
 
   // PeerConnectionObserver (signaling thread)
   void OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState) override {}
-  void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface>) override {}
+  void OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) override;
   void OnIceGatheringChange(webrtc::PeerConnectionInterface::IceGatheringState) override {}
   void OnIceCandidate(const webrtc::IceCandidate* candidate) override;
   void OnIceCandidateError(const std::string& address, int port, const std::string& url, int error_code, const std::string& error_text) override;
@@ -125,12 +156,17 @@ class Peer final : public webrtc::PeerConnectionObserver, public std::enable_sha
   void OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState state) override;
   void OnIceSelectedCandidatePairChanged(const webrtc::CandidatePairChangeEvent& event) override;
   void OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) override;
+  // DataChannelObserver (the feedback channel; called on the network thread: a lock and a parse, nothing that blocks)
+  void OnStateChange() override;
+  void OnMessage(const webrtc::DataBuffer& buffer) override;
+  bool IsOkToCallOnTheNetworkThread() override { return true; }
 
  private:
   void CreateLocal(bool offer);
   void SetLocal(std::unique_ptr<webrtc::SessionDescriptionInterface> desc, const std::string& kind);
   void DrainCandidates();
   std::string RemoteSdpWithLimits(const std::string& sdp) const;
+  void AdoptChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel);
 
   PeerFactory& pf_;
   const std::string id_;
@@ -138,8 +174,11 @@ class Peer final : public webrtc::PeerConnectionObserver, public std::enable_sha
   std::vector<IceServerSpec> servers_;
   PeerLimits limits_;
   PeerEvents ev_;
+  std::shared_ptr<RungTarget> target_;
+  webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> pcf_;
   webrtc::scoped_refptr<webrtc::PeerConnectionInterface> pc_;
   webrtc::scoped_refptr<webrtc::RtpSenderInterface> sender_;
+  webrtc::scoped_refptr<webrtc::DataChannelInterface> dc_;
   bool remote_set_ = false;
   bool closed_ = false;
   struct Cand { std::string candidate, mid; int mline; };
@@ -147,4 +186,6 @@ class Peer final : public webrtc::PeerConnectionObserver, public std::enable_sha
   std::mutex mu_;
   std::string ice_state_ = "new";
   Json pair_;
+  PeerFeedback feedback_;
+  bool dc_open_ = false;
 };

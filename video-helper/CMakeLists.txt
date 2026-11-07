@@ -64,6 +64,8 @@ add_executable(castcade-video
   src/factories.cpp
   src/sdp.cpp
   src/peer.cpp
+  src/ladder.cpp
+  src/controller.cpp
   src/bench.cpp
   src/selftest.cpp)
 

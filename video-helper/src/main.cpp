@@ -4,7 +4,7 @@
 // include/castcade_frame_ring.h; the companion drives it over stdin / stdout in JSON lines (README.md, §6.2).
 //
 //   castcade-video.exe                      the stdio protocol (the companion spawns it this way)
-//   castcade-video.exe --version | --probe | --bench [...] | --ring-selftest | --loopback-selftest [--seconds 5]
+//   castcade-video.exe --version | --probe | --bench [...] | --ring-selftest | --loopback-selftest [--seconds 5] | --controller-selftest
 //
 // Exit codes as the audio helper: 0 normal (also after `quit` or stdin EOF), 2 the helper cannot run here (no
 // H.264 encoder at all, libwebrtc did not start), 64 bad arguments.
@@ -63,7 +63,7 @@ int RunProbe() {
 int RunProtocol(const ProbeResult& probe);
 
 int main(int argc, char** argv) {
-  enum class Mode { kProtocol, kProbe, kBench, kRing, kLoopback } mode = Mode::kProtocol;
+  enum class Mode { kProtocol, kProbe, kBench, kRing, kLoopback, kController } mode = Mode::kProtocol;
   BenchOptions bench;
   int seconds = -1;
   bool ok = true;
@@ -79,6 +79,7 @@ int main(int argc, char** argv) {
     else if (a == "--bench") mode = Mode::kBench;
     else if (a == "--ring-selftest") mode = Mode::kRing;
     else if (a == "--loopback-selftest") mode = Mode::kLoopback;
+    else if (a == "--controller-selftest") mode = Mode::kController;
     else if (a == "--seconds") seconds = ArgInt("--seconds", need("--seconds"), &ok);
     else if (a == "--width") bench.width = ArgInt("--width", need("--width"), &ok);
     else if (a == "--height") bench.height = ArgInt("--height", need("--height"), &ok);
@@ -102,6 +103,7 @@ int main(int argc, char** argv) {
       InstallAvLog();
       return RunBench(bench);
     case Mode::kRing: return RunRingSelftest();
+    case Mode::kController: return RunControllerSelftest();
     case Mode::kLoopback:
       InstallAvLog();
       return RunLoopbackSelftest(seconds > 0 ? seconds : 5);

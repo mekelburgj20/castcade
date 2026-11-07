@@ -1,5 +1,6 @@
 #include "factories.h"
 
+#include <algorithm>
 #include <cstring>
 #include <deque>
 #include <optional>
@@ -14,6 +15,7 @@
 #include "api/video_codecs/video_decoder.h"
 #include "api/video_codecs/video_encoder.h"
 #include "libyuv/convert_from.h"
+#include "libyuv/scale.h"
 #include "media/base/media_constants.h"
 #include "modules/video_coding/codecs/h264/include/h264_globals.h"
 #include "modules/video_coding/codecs/interface/common_constants.h"
@@ -37,31 +39,21 @@ webrtc::SdpVideoFormat H264Format(webrtc::H264Profile profile, webrtc::H264Level
 // ---------------------------------------------------------------------------------------------
 class AvEncoder final : public webrtc::VideoEncoder {
  public:
-  explicit AvEncoder(const CodecOptions& o) : o_(o) {}
+  explicit AvEncoder(const CodecOptions& o) : o_(o), target_(o.target) {}
   ~AvEncoder() override { Release(); }
 
   int InitEncode(const webrtc::VideoCodec* codec, const Settings& /*settings*/) override {
     Release();
-    EncoderConfig cfg;
-    cfg.width = codec->width;
-    cfg.height = codec->height;
-    cfg.fps = codec->maxFramerate > 0 ? static_cast<int>(codec->maxFramerate) : 60;
-    cfg.kbps = codec->startBitrate > 0 ? static_cast<int>(codec->startBitrate) : 4000;
-    cfg.force = o_.encoder;
-    cfg.policy = o_.policy;
-    std::string err;
-    enc_ = Encoder::Open(cfg, &err);
-    if (!enc_) {
-      LogLine("encoder: open failed (%dx%d @%d, %d kbps): %s", cfg.width, cfg.height, cfg.fps, cfg.kbps, err.c_str());
-      return WEBRTC_VIDEO_CODEC_ERROR;
-    }
-    width_ = cfg.width;
-    height_ = cfg.height;
-    fps_ = cfg.fps;
-    scratch_.assign(static_cast<size_t>(width_) * height_ * 3 / 2, 0);
-    LogLine("encoder: %s %dx%d @%d fps, start %d kbps, policy %s", enc_->name().c_str(), width_, height_, fps_, cfg.kbps,
-            RatePolicyName(cfg.policy));
-    return WEBRTC_VIDEO_CODEC_OK;
+    in_width_ = codec->width;
+    in_height_ = codec->height;
+    fps_ = codec->maxFramerate > 0 ? static_cast<int>(codec->maxFramerate) : 60;
+    stack_kbps_ = codec->startBitrate > 0 ? static_cast<int>(codec->startBitrate) : 4000;
+    // D10.5: the output is the rung's fraction of the input (the whole input without a target).
+    int rung = 0, rfps = 0, rkbps = 0;
+    if (target_) target_->Get(&rung, &rfps, &rkbps);
+    rung_kbps_ = rkbps;
+    const RungGeometry g = rung ? RungFor(rung, in_width_, in_height_) : RungGeometry{0, in_width_, in_height_, fps_, 0};
+    return Open(g.width, g.height, rung) ? WEBRTC_VIDEO_CODEC_OK : WEBRTC_VIDEO_CODEC_ERROR;
   }
 
   int32_t RegisterEncodeCompleteCallback(webrtc::EncodedImageCallback* cb) override {
@@ -76,15 +68,27 @@ class AvEncoder final : public webrtc::VideoEncoder {
 
   int32_t Encode(const webrtc::VideoFrame& frame, const std::vector<webrtc::VideoFrameType>* frame_types) override {
     if (!enc_ || !callback_) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
-    if (frame.width() != width_ || frame.height() != height_) {
-      // Adaptation is off; a different size means the source changed (the layer's box). Re-open at the new size.
-      webrtc::VideoCodec c{};
-      c.width = static_cast<uint16_t>(frame.width());
-      c.height = static_cast<uint16_t>(frame.height());
-      c.maxFramerate = fps_;
-      c.startBitrate = enc_->applied_kbps();
-      if (InitEncode(&c, Settings(Capabilities(false), 1, 1200)) != WEBRTC_VIDEO_CODEC_OK) return WEBRTC_VIDEO_CODEC_ERROR;
+    // The age of the frame at the encoder (push → here): libwebrtc's queue in front of us, for the readout.
+    const int64_t age_us = std::max<int64_t>(0, webrtc::TimeMicros() - frame.timestamp_us());
+    int rung = 0, rfps = 0, rkbps = 0;
+    if (target_) target_->Get(&rung, &rfps, &rkbps);
+    // (b) the rung's frame rate: a steady decimation on the source clock.
+    if (rfps > 0 && !decimator_.Keep(frame.timestamp_us(), rfps)) {
+      if (target_) target_->NoteFrame(age_us, false, width_, height_);
+      return WEBRTC_VIDEO_CODEC_OK;
     }
+    // (a) the rung's size, from the frame actually handed over; a change re-opens the encoder, which starts on an IDR
+    // with SPS/PPS in band (the receiver re-initialises on the new SPS). The source's own size change (the layer's box)
+    // takes the same path.
+    const RungGeometry g = rung ? RungFor(rung, frame.width(), frame.height()) : RungGeometry{0, frame.width(), frame.height(), fps_, 0};
+    const bool reopen = g.width != width_ || g.height != height_ || rung != rung_;
+    // (c) the rung's bitrate: the stack's target clamped to it, through the limited policy (D10.1.1); a re-open
+    // takes the new clamp with it.
+    if (rkbps != rung_kbps_) {
+      rung_kbps_ = rkbps;
+      if (!reopen) ApplyTarget();
+    }
+    if (reopen && !Open(g.width, g.height, rung)) return WEBRTC_VIDEO_CODEC_ERROR;
     bool want_key = false;
     if (frame_types)
       for (auto t : *frame_types)
@@ -94,6 +98,18 @@ class AvEncoder final : public webrtc::VideoEncoder {
     const uint8_t *y, *uv;
     int sy, suv;
     Nv12Of(frame, &y, &sy, &uv, &suv);
+    if (frame.width() != width_ || frame.height() != height_) {
+      // libyuv's box filter, the quality choice for a downscale; the scratch buffer is reused (the encoder consumes
+      // the planes inside Encode).
+      if (!scaled_ || scaled_->width() != width_ || scaled_->height() != height_) scaled_ = webrtc::NV12Buffer::Create(width_, height_);
+      const int64_t t0 = NowUs();
+      libyuv::NV12Scale(y, sy, uv, suv, frame.width(), frame.height(), scaled_->MutableDataY(), scaled_->StrideY(),
+                        scaled_->MutableDataUV(), scaled_->StrideUV(), width_, height_, libyuv::kFilterBox);
+      scale_us_ = NowUs() - t0;
+      y = scaled_->DataY(); sy = scaled_->StrideY(); uv = scaled_->DataUV(); suv = scaled_->StrideUV();
+    } else {
+      scale_us_ = 0;
+    }
     const uint8_t* out = nullptr;
     size_t out_size = 0;
     bool key = false;
@@ -102,6 +118,7 @@ class AvEncoder final : public webrtc::VideoEncoder {
       if (++errors_ == 1) LogLine("encoder: %s encode error %d", enc_->name().c_str(), rc);
       return WEBRTC_VIDEO_CODEC_ERROR;
     }
+    if (target_) target_->NoteFrame(age_us, true, width_, height_);
     if (rc == 1 || out_size == 0) return WEBRTC_VIDEO_CODEC_OK;  // buffered (should not happen)
 
     webrtc::EncodedImage image;
@@ -127,7 +144,9 @@ class AvEncoder final : public webrtc::VideoEncoder {
 
   void SetRates(const RateControlParameters& p) override {
     const int kbps = static_cast<int>(p.bitrate.get_sum_kbps());
-    if (kbps > 0 && enc_) enc_->SetTargetKbps(kbps, NowUs());
+    if (kbps <= 0) return;
+    stack_kbps_ = kbps;
+    ApplyTarget();
   }
 
   EncoderInfo GetEncoderInfo() const override {
@@ -144,6 +163,36 @@ class AvEncoder final : public webrtc::VideoEncoder {
   }
 
  private:
+  // (Re)opens the libavcodec encoder at the output size; the first frame after it is an IDR (Encoder::Open's default).
+  bool Open(int width, int height, int rung) {
+    EncoderConfig cfg;
+    cfg.width = width;
+    cfg.height = height;
+    cfg.fps = rung ? RungFps(rung) : fps_;
+    cfg.kbps = rung_kbps_ > 0 ? std::min(stack_kbps_, rung_kbps_) : stack_kbps_;
+    cfg.force = o_.encoder;
+    cfg.policy = o_.policy;
+    std::string err;
+    enc_.reset();
+    enc_ = Encoder::Open(cfg, &err);
+    if (!enc_) {
+      LogLine("encoder: open failed (%dx%d @%d, %d kbps): %s", cfg.width, cfg.height, cfg.fps, cfg.kbps, err.c_str());
+      return false;
+    }
+    width_ = cfg.width;
+    height_ = cfg.height;
+    rung_ = rung;
+    decimator_.Reset();
+    const std::string of = rung ? " (rung " + std::to_string(rung) + " of " + std::to_string(in_width_) + "x" + std::to_string(in_height_) + ")" : std::string();
+    LogLine("encoder: %s %dx%d @%d fps, %d kbps%s, policy %s", enc_->name().c_str(), width_, height_, cfg.fps, cfg.kbps, of.c_str(),
+            RatePolicyName(cfg.policy));
+    return true;
+  }
+  void ApplyTarget() {
+    if (!enc_) return;
+    const int kbps = rung_kbps_ > 0 ? std::min(stack_kbps_, rung_kbps_) : stack_kbps_;
+    enc_->SetTargetKbps(kbps, NowUs());
+  }
   // The two NV12 planes of the frame; zero-copy for an NV12 buffer, a libyuv conversion otherwise.
   void Nv12Of(const webrtc::VideoFrame& frame, const uint8_t** y, int* sy, const uint8_t** uv, int* suv) {
     auto buffer = frame.video_frame_buffer();
@@ -153,18 +202,25 @@ class AvEncoder final : public webrtc::VideoEncoder {
       return;
     }
     auto i420 = buffer->ToI420();
+    const int w = frame.width(), h = frame.height();
+    if (scratch_.size() < static_cast<size_t>(w) * h * 3 / 2) scratch_.assign(static_cast<size_t>(w) * h * 3 / 2, 0);
     uint8_t* dy = scratch_.data();
-    uint8_t* duv = dy + static_cast<size_t>(width_) * height_;
+    uint8_t* duv = dy + static_cast<size_t>(w) * h;
     libyuv::I420ToNV12(i420->DataY(), i420->StrideY(), i420->DataU(), i420->StrideU(), i420->DataV(), i420->StrideV(),
-                       dy, width_, duv, width_, width_, height_);
-    *y = dy; *sy = width_; *uv = duv; *suv = width_;
+                       dy, w, duv, w, w, h);
+    *y = dy; *sy = w; *uv = duv; *suv = w;
   }
 
   CodecOptions o_;
+  std::shared_ptr<RungTarget> target_;
   std::unique_ptr<Encoder> enc_;
   webrtc::EncodedImageCallback* callback_ = nullptr;
-  int width_ = 0, height_ = 0, fps_ = 60;
-  int64_t errors_ = 0;
+  int in_width_ = 0, in_height_ = 0;   // what libwebrtc hands over
+  int width_ = 0, height_ = 0;         // what the encoder is open at
+  int fps_ = 60, rung_ = 0, rung_kbps_ = 0, stack_kbps_ = 4000;
+  int64_t errors_ = 0, scale_us_ = 0;
+  FrameDecimator decimator_;
+  webrtc::scoped_refptr<webrtc::NV12Buffer> scaled_;
   std::vector<uint8_t> scratch_;
 };
 
@@ -206,13 +262,27 @@ class AvDecoder final : public webrtc::VideoDecoder {
   int32_t Decode(const webrtc::EncodedImage& input, int64_t render_time_ms) override {
     if (!dec_ || !callback_) return WEBRTC_VIDEO_CODEC_UNINITIALIZED;
     const int64_t t_in = webrtc::TimeMillis();
+    // D10.5: a size change (the sender's rung) arrives on a keyframe whose SPS libwebrtc has parsed into the image.
+    // h264_cuvid keeps the hardware frames of the first size and refuses a larger one ("AVHWFramesContext is already
+    // initialized with incompatible parameters", measured in the loopback selftest), so the decoder is re-opened on a
+    // keyframe of a new size, and once more as the fallback when a keyframe fails to decode.
+    const bool key = input._frameType == webrtc::VideoFrameType::kVideoFrameKey;
+    const int w = static_cast<int>(input._encodedWidth), h = static_cast<int>(input._encodedHeight);
+    if (key && w > 0 && h > 0 && last_width_ > 0 && (w != last_width_ || h != last_height_)) Reopen("size change", w, h);
     pending_.push_back({input.RtpTimestamp(), render_time_ms});
     if (pending_.size() > 64) pending_.pop_front();  // the decoder is not that deep; drop stale
     int out = 0;
-    const int rc = dec_->Decode(input.data(), input.size(), input.RtpTimestamp(), [&](const DecodedPicture& p) {
+    auto on_picture = [&](const DecodedPicture& p) {
       out++;
+      last_width_ = p.width;
+      last_height_ = p.height;
       if (o_.sink) o_.sink->OnDecoded(p, dec_->last_cost_us());
-    });
+    };
+    int rc = dec_->Decode(input.data(), input.size(), input.RtpTimestamp(), on_picture);
+    if (rc < 0 && key) {
+      Reopen("keyframe failed", w, h);
+      rc = dec_->Decode(input.data(), input.size(), input.RtpTimestamp(), on_picture);
+    }
     if (rc < 0) {
       if (++errors_ == 1) LogLine("decoder: %s decode error %d", dec_->name().c_str(), rc);
       return WEBRTC_VIDEO_CODEC_ERROR;
@@ -240,6 +310,7 @@ class AvDecoder final : public webrtc::VideoDecoder {
   int32_t Release() override {
     dec_.reset();
     pending_.clear();
+    last_width_ = last_height_ = 0;
     return WEBRTC_VIDEO_CODEC_OK;
   }
 
@@ -252,6 +323,21 @@ class AvDecoder final : public webrtc::VideoDecoder {
   const char* ImplementationName() const override { return dec_ ? dec_->name().c_str() : "avcodec"; }
 
  private:
+  // A fresh libavcodec decoder of the same kind (the probe's choice); the pending bookkeeping goes with the old one.
+  void Reopen(const char* why, int w, int h) {
+    const std::string name = dec_ ? dec_->name() : o_.decoder;
+    std::string err;
+    auto fresh = Decoder::Open(name, &err);
+    if (!fresh) {
+      LogLine("decoder: re-open (%s, %dx%d) failed: %s", why, w, h, err.c_str());
+      return;
+    }
+    dec_ = std::move(fresh);
+    pending_.clear();
+    last_width_ = last_height_ = 0;
+    LogLine("decoder: %s re-opened (%s: %dx%d)", dec_->name().c_str(), why, w, h);
+  }
+
   struct Pending {
     uint32_t rtp_timestamp;
     int64_t render_time_ms;
@@ -262,6 +348,7 @@ class AvDecoder final : public webrtc::VideoDecoder {
   std::deque<Pending> pending_;
   webrtc::scoped_refptr<webrtc::I420Buffer> black_;
   int64_t errors_ = 0;
+  int last_width_ = 0, last_height_ = 0;  // of the last decoded picture
 };
 
 class AvDecoderFactory final : public webrtc::VideoDecoderFactory {

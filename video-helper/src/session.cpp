@@ -11,8 +11,10 @@
 #include <thread>
 
 #include "codecs.h"
+#include "controller.h"
 #include "ipc.h"
 #include "json.h"
+#include "ladder.h"
 #include "peer.h"
 #include "sink.h"
 #include "source.h"
@@ -20,8 +22,9 @@
 
 namespace {
 
-// The provisional ladder of docs/design/spectator-video-native.md §3 (the kbps of each rung; the sizes are D10.5).
-const int kRungKbps[] = {20000, 10000, 8000, 5000, 4000, 2000};
+// D10.5: the controller's sampling period and how long the receiver's last feedback counts as current.
+const int kControlTickMs = 200;
+const int64_t kFeedbackFreshUs = 3000000;
 
 class Session {
  public:
@@ -160,6 +163,7 @@ class Session {
       return;
     }
     peer->SetSendActive(send_on_);
+    InitRung(*peer);
   }
 
   std::shared_ptr<Peer> Find(const std::string& id) {
@@ -252,8 +256,11 @@ class Session {
       pin_ = pinned;
     }
     const int eff = EffectiveMaxKbps();
-    LogLine("rungs: ceiling %d kbps%s -> max %d kbps", static_cast<int>(max->as_number()), pinned ? (" pin " + std::to_string(*pinned)).c_str() : "", eff);
-    for (auto& p : Peers()) p->SetMaxKbps(eff);
+    LogLine("rungs: ceiling %d kbps (rung %d or below)%s", eff, CeilingRung(eff), pinned ? (", pin " + std::to_string(*pinned)).c_str() : ", auto");
+    for (auto& p : Peers()) {
+      p->SetMaxKbps(eff);
+      StepController(*p, StatsSnapshot{}, NowUs() / 1000);  // the pin or the ceiling applies now, not at the next tick
+    }
   }
 
   void CmdSink(const Json& c) {
@@ -271,11 +278,69 @@ class Session {
     if (!sink_.Configure(cfg, &err)) ipc_.EmitError("ring_open_failed", "recv ring " + cfg.token + ": " + err);
   }
 
+  // The ceiling: libwebrtc's max_bitrate_bps. The pin is the controller's business (the encoder's clamp is the
+  // rung's kbps, below this), so the stack's estimate keeps room to probe above the rung.
   int EffectiveMaxKbps() {
     std::lock_guard<std::mutex> l(mu_);
-    int m = max_kbps_;
-    if (pin_) m = std::min(m, kRungKbps[*pin_ - 1]);
-    return m;
+    return max_kbps_;
+  }
+
+  // ---- D10.5: the ladder and the controller, per sending peer ----
+
+  // A new peer's first rung before any measurement: the pin, else rung 3 (the probe's), bounded by the ceiling.
+  void InitRung(Peer& peer) { StepController(peer, StatsSnapshot{}, NowUs() / 1000); }
+
+  // One controller sample for a peer: the inputs from the stats snapshot (an invalid one = no stats yet), the
+  // source's fps, the receiver's feedback, the pin and the ceiling; the decision goes to the peer's RungTarget and,
+  // on a change, out as a `rung` event. Runs on the signaling thread (GetStats callbacks) or the stdin thread
+  // (`rungs`, `peer`): the controller itself is only ever stepped under the session lock.
+  void StepController(Peer& peer, const StatsSnapshot& s, int64_t now_ms) {
+    std::lock_guard<std::mutex> l(ctrl_mu_);
+    ControllerInputs in;
+    in.now_ms = now_ms;
+    in.sending = send_on_ && peer.connected();
+    in.source_fps = source_ ? source_->last_fps_in() : 0;
+    if (in.sending != peer.ctrl_sending) {
+      peer.ctrl_sending = in.sending;
+      peer.ctrl_win.clear();
+    }
+    if (s.valid) {
+      peer.ctrl_win.emplace_back(now_ms, s.frames_sent);
+      while (peer.ctrl_win.size() > 1 && now_ms - peer.ctrl_win.front().first > 1100) peer.ctrl_win.pop_front();
+      const int64_t span = peer.ctrl_win.back().first - peer.ctrl_win.front().first;
+      if (span >= 800) in.sent_fps = (static_cast<double>(peer.ctrl_win.back().second) - peer.ctrl_win.front().second) * 1000.0 / span;
+      if (s.fraction_lost) in.loss_pct = *s.fraction_lost * 100;
+      if (s.rtt_s) in.rtt_ms = *s.rtt_s * 1000;
+      if (s.available_outgoing_bitrate_bps) in.bwe_kbps = *s.available_outgoing_bitrate_bps / 1000;
+    }
+    const PeerFeedback fb = peer.feedback();
+    if (fb.at_us && NowUs() - fb.at_us < kFeedbackFreshUs) {
+      in.decode_fps = fb.decode_fps;
+      in.freeze_ms = fb.freeze_ms;
+    }
+    {
+      std::lock_guard<std::mutex> l2(mu_);
+      in.pin = pin_;
+      in.max_kbps = max_kbps_;
+    }
+    const ControllerDecision d = peer.ctrl.Step(in);
+    if (d.rung <= 0) return;
+    const SourceConfig cfg = source_ ? source_->config() : SourceConfig{};
+    const RungGeometry g = RungFor(d.rung, cfg.width, cfg.height);
+    if (d.changed || g != peer.applied) {
+      peer.target()->Set(g.rung, g.fps, g.kbps);
+      peer.applied = g;
+      EmitRung(peer, g, d.reason.empty() ? "start" : d.reason);
+    }
+  }
+
+  void EmitRung(Peer& peer, const RungGeometry& g, const std::string& reason) {
+    Json j = Json::Object();
+    j.Set("event", Json::String("rung")).Set("id", Json::String(peer.id())).Set("rung", Json::Int(g.rung));
+    j.Set("width", Json::Int(g.width)).Set("height", Json::Int(g.height)).Set("fps", Json::Int(g.fps)).Set("kbps", Json::Int(g.kbps));
+    j.Set("reason", Json::String(reason));
+    ipc_.Emit(j);
+    LogLine("peer %s: rung %d (%dx%d @%d, %d kbps): %s", peer.id().c_str(), g.rung, g.width, g.height, g.fps, g.kbps, reason.c_str());
   }
 
   std::vector<std::shared_ptr<Peer>> Peers() {
@@ -295,21 +360,29 @@ class Session {
     ipc_.Emit(j);
   }
 
+  // Every 100 ms; every second tick samples the controller for each peer (one GetStats, D10.5), every tenth also
+  // emits the 1 Hz `stats` and `source` events from the same snapshot.
   void StatsLoop() {
     int tick = 0;
     while (!stop_stats_) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (++tick < 10) continue;
-      tick = 0;
-      if (source_ && source_->config().kind != SourceConfig::Kind::kNone) EmitSource(source_->state());
-      const Sink::Readout sr = sink_.Snapshot();
-      const SinkConfig scfg = sink_.config();
+      if (++tick % (kControlTickMs / 100) != 0) continue;
+      const bool emit = tick >= 10;
+      if (emit) tick = 0;
+      Sink::Readout sr;
+      SinkConfig scfg;
+      if (emit) {
+        if (source_ && source_->config().kind != SourceConfig::Kind::kNone) EmitSource(source_->state());
+        sr = sink_.Snapshot();
+        scfg = sink_.config();
+      }
       for (auto& p : Peers()) {
         std::weak_ptr<Peer> weak = p;
-        p->GetStats([this, weak, sr, scfg](const StatsSnapshot& s) {
+        p->GetStats([this, weak, sr, scfg, emit](const StatsSnapshot& s) {
           auto peer = weak.lock();
           if (!peer) return;
-          EmitStats(*peer, s, sr, scfg);
+          StepController(*peer, s, NowUs() / 1000);
+          if (emit) EmitStats(*peer, s, sr, scfg);
         });
       }
     }
@@ -332,6 +405,7 @@ class Session {
       j.Set("target_kbps", Json::Int(static_cast<int64_t>(s.target_bitrate_bps / 1000)));
       if (!s.encoder_implementation.empty()) j.Set("encoder", Json::String(s.encoder_implementation));
       if (!s.quality_limitation_reason.empty()) j.Set("quality_limitation", Json::String(s.quality_limitation_reason));
+      AddRungStats(peer, j);
       ipc_.Emit(j);
       // recv
       Json r = Json::Object();
@@ -354,8 +428,27 @@ class Session {
       if (!s.decoder_implementation.empty()) r.Set("decoder", Json::String(s.decoder_implementation));
       if (scfg.kind == SinkConfig::Kind::kRing) r.Set("conv_us", Json::Int(static_cast<int64_t>(sr.convert_us)));
       ipc_.Emit(r);
+      // D10.5: what we see of their picture, back to them over the feedback channel (their controller's receiver inputs).
+      peer.SendFeedback(static_cast<double>(s.frames_decoded) - p.frames_decoded, (s.total_freezes_duration_s - p.total_freezes_duration_s) * 1000,
+                        s.frames_decoded > p.frames_decoded ? std::optional<double>(std::round(sr.fps * 10) / 10) : std::nullopt);
     }
     peer.prev = s;
+  }
+
+  // D10.5: the send stats' rung fields: the rung applied, the controller's state and the encoder's own counters.
+  void AddRungStats(Peer& peer, Json& j) {
+    const RungTarget::Readout r = peer.target()->Snapshot();
+    const RungGeometry g = peer.applied;
+    if (g.rung) j.Set("rung", Json::Int(g.rung)).Set("rung_kbps", Json::Int(g.kbps)).Set("rung_fps", Json::Int(g.fps));
+    j.Set("queue_ms", Json::Number(std::round(r.queue_us_max / 100.0) / 10));
+    if (r.frames_dropped) j.Set("dropped", Json::Int(r.frames_dropped));
+    std::lock_guard<std::mutex> l(ctrl_mu_);
+    if (peer.ctrl.pinned()) j.Set("ctrl", Json::String("pin"));
+    else if (peer.ctrl.probing()) j.Set("ctrl", Json::String("probe"));
+    else if (!peer.ctrl.trouble().empty()) j.Set("ctrl", Json::String("trouble:" + peer.ctrl.trouble()));
+    else j.Set("ctrl", Json::String("auto"));
+    const PeerFeedback fb = peer.feedback();
+    if (fb.at_us && NowUs() - fb.at_us < kFeedbackFreshUs && fb.decode_fps) j.Set("peer_decode_fps", Json::Number(*fb.decode_fps));
   }
 
   void Shutdown() {
@@ -381,6 +474,7 @@ class Session {
   Sink sink_;
   std::unique_ptr<Source> source_;
   std::mutex mu_;
+  std::mutex ctrl_mu_;  // D10.5: the controllers are stepped one at a time
   std::map<std::string, std::shared_ptr<Peer>> peers_;
   std::vector<IceServerSpec> ice_;
   int max_kbps_ = 20000;

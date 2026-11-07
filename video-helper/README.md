@@ -65,7 +65,10 @@ castcade-video.exe --probe               opens each encoder and decoder candidat
 castcade-video.exe --bench [--seconds 10] [--width 1354 --height 1440 --fps 60] [--kbps 20000] [--gpu-load]
                            [--rate-policy limited|naive] [--rate-jitter 5] [--encoder <name>]
 castcade-video.exe --ring-selftest       a send ring produced and consumed in this process, 60 fps for 3 s
-castcade-video.exe --loopback-selftest [--seconds 5]   two in-process peers over real libwebrtc (the CI smoke)
+castcade-video.exe --loopback-selftest [--seconds 5]   two in-process peers over real libwebrtc (the CI smoke); the rung
+                                         pinned 3 → 1 → 5 through the run (two size changes end to end), the rung in each line
+castcade-video.exe --controller-selftest the rung controller, the ladder's geometry and the decimator on scripted inputs
+                                         (D10.5): pass / fail per case, exit 1 on any failure
 ```
 
 Exit codes as the audio helper: 0 normal (also after `quit` or stdin EOF), 2 the helper cannot run here (no H.264
@@ -98,7 +101,7 @@ Commands (companion → helper):
 | `close` | `id` | Close that peer. |
 | `source` | `kind: ring \| bench \| none`, `token?`, `width`, `height`, `fps` | Where the frames this rig sends come from: the `send` ring named by the token (the layer fills it), a synthetic bench picture, or nothing. |
 | `send` | `on: bool` | Whether this rig is sending now (the player up): the encoder runs and the video sender is active; off = the track is paused (the transceiver stays). |
-| `rungs` | `max_kbps`, `pin?: int \| null` | The ladder ceiling (the host's, D8.2 / D10.5) and an optional manual pin to one rung; absent = the controller chooses. v1 of the helper: the ceiling clamps libwebrtc's `max_bitrate_bps`; the ladder itself is D10.5. |
+| `rungs` | `max_kbps`, `pin?: int \| null` | The ladder ceiling (this rig's; the host-wide one is D10.5.1) and an optional manual pin to one rung; absent or null = the controller chooses (D10.5, below). |
 | `sink` | `kind: ring \| window \| none`, `token?` | Where decoded frames go: the `recv` ring (the layer draws it), a window the helper opens itself (desktop watchers, D10.4), or nowhere. |
 | `quit` | | Close everything and exit 0. Closing stdin does the same. |
 
@@ -109,7 +112,8 @@ Events (helper → companion):
 | `ready` | `version`, `encoder` (the probe's choice: `h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`), `decoder` |
 | `signal` | `id`, `kind`, `sdp?`, `candidate?` — to be wrapped in `MEDIA_SIGNAL {channel: "video", to: id}` |
 | `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line) |
-| `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?` |
+| `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?`; `send` also `rung`, `rung_kbps`, `rung_fps`, `ctrl`, `queue_ms`, `dropped?`, `peer_decode_fps?` (D10.5) |
+| `rung` | D10.5, on each change of the rung applied to the frames sent to `id`: `rung` (1–6), `width`, `height`, `fps`, `kbps`, `reason: start \| probe \| down:loss \| down:rtt \| down:bwe \| down:fps \| down:receiver \| up \| pin \| ceiling` |
 | `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the ring's health |
 | `error` | `code` (`bad_command`, `peer_unknown`, `ring_open_failed`, `encoder_failed`, …), `text` |
 | `log` | `level: info \| warn`, `text` |
@@ -142,8 +146,62 @@ Events (helper → companion):
   re-opens the encoder). For `bench` they set the picture (480x300 minimum, even, fps 1–120).
 - `send off`: no frames are converted or pushed, and every peer's encoding is set `active = false`. `send on` does
   the reverse; a peer made while sending is on starts active.
-- `rungs`: `pin` 1–6 clamps the ceiling to that rung's kbps (20000, 10000, 8000, 5000, 4000, 2000: the provisional
-  ladder of §3); its size and frame rate are D10.5. A `pin` of `null` or absent clears it.
+- `rungs`: `max_kbps` is the ceiling: libwebrtc's `max_bitrate_bps` on every peer, and the controller never picks a
+  rung whose kbps exceeds it. `pin` 1–6 holds that rung (bounded by the ceiling) and switches the controller off; `null`
+  or absent hands the choice back to the controller, which carries on from the pinned rung (no second probe).
+
+### The ladder and the controller (D10.5; `src/ladder.{h,cpp}`, `src/controller.{h,cpp}`)
+
+Six rungs, each a fraction of the SOURCE box (1, 0.75, 0.5 of its height, aspect kept, sizes rounded to even: the
+design's 677 becomes 678), a frame rate and a bitrate, in the owner's order ("we would sacrifice resolution for
+smoothness": full size at 30 fps before the smaller size at 60):
+
+| Rung | 1354x1440 source (the eye) | 1920x1080 source (a desktop capture) | fps | kbps |
+|---|---|---|---|---|
+| 1 | 1354x1440 | 1920x1080 | 60 | 20000 |
+| 2 | 1354x1440 | 1920x1080 | 30 | 10000 |
+| 3 | 1016x1080 | 1440x810 | 60 | 8000 |
+| 4 | 1016x1080 | 1440x810 | 30 | 5000 |
+| 5 | 678x720 | 960x540 | 60 | 4000 |
+| 6 | 678x720 | 960x540 | 30 | 2000 |
+
+A rung is applied per sending peer, inside that peer's encoder (each Peer has its own PeerConnectionFactory on the
+shared threads, so its encoder factory is bound to the peer's `RungTarget`): the NV12 frame is scaled to the rung's
+size with libyuv's `NV12Scale` (box filter; the source converts once at full size, the per-peer scale costs about
+0.3 ms), decimated to the rung's fps on the source clock (a frame is kept when its timestamp has reached the next due
+time, with a quarter-period tolerance: 60 → 30 keeps every other frame and never drops two in a row), the stack's
+target bitrate is clamped to the rung's kbps through the limited reconfigure policy (D10.1.1), and a size change
+re-opens the encoder, whose first frame is an IDR with SPS/PPS in band. The receiver re-opens its libavcodec decoder on
+a keyframe of a new size (libwebrtc parses the SPS into the frame): `h264_cuvid` keeps the hardware frames of the
+first size and refuses a larger one (measured: "AVHWFramesContext is already initialized with incompatible
+parameters"), so the re-open is the rule for every decoder; the loopback selftest measures a 200–350 ms freeze per
+size change on NVENC → cuvid.
+
+The controller (`RungController::Step`, a pure function of the sampled inputs and its own state, one per sending
+peer) samples every 200 ms from one `GetStats`: the sent fps (frames_sent over the last second, against the rung's
+fps bounded by what the source delivers), the RTCP receiver report's loss and RTT, the selected pair's available
+outgoing bitrate (BWE), and the receiver's decode fps and freeze time from the `castcade-feedback` data channel
+(below; unknown when the channel is not open or its last report is older than 3 s, and unknown never counts).
+Trouble = loss > 2 %, or RTT more than 100 ms above its minimum over the last 10 s, or BWE < 0.9 × the rung's kbps,
+or sent fps < 0.9 × the rung's fps, or decode fps < 0.9 × the rung's fps, or a receiver freeze > 500 ms in its last
+second. Down one rung after 3 s of continuous trouble (`down:<the first kind present>`); up one rung after 30 s clean
+since the last change when BWE ≥ 1.2 × the next rung's kbps. Start-up: a peer's first sending stint runs its first 5 s
+at rung 3 (bounded by the ceiling), then jumps to the highest rung whose kbps ≤ BWE / 1.2 (`probe`); a trouble
+down-step during the probe ends it. Later stints (the next ball) start where the last one ended, and their first 2 s
+ignore the fps and receiver inputs (the pipeline has to fill). The ceiling bounds the rung at all times (`ceiling`).
+The encoder's queue (the age of a frame when it reaches `Encode`) is reported as `queue_ms` and does not step the
+rung on its own: a slow encoder shows up as sent fps.
+
+Why the ceiling, not the rung, is `max_bitrate_bps`: libwebrtc's delay-based estimate cannot grow past about 1.5 × the
+acknowledged throughput, and its probes never exceed the configured maximum, so a max set to the rung's kbps would
+never let the estimate reach 1.2 × the next rung and the up-rule would never fire (the ramp-up of D10.1.3). With the
+ceiling as the max and the rung as the encoder's clamp, the stack keeps room to probe above what is sent.
+
+The feedback channel: the initiator creates a data channel `castcade-feedback` (unordered, `maxRetransmits` 0) on the
+same PeerConnection; the other side takes it from `OnDataChannel`. Once a second each side sends what it sees of the
+other's picture as JSON text, `{"decode_fps": n, "freeze_ms": n, "presented_fps"?: n}` (frames decoded in the last
+second, the jitter buffer's freeze time in it, the sink's fps when pictures came), and the receiving side's controller
+reads it. The channel adds an `m=application` section to the SDP (bundled on the one transport); nothing else changes.
 - `sink ring` creates the `recv` ring as its producer, sized by `width`/`height` (optional, default 2048x2048: a
   decoded picture larger than the box is dropped and logged once). A section that already exists under the token is
   adopted when its geometry matches (the header's rule) and refused with `ring_open_failed` otherwise. `sink window`

@@ -15,6 +15,7 @@
 #include "api/video_codecs/video_encoder_factory.h"
 
 #include "codecs.h"
+#include "ladder.h"
 
 class DecodedSink {
  public:
@@ -28,6 +29,13 @@ struct CodecOptions {
   std::string decoder;
   RatePolicy policy = RatePolicy::kLimited;
   DecodedSink* sink = nullptr;  // may be null (decoded pictures are then only counted by libwebrtc)
+  /**
+   * D10.5: the sending peer's rung (one PeerConnectionFactory per peer carries its own encoder factory bound to this).
+   * The encoder scales each frame to the rung's size (libyuv NV12Scale, box filter), decimates to its fps on the
+   * source clock, clamps the stack's target to its kbps, and re-opens on an IDR when the size changes. Null: frames
+   * go through as they come (the bench, a factory made without a peer).
+   */
+  std::shared_ptr<RungTarget> target;
 };
 
 std::unique_ptr<webrtc::VideoEncoderFactory> CreateEncoderFactory(const CodecOptions& o);

@@ -9,3 +9,5 @@ int RunRingSelftest();
 // `--loopback-selftest`: two peers in one process (bench source → encoder → libwebrtc → decoder, no rings) for
 // `seconds`; prints the receiver's fps and kbps once a second and a summary. Non-zero when nothing arrived.
 int RunLoopbackSelftest(int seconds);
+// D10.5: the rung controller, the ladder's geometry and the decimator through scripted input sequences (no libwebrtc).
+int RunControllerSelftest();

@@ -251,6 +251,18 @@ bool PeerFactory::Init(const CodecOptions& codecs, bool allow_loopback, std::str
   // The receiver renders as soon as a frame is complete (no playout delay added by the jitter buffer's target).
   env_ = webrtc::CreateEnvironment(std::make_unique<FieldTrials>("WebRTC-ForcePlayoutDelay/min_ms:0,max_ms:0/"));
 
+  codecs_ = codecs;
+  allow_loopback_ = allow_loopback;
+  factory_ = CreateFactory(nullptr, error);
+  if (!factory_) return false;
+  source_ = webrtc::make_ref_counted<PushSource>();
+  static_cast<PushSource*>(source_.get())->SetState(webrtc::MediaSourceInterface::kLive);
+  return true;
+}
+
+webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> PeerFactory::CreateFactory(std::shared_ptr<RungTarget> target, std::string* error) {
+  CodecOptions codecs = codecs_;
+  codecs.target = std::move(target);
   webrtc::PeerConnectionFactoryDependencies deps;
   deps.network_thread = net_.get();
   deps.worker_thread = worker_.get();
@@ -265,19 +277,17 @@ bool PeerFactory::Init(const CodecOptions& codecs, bool allow_loopback, std::str
   deps.video_encoder_factory = CreateEncoderFactory(codecs);
   deps.video_decoder_factory = CreateDecoderFactory(codecs);
   webrtc::EnableMedia(deps);
-  factory_ = webrtc::CreateModularPeerConnectionFactory(std::move(deps));
-  if (!factory_) {
-    *error = "CreateModularPeerConnectionFactory returned null";
-    return false;
+  auto factory = webrtc::CreateModularPeerConnectionFactory(std::move(deps));
+  if (!factory) {
+    if (error) *error = "CreateModularPeerConnectionFactory returned null";
+    return nullptr;
   }
-  if (allow_loopback) {
+  if (allow_loopback_) {
     webrtc::PeerConnectionFactoryInterface::Options opts;
     opts.network_ignore_mask = 0;
-    factory_->SetOptions(opts);
+    factory->SetOptions(opts);
   }
-  source_ = webrtc::make_ref_counted<PushSource>();
-  static_cast<PushSource*>(source_.get())->SetState(webrtc::MediaSourceInterface::kLive);
-  return true;
+  return factory;
 }
 
 webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> PeerFactory::source() { return source_; }
@@ -304,11 +314,14 @@ void PeerFactory::Shutdown() {
 // ---------------------------------------------------------------- Peer
 
 Peer::Peer(PeerFactory& pf, std::string id, bool initiator, std::vector<IceServerSpec> servers, PeerLimits limits, PeerEvents events)
-    : pf_(pf), id_(std::move(id)), initiator_(initiator), servers_(std::move(servers)), limits_(limits), ev_(std::move(events)) {}
+    : pf_(pf), id_(std::move(id)), initiator_(initiator), servers_(std::move(servers)), limits_(limits), ev_(std::move(events)),
+      target_(std::make_shared<RungTarget>()) {}
 
 Peer::~Peer() { Close(); }
 
 bool Peer::Start(std::string* error) {
+  pcf_ = pf_.CreateFactory(target_, error);
+  if (!pcf_) return false;
   webrtc::PeerConnectionInterface::RTCConfiguration config;
   config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
   config.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
@@ -321,14 +334,14 @@ bool Peer::Start(std::string* error) {
     config.servers.push_back(is);
   }
   webrtc::PeerConnectionDependencies pc_deps(this);
-  auto result = pf_.factory()->CreatePeerConnectionOrError(config, std::move(pc_deps));
+  auto result = pcf_->CreatePeerConnectionOrError(config, std::move(pc_deps));
   if (!result.ok()) {
     *error = std::string("CreatePeerConnection: ") + result.error().message();
     return false;
   }
   pc_ = result.MoveValue();
 
-  auto track = pf_.factory()->CreateVideoTrack(pf_.source(), "castcade-video-" + id_);
+  auto track = pcf_->CreateVideoTrack(pf_.source(), "castcade-video-" + id_);
   webrtc::RtpTransceiverInit init;
   init.direction = webrtc::RtpTransceiverDirection::kSendRecv;
   init.stream_ids = {"castcade"};
@@ -346,7 +359,7 @@ bool Peer::Start(std::string* error) {
   auto transceiver = r.value();
   sender_ = transceiver->sender();
   // H264 only (plus RTX for retransmission); the factories offer nothing else anyway.
-  auto caps = pf_.factory()->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO);
+  auto caps = pcf_->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO);
   std::vector<webrtc::RtpCodecCapability> prefs;
   for (const auto& c : caps.codecs)
     if (c.name == "H264" || c.name == "rtx") prefs.push_back(c);
@@ -359,9 +372,85 @@ bool Peer::Start(std::string* error) {
   auto e = sender_->SetParameters(params);
   if (!e.ok()) LogLine("peer %s: SetParameters: %s", id_.c_str(), e.message());
 
+  // D10.5: the feedback channel, made by the initiator (the other side gets OnDataChannel); unordered and without
+  // retransmission: a stale report is worth nothing.
+  if (initiator_) {
+    webrtc::DataChannelInit init;
+    init.ordered = false;
+    init.maxRetransmits = 0;
+    auto dc = pc_->CreateDataChannelOrError("castcade-feedback", &init);
+    if (dc.ok()) AdoptChannel(dc.MoveValue());
+    else LogLine("peer %s: CreateDataChannel: %s", id_.c_str(), dc.error().message());
+  }
+
   LogLine("peer %s: created (%s, %zu ice servers)", id_.c_str(), initiator_ ? "initiator" : "answerer", servers_.size());
   if (initiator_) CreateLocal(true);
   return true;
+}
+
+void Peer::AdoptChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
+  if (dc_) dc_->UnregisterObserver();
+  dc_ = std::move(channel);
+  dc_->RegisterObserver(this);
+  OnStateChange();
+}
+
+void Peer::OnDataChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
+  if (channel->label() != "castcade-feedback") {
+    LogLine("peer %s: ignoring data channel %s", id_.c_str(), channel->label().c_str());
+    return;
+  }
+  AdoptChannel(std::move(channel));
+}
+
+void Peer::OnStateChange() {
+  if (!dc_) return;
+  const bool open = dc_->state() == webrtc::DataChannelInterface::kOpen;
+  bool changed;
+  {
+    std::lock_guard<std::mutex> l(mu_);
+    changed = open != dc_open_;
+    dc_open_ = open;
+  }
+  if (changed) LogLine("peer %s: feedback channel %s", id_.c_str(), open ? "open" : "closed");
+}
+
+void Peer::OnMessage(const webrtc::DataBuffer& buffer) {
+  if (buffer.binary) return;
+  std::string err;
+  const Json j = Json::Parse(std::string(buffer.data.data<char>(), buffer.data.size()), &err);
+  if (!j.is_object()) return;
+  std::lock_guard<std::mutex> l(mu_);
+  feedback_.at_us = NowUs();
+  const Json* d = j.Get("decode_fps");
+  feedback_.decode_fps = d && d->is_number() ? std::optional<double>(d->as_number()) : std::nullopt;
+  const Json* f = j.Get("freeze_ms");
+  feedback_.freeze_ms = f && f->is_number() ? std::optional<double>(f->as_number()) : std::nullopt;
+  const Json* pr = j.Get("presented_fps");
+  feedback_.presented_fps = pr && pr->is_number() ? std::optional<double>(pr->as_number()) : std::nullopt;
+}
+
+PeerFeedback Peer::feedback() {
+  std::lock_guard<std::mutex> l(mu_);
+  return feedback_;
+}
+
+bool Peer::feedback_open() {
+  std::lock_guard<std::mutex> l(mu_);
+  return dc_open_;
+}
+
+void Peer::SendFeedback(double decode_fps, double freeze_ms, std::optional<double> presented_fps) {
+  if (closed_ || !dc_ || !feedback_open()) return;
+  Json j = Json::Object();
+  j.Set("decode_fps", Json::Number(decode_fps)).Set("freeze_ms", Json::Number(freeze_ms));
+  if (presented_fps) j.Set("presented_fps", Json::Number(*presented_fps));
+  dc_->SendAsync(webrtc::DataBuffer(j.Dump()), [](webrtc::RTCError) {});
+}
+
+bool Peer::connected() {
+  std::lock_guard<std::mutex> l(mu_);
+  return ice_state_ == "connected" || ice_state_ == "completed";
 }
 
 std::string Peer::RemoteSdpWithLimits(const std::string& sdp) const {
@@ -499,9 +588,14 @@ void Peer::GetStats(std::function<void(const StatsSnapshot&)> cb) {
 void Peer::Close() {
   if (closed_) return;
   closed_ = true;
+  if (dc_) {
+    dc_->UnregisterObserver();
+    dc_ = nullptr;
+  }
   if (pc_) pc_->Close();
   sender_ = nullptr;
   pc_ = nullptr;
+  pcf_ = nullptr;
 }
 
 std::string Peer::ice_state() {

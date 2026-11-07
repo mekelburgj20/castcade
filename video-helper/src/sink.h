@@ -34,6 +34,11 @@ class Sink final : public DecodedSink {
     int64_t frames_total = 0, dropped_too_big = 0;
   };
   Readout Snapshot();
+  // D10.5: the running count of decoded pictures, without touching the window (the loopback selftest's size check).
+  int64_t frames_total() {
+    std::lock_guard<std::mutex> l(mu_);
+    return frames_total_;
+  }
 
  private:
   std::mutex mu_;
