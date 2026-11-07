@@ -103,6 +103,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | `vr-layer/` | `XrApiLayer_castcade_panel.dll` + manifest: C++17/CMake/MSVC implicit OpenXR API layer that appends the match panel as a quad inside VPinballX on non-SteamVR runtimes (frames over `\\.\pipe\castcade-panel`, same format as the helper's stdin; OpenXR headers pinned by tag + sha256; CI `vr-layer.yml` is the build of record) | alpha (D7.3) |
 | `audio-helper/` | `castcade-audio.exe`: C++17/CMake/MSVC table-sound helper: CoreAudio session mute of the VPX process tree (plus PinUP / B2S) while another player is up, process-loopback tap of VPX (`CAU1` float32 stereo 48 kHz frames on stdout) while this rig is up, `--state` crash recovery; CI `audio-helper.yml` is the build of record | alpha (D2.8) |
 | `fakeclient/` | scripted protocol player, no emulator, for CI | 1 |
+| `spike/d10-video/` | the D10.0.1 stack spike (ADR 0010): shared harness dll (frame source + libavcodec encoder/decoder), UDP shaper, `measure.mjs`, the str0m / libwebrtc / GStreamer loopback senders, `results/`; the libwebrtc folder is the seed of `castcade-video.exe`; nothing here ships; `deps/` is gitignored | D10 |
 | `arcade/` | RetroArch launch profiles, core allowlist, ROM memory maps | 6 |
 | `fixtures/` | recorded NVRAM journals + script-event logs for detector replay in CI; `fixtures/maps` is the vendored subset of the maps corpus the tests read (CI has no full corpus) | 2–3 |
 | `docs/` | design docs, ADRs, ArcAid work list | — |

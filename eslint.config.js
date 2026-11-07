@@ -10,6 +10,8 @@ export default tseslint.config(
       '**/out/**',
       '**/build/**',
       'tmp/**',
+      // The D10.0.1 spike: scratch Node scripts and native code, nothing shipped (ADR 0010).
+      'spike/**',
       // Agent worktrees are whole checkouts of this repo: a second tsconfig root and duplicate tests.
       '.claude/**',
       'vpx-hook/**',
