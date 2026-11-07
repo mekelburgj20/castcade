@@ -68,10 +68,10 @@ All matching is case-insensitive VBScript-aware (ignore `'` comments and string 
 | Class | Detect | Notes |
 |---|---|---|
 | **A — VPM / ROM table** | `LoadVPM` call, or `ExecuteGlobal GetTextFile("core.vbs")`, or `Set Controller = CreateObject("VPinMAME.Controller")`; capture `cGameName` (ROM name) | 98% of a typical collection. ROM name → maps corpus lookup decides if live scores are decodable (`game_state` present). |
-| **B — Original, JPSalas pattern** | no VPM; `Sub AddScore` (or `AddScore(`) AND `Sub ResetForNewGame` AND `Sub EndOfGame`; `Dim Score(` | Score per player in `Score(CurrentPlayer)`; ball count in `BallsRemaining(` or similar — record what was found. |
+| **B — Original, script anchors** | no VPM; `Sub AddScore` (any spelling) AND a start sub (`ResetForNewGame` / `StartGame` / `StartNewGame` / `NewGame` / `InitGame`) AND an end sub (`EndOfGame` / `GameOver` / `EndGame`), or, with no end sub, a plain statement that clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`, …) outside `_Init` / `_Exit` / the key handlers / the start sub. The JPSalas trio (`ResetForNewGame` + `EndOfGame`) is B ahead of C and D; the wider vocabulary yields to C and D (C1.3, 2026-11-07) | The score store is read from `AddScore`'s body (`X = X + …` scalar, `X(I) = X(I) + …` array with `I` the player, or a family `p1score, p2score…`); ball end from `EndOfBall` / `EndBall` / `EndPlayerTurn` / `BallDrained` or the `BallsRemaining` decrement — record what was found. |
 | **C — Original, Scorbit-anchored** | class B anchors absent or partial, but `StartSession`, `SendUpdate`, `StopSession` present (any `Scorbit*` identifiers) | Use the Scorbit call sites as the event anchors regardless of `ScorbitActive`. |
 | **D — Original, ScoreServer-integrated** | `CreateObject("VPinball.ScoreServer")` or `SetScoresArray` / `SetGameState` | Already emits scores through superhac's API surface; the sidecar provides a compatible object. (Rare on desktop; present in some ALP-targeted tables.) |
-| **E — Original, generic** | none of B–D, but `_KeyDown` exists and at least one of `Score`, `AddScore`, `Points` identifiers | Turn lock possible; scoring needs a manual anchor (the UI offers a guided pick: "which Sub adds points?"). Marked *partial*. |
+| **E — Original, generic** | none of B–D, but `_KeyDown` exists and at least one of `Score`, `AddScore`, `Points` identifiers | Not patched: the vocabulary found no `AddScore`, no start or no end anchor. The guided pick of the first design is dropped (C1.3); per-table anchor overrides shipped as data are C1.4. |
 | **X — Unsupported** | no `_KeyDown` (e.g. a test table), `Option Explicit` with obfuscated/compressed script, or extraction failed | Never patched. Reason recorded. |
 
 Secondary facts captured for every class: table object name (`Sub (\w+)_KeyDown` → `Table1`), key constants in use
@@ -125,14 +125,33 @@ departs from the sketch above, the code is right:
   own expressions under `On Error Resume Next` and call `Castcade_GameStart` / `Castcade_Scores` / `Castcade_BallEnd`
   / `Castcade_GameEnd`; `Castcade_PlayerScores(arr, base, players)` (lib) turns the table's score array into one
   entry per player. The player count is kept from the last time it was above 0 (some tables zero it at game over).
-- **B:** scores = `Score()`, its base read from `CurrentPlayer = 0|1` (in `ResetForNewGame` first: GotG, Iron Maiden
-  and The Matrix count from 0, most from 1); ball = the table's `Balls` function/variable, else `BallsPerGame -
-  BallsRemaining(CurrentPlayer) + 1`; game start at the end of `ResetForNewGame`; scores at the end of `AddScore`
-  **and in front of each of its early `Exit Sub`** (a repeat is dropped by the library); **ball end at the TOP of
-  `EndOfBall`** (the drained ball's player and number, before anything advances; JPSalas' `EndOfBall` hands over to
-  a timer and `EndOfBall2`), else before the `BallsRemaining(CurrentPlayer)` decrement; game end at the end of
-  `EndOfGame`. An early `Exit Sub` in a start/end anchor sub is a warning, not new control flow (GoT's `EndOfGame`
-  re-entry guard is exactly a path that must not journal).
+- **B (0.2.0, C1.3, 2026-11-07: by role, not by JPSalas' names):** the four roles come from the vocabulary in
+  `classify.ts` (`START_SUBS`, `END_SUBS`, `BALL_END_SUBS`, `GAME_FLAG_CLEAR`; the first name that exists wins). The
+  score store is the first `X = X + …` / `X(I) = X(I) + …` in `AddScore`'s body, a name containing `score`
+  preferred (Diablo 2's `AddScore` also counts `ExtraBallPending`), else the same one call down (the Burger template's
+  `AddScore` only calls `SetScore`); a scalar `X` journals `Array(X)` with the current-player variable
+  (`CurrentPlayer` / `CurrentPlayerIdx` / `nPlayer` / `cp` / `Player`, only when assigned somewhere) and the warning
+  "scalar score: in a multi-player game only the player up is journaled"; a family `p1score, p2score, …` journals
+  `Array(p1score, …)`; an array's index is the player, its base read from `<I> = 0|1` (start sub first: GotG, Iron
+  Maiden, The Matrix and Futurama count from 0, most from 1). Players = `PlayersPlayingGame` / `PlayersPlaying` /
+  `nPlayersInGame` / `NumPlayers` / `numplay` (the Burger template's `numplay` is players + 1, journaled as
+  `numplay - 1`); ball = the `Balls` function, else `BallNumber` / `CurrentBall` / `nBall` / `BallInPlay`, else
+  `BallsPerGame - BallsRemaining[(I)] + 1`; extra = `ExtraBallsAwards(I)` / `ExtraBallPending` / `nExtraBalls` /
+  `ExtraBalls`. A name whose only declaration is a `Dim` inside a sub or class is never taken (2001's class-level
+  `Private Balls(20)`), and a name assigned inside a procedure wins over one only set at module level (Star Wars'
+  dead `PlayersPlayingGame = 1`). Game start at the end of the start sub; scores at the end of `AddScore` **and in
+  front of each of its early `Exit Sub`** (a repeat is dropped by the library); **ball end at the TOP of the ball-end
+  sub** (the drained ball's player and number, before anything advances: JPSalas' `EndOfBall` hands over to a timer
+  and `EndOfBall2`; Diablo 2's `EndPlayerTurn` re-shoots on `ExtraBallPending` in its first line, which the
+  `extra_balls` field carries), else before the `BallsRemaining` decrement; game end at the end of the end sub, else
+  **on the line after the game-flag clear** (Rattlecan's `GameOver = 1`, the Burger template's `gameon = 0`), with a
+  warning naming the sub and line. An early `Exit Sub` in a start/end anchor sub is a warning, not new control flow
+  (GoT's `EndOfGame` re-entry guard is exactly a path that must not journal). The plan reason lists the four subs
+  found and the score store. On the owner's rig (2026-11-07) this turned all eight readable class-E tables into B
+  without a partial: Diablo 2 ×2, Jacks Open, Futurama (exact), Rattlecan and 2001 ×2 / Star Wars (end via the flag,
+  no ball end). Diablo 2's own multiplayer keeps the other players' scores in `PState(p).Item("Score")` and
+  overwrites `Score` with the winner's at `GameOver`: single-player games are exact, local multiplayer finals wait on
+  C1.4.
 - **C:** the 7 arguments of a `Scorbit.SendUpdate` call (P1–P4, ball, 1-based player, players) are the expressions;
   `StopSession`'s scores are not used (VPW tables pass `Score(0..3)` there even when they count from 1, and
   Terrifier passes a different array). Start / end go at the end of the sub calling `StartSession` / `StopSession`,
@@ -146,9 +165,9 @@ departs from the sketch above, the code is right:
 - Partial (the plan reason says `(partial: ...)`): no scores, no game start or no game end anchor.
 - Undo (`unpatchSidecar`, formerly `unpatchRecipeA`) is exact for A–D and refuses another recipe. Each recipe has its
   own version (`RECIPE_VERSIONS`), so a B change does not re-make the A sidecars.
-- Not built: recipe E (needs the guided pick in the app).
+- Not built: per-table anchor overrides (C1.4); recipe E's guided pick is dropped.
 
-**Recipe E (generic original):** block 0 + `_KeyDown` wrap + whatever anchor the guided pick supplied. Marked *partial* in the registry until verified.
+**Recipe E (generic original):** never rendered. The first design had a guided anchor pick here; C1.3 replaced it with the vocabulary above, and what the vocabulary cannot read is a per-table override (C1.4).
 
 **Block L — turn lock (all recipes):**
 ```vbs

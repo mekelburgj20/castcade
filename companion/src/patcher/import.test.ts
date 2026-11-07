@@ -86,10 +86,10 @@ describe('planImport (dry run)', () => {
     expect(byPath(plan.items, AFM)).toMatchObject({ action: 'patch', cls: 'A', rom: 'afm_113b' });
     const iron = byPath(plan.items, IRON);
     expect(iron).toMatchObject({ action: 'patch', cls: 'B', rom: null });
-    expect(iron.reason).toBe('original table (JPSalas pattern), recipe B');
+    expect(iron.reason).toBe('original table (script anchors), recipe B');
     const generic = byPath(plan.items, GENERIC);
     expect(generic).toMatchObject({ action: 'skip', cls: 'E', rom: null });
-    expect(generic.reason).toBe('original table (generic) (class E): recipe E needs a guided pick of the scoring Sub, not built yet');
+    expect(generic.reason).toBe('original table (generic) (class E): recipe E needs anchors this build cannot find (no AddScore sub, or no game start / game end sub)');
     const foreign = byPath(plan.items, FOREIGN);
     expect(foreign).toMatchObject({ action: 'foreign', cls: null });
     expect(foreign.reason).toMatch(/not Castcade's; left alone/);
@@ -136,9 +136,9 @@ describe('applyImport', () => {
     expect(sidecar).toContain('Castcade_Init "Monster Bash (Williams 1998) VPW 1.0", "A"');
     expect(sidecar?.includes('\r\n')).toBe(true);
     expect(fs.text(sidecarPathFor(FOREIGN))).toMatch(/^' somebody else's/);
-    expect(fs.text(sidecarPathFor(IRON))).toContain('Castcade_Init "Iron Maiden (Original 2022)", "B", "0.1.0", ""');
+    expect(fs.text(sidecarPathFor(IRON))).toContain('Castcade_Init "Iron Maiden (Original 2022)", "B", "0.2.0", ""');
     expect(fs.has(sidecarPathFor(GENERIC))).toBe(false);
-    expect(await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(IRON)))).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.1.0', libVersion: LIB_VERSION, rom: null });
+    expect(await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(IRON)))).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION, rom: null });
     // the .vpx files were not touched
     expect(await fs.stat(MB)).toEqual({ size: (await fs.stat(MB)).size, mtimeMs: T0 - 86_400_000 });
 
@@ -167,7 +167,7 @@ describe('applyImport', () => {
     // second pass: nothing to do
     const plan2 = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
     expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 4, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
-    expect(byPath(plan2.items, IRON).reason).toBe(`sidecar current (recipe 0.1.0, lib ${LIB_VERSION})`);
+    expect(byPath(plan2.items, IRON).reason).toBe(`sidecar current (recipe 0.2.0, lib ${LIB_VERSION})`);
     expect(byPath(plan2.items, MB).reason).toBe(`sidecar current (recipe ${RECIPE_VERSION}, lib ${LIB_VERSION})`);
     const res2 = await applyImport(fs, plan2, applyOpts);
     expect(res2).toMatchObject({ patched: [], failed: [], libInstalled: 'unchanged' });
@@ -480,7 +480,7 @@ describe('C1.1: originals get recipes B / C / D', () => {
         ),
       ],
       ['patch', 'D', 'original table (ScoreServer-integrated), recipe D'],
-      ['patch', 'B', 'original table (JPSalas pattern), recipe B'],
+      ['patch', 'B', 'original table (script anchors), recipe B'],
     ]);
     const res = await applyImport(fs, plan, applyOpts);
     expect(res.patched.sort()).toEqual([SSX, SS, TERR, TNA].sort());
@@ -490,7 +490,7 @@ describe('C1.1: originals get recipes B / C / D', () => {
       [SS, 'D'],
     ] as const) {
       const m = await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(p)));
-      expect(m).toMatchObject({ class: recipe, recipe, recipeVersion: '0.1.0', warnings: expect.any(Array) });
+      expect(m).toMatchObject({ class: recipe, recipe, recipeVersion: recipe === 'B' ? '0.2.0' : '0.1.0', warnings: expect.any(Array) });
       expect(fs.text(sidecarPathFor(p))).toContain(`' --- end Castcade recipe ${recipe} ---`);
     }
     expect((await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(TNA))))?.anchors).toMatchObject({ gameEnd: 'end of Sub EndOfGame (line 48)' });
@@ -506,7 +506,7 @@ describe('C1.1: originals get recipes B / C / D', () => {
     expect(await checkSidecar(fs, TNA, MANIFESTS)).toMatchObject({
       state: 'stale',
       kind: 'version',
-      why: `rendered with recipe 0.0.9 / lib ${LIB_VERSION}; this build is 0.1.0 / ${LIB_VERSION}`,
+      why: `rendered with recipe 0.0.9 / lib ${LIB_VERSION}; this build is 0.2.0 / ${LIB_VERSION}`,
     });
     expect(await checkSidecar(fs, MB, MANIFESTS)).toMatchObject({ state: 'ok' });
   });
