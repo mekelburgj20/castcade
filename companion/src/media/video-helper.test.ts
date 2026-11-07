@@ -16,7 +16,7 @@ const until = async (cond: () => boolean, ms = 8000): Promise<void> => {
 };
 
 const running: VideoHelper[] = [];
-const envKeys = ['FAKE_VIDEO_EXIT', 'FAKE_VIDEO_CRASH_AFTER', 'FAKE_VIDEO_JUNK', 'FAKE_VIDEO_STDERR', 'FAKE_VIDEO_STATS_MS', 'FAKE_VIDEO_NAME'];
+const envKeys = ['FAKE_VIDEO_EXIT', 'FAKE_VIDEO_CRASH_AFTER', 'FAKE_VIDEO_JUNK', 'FAKE_VIDEO_STDERR', 'FAKE_VIDEO_STATS_MS', 'FAKE_VIDEO_NAME', 'FAKE_VIDEO_ICE_FAIL'];
 afterEach(async () => {
   for (const h of running.splice(0)) await h.stop();
   for (const k of envKeys) delete process.env[k];
@@ -62,6 +62,11 @@ describe('parseHelperEvent', () => {
     });
   });
 
+  it("D10.3.6 (2026-11-07): a `peer` event carries the restart policy's outcome, `restarts` and `restarts_exhausted`, additive", () => {
+    expect(parseHelperEvent('{"event":"peer","id":"k","ice":"failed","restarts":3,"restarts_exhausted":true}')).toEqual({ event: 'peer', id: 'k', ice: 'failed', restarts: 3, restarts_exhausted: true });
+    expect(parseHelperEvent('{"event":"peer","id":"k","ice":"connected","pair":"srflx<->host","restarts":1}')).toEqual({ event: 'peer', id: 'k', ice: 'connected', pair: 'srflx<->host', restarts: 1 });
+  });
+
   it('a JSON object with a string `event`; anything else is null', () => {
     expect(parseHelperEvent('{"event":"ready","version":"1","encoder":"h264_nvenc","decoder":"nvdec"}')).toEqual({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' });
     expect(parseHelperEvent('not json')).toBeNull();
@@ -77,12 +82,12 @@ describe('the helper process, against the fake exe (§6.2)', () => {
     process.env.FAKE_VIDEO_STDERR = 'castcade-video 0.0.0-fake starting';
     process.env.FAKE_VIDEO_JUNK = '1';
     const h = real();
-    expect(h.helper.status()).toEqual({ helper: 'stopped', reason: null, version: null, encoder: null, decoder: null });
+    expect(h.helper.status()).toEqual({ helper: 'stopped', reason: null, version: null, encoder: null, decoder: null, generation: 0 });
     expect(h.helper.send({ cmd: 'send', on: true })).toBe(false);
     h.helper.start();
     expect(h.helper.status().helper).toBe('starting');
     await until(() => h.helper.status().helper === 'ready');
-    expect(h.helper.status()).toEqual({ helper: 'ready', reason: null, version: '0.0.0-fake', encoder: 'libx264', decoder: 'h264' });
+    expect(h.helper.status()).toEqual({ helper: 'ready', reason: null, version: '0.0.0-fake', encoder: 'libx264', decoder: 'h264', generation: 1 });
     expect(h.events[0]).toEqual({ event: 'ready', version: '0.0.0-fake', encoder: 'libx264', decoder: 'h264' });
     expect(h.log).toContain('video: helper 0.0.0-fake ready (encoder libx264, decoder h264)');
     expect(h.log).toContain('video: castcade-video 0.0.0-fake starting');
@@ -221,8 +226,13 @@ describe('the restart clock', () => {
     f.helper.start();
     f.advance(1000);
     expect(f.children).toHaveLength(1);
+    // D10.3.4: the generation counts spawns (1 now) and is in the status before the `ready` event reaches a listener.
+    const genAtReady: number[] = [];
+    f.helper.onEvent((e) => void (e.event === 'ready' && genAtReady.push(f.helper.status().generation)));
+    expect(f.helper.status()).toMatchObject({ helper: 'starting', generation: 1 });
     f.children[0]!.say({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' });
-    expect(f.helper.status()).toMatchObject({ helper: 'ready', encoder: 'h264_nvenc', decoder: 'nvdec' });
+    expect(f.helper.status()).toMatchObject({ helper: 'ready', encoder: 'h264_nvenc', decoder: 'nvdec', generation: 1 });
+    expect(genAtReady).toEqual([1]);
     expect(f.helper.send({ cmd: 'send', on: true })).toBe(true);
     expect(f.children[0]!.stdin.lines).toEqual(['{"cmd":"send","on":true}']);
     // Dies 1 s in: the restart waits the rest of the 5 s.
@@ -232,10 +242,11 @@ describe('the restart clock', () => {
     expect(f.children).toHaveLength(1);
     f.advance(1);
     expect(f.children).toHaveLength(2);
-    expect(f.helper.status()).toMatchObject({ helper: 'starting', reason: null });
-    // The new one is ready: the listeners hear it again (the mesh replays its state on this).
+    expect(f.helper.status()).toMatchObject({ helper: 'starting', reason: null, generation: 2 });
+    // The new one is ready: the listeners hear it again (the mesh replays its state once per generation).
     f.children[1]!.say({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' });
     expect(f.events.filter((e) => e.event === 'ready')).toHaveLength(2);
+    expect(genAtReady).toEqual([1, 2]);
     // Dies after a long life: restarted at once (the 5 s is measured from the last spawn, as the audio helper's is).
     f.advance(60_000);
     f.children[1]!.exit(1);

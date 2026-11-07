@@ -343,7 +343,7 @@ export function Match({ state }: { state: CastcadeState }) {
           <div className="card">
             <p className="muted">{mediaLine(st.media)}</p>
             {st.media?.nativeVideo && <p className="muted">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
-            {st.media?.nativeVideo?.helper === 'ready' && <VideoQualityRow st={st} video={st.media.nativeVideo} apply={(r) => bridge.match.setVideoRungs(r).then(setSt, (e: unknown) => setError(describe(e)))} />}
+            {st.media?.nativeVideo?.helper === 'ready' && !st.media.nativeVideo.fallback && <VideoQualityRow st={st} video={st.media.nativeVideo} apply={(r) => bridge.match.setVideoRungs(r).then(setSt, (e: unknown) => setError(describe(e)))} />}
             {panelWin && (
               <div className="row">
                 <p className="muted">{panelLine(panelWin)}</p>
@@ -708,14 +708,16 @@ function mediaLine(m: MatchStatus['media']): string {
 /**
  * D10.3 (2026-11-07): the native spectator video in one line, from the mesh status: the encoder, what this rig sends
  * (size, fps, Mbps), what arrives from each peer, and each peer's ICE state and candidate pair; or why the helper is
- * not running.
+ * not running. D10.3.6 (2026-11-07): once the mesh fell back (a peer's connection failed with the helper's restarts
+ * exhausted, or the helper went away), the line says the Electron video serves this match, and keeps the encoder.
  */
 function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>, participants: MatchStatus['participants']): string {
   if (v.helper === 'unavailable') {
-    const why = v.reason === 'helper_missing' ? 'this build has no video helper' : `the helper did not start (${v.reason ?? 'unknown'})`;
+    const why = v.reason === 'helper_missing' ? 'this build has no video helper' : `the helper ${v.encoder ? 'is gone' : 'did not start'} (${v.reason ?? 'unknown'})`;
     return `Native video unavailable: ${why}; the Electron video serves this match.`;
   }
-  if (v.helper !== 'ready') return `Native video: helper ${v.helper}${v.reason ? ` (${v.reason})` : ''}.`;
+  if (v.helper !== 'ready') return `Native video: helper ${v.helper}${v.reason ? ` (${v.reason})` : ''}${v.fallback ? '; the Electron video serves this match' : ''}.`;
+  if (v.fallback) return `Native video failed to connect; the Electron video serves this match${v.encoder ? ` (encoder ${v.encoder})` : ''}.`;
   const name = (id: string) => participants.find((p) => p.id === id)?.name ?? id;
   const mbps = (kbps: number) => `${(kbps / 1000).toFixed(1)} Mbps`;
   const parts: string[] = [v.encoder ?? 'encoder unknown'];

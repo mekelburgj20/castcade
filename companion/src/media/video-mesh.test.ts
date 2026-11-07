@@ -91,6 +91,7 @@ afterEach(async () => {
     await r.helper.stop();
   }
   delete process.env.FAKE_VIDEO_STATS_MS;
+  delete process.env.FAKE_VIDEO_ICE_FAIL;
 });
 
 function rig(id: string, others: () => Rig[]): Rig {
@@ -129,7 +130,7 @@ describe('two meshes over two fake helpers (D10.3 §6.4)', () => {
     a.mesh.setPeers(['aaa', 'bbb']);
     b.mesh.setPeers(['bbb', 'aaa']);
     // Before the helpers are ready, the peers are wanted and shown, not told.
-    expect(a.mesh.status().peers).toEqual({ bbb: { ice: 'new', pair: null, send: null, recv: null, rung: null } });
+    expect(a.mesh.status().peers).toEqual({ bbb: { ice: 'new', pair: null, send: null, recv: null, rung: null, failed: false } });
     await until(() => peer(a, 'bbb')?.ice === 'connected' && peer(b, 'aaa')?.ice === 'connected');
     expect(peer(a, 'bbb')?.pair).toBe('srflx↔host');
     // The lower id made the offer; the other answered.
@@ -143,7 +144,10 @@ describe('two meshes over two fake helpers (D10.3 §6.4)', () => {
     await until(() => !!peer(a, 'bbb')?.send && !!peer(a, 'bbb')?.recv);
     expect(peer(a, 'bbb')?.send).toEqual({ fps: 60, kbps: 18200, width: 1354, height: 1440, rttMs: 31, lossPct: 0, bweKbps: 24000 });
     expect(peer(a, 'bbb')?.recv).toEqual({ fps: 60, kbps: 17900, width: 1354, height: 1440 });
-    expect(a.mesh.status()).toMatchObject({ helper: 'ready', encoder: 'libx264', decoder: 'h264', sending: false, sink: 'none', source: { kind: 'none', state: 'ok', fpsIn: 0 } });
+    expect(a.mesh.status()).toMatchObject({ helper: 'ready', encoder: 'libx264', decoder: 'h264', sending: false, sink: 'none', fallback: false, source: { kind: 'none', state: 'ok', fpsIn: 0 } });
+    // D10.3.4: the helper's `ready` event followed its ready status (the mesh saw both): one `peer` command, one sync.
+    expect(fakeLogs(a).filter((t) => t === 'ice 0 server(s)')).toHaveLength(1);
+    expect(a.log.filter((l) => l === 'video: peer bbb: offering')).toHaveLength(1);
     // The rig's wiring: the turn, the ring source, the sink, the ICE list and the ladder, each a helper command once.
     a.mesh.setSource({ kind: 'ring', token: 'tok_send_0123456', width: 1354, height: 1440, fps: 60 });
     a.mesh.setSending(true);
@@ -195,6 +199,26 @@ describe('two meshes over two fake helpers (D10.3 §6.4)', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(b.events.some((e) => e.event === 'error')).toBe(false);
   }, 20_000);
+
+  it('D10.3.6 (2026-11-07): the helper gives a peer up (ice failed, restarts exhausted): the peer reads failed, the mesh falls back for the match, said once; the Electron path is told nothing here', async () => {
+    process.env.FAKE_VIDEO_ICE_FAIL = '3';
+    const a = rig('aaa', () => rigs);
+    const b = rig('bbb', () => rigs);
+    a.mesh.setPeers(['bbb']);
+    b.mesh.setPeers(['aaa']);
+    await until(() => a.mesh.status().fallback && b.mesh.status().fallback);
+    expect(peer(a, 'bbb')).toMatchObject({ ice: 'failed', failed: true });
+    expect(peer(b, 'aaa')).toMatchObject({ ice: 'failed', failed: true });
+    expect(a.log).toContain('video: peer bbb: ice failed');
+    expect(a.log.filter((l) => l.startsWith('media: native video failed'))).toEqual(['media: native video failed to connect (peer bbb, 3 restarts); the Electron video serves this match']);
+    expect(b.log.filter((l) => l.startsWith('media: native video failed'))).toEqual(['media: native video failed to connect (peer aaa, 3 restarts); the Electron video serves this match']);
+    // The mesh goes on (the status, the turn): nothing takes the picture back mid-match; the flag holds to the end.
+    a.mesh.setSending(true);
+    expect(a.mesh.status()).toMatchObject({ helper: 'ready', sending: true, fallback: true });
+    expect(headsetVideoLine(a.mesh.status())).toBeNull();
+    a.mesh.close();
+    expect(a.mesh.status().fallback).toBe(true);
+  }, 20_000);
 });
 
 // ---- the helper faked in place: what is said, and said again after a restart ----
@@ -203,7 +227,7 @@ function stubHelper() {
   const sent: VideoHelperCommand[] = [];
   const eventCbs = new Set<(e: VideoHelperEvent) => void>();
   const statusCbs = new Set<(s: VideoHelperStatus) => void>();
-  let status: VideoHelperStatus = { helper: 'stopped', reason: null, version: null, encoder: null, decoder: null };
+  let status: VideoHelperStatus = { helper: 'stopped', reason: null, version: null, encoder: null, decoder: null, generation: 0 };
   const helper: VideoHelper = {
     start: () => undefined,
     stop: async () => undefined,
@@ -226,12 +250,15 @@ function stubHelper() {
     status = { ...status, ...s };
     statusCbs.forEach((cb) => cb(status));
   };
+  /** A spawn: the status says ready for a new generation (as the real manager's does before the event fans out). */
+  const readyStatus = (): void => set({ helper: 'ready', reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec', generation: status.generation + 1 });
+  const readyEvent = (): void => eventCbs.forEach((cb) => cb({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' }));
   const ready = (): void => {
-    set({ helper: 'ready', reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' });
-    eventCbs.forEach((cb) => cb({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' }));
+    readyStatus();
+    readyEvent();
   };
   const say = (e: VideoHelperEvent): void => eventCbs.forEach((cb) => cb(e));
-  return { helper, sent, set, ready, say };
+  return { helper, sent, set, ready, readyStatus, readyEvent, say };
 }
 
 describe('the wgc source (D10.6, 2026-11-07)', () => {
@@ -297,7 +324,7 @@ describe('the mesh and a helper that restarts', () => {
     h.say({ event: 'peer', id: 'aaa', ice: 'connected', pair: { local: 'srflx', remote: 'relay' } });
     h.say({ event: 'stats', id: 'aaa', dir: 'recv', fps: 30, kbps: 5000, width: 1016, height: 1080 });
     h.say({ event: 'source', kind: 'ring', state: 'missing', fps_in: 0 });
-    expect(mesh.status().peers.aaa).toEqual({ ice: 'connected', pair: 'srflx↔relay', send: null, recv: { fps: 30, kbps: 5000, width: 1016, height: 1080 }, rung: null });
+    expect(mesh.status().peers.aaa).toEqual({ ice: 'connected', pair: 'srflx↔relay', send: null, recv: { fps: 30, kbps: 5000, width: 1016, height: 1080 }, rung: null, failed: false });
     expect(mesh.status().source).toMatchObject({ state: 'missing', fpsIn: 0 });
     expect(log).toContain('video: source ring: missing (the ring is not being filled)');
     // Nothing changed: nothing more is said.
@@ -306,11 +333,19 @@ describe('the mesh and a helper that restarts', () => {
     mesh.setSending(true);
     mesh.setIce([{ urls: ['stun:s'] }]);
     expect(h.sent).toHaveLength(n);
-    // The helper dies and comes back: everything again, peers included; its old views are gone meanwhile.
+    // D10.3.4: the same generation's `ready` event again (the manager fans every one): nothing is said twice.
+    h.readyEvent();
+    expect(h.sent).toHaveLength(n);
+    expect(mesh.status().peers.aaa?.ice).toBe('connected');
+    // The helper dies and comes back (generation + 1): everything again, peers included; its old views are gone meanwhile.
     h.set({ helper: 'starting', reason: 'restarting' });
-    expect(mesh.status()).toMatchObject({ helper: 'starting', reason: 'restarting', peers: { aaa: { ice: 'new', pair: null, send: null, recv: null } } });
+    expect(mesh.status()).toMatchObject({ helper: 'starting', reason: 'restarting', fallback: false, peers: { aaa: { ice: 'new', pair: null, send: null, recv: null } } });
     h.sent.length = 0;
     h.ready();
+    expect(h.sent.map((c) => c.cmd)).toEqual(['ice', 'source', 'sink', 'rungs', 'send', 'peer', 'peer']);
+    // Its `ready` event once more (or a status re-emit): still the same generation, nothing more.
+    h.readyEvent();
+    h.set({});
     expect(h.sent.map((c) => c.cmd)).toEqual(['ice', 'source', 'sink', 'rungs', 'send', 'peer', 'peer']);
     // Close: peers closed, send off, source and sink none; the helper itself is left running.
     h.sent.length = 0;
@@ -325,14 +360,14 @@ describe('the mesh and a helper that restarts', () => {
     expect(mesh.status().peers).toEqual({});
   });
 
-  it('a helper that is unavailable: the status says why and nothing is sent; a helper that is ready already is told at once', () => {
+  it('a helper that is unavailable: the status says why, nothing is sent and the mesh is in fallback (D10.3.6); a helper that is ready already is told at once', () => {
     const h = stubHelper();
     h.set({ helper: 'unavailable', reason: 'helper_missing' });
     const mesh = createVideoMesh({ helper: h.helper, localId: 'bbb', sendSignal: () => undefined, log: () => undefined });
     mesh.setPeers(['aaa']);
     mesh.setSending(true);
     expect(h.sent).toEqual([]);
-    expect(mesh.status()).toMatchObject({ helper: 'unavailable', reason: 'helper_missing', sending: true, peers: { aaa: { ice: 'new' } } });
+    expect(mesh.status()).toMatchObject({ helper: 'unavailable', reason: 'helper_missing', sending: true, fallback: true, peers: { aaa: { ice: 'new' } } });
     const g = stubHelper();
     g.ready();
     const second = createVideoMesh({ helper: g.helper, localId: 'bbb', sendSignal: () => undefined, log: () => undefined });
@@ -341,5 +376,75 @@ describe('the mesh and a helper that restarts', () => {
     second.setPeers(['aaa']);
     second.setSink({ kind: 'window' });
     expect(g.sent.slice(5)).toEqual([{ cmd: 'peer', id: 'aaa', initiator: false }, { cmd: 'sink', kind: 'window' }]);
+    expect(second.status().fallback).toBe(false);
+  });
+
+  it("D10.3.4 (2026-11-07): the first 0.2.37 match's order: the helper's status is ready, the mesh is made and synced, then the same generation's `ready` event lands: one `peer` command, nothing said twice", () => {
+    const h = stubHelper();
+    h.readyStatus(); // generation 1, ready; its `ready` event is still in the pipe
+    const log: string[] = [];
+    const mesh = createVideoMesh({ helper: h.helper, localId: 'bbb', sendSignal: () => undefined, log: (l) => log.push(l) });
+    mesh.setIce([{ urls: ['stun:s'] }]);
+    mesh.setSink({ kind: 'window' });
+    mesh.setPeers(['aaa']);
+    expect(h.sent.map((c) => c.cmd)).toEqual(['ice', 'source', 'sink', 'rungs', 'send', 'ice', 'sink', 'peer']);
+    h.say({ event: 'signal', id: 'aaa', kind: 'offer', sdp: 'v=0 from aaa' });
+    const n = h.sent.length;
+    // 200 ms later, tonight's second sync: now a no-op (the generation is synced); the peer that answered stands.
+    h.readyEvent();
+    expect(h.sent).toHaveLength(n);
+    expect(h.sent.filter((c) => c.cmd === 'peer')).toEqual([{ cmd: 'peer', id: 'aaa', initiator: false }]);
+    h.say({ event: 'peer', id: 'aaa', ice: 'connected', pair: 'srflx<->host' });
+    expect(mesh.status().peers.aaa).toMatchObject({ ice: 'connected', pair: 'srflx↔host', failed: false });
+    // A real restart (generation 2): everything again, the peer included.
+    h.set({ helper: 'starting', reason: 'restarting' });
+    h.sent.length = 0;
+    h.ready();
+    expect(h.sent).toEqual([
+      { cmd: 'ice', servers: [{ urls: ['stun:s'] }] },
+      { cmd: 'source', kind: 'none' },
+      { cmd: 'sink', kind: 'window' },
+      { cmd: 'rungs', max_kbps: 20_000 },
+      { cmd: 'send', on: false },
+      { cmd: 'peer', id: 'aaa', initiator: false },
+    ]);
+    expect(mesh.status().peers.aaa?.ice).toBe('new');
+  });
+
+  it('D10.3.6: a peer failed with the restarts exhausted sets `failed` and the fallback once, logged once; a plain failed (a restart coming) does not; a helper that goes unavailable mid-match falls back too', () => {
+    const h = stubHelper();
+    h.ready();
+    const log: string[] = [];
+    const statuses: NativeVideoStatus[] = [];
+    const mesh = createVideoMesh({ helper: h.helper, localId: 'bbb', sendSignal: () => undefined, log: (l) => log.push(l) });
+    mesh.onStatus((s) => statuses.push(s));
+    mesh.setPeers(['aaa', 'ccc']);
+    h.say({ event: 'peer', id: 'aaa', ice: 'checking' });
+    h.say({ event: 'peer', id: 'aaa', ice: 'failed' });
+    expect(mesh.status()).toMatchObject({ fallback: false, peers: { aaa: { ice: 'failed', failed: false } } });
+    h.say({ event: 'peer', id: 'aaa', ice: 'connected', pair: 'relay<->host', restarts: 1 });
+    expect(log).toContain('video: peer aaa: ice connected (relay↔host) after 1 restart');
+    h.say({ event: 'peer', id: 'ccc', ice: 'failed', restarts: 3, restarts_exhausted: true });
+    expect(mesh.status()).toMatchObject({ fallback: true, peers: { aaa: { ice: 'connected', failed: false }, ccc: { ice: 'failed', failed: true } } });
+    expect(statuses.at(-1)?.fallback).toBe(true);
+    const line = 'media: native video failed to connect (peer ccc, 3 restarts); the Electron video serves this match';
+    expect(log.filter((l) => l === line)).toHaveLength(1);
+    // Said once: a second peer failing, or the same one again, adds nothing; a connection later clears the peer's mark, not the fallback.
+    h.say({ event: 'peer', id: 'ccc', ice: 'failed', restarts: 3, restarts_exhausted: true });
+    h.say({ event: 'peer', id: 'aaa', ice: 'failed', restarts: 3, restarts_exhausted: true });
+    expect(log.filter((l) => l.startsWith('media: native video failed'))).toHaveLength(1);
+    h.say({ event: 'peer', id: 'ccc', ice: 'connected', pair: 'host<->host', restarts: 4 });
+    expect(mesh.status()).toMatchObject({ fallback: true, peers: { ccc: { ice: 'connected', failed: false } } });
+    expect(headsetVideoLine(mesh.status())).toBeNull();
+    // Another match (another mesh) on a helper that is gone for good: fallback at once, no line (the helper said its own).
+    const g = stubHelper();
+    g.ready();
+    const glog: string[] = [];
+    const second = createVideoMesh({ helper: g.helper, localId: 'bbb', sendSignal: () => undefined, log: (l) => glog.push(l) });
+    second.setPeers(['aaa']);
+    expect(second.status().fallback).toBe(false);
+    g.set({ helper: 'unavailable', reason: 'helper_failed:2' });
+    expect(second.status()).toMatchObject({ helper: 'unavailable', reason: 'helper_failed:2', fallback: true, peers: { aaa: { ice: 'new' } } });
+    expect(glog.filter((l) => l.startsWith('media:'))).toEqual([]);
   });
 });

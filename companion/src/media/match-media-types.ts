@@ -193,8 +193,17 @@ export interface NativeVideoStatus {
   ladder: NativeVideoRung[];
   maxKbps: number;
   pin: number | null;
-  /** Per remote player: ICE state, the selected pair ("srflx↔host"), the last counters each way and the rung in force for them. */
-  peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: NativeVideoRungState | null }>;
+  /**
+   * D10.3.6 (2026-11-07): the Electron video serves the rest of this match: a peer's connection failed with the
+   * helper's ICE restarts exhausted, or the helper is unavailable. Set once per match, never cleared before its end (a
+   * later native connection does not take the picture over mid-match).
+   */
+  fallback: boolean;
+  /**
+   * Per remote player: ICE state, the selected pair ("srflx↔host"), the last counters each way, the rung in force for
+   * them and `failed` (D10.3.6: the helper gave the connection up, restarts exhausted; it clears if it connects later).
+   */
+  peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: NativeVideoRungState | null; failed: boolean }>;
 }
 
 /** D2.8: see `MediaStatus.tableAudio`. */

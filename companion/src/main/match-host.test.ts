@@ -193,12 +193,14 @@ describe('match host (A6)', () => {
           eventCbs.add(cb);
           return () => void eventCbs.delete(cb);
         },
-        status: () => ({ helper: 'ready' as const, reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' }),
+        status: () => ({ helper: 'ready' as const, reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec', generation: 1 }),
         onStatus: () => () => undefined,
       };
       const of = (cmd: string) => sent.filter((c) => c.cmd === cmd);
-      return { helper, sent, of, started: () => started };
+      return { helper, sent, of, say, started: () => started };
     };
+    const lines: string[] = [];
+    const hostLog = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
     const hooks: Array<{ ring: string; onSource: (b: { width: number; height: number; fps: number } | null) => void; onWindow?: (w: { pid: number; title: string; width: number; height: number; fps: number } | null) => void } | null> = [];
     const media = {
       attach: async () => undefined,
@@ -221,7 +223,7 @@ describe('match host (A6)', () => {
     const hostSettings = createMediaSettingsStore(join(hdir, 'media.json'));
     // The real signalling over the match socket (match-setup.ts), as the shell wires it.
     const signalling = (role: Parameters<typeof matchSignalling>[0], id: string) => matchSignalling(role, id);
-    const H = make('vid-host', 'ab'.repeat(32), { media: media as never, mediaSettings: hostSettings, signalling, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
+    const H = make('vid-host', 'ab'.repeat(32), { media: media as never, mediaSettings: hostSettings, signalling, log: hostLog, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
     const C = make('vid-client', 'ab'.repeat(32), { signalling, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
     const port = 41000 + Math.floor(Math.random() * 2000);
     const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
@@ -288,6 +290,24 @@ describe('match host (A6)', () => {
     expect(hv.of('rungs').at(-1)).toEqual({ cmd: 'rungs', max_kbps: 500 });
     expect(H.mh.status().media?.nativeVideo?.ladder[4]).toEqual({ rung: 5, width: 720, height: 720, fps: 60, kbps: 4000 });
     H.mh.setVideoRungs({ maxKbps: 20_000 });
+    expect(H.mh.status().media?.nativeVideo?.fallback).toBe(false);
+    expect(hooks).toHaveLength(1);
+    // D10.3.6: the helper gives the client's connection up (its ICE restarts exhausted): the status says fallback, the
+    // line is logged once, and the hook comes off for the rest of the match: the media layer re-asks the camera without
+    // the ring, hands the window back and lets the page's video track send (rtc-host's setNativeVideo(null) tests).
+    hv.say({ event: 'peer', id: cid, ice: 'failed', restarts: 3, restarts_exhausted: true });
+    expect(H.mh.status().media?.nativeVideo).toMatchObject({ helper: 'ready', encoder: 'h264_nvenc', fallback: true, peers: { [cid]: { ice: 'failed', failed: true } } });
+    expect(lines.filter((l) => l.startsWith('media: native video failed'))).toEqual([`media: native video failed to connect (peer ${cid}, 3 restarts); the Electron video serves this match`]);
+    expect(lines).toContain('match: native video: the Electron video serves the rest of this match');
+    expect(hooks).toHaveLength(2);
+    expect(hooks.at(-1)).toBeNull();
+    // What the media layer answers with: the source handed back reaches the helper as `source none`.
+    hooks[0]?.onSource(null);
+    expect(hv.of('source').at(-1)).toEqual({ cmd: 'source', kind: 'none' });
+    // A native connection later does not take the picture over mid-match: the hook stays off, the flag holds.
+    hv.say({ event: 'peer', id: cid, ice: 'connected', pair: 'host<->host', restarts: 4 });
+    expect(H.mh.status().media?.nativeVideo).toMatchObject({ fallback: true, peers: { [cid]: { ice: 'connected', failed: false } } });
+    expect(hooks).toHaveLength(2);
     // Leaving closes the peer, stops sending and clears the rings; the helper itself is left for the next match.
     await C.mh.leave();
     expect(cv.of('close')).toEqual([{ cmd: 'close', id: hid }]);

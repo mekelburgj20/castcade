@@ -9,9 +9,15 @@
  *
  * Rules:
  *   - the wanted state is the whole truth (peers, sending, source, sink, ICE, rungs); only the difference from what the
- *     running helper was told goes out, and a helper that restarts (its `ready` again) is told it all again, peers
- *     included (their connections died with it: the other side's helper sees ICE fail and the match host there keeps
- *     its peer; our fresh `peer` command offers or waits as the rule says);
+ *     running helper was told goes out, and a helper that restarts (a new `generation` in its status) is told it all
+ *     again, peers included (their connections died with it: the other side's helper sees ICE fail and the match host
+ *     there keeps its peer; our fresh `peer` command offers or waits as the rule says). D10.3.4 (2026-11-07): the
+ *     told state is keyed on the helper's generation: ready seen twice for one generation (the status, then the
+ *     `ready` event 200 ms later, as in the first 0.2.37 match) syncs once; a second `peer` command would make the
+ *     helper replace a connection that has already answered, and both sides end `ice failed`;
+ *   - D10.3.6: a peer whose connection the helper gave up (`ice failed` with `restarts_exhausted`), or a helper that is
+ *     `unavailable`, sets `fallback` for the rest of the match: the match host hands the picture back to the Electron
+ *     video; a native connection that comes later does not take it over mid-match (no picture flapping);
  *   - a signal for a peer the helper has not been told yet (the roster names its sender after their first offer, or
  *     the helper is not ready) is held, at most `MAX_HELD_SIGNALS` per sender and `MAX_HELD_SENDERS` senders, and
  *     replayed in order after the `peer` command; a sender who never makes the roster is forgotten at `close`;
@@ -109,8 +115,8 @@ export function rungReadout(s: Pick<NativeVideoStatus, 'pin' | 'peers' | 'sendin
  * (`video: rung 3 · 1016x1080@60 · 7.8 Mbps · rtt 41 ms`); while a picture arrives, what comes in
  * (`video: in 1016x1080 · 60 fps · 7.8 Mbps`); null when there is nothing to say.
  */
-export function headsetVideoLine(s: Pick<NativeVideoStatus, 'helper' | 'sending' | 'peers'>): string | null {
-  if (s.helper !== 'ready') return null;
+export function headsetVideoLine(s: Pick<NativeVideoStatus, 'helper' | 'sending' | 'peers'> & Partial<Pick<NativeVideoStatus, 'fallback'>>): string | null {
+  if (s.helper !== 'ready' || s.fallback) return null;
   const peers = Object.values(s.peers);
   if (s.sending) {
     const r = peers.map((p) => p.rung).find((x) => x !== null) ?? null;
@@ -199,7 +205,8 @@ const statsOf = (e: VideoStatsEvent): NativeVideoStats => ({
   ...(typeof e.rung === 'number' ? { rung: e.rung } : {}),
   ...(typeof e.ctrl === 'string' ? { ctrl: e.ctrl } : {}),
 });
-const emptyPeer = (): PeerView => ({ ice: 'new', pair: null, send: null, recv: null, rung: null });
+const emptyPeer = (): PeerView => ({ ice: 'new', pair: null, send: null, recv: null, rung: null, failed: false });
+const restartWords = (n: unknown): string => (typeof n === 'number' && Number.isFinite(n) ? `${n} restart${n === 1 ? '' : 's'}` : 'restarts exhausted');
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const sourceBox = (s: VideoSource): { width: number; height: number; fps: number } => (s.kind === 'none' ? { width: 0, height: 0, fps: 0 } : { width: s.width, height: s.height, fps: s.fps });
 
@@ -213,18 +220,22 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
   let wantSink: VideoSink = { kind: 'none' };
   let wantIce: VideoIceServer[] = [];
   let wantRungs: VideoRungs = { max_kbps: DEFAULT_MAX_KBPS };
-  // ---- told to the running helper (null: not told since its last `ready`) ----
+  // ---- told to the running helper (null: not told since the generation `syncedGeneration` came up) ----
   const toldPeers = new Set<MatchPlayerId>();
   let toldSending: boolean | null = null;
   let toldSource: string | null = null;
   let toldSink: string | null = null;
   let toldIce: string | null = null;
   let toldRungs: string | null = null;
+  /** D10.3.4: the helper generation (`VideoHelperStatus.generation`) the told state belongs to; null: none synced yet. */
+  let syncedGeneration: number | null = null;
   // ---- what the helper says ----
   const peerViews = new Map<MatchPlayerId, PeerView>();
   const held = new Map<MatchPlayerId, MediaSignal[]>();
   let sourceState: { state: 'ok' | 'missing' | 'dead'; fpsIn: number; window: string | null } | null = null;
   let helperStatus: VideoHelperStatus = helper.status();
+  /** D10.3.6: the Electron video serves the rest of this match (set once; the mesh dies with the match). */
+  let fallback = false;
   let closed = false;
   let current: NativeVideoStatus | null = null;
 
@@ -239,8 +250,26 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     ladder: ladderFor(wantSource.kind === 'none' ? 0 : wantSource.width, wantSource.kind === 'none' ? 0 : wantSource.height),
     maxKbps: wantRungs.max_kbps,
     pin: wantRungs.pin ?? null,
+    fallback,
     peers: Object.fromEntries([...wantPeers].map((id) => [id, peerViews.get(id) ?? emptyPeer()])),
   });
+  /** D10.3.6: once per match; `why` is the log line (null: the helper said its own). */
+  const fallBack = (why: string | null): void => {
+    if (fallback) return;
+    fallback = true;
+    if (why) log(why);
+  };
+  /** The helper's state died (it is gone, or a new generation came up): nothing is told, its views are gone. */
+  const forget = (): void => {
+    toldPeers.clear();
+    toldSending = null;
+    toldSource = null;
+    toldSink = null;
+    toldIce = null;
+    toldRungs = null;
+    peerViews.clear();
+    sourceState = null;
+  };
   const emit = (): void => {
     const s = computed();
     if (current && JSON.stringify(s) === JSON.stringify(current)) return;
@@ -283,20 +312,22 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     }
   };
 
+  /**
+   * D10.3.4: a helper seen ready, from its status or its `ready` event (the status is current at both): a generation
+   * not synced yet (the first, or a restart) knows nothing and is told it all; one synced already is a no-op.
+   */
+  const onReady = (): void => {
+    helperStatus = helper.status();
+    if (helperStatus.helper !== 'ready' || helperStatus.generation === syncedGeneration) return;
+    forget();
+    syncedGeneration = helperStatus.generation;
+    sync();
+  };
+
   const onEvent = (e: VideoHelperEvent): void => {
     switch (e.event) {
       case 'ready':
-        // A fresh helper (the first, or a restart): it knows nothing; say it all again.
-        toldPeers.clear();
-        toldSending = null;
-        toldSource = null;
-        toldSink = null;
-        toldIce = null;
-        toldRungs = null;
-        peerViews.clear();
-        sourceState = null;
-        helperStatus = helper.status();
-        sync();
+        onReady();
         break;
       case 'signal': {
         if (typeof e.id !== 'string' || !wantPeers.has(e.id)) return;
@@ -312,8 +343,13 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
         const was = peerViews.get(e.id);
         const pair = e.pair === undefined ? (was?.pair ?? null) : pairWords(e.pair);
         const ice = typeof e.ice === 'string' ? e.ice : 'new';
-        peerViews.set(e.id, { ...(was ?? emptyPeer()), ice, pair });
-        if (was?.ice !== ice || was?.pair !== pair) log(`video: peer ${e.id}: ice ${ice}${pair ? ` (${pair})` : ''}`);
+        // D10.3.6: `failed` with the helper's restarts exhausted is final for this peer; a connection later clears the mark.
+        const gaveUp = ice === 'failed' && e.restarts_exhausted === true;
+        const failed = gaveUp || ((was?.failed ?? false) && ice !== 'connected' && ice !== 'completed');
+        peerViews.set(e.id, { ...(was ?? emptyPeer()), ice, pair, failed });
+        const after = (ice === 'connected' || ice === 'completed') && typeof e.restarts === 'number' && e.restarts > 0 ? ` after ${restartWords(e.restarts)}` : '';
+        if (was?.ice !== ice || was?.pair !== pair) log(`video: peer ${e.id}: ice ${ice}${pair ? ` (${pair})` : ''}${after}`);
+        if (gaveUp) fallBack(`media: native video failed to connect (peer ${e.id}, ${restartWords(e.restarts)}); the Electron video serves this match`);
         break;
       }
       case 'stats': {
@@ -349,22 +385,20 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
   const offEvent = helper.onEvent(onEvent);
   const offStatus = helper.onStatus((s) => {
     helperStatus = s;
-    if (s.helper !== 'ready') {
-      // The helper is gone (or going): its peers are gone with it; a `ready` later says it all again.
-      toldPeers.clear();
-      toldSending = null;
-      toldSource = null;
-      toldSink = null;
-      toldIce = null;
-      toldRungs = null;
-      peerViews.clear();
-      sourceState = null;
+    if (s.helper === 'ready') onReady();
+    else {
+      // The helper is gone (or going): its peers are gone with it; the next generation is told it all again.
+      forget();
+      // D10.3.6: gone for good (the helper logged why): the Electron video serves the rest of the match.
+      if (s.helper === 'unavailable') fallBack(null);
     }
     emit();
   });
-  // A helper that is ready already (a second match in one run): told the whole (empty) state now, as a helper that
-  // becomes ready later is told it all at its `ready`; the match host's own settings follow as single commands.
-  if (helperStatus.helper === 'ready') sync();
+  // A helper that is ready already (a second match in one run, or one that came up before the mesh): told the whole
+  // (empty) state now, once for its generation (its `ready` event, if it still follows, is a no-op); the match host's
+  // own settings follow as single commands. One that is unavailable: the Electron video serves this match.
+  onReady();
+  if (helperStatus.helper === 'unavailable') fallBack(null);
 
   return {
     setPeers(ids) {

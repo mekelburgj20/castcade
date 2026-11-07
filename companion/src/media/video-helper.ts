@@ -8,8 +8,9 @@
  * Rules (the audio helper's):
  *   - started at `start()`; a missing exe → `unavailable helper_missing`; a start-up failure (an exit before `ready`,
  *     or exit 2 / 64) → `unavailable helper_failed:<code>`; any other exit we did not ask for → a restart, at most one
- *     every `RESTART_MIN_MS`. The helper's state dies with it: a `ready` event (every one, a restart's too) is the
- *     caller's cue to tell it everything again (`send` returns false until then);
+ *     every `RESTART_MIN_MS`. The helper's state dies with it: a new `generation` in the status (one per spawn, current
+ *     before the `ready` event fans out) is the caller's cue to tell it everything again (`send` returns false until
+ *     then); the mesh syncs once per generation, whichever of the status and the event it sees first (D10.3.4);
  *   - stderr goes to the log line by line; a stdout line that is not a JSON object with an `event` is logged once per
  *     run of the helper and skipped;
  *   - `ready` = available, with the probe's `encoder` / `decoder` in the status;
@@ -139,7 +140,11 @@ export interface VideoRungEvent {
 export type VideoHelperEvent =
   | { event: 'ready'; version: string; encoder: string; decoder: string }
   | ({ event: 'signal' } & VideoSignalBody)
-  | { event: 'peer'; id: string; ice: VideoIceState; pair?: string | null }
+  /**
+   * D10.3.6 (2026-11-07): `restarts` counts the ICE restarts the helper made for this peer (with `connected`: how many it
+   * took); `restarts_exhausted: true` with `failed` means it gave up (its restart policy is spent): the mesh falls back.
+   */
+  | { event: 'peer'; id: string; ice: VideoIceState; pair?: string | null; restarts?: number | null; restarts_exhausted?: boolean | null }
   | VideoStatsEvent
   | VideoRungEvent
   /** `window` (D10.6): the window a `wgc` source is capturing, `"<title>" WxH (pid n)`, while it has one. */
@@ -171,6 +176,13 @@ export interface VideoHelperStatus {
   version: string | null;
   encoder: string | null;
   decoder: string | null;
+  /**
+   * D10.3.4 (2026-11-07): the spawn count: 0 before the first spawn, +1 at every spawn (a restart's too). The mesh keys
+   * what it told the helper on it: a `ready` for a generation it has synced already is a no-op (the first match on
+   * 0.2.37 synced at the status and again 200 ms later at the event, and the second `peer` command replaced a
+   * connection that had already answered). The status is current before the `ready` event fans out.
+   */
+  generation: number;
 }
 
 export interface VideoHelper {
@@ -215,7 +227,8 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
   let restartTimer: unknown = null;
   let probe: { version: string | null; encoder: string | null; decoder: string | null } = { version: null, encoder: null, decoder: null };
   let missingSaid = false;
-  let current: VideoHelperStatus = { helper: gaveUp ? 'unavailable' : 'stopped', reason: gaveUp, version: null, encoder: null, decoder: null };
+  let generation = 0;
+  let current: VideoHelperStatus = { helper: gaveUp ? 'unavailable' : 'stopped', reason: gaveUp, version: null, encoder: null, decoder: null, generation };
 
   const computed = (): VideoHelperStatus => ({
     helper: gaveUp ? 'unavailable' : ready ? 'ready' : child || restartTimer ? 'starting' : 'stopped',
@@ -223,6 +236,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
     version: probe.version,
     encoder: probe.encoder,
     decoder: probe.decoder,
+    generation,
   });
   const emit = (): void => {
     const s = computed();
@@ -271,6 +285,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
     }
     child = c;
     ready = false;
+    generation += 1;
     lastSpawn = now();
     let sawReady = false;
     let unreadableSaid = false;

@@ -9,6 +9,8 @@
 //   FAKE_VIDEO_STDERR=<text>   one stderr line at start
 //   FAKE_VIDEO_STATS_MS=<ms>   the stats interval (1000)
 //   FAKE_VIDEO_NAME=<name>     this helper's name in the SDP text it makes
+//   FAKE_VIDEO_ICE_FAIL=<n>    D10.3.6: every peer fails instead of connecting: `checking`, then `failed` with
+//                              `restarts: n, restarts_exhausted: true` (the helper's ICE restart policy spent)
 import process from 'node:process';
 import { createInterface } from 'node:readline';
 import { clearInterval, setInterval, setTimeout } from 'node:timers';
@@ -33,8 +35,12 @@ const sayRung = (id, reason) => {
 
 const connected = (id) => {
   const p = peers.get(id);
-  if (!p || p.timer) return;
+  if (!p || p.timer || p.failed) return;
   say({ event: 'peer', id, ice: 'checking' });
+  if (env.FAKE_VIDEO_ICE_FAIL !== undefined) {
+    p.failed = true;
+    return say({ event: 'peer', id, ice: 'failed', restarts: Number(env.FAKE_VIDEO_ICE_FAIL), restarts_exhausted: true });
+  }
   say({ event: 'peer', id, ice: 'connected', pair: 'srflx<->host' });
   sayRung(id, 'start');
   p.timer = setInterval(() => {
@@ -70,7 +76,7 @@ const handle = (line) => {
       return say({ event: 'log', level: 'info', text: `ice ${Array.isArray(m.servers) ? m.servers.length : 0} server(s)` });
     case 'peer': {
       if (typeof m.id !== 'string') return say({ event: 'error', code: 'bad_command', text: 'peer without id' });
-      peers.set(m.id, { initiator: !!m.initiator, timer: null });
+      peers.set(m.id, { initiator: !!m.initiator, timer: null, failed: false });
       if (m.initiator) say({ event: 'signal', id: m.id, kind: 'offer', sdp: `v=0 offer from ${name} to ${m.id}` });
       return;
     }

@@ -734,15 +734,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const mesh = createVideoMesh({ helper: nv.helper, localId: a.engine.localId, sendSignal: (to, s) => side.send(to, s), log: (l) => log.info(l) });
     a.video = mesh;
     a.offs.push(side.onSignal((from, s) => mesh.onSignal(from, s)));
-    a.offs.push(
-      mesh.onStatus(() => {
-        if (active !== a) return;
-        syncVideoLine(a);
-        emit();
-      }),
-    );
-    mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
-    mesh.setRungs(videoRungs());
     const hook: NativeVideoHook = {
       ring: nv.sendRing,
       onSource: (box) => mesh.setSource(box ? { kind: 'ring', token: nv.sendRing, ...box } : { kind: 'none' }),
@@ -752,14 +743,32 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     };
     // The hook (the camera asked with the ring, the window handed over, the page's video track held back) only while
     // the helper is ready: a helper that is missing, failed or restarting leaves the Electron video flowing meanwhile.
+    // D10.3.6: once the mesh falls back (a peer failed with the helper's restarts exhausted, or the helper is gone for
+    // good) the hook comes off for the rest of the match: the media layer re-asks the camera without the ring (the
+    // layer's JPEG frames feed the page again), hands the window back (`source none` to the helper) and lets the page's
+    // video track send, as 0.2.36 did; a native connection that comes later does not take the picture over.
     let hooked = false;
+    let fellBack = mesh.status().fallback;
     const syncHook = (): void => {
-      const ready = nv.helper.status().helper === 'ready';
-      if (ready === hooked) return;
-      hooked = ready;
-      opts.media?.setNativeVideo?.(ready ? hook : null);
-      if (!ready) log.info('match: native video: the helper is not ready; the Electron video serves until it is');
+      const want = !fellBack && nv.helper.status().helper === 'ready';
+      if (want === hooked) return;
+      hooked = want;
+      opts.media?.setNativeVideo?.(want ? hook : null);
+      if (!want) log.info(fellBack ? 'match: native video: the Electron video serves the rest of this match' : 'match: native video: the helper is not ready; the Electron video serves until it is');
     };
+    a.offs.push(
+      mesh.onStatus((s) => {
+        if (active !== a) return;
+        if (s.fallback && !fellBack) {
+          fellBack = true;
+          syncHook();
+        }
+        syncVideoLine(a);
+        emit();
+      }),
+    );
+    mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
+    mesh.setRungs(videoRungs());
     a.offs.push(nv.helper.onStatus(() => void (active === a && a.video === mesh && syncHook())));
     syncHook();
     const h = nv.helper.status();

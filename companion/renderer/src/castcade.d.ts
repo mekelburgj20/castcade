@@ -458,7 +458,9 @@ interface NativeVideoStatus {
   ladder: NativeVideoRung[];
   maxKbps: number;
   pin: number | null;
-  peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: (NativeVideoRung & { reason: string }) | null }>;
+  /** D10.3.6: the Electron video serves the rest of this match (a peer failed with the restarts exhausted, or the helper is unavailable). */
+  fallback: boolean;
+  peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: (NativeVideoRung & { reason: string }) | null; failed: boolean }>;
 }
 interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
