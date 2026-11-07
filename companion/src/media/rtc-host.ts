@@ -32,6 +32,8 @@
  * (`cameraCapture`, `sourceId: 'layer-camera'`) and the frames (both eyes' JPEGs, one in flight, newest wins; one a
  * second while another player is up). A 1 s tick and every camera status run `cameraWatch`; on a fallback the camera
  * is stopped, logged (`media: camera: back to the screen capture: <reason>`) and the screen capture picked as usual.
+ * D10.3.7 (2026-11-07): a stop the layer reports is given 1 s for its `on` before it counts, and the layer's own
+ * restart for a changed request (`off (a new request)`) never does (layer-camera.ts).
  * Nothing falls forward to the layer again within the match, except the player choosing it again on the Match tab
  * (taken between balls). D8.1 (2026-11-05, ADR 0009): the layer is the default on VR rigs and asks for ONE eye
  * (`setCameraEyes`, match settings `cameraEyes`, `one` by default: the request's `eye: 'left'`); the capture is then
@@ -52,7 +54,7 @@ import { join } from 'node:path';
 import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
-import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
+import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraStopReason, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
 import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
@@ -142,6 +144,12 @@ export interface RtcHost extends MatchMedia {
    * `onWindow` (D10.6), the picked VPX window goes to the hook for the helper's own capture of it and the page's video
    * track is held back the same way; without `onWindow` the Electron video keeps flowing as in 0.2.36. Null: the
    * 0.2.36 path.
+   *
+   * D10.3.7 (2026-11-07): the match host sets the hook BEFORE `attach`, whatever the helper's state (the ring tokens
+   * exist at companion start; the layer creates and fills the ring whether or not a helper reads it yet), so the very
+   * first camera request carries the ring and no re-ask follows when the helper comes up. A hook set while a camera
+   * runs still re-asks the layer (the layer restarts the camera: `off (a new request)`, then `on`; the watch tolerates
+   * that), which is now only the D10.3.6 fallback's `setNativeVideo(null)`.
    */
   setNativeVideo(hook: NativeVideoHook | null): void;
   /**
@@ -630,7 +638,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const cameraStereo = (): VrStereo => (cameraEyeFor(cameraEyes) ? 'mono' : 'sbs');
   let vrRuntime: CameraDecisionInput['runtime'] = null;
   /** The camera feeding this attach (null: the screen capture path, as before D7.5.1). */
-  type CameraRun = { gen: number; askedAt: number; connectedAt: number | null; off: Array<() => void>; timer: ReturnType<typeof setInterval>; lastPostAt: number };
+  type CameraRun = {
+    gen: number;
+    askedAt: number;
+    connectedAt: number | null;
+    off: Array<() => void>;
+    timer: ReturnType<typeof setInterval>;
+    lastPostAt: number;
+    /** D10.3.7: when the layer's current stop (`cameraStopReason`) was first seen; null while it is not stopped. */
+    stopSeenAt: number | null;
+  };
   let cam: CameraRun | null = null;
   const camSlot = createFrameSlot<PanelCameraFrame>();
   /** Why the camera was given up in this match (never asked again within it, unless the Match tab says layer again). */
@@ -1276,8 +1293,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const now = Date.now();
     const layerProtocol = cameraLayer.layerProtocol?.() ?? null;
     if (layerProtocol !== null && c.connectedAt === null) c.connectedAt = now;
+    const status = cameraLayer.cameraStatus();
+    // D10.3.7: a stop the layer reported gets 1 s for its `on` (its own restart for a new request never counts).
+    if (cameraStopReason(status) === null) c.stopSeenAt = null;
+    else c.stopSeenAt ??= now;
     // D10.3: asked with a ring, the layer sends no JPEG frame on the pipe: only its own answers count.
-    const w = cameraWatch({ status: cameraLayer.cameraStatus(), now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status(), ring: native !== null });
+    const w = cameraWatch({ status, now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status(), ring: native !== null, ...(c.stopSeenAt !== null ? { stoppedSince: c.stopSeenAt } : {}) });
     if (w.fallBack) cameraBack(c.gen, w.reason ?? 'no reason given');
   };
   /** Ask the layer and hold the synthetic capture; the screen capture is not opened. The pid is probed for table sound. */
@@ -1287,7 +1308,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const req = cameraRequest();
     log.info(`media: camera: the VR layer (${reason}): ${cameraAskWords(req)}; no screen capture`);
     camSlot.reset();
-    const run: CameraRun = { gen, askedAt: Date.now(), connectedAt: null, off: [], timer: setInterval(() => checkCamera(run), CAMERA_WATCH_MS), lastPostAt: 0 };
+    const run: CameraRun = { gen, askedAt: Date.now(), connectedAt: null, off: [], timer: setInterval(() => checkCamera(run), CAMERA_WATCH_MS), lastPostAt: 0, stopSeenAt: null };
     cam = run;
     run.off.push(layer.onCameraFrame((f) => cameraFrame(run, f)));
     run.off.push(layer.onCameraStatus(() => checkCamera(run)));

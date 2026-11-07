@@ -5,6 +5,7 @@ import {
   cameraFallback,
   cameraFrameEyes,
   cameraRequestFor,
+  cameraStopReason,
   cameraViewWords,
   cameraWatch,
   createFrameSlot,
@@ -13,7 +14,9 @@ import {
   LAYER_CAMERA_DEFAULT_REQUEST,
   LAYER_CAMERA_FALLBACK_MS,
   LAYER_CAMERA_PIPE_WAIT_MS,
+  LAYER_CAMERA_RESTART_WHY,
   LAYER_CAMERA_STALL_MS,
+  LAYER_CAMERA_STOP_GRACE_MS,
   type CameraDecisionInput,
   type CameraWatchInput,
 } from './layer-camera.js';
@@ -158,6 +161,29 @@ describe('cameraWatch (D7.5.1)', () => {
     expect(cameraWatch({ ...flowing, now: 12_000, sending: true }).fallBack).toBe(false);
     expect(cameraWatch({ ...flowing, now: 13_000, sending: true }).reason).toBe('the layer camera stalled (no frame for 3 s)');
     expect(cameraWatch({ ...flowing, now: 60_000, sending: false }).fallBack).toBe(false);
+  });
+
+  it("D10.3.7 (2026-11-07): the layer's own restart (`a new request`) is never a stop; another stop gets 1 s for its `on` when the caller says when it saw it, none otherwise; with or without the ring", () => {
+    expect(LAYER_CAMERA_RESTART_WHY).toBe('a new request');
+    expect(LAYER_CAMERA_STOP_GRACE_MS).toBe(1000);
+    expect(cameraStopReason(st({ why: 'a new request' }))).toBe('a new request');
+    expect(cameraStopReason({ state: 'off', why: 'the session ended' })).toBe('the session ended');
+    expect(cameraStopReason(st({}))).toBeNull();
+    expect(cameraStopReason(st({ state: 'on', why: 'stale' }))).toBeNull();
+    expect(cameraStopReason(st({ state: 'refused', why: 'GL 3.1' }))).toBeNull();
+    const on = { ...base, layerProtocol: 3, askedAt: 0, connectedAt: 0 };
+    for (const ring of [false, true]) {
+      const restart = { ...on, ring, status: st({ why: 'a new request' }) };
+      expect(cameraWatch({ ...restart, now: 500 }).fallBack).toBe(false);
+      expect(cameraWatch({ ...restart, now: 500, stoppedSince: 0 }).fallBack).toBe(false);
+      expect(cameraWatch({ ...restart, now: 60_000, stoppedSince: 0 }).fallBack).toBe(false);
+      const stop = { ...on, ring, status: st({ why: 'the session ended' }) };
+      expect(cameraWatch({ ...stop, now: 5_000, stoppedSince: 4_001 }).fallBack).toBe(false);
+      expect(cameraWatch({ ...stop, now: 5_000, stoppedSince: 4_000 })).toEqual({ fallBack: true, reason: 'the layer stopped the camera: the session ended' });
+      expect(cameraWatch({ ...stop, now: 5_000 })).toEqual({ fallBack: true, reason: 'the layer stopped the camera: the session ended' });
+    }
+    // The immediate rule too: the restart's `off` is not a stop.
+    expect(cameraFallback({ state: 'off', why: 'a new request', lastFrameAt: null, frames: 0 }, 0, 0, true).fallBack).toBe(false);
   });
 });
 

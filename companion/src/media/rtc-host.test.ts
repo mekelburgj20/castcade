@@ -1204,6 +1204,59 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     expect(cam.asks.at(-1)).toBeNull();
   });
 
+  it("D10.3.7 (2026-11-07): the hook set before the attach puts the ring on the FIRST request; the layer's `off (a new request)` → `on` keeps the camera; another stop falls back only without an `on` within 1 s; refused at once", async () => {
+    const boxes: unknown[] = [];
+    const hook = { ring: 'send_tok_ABCDEFGH', onSource: (b: unknown) => void boxes.push(b) };
+    const cam = fakeLayer(3);
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setCameraLayer(cam.layer);
+    host.setCameraEyes('both');
+    host.setCameraSource('layer');
+    host.setNativeVideo(hook);
+    await host.setVr(VD);
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    await settle();
+    const fallbacks = () => logs.filter((l) => l.includes('back to the screen capture'));
+    // One ask, with the ring, whatever the helper's state: nothing to re-ask when the helper comes up.
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30, ring: 'send_tok_ABCDEFGH' }]);
+    expect(boxes).toEqual([{ width: 720, height: 1440, fps: 30 }]);
+    cam.status({ state: 'on', why: null });
+    // The owner's log (21:21:55Z): the layer restarts the camera for a changed request: an `off` whose why is
+    // `a new request` (vr-layer.ts keeps the state `asked` with the layer's why), then `on` 5 ms later.
+    cam.status({ state: 'asked', why: 'a new request' });
+    expect(fallbacks()).toEqual([]);
+    vi.advanceTimersByTime(5);
+    cam.status({ state: 'on', why: null });
+    vi.advanceTimersByTime(30_000);
+    expect(fallbacks()).toEqual([]);
+    expect(cam.asks).toHaveLength(1);
+    // A stop for another reason that the layer takes back within 1 s: the camera is kept.
+    cam.status({ state: 'asked', why: 'the session ended' });
+    vi.advanceTimersByTime(999);
+    expect(fallbacks()).toEqual([]);
+    cam.status({ state: 'on', why: null });
+    vi.advanceTimersByTime(5_000);
+    expect(fallbacks()).toEqual([]);
+    // The same stop with no `on`: the screen capture once the grace is over (the 1 s tick after it).
+    cam.status({ state: 'asked', why: 'the session ended' });
+    vi.advanceTimersByTime(999);
+    expect(fallbacks()).toEqual([]);
+    vi.advanceTimersByTime(1_001);
+    expect(fallbacks()).toEqual(['media: camera: back to the screen capture: the layer stopped the camera: the session ended']);
+    expect(cam.asks.at(-1)).toBeNull();
+    expect(boxes.at(-1)).toBeNull();
+    await host.detach();
+    // Refused: at once, no grace (a new match asks afresh, with the ring).
+    await host.attach(signalling('owner').sig, ['krobs']);
+    await settle();
+    expect(cam.asks.at(-1)).toEqual({ width: 720, height: 1440, fps: 30, ring: 'send_tok_ABCDEFGH' });
+    cam.status({ state: 'refused', why: 'multisampled swapchain' });
+    expect(fallbacks().at(-1)).toBe('media: camera: back to the screen capture: the layer refused the camera: multisampled swapchain');
+    await host.detach();
+  });
+
   it('D10.3: native video on but the capture is the screen (the Match tab on screen capture): the Electron video flows as in 0.2.36, the hook hears nothing', async () => {
     const boxes: unknown[] = [];
     const cam = fakeLayer(3);

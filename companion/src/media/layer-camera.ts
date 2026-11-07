@@ -25,6 +25,13 @@
  * and asks for ONE eye (`cameraEyes: 'one'`: the request's `eye`, the left one), sent as a flat picture; a one-eye
  * frame from the layer, or the asked eye out of a two-eye frame from a layer that predates `eye`. The two-eye path
  * (`cameraEyes: 'both'`, the stereo window) stays as shipped in 0.2.35. The rules above are unchanged.
+ *
+ * D10.3.7 (2026-11-07, the second 0.2.38 match): a changed request (a new box, eye, fps or ring) makes the layer stop
+ * and restart the camera on its own: an `off` status whose `why` is `a new request` (`vr-layer/src/camera.cpp`), then
+ * `on` a few ms later. That `off` is never the layer giving up (`LAYER_CAMERA_RESTART_WHY`), and any other stop falls
+ * back only when no `on` follows within `LAYER_CAMERA_STOP_GRACE_MS` (the caller says when it first saw the stop,
+ * `CameraWatchInput.stoppedSince`). The owner's rig fell back to the screen capture on its own re-ask with the ring,
+ * 5 ms after the layer had logged `camera: on`, and sent the preview window for the whole match.
  */
 import type { LayerCameraEyeSide, LayerCameraRequest, LayerCameraStatus } from './match-media-types.js';
 
@@ -53,6 +60,21 @@ export const LAYER_CAMERA_FALLBACK_MS = 8000;
 export const LAYER_CAMERA_STALL_MS = 3000;
 /** The first protocol with the camera (vr-layer.ts VR_LAYER_CAMERA_PROTOCOL). */
 export const LAYER_CAMERA_MIN_PROTOCOL = 3;
+/**
+ * D10.3.7: the `why` of the `off` the layer sends when it restarts the camera for a changed request
+ * (`vr-layer/src/camera.cpp`: `I.stop("a new request", …)`, then `on`): the camera comes back by itself; never a fallback.
+ */
+export const LAYER_CAMERA_RESTART_WHY = 'a new request';
+/** D10.3.7: a stop with any other reason falls back only when no `on` follows within this long. */
+export const LAYER_CAMERA_STOP_GRACE_MS = 1000;
+
+/**
+ * D10.3.7: the layer stopped the camera on its own word while it was asked (`vr-layer.ts` keeps the state `asked`
+ * with the layer's `why`; `off` with a `why` once nothing is asked): the reason, or null for any other state.
+ */
+export function cameraStopReason(s: Pick<LayerCameraStatus, 'state' | 'why'>): string | null {
+  return (s.state === 'asked' || s.state === 'off') && s.why ? s.why : null;
+}
 
 export const LAYER_CAMERA_DEFAULT_REQUEST: LayerCameraRequest = { width: 720, height: 1440, fps: LAYER_CAMERA_FPS };
 
@@ -143,7 +165,8 @@ export interface CameraFallback {
  */
 export function cameraFallback(s: LayerCameraStatus, now: number, askedAt: number | null, sending: boolean): CameraFallback {
   if (s.state === 'refused') return { fallBack: true, reason: `the layer refused the camera: ${s.why ?? 'no reason given'}` };
-  if (s.state === 'off' && s.why) return { fallBack: true, reason: `the layer stopped the camera: ${s.why}` };
+  // D10.3.7: the layer's own restart for a changed request is not a stop.
+  if (s.state === 'off' && s.why && s.why !== LAYER_CAMERA_RESTART_WHY) return { fallBack: true, reason: `the layer stopped the camera: ${s.why}` };
   if (s.state === 'asked' && askedAt !== null && now - askedAt >= LAYER_CAMERA_FALLBACK_MS) {
     return { fallBack: true, reason: `no frame from the layer within ${LAYER_CAMERA_FALLBACK_MS / 1000} s of asking` };
   }
@@ -179,6 +202,11 @@ export interface CameraWatchInput {
    * The layer's own answers (refused, stopped, protocol 2, pipe closed) still count.
    */
   ring?: boolean;
+  /**
+   * D10.3.7: when the caller first saw the stop `cameraStopReason(status)` names (ms clock): the fallback waits
+   * `LAYER_CAMERA_STOP_GRACE_MS` from then for the layer's `on`. Absent: no grace (a stop falls back at once).
+   */
+  stoppedSince?: number;
 }
 
 /**
@@ -186,8 +214,9 @@ export interface CameraWatchInput {
  * 4): `cameraFallback` plus what only the pipe tells: a layer that turns out to speak protocol 2, an overlay that
  * cannot run, a pipe that never opened (`LAYER_CAMERA_PIPE_WAIT_MS`) or closed after it had (VPX exited or left VR), a
  * layer that stopped the camera on its own while still asked (`vr-layer.ts` then keeps the state `asked` with the
- * layer's `why`), and a layer that said `on` and sent nothing. The 8 s "no frame" clock runs from when the layer came
- * on the pipe, not from the ask.
+ * layer's `why`; D10.3.7: never for its own restart, `LAYER_CAMERA_RESTART_WHY`, and otherwise only once no `on`
+ * followed within `LAYER_CAMERA_STOP_GRACE_MS` of `stoppedSince`), and a layer that said `on` and sent nothing. The 8 s
+ * "no frame" clock runs from when the layer came on the pipe, not from the ask.
  */
 export function cameraWatch(i: CameraWatchInput): CameraFallback {
   if (i.layerProtocol !== null && i.layerProtocol < LAYER_CAMERA_MIN_PROTOCOL) {
@@ -200,7 +229,12 @@ export function cameraWatch(i: CameraWatchInput): CameraFallback {
     return { fallBack: false, reason: null };
   }
   const since = Math.max(i.askedAt, i.connectedAt ?? i.askedAt);
-  if (i.status.state === 'asked' && i.status.why) return { fallBack: true, reason: `the layer stopped the camera: ${i.status.why}` };
+  const stop = cameraStopReason(i.status);
+  if (stop !== null) {
+    if (stop === LAYER_CAMERA_RESTART_WHY) return { fallBack: false, reason: null };
+    if (i.stoppedSince !== undefined && i.now - i.stoppedSince < LAYER_CAMERA_STOP_GRACE_MS) return { fallBack: false, reason: null };
+    return { fallBack: true, reason: `the layer stopped the camera: ${stop}` };
+  }
   if (i.ring) {
     // The frames go to the ring, not the pipe: only the layer's own word counts (the two frame clocks below never run).
     return cameraFallback(i.status, i.now, since, false);

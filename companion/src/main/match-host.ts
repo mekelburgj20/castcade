@@ -741,20 +741,25 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // the helper captures that window itself (`source wgc`) in the box and at the fps the Electron capture would use.
       onWindow: (w) => mesh.setSource(w ? { kind: 'wgc', ...w } : { kind: 'none' }),
     };
-    // The hook (the camera asked with the ring, the window handed over, the page's video track held back) only while
-    // the helper is ready: a helper that is missing, failed or restarting leaves the Electron video flowing meanwhile.
-    // D10.3.6: once the mesh falls back (a peer failed with the helper's restarts exhausted, or the helper is gone for
-    // good) the hook comes off for the rest of the match: the media layer re-asks the camera without the ring (the
-    // layer's JPEG frames feed the page again), hands the window back (`source none` to the helper) and lets the page's
-    // video track send, as 0.2.36 did; a native connection that comes later does not take the picture over.
+    // The hook (the camera asked with the ring, the window handed over, the page's video track held back) goes on now,
+    // before the media attaches and whatever the helper's state (D10.3.7, 2026-11-07): the ring tokens exist at
+    // companion start, the layer creates and fills the ring whether or not a helper reads it yet, and the helper opens
+    // it when it is ready. 0.2.38 set the hook only once the helper was ready, which on the owner's rig was 0.5 s after
+    // the camera had started without the ring: the re-ask made the layer restart the camera (`off (a new request)`),
+    // the watch took that for the layer giving up and the preview window was sent for the whole match.
+    // D10.3.6: once the mesh falls back (a peer failed with the helper's restarts exhausted, the helper gone for good,
+    // or a peer that never connected) the hook comes off for the rest of the match: the media layer re-asks the camera
+    // without the ring (the layer's JPEG frames feed the page again), hands the window back (`source none` to the
+    // helper) and lets the page's video track send, as 0.2.36 did; a native connection that comes later does not take
+    // the picture over.
     let hooked = false;
     let fellBack = mesh.status().fallback;
     const syncHook = (): void => {
-      const want = !fellBack && nv.helper.status().helper === 'ready';
+      const want = !fellBack;
       if (want === hooked) return;
       hooked = want;
       opts.media?.setNativeVideo?.(want ? hook : null);
-      if (!want) log.info(fellBack ? 'match: native video: the Electron video serves the rest of this match' : 'match: native video: the helper is not ready; the Electron video serves until it is');
+      if (!want) log.info('match: native video: the Electron video serves the rest of this match');
     };
     a.offs.push(
       mesh.onStatus((s) => {
@@ -769,7 +774,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     );
     mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
     mesh.setRungs(videoRungs());
-    a.offs.push(nv.helper.onStatus(() => void (active === a && a.video === mesh && syncHook())));
     syncHook();
     const h = nv.helper.status();
     log.info(`match: native video: on for this match (helper ${h.helper}${h.reason ? `, ${h.reason}` : ''}; send ring ${nv.sendRing}, recv ring ${nv.recvRing})`);
