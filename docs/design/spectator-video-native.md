@@ -103,3 +103,76 @@ quirks already ironed out; its D10 change is the NV12 readback and the shared-me
   rigs only.
 - Nothing native compiles on the dev machine today (E7): every fix is a CI round until the toolchain is installed.
 - The Electron path stays shippable for one release as the fallback; it is removed in D10.7, not before.
+
+## 6. Contracts (fixed 2026-11-07 by the lead after ADR 0010; decisions made without the owner, revert if wrong)
+
+Three contracts let D10.1 (the helper), D10.2 (the layer) and D10.3 (the companion) be built in parallel.
+
+### 6.1 The frame ring, layer ↔ helper — `video-helper/include/castcade_frame_ring.h`
+
+A named shared-memory section and a named event per direction (`send`: layer → helper, the eye this rig sends;
+`recv`: helper → layer, the decoded picture of the player who is up), three slots, newest wins, BGRA top-down in
+version 1 (the layer already produces BGRA for its JPEG path; the helper converts to NV12 with libyuv, which ships in
+the libwebrtc archive). NV12 in the ring is D10.2.1, only if the helper's conversion shows in the numbers. The
+companion hands both sides the same token (a fresh one per companion start) in their control messages; the producer
+creates the section, the consumer opens it. Decision: a ring in both directions instead of a shared D3D11 texture
+handle for the decoded picture, because Chuck's VPX is OpenGL and one mechanism must serve both; a 1354x1440 BGRA
+frame is 7.8 MB, 470 MB/s at 60 fps, a memcpy a desktop never notices.
+
+### 6.2 The helper's stdio protocol, companion ↔ `castcade-video.exe` — `video-helper/README.md`
+
+The shape of `castcade-audio.exe`: the companion spawns the helper, writes one JSON object per line to its stdin,
+reads one JSON object per line from its stdout (events), copies stderr into its log. Nothing binary on these pipes
+(frames go through the rings). Exit codes as the audio helper (2 = bad arguments, 64 = cannot run here).
+
+Commands (companion → helper):
+
+| `cmd` | Fields | Meaning |
+|---|---|---|
+| `ice` | `servers: [{urls: [..], username?, credential?}]` | The ICE servers for every peer made after this (the companion's STUN list and TURN entry, media-settings.ts). |
+| `peer` | `id` (the remote player's id), `initiator: bool` | Make a PeerConnection for that remote player with one `sendrecv` video transceiver (H.264 only, packetization mode 1). The initiator makes the offer now; the other waits for it. One PC per pair for the whole match; nothing is renegotiated. |
+| `signal` | `id`, `kind: offer \| answer \| ice`, `sdp?`, `candidate?` (`{candidate, sdpMid, sdpMLineIndex}`) | The remote side's signal for that peer, relayed from `MEDIA_SIGNAL` with `channel: "video"`. |
+| `close` | `id` | Close that peer. |
+| `source` | `kind: ring \| bench \| none`, `token?`, `width`, `height`, `fps` | Where the frames this rig sends come from: the `send` ring named by the token (the layer fills it), a synthetic bench picture, or nothing. |
+| `send` | `on: bool` | Whether this rig is sending now (the player up): the encoder runs and the video sender is active; off = the track is paused (the transceiver stays). |
+| `rungs` | `max_kbps`, `pin?: int \| null` | The ladder ceiling (the host's, D8.2 / D10.5) and an optional manual pin to one rung; absent = the controller chooses. v1 of the helper: the ceiling clamps libwebrtc's `max_bitrate_bps`; the ladder itself is D10.5. |
+| `sink` | `kind: ring \| window \| none`, `token?` | Where decoded frames go: the `recv` ring (the layer draws it), a window the helper opens itself (desktop watchers, D10.4), or nowhere. |
+| `quit` | | Close everything and exit 0. Closing stdin does the same. |
+
+Events (helper → companion):
+
+| `event` | Fields |
+|---|---|
+| `ready` | `version`, `encoder` (the probe's choice: `h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`), `decoder` |
+| `signal` | `id`, `kind`, `sdp?`, `candidate?` — to be wrapped in `MEDIA_SIGNAL {channel: "video", to: id}` |
+| `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line) |
+| `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?` |
+| `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the ring's health |
+| `error` | `code` (`bad_command`, `peer_unknown`, `ring_open_failed`, `encoder_failed`, …), `text` |
+| `log` | `level: info \| warn`, `text` |
+
+### 6.3 The signalling field — `protocol/src/messages.ts`
+
+`MEDIA_SIGNAL` gains `channel: "rtc" | "video"`, optional, default `"rtc"` (the Electron peer connection that carries
+voice, and video until D10.7). `"video"` signals belong to the native helper's peer connection for the same pair.
+Additive and never logged, so the protocol version stays 3 (the rule of version.ts: a peer that does not know the
+field drops the frame, which only costs it the native video). The companion's `SignalingMesh` passes `video` signals
+to the helper manager instead of the panel page.
+
+### 6.4 The companion's side — `companion/src/media/video-helper.ts`, `video-mesh.ts`
+
+`video-helper.ts` is `audio-helper.ts`'s twin: resolve the exe (`resources/video-helper/`, dev: `video-helper/build/
+Release/`), spawn, JSON lines both ways, restart once per 5 s on an exit we did not ask for, every failure a status
+never a blocker. `video-mesh.ts` owns the peers: one per remote participant for the match's life, `initiator` =
+the lower player id (the rule `isPolite` in rtc-signaling.ts already encodes), `send on` when this rig is the player
+up, `sink ring` on VR rigs (the token also goes to the layer in the `CVC1` control as `"video": {"ring": token}` and
+the camera request as `"ring": token`, both additive on pipe protocol 3), `sink window` on desktop rigs. The Electron
+video path stays selectable (`videoPath: "native" | "electron"` in media settings, `native` the default where the
+helper is present) for one release, as §4 D10.7 says.
+
+### 6.5 What the layer does (D10.2) — `vr-layer/`
+
+The camera request gains `"ring": "<token>"`: with it, the scaled eye goes into the `send` ring as BGRA instead of
+being JPEG-encoded (the JPEG path stays for a companion that does not send a token, and as the fallback when the ring
+cannot be created). The control gains `"video": {"ring": "<token>"}`: with it, theater takes its frames from the
+`recv` ring instead of `CVO2` (which stays). Layer version 0.6.0, pipe protocol still 3.
