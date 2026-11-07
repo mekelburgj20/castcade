@@ -66,6 +66,10 @@ castcade-video.exe --bench [--seconds 10] [--width 1354 --height 1440 --fps 60] 
                            [--rate-policy limited|naive] [--rate-jitter 5] [--encoder <name>]
 castcade-video.exe --ring-selftest       a send ring produced and consumed in this process, 60 fps for 3 s
 castcade-video.exe --loopback-selftest [--seconds 5]   two in-process peers over real libwebrtc (the CI smoke)
+castcade-video.exe --wgc-selftest [--pid n | --title "..."] [--seconds 5]   capture one window with Windows Graphics
+                                         Capture (D10.6): default any "Visual Pinball Player", else this console
+                                         window; prints frames, size, mean copy + map µs. Where WGC cannot run (no
+                                         desktop session: CI) it prints `skipped: no capture session` and exits 0.
 ```
 
 Exit codes as the audio helper: 0 normal (also after `quit` or stdin EOF), 2 the helper cannot run here (no H.264
@@ -96,7 +100,7 @@ Commands (companion → helper):
 | `peer` | `id` (the remote player's id), `initiator: bool` | Make a PeerConnection for that remote player with one `sendrecv` video transceiver (H.264 only, packetization mode 1). The initiator makes the offer now; the other waits for it. One PC per pair for the whole match; nothing is renegotiated. |
 | `signal` | `id`, `kind: offer \| answer \| ice`, `sdp?`, `candidate?` (`{candidate, sdpMid, sdpMLineIndex}`) | The remote side's signal for that peer, relayed from `MEDIA_SIGNAL` with `channel: "video"`. |
 | `close` | `id` | Close that peer. |
-| `source` | `kind: ring \| bench \| none`, `token?`, `width`, `height`, `fps` | Where the frames this rig sends come from: the `send` ring named by the token (the layer fills it), a synthetic bench picture, or nothing. |
+| `source` | `kind: ring \| bench \| wgc \| none`, `token?`, `pid?`, `title?`, `width`, `height`, `fps` | Where the frames this rig sends come from: the `send` ring named by the token (the layer fills it), a synthetic bench picture, the VPX window itself captured by the helper (`wgc`, D10.6: see below), or nothing. |
 | `send` | `on: bool` | Whether this rig is sending now (the player up): the encoder runs and the video sender is active; off = the track is paused (the transceiver stays). |
 | `rungs` | `max_kbps`, `pin?: int \| null` | The ladder ceiling (the host's, D8.2 / D10.5) and an optional manual pin to one rung; absent = the controller chooses. v1 of the helper: the ceiling clamps libwebrtc's `max_bitrate_bps`; the ladder itself is D10.5. |
 | `sink` | `kind: ring \| window \| none`, `token?` | Where decoded frames go: the `recv` ring (the layer draws it), a window the helper opens itself (desktop watchers, D10.4), or nowhere. |
@@ -110,7 +114,7 @@ Events (helper → companion):
 | `signal` | `id`, `kind`, `sdp?`, `candidate?` — to be wrapped in `MEDIA_SIGNAL {channel: "video", to: id}` |
 | `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line) |
 | `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?` |
-| `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the ring's health |
+| `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the source's health; `window?` (wgc) the window captured |
 | `error` | `code` (`bad_command`, `peer_unknown`, `ring_open_failed`, `encoder_failed`, …), `text` |
 | `log` | `level: info \| warn`, `text` |
 
@@ -140,6 +144,29 @@ Events (helper → companion):
   from the ring in the last second, whether or not sending), `convert_us` (BGRA → NV12 average) and `skipped` (frames
   the producer lapped). `width`/`height` are informational for a ring (the frames carry their own size; a size change
   re-opens the encoder). For `bench` they set the picture (480x300 minimum, even, fps 1–120).
+- `source wgc` (D10.6, `src/source_wgc.cpp`; the non-VR sender of §3 point 1):
+  `{"cmd":"source","kind":"wgc","pid":<n>,"title":"<words>","width":w,"height":h,"fps":f}`. The helper looks for the
+  largest visible, unminimised, uncloaked top-level window of `pid` (0 = any process) whose title contains `title`
+  (case-insensitive substring; the companion sends the words `pickCaptureWindow` matched: "Visual Pinball Player", or
+  the fallback window's own title) with a non-empty client area, and captures it with Windows Graphics Capture: a
+  `GraphicsCaptureItem` for the HWND (`IGraphicsCaptureItemInterop`), a free-threaded `Direct3D11CaptureFramePool`
+  (B8G8R8A8, 2 buffers) on a D3D11 device of its own, cursor off, the yellow border off where
+  `GraphicsCaptureSession.IsBorderRequired` exists (Windows 11; `ApiInformation::IsPropertyPresent`). Each
+  `FrameArrived` is copied to a staging texture and mapped; the window's client area (the DWM frame bounds minus a
+  windowed VPX's title bar and frame; a borderless or fullscreen window whole) goes down the one conversion path:
+  scaled with libyuv `ARGBScale` to fit inside `width` x `height` (never upscaled, aspect kept, even sizes: a portrait
+  playfield window on a cabinet stays portrait), converted to NV12 as a ring frame is. The window renders at its own
+  rate (and only when its content changes); the push clock takes one frame per `1/fps` and `fps_in` counts those,
+  whether or not sending, so a window that renders slower than `fps` shows its own rate. A resized window recreates
+  the pool behind the frame and the next frames come at the new size (the encoder reopens as for a ring). One stderr
+  line names the window found (title, client size, pid); the `source` event carries it as `window` while `ok`. The
+  window is `missing` (and looked for again every second) until it exists, and again when it closes, is minimised or
+  has no client area (checked every 100 ms; the item's `Closed` event too). WGC composes from the DWM, so OpenGL and
+  D3D11 VPX builds capture alike and the window need not be in front; what still blanks it: a minimised window (the
+  helper reports `missing` and waits for the restore), a window on another virtual desktop (cloaked: not found), a
+  window whose content is DRM-protected (`SetWindowDisplayAffinity`: black), and a session with no desktop (RDP
+  disconnected, a service session: `IsSupported()` false, `missing` for good). Written against the WinRT ABI with WRL,
+  not C++/WinRT, because the helper has no C++ exceptions and C++/WinRT reports every failure by throwing.
 - `send off`: no frames are converted or pushed, and every peer's encoding is set `active = false`. `send on` does
   the reverse; a peer made while sending is on starts active.
 - `rungs`: `pin` 1–6 clamps the ceiling to that rung's kbps (20000, 10000, 8000, 5000, 4000, 2000: the provisional
@@ -184,3 +211,7 @@ decoder yields NV12 (cuvid, D3D11VA after the hardware → system copy) or I420 
   naive policy; 2 → 2 under the limited one): the limited policy is the default. A direct `NvEncReconfigureEncoder`
   without `forceIDR` needs `nvEncodeAPI.h`, which neither the FFmpeg build nor this machine has (D10.1.1 stays open).
 - `--loopback-selftest`: connected in 14 ms, 60 fps at 20 Mbps, nvenc → cuvid, decode 2.1 ms a frame.
+- `source wgc` on a 1438x1017 Notepad window resized continuously (D10.6, 2026-11-07): `fps_in` 29.9–30.8 against a
+  30 fps push clock, scale + convert into 1280x720 1.1–1.4 ms a frame, copy + map 0.8–1.3 ms; minimised → `missing`
+  within 100 ms, restored → `ok` again at the new size within a second. A static window delivers one frame (WGC only
+  composes on change), so a paused table shows `fps_in` 0 while `ok`.

@@ -5,6 +5,7 @@
 //
 //   castcade-video.exe                      the stdio protocol (the companion spawns it this way)
 //   castcade-video.exe --version | --probe | --bench [...] | --ring-selftest | --loopback-selftest [--seconds 5]
+//                      | --wgc-selftest [--pid n | --title "..."] [--seconds 5]
 //
 // Exit codes as the audio helper: 0 normal (also after `quit` or stdin EOF), 2 the helper cannot run here (no
 // H.264 encoder at all, libwebrtc did not start), 64 bad arguments.
@@ -19,6 +20,7 @@
 #include "gpu.h"
 #include "json.h"
 #include "selftest.h"
+#include "source_wgc.h"
 #include "util.h"
 
 namespace {
@@ -34,6 +36,8 @@ void Usage() {
          "  --bench                encode synthetic frames; options below\n"
          "  --ring-selftest        produce and consume a frame ring in this process for 3 s\n"
          "  --loopback-selftest    two in-process peers over real libwebrtc for --seconds (default 5)\n"
+         "  --wgc-selftest         capture a window with Windows Graphics Capture for --seconds (default 5):\n"
+         "                         --pid n | --title \"...\" (default: \"Visual Pinball Player\", else this console)\n"
          "bench options: --seconds 10 --width 1354 --height 1440 --fps 60 --kbps 20000 --gpu-load\n"
          "               --rate-policy limited|naive --rate-jitter 5 --encoder <name>\n",
          CASTCADE_VIDEO_VERSION);
@@ -63,9 +67,11 @@ int RunProbe() {
 int RunProtocol(const ProbeResult& probe);
 
 int main(int argc, char** argv) {
-  enum class Mode { kProtocol, kProbe, kBench, kRing, kLoopback } mode = Mode::kProtocol;
+  enum class Mode { kProtocol, kProbe, kBench, kRing, kLoopback, kWgc } mode = Mode::kProtocol;
   BenchOptions bench;
   int seconds = -1;
+  int wgc_pid = 0;
+  std::string wgc_title;
   bool ok = true;
   for (int i = 1; i < argc; i++) {
     const std::string a = argv[i];
@@ -79,6 +85,9 @@ int main(int argc, char** argv) {
     else if (a == "--bench") mode = Mode::kBench;
     else if (a == "--ring-selftest") mode = Mode::kRing;
     else if (a == "--loopback-selftest") mode = Mode::kLoopback;
+    else if (a == "--wgc-selftest") mode = Mode::kWgc;
+    else if (a == "--pid") wgc_pid = ArgInt("--pid", need("--pid"), &ok);
+    else if (a == "--title") wgc_title = need("--title");
     else if (a == "--seconds") seconds = ArgInt("--seconds", need("--seconds"), &ok);
     else if (a == "--width") bench.width = ArgInt("--width", need("--width"), &ok);
     else if (a == "--height") bench.height = ArgInt("--height", need("--height"), &ok);
@@ -105,6 +114,7 @@ int main(int argc, char** argv) {
     case Mode::kLoopback:
       InstallAvLog();
       return RunLoopbackSelftest(seconds > 0 ? seconds : 5);
+    case Mode::kWgc: return RunWgcSelftest(wgc_pid, wgc_title, seconds > 0 ? seconds : 5);
     case Mode::kProtocol: break;
   }
   InstallAvLog();

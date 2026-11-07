@@ -60,6 +60,7 @@ add_executable(castcade-video
   src/gpu.cpp
   src/frame_ring.cpp
   src/source.cpp
+  src/source_wgc.cpp
   src/sink.cpp
   src/factories.cpp
   src/sdp.cpp
@@ -99,7 +100,9 @@ target_link_libraries(castcade-video PRIVATE
   "${WEBRTC_DIR}/lib/webrtc.lib"
   ws2_32 winmm secur32 iphlpapi crypt32 ole32 oleaut32 uuid
   dmoguids wmcodecdspuuid msdmo strmiids
-  d3d11 dxgi d3dcompiler dwmapi shcore gdi32 user32 advapi32 shell32 avrt dbghelp)
+  d3d11 dxgi d3dcompiler dwmapi shcore gdi32 user32 advapi32 shell32 avrt dbghelp
+  # D10.6: Windows Graphics Capture through the WinRT ABI (RoGetActivationFactory, HSTRING; the SDK's umbrella lib).
+  windowsapp)
 
 set_target_properties(castcade-video PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/Release"

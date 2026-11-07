@@ -162,8 +162,12 @@ export interface NativeVideoStatus {
   decoder: string | null;
   /** This rig is the player up: the encoder runs and the video sender is active. */
   sending: boolean;
-  /** Where this rig's frames come from, as last told, and the ring's health as the helper reports it. */
-  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  /**
+   * Where this rig's frames come from, as last told, and the source's health as the helper reports it. D10.6
+   * (2026-11-07): `wgc` = the helper captures the VPX window itself (desktop rigs); `window` names the window it has
+   * (`"<title>" WxH (pid n)`), null while none.
+   */
+  source: { kind: 'ring' | 'bench' | 'wgc' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null; window?: string | null };
   sink: 'ring' | 'window' | 'none';
   /** Per remote player: ICE state, the selected pair ("srflx↔host") and the last counters each way. */
   peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;

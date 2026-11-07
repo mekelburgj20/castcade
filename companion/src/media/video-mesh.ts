@@ -126,7 +126,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
   // ---- what the helper says ----
   const peerViews = new Map<MatchPlayerId, PeerView>();
   const held = new Map<MatchPlayerId, MediaSignal[]>();
-  let sourceState: { state: 'ok' | 'missing' | 'dead'; fpsIn: number } | null = null;
+  let sourceState: { state: 'ok' | 'missing' | 'dead'; fpsIn: number; window: string | null } | null = null;
   let helperStatus: VideoHelperStatus = helper.status();
   let closed = false;
   let current: NativeVideoStatus | null = null;
@@ -137,7 +137,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     encoder: helperStatus.encoder,
     decoder: helperStatus.decoder,
     sending: wantSending,
-    source: { kind: wantSource.kind, ...sourceBox(wantSource), state: sourceState?.state ?? null, fpsIn: sourceState?.fpsIn ?? null },
+    source: { kind: wantSource.kind, ...sourceBox(wantSource), state: sourceState?.state ?? null, fpsIn: sourceState?.fpsIn ?? null, window: sourceState?.window ?? null },
     sink: wantSink.kind,
     peers: Object.fromEntries([...wantPeers].map((id) => [id, peerViews.get(id) ?? { ice: 'new', pair: null, send: null, recv: null }])),
   });
@@ -224,8 +224,10 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       }
       case 'source': {
         const state = e.state === 'ok' || e.state === 'missing' || e.state === 'dead' ? e.state : 'ok';
-        const next = { state, fpsIn: num(e.fps_in) };
-        if (sourceState?.state !== next.state) log(`video: source ${e.kind}: ${state}${state !== 'ok' ? ' (the ring is not being filled)' : ''}`);
+        const next = { state, fpsIn: num(e.fps_in), window: typeof e.window === 'string' && e.window ? e.window : null };
+        // D10.6: a wgc source names the window it captures; its `missing` means no VPX window to capture (yet, or any more).
+        const why = state === 'ok' ? (next.window ? ` (${next.window})` : '') : e.kind === 'wgc' ? ' (no VPX window to capture)' : ' (the ring is not being filled)';
+        if (sourceState?.state !== next.state || sourceState.window !== next.window) log(`video: source ${e.kind}: ${state}${why}`);
         sourceState = next;
         break;
       }
@@ -297,7 +299,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       if (JSON.stringify(source) === JSON.stringify(wantSource)) return;
       wantSource = source;
       sourceState = null;
-      log(`video: source ${source.kind === 'none' ? 'none' : `${source.kind} ${source.width}x${source.height} at ${source.fps} fps`}`);
+      log(`video: source ${source.kind === 'none' ? 'none' : source.kind === 'wgc' ? `wgc "${source.title}" (pid ${source.pid}) in a ${source.width}x${source.height} box at ${source.fps} fps` : `${source.kind} ${source.width}x${source.height} at ${source.fps} fps`}`);
       sync();
       emit();
     },

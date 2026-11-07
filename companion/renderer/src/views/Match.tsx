@@ -720,7 +720,18 @@ function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativ
   const parts: string[] = [v.encoder ?? 'encoder unknown'];
   const peers = Object.entries(v.peers);
   const sent = peers.map(([, p]) => p.send).find((s) => s && s.width > 0);
-  if (v.sending) parts.push(sent ? `sending ${sent.width}x${sent.height} at ${sent.fps} fps, ${mbps(sent.kbps)}` : `sending${v.source.kind === 'none' ? ' (no source on this rig yet)' : v.source.state && v.source.state !== 'ok' ? ` (ring ${v.source.state})` : ''}`);
+  // D10.6: `wgc` = the helper captures the VPX window itself (desktop rigs); `ring` = the OpenXR layer's camera.
+  const src =
+    v.source.kind === 'wgc'
+      ? v.source.state === 'ok'
+        ? 'capturing the VPX window natively'
+        : 'no VPX window to capture yet'
+      : v.source.kind === 'none'
+        ? 'no source on this rig yet'
+        : v.source.state && v.source.state !== 'ok'
+          ? `ring ${v.source.state}`
+          : null;
+  if (v.sending) parts.push(`${sent ? `sending ${sent.width}x${sent.height} at ${sent.fps} fps, ${mbps(sent.kbps)}` : 'sending'}${src ? ` (${src})` : ''}`);
   else parts.push('not sending');
   for (const [id, p] of peers) {
     if (p.recv && p.recv.width > 0) parts.push(`from ${name(id)}: ${p.recv.fps} fps, ${mbps(p.recv.kbps)}`);

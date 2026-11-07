@@ -441,7 +441,7 @@ interface NativeVideoStatus {
   encoder: string | null;
   decoder: string | null;
   sending: boolean;
-  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  source: { kind: 'ring' | 'bench' | 'wgc' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null; window?: string | null };
   sink: 'ring' | 'window' | 'none';
   peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;
 }

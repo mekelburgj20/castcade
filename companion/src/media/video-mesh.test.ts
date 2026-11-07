@@ -185,6 +185,33 @@ function stubHelper() {
   return { helper, sent, set, ready, say };
 }
 
+describe('the wgc source (D10.6, 2026-11-07)', () => {
+  it('the VPX window goes to the helper as `source wgc`; the helper names the window it captures and `missing` reads as no window', () => {
+    const h = stubHelper();
+    const log: string[] = [];
+    const mesh = createVideoMesh({ helper: h.helper, localId: 'bbb', sendSignal: () => undefined, log: (l) => log.push(l) });
+    h.ready();
+    mesh.setSource({ kind: 'wgc', pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(h.sent.at(-1)).toEqual({ cmd: 'source', kind: 'wgc', pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(log).toContain('video: source wgc "Visual Pinball Player" (pid 4242) in a 1280x720 box at 30 fps');
+    expect(mesh.status().source).toEqual({ kind: 'wgc', width: 1280, height: 720, fps: 30, state: null, fpsIn: null, window: null });
+    h.say({ event: 'source', kind: 'wgc', state: 'missing', fps_in: 0 });
+    expect(log).toContain('video: source wgc: missing (no VPX window to capture)');
+    h.say({ event: 'source', kind: 'wgc', state: 'ok', fps_in: 29.9, window: '"Visual Pinball Player" 1920x1080 (pid 4242)' });
+    expect(mesh.status().source).toMatchObject({ kind: 'wgc', state: 'ok', fpsIn: 29.9, window: '"Visual Pinball Player" 1920x1080 (pid 4242)' });
+    expect(log).toContain('video: source wgc: ok ("Visual Pinball Player" 1920x1080 (pid 4242))');
+    // The same event again says nothing; the window gone says so once.
+    const n = log.length;
+    h.say({ event: 'source', kind: 'wgc', state: 'ok', fps_in: 30.2, window: '"Visual Pinball Player" 1920x1080 (pid 4242)' });
+    expect(log).toHaveLength(n);
+    h.say({ event: 'source', kind: 'wgc', state: 'missing', fps_in: 12 });
+    expect(mesh.status().source).toMatchObject({ state: 'missing', window: null });
+    mesh.setSource({ kind: 'none' });
+    expect(h.sent.at(-1)).toEqual({ cmd: 'source', kind: 'none' });
+    expect(mesh.status().source).toEqual({ kind: 'none', width: 0, height: 0, fps: 0, state: null, fpsIn: null, window: null });
+  });
+});
+
 describe('the mesh and a helper that restarts', () => {
   it('tells a fresh helper everything again, in order: ice, source, sink, rungs, send, then the peers; held signals follow the peer', () => {
     const h = stubHelper();

@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createVideoHelper, parseHelperEvent, resolveVideoHelper, RESTART_MIN_MS, VIDEO_HELPER_EXE, type VideoHelper, type VideoHelperEvent, type VideoHelperStatus } from './video-helper.js';
+import { createVideoHelper, parseHelperEvent, resolveVideoHelper, RESTART_MIN_MS, VIDEO_HELPER_EXE, type VideoHelper, type VideoHelperCommand, type VideoHelperEvent, type VideoHelperStatus } from './video-helper.js';
 
 /** The stand-in exe (speaks §6.2 over stdio), run through node. */
 const FAKE = fileURLToPath(new URL('./__fixtures__/fake-video-helper.mjs', import.meta.url));
@@ -49,6 +49,19 @@ describe('resolveVideoHelper (D10.3)', () => {
 });
 
 describe('parseHelperEvent', () => {
+  it('D10.6 (2026-11-07): the `source wgc` command round-trips as the helper reads it, and its event carries the window', () => {
+    const cmd: VideoHelperCommand = { cmd: 'source', kind: 'wgc', pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 };
+    expect(JSON.parse(JSON.stringify(cmd))).toEqual({ cmd: 'source', kind: 'wgc', pid: 4242, title: 'Visual Pinball Player', width: 1280, height: 720, fps: 30 });
+    expect(parseHelperEvent('{"event":"source","kind":"wgc","state":"ok","fps_in":29.9,"convert_us":1250,"window":"\\"Visual Pinball Player\\" 1920x1080 (pid 4242)"}')).toEqual({
+      event: 'source',
+      kind: 'wgc',
+      state: 'ok',
+      fps_in: 29.9,
+      convert_us: 1250,
+      window: '"Visual Pinball Player" 1920x1080 (pid 4242)',
+    });
+  });
+
   it('a JSON object with a string `event`; anything else is null', () => {
     expect(parseHelperEvent('{"event":"ready","version":"1","encoder":"h264_nvenc","decoder":"nvdec"}')).toEqual({ event: 'ready', version: '1', encoder: 'h264_nvenc', decoder: 'nvdec' });
     expect(parseHelperEvent('not json')).toBeNull();

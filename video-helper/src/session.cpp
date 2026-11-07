@@ -16,6 +16,7 @@
 #include "peer.h"
 #include "sink.h"
 #include "source.h"
+#include "source_wgc.h"
 #include "util.h"
 
 namespace {
@@ -213,7 +214,11 @@ class Session {
     if (kind == "ring") cfg.kind = SourceConfig::Kind::kRing;
     else if (kind == "bench") cfg.kind = SourceConfig::Kind::kBench;
     else if (kind == "none") cfg.kind = SourceConfig::Kind::kNone;
-    else return ipc_.EmitError("bad_command", "source: kind is ring, bench or none");
+    else if (kind == "wgc") {  // D10.6: the VPX window itself, source_wgc.cpp
+      std::string err;
+      if (!ParseWgcSource(c, &cfg, &err)) return ipc_.EmitError("bad_command", err);
+    } else return ipc_.EmitError("bad_command", "source: kind is ring, bench, wgc or none");
+    if (cfg.kind != SourceConfig::Kind::kWgc) {
     cfg.token = c.GetString("token");
     cfg.width = c.GetInt("width", 1354);
     cfg.height = c.GetInt("height", 1440);
@@ -221,6 +226,7 @@ class Session {
     if (cfg.kind == SourceConfig::Kind::kRing && cfg.token.empty()) return ipc_.EmitError("bad_command", "source ring: token missing");
     if (cfg.kind == SourceConfig::Kind::kBench && (cfg.width < 480 || cfg.height < 300 || (cfg.width & 1) || (cfg.height & 1) || cfg.fps < 1 || cfg.fps > 120))
       return ipc_.EmitError("bad_command", "source bench: bad width / height / fps");
+    }
     LogLine("source: %s%s %dx%d @%d", kind.c_str(), cfg.token.empty() ? "" : (" " + cfg.token).c_str(), cfg.width, cfg.height, cfg.fps);
     source_->Configure(cfg);
     source_->SetEnabled(send_on_);
@@ -292,6 +298,8 @@ class Session {
     j.Set("event", Json::String("source")).Set("kind", Json::String(SourceKindName(cfg.kind))).Set("state", Json::String(state));
     j.Set("fps_in", Json::Number(std::round(r.fps_in * 10) / 10)).Set("convert_us", Json::Int(static_cast<int64_t>(r.convert_us)));
     if (r.skipped_total) j.Set("skipped", Json::Int(r.skipped_total));
+    const std::string window = source_->window();  // D10.6: the window a wgc source captures
+    if (!window.empty()) j.Set("window", Json::String(window));
     ipc_.Emit(j);
   }
 
