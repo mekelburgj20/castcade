@@ -43,7 +43,7 @@ const sender = run('sender', ['sender', '--endpoint', endpoint, '--port-min', '2
 
 const senderCode = await new Promise((r) => sender.on('exit', r));
 console.log(`sender exited ${senderCode}`);
-const receiverCode = await Promise.race([new Promise((r) => receiver.on('exit', r)), new Promise((r) => setTimeout(() => r('timeout'), 8000))]);
+const receiverCode = await Promise.race([new Promise((r) => receiver.on('exit', r)), new Promise((r) => setTimeout(() => r('timeout'), 15000))]);
 if (receiverCode === 'timeout') receiver.kill();
 console.log(`receiver exited ${receiverCode}`);
 proxy?.close();

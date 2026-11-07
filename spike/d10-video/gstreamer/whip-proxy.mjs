@@ -16,7 +16,8 @@ export function rewriteSdp(sdp, port, preferIp = '127.0.0.1') {
   const ok = parsed.filter((c) => c.host && c.udp && c.v4);
   const keep = ok.find((c) => c.ip === preferIp) ?? ok[0];
   if (!keep) return { sdp, kept: null };
-  keep.f[5] = String(port);
+  if (port) keep.f[5] = String(port); // port 0 = keep the real port (proxy pass-through, no shaper)
+  port = Number(keep.f[5]);
   const dropIdx = new Set(parsed.filter((c) => c !== keep).map((c) => c.i));
   const out = lines.filter((_, i) => !dropIdx.has(i)).map((l, _i) => {
     if (l.startsWith('a=candidate:') && l === lines[keep.i]) return 'a=candidate:' + keep.f.join(' ');

@@ -12,6 +12,7 @@
 // One CSV line a second each, columns per spike/d10-video/README.md (extra columns after the required ones).
 use gst::glib;
 use gst::prelude::*;
+use gst_video::prelude::*;
 use gstreamer as gst;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
@@ -157,16 +158,19 @@ fn request_stats(webrtcbin: &gst::Element, slot: Arc<Mutex<RtpStats>>) {
     let promise = gst::Promise::with_change_func(move |reply| {
         let Ok(Some(s)) = reply else { return };
         let mut acc = RtpStats::default();
+        if std::env::var_os("SPIKE_DEBUG").is_some() {
+            println!("stats: {s}");
+        }
         for (_, v) in s.iter() {
             let Ok(sub) = v.get::<gst::Structure>() else { continue };
             match sub.name().as_str() {
-                "rtp-outbound-stream-stats" => acc.bytes += num_field(&sub, "bytes-sent").unwrap_or(0.0),
-                "rtp-inbound-stream-stats" => {
+                "outbound-rtp" => acc.bytes += num_field(&sub, "bytes-sent").unwrap_or(0.0),
+                "inbound-rtp" => {
                     acc.bytes += num_field(&sub, "bytes-received").unwrap_or(0.0);
                     acc.packets_lost += num_field(&sub, "packets-lost").unwrap_or(0.0);
                     acc.jitter_ms = num_field(&sub, "jitter").unwrap_or(0.0) * 1000.0;
                 }
-                "rtp-remote-inbound-stream-stats" => {
+                "remote-inbound-rtp" => {
                     acc.rtt_ms = num_field(&sub, "round-trip-time").unwrap_or(0.0) * 1000.0;
                     acc.fraction_lost = num_field(&sub, "fraction-lost").unwrap_or(0.0);
                     acc.packets_lost += num_field(&sub, "packets-lost").unwrap_or(0.0);
@@ -183,6 +187,7 @@ fn request_stats(webrtcbin: &gst::Element, slot: Arc<Mutex<RtpStats>>) {
 #[derive(Default)]
 struct TxState {
     encoder: Option<gst::Element>,
+    gen: u64, // bumped per encoder-setup; probes of older encoders stop counting
     webrtcbin: Option<gst::Element>,
     bwe: Option<gst::Element>,
     frames_in: u64,
@@ -245,7 +250,15 @@ fn run_sender(a: &Args) {
     sink.connect("encoder-setup", false, move |args| {
         let enc = args[3].get::<gst::Element>().unwrap();
         let name = factory_name(&enc);
-        println!("encoder: {name}");
+        let gen = {
+            let mut s = st2.lock().unwrap();
+            s.gen += 1;
+            s.pending.clear();
+            s.first_out = None;
+            (s.frames_in, s.frames_out, s.bytes_out, s.cost_sum_us, s.cost_n) = (0, 0, 0, 0, 0);
+            s.gen
+        };
+        println!("encoder: {name} #{gen} for peer {:?} at {}", args[1].get::<String>().ok(), enc.path_string());
         let set = |p: &str, v: &str| {
             if enc.find_property(p).is_some() {
                 enc.set_property_from_str(p, v);
@@ -273,6 +286,9 @@ fn run_sender(a: &Args) {
         enc.static_pad("sink").unwrap().add_probe(gst::PadProbeType::BUFFER, move |_, info| {
             if let Some(b) = info.buffer() {
                 let mut s = st3.lock().unwrap();
+                if s.gen != gen {
+                    return gst::PadProbeReturn::Ok;
+                }
                 s.frames_in += 1;
                 s.pending.push_back((b.pts().map(|p| p.nseconds()).unwrap_or(0), Instant::now()));
                 if s.pending.len() > 64 {
@@ -286,12 +302,16 @@ fn run_sender(a: &Args) {
             if let Some(b) = info.buffer() {
                 let now = Instant::now();
                 let mut s = st4.lock().unwrap();
+                if s.gen != gen {
+                    return gst::PadProbeReturn::Ok;
+                }
                 s.frames_out += 1;
                 s.bytes_out += b.size() as u64;
                 s.first_out.get_or_insert(now);
+                // match the input by pts, else FIFO (no B-frames: one in, one out, in order)
                 let pts = b.pts().map(|p| p.nseconds()).unwrap_or(0);
-                if let Some(i) = s.pending.iter().position(|(p, _)| *p == pts) {
-                    let (_, t) = s.pending.remove(i).unwrap();
+                let i = s.pending.iter().position(|(p, _)| *p == pts).unwrap_or(0);
+                if let Some((_, t)) = s.pending.remove(i) {
                     s.cost_sum_us += now.duration_since(t).as_micros() as u64;
                     s.cost_n += 1;
                 }
@@ -329,16 +349,19 @@ fn run_sender(a: &Args) {
 
     pipeline.set_state(gst::State::Playing).unwrap();
 
-    // Frame pump: frame n at t0 + n/fps, pts = n/fps.
+    // Frame pump: frame n at t0 + n/fps, pts = n/fps. Runs until the tick below raises `stop`
+    // (`duration` seconds after the session encoder's first output, so connect time does not count).
     let duration = a.duration;
     let fps = a.fps as u64;
-    if let (Some(appsrc), Some(h)) = (appsrc, harness) {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let (Some(appsrc), Some(hz)) = (appsrc, harness) {
         let size = (w as usize) * (h as usize) * 3 / 2;
+        let stop = stop.clone();
         std::thread::spawn(move || {
             let t0 = Instant::now();
             let frame_ns = 1_000_000_000u64 / fps;
             let mut n: u64 = 0;
-            while n < duration * fps {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 let due = t0 + Duration::from_nanos(n * frame_ns);
                 let now = Instant::now();
                 if due > now {
@@ -350,7 +373,7 @@ fn run_sender(a: &Args) {
                     b.set_pts(gst::ClockTime::from_nseconds(n * frame_ns));
                     b.set_duration(gst::ClockTime::from_nseconds(frame_ns));
                     let mut map = b.map_writable().unwrap();
-                    h.fill(n, map.as_mut_slice());
+                    hz.fill(n, map.as_mut_slice());
                 }
                 if appsrc.push_buffer(buf).is_err() {
                     break;
@@ -359,9 +382,6 @@ fn run_sender(a: &Args) {
             }
             let _ = appsrc.end_of_stream();
         });
-    } else {
-        let ml = main_loop.clone();
-        glib::timeout_add_once(Duration::from_secs(duration), move || ml.quit());
     }
 
     let mut csv = std::fs::File::create(format!("{}-sender.csv", a.out)).unwrap();
@@ -369,13 +389,28 @@ fn run_sender(a: &Args) {
     let sink2 = sink.clone();
     let st2 = st.clone();
     let rtp2 = rtp.clone();
-    let (mut last_out, mut last_bytes, mut last_cost, mut last_n, mut last_rtp_bytes, mut t) = (0u64, 0u64, 0u64, 0u64, 0f64, 0u64);
+    let ml = main_loop.clone();
+    let (mut last_out, mut last_bytes, mut last_cost, mut last_n, mut last_rtp_bytes, mut t, mut idle) = (0u64, 0u64, 0u64, 0u64, 0f64, 0u64, 0u64);
     glib::timeout_add(Duration::from_secs(1), move || {
         let mut s = st2.lock().unwrap();
-        if s.first_out.is_none() {
+        // the clock starts at the session encoder's first output (gen 2: gen 1 is webrtcsink's discovery)
+        let Some(first) = s.first_out.filter(|_| s.gen >= 2) else {
+            idle += 1;
+            if idle > 30 {
+                eprintln!("sender: no session after 30 s, giving up");
+                ml.quit();
+            }
             return glib::ControlFlow::Continue;
+        };
+        if first.elapsed().as_secs() >= duration {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            ml.quit();
+            return glib::ControlFlow::Break;
         }
         let name = s.encoder.as_ref().map(factory_name).unwrap_or_default();
+        if s.frames_out < last_out {
+            (last_out, last_bytes, last_cost, last_n) = (0, 0, 0, 0); // a new encoder reset the counters
+        }
         let fps_sent = s.frames_out - last_out;
         let enc_kbps = (s.bytes_out - last_bytes) as f64 * 8.0 / 1000.0;
         let cost = if s.cost_n > last_n { (s.cost_sum_us - last_cost) / (s.cost_n - last_n) } else { 0 };
@@ -404,7 +439,7 @@ fn run_sender(a: &Args) {
             }
         }
         let r = rtp2.lock().unwrap();
-        let kbps_sent = if last_rtp_bytes > 0.0 { (r.bytes - last_rtp_bytes) * 8.0 / 1000.0 } else { enc_kbps };
+        let kbps_sent = if last_rtp_bytes > 0.0 { ((r.bytes - last_rtp_bytes) * 8.0 / 1000.0).max(0.0) } else { enc_kbps };
         last_rtp_bytes = r.bytes;
         let line = format!("{t},{name},{fps_sent},{kbps_sent:.0},{target_kbps:.0},{cost},{:.1},{:.2},{bwe_kbps:.0},{enc_kbps:.0},{},{mitigation},{enc_bitrate_kbps:.0}", r.rtt_ms, r.fraction_lost * 100.0, s.frames_in);
         drop(r);
@@ -467,10 +502,20 @@ fn run_receiver(a: &Args) {
         .property("do-retransmission", true)
         .build()
         .unwrap();
-    src.property::<glib::Object>("signaller").set_property("host-addr", &a.listen);
+    let signaller = src.property::<glib::Object>("signaller");
+    signaller.set_property("host-addr", &a.listen);
     pipeline.add(&src).unwrap();
     let st = Arc::new(Mutex::new(RxState { counter_last: -1, ..Default::default() }));
     let rtp = Arc::new(Mutex::new(RtpStats::default()));
+    // The signaller hands us the session's webrtcbin before negotiation: pin its ports there.
+    let st2 = st.clone();
+    let (lo, hi) = (a.port_min, a.port_max);
+    signaller.connect("webrtcbin-ready", false, move |args| {
+        let wb = args[2].get::<gst::Element>().unwrap();
+        pin_ice_ports(&wb, lo, hi);
+        st2.lock().unwrap().webrtcbin = Some(wb);
+        None
+    });
 
     let pl = pipeline.clone();
     let st2 = st.clone();
@@ -559,20 +604,13 @@ fn run_receiver(a: &Args) {
     let mut csv = std::fs::File::create(format!("{}-receiver.csv", a.out)).unwrap();
     writeln!(csv, "t,frames_delivered,fps,kbps_received,decode_ok,freeze_ms_max,width,height,decoder,counter_last,counter_ok,counter_bad,packets_lost,jitter_ms").unwrap();
     let (st2, rtp2, pl, ml) = (st.clone(), rtp.clone(), pipeline.clone(), main_loop.clone());
-    let (lo, hi) = (a.port_min, a.port_max);
     let decoder_hint = a.decoder.clone();
     let duration = a.duration;
     let (mut last_frames, mut last_bytes, mut t, mut idle) = (0u64, 0f64, 0u64, 0u64);
     glib::timeout_add(Duration::from_secs(1), move || {
         let mut s = st2.lock().unwrap();
-        if s.webrtcbin.is_none() {
-            if let Some(wb) = find_in_bin(&pl, &|f| f.name() == "webrtcbin") {
-                pin_ice_ports(&wb, lo, hi); // may be late for the first session; the proxy keeps one candidate anyway
-                s.webrtcbin = Some(wb);
-            }
-        }
         if s.decoder.is_empty() {
-            if let Some(d) = find_in_bin(&pl, &|f| f.has_type(gst::ElementFactoryType::DECODER | gst::ElementFactoryType::MEDIA_VIDEO)) {
+            if let Some(d) = find_in_bin(pl.upcast_ref::<gst::Bin>(), &|f| f.has_type(gst::ElementFactoryType::DECODER | gst::ElementFactoryType::MEDIA_VIDEO)) {
                 s.decoder = factory_name(&d);
                 println!("decoder: {} (hint {:?})", s.decoder, decoder_hint);
             }
@@ -591,7 +629,7 @@ fn run_receiver(a: &Args) {
         let freeze = s.gap_max_ms.max(ongoing);
         s.gap_max_ms = 0.0;
         let r = rtp2.lock().unwrap();
-        let kbps = if last_bytes > 0.0 { (r.bytes - last_bytes) * 8.0 / 1000.0 } else { 0.0 };
+        let kbps = if last_bytes > 0.0 { ((r.bytes - last_bytes) * 8.0 / 1000.0).max(0.0) } else { 0.0 };
         last_bytes = r.bytes;
         let decode_ok = if s.decode_err { 0 } else { 1 };
         s.decode_err = false;
@@ -603,8 +641,8 @@ fn run_receiver(a: &Args) {
         if let Some(wb) = s.webrtcbin.clone() {
             request_stats(&wb, rtp2.clone());
         }
-        if now.duration_since(first).as_secs() > duration + 3 {
-            ml.quit();
+        if now.duration_since(first).as_secs() > duration + 3 || ongoing > 5000.0 {
+            ml.quit(); // the run is over, or the sender went away
         }
         glib::ControlFlow::Continue
     });
