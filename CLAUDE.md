@@ -51,6 +51,7 @@ npm run fetch-ffmpeg -w companion # fetch the pinned ffmpeg build (sha256-checke
 npm run fetch-vr-overlay -w companion # fetch the OpenVR overlay helper zip from the pinned release into companion/resources/vr-overlay (gitignored; `--from vr-overlay/build/Release` for a local build; D7)
 npm run fetch-vr-layer -w companion   # fetch the OpenXR panel layer zip (dll + json) into companion/resources/vr-layer (gitignored; `--from vr-layer/build/Release` for a local build; D7.3)
 npm run fetch-audio-helper -w companion # fetch castcade-audio.exe (the table-sound helper) into companion/resources/audio-helper (gitignored; `--from audio-helper/build/Release` for a local build; D2.8)
+npm run fetch-video-helper -w companion # fetch castcade-video.exe + FFmpeg DLLs (the native spectator-video helper) into companion/resources/video-helper (gitignored; `--from video-helper/build/Release`, relative to the repo root, for a local build; D10.1)
 npm run ffmpeg-source -w companion # download the GPL Corresponding Source of the bundled ffmpeg into companion/release (release.yml uploads it; E5, docs/ffmpeg-source.md)
 npm run fetch-vps -w companion    # build the compact VPS index into companion/resources/vps from the pinned vps-db commit (gitignored; needed to package; the installed app refreshes it daily from vps-db main into userData, B24); `--from <vpsdb.json> --subset <ids>` rebuilds fixtures/vps
 npm run playfield-tags -w companion -- "<table.vpx>"   # re-record fixtures/playfield/tags.json (B4.1) after a VPX update: tag names and counts only

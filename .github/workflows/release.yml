@@ -60,6 +60,17 @@ jobs:
           cmake -S audio-helper -B audio-helper/build -A x64
           cmake --build audio-helper/build --config Release
           node companion/scripts/fetch-audio-helper.mjs --from audio-helper/build/Release
+      # D10.1: the native spectator-video helper (video-helper.yml builds the release's zip in parallel). Fetches its deps
+      # (libwebrtc, FFmpeg shared build; sha256-pinned), builds, and stages exe + FFmpeg dlls + THIRD-PARTY.md.
+      - name: Build the native video helper and stage it into companion/resources/video-helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          pwsh video-helper/fetch-webrtc.ps1
+          node video-helper/fetch-ffmpeg.mjs
+          cmake -S video-helper -B video-helper/build -A x64
+          cmake --build video-helper/build --config Release
+          node companion/scripts/fetch-video-helper.mjs --from video-helper/build/Release
       - run: npm run build
       - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
         if: startsWith(github.ref, 'refs/tags/')

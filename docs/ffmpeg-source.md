@@ -73,3 +73,29 @@ upstream release at that version; this page gives no URLs because the README giv
 Change `VERSION` and `SHA256` in `companion/scripts/fetch-ffmpeg.mjs` (its header lists what to re-check), then
 update the table above from the new build's `README.txt`. `npm run ffmpeg-source -w companion` reads the commit
 and library list from that same file, so the release assets follow the pin on their own.
+
+## FFmpeg inside the native video helper (GPLv3)
+
+`resources/video-helper/` in the install carries `castcade-video.exe` (D10.1, `docs/design/spectator-video-native.md`)
+and the FFmpeg shared libraries it links: `avcodec-62.dll`, `avutil-60.dll`, `swscale-9.dll`, `swresample-6.dll`. This is
+a different FFmpeg build from the one above, so it has its own source asset.
+
+| | |
+|---|---|
+| Build | BtbN FFmpeg-Builds (https://github.com/BtbN/FFmpeg-Builds), `ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip` (the `n8.1` release branch, GPL, shared) |
+| Version | 8.1.3 (`ffmpeg -version`: `n8.1.3-34-ga35157abb9-20261106`) |
+| Zip sha256 | `7fd8ec7024823185230e8989082be9f3af957ed300f5b8cd136d02ac139ddceb` (pinned in `video-helper/ffmpeg.sha256`) |
+| FFmpeg commit | `a35157abb96167fd7308edc92b55408d5bb084b0` (34 commits after the `n8.1.3` tag on the `n8.1` branch) |
+| FFmpeg-Builds commit | not stated by the zip (it has no README). The `latest` release was published 2026-11-06 from `master`, whose newest commit before that was `c63bb308a1de656b425c132a8102f8fd5389afc5` (2026-11-04); treat that as the likely, unproven build-script revision |
+| Licence | GPL v3 (`--enable-gpl --enable-version3`, no `--enable-nonfree`); full text in `LICENSE.txt` of the zip. The helper's own `THIRD-PARTY.md` carries the notices |
+| Where it sits | `resources/video-helper/` in the install: `castcade-video.exe`, the four DLLs, `THIRD-PARTY.md`, `VERSION` |
+
+The same written offer applies as above (GPLv3 section 6(b) and 6(d)). The Corresponding Source is published with every
+release as `ffmpeg-8.1.3-helper-source.tar.gz` (FFmpeg at the commit above) and `ffmpeg-8.1.3-helper-SOURCES.txt` (the
+build's `--enable-*` library list, from the configure line). `npm run ffmpeg-source -w companion` writes both next to the
+Gyan assets, and release.yml's existing `ffmpeg-*-source.tar.gz` / `ffmpeg-*-SOURCES.txt` globs upload them;
+`HELPER_FFMPEG` in `companion/scripts/ffmpeg-source.mjs` holds these facts.
+
+Moving this pin: BtbN's `latest` release is rolling, so an old zip disappears when the build is refreshed
+(`video-helper/fetch-ffmpeg.mjs` then fails its sha256 check). When it does, take the new zip, re-read `ffmpeg -version`,
+and update `ffmpeg.sha256`, `HELPER_FFMPEG` and this table together.

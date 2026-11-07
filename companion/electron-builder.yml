@@ -50,6 +50,12 @@ extraResources:
   # src/media/audio-helper.ts finds it here, and treats a missing one as "table sound unavailable".
   - from: resources/audio-helper
     to: audio-helper
+  # The native spectator-video helper (D10.1): castcade-video.exe (libwebrtc + FFmpeg, docs/design/spectator-video-native.md
+  # §6.2) with the FFmpeg DLLs beside it (LGPL/GPL, see docs/ffmpeg-source.md) and THIRD-PARTY.md. release.yml builds it from
+  # the tag; locally `npm run fetch-video-helper -w companion` (or `-- --from video-helper/build/Release`). Outside the
+  # asar so the exe can run; a missing one means the native video path is unavailable.
+  - from: resources/video-helper
+    to: video-helper
   # The shared VBScript library the patcher installs into <VPX>\scripts\ (vpx-hook/castcade.vbs at the repo
   # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
   - from: ../vpx-hook/castcade.vbs
@@ -69,6 +75,8 @@ nsis:
   allowElevation: false
   deleteAppDataOnUninstall: false
   shortcutName: Castcade
+  # Windows Firewall rule for the video helper (D10.1); best-effort, see the file for the elevation finding.
+  include: build/installer.nsh
 publish:
   provider: github
   owner: mekelburgj20

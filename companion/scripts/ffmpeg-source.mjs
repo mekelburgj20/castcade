@@ -8,6 +8,8 @@
  * commit from GitHub, and writes ffmpeg-<version>-source.tar.gz plus ffmpeg-<version>-SOURCES.txt (the statically
  * linked libraries and their versions, verbatim from the same README.txt) into the out dir. release.yml uploads both
  * to the GitHub release on tag pushes. Run `npm run fetch-ffmpeg -w companion` first so README.txt exists.
+ * It also writes ffmpeg-<version>-helper-source.tar.gz + ffmpeg-<version>-helper-SOURCES.txt for the FFmpeg DLLs of the
+ * native video helper (HELPER_FFMPEG below; D10.1), a different build and version from the one above.
  */
 /* global fetch */ // Node 22's built-in fetch
 import { Buffer } from 'node:buffer';
@@ -53,6 +55,64 @@ function readBuildInfo(readmePath) {
   return { commit: src[1], build: ver[1], version: ver[1].split('-')[0], libs };
 }
 
+/**
+ * The FFmpeg shared build the native video helper bundles (D10.1; video-helper/fetch-ffmpeg.mjs): BtbN FFmpeg-Builds,
+ * `ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip`. Its zip has no README, so the facts are pinned here, read from
+ * `ffmpeg -version` of the pinned zip (sha256 in video-helper/ffmpeg.sha256). It differs from the Gyan build above
+ * (8.1.1), hence a second tarball; the `-helper-` infix keeps the names apart and still matches release.yml's globs.
+ * To move the pin: update these, the table in docs/ffmpeg-source.md, and video-helper/ffmpeg.sha256 together.
+ */
+const HELPER_FFMPEG = {
+  version: '8.1.3',
+  describe: 'n8.1.3-34-ga35157abb9-20261106',
+  commit: 'a35157abb96167fd7308edc92b55408d5bb084b0',
+  zip: 'ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip',
+  zipSha256: '7fd8ec7024823185230e8989082be9f3af957ed300f5b8cd136d02ac139ddceb',
+  // `--enable-*` flags of the build's configure line (minus gpl, version3, shared, pthreads, schannel, cuda-llvm).
+  libs: `iconv zlib libxml2 libvmaf fontconfig libharfbuzz libfreetype libfribidi lcms2 vulkan libshaderc libdav1d libvorbis librav1e librsvg gmp lzma liblcevc-dec opencl amf libaom avisynth chromaprint libdavs2 libdvdread libdvdnav ffnvcodec frei0r libgme libkvazaar libaribb24 libaribcaption libass libbluray libjxl libmp3lame libopus libplacebo librist libssh libtheora libvpx libwebp libzmq lv2 libvpl openal liboapv libopencore-amrnb libopencore-amrwb libopenh264 libopenjpeg libopenmpt librubberband sdl2 libsnappy libsoxr libsrt libsvtav1 libtwolame libuavs3d vaapi vapoursynth libvidstab libvvenc libx264 libx265 libxavs2 libxvid libzimg libzvbi`.split(' '),
+};
+
+async function download(url) {
+  console.log(`fetching ${url}`);
+  const res = await fetch(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** The second asset: FFmpeg at the helper build's commit + its library list. */
+async function writeHelperSource(outDir) {
+  const h = HELPER_FFMPEG;
+  const pinFile = resolve(companionDir, '..', 'video-helper', 'ffmpeg.sha256');
+  if (existsSync(pinFile)) {
+    const pinned = readFileSync(pinFile, 'utf8').trim().split(/\s+/)[0];
+    if (pinned !== h.zipSha256) {
+      console.warn(`ffmpeg-source: WARNING video-helper/ffmpeg.sha256 (${pinned}) differs from HELPER_FFMPEG.zipSha256 (${h.zipSha256}); update HELPER_FFMPEG and docs/ffmpeg-source.md`);
+    }
+  }
+  const tarPath = join(outDir, `ffmpeg-${h.version}-helper-source.tar.gz`);
+  const listPath = join(outDir, `ffmpeg-${h.version}-helper-SOURCES.txt`);
+  writeFileSync(tarPath, await download(`https://github.com/FFmpeg/FFmpeg/archive/${h.commit}.tar.gz`));
+  writeFileSync(
+    listPath,
+    [
+      'Corresponding Source for the FFmpeg libraries bundled with the Castcade native video helper (GPLv3 section 6).',
+      `Build: BtbN FFmpeg-Builds, ${h.zip} (sha256 ${h.zipSha256}), FFmpeg ${h.describe}`,
+      `FFmpeg commit: ${h.commit} (ffmpeg-${h.version}-helper-source.tar.gz is FFmpeg at that commit)`,
+      'Bundled DLLs: avcodec, avutil, swscale, swresample. External libraries are linked into them; the build was configured with:',
+      '',
+      ...h.libs.map((l) => `--enable-${l}`),
+      '',
+      "Each library's source is the upstream release the FFmpeg-Builds scripts pinned at build time",
+      '(https://github.com/BtbN/FFmpeg-Builds). See docs/ffmpeg-source.md in the repo.',
+      '',
+    ].join('\n'),
+  );
+  for (const p of [tarPath, listPath]) {
+    const buf = readFileSync(p);
+    console.log(`${p}\n  sha256 ${createHash('sha256').update(buf).digest('hex')}  ${buf.length} bytes`);
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const info = readBuildInfo(opts.readme);
@@ -82,6 +142,7 @@ async function main() {
     const buf = readFileSync(p);
     console.log(`${p}\n  sha256 ${createHash('sha256').update(buf).digest('hex')}  ${buf.length} bytes`);
   }
+  await writeHelperSource(opts.out);
 }
 
 main().catch((err) => {

@@ -1,0 +1,86 @@
+name: Video helper (Windows x64)
+
+# castcade-video.exe (D10.1; video-helper/, docs/design/spectator-video-native.md §6.2): the build of record for the
+# native spectator-video helper (libwebrtc + FFmpeg).
+# Push or PR touching video-helper/** (or this file) → build, smoke-test, upload the artifact castcade-video-win-x64.
+# Tag push `v*` → also zip the folder's contents as castcade-video-<tag>-win-x64.zip on that GitHub release, where
+# companion/scripts/fetch-video-helper.mjs fetches it for packaging. (Path filters do not apply to tag pushes.)
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+    paths:
+      - 'video-helper/**'
+      - '.github/workflows/video-helper.yml'
+  pull_request:
+    paths:
+      - 'video-helper/**'
+      - '.github/workflows/video-helper.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: video-helper-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: castcade-video (windows x64, MSVC, Release)
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      # The dependency caches are keyed on the sha256 pins, so moving a pin (fetch-webrtc.ps1, ffmpeg.sha256) is what
+      # invalidates them. The fetch scripts verify the hash themselves and skip the download when the folder matches.
+      - name: Cache libwebrtc (LiveKit prebuilt)
+        uses: actions/cache@v4
+        with:
+          path: video-helper/deps/webrtc
+          key: video-webrtc-${{ runner.os }}-${{ hashFiles('video-helper/fetch-webrtc.ps1') }}
+      - name: Cache FFmpeg (BtbN GPL shared)
+        uses: actions/cache@v4
+        with:
+          path: video-helper/deps/ffmpeg
+          key: video-ffmpeg-${{ runner.os }}-${{ hashFiles('video-helper/ffmpeg.sha256') }}
+      - name: Fetch libwebrtc
+        shell: pwsh
+        run: pwsh video-helper/fetch-webrtc.ps1
+      - name: Fetch FFmpeg
+        run: node video-helper/fetch-ffmpeg.mjs
+      - name: Configure
+        run: cmake -S video-helper -B video-helper/build -A x64
+      - name: Build (Release)
+        run: cmake --build video-helper/build --config Release
+      - name: The exe runs (version, then a 5 s in-process loopback send/receive; software encoder, no GPU needed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd video-helper/build/Release
+          ls -l
+          ./castcade-video.exe --version
+          ./castcade-video.exe --loopback-selftest
+      - name: Upload the helper as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: castcade-video-win-x64
+          if-no-files-found: error
+          path: video-helper/build/Release/
+      - name: Zip for the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          # The folder's contents (exe + FFmpeg dlls + THIRD-PARTY.md) at the zip's top level, no wrapper folder.
+          Compress-Archive -Path "video-helper/build/Release/*" -DestinationPath "castcade-video-$env:GITHUB_REF_NAME-win-x64.zip"
+          (Get-FileHash "castcade-video-$env:GITHUB_REF_NAME-win-x64.zip" -Algorithm SHA256).Hash.ToLower()
+      # release.yml creates the same pre-release on the same tag; whichever workflow gets there first creates it, the
+      # other finds it (a lost create race is fine: the view after it must then succeed).
+      - name: Attach the zip to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+          gh release upload "$GITHUB_REF_NAME" "castcade-video-$GITHUB_REF_NAME-win-x64.zip" --clobber --repo "$GITHUB_REPOSITORY"
