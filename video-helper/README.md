@@ -69,6 +69,10 @@ castcade-video.exe --loopback-selftest [--seconds 5]   two in-process peers over
                                          pinned 3 → 1 → 5 through the run (two size changes end to end), the rung in each line
 castcade-video.exe --controller-selftest the rung controller, the ladder's geometry and the decimator on scripted inputs
                                          (D10.5): pass / fail per case, exit 1 on any failure
+castcade-video.exe --restart-selftest    two in-process peers whose trickle candidates are held both ways for 12 s, so
+                                         the first ICE generation stalls and the initiator's watchdog restarts at 10 s
+                                         (D10.3.5, "Connectivity" below); prints the timeline; passes when both connect
+                                         within 15 s of start through restart 1
 castcade-video.exe --wgc-selftest [--pid n | --title "..."] [--seconds 5]   capture one window with Windows Graphics
                                          Capture (D10.6): default any "Visual Pinball Player", else this console
                                          window; prints frames, size, mean copy + map µs. Where WGC cannot run (no
@@ -103,7 +107,7 @@ Commands (companion → helper):
 | `cmd` | Fields | Meaning |
 |---|---|---|
 | `ice` | `servers: [{urls: [..], username?, credential?}]` | The ICE servers for every peer made after this (the companion's STUN list and TURN entry, media-settings.ts). |
-| `peer` | `id` (the remote player's id), `initiator: bool` | Make a PeerConnection for that remote player with one `sendrecv` video transceiver (H.264 only, packetization mode 1). The initiator makes the offer now; the other waits for it. One PC per pair for the whole match; nothing is renegotiated. |
+| `peer` | `id` (the remote player's id), `initiator: bool` | Make a PeerConnection for that remote player with one `sendrecv` video transceiver (H.264 only, packetization mode 1). The initiator makes the offer now; the other waits for it. One PC per pair for the whole match; the only renegotiation is an ICE restart ("Connectivity" below): the initiator offers again, the answerer answers any offer. |
 | `signal` | `id`, `kind: offer \| answer \| ice`, `sdp?`, `candidate?` (`{candidate, sdpMid, sdpMLineIndex}`) | The remote side's signal for that peer, relayed from `MEDIA_SIGNAL` with `channel: "video"`. |
 | `close` | `id` | Close that peer. |
 | `source` | `kind: ring \| bench \| wgc \| none`, `token?`, `pid?`, `title?`, `width`, `height`, `fps` | Where the frames this rig sends come from: the `send` ring named by the token (the layer fills it), a synthetic bench picture, the VPX window itself captured by the helper (`wgc`, D10.6: see below), or nothing. |
@@ -118,7 +122,7 @@ Events (helper → companion):
 |---|---|
 | `ready` | `version`, `encoder` (the probe's choice: `h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`), `decoder` |
 | `signal` | `id`, `kind`, `sdp?`, `candidate?` — to be wrapped in `MEDIA_SIGNAL {channel: "video", to: id}` |
-| `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line) |
+| `peer` | `id`, `ice: new \| checking \| connected \| completed \| failed \| disconnected \| closed`, `pair?` (the selected candidate pair's types and addresses, for the Match tab's connectivity line); D10.3.5: `restarts?` (ICE restarts in the current stuck spell, present once ≥ 1; a `connected` carries the count it took), `restarts_exhausted?: true` (with `ice: failed`: the watchdog gave up, "Connectivity" below) |
 | `stats` | once a second: `id`, `dir: send \| recv`, `fps`, `kbps`, `width`, `height`, `rtt_ms?`, `loss_pct?`, `bwe_kbps?`, `enc_us?`, `dec_us?`, `freeze_ms?`, `encoder?`, `decoder?`, `quality_limitation?`; `send` also `rung`, `rung_kbps`, `rung_fps`, `ctrl`, `queue_ms`, `dropped?`, `peer_decode_fps?` (D10.5) |
 | `rung` | D10.5, on each change of the rung applied to the frames sent to `id`: `rung` (1–6), `width`, `height`, `fps`, `kbps`, `reason: start \| probe \| down:loss \| down:rtt \| down:bwe \| down:fps \| down:receiver \| up \| pin \| ceiling` |
 | `source` | `kind`, `state: ok \| missing \| dead`, `fps_in` — the source's health; `window?` (wgc) the window captured |
@@ -145,7 +149,10 @@ Events (helper → companion):
   `sdpMLineIndex`, the shape of a browser's `RTCIceCandidate`.
 - `peer` events: one per ICE state change and one per selected-pair change (same `ice`, new `pair`). `pair` is
   `{"local": {"type", "protocol", "address", "relay_protocol"?}, "remote": {…}}` with `type` one of host / srflx /
-  prflx / relay and `address` as `ip:port`. `close` answers with `ice: closed`.
+  prflx / relay and `address` as `ip:port`. `close` answers with `ice: closed`. The restart fields are below.
+- `signal offer` to a peer made as the answerer is answered whenever it arrives, also on an established connection
+  (set remote → create answer → `signal answer` out); an offer to the initiator is logged and ignored (our protocol
+  never sends one; glare cannot arise). Candidates keep trickling after a renegotiation.
 - `source ring`: the helper opens the layer's `send` ring and reports `missing` until it exists (retried every
   500 ms), `ok` while frames come, `dead` when the producer's heartbeat is older than 3 s (then it closes and retries).
   The `source` event is sent on every state change and once a second while a source is set, with `fps_in` (frames taken
@@ -252,6 +259,54 @@ reads it. The channel adds an `m=application` section to the SDP (bundled on the
   problems come as `error negotiation_failed` / `error bad_signal` with the peer's `id`. The helper carries on.
 - stderr: one `video: …` line per state change (probe results, peers made / connected / closed, source and sink
   changes, `send` changes, encoder and decoder opens, libwebrtc warnings), never per frame.
+
+## Connectivity (D10.3.5; `src/peer.cpp`, `src/network_filter.h`)
+
+The first match on 0.2.37 (2026-11-07) never got video between two home routers: the helper's peer went `checking` →
+20 s → `failed` on both sides while the companion's voice connection between the same two PCs, with the same STUN
+servers, came up after one ICE restart. The helper had no restart (one offer, one answer, nothing after), and its
+gathering was slowed by adapters that can reach nobody. Three things changed.
+
+**ICE restarts, the companion's D2.9 cadence** (`panel-page.ts` ICE_WATCH, mirrored here per peer, on libwebrtc's
+signaling thread, a 1 s tick). A connection is *stuck* while its ICE state is `checking`, `disconnected` or `failed`,
+or still `new` once both descriptions are in (no candidate pair could be formed). The **initiator** restarts ICE
+(`RestartIce()` + a new offer, an ordinary renegotiation with fresh credentials on the same transceivers) after 10 s
+stuck, again 20 s after that restart, again 40 s after that (three restarts in all), logging
+`peer <id>: ICE restart n of 3 (<state> for N s)`; a connection libwebrtc itself has already marked `failed` restarts
+at once the first time, and the backoff holds after. 40 s after the third restart it gives up: one more `peer` event
+with `ice: "failed"` and `restarts_exhausted: true` (plus `restarts: 3`), and no further restarts until the connection
+connects. The **answerer** never restarts (the lead does), it only answers each offer; it emits its own
+`restarts_exhausted` 115 s after it got stuck (the lead's whole budget plus 5 s), so both companions can fall back at
+about the same time. When a connection comes up after restarts, its `connected` event carries `restarts: n` and the
+log says `ice connected after n ICE restart(s), N s stuck`. `GATHER_CONTINUALLY` is on, so candidates keep coming
+after a restart and when an adapter appears; libwebrtc's own `ice_connection_receiving_timeout` and backup-pair ping
+interval are untouched (failure is detected no sooner than the library would on its own).
+
+What `ice: failed` means now: without `restarts_exhausted` it is libwebrtc's verdict on **one** ICE generation (it
+arrives about 20 s into a generation that never found a pair) and the watchdog is still working: the next restart
+follows on the cadence. With `restarts_exhausted: true` the helper is out of ideas for this peer and the companion
+should fall back (D10.3.6) or tell the player there is no path.
+
+**The adapter filter** (`FilteredNetworkManager`, libwebrtc's `BasicNetworkManager` with its list filtered before the
+port allocator sees it, so STUN is never asked about addresses that cannot reach the other player). Dropped: any
+network whose address is IPv4 link-local (169.254/16: an adapter without DHCP), IPv6 link-local (fe80::/10) or IPv6
+unique-local (fc00::/7); and a *virtual* adapter, when at least one non-virtual adapter survives: its name contains
+vEthernet, WSL, Hyper-V, VMware, VirtualBox or Loopback (case-insensitive; a release libwebrtc names Windows adapters
+by ordinal, so the driver description is matched as well: "Hyper-V Virtual Ethernet Adapter", "VMware Virtual…",
+"VirtualBox Host-Only…", "…Loopback…"; a Hyper-V or Azure guest's own "Microsoft Hyper-V Network Adapter" is not
+virtual), or it is libwebrtc's loopback type. Kept: everything else, global IPv6 included. If every adapter would be
+dropped, every adapter is kept and the log says so. One stderr line per peer at its first gathering (and again when
+the set changes) lists what was kept and dropped with the reason: adapter ordinal, description, family, and for IPv4
+the first two octets only (`video: peer <id>: adapters: kept 2 Killer E3100G… (v4 192.168.*), …; dropped 0 Hyper-V
+Virtual Ethernet Adapter (v4 172.24.*): virtual, 1 UsbNcm Host Device (v4 169.254.*): link-local, …`). The self tests
+(`--loopback-selftest`, `--restart-selftest`) keep the loopback adapter; the protocol never does (the port allocator's
+default ignore mask drops it too).
+
+**`--restart-selftest`** proves the cadence end to end: two in-process peers, SDP relayed at once, trickle
+candidates held both ways for 12 s so the first generation can never form a pair; the initiator restarts at 10 s
+(the tick makes it 11), the hold is released at 12 s, libwebrtc drops the old generation's candidates by their ufrag
+and the new generation connects within a few ms. Pass: both sides connected within 15 s, the initiator's `connected`
+carrying `restarts ≥ 1`. On the owner's rig: restart at 11.0 s, connected at 12.0 s, 32 candidates held.
 
 ## The window (`sink window`, D10.4; `src/sink_window.{h,cpp}`)
 

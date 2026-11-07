@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <thread>
 #include <vector>
 
@@ -347,7 +348,7 @@ int RunLoopbackSelftest(int seconds) {
     PeerEvents ev;
     ev.on_sdp = [other](const std::string&, const std::string& kind, const std::string& sdp) { (*other)->OnRemoteSdp(kind, sdp); };
     ev.on_candidate = [other](const std::string&, const std::string& c, const std::string& mid, int mline) { (*other)->OnRemoteCandidate(c, mid, mline); };
-    ev.on_ice = [&, ice](const std::string& id, const std::string& state, const Json& pair) {
+    ev.on_ice = [&, ice](const std::string& id, const std::string& state, const Json& pair, const Json&) {
       std::lock_guard<std::mutex> l(mu);
       *ice = state;
       if (pair.is_object()) printf("peer %s: %s via %s\n", id.c_str(), state.c_str(), pair.Dump().c_str());
@@ -451,6 +452,130 @@ int RunLoopbackSelftest(int seconds) {
   b.reset();
   pf.Shutdown();
   return fin.frames_total > 0 && size_ok ? 0 : 1;
+}
+
+// D10.3.5: the ICE restart cadence end to end. Two in-process peers whose SDP relays at once but whose trickle
+// candidates are HELD, both ways, for the first 12 s: neither side learns an address of the other, so the first
+// generation never forms a pair (ICE stays `new` with both descriptions in: the stuck shape the watchdog counts) and the
+// initiator restarts at 10 s. The hold is then released: the old generation's candidates are dropped by libwebrtc
+// (their ufrag is a past generation), the new generation's connect. Pass: both sides connected within 15 s of start,
+// the initiator's `connected` carrying restarts ≥ 1.
+int RunRestartSelftest() {
+  const int kHoldMs = 12000, kPassMs = 15000, kGiveUpMs = 30000;
+  ProbeResult probe = ProbeCodecs(1354, 1440, 60);
+  if (probe.encoder.empty() || probe.decoder.empty()) {
+    fprintf(stderr, "castcade-video: no encoder / decoder\n");
+    return 2;
+  }
+  Sink sink;
+  CodecOptions codecs;
+  codecs.encoder = probe.encoder;
+  codecs.decoder = probe.decoder;
+  codecs.sink = &sink;
+  PeerFactory pf;
+  std::string err;
+  if (!pf.Init(codecs, /*allow_loopback=*/true, &err)) {
+    fprintf(stderr, "castcade-video: libwebrtc did not start: %s\n", err.c_str());
+    return 2;
+  }
+  const int64_t t0 = NowUs();
+  auto ms = [&] { return (long long)((NowUs() - t0) / 1000); };
+  std::shared_ptr<Peer> a, b;
+  std::mutex mu;
+  std::condition_variable cv;
+  std::string a_ice = "new", b_ice = "new";
+  int errors = 0, a_restarts_at_connect = 0, held_total = 0, offers = 0;
+  bool released = false;
+  struct Held { std::shared_ptr<Peer>* to; std::string cand, mid; int mline; };
+  std::deque<Held> held;
+  auto up = [](const std::string& s) { return s == "connected" || s == "completed"; };
+  auto events = [&](std::shared_ptr<Peer>* other, std::string* ice, const char* name) {
+    PeerEvents ev;
+    ev.on_sdp = [&, other, name](const std::string&, const std::string& kind, const std::string& sdp) {
+      {
+        std::lock_guard<std::mutex> l(mu);
+        if (kind == "offer") offers++;
+      }
+      printf("%6lld ms  %s: %s out (relayed at once)\n", ms(), name, kind.c_str());
+      fflush(stdout);
+      (*other)->OnRemoteSdp(kind, sdp);
+    };
+    ev.on_candidate = [&, other](const std::string&, const std::string& c, const std::string& mid, int mline) {
+      bool deliver;
+      {
+        std::lock_guard<std::mutex> l(mu);
+        deliver = released;
+        if (!deliver) {
+          held.push_back({other, c, mid, mline});
+          held_total++;
+        }
+      }
+      if (deliver) (*other)->OnRemoteCandidate(c, mid, mline);
+    };
+    ev.on_ice = [&, ice, name](const std::string&, const std::string& state, const Json& pair, const Json& extra) {
+      std::lock_guard<std::mutex> l(mu);
+      *ice = state;
+      const int r = extra.is_object() ? extra.GetInt("restarts", 0) : 0;
+      const bool ex = extra.is_object() && extra.GetBool("restarts_exhausted", false);
+      if (up(state) && name[0] == 'a' && a_restarts_at_connect == 0) a_restarts_at_connect = r;
+      printf("%6lld ms  %s: ice %s%s%s%s\n", ms(), name, state.c_str(), r ? (" (restarts " + std::to_string(r) + ")").c_str() : "",
+             ex ? " restarts_exhausted" : "", pair.is_object() ? (" via " + pair.Dump()).c_str() : "");
+      fflush(stdout);
+      cv.notify_all();
+    };
+    ev.on_error = [&, name](const std::string&, const std::string& code, const std::string& text) {
+      printf("%6lld ms  %s: error %s: %s\n", ms(), name, code.c_str(), text.c_str());
+      fflush(stdout);
+      std::lock_guard<std::mutex> l(mu);
+      errors++;
+      cv.notify_all();
+    };
+    return ev;
+  };
+  PeerLimits limits;
+  a = std::make_shared<Peer>(pf, "a", true, std::vector<IceServerSpec>{}, limits, events(&b, &a_ice, "a"));
+  b = std::make_shared<Peer>(pf, "b", false, std::vector<IceServerSpec>{}, limits, events(&a, &b_ice, "b"));
+  printf("restart-selftest: trickle candidates held both ways for %d ms; the initiator (a) must restart ICE at ~10 s and connect through the new generation by %d ms\n", kHoldMs, kPassMs);
+  if (!b->Start(&err) || !a->Start(&err)) {
+    fprintf(stderr, "castcade-video: peer start failed: %s\n", err.c_str());
+    return 1;
+  }
+  bool early = false;
+  {
+    std::unique_lock<std::mutex> l(mu);
+    early = cv.wait_until(l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kHoldMs), [&] { return errors > 0 || (up(a_ice) && up(b_ice)); });
+    released = true;
+  }
+  std::deque<Held> release;
+  {
+    std::lock_guard<std::mutex> l(mu);
+    release.swap(held);
+  }
+  printf("%6lld ms  relay: released %zu held candidates (%d offers so far)\n", ms(), release.size(), offers);
+  fflush(stdout);
+  if (early) {
+    printf("restart-selftest: FAIL — connected before the hold was released (a %s, b %s, %d errors): the hold did not stall the first attempt\n", a_ice.c_str(), b_ice.c_str(), errors);
+    fflush(stdout);
+  } else {
+    for (const Held& h : release) (*h.to)->OnRemoteCandidate(h.cand, h.mid, h.mline);
+  }
+  long long connected_ms = -1;
+  if (!early) {
+    std::unique_lock<std::mutex> l(mu);
+    cv.wait_until(l, std::chrono::steady_clock::now() + std::chrono::milliseconds(kGiveUpMs - kHoldMs), [&] { return errors > 0 || (up(a_ice) && up(b_ice)); });
+    if (up(a_ice) && up(b_ice)) connected_ms = ms();
+  }
+  const bool ok = !early && errors == 0 && connected_ms >= 0 && connected_ms <= kPassMs && a_restarts_at_connect >= 1;
+  printf("restart-selftest: %s — %s at %lld ms, initiator restarts at connect %d, %d offers, %d candidates held then released at %d ms, %d errors (pass: connected by %d ms through restart ≥ 1)\n",
+         ok ? "pass" : "FAIL", connected_ms >= 0 ? "connected" : "not connected", connected_ms >= 0 ? connected_ms : ms(), a_restarts_at_connect, offers, held_total, kHoldMs,
+         errors, kPassMs);
+  fflush(stdout);
+  a->Close();
+  b->Close();
+  a.reset();
+  b.reset();
+  pf.Shutdown();
+  return ok ? 0 : 1;
 }
 
 int RunWindowSelftest(int seconds, bool warp) {

@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 
+#include <algorithm>
 #include <map>
 
 #include "api/audio/audio_device.h"
@@ -26,6 +27,7 @@
 #include "api/stats/rtc_stats_collector_callback.h"
 #include "api/stats/rtc_stats_report.h"
 #include "api/stats/rtcstats_objects.h"
+#include "api/units/time_delta.h"
 #include "api/video/video_frame.h"
 #include "media/base/video_broadcaster.h"
 #include "p2p/base/port.h"
@@ -34,6 +36,7 @@
 #include "rtc_base/ssl_adapter.h"
 #include "rtc_base/time_utils.h"
 
+#include "network_filter.h"
 #include "sdp.h"
 #include "util.h"
 
@@ -69,10 +72,11 @@ class StderrLogSink final : public webrtc::LogSink {
  public:
   void OnLogMessage(const std::string& message) override {
     // Known chatter that says nothing about this match: DSCP on Windows sockets, pings between address families
-    // or adapters that cannot reach each other (every ICE run has some), the dummy audio device.
+    // or adapters that cannot reach each other (every ICE run has some; FD_CONNECT_BIT 10051 / 10049 is the same
+    // thing seen from the socket server), the dummy audio device.
     static const char* const kNoise[] = {"OPT_DSCP", "Failed to send STUN ping", "UDP send of", "Unable to set playout device",
                                          "aecdump", "Transmitting payload type without picture ID",
-                                         "Discarding candidate because port is already done gathering"};
+                                         "Discarding candidate because port is already done gathering", "FD_CONNECT_BIT"};
     for (const char* n : kNoise)
       if (message.find(n) != std::string::npos) return;
     std::string m = message;
@@ -253,14 +257,14 @@ bool PeerFactory::Init(const CodecOptions& codecs, bool allow_loopback, std::str
 
   codecs_ = codecs;
   allow_loopback_ = allow_loopback;
-  factory_ = CreateFactory(nullptr, error);
+  factory_ = CreateFactory(nullptr, "", error);
   if (!factory_) return false;
   source_ = webrtc::make_ref_counted<PushSource>();
   static_cast<PushSource*>(source_.get())->SetState(webrtc::MediaSourceInterface::kLive);
   return true;
 }
 
-webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> PeerFactory::CreateFactory(std::shared_ptr<RungTarget> target, std::string* error) {
+webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> PeerFactory::CreateFactory(std::shared_ptr<RungTarget> target, const std::string& peer_tag, std::string* error) {
   CodecOptions codecs = codecs_;
   codecs.target = std::move(target);
   webrtc::PeerConnectionFactoryDependencies deps;
@@ -269,6 +273,9 @@ webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface> PeerFactory::Creat
   deps.signaling_thread = sig_.get();
   deps.socket_factory = net_->socketserver();
   deps.env = env_;
+  // D10.3.5: the adapter filter (network_filter.h) in place of the default network manager; the factory's connection
+  // context owns it and uses it on the network thread. The self tests keep the loopback adapter.
+  if (!peer_tag.empty()) deps.network_manager = std::make_unique<FilteredNetworkManager>(*env_, net_->socketserver(), peer_tag, allow_loopback_);
   deps.adm = worker_->BlockingCall([&] {
     return webrtc::CreateAudioDeviceModule(*env_, webrtc::AudioDeviceModule::kDummyAudio, false);
   });
@@ -320,12 +327,15 @@ Peer::Peer(PeerFactory& pf, std::string id, bool initiator, std::vector<IceServe
 Peer::~Peer() { Close(); }
 
 bool Peer::Start(std::string* error) {
-  pcf_ = pf_.CreateFactory(target_, error);
+  pcf_ = pf_.CreateFactory(target_, id_, error);
   if (!pcf_) return false;
   webrtc::PeerConnectionInterface::RTCConfiguration config;
   config.sdp_semantics = webrtc::SdpSemantics::kUnifiedPlan;
   config.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
   config.rtcp_mux_policy = webrtc::PeerConnectionInterface::kRtcpMuxPolicyRequire;
+  // D10.3.5: candidates keep coming after an ICE restart and when an adapter changes (the receiving timeout and the
+  // backup-pair ping interval stay libwebrtc's own: failure detection is not shortened).
+  config.continual_gathering_policy = webrtc::PeerConnectionInterface::GATHER_CONTINUALLY;
   for (const auto& s : servers_) {
     webrtc::PeerConnectionInterface::IceServer is;
     is.urls = s.urls;
@@ -384,9 +394,125 @@ bool Peer::Start(std::string* error) {
   }
 
   LogLine("peer %s: created (%s, %zu ice servers)", id_.c_str(), initiator_ ? "initiator" : "answerer", servers_.size());
+  // The first offer is explicit (AddTransceiver and CreateDataChannel above already asked for negotiation, before
+  // the codec preferences and parameters were set); from here on OnRenegotiationNeeded drives the initiator.
+  std::weak_ptr<Peer> weak = weak_from_this();
+  pf_.signaling_thread()->PostTask([weak] {
+    if (auto self = weak.lock()) self->started_ = true;
+  });
   if (initiator_) CreateLocal(true);
+  ScheduleWatch();
   return true;
 }
+
+// ---- D10.3.5: renegotiation (the initiator offers again) and the ICE restart watchdog, all on the signaling thread
+
+void Peer::OnRenegotiationNeeded() {
+  if (!initiator_ || !started_ || closed_) return;
+  // Not re-entrantly: this fires from inside RestartIce() / the description setters.
+  std::weak_ptr<Peer> weak = weak_from_this();
+  pf_.signaling_thread()->PostTask([weak] {
+    if (auto self = weak.lock()) self->OfferWhenStable();
+  });
+}
+
+void Peer::OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState state) {
+  if (state != webrtc::PeerConnectionInterface::kStable || !offer_pending_ || closed_) return;
+  std::weak_ptr<Peer> weak = weak_from_this();
+  pf_.signaling_thread()->PostTask([weak] {
+    if (auto self = weak.lock()) self->OfferWhenStable();
+  });
+}
+
+void Peer::OfferWhenStable() {
+  if (!initiator_ || closed_ || !pc_) return;
+  if (making_offer_ || pc_->signaling_state() != webrtc::PeerConnectionInterface::kStable) {
+    if (!offer_pending_) LogLine("peer %s: renegotiation queued (signaling not stable)", id_.c_str());
+    offer_pending_ = true;
+    return;
+  }
+  offer_pending_ = false;
+  offer_due_ = false;
+  LogLine("peer %s: renegotiation: offering", id_.c_str());
+  CreateLocal(true);
+}
+
+void Peer::ScheduleWatch() {
+  std::weak_ptr<Peer> weak = weak_from_this();
+  pf_.signaling_thread()->PostDelayedTask(
+      [weak] {
+        if (auto self = weak.lock()) self->WatchTick();
+      },
+      webrtc::TimeDelta::Millis(kIceWatchTickMs));
+}
+
+void Peer::WatchTick() {
+  if (closed_ || !pc_) return;
+  using S = webrtc::PeerConnectionInterface;
+  const S::IceConnectionState st = pc_->standardized_ice_connection_state();
+  const int64_t now = NowUs();
+  if (st == S::kIceConnectionConnected || st == S::kIceConnectionCompleted) {
+    // The state change handler logged and reset the spell; nothing to do until it is stuck again.
+    watch_ = IceWatch{};
+    restarts_ = 0;
+  } else if (st != S::kIceConnectionClosed) {
+    bool remote_set;
+    {
+      std::lock_guard<std::mutex> l(mu_);
+      remote_set = remote_set_;
+    }
+    // Stuck: checking / disconnected / failed, or still `new` once both descriptions are in (no candidate pair could
+    // be formed: nothing of the other side reached us).
+    const bool stuck = st == S::kIceConnectionChecking || st == S::kIceConnectionDisconnected || st == S::kIceConnectionFailed ||
+                       (st == S::kIceConnectionNew && remote_set && pc_->signaling_state() == S::kStable);
+    if (stuck) {
+      if (!watch_.since_us) watch_.since_us = now;
+      const int stuck_s = static_cast<int>((now - watch_.since_us) / 1000000);
+      const int64_t elapsed_ms = (now - std::max(watch_.since_us, watch_.last_restart_us)) / 1000;
+      if (!watch_.gave_up && initiator_) {
+        if (watch_.restarts < kIceRestartMax) {
+          // A connection libwebrtc already gave up on (failed) restarts at once the first time; the backoff holds after.
+          const int delay = (st == S::kIceConnectionFailed && watch_.restarts == 0) ? 0 : kIceRestartBackoffMs[watch_.restarts];
+          if (elapsed_ms >= delay) {
+            watch_.restarts++;
+            restarts_ = watch_.restarts;
+            watch_.last_restart_us = now;
+            LogLine("peer %s: ICE restart %d of %d (%s for %d s)", id_.c_str(), watch_.restarts, kIceRestartMax, IceName(st), stuck_s);
+            offer_due_ = true;
+            pc_->RestartIce();
+            // libwebrtc asks for negotiation from inside RestartIce() (OnRenegotiationNeeded, posted above). Should
+            // no offer follow within a tick, the next tick offers anyway: CreateOffer after RestartIce() carries the
+            // new credentials.
+          } else if (offer_due_ && !making_offer_ && !offer_pending_) {
+            LogLine("peer %s: no offer followed the ICE restart: offering", id_.c_str());
+            OfferWhenStable();
+          }
+        } else if (elapsed_ms >= kIceRestartBackoffMs[kIceRestartMax - 1]) {
+          watch_.gave_up = true;
+          LogLine("peer %s: no path after %d ICE restarts (%s for %d s): restarts exhausted", id_.c_str(), watch_.restarts, IceName(st), stuck_s);
+          EmitIce("failed", pair(), watch_.restarts, true);
+        }
+      } else if (!watch_.gave_up && !initiator_ && now - watch_.since_us >= static_cast<int64_t>(kIceAnswererGiveUpMs) * 1000) {
+        watch_.gave_up = true;
+        LogLine("peer %s: no path after %d s (%s; the initiator's restarts are over): restarts exhausted", id_.c_str(), stuck_s, IceName(st));
+        EmitIce("failed", pair(), watch_.restarts, true);
+      }
+    }
+  }
+  ScheduleWatch();
+}
+
+void Peer::EmitIce(const std::string& state, const Json& pair, int restarts, bool exhausted) {
+  Json extra;
+  if (restarts > 0 || exhausted) {
+    extra = Json::Object();
+    if (restarts > 0) extra.Set("restarts", Json::Int(restarts));
+    if (exhausted) extra.Set("restarts_exhausted", Json::Bool(true));
+  }
+  ev_.on_ice(id_, state, pair, extra);
+}
+
+int Peer::restarts() { return restarts_; }
 
 void Peer::AdoptChannel(webrtc::scoped_refptr<webrtc::DataChannelInterface> channel) {
   if (dc_) dc_->UnregisterObserver();
@@ -463,10 +589,12 @@ std::string Peer::RemoteSdpWithLimits(const std::string& sdp) const {
 void Peer::CreateLocal(bool offer) {
   std::weak_ptr<Peer> weak = weak_from_this();
   const std::string kind = offer ? "offer" : "answer";
-  auto obs = webrtc::make_ref_counted<CreateSdpObserver>(weak, [weak, kind](std::unique_ptr<webrtc::SessionDescriptionInterface> desc, std::string err) {
+  if (offer) making_offer_ = true;
+  auto obs = webrtc::make_ref_counted<CreateSdpObserver>(weak, [weak, kind, offer](std::unique_ptr<webrtc::SessionDescriptionInterface> desc, std::string err) {
     auto self = weak.lock();
     if (!self) return;
     if (!desc) {
+      if (offer) self->making_offer_ = false;
       self->ev_.on_error(self->id_, "negotiation_failed", "Create" + kind + ": " + err);
       return;
     }
@@ -484,6 +612,7 @@ void Peer::SetLocal(std::unique_ptr<webrtc::SessionDescriptionInterface> desc, c
   auto obs = webrtc::make_ref_counted<SetLocalObserver>(weak, [weak, kind, sdp](std::string err) {
     auto self = weak.lock();
     if (!self) return;
+    if (kind == "offer") self->making_offer_ = false;
     if (!err.empty()) {
       self->ev_.on_error(self->id_, "negotiation_failed", "SetLocalDescription(" + kind + "): " + err);
       return;
@@ -496,9 +625,19 @@ void Peer::SetLocal(std::unique_ptr<webrtc::SessionDescriptionInterface> desc, c
 void Peer::OnRemoteSdp(const std::string& kind, const std::string& sdp) {
   if (!pc_ || closed_) return;
   const bool offer = kind == "offer";
-  if (offer == initiator_) {
-    ev_.on_error(id_, "bad_signal", initiator_ ? "an offer for the initiator" : "an answer for the answerer");
+  if (offer && initiator_) {
+    // Glare cannot happen in our protocol (only the initiator offers); should one arrive anyway, the initiator's own
+    // offer stands and this one is dropped.
+    LogLine("peer %s: ignoring an offer (the initiator does not answer)", id_.c_str());
     return;
+  }
+  if (!offer && !initiator_) {
+    ev_.on_error(id_, "bad_signal", "an answer for the answerer");
+    return;
+  }
+  if (offer) {
+    std::lock_guard<std::mutex> l(mu_);
+    if (remote_set_) LogLine("peer %s: new offer on an established connection (renegotiation): answering", id_.c_str());
   }
   webrtc::SdpParseError parse;
   auto desc = webrtc::CreateSessionDescription(offer ? webrtc::SdpType::kOffer : webrtc::SdpType::kAnswer, RemoteSdpWithLimits(sdp), &parse);
@@ -619,14 +758,28 @@ void Peer::OnIceCandidateError(const std::string& address, int port, const std::
 }
 
 void Peer::OnStandardizedIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState state) {
+  using S = webrtc::PeerConnectionInterface;
   Json pair;
   {
     std::lock_guard<std::mutex> l(mu_);
     ice_state_ = IceName(state);
     pair = pair_;
   }
-  LogLine("peer %s: ice %s", id_.c_str(), IceName(state));
-  ev_.on_ice(id_, IceName(state), pair);
+  const bool up = state == S::kIceConnectionConnected || state == S::kIceConnectionCompleted;
+  const int restarts = watch_.restarts;
+  if (up && watch_.since_us) {
+    if (restarts > 0)
+      LogLine("peer %s: ice %s after %d ICE restart(s), %d s stuck", id_.c_str(), IceName(state), restarts, static_cast<int>((NowUs() - watch_.since_us) / 1000000));
+    else
+      LogLine("peer %s: ice %s", id_.c_str(), IceName(state));
+    watch_ = IceWatch{};
+    restarts_ = 0;
+  } else {
+    LogLine("peer %s: ice %s", id_.c_str(), IceName(state));
+  }
+  // A `connected` after restarts carries their count; a `failed` from libwebrtc alone (no `restarts_exhausted`) is
+  // one generation's verdict: the watchdog keeps restarting.
+  EmitIce(IceName(state), pair, up ? restarts : watch_.restarts, false);
 }
 
 void Peer::OnConnectionChange(webrtc::PeerConnectionInterface::PeerConnectionState state) {
@@ -649,7 +802,7 @@ void Peer::OnIceSelectedCandidatePairChanged(const webrtc::CandidatePairChangeEv
           event.selected_candidate_pair.local_candidate().address().ToString().c_str(),
           std::string(webrtc::IceCandidateTypeToString(event.selected_candidate_pair.remote_candidate().type())).c_str(),
           event.selected_candidate_pair.remote_candidate().address().ToString().c_str(), event.reason.c_str());
-  ev_.on_ice(id_, state, pair);
+  EmitIce(state, pair, watch_.restarts, false);
 }
 
 void Peer::OnTrack(webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver) {
