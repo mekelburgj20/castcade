@@ -63,7 +63,7 @@ fn parse_args() -> Args {
         width: num("--width", 1354) as i32,
         height: num("--height", 1440) as i32,
         fps: num("--fps", 60) as i32,
-        strip_block: num("--strip-block", 16) as usize,
+        strip_block: num("--strip-block", 24) as usize,
         port_min: num("--port-min", 0) as u32,
         port_max: num("--port-max", 0) as u32,
         mitigation: get("--mitigation"),
@@ -86,8 +86,18 @@ unsafe impl Send for Harness {}
 
 impl Harness {
     fn open(path: &str, w: i32, h: i32) -> Option<Harness> {
+        // The dll's FFmpeg dependents (avcodec-62 ...) sit beside it: put that folder on the loader path.
+        if let Some(dir) = std::path::Path::new(path).parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::env::set_var("PATH", format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default()));
+        }
         unsafe {
-            let lib = libloading::Library::new(path).ok()?;
+            let lib = match libloading::Library::new(path) {
+                Ok(l) => l,
+                Err(e) => {
+                    println!("harness: {path}: {e}");
+                    return None;
+                }
+            };
             let open: SourceOpen = *lib.get(b"spike_source_open\0").ok()?;
             let frame: SourceFrame = *lib.get(b"spike_source_frame\0").ok()?;
             let close: SourceClose = *lib.get(b"spike_source_close\0").ok()?;
@@ -378,8 +388,22 @@ fn run_sender(a: &Args) {
                     let b = buf.get_mut().unwrap();
                     b.set_pts(gst::ClockTime::from_nseconds(n * frame_ns));
                     b.set_duration(gst::ClockTime::from_nseconds(frame_ns));
-                    let mut map = b.map_writable().unwrap();
-                    hz.fill(n, map.as_mut_slice());
+                    {
+                        let mut map = b.map_writable().unwrap();
+                        hz.fill(n, map.as_mut_slice());
+                    }
+                    // The harness packs NV12 with stride == width (1354); GStreamer's default NV12 layout
+                    // rounds the stride up to 1356. The meta tells the encoder the real strides and offsets.
+                    gst_video::VideoMeta::add_full(
+                        b,
+                        gst_video::VideoFrameFlags::empty(),
+                        gst_video::VideoFormat::Nv12,
+                        w as u32,
+                        h as u32,
+                        &[0, (w as usize) * (h as usize)],
+                        &[w, w],
+                    )
+                    .unwrap();
                 }
                 if appsrc.push_buffer(buf).is_err() {
                     break;
@@ -481,22 +505,23 @@ struct RxState {
     decoder: String,
 }
 
-// Harness frame counter: 16 bits burned in as 16 blocks across the top-left, MSB first, luma > 128 = 1.
-// TODO(D10.0.1): confirm block size / bit order against spike/d10-video/harness once it lands.
+// Harness frame counter (harness/src/harness.cpp): 16 blocks of `block` px (24) starting at (16, 16), MSB
+// first, Y 235 for 1 / 16 for 0; read like the harness does, the inner region 6 px in, mean >= 160 = 1.
+const STRIP_MARGIN: usize = 16;
 fn read_counter(y: &[u8], stride: usize, block: usize) -> i64 {
-    if block == 0 || stride < 16 * block {
+    if block < 13 || stride < STRIP_MARGIN + 16 * block || y.len() < (STRIP_MARGIN + block) * stride {
         return -1;
     }
     let mut v: i64 = 0;
     for i in 0..16 {
-        let (cx, cy) = (i * block + block / 2, block / 2);
-        let mut sum = 0u32;
-        for dy in 0..3 {
-            for dx in 0..3 {
-                sum += y[(cy + dy - 1) * stride + cx + dx - 1] as u32;
+        let (mut sum, mut n) = (0u64, 0u64);
+        for yy in STRIP_MARGIN + 6..STRIP_MARGIN + block - 6 {
+            for x in STRIP_MARGIN + i * block + 6..STRIP_MARGIN + (i + 1) * block - 6 {
+                sum += y[yy * stride + x] as u64;
+                n += 1;
             }
         }
-        v = (v << 1) | ((sum / 9 > 128) as i64);
+        v = (v << 1) | ((sum / n.max(1) >= 160) as i64);
     }
     v
 }

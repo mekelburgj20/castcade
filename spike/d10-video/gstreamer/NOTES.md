@@ -124,27 +124,47 @@ No `gst-webrtc-signalling-server` build was needed: WHIP is HTTP between the two
    includes the system-memory → CUDA upload nvh264enc does per frame (`nvd3d11h264enc` with D3D11 textures
    would avoid it, which is the layer's real path).
 
-## 5. Smoke results (videotestsrc ball pattern, harness dll not yet built: the counter columns are noise)
+## 5. Smoke results (owner's 3090, 2026-11-07; the 90 s measurement runs are the lead's via `measure.mjs`)
 
-15 s direct and 15 s through the WHIP proxy in pass-through mode (`--s 0 --c 0`; no shaper on main yet), owner's
-3090, 2026-11-07. Both: `nvh264enc` (session encoder #2) → `d3d12h264dec`; 60 fps sent and 60 fps delivered
-every full second; `freeze_ms_max` 31–33 ms (two frame intervals); `rtt_ms` 0.0–0.5; 0 loss; the encoder sat at
-13 468 kbps while the estimate read 20 000 (§4.2); the wire carried only 250–350 kbps because the test pattern
-compresses to nothing (CBR without stuffing does not pad). Through the proxy, last rows:
+**Smoke 1–2: videotestsrc, 15 s direct and 15 s through the WHIP proxy in pass-through mode** (`--s 0 --c 0`):
+`nvh264enc` → `d3d12h264dec`, 60 fps sent and delivered every full second, `freeze_ms_max` 31–33 ms, rtt 0.0–0.5 ms,
+no loss; the wire carried only 250–350 kbps because the ball pattern compresses to nothing (CBR does not pad).
+
+**Smoke 3: harness frames (`castcade_spike_harness.dll` from main), 20 s through the proxy + the shaper at a flat
+25 Mbps** (`shaper.mjs --s 27410 --c 27411 --schedule 25000:60 --start-on-first-packet`), `start-bitrate` 20 Mbps,
+`max-bitrate` 30 Mbps. The counter reader works (1138 frames in sequence, 27 not: the start-up burst). Shape of it:
+the first ~10 s **overshoot** the link — encoder at 20 Mbps plus RTX fills the shaper's 150 ms queue (shaper log:
+24.9 Mbps forwarded, `queued_ms` 150, 25–271 packets dropped a second), GCC sees 136 ms RTT and 2.3 % loss and
+backs the encoder down from 17 Mbps (t=2) to 8.5 Mbps (t=11); from ~11 s the queue drains, the encoder climbs
+back to 11.6 Mbps by t=19 (wire 13–15 Mbps with RTX), rtt back to 1.3 ms. Delivered frame rate: 59–63 fps while the
+queue was filling (t=2–5), then **37–54 fps for t=5–8 with `freeze_ms_max` 118–168 ms and 27 frames lost**
+(`counter_bad`, receiver-side `packets_lost` 49–88), then 58–61 fps from t=9 on with `freeze_ms_max` 47–82 ms
+(3–5 frame intervals); resolution stayed 1354x1440 (no mitigation above 2 Mbps). `enc_cost_us_avg` 5.5–6 ms a
+frame while the encoder ran at 13–17 Mbps, 10–14 ms once congestion control was active (includes the NV12 →
+CUDA upload; the libavcodec harness encoder is the comparison).
 
 ```
 t,encoder,fps_sent,kbps_sent,target_kbps,enc_cost_us_avg,rtt_ms,loss_pct,bwe_kbps,enc_kbps,frames_in,mitigation,enc_bitrate_kbps
-12,nvh264enc,60,260,13468,6415,0.0,0.00,20000,176,755,Lowered resolution,13468
-13,nvh264enc,61,269,13468,6517,0.0,0.00,20000,197,815,Lowered resolution,13468
-14,nvh264enc,61,295,13468,6135,0.0,0.00,20000,166,876,Lowered resolution,13468
+14,nvh264enc,59,13368,10334,13410,136.4,2.34,12071,11723,850,Lowered resolution,10334
+15,nvh264enc,60,14179,11001,14196,136.4,2.34,13039,12540,910,Lowered resolution,11001
+16,nvh264enc,63,14996,9715,10243,136.4,2.34,11198,11605,972,Lowered resolution,9715
+17,nvh264enc,58,13264,10259,11233,136.4,2.34,11965,11468,1031,Lowered resolution,10259
+18,nvh264enc,62,13982,10934,12673,136.4,2.34,12940,12719,1093,Lowered resolution,10934
+19,nvh264enc,59,14920,11621,13235,1.3,0.00,13963,12980,1152,Lowered resolution,11621
 t,frames_delivered,fps,kbps_received,decode_ok,freeze_ms_max,width,height,decoder,counter_last,counter_ok,counter_bad,packets_lost,jitter_ms
-12,787,60,229,1,32,1354,1440,d3d12h264dec,0,4,783,0,4.4
-13,848,61,328,1,31,1354,1440,d3d12h264dec,0,4,844,0,5.6
-14,908,60,254,1,32,1354,1440,d3d12h264dec,0,4,904,0,4.4
-15,936,28,315,1,557,1354,1440,d3d12h264dec,0,4,932,0,6.4   (sender stopped at 15 s; the rest is teardown)
+14,894,61,14667,1,47,1354,1440,d3d12h264dec,993,867,27,0,1.5
+15,954,60,14739,1,57,1354,1440,d3d12h264dec,1053,927,27,0,1.4
+16,1013,59,12490,1,50,1354,1440,d3d12h264dec,1112,986,27,0,1.2
+17,1071,58,14397,1,70,1354,1440,d3d12h264dec,1170,1044,27,0,0.5
+18,1132,61,14384,1,82,1354,1440,d3d12h264dec,1231,1105,27,0,1.4
+19,1165,33,16884,1,464,1354,1440,d3d12h264dec,1264,1138,27,0,1.0   (sender stopped at 20 s; teardown)
+shaper: t,rate_kbps,fwd_kbps,dropped,queued_ms
+2.4,25000,24976,25,150 · 8.4,25000,24981,271,150 · 11.4,25000,13459,0,80 · 15.4,25000,18647,0,39 · 19.4,25000,24986,0,139
 ```
 
-The 90 s measurement runs are the lead's (`measure.mjs`), once the harness dll and the shaper are on main.
+For the measurement the lead may want `--start-kbps` below the first cap (GCC ramps from there instead of
+overshooting into the queue) — that is a protocol choice, the default stays 20 000 to match the other candidates.
+Note the `rtt_ms`/`loss_pct` columns hold the last RTCP receiver report and change in steps.
 
 ## 6. Packaging answer
 
@@ -185,11 +205,13 @@ decodebin3 into the layer's shared handle instead of appsink), packaging, and an
 path would use `webrtcsink`/`webrtcsrc` with a custom `Signallable` (a GObject interface implemented in Rust
 or C) over the match transport, not an HTTP endpoint.
 
-## 8. Unfinished
+## 8. Unfinished / caveats
 
-- No harness dll yet (another worker): runs used videotestsrc; the counter reader (`read_counter`, 16 blocks
-  of `--strip-block` px, MSB first, luma > 128) is untested against the real strip layout.
-- No shaper yet (another worker): the proxy path was exercised in pass-through mode (`--s 0 --c 0`) only.
-  With the shaper on main, the measurement command is the `measure.mjs` template above (the shaper binds S
-  and C; the proxy puts C in the offer and S in the answer; both ends pin 127.0.0.1).
+- The harness is loaded from main's build (`--harness C:\code\repos\castcade\spike\d10-video\harness\build\Release\castcade_spike_harness.dll`);
+  the default relative path expects `spike/d10-video/harness/build/Release/` beside this folder once the branches merge.
+  The harness packs NV12 with stride = width; spike-gst attaches a `VideoMeta` so nvh264enc accepts the 1354-wide
+  rows (GStreamer's default layout rounds the stride to 1356 and rejected the buffers without it).
+- The 90 s protocol runs were not made here (lead's job, one GPU). Only the 20 s flat-25 Mbps smoke above.
 - `amfh264enc` / `qsvh264enc` paths unverified (no such GPU here); `--encoder x264enc` forces the software path.
+- `enc_cost_us_avg` is wall time through the encoder element, not the harness's `spike_encoder_last_cost_us`
+  (GStreamer owns the encoder here); compare with that caveat.
