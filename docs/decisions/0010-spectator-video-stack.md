@@ -1,6 +1,6 @@
 # ADR 0010 — The stack under `castcade-video.exe`, chosen by the D10.0.1 spike
 
-**Status:** Proposed (2026-11-07, measurements made and the lead's decision below). Becomes Accepted when the owner reads the numbers.
+**Status:** Accepted (2026-11-07, owner: "I accept ADR 0010").
 **Owner ruling:** 2026-11-06, on the lead's recommendation: the WebRTC stack and the language of the native video
 helper are chosen by a two-day spike, not by argument; whichever holds 60 fps at 1354x1440 and recovers within 3 s of
 a bandwidth drop with the least code we own wins. The layer stays C++ in every outcome; Go is reserved for the SFU (D10.9).
