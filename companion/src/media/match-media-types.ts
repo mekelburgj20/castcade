@@ -169,6 +169,9 @@ export interface NativeVideoRungState extends NativeVideoRung {
   reason: string;
 }
 
+/** D10.3.8: theater's picture source while the sink is the layer's `recv` ring (`video-mesh.ts` theaterPathStep). */
+export type TheaterPath = 'ring' | 'pipe';
+
 /** D10.3: see `MediaStatus.nativeVideo`. */
 export interface NativeVideoStatus {
   /** `ready`: the helper runs and said so; `starting`: spawned, no `ready` yet; `stopped`: not started; `unavailable`: `helper_missing`, `helper_failed:<code>`. */
@@ -199,6 +202,13 @@ export interface NativeVideoStatus {
    * later native connection does not take the picture over mid-match).
    */
   fallback: boolean;
+  /**
+   * D10.3.8 (2026-11-07): where the headset's theater takes its picture while this rig is in theater with the layer's
+   * `recv` ring as the sink: `ring` (the native frames) or `pipe` (the Electron frames, after 5 s with no native frame
+   * from the player up; back to `ring` after 3 s of frames). Null outside theater or off the ring. Added by the match
+   * host (`video-mesh.ts` does not know theater); absent from a bare mesh status.
+   */
+  theaterPath?: TheaterPath | null;
   /**
    * Per remote player: ICE state, the selected pair ("srflx↔host"), the last counters each way, the rung in force for
    * them and `failed` (D10.3.6: the helper gave the connection up, restarts exhausted; it clears if it connects later).

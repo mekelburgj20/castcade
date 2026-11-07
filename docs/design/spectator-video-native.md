@@ -173,6 +173,18 @@ the camera request as `"ring": token`, both additive on pipe protocol 3), `sink 
 video path stays selectable (`videoPath: "native" | "electron"` in media settings, `native` the default where the
 helper is present) for one release, as §4 D10.7 says.
 
+Two rules from the second 0.2.38 match (2026-11-07). **The ring is on the first camera request** (D10.3.7): the match
+host gives the media layer the send ring before the media attaches, whatever the helper's state (the tokens exist at
+companion start; the layer creates and fills the ring whether or not a helper reads it yet; the helper opens it when it
+is ready), so the camera is never re-asked when the helper comes up; the only re-ask left is the D10.3.6 fallback's,
+without the ring. And the camera watch (`layer-camera.ts`) never takes the layer's own restart for a changed request
+(`off (a new request)`, then `on`) for the layer giving up, and gives any other stop 1 s for its `on`. **Theater has a
+safety net under the ring** (D10.3.8, `match-host.ts` syncNativeVideo): in theater on the ring with no native frame
+from the player up (the mesh's recv stats: fps 0, or none) for 5 s, the companion un-names the ring (`video: null` in
+the control) so the layer draws the panel page's CVO2 frames, which the Electron path keeps delivering; 3 s of native
+frames name it again; one log line per switch; `MediaStatus.nativeVideo.theaterPath` says which, and the Match tab's
+native-video line appends `theater from the Electron frames`.
+
 ### 6.5 What the layer does (D10.2) — `vr-layer/`
 
 The camera request gains `"ring": "<token>"`: with it, the scaled eye goes into the `send` ring as BGRA instead of

@@ -460,6 +460,8 @@ interface NativeVideoStatus {
   pin: number | null;
   /** D10.3.6: the Electron video serves the rest of this match (a peer failed with the restarts exhausted, or the helper is unavailable). */
   fallback: boolean;
+  /** D10.3.8: in theater on the layer's ring, where the picture comes from: the native frames, or the Electron frames after 5 s without any. Null otherwise. */
+  theaterPath?: 'ring' | 'pipe' | null;
   peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: (NativeVideoRung & { reason: string }) | null; failed: boolean }>;
 }
 interface VrOverlayStatus {

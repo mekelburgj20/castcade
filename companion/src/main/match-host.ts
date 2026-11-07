@@ -45,7 +45,7 @@ import { previewAdvice } from '../media/preview-stereo.js';
 import type { NativeVideoHook, RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
 import type { VideoHelper, VideoSink } from '../media/video-helper.js';
-import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
+import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import { tuneWords } from '../media/vr-layer.js';
@@ -293,6 +293,8 @@ const LEAVE_FLUSH_MS = 300;
 const SERIES_OVER_LINGER_MS = 20_000;
 /** D7.6: after the bench's theater-off control, before the pipe closes (the layer reads the control first). */
 const BENCH_HIDE_MS = 300;
+/** D10.3.8: the theater-path watch's own tick (the helper's stats come once a second too, but not when nothing arrives). */
+const THEATER_WATCH_MS = 1_000;
 
 interface Active {
   role: 'host' | 'client';
@@ -330,6 +332,9 @@ interface Active {
   offs: (() => void)[];
   /** D10.3: the native video mesh of this match (`openVideo`), null on the Electron path or without the helper. */
   video: VideoMesh | null;
+  /** D10.3.8: theater's picture source while the sink is the layer's ring (`syncNativeVideo`), and its 1 s clock. */
+  theater: TheaterPathState;
+  theaterTimer: ReturnType<typeof setInterval> | null;
 }
 
 /** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
@@ -508,8 +513,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const r = a ? { rig: a.rig, rigReason: a.rigReason, runtime: a.runtime } : rigOf(idleRig());
     const rawMedia = a && opts.media ? opts.media.status() : null;
     const withAudio = rawMedia && opts.tableAudio ? { ...rawMedia, tableAudio: opts.tableAudio.status() } : rawMedia;
-    // D10.3: the native video block, like table sound: only while this match runs it.
-    const media = withAudio && a?.video ? { ...withAudio, nativeVideo: a.video.status() } : withAudio;
+    // D10.3: the native video block, like table sound: only while this match runs it. D10.3.8: with theater's path.
+    const media = withAudio && a?.video ? { ...withAudio, nativeVideo: { ...a.video.status(), theaterPath: theaterOnRing(a) ? a.theater.path : null } } : withAudio;
     return {
       role: a ? a.role : 'none',
       phase,
@@ -777,12 +782,22 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     syncHook();
     const h = nv.helper.status();
     log.info(`match: native video: on for this match (helper ${h.helper}${h.reason ? `, ${h.reason}` : ''}; send ring ${nv.sendRing}, recv ring ${nv.recvRing})`);
+    // D10.3.8: the theater-path watch needs a clock of its own: with no native frames there may be no stats to emit on.
+    a.theaterTimer = setInterval(() => void (active === a && a.video === mesh && syncNativeVideo(a)), THEATER_WATCH_MS);
     syncNativeVideo(a);
   };
+  /** D10.3.8: this rig is in theater with the layer's ring as the sink: the only place the theater path means anything. */
+  const theaterOnRing = (a: Active): boolean => a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings) === 'theater';
   /**
    * The mesh follows the match: a helper peer per other participant; `send` on exactly when the headset would be
    * hidden for this rig's own ball (the same panel state `syncVrMode` reads: playing and my turn); the sink and the
    * layer's `video.ring` from the rig as it is now (a desktop rig that moves into the headset switches to the ring).
+   *
+   * D10.3.8 (2026-11-07): the safety net under the ring. While this rig is in theater on the ring and the mesh's recv
+   * stats for the player up show no frames (fps 0, or no recv stats) for `THEATER_RING_EMPTY_MS`, the ring is un-named
+   * (`setVideoRing(null)`) so the layer draws the panel page's CVO2 frames, which the Electron path keeps delivering;
+   * frames on the ring for `THEATER_RING_BACK_MS` name it again. One log line per switch; nothing switches outside
+   * theater (the state resets to the ring when theater ends, so each episode starts on the native frames).
    */
   const syncNativeVideo = (a: Active): void => {
     const mesh = a.video;
@@ -793,9 +808,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     mesh.setSending(panel.phase === 'playing' && panel.myTurn);
     const sink = videoSink(a);
     mesh.setSink(sink);
-    opts.vrLayer?.setVideoRing?.(sink.kind === 'ring' ? sink.token : null);
+    const theater = theaterOnRing(a);
+    const up = theater ? panel.playerUp : null;
+    const recv = up !== null ? mesh.status().peers[up]?.recv : undefined;
+    const step = theaterPathStep(a.theater, { theater, fps: recv ? recv.fps : null, now: Date.now() });
+    a.theater = step.state;
+    if (step.switched && up !== null) {
+      const who = nameIn(c, up);
+      log.info(step.state.path === 'pipe' ? `media: theater: no native frames from ${who} for ${THEATER_RING_EMPTY_MS / 1000} s; drawing the Electron frames` : `media: theater: native frames from ${who} for ${THEATER_RING_BACK_MS / 1000} s; drawing the frame ring again`);
+    }
+    opts.vrLayer?.setVideoRing?.(sink.kind === 'ring' && a.theater.path === 'ring' ? sink.token : null);
   };
   const closeVideo = (a: Active): void => {
+    if (a.theaterTimer) clearInterval(a.theaterTimer);
+    a.theaterTimer = null;
+    a.theater = THEATER_ON_RING;
     if (!a.video) return;
     a.video.close();
     a.video = null;
@@ -1137,6 +1164,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         endTimer: null,
         offs: [],
         video: null,
+        theater: THEATER_ON_RING,
+        theaterTimer: null,
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
       active = a;
@@ -1237,6 +1266,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           endTimer: null,
           offs: [],
           video: null,
+          theater: THEATER_ON_RING,
+          theaterTimer: null,
         };
         a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
         active = a;

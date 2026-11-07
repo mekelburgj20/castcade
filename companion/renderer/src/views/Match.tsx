@@ -740,6 +740,8 @@ function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativ
     if (p.recv && p.recv.width > 0) parts.push(`from ${name(id)}: ${p.recv.fps} fps, ${mbps(p.recv.kbps)}`);
     parts.push(`${peers.length > 1 ? `${name(id)} ` : ''}ice ${p.ice}${p.pair ? ` (${p.pair})` : ''}`);
   }
+  // D10.3.8: theater fell back to the panel page's frames (no native frame from the player up for 5 s).
+  if (v.theaterPath === 'pipe') parts.push('theater from the Electron frames');
   return `Native video: ${parts.join(' · ')}.`;
 }
 

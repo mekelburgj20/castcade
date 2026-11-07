@@ -26,7 +26,7 @@
  *     next match; the shell stops it at quit).
  * Nothing here ever blocks a match: the status says what the helper is doing; the Electron path serves the rest.
  */
-import type { MatchPlayerId, MediaSignal, NativeVideoRung, NativeVideoRungState, NativeVideoStats, NativeVideoStatus } from './match-media-types.js';
+import type { MatchPlayerId, MediaSignal, NativeVideoRung, NativeVideoRungState, NativeVideoStats, NativeVideoStatus, TheaterPath } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
 import { isPolite } from './rtc-signaling.js';
 import type { VideoHelper, VideoHelperEvent, VideoHelperStatus, VideoIceServer, VideoSignalKind, VideoSink, VideoSource, VideoStatsEvent } from './video-helper.js';
@@ -161,6 +161,44 @@ export function helperIceServers(servers: IceServer[]): VideoIceServer[] {
     if (s.credential !== undefined) out.credential = s.credential;
     return out;
   });
+}
+
+/**
+ * D10.3.8 (2026-11-07, the second 0.2.38 match): theater's picture source while this rig's sink is the layer's `recv`
+ * ring: `ring` (the helper's decoded native frames) or `pipe` (the panel page's CVO2 frames, the Electron video). The
+ * owner sat in theater `from the frame ring` while Chuck's native send delivered nothing and the Electron path was
+ * decoding his picture 10 frames a second, which the layer drained unseen because the ring was named.
+ */
+export type { TheaterPath };
+/** D10.3.8: in theater with no native frame from the player up for this long, the layer is pointed at the pipe frames. */
+export const THEATER_RING_EMPTY_MS = 5_000;
+/** D10.3.8: native frames flowing again for this long name the ring again. */
+export const THEATER_RING_BACK_MS = 3_000;
+export interface TheaterPathState {
+  path: TheaterPath;
+  /** When the evidence against the current path began (no frames on the ring; frames while on the pipe); null: none. */
+  since: number | null;
+}
+export const THEATER_ON_RING: TheaterPathState = { path: 'ring', since: null };
+
+/**
+ * D10.3.8: one step of the theater-path watch, run once a second and at every mesh status. `theater`: the headset is in
+ * theater with the ring as the sink; outside it the state is the ring again (each theater episode starts on the ring).
+ * `fps`: the native receive from the player up (`peers[up].recv.fps`), null when there are no recv stats for them.
+ */
+export function theaterPathStep(st: TheaterPathState, i: { theater: boolean; fps: number | null; now: number }): { state: TheaterPathState; switched: boolean } {
+  if (!i.theater) return { state: THEATER_ON_RING, switched: false };
+  const frames = i.fps !== null && i.fps > 0;
+  if (st.path === 'ring') {
+    if (frames) return { state: THEATER_ON_RING, switched: false };
+    const since = st.since ?? i.now;
+    if (i.now - since >= THEATER_RING_EMPTY_MS) return { state: { path: 'pipe', since: null }, switched: true };
+    return { state: { path: 'ring', since }, switched: false };
+  }
+  if (!frames) return { state: { path: 'pipe', since: null }, switched: false };
+  const since = st.since ?? i.now;
+  if (i.now - since >= THEATER_RING_BACK_MS) return { state: THEATER_ON_RING, switched: true };
+  return { state: { path: 'pipe', since }, switched: false };
 }
 
 export interface VideoRungs {

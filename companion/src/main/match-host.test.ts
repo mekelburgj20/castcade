@@ -99,6 +99,40 @@ const until = async (cond: () => boolean, ms = 3000): Promise<void> => {
   }
 };
 
+type Cmd = Record<string, unknown> & { cmd: string };
+type Ev = Record<string, unknown> & { event: string };
+/** D10.3: a video helper that is ready at once and answers like the fake exe: an offer when it initiates, an answer + connected on an offer. */
+const stubHelper = () => {
+  const sent: Cmd[] = [];
+  const eventCbs = new Set<(e: Ev) => void>();
+  let started = 0;
+  const say = (e: Ev) => eventCbs.forEach((cb) => cb(e));
+  const helper = {
+    start: () => void started++,
+    stop: async () => undefined,
+    send(cmd: Cmd) {
+      sent.push(cmd);
+      if (cmd.cmd === 'peer' && cmd.initiator) setImmediate(() => say({ event: 'signal', id: cmd.id, kind: 'offer', sdp: `v=0 offer to ${String(cmd.id)}` }));
+      if (cmd.cmd === 'signal' && cmd.kind === 'offer') {
+        setImmediate(() => {
+          say({ event: 'signal', id: cmd.id, kind: 'answer', sdp: 'v=0 answer' });
+          say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' });
+        });
+      }
+      if (cmd.cmd === 'signal' && cmd.kind === 'answer') setImmediate(() => say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' }));
+      return true;
+    },
+    onEvent: (cb: (e: Ev) => void) => {
+      eventCbs.add(cb);
+      return () => void eventCbs.delete(cb);
+    },
+    status: () => ({ helper: 'ready' as const, reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec', generation: 1 }),
+    onStatus: () => () => undefined,
+  };
+  const of = (cmd: string) => sent.filter((c) => c.cmd === cmd);
+  return { helper, sent, of, say, started: () => started };
+};
+
 describe('match host (A6)', () => {
   it('host, join with a different table file (advisory), start: the lock follows the grant; leave unlocks', async () => {
     const H = make('host', 'ab'.repeat(32));
@@ -166,39 +200,6 @@ describe('match host (A6)', () => {
   }, 15_000);
 
   it('D10.3 (2026-11-07): native video: one helper peer per rig over the real signalling (channel video), the lower id offers, send follows the turn, the rings reach the media layer; the setting is saved', async () => {
-    type Cmd = Record<string, unknown> & { cmd: string };
-    type Ev = Record<string, unknown> & { event: string };
-    /** A helper that is ready at once and answers like the fake exe: an offer when it initiates, an answer + connected on an offer. */
-    const stubHelper = () => {
-      const sent: Cmd[] = [];
-      const eventCbs = new Set<(e: Ev) => void>();
-      let started = 0;
-      const say = (e: Ev) => eventCbs.forEach((cb) => cb(e));
-      const helper = {
-        start: () => void started++,
-        stop: async () => undefined,
-        send(cmd: Cmd) {
-          sent.push(cmd);
-          if (cmd.cmd === 'peer' && cmd.initiator) setImmediate(() => say({ event: 'signal', id: cmd.id, kind: 'offer', sdp: `v=0 offer to ${String(cmd.id)}` }));
-          if (cmd.cmd === 'signal' && cmd.kind === 'offer') {
-            setImmediate(() => {
-              say({ event: 'signal', id: cmd.id, kind: 'answer', sdp: 'v=0 answer' });
-              say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' });
-            });
-          }
-          if (cmd.cmd === 'signal' && cmd.kind === 'answer') setImmediate(() => say({ event: 'peer', id: cmd.id, ice: 'connected', pair: 'host<->host' }));
-          return true;
-        },
-        onEvent: (cb: (e: Ev) => void) => {
-          eventCbs.add(cb);
-          return () => void eventCbs.delete(cb);
-        },
-        status: () => ({ helper: 'ready' as const, reason: null, version: '1', encoder: 'h264_nvenc', decoder: 'nvdec', generation: 1 }),
-        onStatus: () => () => undefined,
-      };
-      const of = (cmd: string) => sent.filter((c) => c.cmd === cmd);
-      return { helper, sent, of, say, started: () => started };
-    };
     const lines: string[] = [];
     const hostLog = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
     const hooks: Array<{ ring: string; onSource: (b: { width: number; height: number; fps: number } | null) => void; onWindow?: (w: { pid: number; title: string; width: number; height: number; fps: number } | null) => void } | null> = [];
@@ -316,6 +317,64 @@ describe('match host (A6)', () => {
     expect(hooks.at(-1)).toBeNull();
     expect(hv.of('send').at(-1)).toEqual({ cmd: 'send', on: false });
     expect(hv.of('close')).toEqual([{ cmd: 'close', id: cid }]);
+  }, 15_000);
+
+  it('D10.3.8 (2026-11-07): theater on the ring with no native frame from the player up for 5 s: the ring is un-named (the layer draws the Electron frames), said once, theaterPath pipe; frames for 3 s name it again; nothing switches outside theater', async () => {
+    // The theater-path clock and Date are faked; the sockets, the stub helper's setImmediate and `until` stay real.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const hv = stubHelper();
+      const cv = stubHelper();
+      const lines: string[] = [];
+      const clientLog = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
+      const theaterLines = () => lines.filter((l) => l.startsWith('media: theater:'));
+      const signalling = (role: Parameters<typeof matchSignalling>[0], id: string) => matchSignalling(role, id);
+      const layer = fakeOverlay();
+      const m = fakeMedia();
+      const H = make('tp-host', 'ab'.repeat(32), { signalling, nativeVideo: { helper: hv.helper as never, sendRing: 'HOSTsend_ABCDEFG', recvRing: 'HOSTrecv_ABCDEFG' } });
+      // The client is a VR rig on Virtual Desktop's OpenXR runtime: its sink is the layer's ring.
+      const C = make('tp-client', 'ab'.repeat(32), { witness: liveWitness(VR_VD, VR_OFF).w, media: m.media, vrLayer: layer.overlay, signalling, log: clientLog, nativeVideo: { helper: cv.helper as never, sendRing: 'CLNTsend_ABCDEFG', recvRing: 'CLNTrecv_ABCDEFG' } });
+      const port = 45000 + Math.floor(Math.random() * 2000);
+      const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+      await C.mh.join(hs.invite!, 'Krobs');
+      const hid = H.mh.status().localId!;
+      await until(() => C.mh.status().media?.nativeVideo?.peers[hid]?.ice === 'connected');
+      expect(cv.of('sink').at(-1)).toEqual({ cmd: 'sink', kind: 'ring', token: 'CLNTrecv_ABCDEFG' });
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG']);
+      expect(C.mh.status().media?.nativeVideo?.theaterPath).toBeNull();
+      // The lobby (the panel, not theater): 10 s of empty recv stats switch nothing.
+      cv.say({ event: 'stats', id: hid, dir: 'recv', fps: 0, kbps: 0, width: 0, height: 0 });
+      vi.advanceTimersByTime(10_000);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG']);
+      expect(theaterLines()).toEqual([]);
+      // The host's ball 1: the client's headset goes to theater on the ring; 5 s without a native frame un-names it, once.
+      await H.mh.start();
+      await until(() => layer.modes.at(-1) === 'theater');
+      expect(C.mh.status().media?.nativeVideo?.theaterPath).toBe('ring');
+      vi.advanceTimersByTime(4_999);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG']);
+      expect(C.mh.status().media?.nativeVideo?.theaterPath).toBe('ring');
+      vi.advanceTimersByTime(1);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG', null]);
+      expect(theaterLines()).toEqual(['media: theater: no native frames from Hosty for 5 s; drawing the Electron frames']);
+      expect(C.mh.status().media?.nativeVideo?.theaterPath).toBe('pipe');
+      vi.advanceTimersByTime(10_000);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG', null]);
+      expect(theaterLines()).toHaveLength(1);
+      // Native frames again: after 3 s of them the ring is named again, said once.
+      cv.say({ event: 'stats', id: hid, dir: 'recv', fps: 60, kbps: 8000, width: 1354, height: 1440 });
+      vi.advanceTimersByTime(2_999);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG', null]);
+      vi.advanceTimersByTime(1);
+      expect(layer.rings).toEqual(['CLNTrecv_ABCDEFG', null, 'CLNTrecv_ABCDEFG']);
+      expect(theaterLines()).toEqual(['media: theater: no native frames from Hosty for 5 s; drawing the Electron frames', 'media: theater: native frames from Hosty for 3 s; drawing the frame ring again']);
+      expect(C.mh.status().media?.nativeVideo?.theaterPath).toBe('ring');
+      // Leaving lets the ring go, as before.
+      await C.mh.leave();
+      expect(layer.rings.at(-1)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   }, 15_000);
 
   it('D2.10 (2026-11-05): voice over the game: the volumes reach the media layer, my table is levelled on my ball, the keys live with the match', async () => {
@@ -557,9 +616,14 @@ function fakeOverlay() {
   const started: unknown[] = [];
   const videos: unknown[] = [];
   const modes: string[] = [];
+  /** D10.3.8: every `setVideoRing` as the OpenXR layer would hear it (a token, or null for the pipe frames), changes only. */
+  const rings: Array<string | null> = [];
   let stops = 0;
   let state: 'stopped' | 'showing' = 'stopped';
   const overlay = {
+    setVideoRing: (token: string | null) => {
+      if (rings.length === 0 || rings.at(-1) !== token) rings.push(token);
+    },
     async start(src: unknown, video?: unknown) {
       started.push(src);
       videos.push(video ?? null);
@@ -574,7 +638,7 @@ function fakeOverlay() {
     onStatus: () => () => undefined,
     setMode: (m: string) => void modes.push(m),
   };
-  return { overlay: overlay as unknown as OverlayOpt, started, videos, modes, stops: () => stops };
+  return { overlay: overlay as unknown as OverlayOpt, started, videos, modes, rings, stops: () => stops };
 }
 
 describe('match host: the rig (A6, 2026-10-31)', () => {
