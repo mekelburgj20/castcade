@@ -61,6 +61,7 @@ add_executable(castcade-video
   src/frame_ring.cpp
   src/source.cpp
   src/sink.cpp
+  src/sink_window.cpp
   src/factories.cpp
   src/sdp.cpp
   src/peer.cpp
