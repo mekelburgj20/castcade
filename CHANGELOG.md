@@ -7,6 +7,79 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.37] — 2026-11-07
+
+The first native spectator-video build (D10, ADR 0010): the player up's picture is encoded on the GPU in a native
+helper and carried by Google's WebRTC library, decoded natively on the other side and drawn straight on the headset's
+theater screen or in the helper's own window. The Electron video path of 0.2.36 stays behind a setting for this one
+release. Protocol 4: a 0.2.36 rig and a 0.2.37 rig refuse each other at HELLO; every rig updates through the updater.
+
+### The stack, chosen by measurement (D10.0.1; ADR 0010)
+
+- **Three loopback senders through one UDP shaper, two 90 s runs each on the owner's rig** (`spike/d10-video/`,
+  `results/RESULTS.md`): Rust + str0m, LiveKit's prebuilt libwebrtc from C++ with our NVENC plugged in, and GStreamer.
+  libwebrtc held 60 fps, froze 1.8 s at a 25 → 2 Mbps drop, was steady again in 3–4 s and never lost a decodable
+  second; str0m froze 3–5 s and lost whole seconds; GStreamer had start-up freezes, no ramp-up, a 48–73 MB runtime
+  and no congestion control for AMD encoders. libwebrtc won; the owner accepted ADR 0010 the same day.
+
+### `castcade-video.exe`, the video helper (D10.1, D10.1.5; `video-helper/`, 0.1.0)
+
+- **A native helper beside the audio helper**: libwebrtc (LiveKit's `webrtc-a545de4`, M150) with libavcodec as the
+  encoder front, probed at start in the order `h264_nvenc` → `h264_amf` → `h264_qsv` → `libx264` (and `h264_cuvid` →
+  `d3d11va` → software for decoding), the choice logged and on the Match tab. One JSON line per command over stdin,
+  one per event over stdout (`video-helper/README.md` is the protocol). `--probe`, `--bench` (with `--gpu-load`, the
+  P-state and the IDR count per rate policy), and self tests the CI runs (`--loopback-selftest`, `--ring-selftest`,
+  `--controller-selftest`, `--window-selftest`, `--wgc-selftest`). `video-helper.yml` is the build of record;
+  `fetch-video-helper.mjs`, the installer entry and a best-effort firewall rule; the helper's FFmpeg (BtbN
+  `autobuild-2026-11-06-12-50`, GPL shared) joins the written source offer (`docs/ffmpeg-source.md`). The installer
+  grows by about 136 MB for the FFmpeg DLLs (D10.1.4 is the trim).
+- **Bitrate changes are rate-limited** (a new target applied on a ≥ 10 % change at most once a second, drops of
+  ≥ 30 % at once) because libavcodec's NVENC wrapper forces a keyframe on every change (D10.1.1: 52 keyframes in a
+  10 s bench without the limit, 2 with it).
+
+### Frames cross through shared memory, not the pipe (D10.2; layer 0.6.0)
+
+- **The OpenXR layer writes the eye it captures into a send ring** (`Local\castcade-video-send-<token>`, three
+  slots, BGRA, newest wins) instead of JPEG when the companion's camera request names a ring; **theater draws from a
+  recv ring** the helper fills with the decoded picture when the control names one (`"video": {"ring": …}`). The JPEG
+  path and `CVO2` frames stay as the fallback; a helper that dies leaves theater within 3 s as before. The contract is
+  `video-helper/include/castcade_frame_ring.h`; `ring_feed.exe` (not shipped) fills and drains rings without VPX.
+
+### The companion drives it (D10.3; protocol 4)
+
+- **`video-helper.ts` and `video-mesh.ts`**: the helper is spawned at Host / Join and restarted on a crash at most
+  once per 5 s; one helper peer per other player for the match's life (the lower player id offers), the turn turns
+  sending on and off, VR rigs get the recv ring and desktop rigs the helper's window; signals ride `MEDIA_SIGNAL` with
+  the new `channel: "video"`. **Match tab setting "Spectator video"**: Native helper (default) or Electron (the 0.2.36
+  path), used from the next match; a status line `Native video: h264_nvenc · sending 1354x1440 at 60 fps, 18.2 Mbps ·
+  from Krobs: 60 fps · ice connected (srflx↔host)`.
+- **Wire**: `MEDIA_SIGNAL.channel` (`rtc` | `video`, default `rtc`); `PROTOCOL_VERSION` 4 (a 0.2.36 peer would strip
+  the key and feed a native-video offer to its page, so mixed builds refuse each other instead). Schemas and SPEC
+  regenerated; `protocol/test/messages.test.ts` covers the default.
+
+### Watching on a desktop (D10.4) and sending from one (D10.6)
+
+- **The helper opens its own window for a desktop watcher** ("Castcade — spectating": resizable, letterboxed, F11 or a
+  double-click for full screen, Escape back; D3D11 with a WARP fallback; "waiting for the player up" after 3 s without
+  a frame). Closing it tells the companion.
+- **A desktop sender captures the VPX player window natively** with Windows Graphics Capture (the client area of a
+  windowed player, the whole of a borderless one, portrait stays portrait; works with the window behind others and
+  with the OpenGL build), so no rig on the native path sends Electron video any more. Minimised → "no VPX window to
+  capture yet" until it is back.
+
+### The ladder and its controller (D10.5)
+
+- **Six rungs** from the source box (full, 0.75, 0.5 of its height; 60 and 30 fps; 20 / 10 / 8 / 5 / 4 / 2 Mbps),
+  applied per receiving peer: a GPU-side NV12 scale, a steady frame decimation, the encoder's clamp. **The controller**
+  (sampled every 200 ms from the stack's stats and a `castcade-feedback` data channel carrying the receiver's decode
+  fps and freezes): 5 s at rung 3 to probe, then straight to the highest rung the estimate supports; one rung down after
+  3 s of trouble (loss over 2 %, RTT up 100 ms, estimate under 0.9× the rung, sent or decoded fps under 0.9×, a freeze
+  over 500 ms), one up after 30 s clean. A size change costs 190–350 ms (the receiver's `h264_cuvid` is re-opened on a
+  keyframe of a new size). **Match tab**: Auto or a pinned rung, a ceiling in kbps (`videoMaxKbps`, this rig's own);
+  **headset footer**: `video: rung 3 · 1016x1080@60 · 7.8 Mbps · rtt 41 ms` while sending, `video: in …` while watching.
+  The rung order honours the owner's rule: full size at 30 fps before a smaller picture at 60.
+
+
 ### Added
 
 - **Original tables patch by role, not by JPSalas' names (C1.3; recipe B 0.2.0).** Diablo 2 (ChuckRibbits 1.1.1 and
