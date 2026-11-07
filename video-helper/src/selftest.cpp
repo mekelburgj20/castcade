@@ -197,6 +197,7 @@ int RunLoopbackSelftest(int seconds) {
          encoder.c_str(), decoder.c_str(), seconds, W, H, FPS);
   fflush(stdout);
   source.Stop();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));  // let the last frames leave the encoder queue
   a->Close();
   b->Close();
   a.reset();

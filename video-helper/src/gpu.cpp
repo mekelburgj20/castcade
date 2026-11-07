@@ -87,7 +87,7 @@ const char kShader[] =
     "RWStructuredBuffer<float> buf : register(u0);\n"
     "[numthreads(256, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {\n"
     "  float v = buf[id.x];\n"
-    "  [loop] for (int i = 0; i < 1024; i++) v = sin(v) * 1.0001f + 0.37f;\n"
+    "  [loop] for (int i = 0; i < 2048; i++) v = sin(v) * 1.0001f + 0.37f;\n"
     "  buf[id.x] = v;\n"
     "}\n";
 constexpr UINT kElements = 256 * 8192;  // two million threads a dispatch: a few ms of work on a big GPU
@@ -145,16 +145,16 @@ bool GpuLoad::Start(std::string* error) {
     ctx->CSSetShader(cs.Get(), nullptr, 0);
     ctx->CSSetUnorderedAccessViews(0, 1, uavs, nullptr);
     while (!stop_) {
-      // A few milliseconds of work, waited for, then a short pause: the GPU is busy most of the time without being
-      // saturated, which is what a running game looks like to the clock governor (an idle-ish load is not enough:
-      // the first version at ~10 % busy still let the clocks fall to P8).
+      // A few milliseconds of work, waited for, again and again: the GPU is busy nearly all the time, which is what
+      // a running game looks like to the clock governor (a lighter load, ~10 % busy, still let the clocks fall to P8;
+      // one with 1 ms pauses held P2 in one run and slid to P5 in the next).
       ctx->Dispatch(kElements / 256, 1, 1);
       ctx->End(query.Get());
       ctx->Flush();
       BOOL done = FALSE;
       while (!stop_ && ctx->GetData(query.Get(), &done, sizeof done, 0) != S_OK) std::this_thread::yield();
       dispatches_++;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::yield();  // back to back: a VR VPX keeps the GPU this busy
     }
   });
   return true;

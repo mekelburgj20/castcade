@@ -79,7 +79,8 @@ every 200 ms in between as a bandwidth estimate would give; the summary counts t
 `--rate-policy` picks how a new target reaches the encoder (D10.1.1): `limited` (the default, and the helper's policy:
 a change of ≥ 10 % applied at most once a second, a drop of ≥ 30 % at once) or `naive` (every change as it comes).
 `--gpu-load` runs a D3D11 compute loop on another thread for the bench's duration so the GPU stays clocked as it would
-with VPX running (D10.1.2): without it this rig's encode time goes 3.7 → 9.8 ms a frame in 10 s as the GPU drops to P8.
+with VPX running (D10.1.2): without it this rig's encode time goes 3.7 → 9.9 ms a frame in 10 s as the GPU drops to P8;
+with it the run ends at 4.9–5.9 ms (P2–P5; the governor still dips around the low-bitrate third of the run).
 
 ## The stdio protocol (§6.2 of `docs/design/spectator-video-native.md`, the normative text)
 
@@ -177,8 +178,8 @@ decoder yields NV12 (cuvid, D3D11VA after the hardware → system copy) or I420 
 
 ## Measured on the owner's rig (RTX 3090, driver 616.56)
 
-- `--bench` at 1354x1440 @ 60, 20 Mbps: convert 0.6 ms, encode 3.7 ms a frame, climbing to 9.8 ms within 10 s as the GPU
-  goes P2 → P8 with nothing else running; with `--gpu-load` it stays at 3.8 ms (D10.1.2).
+- `--bench` at 1354x1440 @ 60, 20 Mbps: convert 0.6 ms, encode 3.7 ms a frame, climbing to 9.9 ms within 10 s as the GPU
+  goes P2 → P8 with nothing else running; with `--gpu-load` the run ends at 4.9–5.9 ms, P2–P5 (D10.1.2).
 - libavcodec's `h264_nvenc` costs one IDR per applied rate change, whatever the VBV does (52 changes → 52 IDRs under the
   naive policy; 2 → 2 under the limited one): the limited policy is the default. A direct `NvEncReconfigureEncoder`
   without `forceIDR` needs `nvEncodeAPI.h`, which neither the FFmpeg build nor this machine has (D10.1.1 stays open).
