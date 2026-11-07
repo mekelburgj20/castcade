@@ -81,13 +81,18 @@ if (mode === 'summarize') {
   const shaperCmd = fill(opt('shaper', `node ${join(here, 'shaper', 'shaper.mjs')} --s {S} --c {C} --schedule {SCHED} --log {LOG} --start-on-first-packet`), { S, C, SCHED: SCHEDULE, LOG: shaperLog });
   const cmd = fill(opt('cmd'), { S, C, DUR: DURATION, OUT: out });
   console.log(`shaper: ${shaperCmd}\ncandidate: ${cmd}`);
-  const shaper = spawn(shaperCmd, { shell: true, stdio: ['ignore', 'inherit', 'inherit'] });
+  // no shell for the shaper: shaper.kill() must reach node itself, not a cmd.exe wrapper (the first run left an orphan)
+  const [shaperExe, ...shaperArgs] = shaperCmd.match(/"[^"]*"|\S+/g).map((a) => a.replace(/^"|"$/g, ''));
+  const shaper = spawn(shaperExe, shaperArgs, { stdio: ['ignore', 'inherit', 'inherit'] });
   await new Promise((r) => setTimeout(r, 1000));
   const cand = spawn(cmd, { shell: true, stdio: 'inherit' });
   const code = await new Promise((r) => cand.on('exit', r));
   shaper.kill();
   console.log(`candidate exited ${code}`);
-  reduce(candidate, `${out}-sender.csv`, `${out}-receiver.csv`, shaperLog, { exe: opt('exe'), loc: opt('loc'), notes: opt('notes') });
+  // candidates may name their CSVs themselves: take {OUT}-*.csv if present, else the newest *-<candidate>-{sender,receiver}.csv
+  const pick = (kind) => existsSync(`${out}-${kind}.csv`) ? `${out}-${kind}.csv`
+    : readdirSync(results).filter((f) => f.endsWith(`-${candidate}-${kind}.csv`)).map((f) => join(results, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+  reduce(candidate, pick('sender'), pick('receiver'), shaperLog, { exe: opt('exe'), loc: opt('loc'), notes: opt('notes') });
 } else {
   console.error('usage: measure.mjs run|summarize ...'); process.exit(2);
 }
