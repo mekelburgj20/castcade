@@ -21,7 +21,7 @@ elements. Prediction on record before the runs: libwebrtc wins on quality, Rust 
 
 ## Method
 
-`spike/d10-video/README.md`: 90 s a run, the shaper at 20 Mbps for 30 s, 2 Mbps for 20 s, 20 Mbps for 40 s;
+`spike/d10-video/README.md`: 90 s a run, the shaper at 25 Mbps for 30 s, 2 Mbps for 20 s, 25 Mbps for 40 s (the ladder's top rung is 20 Mbps; 25 is Krobs' uplink);
 the receiver logs frames, fps, kbps and the longest freeze each second. Reported: encoder chosen, fps held in the
 first 30 s, longest freeze after the drop, seconds to a steady picture after the drop, seconds to ≥ 55 fps at
 ≥ 15 Mbps after the restore, release binary size, lines of code we own. Runs by the lead, one candidate at a time,

@@ -16,7 +16,7 @@ const args = process.argv.slice(2);
 const mode = args.shift();
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 
-const SCHEDULE = opt('schedule', '20000:30,2000:20,20000:40');
+const SCHEDULE = opt('schedule', '25000:30,2000:20,25000:40');
 const DROP_AT = 30, RESTORE_AT = 50, DURATION = Number(opt('duration', 90));
 const S = Number(opt('s', 27410)), C = Number(opt('c', 27411));
 
