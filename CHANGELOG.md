@@ -7,6 +7,28 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.39] — 2026-11-07
+
+The second-match fix round (owner + ChuckRibbits on 0.2.38, 2026-11-07 21:22Z). The ICE restarts of 0.2.38 worked:
+both helpers connected after one restart and Chuck watched the owner's play natively; the owner saw nothing of Chuck's.
+
+### Fixed
+
+- **Both rigs lost the eye camera to a race and sent a window capture instead (D10.3.7).** The first camera request
+  went to the layer before the helper was ready, without the ring; the re-ask with the ring restarts the layer's
+  camera, which reports `off (a new request)` for a few milliseconds, and the companion read that as the layer giving
+  up and fell back to the screen capture (on the native path, the helper's capture of the VR preview window: the owner's
+  1200x1280 window worked, Chuck's full-screen 1920x1080 OpenGL window delivered no frames). The ring token now rides
+  the first camera request (it exists at start; the layer fills the ring whether or not the helper reads it yet), and an
+  `off` for the layer's own restart never triggers the fallback; any other stop falls back only after a one-second
+  grace (`rtc-host.ts`, `layer-camera.ts`, `main/match-host.ts`).
+- **Theater sat behind an empty ring while a picture was arriving (D10.3.8).** The layer draws from the recv ring when
+  the control names one and drains the pipe's frames; with Chuck's native send silent, the owner read "waiting for
+  ChuckRibbits' table" while the Electron path delivered Chuck's picture to the page. Now, five seconds without a
+  native frame from the player up in theater and the layer draws the Electron frames (logged; the Match tab line says
+  `theater from the Electron frames`); three seconds of native frames and it returns to the ring.
+
+
 ## [0.2.38] — 2026-11-07
 
 The fix round from the first 0.2.37 match (owner + ChuckRibbits, 2026-11-07 17:33Z): no native video reached either
