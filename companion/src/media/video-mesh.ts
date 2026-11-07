@@ -36,6 +36,10 @@ export const MAX_HELD_SIGNALS = 64;
 export const MAX_HELD_SENDERS = 8;
 /** §3 item 4: the top rung, 20 Mbps: the default ceiling. */
 export const DEFAULT_MAX_KBPS = 20_000;
+/** D10.3.6 (2026-11-07): a peer the helper has not connected this long after it was told falls the match back to the Electron
+ *  video, whatever the helper says later (the first 0.2.37 match: the helper's restarts take 10 + 20 + 40 s to exhaust; the
+ *  Electron peer connects in about 11 s with one restart). */
+export const CONNECT_TIMEOUT_MS = 25_000;
 /** The ceiling's range as the Match tab and media.json accept it (kbps). */
 export const MIN_MAX_KBPS = 500;
 export const MAX_MAX_KBPS = 50_000;
@@ -171,6 +175,9 @@ export interface VideoMeshOptions {
   /** The `video` side of `splitSignalling`: what goes out as MEDIA_SIGNAL `{to, channel: 'video', ...}`. */
   sendSignal: (to: MatchPlayerId, signal: MediaSignal) => void;
   log: (line: string) => void;
+  /** Tests: the clock behind the connect timeout. */
+  setTimeout?: (fn: () => void, ms: number) => unknown;
+  clearTimeout?: (handle: unknown) => void;
 }
 
 export interface VideoMesh {
@@ -212,7 +219,28 @@ const sourceBox = (s: VideoSource): { width: number; height: number; fps: number
 
 export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
   const { helper, localId, log } = o;
+  const later = o.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
+  const cancel = o.clearTimeout ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const listeners = new Set<(s: NativeVideoStatus) => void>();
+  /** D10.3.6: one connect timeout per told peer, cleared when it connects or goes. */
+  const connectTimers = new Map<MatchPlayerId, unknown>();
+  const dropTimer = (id: MatchPlayerId): void => {
+    const t = connectTimers.get(id);
+    if (t === undefined) return;
+    connectTimers.delete(id);
+    cancel(t);
+  };
+  const armTimer = (id: MatchPlayerId): void => {
+    dropTimer(id);
+    connectTimers.set(id, later(() => {
+      connectTimers.delete(id);
+      if (closed || fallback || !toldPeers.has(id)) return;
+      const v = peerViews.get(id);
+      if (v && (v.ice === 'connected' || v.ice === 'completed')) return;
+      fallBack(`media: native video has not connected to ${id} in ${CONNECT_TIMEOUT_MS / 1000} s; the Electron video serves this match`);
+      emit();
+    }, CONNECT_TIMEOUT_MS));
+  };
   // ---- wanted ----
   const wantPeers = new Set<MatchPlayerId>();
   let wantSending = false;
@@ -269,6 +297,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     toldRungs = null;
     peerViews.clear();
     sourceState = null;
+    for (const id of [...connectTimers.keys()]) dropTimer(id);
   };
   const emit = (): void => {
     const s = computed();
@@ -298,6 +327,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       if (wantPeers.has(id)) continue;
       helper.send({ cmd: 'close', id });
       toldPeers.delete(id);
+      dropTimer(id);
       peerViews.delete(id);
       held.delete(id);
     }
@@ -306,6 +336,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       const initiator = initiates(localId, id);
       if (!helper.send({ cmd: 'peer', id, initiator })) continue;
       toldPeers.add(id);
+      armTimer(id);
       log(`video: peer ${id}: ${initiator ? 'offering' : 'waiting for their offer'}`);
       for (const s of held.get(id) ?? []) signalToHelper(id, s);
       held.delete(id);
@@ -347,6 +378,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
         const gaveUp = ice === 'failed' && e.restarts_exhausted === true;
         const failed = gaveUp || ((was?.failed ?? false) && ice !== 'connected' && ice !== 'completed');
         peerViews.set(e.id, { ...(was ?? emptyPeer()), ice, pair, failed });
+        if (ice === 'connected' || ice === 'completed') dropTimer(e.id);
         const after = (ice === 'connected' || ice === 'completed') && typeof e.restarts === 'number' && e.restarts > 0 ? ` after ${restartWords(e.restarts)}` : '';
         if (was?.ice !== ice || was?.pair !== pair) log(`video: peer ${e.id}: ice ${ice}${pair ? ` (${pair})` : ''}${after}`);
         if (gaveUp) fallBack(`media: native video failed to connect (peer ${e.id}, ${restartWords(e.restarts)}); the Electron video serves this match`);
@@ -482,6 +514,7 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       wantSink = { kind: 'none' };
       sync();
       closed = true;
+      for (const id of [...connectTimers.keys()]) dropTimer(id);
       offEvent();
       offStatus();
       emit();

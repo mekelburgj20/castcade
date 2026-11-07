@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MediaSignal, NativeVideoStatus } from './match-media-types.js';
 import { createVideoHelper, type VideoHelper, type VideoHelperCommand, type VideoHelperEvent, type VideoHelperStatus } from './video-helper.js';
-import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, helperIceServers, initiates, ladderFor, pairWords, rungGeometry, rungReadout, type VideoMesh } from './video-mesh.js';
+import { CONNECT_TIMEOUT_MS, clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, helperIceServers, initiates, ladderFor, pairWords, rungGeometry, rungReadout, type VideoMesh } from './video-mesh.js';
 
 const FAKE = fileURLToPath(new URL('./__fixtures__/fake-video-helper.mjs', import.meta.url));
 
@@ -447,4 +447,38 @@ describe('the mesh and a helper that restarts', () => {
     expect(second.status()).toMatchObject({ helper: 'unavailable', reason: 'helper_failed:2', fallback: true, peers: { aaa: { ice: 'new' } } });
     expect(glog.filter((l) => l.startsWith('media:'))).toEqual([]);
   });
+  it('D10.3.6 (2026-11-07): a peer not connected 25 s after it was told falls the match back, whatever the helper says later; a peer that connects in time cancels its clock; a peer that leaves too', () => {
+    const timers: Array<{ fn: (() => void) | null; ms: number }> = [];
+    const clock = { setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms }), clearTimeout: (h: unknown) => void (timers[(h as number) - 1].fn = null) };
+    const h = stubHelper();
+    h.ready();
+    const log: string[] = [];
+    const mesh = createVideoMesh({ helper: h.helper, localId: 'bbb', sendSignal: () => undefined, log: (l) => log.push(l), ...clock });
+    mesh.setPeers(['aaa', 'ccc', 'ddd']);
+    expect(timers.map((x) => x.ms)).toEqual([CONNECT_TIMEOUT_MS, CONNECT_TIMEOUT_MS, CONNECT_TIMEOUT_MS]);
+    // aaa connects in time: its clock is cancelled; ddd leaves the roster: cancelled too.
+    h.say({ event: 'peer', id: 'aaa', ice: 'checking' });
+    h.say({ event: 'peer', id: 'aaa', ice: 'connected', pair: 'srflx<->srflx' });
+    mesh.setPeers(['aaa', 'ccc']);
+    expect(timers[0].fn).toBeNull();
+    expect(timers[2].fn).toBeNull();
+    expect(timers[1].fn).not.toBeNull();
+    // ccc is still checking when its clock fires: the match falls back, said once; the helper's later connection changes nothing.
+    h.say({ event: 'peer', id: 'ccc', ice: 'checking' });
+    const fire = timers[1].fn;
+    timers[1].fn = null;
+    fire?.();
+    expect(mesh.status()).toMatchObject({ fallback: true, peers: { ccc: { ice: 'checking' } } });
+    expect(log.filter((l) => l === `media: native video has not connected to ccc in ${CONNECT_TIMEOUT_MS / 1000} s; the Electron video serves this match`)).toHaveLength(1);
+    h.say({ event: 'peer', id: 'ccc', ice: 'connected', pair: 'srflx<->srflx', restarts: 2 });
+    expect(mesh.status().fallback).toBe(true);
+    // A helper restart re-tells the peers and re-arms their clocks; close() drops them all.
+    h.set({ helper: 'starting' });
+    h.ready();
+    const armed = timers.filter((x) => x.fn !== null).length;
+    expect(armed).toBe(2);
+    mesh.close();
+    expect(timers.filter((x) => x.fn !== null)).toHaveLength(0);
+  });
 });
+
