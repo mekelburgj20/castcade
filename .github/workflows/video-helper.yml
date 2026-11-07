@@ -62,6 +62,9 @@ jobs:
           ls -l
           ./castcade-video.exe --version
           ./castcade-video.exe --loopback-selftest
+      - name: ICE restarts connect a stalled pair (D10.3.5)
+        shell: bash
+        run: video-helper/build/Release/castcade-video.exe --restart-selftest
       - name: The window sink presents (D10.4; WARP on a runner without a GPU, a failure exits 1)
         shell: bash
         run: video-helper/build/Release/castcade-video.exe --window-selftest --seconds 3
