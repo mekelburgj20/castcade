@@ -29,7 +29,7 @@ const S = Number(opt('s', 27410)), C = Number(opt('c', 27411));
 const listen = 'http://127.0.0.1:8080';
 const proxyPort = 8090;
 const common = ['--duration', duration, '--out', out];
-for (const k of ['harness', 'encoder', 'decoder', 'start-kbps', 'min-kbps', 'max-kbps', 'mitigation', 'strip-block']) if (opt(k)) common.push(`--${k}`, opt(k));
+for (const k of ['harness', 'encoder', 'decoder', 'start-kbps', 'min-kbps', 'max-kbps', 'mitigation', 'strip-block', 'local-ip']) if (opt(k)) common.push(`--${k}`, opt(k));
 
 if (!existsSync(exe)) { console.error(`missing ${exe}: build with cargo build --release (env.ps1 dot-sourced)`); process.exit(2); }
 const run = (name, a) => { console.log(`${name}: ${exe} ${a.join(' ')}`); const p = spawn(exe, a, { env, stdio: 'inherit', cwd: here }); return p; };

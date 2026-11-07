@@ -41,6 +41,7 @@ struct Args {
     port_min: u32,
     port_max: u32,
     mitigation: Option<String>,
+    local_ip: String,
 }
 
 fn parse_args() -> Args {
@@ -58,7 +59,7 @@ fn parse_args() -> Args {
         decoder: get("--decoder"),
         start_kbps: num("--start-kbps", 20000) as u32,
         min_kbps: num("--min-kbps", 500) as u32,
-        max_kbps: num("--max-kbps", 20000) as u32,
+        max_kbps: num("--max-kbps", 30000) as u32, // above the shaper's 25 Mbps cap so GCC, not this, limits
         width: num("--width", 1354) as i32,
         height: num("--height", 1440) as i32,
         fps: num("--fps", 60) as i32,
@@ -66,6 +67,7 @@ fn parse_args() -> Args {
         port_min: num("--port-min", 0) as u32,
         port_max: num("--port-max", 0) as u32,
         mitigation: get("--mitigation"),
+        local_ip: get("--local-ip").unwrap_or_else(|| "127.0.0.1".into()),
     }
 }
 
@@ -128,12 +130,16 @@ fn factory_name(e: &gst::Element) -> String {
     e.factory().map(|f| f.name().to_string()).unwrap_or_default()
 }
 
-// Pin the ICE agent to one UDP port range so the shaper rule (one host candidate a side) holds.
-fn pin_ice_ports(webrtcbin: &gst::Element, lo: u32, hi: u32) {
-    if lo == 0 {
-        return;
-    }
+// Pin the ICE agent to one UDP port range and (unless --local-ip auto) one local address, so the shaper
+// rule (one host candidate a side) holds without the proxy having to choose.
+fn pin_ice_ports(webrtcbin: &gst::Element, lo: u32, hi: u32, local_ip: &str) {
     if let Some(ice) = webrtcbin.property::<Option<glib::Object>>("ice-agent") {
+        if local_ip != "auto" && ice.emit_by_name::<bool>("add-local-ip-address", &[&local_ip]) {
+            println!("ice: local address pinned to {local_ip}");
+        }
+        if lo == 0 {
+            return;
+        }
         if ice.find_property("min-rtp-port").is_some() {
             ice.set_property("min-rtp-port", lo);
             ice.set_property("max-rtp-port", hi.max(lo));
@@ -322,10 +328,10 @@ fn run_sender(a: &Args) {
         Some(false.to_value())
     });
     let st2 = st.clone();
-    let (lo, hi) = (a.port_min, a.port_max);
+    let (lo, hi, ip) = (a.port_min, a.port_max, a.local_ip.clone());
     sink.connect("consumer-added", false, move |args| {
         let wb = args[2].get::<gst::Element>().unwrap();
-        pin_ice_ports(&wb, lo, hi);
+        pin_ice_ports(&wb, lo, hi, &ip);
         st2.lock().unwrap().webrtcbin = Some(wb);
         None
     });
@@ -509,10 +515,10 @@ fn run_receiver(a: &Args) {
     let rtp = Arc::new(Mutex::new(RtpStats::default()));
     // The signaller hands us the session's webrtcbin before negotiation: pin its ports there.
     let st2 = st.clone();
-    let (lo, hi) = (a.port_min, a.port_max);
+    let (lo, hi, ip) = (a.port_min, a.port_max, a.local_ip.clone());
     signaller.connect("webrtcbin-ready", false, move |args| {
         let wb = args[2].get::<gst::Element>().unwrap();
-        pin_ice_ports(&wb, lo, hi);
+        pin_ice_ports(&wb, lo, hi, &ip);
         st2.lock().unwrap().webrtcbin = Some(wb);
         None
     });
@@ -655,6 +661,9 @@ fn run_receiver(a: &Args) {
 
 fn main() {
     let a = parse_args();
+    // Winsock must be initialised before libnice parses "127.0.0.1" (add-local-ip-address fails with
+    // "Failed to initialize NiceAddress" otherwise); Rust's std does WSAStartup on first socket use.
+    let _wsa = std::net::UdpSocket::bind("127.0.0.1:0");
     // Rank overrides steer webrtcsink's encoder pick (first factory by rank that yields H264) and
     // decodebin3's decoder pick; set before gst::init so the registry sees them.
     let mut ranks: Vec<String> = std::env::var("GST_PLUGIN_FEATURE_RANK").ok().into_iter().filter(|s| !s.is_empty()).collect();
@@ -670,7 +679,7 @@ fn main() {
         "sender" => run_sender(&a),
         "receiver" => run_receiver(&a),
         _ => {
-            eprintln!("usage: spike-gst sender|receiver [--endpoint URL] [--listen URL] [--out PREFIX] [--harness DLL] [--duration S] [--encoder NAME] [--decoder NAME] [--start-kbps N] [--min-kbps N] [--max-kbps N] [--port-min N --port-max N] [--mitigation none|downscaled|downsampled|all] [--strip-block PX]");
+            eprintln!("usage: spike-gst sender|receiver [--endpoint URL] [--listen URL] [--out PREFIX] [--harness DLL] [--duration S] [--encoder NAME] [--decoder NAME] [--start-kbps N] [--min-kbps N] [--max-kbps N] [--port-min N --port-max N] [--mitigation none|downscaled|downsampled|all] [--local-ip 127.0.0.1|auto] [--strip-block PX]");
             std::process::exit(2);
         }
     }
