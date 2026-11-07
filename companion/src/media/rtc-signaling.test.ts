@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { MediaSignal } from './match-media-types.js';
-import { isPolite, leadsIceRestart, negotiationSource, PeerNegotiator, SignalingMesh, type CandidateInit, type NegotiablePc, type SdpInit } from './rtc-signaling.js';
+import type { MediaSignal, MediaSignalling } from './match-media-types.js';
+import { isPolite, leadsIceRestart, negotiationSource, PeerNegotiator, SignalingMesh, splitSignalling, type CandidateInit, type NegotiablePc, type SdpInit } from './rtc-signaling.js';
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r));
 const settle = async (n = 20): Promise<void> => {
@@ -472,5 +472,82 @@ describe('perfect negotiation (D2)', () => {
     n.close();
     expect(n.restartIce()).toBe(false);
     expect(pc.restarts).toBe(0);
+  });
+});
+
+describe('the native video channel (D10.3, 2026-11-07)', () => {
+  it("a `video` signal never touches the page's mesh: no connection opens, nothing is held, nothing answered", async () => {
+    const net = network(['a', 'b']);
+    net.meshes.a!.add('b');
+    // The connection to b stands; a video offer from b must not be taken for an Electron one (a stale-offer reopen).
+    await net.meshes.a!.receive('b', { kind: 'offer', sdp: 'v=0 pc-video', channel: 'video' });
+    await settle();
+    expect(net.queue).toEqual([]);
+    expect(net.pcs.filter((p) => p.remoteDescription !== null)).toHaveLength(0);
+    expect(net.errors).toEqual([]);
+    expect(net.reopens).toEqual([]);
+    // A peer not added yet: a video signal is not held for it either.
+    await net.meshes.b!.receive('a', { kind: 'offer', sdp: 'v=0 pc-video', channel: 'video' });
+    expect(net.meshes.b!.early.size).toBe(0);
+    // ...while a plain one is held and replayed on add, as before.
+    await net.meshes.b!.receive('a', { kind: 'offer', sdp: 'v=0 later' });
+    expect(net.meshes.b!.early.get('a')).toHaveLength(1);
+  });
+
+  it('splitSignalling: one listener on the match signalling; rtc keeps the 0.2.36 behaviour, video gets its own, each side holds until it listens', () => {
+    let listener: ((from: string, s: MediaSignal) => void) | null = null;
+    let subscriptions = 0;
+    const sent: Array<[string, MediaSignal]> = [];
+    const sig: MediaSignalling = {
+      localId: 'me',
+      send: (to, s) => void sent.push([to, s]),
+      onSignal(cb) {
+        subscriptions++;
+        listener = cb;
+        return () => void (listener = null);
+      },
+    };
+    const split = splitSignalling(sig);
+    expect(subscriptions).toBe(1);
+    // Before either side listens: both held, per side.
+    listener!('p2', { kind: 'offer', sdp: 'v=0 rtc' });
+    listener!('p2', { kind: 'offer', sdp: 'v=0 video', channel: 'video' });
+    listener!('p2', { kind: 'ice', candidate: { candidate: 'c', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'rtc' });
+    const rtc: Array<[string, MediaSignal]> = [];
+    const video: Array<[string, MediaSignal]> = [];
+    const offVideo = split.video.onSignal((from, s) => void video.push([from, s]));
+    expect(video).toEqual([['p2', { kind: 'offer', sdp: 'v=0 video', channel: 'video' }]]);
+    expect(rtc).toEqual([]);
+    split.rtc.onSignal((from, s) => void rtc.push([from, s]));
+    expect(rtc.map(([, s]) => s.sdp ?? s.kind)).toEqual(['v=0 rtc', 'ice']);
+    // Live: routed by channel; absent and `rtc` are the same side.
+    listener!('p3', { kind: 'answer', sdp: 'v=0 a', channel: 'video' });
+    listener!('p3', { kind: 'reset' });
+    expect(video).toHaveLength(2);
+    expect(rtc).toHaveLength(3);
+    // Sending: the video side marks its channel, the rtc side sends what it was given (no field, as 0.2.36 did).
+    split.video.send('p2', { kind: 'offer', sdp: 'v=0 out' });
+    split.rtc.send('p2', { kind: 'stereo', stereo: 'mono' });
+    expect(sent).toEqual([
+      ['p2', { kind: 'offer', sdp: 'v=0 out', channel: 'video' }],
+      ['p2', { kind: 'stereo', stereo: 'mono' }],
+    ]);
+    expect(split.rtc.localId).toBe('me');
+    // Unsubscribed: held again, and a stale unsubscribe does not remove a newer listener.
+    offVideo();
+    listener!('p2', { kind: 'ice', candidate: { candidate: 'c2', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'video' });
+    expect(video).toHaveLength(2);
+    const later: MediaSignal[] = [];
+    split.video.onSignal((_from, s) => void later.push(s));
+    expect(later).toHaveLength(1);
+    offVideo();
+    listener!('p2', { kind: 'ice', candidate: { candidate: 'c3', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'video' });
+    expect(later).toHaveLength(2);
+    // The hold is bounded, oldest out.
+    const tiny = splitSignalling(sig, 2);
+    for (let i = 0; i < 5; i++) listener!('p9', { kind: 'offer', sdp: `v=0 ${i}`, channel: 'video' });
+    const got: string[] = [];
+    tiny.video.onSignal((_f, s) => void got.push(s.sdp!));
+    expect(got).toEqual(['v=0 3', 'v=0 4']);
   });
 });

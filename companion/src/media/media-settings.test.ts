@@ -24,7 +24,7 @@ describe('media settings (D2)', () => {
   });
 
   it('round-trips and drops invalid fields to the default', () => {
-    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'], mainBounds: { x: 10, y: 20, width: 420, height: 640 } };
+    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'], mainBounds: { x: 10, y: 20, width: 420, height: 640 }, videoPath: 'electron' as const };
     expect(readMediaSettings(writeMediaSettings(s))).toEqual(s);
     const bad = readMediaSettings(JSON.stringify({ version: 1, micDeviceId: 7, muted: 'yes', turn: { url: 'http://x', username: 'u', credential: 'c' }, stun: 'stun:x' }));
     expect(bad).toEqual(DEFAULT_MEDIA_SETTINGS);
@@ -79,6 +79,19 @@ describe('media settings (D2)', () => {
       expect(broken.get().muted).toBe(true);
       expect(errors).toHaveLength(1);
     });
+  });
+});
+
+describe('spectator video path (D10.3, 2026-11-07)', () => {
+  it('native by default (a 0.2.36 media.json has no field); electron kept; junk falls back to what was there', () => {
+    expect(DEFAULT_MEDIA_SETTINGS.videoPath).toBe('native');
+    expect(readMediaSettings(JSON.stringify({ version: 1, muted: true })).videoPath).toBe('native');
+    expect(readMediaSettings(JSON.stringify({ version: 1, videoPath: 'electron' })).videoPath).toBe('electron');
+    expect(readMediaSettings(JSON.stringify({ version: 1, videoPath: 'jpeg' })).videoPath).toBe('native');
+    const cur = { ...DEFAULT_MEDIA_SETTINGS, videoPath: 'electron' as const };
+    expect(patchMediaSettings(cur, { videoPath: 'native' }).videoPath).toBe('native');
+    expect(patchMediaSettings(cur, { videoPath: 7 as never }).videoPath).toBe('electron');
+    expect(JSON.parse(writeMediaSettings(cur))).toMatchObject({ videoPath: 'electron' });
   });
 });
 

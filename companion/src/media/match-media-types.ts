@@ -74,6 +74,12 @@ export interface MediaSignal {
    * stand in, as before). Sent by the panel page once the lead wires §5a of docs/design/alpha-match.md.
    */
   eyes?: LayerCameraEyeGeometry[] | null;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.3): which peer connection the signal belongs to. Absent or `rtc`:
+   * the panel page's Electron connection (voice, and video until D10.7). `video`: the native helper's connection for
+   * the same pair (`video-mesh.ts`); the page never sees these (`splitSignalling` in rtc-signaling.ts).
+   */
+  channel?: 'rtc' | 'video';
 }
 
 /** How the media layer reaches the other players: the controller wraps the match transport (MEDIA_SIGNAL). */
@@ -126,7 +132,41 @@ export interface MediaStatus {
    * `receivingTable` (D2.8) says their table track is live.
    */
   tableAudio?: TableAudioStatus;
+  /**
+   * D10.3 (2026-11-07): the native spectator video (`media/video-mesh.ts` over `castcade-video.exe`), added by the
+   * match host like `tableAudio`; absent when the media setting `videoPath` is `electron` or there is no match.
+   */
+  nativeVideo?: NativeVideoStatus;
   lastError: string | null;
+}
+
+/** D10.3: one direction's counters as the helper's `stats` event gives them, once a second per peer. */
+export interface NativeVideoStats {
+  fps: number;
+  kbps: number;
+  width: number;
+  height: number;
+  rttMs?: number | null;
+  lossPct?: number | null;
+  bweKbps?: number | null;
+  qualityLimitation?: string | null;
+}
+
+/** D10.3: see `MediaStatus.nativeVideo`. */
+export interface NativeVideoStatus {
+  /** `ready`: the helper runs and said so; `starting`: spawned, no `ready` yet; `stopped`: not started; `unavailable`: `helper_missing`, `helper_failed:<code>`. */
+  helper: 'ready' | 'starting' | 'stopped' | 'unavailable';
+  reason: string | null;
+  /** The helper's probe: `h264_nvenc` / `h264_amf` / `h264_qsv` / `libx264`, once ready. */
+  encoder: string | null;
+  decoder: string | null;
+  /** This rig is the player up: the encoder runs and the video sender is active. */
+  sending: boolean;
+  /** Where this rig's frames come from, as last told, and the ring's health as the helper reports it. */
+  source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
+  sink: 'ring' | 'window' | 'none';
+  /** Per remote player: ICE state, the selected pair ("srflx↔host") and the last counters each way. */
+  peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;
 }
 
 /** D2.8: see `MediaStatus.tableAudio`. */
@@ -268,6 +308,12 @@ export interface LayerCameraRequest {
   fps: number;
   whole?: boolean;
   eye?: LayerCameraEyeSide;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.5): with it, the layer (0.6.0) puts the scaled eye into the `send`
+   * frame ring of this token as BGRA for `castcade-video.exe`, instead of JPEG frames on the pipe; a layer that does
+   * not know the field sends JPEG as before. Absent: the JPEG path.
+   */
+  ring?: string;
 }
 
 /** D8.1: which eye a one-eye camera request asks for. */
@@ -385,6 +431,13 @@ export interface VrOverlay {
    * Cleared by `stop`. Idempotent.
    */
   setTest?(test: VrTestPattern | null): void;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.5), the OpenXR layer only: theater takes its frames from the `recv`
+   * frame ring of this token (filled by `castcade-video.exe`) instead of the CVO2 pipe frames; null goes back to CVO2.
+   * On the control as `video: {ring}`, to a protocol-3 layer only and only while set (a control without it is byte for
+   * byte what it was). Idempotent.
+   */
+  setVideoRing?(token: string | null): void;
 }
 
 /** D7.6.1: what the layer shows in theater instead of the companion's picture (vr-layer/README.md "The calibration pattern"). */

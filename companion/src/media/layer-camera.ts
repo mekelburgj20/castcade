@@ -173,6 +173,12 @@ export interface CameraWatchInput {
   layerProtocol: number | null;
   /** The overlay's own state (`VrOverlay.status()`), when known. */
   overlay?: { state: string; reason: string | null } | null;
+  /**
+   * D10.3 (2026-11-07): the camera was asked with a frame ring (`LayerCameraRequest.ring`): the layer writes the eye
+   * into shared memory for the video helper and sends no JPEG frame on the pipe, so "on but no frame" is no fault.
+   * The layer's own answers (refused, stopped, protocol 2, pipe closed) still count.
+   */
+  ring?: boolean;
 }
 
 /**
@@ -195,6 +201,10 @@ export function cameraWatch(i: CameraWatchInput): CameraFallback {
   }
   const since = Math.max(i.askedAt, i.connectedAt ?? i.askedAt);
   if (i.status.state === 'asked' && i.status.why) return { fallBack: true, reason: `the layer stopped the camera: ${i.status.why}` };
+  if (i.ring) {
+    // The frames go to the ring, not the pipe: only the layer's own word counts (the two frame clocks below never run).
+    return cameraFallback(i.status, i.now, since, false);
+  }
   if (i.status.state === 'on' && i.status.frames === 0 && i.now - since >= LAYER_CAMERA_FALLBACK_MS) {
     return { fallBack: true, reason: `the layer said the camera is on but sent no frame within ${LAYER_CAMERA_FALLBACK_MS / 1000} s` };
   }
