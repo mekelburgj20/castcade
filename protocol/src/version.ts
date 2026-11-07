@@ -11,7 +11,10 @@
  * 3 (2026-11-02, A10 + A11): a match is a series of games. NEXT_GAME (logged) starts game N+1 in the same log,
  *   MATCH_END (not logged) closes the series; `GrantBody.game`, `RESULT.game` and `RESULT.series`; HELLO_ACK
  *   `startsInMs` (the lobby countdown) and `loading`. A new logged message type, so a peer on 2 could not follow the
- *   log: both rigs run the same build through the updater. MEDIA_SIGNAL `channel` (D10.3, 2026-11-07): optional,
- *   defaulted to `rtc`, never logged, so still 3 (a peer without the native video helper ignores `video` signals).
+ *   log: both rigs run the same build through the updater.
+ * 4 (2026-11-07, D10.3): MEDIA_SIGNAL `channel` (`rtc` | `video`, defaulted to `rtc`, never logged). Additive in
+ *   shape, but a peer that does not know it would not drop the frame: zod strips the unknown key, so a 0.2.36 peer
+ *   would feed the native helper's `video` offer to its Electron page as its own. A version bump makes mixed builds
+ *   refuse each other at HELLO instead; every rig updates through the updater, so nothing is lost (lead's decision).
  */
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;

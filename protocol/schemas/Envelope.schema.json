@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v3/Envelope.schema.json",
+  "$id": "https://castcade.dev/protocol/v4/Envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "v": {
       "type": "number",
-      "const": 3,
+      "const": 4,
       "description": "Protocol version; peers with a different value refuse each other."
     },
     "type": {
