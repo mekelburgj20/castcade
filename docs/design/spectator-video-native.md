@@ -123,7 +123,7 @@ frame is 7.8 MB, 470 MB/s at 60 fps, a memcpy a desktop never notices.
 
 The shape of `castcade-audio.exe`: the companion spawns the helper, writes one JSON object per line to its stdin,
 reads one JSON object per line from its stdout (events), copies stderr into its log. Nothing binary on these pipes
-(frames go through the rings). Exit codes as the audio helper (2 = bad arguments, 64 = cannot run here).
+(frames go through the rings). Exit codes as the audio helper (64 = bad arguments, 2 = cannot run here; the companion treats both as `helper_failed`).
 
 Commands (companion → helper):
 

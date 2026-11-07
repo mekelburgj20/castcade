@@ -57,7 +57,7 @@ function readBuildInfo(readmePath) {
 
 /**
  * The FFmpeg shared build the native video helper bundles (D10.1; video-helper/fetch-ffmpeg.mjs): BtbN FFmpeg-Builds,
- * `ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip`. Its zip has no README, so the facts are pinned here, read from
+ * `ffmpeg-n8.1.3-34-ga35157abb9-win64-gpl-shared-8.1.zip` (dated release `autobuild-2026-11-06-12-50`). Its zip has no README, so the facts are pinned here, read from
  * `ffmpeg -version` of the pinned zip (sha256 in video-helper/ffmpeg.sha256). It differs from the Gyan build above
  * (8.1.1), hence a second tarball; the `-helper-` infix keeps the names apart and still matches release.yml's globs.
  * To move the pin: update these, the table in docs/ffmpeg-source.md, and video-helper/ffmpeg.sha256 together.
@@ -66,7 +66,7 @@ const HELPER_FFMPEG = {
   version: '8.1.3',
   describe: 'n8.1.3-34-ga35157abb9-20261106',
   commit: 'a35157abb96167fd7308edc92b55408d5bb084b0',
-  zip: 'ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip',
+  zip: 'ffmpeg-n8.1.3-34-ga35157abb9-win64-gpl-shared-8.1.zip', // release tag autobuild-2026-11-06-12-50
   zipSha256: '7fd8ec7024823185230e8989082be9f3af957ed300f5b8cd136d02ac139ddceb',
   // `--enable-*` flags of the build's configure line (minus gpl, version3, shared, pthreads, schannel, cuda-llvm).
   libs: `iconv zlib libxml2 libvmaf fontconfig libharfbuzz libfreetype libfribidi lcms2 vulkan libshaderc libdav1d libvorbis librav1e librsvg gmp lzma liblcevc-dec opencl amf libaom avisynth chromaprint libdavs2 libdvdread libdvdnav ffnvcodec frei0r libgme libkvazaar libaribb24 libaribcaption libass libbluray libjxl libmp3lame libopus libplacebo librist libssh libtheora libvpx libwebp libzmq lv2 libvpl openal liboapv libopencore-amrnb libopencore-amrwb libopenh264 libopenjpeg libopenmpt librubberband sdl2 libsnappy libsoxr libsrt libsvtav1 libtwolame libuavs3d vaapi vapoursynth libvidstab libvvenc libx264 libx265 libxavs2 libxvid libzimg libzvbi`.split(' '),

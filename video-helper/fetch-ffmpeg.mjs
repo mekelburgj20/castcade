@@ -4,11 +4,12 @@
  *
  *   node video-helper/fetch-ffmpeg.mjs [--force]
  *
- * Downloads BtbN's ffmpeg-n8.1-latest-win64-gpl-shared-8.1.zip (GPL, shared: avcodec/avutil/swscale dlls + import
- * libs + headers) into video-helper/deps/ffmpeg (gitignored). "latest" moves: the first run writes the sha256 it
- * saw to video-helper/ffmpeg.sha256 (tracked); every later run checks the download against it, so everyone building
- * the helper links the same bytes (the same pin as the D10.0.1 spike harness; the GPL offer E5 names this build). To
- * move the pin, delete ffmpeg.sha256 and rerun. Windows only (extraction uses Windows' own tar.exe, which reads zip).
+ * Downloads BtbN's ffmpeg-n8.1.3-34-ga35157abb9-win64-gpl-shared-8.1.zip (GPL, shared: avcodec/avutil/swscale dlls +
+ * import libs + headers) from the dated autobuild release (the same FFmpeg commit the D10.0.1 spike used from the
+ * rolling `latest`, whose assets are replaced daily; a dated release keeps its zip) into video-helper/deps/ffmpeg
+ * (gitignored). The sha256 is pinned in video-helper/ffmpeg.sha256 (tracked); every run checks the download against
+ * it, so everyone building the helper links the same bytes (the GPL offer E5 names this build). To move the pin,
+ * change TAG and NAME, delete ffmpeg.sha256 and rerun (the first run writes the sha it saw). Windows only (extraction uses Windows' own tar.exe, which reads zip).
  * No dependencies.
  */
 /* global fetch */
@@ -19,8 +20,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-const NAME = 'ffmpeg-n8.1-latest-win64-gpl-shared-8.1';
-const URL_ = `https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/${NAME}.zip`;
+const NAME = 'ffmpeg-n8.1.3-34-ga35157abb9-win64-gpl-shared-8.1';
+const TAG = 'autobuild-2026-11-06-12-50'; // a dated autobuild release: its assets never change, unlike `latest`
+const URL_ = `https://github.com/BtbN/FFmpeg-Builds/releases/download/${TAG}/${NAME}.zip`;
 const helperDir = resolve(fileURLToPath(new URL('.', import.meta.url)));
 const depsDir = resolve(helperDir, 'deps');
 const outDir = join(depsDir, 'ffmpeg');
