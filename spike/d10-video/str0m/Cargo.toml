@@ -1,0 +1,13 @@
+# D10.0.1 spike, the Rust + str0m candidate: one binary, two peers in one process, the harness dll loaded at run time.
+#
+#   cargo build --release --manifest-path spike/d10-video/str0m/Cargo.toml
+#   spike\d10-video\str0m\target\release\spike-str0m.exe [--duration 90] [--shaper 5000:5001] [--harness <dll>]
+[workspace]
+members = ["spike-str0m"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

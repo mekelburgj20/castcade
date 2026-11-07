@@ -1,0 +1,12 @@
+[package]
+name = "spike-str0m"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-only"
+
+[dependencies]
+# rust-crypto: pure-Rust DTLS/SRTP backend, so the spike needs neither aws-lc's cmake/nasm build nor OpenSSL.
+str0m = { version = "0.25", default-features = false, features = ["rust-crypto"] }
+libloading = "0.9"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
