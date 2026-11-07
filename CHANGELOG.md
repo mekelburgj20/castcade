@@ -7,6 +7,21 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **Original tables patch by role, not by JPSalas' names (C1.3; recipe B 0.2.0).** Diablo 2 (ChuckRibbits 1.1.1 and
+  1.2.1) and eight other originals on the owner's rig were skipped as class E ("recipe E needs a guided pick"). Recipe B
+  now finds its four anchors from a vocabulary: the start sub (`ResetForNewGame` / `StartGame` / `StartNewGame` /
+  `NewGame` / `InitGame`), the end sub (`EndOfGame` / `GameOver` / `EndGame`) or, failing one, the first statement that
+  clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`), the ball-end sub (`EndOfBall` / `EndBall` /
+  `EndPlayerTurn` / `BallDrained`) or the `BallsRemaining` decrement, and the score store read from `AddScore`'s own
+  body (a scalar `Score`, a `Score(player)` array, or a `p1score, p2score…` family). The player, players, ball and
+  extra-ball variables follow the same vocabulary, and a name that is only a local `Dim` is never taken. Every B
+  sidecar is re-made on the first look (recipe version 0.2.0); the plan reason names the subs and the score store it
+  found. On the rig: Diablo 2 ×2, Jacks Open and Futurama exact; Rattlecan, 2001 ×2 and Star Wars (Burger) with the
+  game end from the flag and no ball end. The guided-pick UI of the old C1.3 is dropped; the leftovers (Diablo 2's own
+  multiplayer finals, the Burger template's ball end) are per-table overrides, C1.4.
+
 ### Fixed
 
 - **Scripts with mixed line endings were refused as "no _KeyDown handler" (C13).** Krobs' Twilight Zone (VPW 1.0),

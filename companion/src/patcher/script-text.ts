@@ -146,6 +146,52 @@ export function findSub(lines: readonly string[], name: string): [number, number
   return [s, findLine(lines, /^\s*End\s+(Sub|Function)\b/, s + 1)];
 }
 
+/** A `Sub` / `Function` / `Property` head line: group 1 the keyword, group 2 the name as spelled. */
+export const PROC_HEAD = /^\s*(?:Public\s+|Private\s+)?(?:Default\s+)?(Sub|Function|Property\s+(?:Get|Let|Set))\s+(\w+)/i;
+const PROC_END = /^\s*End\s+(Sub|Function|Property)\b/i;
+const PROC_END_INLINE = /\bEnd\s+(Sub|Function|Property)\b/i;
+
+/** Where a line sits: in which multi-line procedure (if any) and whether inside a `Class`. */
+export interface LineContext {
+  /** 0-based index of the head line of the Sub / Function / Property holding this line; -1 at module level. */
+  proc: number;
+  /** That procedure's name as spelled; `''` at module level. */
+  procName: string;
+  /** Inside a `Class ... End Class` block (a member sub, or a class-level declaration). */
+  inClass: boolean;
+}
+
+/**
+ * One forward pass over the script: the context of every line (C1.3). A one-line procedure (`Sub X : ... : End Sub`)
+ * is not entered; its head line is module level. The head and `End` lines of a procedure count as inside it.
+ */
+export function lineContexts(lines: readonly string[]): LineContext[] {
+  const out: LineContext[] = [];
+  let proc = -1;
+  let procName = '';
+  let inClass = false;
+  for (let i = 0; i < lines.length; i++) {
+    const c = stripComment(lines[i] ?? '');
+    if (proc >= 0) {
+      out.push({ proc, procName, inClass });
+      if (PROC_END.test(c)) {
+        proc = -1;
+        procName = '';
+      }
+      continue;
+    }
+    if (/^\s*Class\s+\w+/i.test(c)) inClass = true;
+    const m = PROC_HEAD.exec(c);
+    if (m && !PROC_END_INLINE.test(c)) {
+      proc = i;
+      procName = m[2] ?? '';
+    }
+    out.push({ proc, procName, inClass });
+    if (proc < 0 && /^\s*End\s+Class\b/i.test(c)) inClass = false;
+  }
+  return out;
+}
+
 /** True when `ident` appears as a whole word in the code part of any line. */
 export function hasIdent(lines: readonly string[], ident: string): boolean {
   const rx = new RegExp(`\\b${escapeRegExp(ident)}\\b`, 'i');

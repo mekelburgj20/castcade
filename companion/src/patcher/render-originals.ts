@@ -5,11 +5,18 @@
  * each anchor sub and a block of `Castcade_<recipe>_*` subs after the wrappers that read the table's variables and
  * call the library (`Castcade_GameStart` / `Castcade_Scores` / `Castcade_BallEnd` / `Castcade_GameEnd`, lib 0.5.0).
  *
- * - **B** (JPSalas pattern): `Castcade_<R>_GameStart` at the end of `ResetForNewGame`, `_Scores` at the end of
- *   `AddScore` and in front of each of its early `Exit Sub`, `_BallEnd` at the TOP of `EndOfBall` (the ball that
- *   just drained, before anything advances; `EndOfBall` often hands over to a timer) or else in front of the
- *   `BallsRemaining` decrement, `_GameEnd` at the end of `EndOfGame`. Scores come from `Score()`, 0- or 1-based as
- *   the table counts `CurrentPlayer`; the ball from the table's `Balls` (the JPSalas ball-number function).
+ * - **B** (script anchors; 0.2.0 = C1.3, the original-table vocabulary in `classify.ts`): `Castcade_<R>_GameStart`
+ *   at the end of the start sub (`ResetForNewGame` / `StartGame` / `StartNewGame` / `NewGame` / `InitGame`),
+ *   `_Scores` at the end of `AddScore` and in front of each of its early `Exit Sub`, `_BallEnd` at the TOP of the
+ *   ball-end sub (`EndOfBall` / `EndBall` / `EndPlayerTurn` / `BallDrained`: the ball that just drained, before
+ *   anything advances; JPSalas' `EndOfBall` hands over to a timer) or else in front of the `BallsRemaining`
+ *   decrement, `_GameEnd` at the end of the end sub (`EndOfGame` / `GameOver` / `EndGame`) or, with none, right after
+ *   the first plain statement that clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`, ...).
+ *   The score store is read from `AddScore`'s body (the first `X = X + ...`; a `score`-named one first; one call
+ *   level down when `AddScore` only calls a helper): an array `X(I)` journals `X` with `I` as the player, 0- or
+ *   1-based as the table sets `I`; a scalar `X` journals `Array(X)` with the current-player variable, or a family
+ *   `p1score, p2score, ...` as one array. The ball, player count and extra balls come from the table's variables
+ *   by the same vocabulary (`recipeB` below), each with a warning when absent.
  * - **C** (Scorbit-anchored): the expressions the table passes to `Scorbit.SendUpdate` (4 scores, ball, player,
  *   players) are what the anchors journal; `Scorbit.StartSession` / `StopSession` place the game start and end at
  *   the end of the sub that calls them. Those calls sit behind the table's Scorbit guards, so a call inside a
@@ -25,7 +32,7 @@
  * table. Pure: text in, bytes out; `unpatchSidecar` (render.ts) undoes it exactly.
  */
 import { createHash } from 'node:crypto';
-import type { ClassifyResult, ScriptClass } from './classify.js';
+import { BALL_END_SUBS, END_SUBS, START_SUBS, findFirstSub, findGameFlagClear, type ClassifyResult, type FoundSub, type ScriptClass } from './classify.js';
 import {
   SCORE_SERVER_CREATE,
   SCORE_SERVER_SHIM_CALL,
@@ -40,7 +47,7 @@ import {
   type RenderOptions,
   type Rendered,
 } from './render.js';
-import { encodeScript, escapeRegExp, findLine, findSub, hasIdent, joinScript, splitScript, stripComment } from './script-text.js';
+import { encodeScript, escapeRegExp, findLine, findSub, hasIdent, joinScript, lineContexts, splitScript, stripComment, type LineContext } from './script-text.js';
 
 type OriginalRecipe = 'B' | 'C' | 'D';
 
@@ -298,6 +305,12 @@ class Render {
     this.insert(idx, this.anchorLine(fn, what));
     this.anchors[key] = where;
   }
+
+  /** The call line right after line `idx` (recipe B's game end after the game-flag clear). */
+  after(key: string, idx: number, fn: string, what: string, where: string): void {
+    this.insert(idx + 1, this.anchorLine(fn, what));
+    this.anchors[key] = where;
+  }
 }
 
 function renderOriginal(recipe: OriginalRecipe, scriptText: string, cls: ClassifyResult, opts: RenderOptions): Rendered {
@@ -368,9 +381,139 @@ function anchorSubs(r: Render, x: Exprs): string[] {
   ];
 }
 
-/** `CurrentPlayer = 0` or `= 1` as a statement: in `ResetForNewGame` first, else anywhere. */
-function playerBase(lines: readonly string[], reset: SubRange | null): 0 | 1 | null {
-  const rx = /(?:^|:|\bThen)\s*CurrentPlayer\s*=\s*([01])\s*(?::|$)/i;
+// ------------------------------------------------------------------------------------------- recipe B
+
+/** The variable names recipe B knows for each value, in the order tried (C1.3). */
+const CURRENT_PLAYER_VARS = ['CurrentPlayer', 'CurrentPlayerIdx', 'nPlayer', 'cp', 'Player'];
+const PLAYERS_VARS = ['PlayersPlayingGame', 'PlayersPlaying', 'nPlayersInGame', 'NumPlayers', 'numplay'];
+const BALL_VARS = ['BallNumber', 'CurrentBall', 'nBall', 'BallInPlay'];
+const EXTRA_BALL_VARS = ['ExtraBallPending', 'nExtraBalls', 'ExtraBalls'];
+
+/** How the script uses a name: declared at module level, declared inside a procedure (a local), assigned as a statement. */
+interface IdentUse {
+  declaredTop: boolean;
+  declaredLocal: boolean;
+  assigned: boolean;
+  assignedInProc: boolean;
+}
+
+function identUse(lines: readonly string[], ctx: readonly LineContext[], name: string): IdentUse {
+  const N = escapeRegExp(name);
+  const word = new RegExp(`\\b${N}\\b`, 'i');
+  const assign = new RegExp(`(?:^|:|\\bThen\\b|\\bElse\\b)\\s*${N}\\s*(?:\\([^)]*\\))?\\s*=`, 'i');
+  const u: IdentUse = { declaredTop: false, declaredLocal: false, assigned: false, assignedInProc: false };
+  for (let i = 0; i < lines.length; i++) {
+    const c = code(lines, i);
+    const top = (ctx[i]?.proc ?? -1) < 0 && !ctx[i]?.inClass;
+    const d = /^\s*(?:Dim|Public|Private|Const)\s+([^:]*)/i.exec(c);
+    if (d && word.test(d[1] ?? '')) {
+      if (top) u.declaredTop = true;
+      else u.declaredLocal = true;
+    }
+    if (assign.test(c)) {
+      u.assigned = true;
+      if (!top) u.assignedInProc = true;
+    }
+  }
+  return u;
+}
+
+/**
+ * The first of `names` the table really uses, so a stray word is never taken: a name assigned inside a procedure (a
+ * value that moves during play) wins over one only set at module level (Star Wars (Burger 2025) declares
+ * `PlayersPlayingGame = 1` once and counts in `numplay`); a name that is only a procedure's local (`Dim extraBalls`
+ * inside a sub) is never used, as our anchor subs could not see it. `needAssigned` also refuses a bare declaration.
+ */
+function pickVar(lines: readonly string[], ctx: readonly LineContext[], names: readonly string[], needAssigned = false): string | null {
+  const uses = names.map((n) => ({ n, u: identUse(lines, ctx, n) }));
+  const ok = ({ u }: { u: IdentUse }): boolean => (u.declaredTop || u.assigned) && !(u.declaredLocal && !u.declaredTop) && (!needAssigned || u.assigned);
+  return uses.find((x) => ok(x) && x.u.assignedInProc)?.n ?? uses.find(ok)?.n ?? null;
+}
+
+/** Where the table keeps the score: an array indexed by the player, one scalar, or a family of per-player scalars. */
+type ScoreStore = { kind: 'array'; name: string; index: string } | { kind: 'scalar'; name: string } | { kind: 'numbered'; names: string[] };
+
+interface Accumulation {
+  store: ScoreStore & { kind: 'array' | 'scalar' };
+  /** 0-based line of the statement. */
+  idx: number;
+  text: string;
+}
+
+/** `X = X + ...` or `X(I) = X(I) + ...` as a statement (the whitespace may vary). */
+const ACCUMULATE = /(?:^|:|\bThen\b|\bElse\b)\s*(\w+)\s*(?:\(\s*([^()]*?)\s*\))?\s*=\s*(\w+)\s*(?:\(\s*([^()]*?)\s*\))?\s*\+/i;
+
+/** Every accumulation in the body of `s`, in order. */
+function accumulations(lines: readonly string[], s: SubRange): Accumulation[] {
+  const out: Accumulation[] = [];
+  const norm = (e: string | undefined): string => (e ?? '').replace(/\s+/g, '').toLowerCase();
+  for (let i = s.start + 1; i < s.end; i++) {
+    const c = code(lines, i);
+    const m = ACCUMULATE.exec(c);
+    if (!m || (m[1] ?? '').toLowerCase() !== (m[3] ?? '').toLowerCase() || norm(m[2]) !== norm(m[4])) continue;
+    if ((m[2] === undefined) !== (m[4] === undefined)) continue;
+    const name = m[1] ?? '';
+    const text = c.trim().replace(/\s*:.*$/, '');
+    out.push({ store: m[2] === undefined ? { kind: 'scalar', name } : { kind: 'array', name, index: (m[2] ?? '').trim() }, idx: i, text });
+  }
+  return out;
+}
+
+/** The family `p1score, p2score, ...` when `name` is its first member and the others accumulate in the same sub. */
+function numberedFamily(name: string, all: readonly Accumulation[]): string[] | null {
+  const m = /^([A-Za-z_]*?)1([A-Za-z_]\w*)?$/.exec(name);
+  if (!m) return null;
+  const names = [name];
+  for (let n = 2; n <= 8; n++) {
+    const sib = `${m[1] ?? ''}${n}${m[2] ?? ''}`;
+    if (!all.some((a) => a.store.kind === 'scalar' && a.store.name.toLowerCase() === sib.toLowerCase())) break;
+    names.push(sib);
+  }
+  return names.length >= 2 ? names : null;
+}
+
+interface ScoreStoreFound {
+  store: ScoreStore;
+  /** The statement it was read from and where; absent for the `Dim Score(` fallback. */
+  at?: { sub: string; line: number; text: string };
+}
+
+/**
+ * The score store, from `AddScore`'s body: the first accumulation whose name says `score`, else the first; with none
+ * there, the same one call level down (the first helper `AddScore` calls as a statement that accumulates: the Burger
+ * template's `AddScore` calls `SetScore`); else today's `Dim Score(` array with `CurrentPlayer`.
+ */
+function findScoreStore(lines: readonly string[], add: SubRange | null): ScoreStoreFound | null {
+  const best = (s: SubRange): ScoreStoreFound | null => {
+    const all = accumulations(lines, s);
+    const a = all.find((x) => /score/i.test(x.store.name)) ?? all[0];
+    if (!a) return null;
+    const at = { sub: s.name, line: a.idx + 1, text: a.text };
+    if (a.store.kind === 'scalar') {
+      const family = numberedFamily(a.store.name, all);
+      if (family) return { store: { kind: 'numbered', names: family }, at };
+    }
+    return { store: a.store, at };
+  };
+  if (add) {
+    const own = best(add);
+    if (own) return own;
+    for (let i = add.start + 1; i < add.end; i++) {
+      const callee = /^\s*(?:Call\s+)?(\w+)\b/i.exec(code(lines, i))?.[1];
+      if (!callee || callee.toLowerCase() === add.name.toLowerCase()) continue;
+      const s = subRange(lines, callee);
+      if (typeof s === 'string') continue;
+      const down = best(s);
+      if (down) return down;
+    }
+  }
+  if (findLine(lines, /^\s*(Dim|Public|Private)\s+(\w+(\(\s*\d*\s*\))?\s*,\s*)*Score\s*\(/) >= 0) return { store: { kind: 'array', name: 'Score', index: 'CurrentPlayer' } };
+  return null;
+}
+
+/** `<v> = 0` or `= 1` as a statement: in the start sub first, else anywhere. */
+function playerBase(lines: readonly string[], start: SubRange | null, v: string): 0 | 1 | null {
+  const rx = new RegExp(`(?:^|:|\\bThen\\b)\\s*${escapeRegExp(v)}\\s*=\\s*([01])\\s*(?::|$)`, 'i');
   const scan = (from: number, to: number): 0 | 1 | null => {
     for (let i = from; i < to; i++) {
       const m = rx.exec(code(lines, i));
@@ -378,64 +521,99 @@ function playerBase(lines: readonly string[], reset: SubRange | null): 0 | 1 | n
     }
     return null;
   };
-  return (reset ? scan(reset.start + 1, reset.end) : null) ?? scan(0, lines.length);
+  return (start ? scan(start.start + 1, start.end) : null) ?? scan(0, lines.length);
 }
 
-/** The table's ball number: its `Balls` function or variable, else computed from `BallsPerGame` / `BallsRemaining`. */
-function ballExpr(lines: readonly string[]): string | null {
+/**
+ * The table's ball number: its `Balls` function or module-level variable, else the first ball variable it uses, else
+ * computed from `BallsPerGame` / `BallsRemaining` (indexed by the table's own player index when it is an array).
+ */
+function ballExpr(lines: readonly string[], ctx: readonly LineContext[], index: string | null): string | null {
   if (findSub(lines, 'Balls')[0] >= 0) return 'Balls';
-  if (findLine(lines, /^\s*(Dim|Public|Private)\s+(\w+(\(\s*\d*\s*\))?\s*,\s*)*Balls\s*(,|:|$)/) >= 0) return 'Balls';
-  if (hasIdent(lines, 'BallsPerGame') && hasIdent(lines, 'BallsRemaining')) return 'BallsPerGame - BallsRemaining(CurrentPlayer) + 1';
+  const dim = /^\s*(Dim|Public|Private)\s+(\w+(\(\s*\d*\s*\))?\s*,\s*)*Balls\s*(,|:|$)/i;
+  for (let i = 0; i < lines.length; i++) if ((ctx[i]?.proc ?? -1) < 0 && !ctx[i]?.inClass && dim.test(code(lines, i))) return 'Balls';
+  const v = pickVar(lines, ctx, BALL_VARS);
+  if (v) return v;
+  if (hasIdent(lines, 'BallsPerGame') && hasIdent(lines, 'BallsRemaining')) {
+    return findLine(lines, /\bBallsRemaining\s*\(/) >= 0 ? `BallsPerGame - BallsRemaining(${index ?? 'CurrentPlayer'}) + 1` : 'BallsPerGame - BallsRemaining + 1';
+  }
   return null;
 }
 
 function recipeB(r: Render): string[] {
   const L = r.lines;
-  const sub = (name: string): SubRange | null => {
-    const s = subRange(L, name);
-    return typeof s === 'string' ? null : s;
+  const ctx = lineContexts(L);
+  const found = (names: readonly string[]): [FoundSub | null, SubRange | string] => {
+    const f = findFirstSub(L, names);
+    return [f, f ? subRange(L, f.name) : `no Sub ${names.join(' / ')}`];
   };
-  const reason = (name: string): string => {
-    const s = subRange(L, name);
-    return typeof s === 'string' ? s : '';
-  };
-  const reset = sub('ResetForNewGame');
-  const base = playerBase(L, reset);
-  if (base === null) r.warnings.push('no "CurrentPlayer = 0" or "= 1" found; player 1 is taken as Score(1)');
-  const b: 0 | 1 = base ?? 1;
-  const havePlayer = hasIdent(L, 'CurrentPlayer');
-  if (!havePlayer) r.warnings.push('no CurrentPlayer variable; every event names player 1');
-  const player = havePlayer ? (b === 1 ? 'CurrentPlayer' : 'CurrentPlayer + 1') : '1';
-  const players = hasIdent(L, 'PlayersPlayingGame') ? 'PlayersPlayingGame' : '1';
-  if (players === '1') r.warnings.push('no PlayersPlayingGame variable; games are journaled as 1 player');
-  const ball = ballExpr(L);
-  if (ball === null) r.warnings.push('no ball number (Balls, BallsPerGame / BallsRemaining); ball fields are 0');
-  const haveScores = findLine(L, /^\s*(Dim|Public|Private)\s+(\w+(\(\s*\d*\s*\))?\s*,\s*)*Score\s*\(/) >= 0;
-  if (!haveScores) r.miss('no Dim Score( array; scores are not journaled', true);
-  const x: Exprs = {
-    scores: haveScores ? 'Score' : null,
-    base: b,
-    player,
-    ball: ball ?? '0',
-    players,
-    extra: hasIdent(L, 'ExtraBallsAwards') ? 'ExtraBallsAwards(CurrentPlayer)' : '0',
-  };
-  r.anchors['vars'] = `Score base ${b}, player ${player}, ball ${x.ball}, players ${players}`;
+  const ok = (s: SubRange | string): SubRange | null => (typeof s === 'string' ? null : s);
+  const [addF, add] = found(['AddScore']);
+  const [startF, start] = found(START_SUBS);
+  const [endF, end] = found(END_SUBS);
+  const [eobF, eob] = found(BALL_END_SUBS);
+  const flag = endF ? null : findGameFlagClear(L, ctx, startF);
 
-  const add = sub('AddScore');
-  if (add && haveScores) r.atEnd('scores', add, 'Scores', 'current scores', true);
-  else if (!add) r.miss(`${reason('AddScore')}; live scores are not journaled`, false);
-  if (reset) r.atEnd('gameStart', reset, 'GameStart', 'game start', false);
-  else r.miss(`${reason('ResetForNewGame')}; no game start is journaled`, true);
-  const eog = sub('EndOfGame');
-  if (eog) r.atEnd('gameEnd', eog, 'GameEnd', 'game end', false);
-  else r.miss(`${reason('EndOfGame')}; no game end is journaled`, true);
-  const eob = sub('EndOfBall');
-  if (eob) r.atTop('ballEnd', eob, 'BallEnd', 'ball end');
+  // The score store, and from it the player: an array's index is the player as the table counts it.
+  const store = findScoreStore(L, ok(add));
+  let index: string | null = null;
+  let player = '1';
+  let base: 0 | 1 = 0;
+  if (store?.store.kind === 'array') {
+    const { name, index: ix } = store.store;
+    index = ix;
+    if (/^\w+$/.test(ix)) {
+      const b = playerBase(L, ok(start), ix);
+      if (b === null) r.warnings.push(`no "${ix} = 0" or "= 1" found; player 1 is taken as ${name}(1)`);
+      base = b ?? 1;
+      player = base === 1 ? ix : `${ix} + 1`;
+    } else {
+      base = 1;
+      player = `(${ix})`;
+      r.warnings.push(`the score index "${ix}" is not a variable; player 1 is taken as ${name}(1)`);
+    }
+  } else {
+    const p = pickVar(L, ctx, CURRENT_PLAYER_VARS, true);
+    if (p) {
+      index = p;
+      const b = playerBase(L, ok(start), p);
+      if (b === null) r.warnings.push(`no "${p} = 0" or "= 1" found; ${p} is taken as 1-based`);
+      player = b === 0 ? `${p} + 1` : p;
+    } else r.warnings.push(`no current-player variable (${CURRENT_PLAYER_VARS.join(', ')}); every event names player 1`);
+    if (store?.store.kind === 'scalar') r.warnings.push('scalar score: in a multi-player game only the player up is journaled');
+  }
+  const playersVar = pickVar(L, ctx, PLAYERS_VARS);
+  if (!playersVar) r.warnings.push(`no players-in-game variable (${PLAYERS_VARS.join(', ')}); games are journaled as 1 player`);
+  // The Burger template (2001, Star Wars) keeps `numplay` one above the player count: it starts at 2, the game starts
+  // only when `numplay > 1`, and `If cp = numplay` is the end of a round (verified on the owner's three, 2026-11-06).
+  const players = playersVar?.toLowerCase() === 'numplay' ? `${playersVar} - 1` : playersVar;
+  const ball = ballExpr(L, ctx, index);
+  if (ball === null) r.warnings.push(`no ball number (Balls, ${BALL_VARS.join(', ')}, BallsPerGame / BallsRemaining); ball fields are 0`);
+  const extra = hasIdent(L, 'ExtraBallsAwards') ? `ExtraBallsAwards(${index ?? 'CurrentPlayer'})` : (pickVar(L, ctx, EXTRA_BALL_VARS) ?? '0');
+  const s = store?.store ?? null;
+  const scores = s === null ? null : s.kind === 'array' ? s.name : s.kind === 'scalar' ? `Array(${s.name})` : `Array(${s.names.join(', ')})`;
+  const x: Exprs = { scores, base, player, ball: ball ?? '0', players: players ?? '1', extra };
+  r.anchors['vars'] = `${scores ?? 'no scores'} base ${base}, player ${player}, ball ${x.ball}, players ${x.players}`;
+  if (store?.at) r.anchors['scoreStore'] = `${store.at.text} (Sub ${store.at.sub}, line ${store.at.line})`;
+  const named = (f: FoundSub | null): string => (f ? `${f.name} (line ${f.line})` : 'none');
+  const endNamed = endF ? named(endF) : flag ? `"${flag.text}" in Sub ${flag.sub} (line ${flag.line})` : 'none';
+  r.anchors['subs'] = `AddScore ${named(addF)}, start ${named(startF)}, end ${endNamed}, ball end ${named(eobF)}`;
+
+  if (s === null) r.miss(`no score store (no "X = X + ..." in Sub ${addF?.name ?? 'AddScore'} or a sub it calls, no Dim Score( array); scores are not journaled`, true);
+  else if (typeof add === 'string') r.miss(`${add}; live scores are not journaled (the game end carries the final scores)`, false);
+  else r.atEnd('scores', add, 'Scores', 'current scores', true);
+  if (typeof start !== 'string') r.atEnd('gameStart', start, 'GameStart', 'game start', false);
+  else r.miss(`${start}; no game start is journaled`, true);
+  if (typeof end !== 'string') r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
+  else if (flag) {
+    r.after('gameEnd', flag.line - 1, 'GameEnd', 'game end', `after "${flag.text}" in Sub ${flag.sub} (line ${flag.line})`);
+    r.warnings.push(`${end}; the game end is anchored after "${flag.text}" in Sub ${flag.sub} (line ${flag.line}), the first place the game flag is cleared`);
+  } else r.miss(`${end}${endF ? '' : ' and no game-flag clear (gameon = 0, GameActive = False, GameOver = 1, ...)'}; no game end is journaled`, true);
+  if (typeof eob !== 'string') r.atTop('ballEnd', eob, 'BallEnd', 'ball end');
   else {
-    const dec = findLine(L, /^\s*BallsRemaining\s*\(\s*CurrentPlayer\s*\)\s*=\s*BallsRemaining\s*\(\s*CurrentPlayer\s*\)\s*-/);
+    const dec = findLine(L, /^\s*BallsRemaining\s*(\([^)]*\))?\s*=\s*BallsRemaining\s*(\([^)]*\))?\s*-/);
     if (dec >= 0) r.before('ballEnd', dec, 'BallEnd', 'ball end', `before the BallsRemaining decrement (line ${dec + 1})`);
-    else r.miss('no EndOfBall sub and no BallsRemaining(CurrentPlayer) decrement; no ball end is journaled', false);
+    else r.miss(`${eob}${eobF ? '' : ' and no BallsRemaining decrement'}; no ball end is journaled`, false);
   }
   return anchorSubs(r, x);
 }
