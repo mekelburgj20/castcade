@@ -19,7 +19,7 @@ export const LIB_VERSION = '0.5.0';
 export const RECIPE_VERSION = '0.3.1';
 
 /** Each recipe's version, written into its sidecar's marker and `Castcade_Init`; a bump re-makes only that recipe's sidecars. */
-export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.1.0', C: '0.1.0', D: '0.1.0' } as const;
+export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.2.0', C: '0.1.0', D: '0.1.0' } as const;
 export type Recipe = keyof typeof RECIPE_VERSIONS;
 
 export function isRecipe(r: string): r is Recipe {

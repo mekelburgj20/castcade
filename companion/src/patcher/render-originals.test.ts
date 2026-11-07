@@ -6,8 +6,13 @@ import { callArgs, recipeFor, renderRecipeB, renderSidecar } from './render-orig
 import { LIB_VERSION, RECIPE_VERSION, RECIPE_VERSIONS, STUB, isRecipe, parseSidecarMarker, recipeVersionFor, renderRecipeA, unpatchSidecar, type RenderOptions } from './render.js';
 import { decodeScript, splitScript } from './script-text.js';
 import {
+  BURGER_B_SCRIPT,
+  DIABLO_B_SCRIPT,
+  FUTURAMA_B_SCRIPT,
+  JACKS_B_SCRIPT,
   JPSALAS_B_SCRIPT,
   ORIGINAL_B_SCRIPT,
+  RATTLECAN_B_SCRIPT,
   ORIGINAL_E_SCRIPT,
   SCORBIT_C_SCRIPT,
   SCORESERVER_D_SCRIPT,
@@ -50,9 +55,9 @@ const subLines = (L: string[], name: string): string[] => {
 
 describe('recipe versions', () => {
   it('each recipe carries its own version; recipe A keeps 0.3.1 so the lib bump alone re-makes A sidecars', () => {
-    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.1.0', C: '0.1.0', D: '0.1.0' });
+    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.2.0', C: '0.1.0', D: '0.1.0' });
     expect(RECIPE_VERSION).toBe('0.3.1');
-    expect(recipeVersionFor('B')).toBe('0.1.0');
+    expect(recipeVersionFor('B')).toBe('0.2.0');
     expect(recipeVersionFor('E')).toBeNull();
     expect(isRecipe('D')).toBe(true);
     expect(isRecipe('E')).toBe(false);
@@ -93,8 +98,8 @@ describe('renderRecipeB (JPSalas original)', () => {
     const { r, L, cls } = render(JPSALAS_B_SCRIPT);
     expect(cls.cls).toBe('B');
     expect(L[0]).toBe('Option Explicit');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.1.0', libVersion: LIB_VERSION });
-    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.1.0", ""`);
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
+    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.2.0", ""`);
     expect(L.some((l) => l.startsWith('Castcade_Guard "C:\\VPX\\tables\\Total Nuclear Annihilation'))).toBe(true);
     expect(L.some((l) => /^(Dim UseVPMNVRAM|UseVPMNVRAM =|Castcade_RegisterNVRAM|Castcade_WatchBytes)/.test(l))).toBe(false);
     expect(L).toContain('Sub Castcade_Orig_KeyDown(ByVal keycode)');
@@ -150,6 +155,8 @@ describe('renderRecipeB (JPSalas original)', () => {
       gameEnd: 'end of Sub EndOfGame (line 48)',
       ballEnd: 'top of Sub EndOfBall (line 35)',
       vars: 'Score base 1, player CurrentPlayer, ball Balls, players PlayersPlayingGame',
+      subs: 'AddScore AddScore (line 30), start ResetForNewGame (line 18), end EndOfGame (line 45), ball end EndOfBall (line 35)',
+      scoreStore: 'Score(CurrentPlayer) = Score(CurrentPlayer) + points (Sub AddScore, line 32)',
     });
   });
 
@@ -174,20 +181,21 @@ describe('renderRecipeB (JPSalas original)', () => {
     expect(r.partial).toEqual([]);
     expect(r.warnings).toEqual([
       'no "CurrentPlayer = 0" or "= 1" found; player 1 is taken as Score(1)',
-      'no ball number (Balls, BallsPerGame / BallsRemaining); ball fields are 0',
-      'no EndOfBall sub and no BallsRemaining(CurrentPlayer) decrement; no ball end is journaled',
+      'no ball number (Balls, BallNumber, CurrentBall, nBall, BallInPlay, BallsPerGame / BallsRemaining); ball fields are 0',
+      'no Sub EndOfBall / EndBall / EndPlayerTurn / BallDrained and no BallsRemaining decrement; no ball end is journaled',
     ]);
     expect(block(L, 'B')).toContain('    Castcade_Scores Castcade_PlayerScores(Score, 1, Castcade_B_Count()), CurrentPlayer, 0');
   });
 
-  it('is partial without a Score array: no scores call is anchored and the game end journals no scores', () => {
+  it('is partial without a score store: no scores call is anchored and the game end journals no scores', () => {
     const lines = ['Sub Table1_KeyDown(ByVal k)', 'End Sub', 'Sub ResetForNewGame()', 'End Sub', 'Sub AddScore(p)', 'End Sub', 'Sub EndOfGame()', 'End Sub'];
     const { r, L } = render(lines, lf(lines));
-    expect(r.partial).toEqual(['no Dim Score( array; scores are not journaled']);
+    expect(r.partial).toEqual(['no score store (no "X = X + ..." in Sub AddScore or a sub it calls, no Dim Score( array); scores are not journaled']);
     expect(L.some((l) => l.includes("Castcade_B_Scores   ' Castcade"))).toBe(false);
     expect(block(L, 'B')).toContain('    Castcade_GameEnd Array(), Castcade_B_Count()');
-    expect(r.warnings).toContain('no PlayersPlayingGame variable; games are journaled as 1 player');
-    expect(r.warnings).toContain('no "CurrentPlayer = 0" or "= 1" found; player 1 is taken as Score(1)');
+    expect(r.warnings).toContain('no players-in-game variable (PlayersPlayingGame, PlayersPlaying, nPlayersInGame, NumPlayers, numplay); games are journaled as 1 player');
+    expect(r.warnings).toContain('no current-player variable (CurrentPlayer, CurrentPlayerIdx, nPlayer, cp, Player); every event names player 1');
+    expect(r.anchors['vars']).toBe('no scores base 0, player 1, ball 0, players 1');
   });
 
   it('a one-line sub cannot carry an anchor and says so', () => {
@@ -241,6 +249,178 @@ describe('renderRecipeB (JPSalas original)', () => {
     expect(events.filter((e) => e.kind === 'game_end')).toEqual([{ kind: 'game_end', t: 0.105, scores: [3770], players: 1 }]);
     expect(events.some((e) => e.kind === 'game_abandoned')).toBe(false);
     expect(detector.summary()).toMatchObject({ recipe: 'B', inGame: false, maxBall: 3, scores: [3770] });
+  });
+});
+
+describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
+  const line = (lines: readonly string[], text: string): number => lines.indexOf(text) + 1;
+  const SCALAR = 'scalar score: in a multi-player game only the player up is journaled';
+  const NO_PLAYER = 'no current-player variable (CurrentPlayer, CurrentPlayerIdx, nPlayer, cp, Player); every event names player 1';
+  const NO_PLAYERS = 'no players-in-game variable (PlayersPlayingGame, PlayersPlaying, nPlayersInGame, NumPlayers, numplay); games are journaled as 1 player';
+  const NO_BALL = 'no ball number (Balls, BallNumber, CurrentBall, nBall, BallInPlay, BallsPerGame / BallsRemaining); ball fields are 0';
+  const NO_BALL_END = 'no Sub EndOfBall / EndBall / EndPlayerTurn / BallDrained and no BallsRemaining decrement; no ball end is journaled';
+
+  it('Diablo 2: scalar Score with CurrentPlayerIdx, start at the end of StartGame past its early exits, ball end at the top of EndPlayerTurn', () => {
+    const { r, L, cls } = render(DIABLO_B_SCRIPT);
+    expect(cls.cls).toBe('B');
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
+    expect(subLines(L, 'AddScore')).toEqual([
+      'Sub AddScore(points)',
+      "    DBG \"CALL\", \"AddScore\" '##DBGINJ",
+      '    Score = Score + points',
+      '    If Score > 400000 Then ExtraBallPending = ExtraBallPending + 1',
+      "    Castcade_B_Scores   ' Castcade: current scores",
+      'End Sub',
+    ]);
+    const start = subLines(L, 'StartGame');
+    expect(start.at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
+    expect(start.filter((l) => /Exit Sub/.test(l))).toEqual(['    If GameActive Then Exit Sub', '        Exit Sub']);
+    expect(subLines(L, 'EndPlayerTurn').slice(0, 3)).toEqual([
+      'Sub EndPlayerTurn()',
+      "    Castcade_B_BallEnd   ' Castcade: ball end",
+      "    If ExtraBallPending > 0 Then LaunchNextBall : Exit Sub        ' same player shoots again",
+    ]);
+    expect(subLines(L, 'GameOver').at(-2)).toBe("    Castcade_B_GameEnd   ' Castcade: game end");
+    const b = block(L, 'B');
+    expect(b).toContain('    n = CLng(PlayersPlaying)');
+    expect(b).toContain('    Castcade_Scores Castcade_PlayerScores(Array(Score), 0, Castcade_B_Count()), CurrentPlayerIdx, BallNumber');
+    expect(b).toContain('    Castcade_BallEnd CurrentPlayerIdx, BallNumber, ExtraBallPending');
+    expect(b).toContain('    Castcade_GameEnd Castcade_PlayerScores(Array(Score), 0, Castcade_B_Count()), Castcade_B_Count()');
+    expect(r.warnings).toEqual([SCALAR, 'Sub StartGame has 2 early Exit Sub; no game start is journaled on those paths']);
+    expect(r.partial).toEqual([]);
+    expect(r.anchors).toMatchObject({
+      vars: 'Array(Score) base 0, player CurrentPlayerIdx, ball BallNumber, players PlayersPlaying',
+      scoreStore: `Score = Score + points (Sub AddScore, line ${line(DIABLO_B_SCRIPT, '    Score = Score + points')})`,
+      subs: `AddScore AddScore (line ${line(DIABLO_B_SCRIPT, 'Sub AddScore(points)')}), start StartGame (line ${line(DIABLO_B_SCRIPT, 'Sub StartGame()')}), end GameOver (line ${line(DIABLO_B_SCRIPT, 'Sub GameOver()')}), ball end EndPlayerTurn (line ${line(DIABLO_B_SCRIPT, 'Sub EndPlayerTurn()')})`,
+      gameStart: `end of Sub StartGame (line ${line(DIABLO_B_SCRIPT, 'Sub StartGame()') + 10})`,
+      ballEnd: `top of Sub EndPlayerTurn (line ${line(DIABLO_B_SCRIPT, 'Sub EndPlayerTurn()')})`,
+    });
+  });
+
+  it('Jacks Open: the score add inside a Select Case, CurrentBall, no player variables (player 1, 1 player)', () => {
+    const { r, L } = render(JACKS_B_SCRIPT);
+    expect(subLines(L, 'StartGame')).toEqual(['Sub StartGame', '\tInitialize', '\tNextBallPause = 30', "    Castcade_B_GameStart   ' Castcade: game start", 'End Sub']);
+    expect(subLines(L, 'AddScore').at(-2)).toBe("    Castcade_B_Scores   ' Castcade: current scores");
+    expect(subLines(L, 'EndOfBall')[1]).toBe("    Castcade_B_BallEnd   ' Castcade: ball end");
+    expect(subLines(L, 'GameOver').at(-2)).toBe("    Castcade_B_GameEnd   ' Castcade: game end");
+    expect(block(L, 'B')).toContain('    Castcade_Scores Castcade_PlayerScores(Array(Score), 0, Castcade_B_Count()), 1, CurrentBall');
+    expect(block(L, 'B')).toContain('    Castcade_BallEnd 1, CurrentBall, 0');
+    expect(r.warnings).toEqual([NO_PLAYER, SCALAR, NO_PLAYERS]);
+    expect(r.partial).toEqual([]);
+    expect(r.anchors['vars']).toBe('Array(Score) base 0, player 1, ball CurrentBall, players 1');
+    // the GameStarted = 0 in DelayTimer_Timer is not used while Sub GameOver exists ...
+    expect(r.anchors['gameEnd']).toBe(`end of Sub GameOver (line ${line(JACKS_B_SCRIPT, 'Sub GameOver') + 2})`);
+    // ... and stands in when it does not, skipping the one in Table1_Init
+    const noSub = JACKS_B_SCRIPT.filter((_, i, a) => i < a.indexOf('Sub GameOver') || i > a.indexOf('Sub GameOver') + 2);
+    const alt = render(noSub);
+    expect(alt.cls.cls).toBe('B');
+    const flagLine = line(noSub, '\t\tGameStarted = 0');
+    expect(alt.r.anchors['gameEnd']).toBe(`after "GameStarted = 0" in Sub DelayTimer_Timer (line ${flagLine})`);
+    expect(alt.r.warnings).toContain(`no Sub EndOfGame / GameOver / EndGame; the game end is anchored after "GameStarted = 0" in Sub DelayTimer_Timer (line ${flagLine}), the first place the game flag is cleared`);
+    expect(alt.r.partial).toEqual([]);
+    const at = alt.L.indexOf('\t\tGameStarted = 0');
+    expect(alt.L.slice(at, at + 3)).toEqual(['\t\tGameStarted = 0', "    Castcade_B_GameEnd   ' Castcade: game end", '\t\tGameOver']);
+  });
+
+  it('Futurama: anScore(nPlayer) counted from 0, "Sub Addscore (value)", InitGame / EndBall / EndGame; no warnings', () => {
+    const { r, L } = render(FUTURAMA_B_SCRIPT);
+    expect(subLines(L, 'Addscore')).toEqual(['Sub Addscore (value)', '\tanScore(nPlayer) = anScore(nPlayer) + (fPlayfieldX * value)', "    Castcade_B_Scores   ' Castcade: current scores", 'End Sub']);
+    expect(subLines(L, 'InitGame').at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
+    expect(subLines(L, 'EndBall')[1]).toBe("    Castcade_B_BallEnd   ' Castcade: ball end");
+    expect(subLines(L, 'EndGame')).toEqual(['Sub EndGame', '\tnPlayersInGame = 0', "    Castcade_B_GameEnd   ' Castcade: game end", 'End Sub']);
+    const b = block(L, 'B');
+    expect(b).toContain('    n = CLng(nPlayersInGame)');
+    expect(b).toContain('    Castcade_Scores Castcade_PlayerScores(anScore, 0, Castcade_B_Count()), nPlayer + 1, nBall');
+    expect(b).toContain('    Castcade_BallEnd nPlayer + 1, nBall, nExtraBalls');
+    expect(r.warnings).toEqual([]);
+    expect(r.partial).toEqual([]);
+    expect(r.anchors['vars']).toBe('anScore base 0, player nPlayer + 1, ball nBall, players nPlayersInGame');
+    expect(r.anchors['subs']).toMatch(/^AddScore Addscore \(line \d+\), start InitGame \(line \d+\), end EndGame \(line \d+\), ball end EndBall \(line \d+\)$/);
+  });
+
+  it('Rattlecan: a GameOver variable, the game end after "GameOver=1" in the drain timer, the scores call before the tilt exit', () => {
+    const { r, L, cls } = render(RATTLECAN_B_SCRIPT);
+    expect(cls.cls).toBe('B');
+    expect(subLines(L, 'AddScore')).toEqual([
+      'Sub AddScore(value)',
+      '\tIf TableTilted=1 Then Castcade_B_Scores : Exit Sub',
+      '\tCurrentScore = CurrentScore + value : UpdateScore',
+      "    Castcade_B_Scores   ' Castcade: current scores",
+      'End Sub',
+    ]);
+    const at = L.indexOf('\t\t\t\tGameOver=1');
+    expect(L.slice(at, at + 3)).toEqual(['\t\t\t\tGameOver=1', "    Castcade_B_GameEnd   ' Castcade: game end", '\t\t\t\tPlaySound "gameover"']);
+    // the GameOver = 1 in Table1_Init and the GameOver = 0 in StartGame carry no anchor
+    expect(L.filter((l) => l.includes('Castcade_B_GameEnd   '))).toHaveLength(1);
+    expect(subLines(L, 'StartGame').at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
+    const flagLine = line(RATTLECAN_B_SCRIPT, '\t\t\t\tGameOver=1');
+    expect(r.anchors).toMatchObject({
+      vars: 'Array(CurrentScore) base 0, player 1, ball BallInPlay, players 1',
+      gameEnd: `after "GameOver=1" in Sub ShootAgain_Timer (line ${flagLine})`,
+      scores: `end of Sub AddScore (line ${line(RATTLECAN_B_SCRIPT, 'Sub AddScore(value)') + 3}) and before its 1 early Exit Sub`,
+      subs: expect.stringContaining(`end "GameOver=1" in Sub ShootAgain_Timer (line ${flagLine}), ball end none`),
+    });
+    expect(block(L, 'B')).toContain('    Castcade_BallEnd 1, BallInPlay, ExtraBalls');
+    expect(r.warnings).toEqual([
+      NO_PLAYER,
+      SCALAR,
+      NO_PLAYERS,
+      `no Sub EndOfGame / GameOver / EndGame; the game end is anchored after "GameOver=1" in Sub ShootAgain_Timer (line ${flagLine}), the first place the game flag is cleared`,
+      NO_BALL_END,
+    ]);
+    expect(r.partial).toEqual([]);
+    // with a Sub GameOver the sub is the end and the variable's line is left alone
+    const withSub = render([...RATTLECAN_B_SCRIPT, 'Sub GameOver', 'End Sub']);
+    expect(withSub.r.anchors['gameEnd']).toBe(`end of Sub GameOver (line ${RATTLECAN_B_SCRIPT.length + 2})`);
+    expect(withSub.L.indexOf("    Castcade_B_GameEnd   ' Castcade: game end")).toBe(withSub.L.indexOf('Sub GameOver') + 1);
+  });
+
+  it('Burger template: the p1score..p4score family found one call down in SetScore, numplay - 1 players, gameon = 0 in Drain_Hit, no ball end', () => {
+    const { r, L, cls } = render(BURGER_B_SCRIPT);
+    expect(cls.cls).toBe('B');
+    expect(subLines(L, 'AddScore').at(-2)).toBe("    Castcade_B_Scores   ' Castcade: current scores");
+    expect(subLines(L, 'SetScore').some((l) => l.includes('Castcade'))).toBe(false);
+    expect(subLines(L, 'StartGame').at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
+    const at = L.indexOf('\t\t\t\tgameon = 0');
+    expect(L.slice(at, at + 3)).toEqual(['\t\t\t\tgameon = 0', "    Castcade_B_GameEnd   ' Castcade: game end", '\t\t\t\tnumplay = 2']);
+    expect(L.filter((l) => l.includes('Castcade_B_GameEnd   '))).toHaveLength(1);
+    expect(L.some((l) => l.includes('Castcade_B_BallEnd   '))).toBe(false);
+    const b = block(L, 'B');
+    expect(b).toContain('    n = CLng(numplay - 1)');
+    expect(b).toContain('    Castcade_Scores Castcade_PlayerScores(Array(p1score, p2score, p3score, p4score), 0, Castcade_B_Count()), cp, 0');
+    expect(b).toContain('    Castcade_BallEnd cp, 0, 0');
+    const flagLine = line(BURGER_B_SCRIPT, '\t\t\t\tgameon = 0');
+    expect(r.warnings).toEqual([NO_BALL, `no Sub EndOfGame / GameOver / EndGame; the game end is anchored after "gameon = 0" in Sub Drain_Hit (line ${flagLine}), the first place the game flag is cleared`, NO_BALL_END]);
+    expect(r.partial).toEqual([]);
+    expect(r.anchors).toMatchObject({
+      vars: 'Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1',
+      scoreStore: `p1score = p1score + score (Sub SetScore, line ${line(BURGER_B_SCRIPT, 'p1score = p1score + score')})`,
+      gameEnd: `after "gameon = 0" in Sub Drain_Hit (line ${flagLine})`,
+    });
+  });
+
+  it('a name that is only a local, or only ever set once at module level, is not taken for a live value', () => {
+    // Star Wars (Burger 2025): `dim PlayersPlayingGame : PlayersPlayingGame=1` once at module level, `numplay` is the live count;
+    // `Dim extraBalls` inside a sub; `Dim balls` inside a timer.
+    const lines = [...BURGER_B_SCRIPT, 'dim PlayersPlayingGame', 'PlayersPlayingGame=1', 'Private Sub UMD_BuildBonusList()', '    Dim extraBalls: extraBalls = DrainsThisBall - 1', 'End Sub', 'Sub BallShadowUpdate_Timer()', '    Dim balls, i', '    balls = GetBalls()', 'End Sub'];
+    const { r } = render(lines);
+    expect(r.anchors['vars']).toBe('Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1');
+    expect(r.warnings).toContain(NO_BALL);
+    expect(block(render(lines).L, 'B')).toContain('    Castcade_BallEnd cp, 0, 0');
+  });
+
+  it('is deterministic and undone byte for byte for every shape (CRLF, LF and mixed), re-rendering to the same sidecar', () => {
+    for (const script of [DIABLO_B_SCRIPT, JACKS_B_SCRIPT, FUTURAMA_B_SCRIPT, RATTLECAN_B_SCRIPT, BURGER_B_SCRIPT]) {
+      for (const text of [crlf(script), lf(script), mixed(script, 3, 20)]) {
+        const a = render(script, text);
+        expect(a.cls.cls).toBe('B');
+        expect(parseSidecarMarker(a.L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
+        expect(render(script, text).r.sha256).toBe(a.r.sha256);
+        const undone = unpatchSidecar(a.out);
+        expect(undone).toBe(text);
+        expect(renderSidecar(undone!, classifyScript(undone!), OPTS).sha256).toBe(a.r.sha256);
+      }
+    }
   });
 });
 

@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { classifyScript } from './classify.js';
-import { decodeScript, describeScriptText, encodeScript, joinScript, looksUtf16, splitScript, stripComment, vbStringLiteral } from './script-text.js';
+import { classifyScript, describeClass } from './classify.js';
+import { decodeScript, describeScriptText, encodeScript, joinScript, lineContexts, looksUtf16, splitScript, stripComment, vbStringLiteral } from './script-text.js';
 import {
+  BURGER_B_SCRIPT,
   COMMENTED_LOADVPM_SCRIPT,
+  DIABLO_B_SCRIPT,
+  FUTURAMA_B_SCRIPT,
+  JACKS_B_SCRIPT,
   JPSALAS_B_SCRIPT,
+  RATTLECAN_B_SCRIPT,
   NO_KEYDOWN_SCRIPT,
   ORIGINAL_B_SCRIPT,
   ORIGINAL_C_SCRIPT,
@@ -58,6 +63,25 @@ describe('script text', () => {
     expect(stripComment("' whole line")).toBe('');
   });
 
+  it('knows which procedure and class each line is in (one-line subs are not entered)', () => {
+    const L = ['Dim a', 'Sub One()', '  x = 1', 'End Sub', 'Sub Two : y = 2 : End Sub', 'Class K', '  Private v', '  Public Sub M()', '    z = 3', '  End Sub', 'End Class', 'Function F(a)', 'End Function'];
+    expect(lineContexts(L).map((c) => `${c.proc}:${c.procName}:${c.inClass ? 'C' : ''}`)).toEqual([
+      '-1::',
+      '1:One:',
+      '1:One:',
+      '1:One:',
+      '-1::',
+      '-1::C',
+      '-1::C',
+      '7:M:C',
+      '7:M:C',
+      '7:M:C',
+      '-1::C',
+      '11:F:',
+      '11:F:',
+    ]);
+  });
+
   it('renders ASCII-only VBScript string literals', () => {
     expect(vbStringLiteral('plain')).toBe('"plain"');
     expect(vbStringLiteral('say "hi"')).toBe('"say ""hi"""');
@@ -102,7 +126,8 @@ describe('classifyScript', () => {
   it('a JPSalas-style original is class B', () => {
     const r = classifyScript(crlf(ORIGINAL_B_SCRIPT));
     expect(r.cls).toBe('B');
-    expect(r.facts.subs).toEqual({ AddScore: 15, ResetForNewGame: 11, EndOfGame: 19, EndOfBall: null });
+    expect(r.facts.subs).toEqual({ AddScore: { name: 'AddScore', line: 15 }, start: { name: 'ResetForNewGame', line: 11 }, end: { name: 'EndOfGame', line: 19 }, ballEnd: null });
+    expect(r.facts.gameEndFlag).toBeNull();
     expect(r.facts.scoreArray).toBe(true);
   });
 
@@ -137,7 +162,7 @@ describe('classifyScript', () => {
   it("classifies the recipe tests' synthetic originals as their recipes expect (C1.1)", () => {
     const b = classifyScript(crlf(JPSALAS_B_SCRIPT));
     expect(b.cls).toBe('B');
-    expect(b.facts.subs).toEqual({ AddScore: 30, ResetForNewGame: 18, EndOfGame: 45, EndOfBall: 35 });
+    expect(b.facts.subs).toEqual({ AddScore: { name: 'AddScore', line: 30 }, start: { name: 'ResetForNewGame', line: 18 }, end: { name: 'EndOfGame', line: 45 }, ballEnd: { name: 'EndOfBall', line: 35 } });
     expect(b.facts.scoreArray).toBe(true);
     const c = classifyScript(crlf(SCORBIT_C_SCRIPT));
     expect(c.cls).toBe('C');
@@ -151,6 +176,80 @@ describe('classifyScript', () => {
 
   it('a commented-out LoadVPM does not count', () => {
     expect(classifyScript(lf(COMMENTED_LOADVPM_SCRIPT)).cls).toBe('B');
+  });
+
+  describe('the original-table vocabulary (C1.3): class B beyond the JPSalas names', () => {
+    const line = (lines: readonly string[], text: string): number => lines.indexOf(text) + 1;
+
+    it('Diablo 2: StartGame / AddScore / EndPlayerTurn / GameOver', () => {
+      const r = classifyScript(crlf(DIABLO_B_SCRIPT));
+      expect(r.cls).toBe('B');
+      expect(r.facts.subs).toEqual({
+        AddScore: { name: 'AddScore', line: line(DIABLO_B_SCRIPT, 'Sub AddScore(points)') },
+        start: { name: 'StartGame', line: line(DIABLO_B_SCRIPT, 'Sub StartGame()') },
+        end: { name: 'GameOver', line: line(DIABLO_B_SCRIPT, 'Sub GameOver()') },
+        ballEnd: { name: 'EndPlayerTurn', line: line(DIABLO_B_SCRIPT, 'Sub EndPlayerTurn()') },
+      });
+      expect(r.facts.gameEndFlag).toBeNull();
+      expect(r.facts.scoreArray).toBe(false);
+      expect(describeClass('B')).toBe('original table (script anchors)');
+    });
+
+    it('Jacks Open: Sub StartGame without parentheses, EndOfBall, GameOver', () => {
+      const r = classifyScript(crlf(JACKS_B_SCRIPT));
+      expect(r.cls).toBe('B');
+      expect(r.facts.subs).toMatchObject({ start: { name: 'StartGame' }, end: { name: 'GameOver' }, ballEnd: { name: 'EndOfBall' } });
+    });
+
+    it('Futurama: InitGame, "Sub Addscore (value)" with a space before the parenthesis, EndBall, EndGame', () => {
+      const r = classifyScript(crlf(FUTURAMA_B_SCRIPT));
+      expect(r.cls).toBe('B');
+      expect(r.facts.subs).toEqual({
+        AddScore: { name: 'Addscore', line: line(FUTURAMA_B_SCRIPT, 'Sub Addscore (value)') },
+        start: { name: 'InitGame', line: line(FUTURAMA_B_SCRIPT, 'Sub InitGame(bFastRestart)') },
+        end: { name: 'EndGame', line: line(FUTURAMA_B_SCRIPT, 'Sub EndGame') },
+        ballEnd: { name: 'EndBall', line: line(FUTURAMA_B_SCRIPT, 'Sub EndBall') },
+      });
+    });
+
+    it('a variable named GameOver is not an end sub; the game-flag clear stands in, skipping Table1_Init and StartGame', () => {
+      const r = classifyScript(crlf(RATTLECAN_B_SCRIPT));
+      expect(r.cls).toBe('B');
+      expect(r.facts.subs).toMatchObject({ AddScore: { name: 'AddScore' }, start: { name: 'StartGame' }, end: null, ballEnd: null });
+      expect(r.facts.gameEndFlag).toEqual({ line: line(RATTLECAN_B_SCRIPT, '\t\t\t\tGameOver=1'), sub: 'ShootAgain_Timer', text: 'GameOver=1' });
+      // the same script with a Sub GameOver: the sub is the end, no flag is looked for
+      const withSub = classifyScript(crlf([...RATTLECAN_B_SCRIPT, 'Sub GameOver', 'End Sub']));
+      expect(withSub.cls).toBe('B');
+      expect(withSub.facts.subs?.end).toEqual({ name: 'GameOver', line: RATTLECAN_B_SCRIPT.length + 1 });
+      expect(withSub.facts.gameEndFlag).toBeNull();
+    });
+
+    it('Burger template: gameon = 0 in table1_init and at the top of StartGame are skipped; the one in Drain_Hit is the end', () => {
+      const r = classifyScript(crlf(BURGER_B_SCRIPT));
+      expect(r.cls).toBe('B');
+      expect(r.facts.subs).toMatchObject({ AddScore: { name: 'AddScore' }, start: { name: 'StartGame' }, end: null, ballEnd: null });
+      expect(r.facts.gameEndFlag).toEqual({ line: line(BURGER_B_SCRIPT, '\t\t\t\tgameon = 0'), sub: 'Drain_Hit', text: 'gameon = 0' });
+      // a flag clear that is the `x` of a one-line If, or at module level, never counts
+      const oneLiner = BURGER_B_SCRIPT.map((l) => (l === '\t\t\t\tgameon = 0' ? '\t\t\t\tIf cp = 1 Then gameon = 0' : l));
+      expect(classifyScript(crlf(oneLiner)).cls).toBe('E');
+      expect(classifyScript(crlf([...oneLiner, 'gameon = 0'])).cls).toBe('E');
+    });
+
+    it('the JPSalas trio stays class B ahead of Scorbit; a table that is B only through the wider names yields to C', () => {
+      const jpWithScorbit = [...JPSALAS_B_SCRIPT, 'Sub Tick()', '    Scorbit.StartSession', '    Scorbit.SendUpdate 1, 2, 3, 4, 5, 6, 7', '    Scorbit.StopSession', 'End Sub'];
+      expect(classifyScript(crlf(jpWithScorbit)).cls).toBe('B');
+      const scorbitWithEndGame = SCORBIT_C_SCRIPT.map((l) => l.replace(/FinishGame/g, 'EndGame'));
+      const c = classifyScript(crlf(scorbitWithEndGame));
+      expect(c.cls).toBe('C');
+      expect(c.facts.subs).toMatchObject({ AddScore: { name: 'AddScore' }, start: { name: 'StartGame' }, end: { name: 'EndGame' }, ballEnd: { name: 'EndBall' } });
+    });
+
+    it('class E remains for scoring scripts with no usable anchors', () => {
+      // AddScore and a start sub, but no end sub and no game-flag clear
+      expect(classifyScript(lf(['Sub Table1_KeyDown(ByVal k)', 'End Sub', 'Sub StartGame()', 'End Sub', 'Sub AddScore(p)', '  Score = Score + p', 'End Sub'])).cls).toBe('E');
+      // an end sub and a start sub, but no AddScore
+      expect(classifyScript(lf(['Sub Table1_KeyDown(ByVal k)', 'End Sub', 'Sub StartGame()', 'End Sub', 'Sub GameOver()', '  Score = 0', 'End Sub'])).cls).toBe('E');
+    });
   });
 
   it('a script with Castcade_Init outside comments is flagged already patched', () => {

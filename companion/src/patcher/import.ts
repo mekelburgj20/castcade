@@ -228,7 +228,7 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   // C13: a class X refusal names the script's bytes, so a mixed-ending or UTF-16 script is readable from the log.
   if (cls === 'X') return item('unsupported', cls, rom, `${facts.reason ?? 'unsupported'} (${describeScriptText(source.text)})${sidecarNote}`);
   const recipe = recipeFor(cls);
-  if (recipe === null) return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe E needs a guided pick of the scoring Sub, not built yet${sidecarNote}`);
+  if (recipe === null) return item('skip', cls, rom, `${describeClass(cls)} (class ${cls}): recipe E needs anchors this build cannot find (no AddScore sub, or no game start / game end sub)${sidecarNote}`);
   if (facts.alreadyPatched) return item('already', cls, rom, 'the embedded script already contains Castcade_Init');
   // B12: a patch on a machine whose live score the hook cannot see would read as ready and post nothing live.
   // A table with no ROM name is still patched: the hook reports the ROM it really runs.

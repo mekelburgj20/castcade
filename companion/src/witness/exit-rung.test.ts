@@ -46,7 +46,7 @@ describe('exitRungFor (C11: why a score was read only at close)', () => {
     expect(removed.patchable).toBe(true);
     expect(removed.detail).toMatch(/removed from disk by another program, most likely an antivirus quarantine/);
     expect(removed.note).toMatch(/Windows Security → Protection history, then press Patch now/);
-    expect(exitRungFor({ table: T, live: null, unpatched: unpatched({ cls: 'B', rom: null, support: null }) }).detail).toBe('table not patched (new file; the import would patch it: original table (JPSalas pattern))');
+    expect(exitRungFor({ table: T, live: null, unpatched: unpatched({ cls: 'B', rom: null, support: null }) }).detail).toBe('table not patched (new file; the import would patch it: original table (script anchors))');
   });
 
   it('(b) a machine whose live score is out of reach, or no map for the ROM', () => {
