@@ -342,6 +342,7 @@ export function Match({ state }: { state: CastcadeState }) {
 
           <div className="card">
             <p className="muted">{mediaLine(st.media)}</p>
+            {st.media?.nativeVideo && <p className="muted">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
             {panelWin && (
               <div className="row">
                 <p className="muted">{panelLine(panelWin)}</p>
@@ -386,6 +387,22 @@ export function Match({ state }: { state: CastcadeState }) {
       </div>
 
       <TurnCard turn={st.turn} save={(t) => bridge.match.setTurn(t).then(setSt)} />
+
+      <div className="card">
+        <div className="row">
+          <label className="field">
+            <span>Spectator video</span>
+            <select value={st.videoPath} onChange={(e) => bridge.match.setVideoPath(e.target.value === 'electron' ? 'electron' : 'native').then(setSt, () => undefined)}>
+              <option value="native">Native helper (recommended)</option>
+              <option value="electron">Electron (0.2.36 path)</option>
+            </select>
+            <small>
+              Native: the castcade-video helper encodes your eye on the GPU (H.264, up to 60 fps) and the headset draws what arrives; voice stays as it was.
+              Electron: the 0.2.36 picture through the match panel. Used from the next match.
+            </small>
+          </label>
+        </div>
+      </div>
 
       <div className="card">
         <div className="row">
@@ -685,6 +702,31 @@ function mediaLine(m: MatchStatus['media']): string {
   if (!m.attached) return `Video and voice: not connected${m.lastError ? ` (${m.lastError})` : ''}.`;
   const peers = Object.entries(m.peers).map(([id, p]) => `${id} ${p.ice}`);
   return `Video and voice: ${m.sending ? 'sending your table' : 'not sending'} · mic ${m.mic}${m.captureSource ? ` · ${m.captureSource}` : ''}${m.captureWarning ? ` · ${m.captureWarning}` : ''}${peers.length ? ` · ${peers.join(', ')}` : ''}${m.lastError ? ` · ${m.lastError}` : ''}.`;
+}
+
+/**
+ * D10.3 (2026-11-07): the native spectator video in one line, from the mesh status: the encoder, what this rig sends
+ * (size, fps, Mbps), what arrives from each peer, and each peer's ICE state and candidate pair; or why the helper is
+ * not running.
+ */
+function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>, participants: MatchStatus['participants']): string {
+  if (v.helper === 'unavailable') {
+    const why = v.reason === 'helper_missing' ? 'this build has no video helper' : `the helper did not start (${v.reason ?? 'unknown'})`;
+    return `Native video unavailable: ${why}; the Electron video serves this match.`;
+  }
+  if (v.helper !== 'ready') return `Native video: helper ${v.helper}${v.reason ? ` (${v.reason})` : ''}.`;
+  const name = (id: string) => participants.find((p) => p.id === id)?.name ?? id;
+  const mbps = (kbps: number) => `${(kbps / 1000).toFixed(1)} Mbps`;
+  const parts: string[] = [v.encoder ?? 'encoder unknown'];
+  const peers = Object.entries(v.peers);
+  const sent = peers.map(([, p]) => p.send).find((s) => s && s.width > 0);
+  if (v.sending) parts.push(sent ? `sending ${sent.width}x${sent.height} at ${sent.fps} fps, ${mbps(sent.kbps)}` : `sending${v.source.kind === 'none' ? ' (no source on this rig yet)' : v.source.state && v.source.state !== 'ok' ? ` (ring ${v.source.state})` : ''}`);
+  else parts.push('not sending');
+  for (const [id, p] of peers) {
+    if (p.recv && p.recv.width > 0) parts.push(`from ${name(id)}: ${p.recv.fps} fps, ${mbps(p.recv.kbps)}`);
+    parts.push(`${peers.length > 1 ? `${name(id)} ` : ''}ice ${p.ice}${p.pair ? ` (${p.pair})` : ''}`);
+  }
+  return `Native video: ${parts.join(' · ')}.`;
 }
 
 /** D2.6 (2026-11-01): the match panel is a second window; say so, and where it is. */

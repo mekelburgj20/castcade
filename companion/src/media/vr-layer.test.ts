@@ -428,6 +428,57 @@ describe('createVrLayerOverlay: modes (D7.4)', () => {
     expect(h.log.filter((l) => l.startsWith('vr-layer: mode')).at(-1)).toBe('vr-layer: mode theater (mono)');
   });
 
+  it('D10.3: the frame rings ride on a protocol-3 control only while set (camera.ring, video.ring); without them the control is byte for byte the 0.2.36 one', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    await h.ov.start(h.src);
+    h.ov.setMode('theater');
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(3));
+    const controls = () => messages(h.pipes[0]!).filter(([m]) => m === 'CVC1');
+    const raw = () => h.pipes[0]!.chunks.filter((c) => c.toString('latin1', 0, 4) === 'CVC1').map((c) => c.toString('utf8', 8));
+    const base = { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1, camera: null };
+    expect(controls()).toEqual([['CVC1', base]]);
+    const plain = raw()[0];
+    expect(plain).toBe('{"mode":"theater","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null}');
+    // The recv ring for theater.
+    h.ov.setVideoRing?.('recv_tok_ABCDEFGH');
+    h.ov.setVideoRing?.('recv_tok_ABCDEFGH'); // the same again: no control
+    expect(controls().at(-1)).toEqual(['CVC1', { ...base, video: { ring: 'recv_tok_ABCDEFGH' } }]);
+    expect(controls()).toHaveLength(2);
+    expect(h.log).toContain("vr-layer: theater video from the helper's frame ring");
+    expect(h.log).toContain('vr-layer: mode theater (mono, camera off, theater from the frame ring)');
+    // The send ring on the camera request: the request object goes on the control as is, `ring` included.
+    h.ov.setCamera?.({ width: 1440, height: 1440, fps: 60, whole: true, eye: 'left', ring: 'send_tok_ABCDEFGH' });
+    expect(controls().at(-1)).toEqual(['CVC1', { ...base, camera: { width: 1440, height: 1440, fps: 60, whole: true, eye: 'left', ring: 'send_tok_ABCDEFGH' }, video: { ring: 'recv_tok_ABCDEFGH' } }]);
+    expect(raw().at(-1)).toBe('{"mode":"theater","stereo":"mono","panelPos":"low","theaterScale":1,"camera":{"width":1440,"height":1440,"fps":60,"whole":true,"eye":"left","ring":"send_tok_ABCDEFGH"},"video":{"ring":"recv_tok_ABCDEFGH"}}');
+    expect(h.log.at(-1)).toBe('vr-layer: mode theater (mono, camera 1440x1440 at 60 fps, whole view, one eye (left), to the frame ring, theater from the frame ring)');
+    // The same request without the ring is a change (the layer goes back to JPEG frames).
+    h.ov.setCamera?.({ width: 1440, height: 1440, fps: 60, whole: true, eye: 'left' });
+    expect(controls()).toHaveLength(4);
+    expect((controls().at(-1)![1] as { camera: object }).camera).toEqual({ width: 1440, height: 1440, fps: 60, whole: true, eye: 'left' });
+    // Back off: the field leaves the control.
+    h.ov.setVideoRing?.(null);
+    h.ov.setCamera?.(null);
+    expect(controls().at(-1)).toEqual(['CVC1', base]);
+    expect(raw().at(-1)).toBe(plain);
+    // A protocol-2 layer on the next connection: both set, neither sent; its control is the 0.2.26 one.
+    h.ov.setVideoRing?.('recv_tok_ABCDEFGH');
+    h.ov.setCamera?.({ width: 720, height: 1440, fps: 30, ring: 'send_tok_ABCDEFGH' });
+    h.pipes[0]!.hangUp();
+    h.advance(CONNECT_RETRY_MS);
+    h.pipes[1]!.answer();
+    h.pipes[1]!.emit('data', hello(2));
+    expect(messages(h.pipes[1]!).filter(([m]) => m === 'CVC1')).toEqual([['CVC1', { mode: 'theater', stereo: 'mono', panelPos: 'low', theaterScale: 1 }]]);
+    // stop clears the ring, like the test pattern: the next match sets it again.
+    await h.ov.stop();
+    await h.ov.start(h.src);
+    h.advance(CONNECT_RETRY_MS);
+    h.pipes[2]!.answer();
+    h.pipes[2]!.emit('data', hello(3));
+    expect((messages(h.pipes[2]!).filter(([m]) => m === 'CVC1').at(-1)![1] as { video?: unknown }).video).toBeUndefined();
+  });
+
   it("D7.5.2: a theater frame's eyes go on a protocol-3 layer's control, once per change, and leave it when the frames stop carrying them", async () => {
     const h = setup();
     const v = videoSource();

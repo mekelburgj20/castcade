@@ -30,11 +30,19 @@ export interface MediaSettings {
    * patches and saves; the match panel is placed beside this window.
    */
   mainBounds: { x: number; y: number; width: number; height: number } | null;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.4): which path carries the spectator video. `native`: the
+   * `castcade-video.exe` helper (hardware H.264, the frame rings; the Electron page's video track is held back where
+   * the helper has a source); `electron`: the 0.2.36 path, untouched. Kept for one release (D10.7 removes it).
+   */
+  videoPath: VideoPath;
 }
+
+export type VideoPath = 'native' | 'electron';
 
 export const DEFAULT_STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
 
-export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN], mainBounds: null };
+export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN], mainBounds: null, videoPath: 'native' };
 
 /** `RTCIceServer` without the DOM lib. */
 export interface IceServer {
@@ -88,6 +96,7 @@ function sanitize(o: Record<string, unknown>, d: MediaSettings): MediaSettings {
     turn: o.turn === null ? null : (readTurn(o.turn) ?? d.turn),
     stun: Array.isArray(o.stun) ? readStun(o.stun) : [...d.stun],
     mainBounds: o.mainBounds === null ? null : (readBounds(o.mainBounds) ?? d.mainBounds),
+    videoPath: o.videoPath === 'native' || o.videoPath === 'electron' ? o.videoPath : d.videoPath,
   };
 }
 

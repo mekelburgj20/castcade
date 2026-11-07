@@ -23,7 +23,7 @@
  * offer is the one that wins a collision anyway; the polite one restarts only when the lead has not (the page's
  * watchdog gives it a lag), and if both do at once the usual glare rule settles it.
  */
-import type { MatchPlayerId, MediaSignal } from './match-media-types.js';
+import type { MatchPlayerId, MediaSignal, MediaSignalling } from './match-media-types.js';
 
 export interface SdpInit {
   type: 'offer' | 'answer' | 'rollback';
@@ -285,6 +285,9 @@ export class SignalingMesh {
 
   receive(from: MatchPlayerId, signal: MediaSignal): Promise<void> {
     if (from === this.localId) return Promise.resolve();
+    // D10.3: a signal of the native video helper's connection is never this mesh's (the host splits them off before
+    // the page; this is the page's own guard, since its copy of this class runs on whatever main forwards).
+    if (signal.channel === 'video') return Promise.resolve();
     if (signal.kind === 'reset') {
       // D2.7: the peer's connections are new. Everything it sent before belongs to its old one: dropped, not forwarded.
       this.early.delete(from);
@@ -314,6 +317,43 @@ export class SignalingMesh {
     for (const id of [...this.peers.keys()]) this.remove(id);
     this.early.clear();
   }
+}
+
+/** D10.3: signals held for a side that has no listener yet (the page attaches after the join; the mesh at the match's open). */
+export const SPLIT_HOLD_MAX = 256;
+
+/**
+ * D10.3 (2026-11-07, spectator-video-native.md §6.3): one match signalling split by `channel`: `rtc` is what the panel
+ * page's mesh gets (every signal without a channel, as 0.2.36 did; it never sees a `video` one), `video` is the native
+ * helper's (`video-mesh.ts`), and what it sends goes out marked `channel: 'video'`. The underlying signalling holds
+ * one listener (`matchSignalling`), so it is subscribed once, here, and each side's signals are held until that side
+ * listens (at most `SPLIT_HOLD_MAX`, oldest dropped). Each side takes one listener at a time, as the original does.
+ */
+export function splitSignalling(sig: MediaSignalling, max = SPLIT_HOLD_MAX): { rtc: MediaSignalling; video: MediaSignalling } {
+  type Cb = (from: MatchPlayerId, signal: MediaSignal) => void;
+  const sides: Record<'rtc' | 'video', { listener: Cb | null; held: Array<[MatchPlayerId, MediaSignal]> }> = {
+    rtc: { listener: null, held: [] },
+    video: { listener: null, held: [] },
+  };
+  sig.onSignal((from, signal) => {
+    const side = sides[signal.channel === 'video' ? 'video' : 'rtc'];
+    if (side.listener) return side.listener(from, signal);
+    side.held.push([from, signal]);
+    if (side.held.length > max) side.held.shift();
+  });
+  const make = (name: 'rtc' | 'video'): MediaSignalling => ({
+    localId: sig.localId,
+    send: (to, signal) => sig.send(to, name === 'video' ? { ...signal, channel: 'video' } : signal),
+    onSignal(cb) {
+      const side = sides[name];
+      side.listener = cb;
+      for (const [from, signal] of side.held.splice(0)) cb(from, signal);
+      return () => {
+        if (side.listener === cb) side.listener = null;
+      };
+    },
+  });
+  return { rtc: make('rtc'), video: make('video') };
 }
 
 /** The classes as plain JS for the panel page's `<script>` (see the header): one source, no second copy to drift. */

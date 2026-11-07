@@ -143,6 +143,20 @@ describe('envelope', () => {
     expect(MESSAGE_DIRECTION.MEDIA_SIGNAL).toBe('any');
   });
 
+  it('MEDIA_SIGNAL.channel (D10.3): a frame without it parses as `rtc`; `video` rides along and round-trips; junk is refused', () => {
+    // A 0.2.36 frame, byte for byte: no `channel` on the wire.
+    const old = encodeFrame({ v: PROTOCOL_VERSION, type: 'MEDIA_SIGNAL', matchId: 'TD-1', seq: 5, from: 'p1', ts: 1, payload: { to: 'p2', kind: 'offer', sdp: 'v=0\r\n' } } as never);
+    const back = decodeFrame(old);
+    expect(back.type).toBe('MEDIA_SIGNAL');
+    if (back.type === 'MEDIA_SIGNAL') expect(back.payload.channel).toBe('rtc');
+    const built = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0\r\n' }, { matchId: 'TD-1', seq: 6, from: 'p1', ts: 1 });
+    expect(built.payload.channel).toBe('rtc');
+    const video = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'answer', sdp: 'v=0\r\n', channel: 'video' }, { matchId: 'TD-1', seq: 7, from: 'p1', ts: 1 });
+    expect(video.payload.channel).toBe('video');
+    expect(decodeFrame(encodeFrame(video))).toEqual(video);
+    expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0', channel: 'audio' as never }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
+  });
+
   it('MEDIA_SIGNAL stereo: `eyes` is optional and survives the wire when present (D7.5.2)', () => {
     const eye = { fov: [-0.9, 0.8, 0.8, -0.95], rect: [0, 120, 1536, 3072], render: [3072, 3264] };
     const plain = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs' }, { matchId: 'TD-1', seq: 11, from: 'p1' });
@@ -156,7 +170,8 @@ describe('envelope', () => {
     const reset = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'reset' }, { matchId: 'TD-1', seq: 5, from: 'p1', ts: 1 });
     expect(decodeFrame(encodeFrame(reset))).toEqual(reset);
     const sbs = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs' }, { matchId: 'TD-1', seq: 6, from: 'p1', ts: 1 });
-    expect(decodeFrame(encodeFrame(sbs)).payload).toEqual({ to: 'p2', kind: 'stereo', stereo: 'sbs' });
+    // D10.3: the parsed payload carries the defaulted `channel`.
+    expect(decodeFrame(encodeFrame(sbs)).payload).toEqual({ to: 'p2', kind: 'stereo', stereo: 'sbs', channel: 'rtc' });
     expect(buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: null }, { matchId: 'TD-1', seq: 7, from: 'p1' }).payload.stereo).toBeNull();
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo' }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'tab' as never }, { matchId: 'TD-1', seq: 9, from: 'p1' })).toThrow(ProtocolError);

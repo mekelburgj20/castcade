@@ -62,7 +62,8 @@ describe('MEDIA_SIGNAL relay (D2)', () => {
     r.clients['b']?.sendMediaSignal('a', ice);
     await flush();
 
-    expect(r.got['b']).toEqual([{ from: 'a', signal: { to: 'b', ...offer } }]);
+    // D10.3: the parsed payload carries the defaulted `channel` (absent on the wire = `rtc`).
+    expect(r.got['b']).toEqual([{ from: 'a', signal: { to: 'b', ...offer, channel: 'rtc' } }]);
     expect(r.got['a']?.map((g) => [g.from, g.signal.kind])).toEqual([
       ['b', 'answer'],
       ['b', 'ice'],
@@ -80,12 +81,12 @@ describe('MEDIA_SIGNAL relay (D2)', () => {
     const r = await rig(['a', 'b']);
     r.clients['a']?.sendMediaSignal('h', offer);
     await flush();
-    expect(r.got['h']).toEqual([{ from: 'a', signal: { to: 'h', ...offer } }]);
+    expect(r.got['h']).toEqual([{ from: 'a', signal: { to: 'h', ...offer, channel: 'rtc' } }]);
     expect(signalsOn(r.wire['b'])).toEqual([]);
 
     expect(r.host.sendMediaSignal('a', { kind: 'answer', sdp: 'v=0\r\n' })).toBe(true);
     await flush();
-    expect(r.got['a']).toEqual([{ from: 'h', signal: { to: 'a', kind: 'answer', sdp: 'v=0\r\n' } }]);
+    expect(r.got['a']).toEqual([{ from: 'h', signal: { to: 'a', kind: 'answer', sdp: 'v=0\r\n', channel: 'rtc' } }]);
     expect(signalsOn(r.wire['b'])).toEqual([]);
     // to oneself: nothing sent
     expect(r.host.sendMediaSignal('h', offer)).toBe(false);

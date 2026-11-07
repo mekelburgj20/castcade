@@ -11,6 +11,7 @@
  * 3 (2026-11-02, A10 + A11): a match is a series of games. NEXT_GAME (logged) starts game N+1 in the same log,
  *   MATCH_END (not logged) closes the series; `GrantBody.game`, `RESULT.game` and `RESULT.series`; HELLO_ACK
  *   `startsInMs` (the lobby countdown) and `loading`. A new logged message type, so a peer on 2 could not follow the
- *   log: both rigs run the same build through the updater.
+ *   log: both rigs run the same build through the updater. MEDIA_SIGNAL `channel` (D10.3, 2026-11-07): optional,
+ *   defaulted to `rtc`, never logged, so still 3 (a peer without the native video helper ignores `video` signals).
  */
 export const PROTOCOL_VERSION = 3 as const;

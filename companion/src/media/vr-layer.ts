@@ -286,7 +286,8 @@ export function createLayerReader(): LayerReader {
 
 // D8.1: `eye` is part of the request (one eye asked or both), so a change of it reaches the layer.
 const sameRequest = (a: LayerCameraRequest | null, b: LayerCameraRequest | null): boolean =>
-  a === b || (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps && (a.whole === true) === (b.whole === true) && (a.eye ?? null) === (b.eye ?? null));
+  a === b ||
+  (a !== null && b !== null && a.width === b.width && a.height === b.height && a.fps === b.fps && (a.whole === true) === (b.whole === true) && (a.eye ?? null) === (b.eye ?? null) && (a.ring ?? null) === (b.ring ?? null));
 
 /**
  * D7.5.10 / D7.5.11 (2026-11-04): the stereo window's tuning as the control carries it: `tune` only when a value is not
@@ -463,6 +464,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let session: LayerSessionReport | null = null;
   /** D7.6.1: the calibration pattern, while asked. */
   let test: VrTestPattern | null = null;
+  /** D10.3: the `recv` frame ring theater reads instead of CVO2 (`video: {ring}` on a protocol-3 control, only while set). */
+  let videoRing: string | null = null;
   let sentControls: Array<{ at: number; text: string }> = [];
   const sessionWaiters = new Set<(r: LayerSessionReport) => void>();
   const benchListeners = new Set<(b: VrLayerBench) => void>();
@@ -578,6 +581,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       // D7.5.10 / D7.5.11: the window's tuning and soft edge only when set, to a protocol-3 layer only (omitted = defaults).
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && !tuneIsDefault(tune) ? { tune } : {}),
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && feather > 0 ? { feather } : {}),
+      // D10.3: the decoded picture's ring only while the match host set one, to a protocol-3 layer only (§6.5).
+      ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && videoRing ? { video: { ring: videoRing } } : {}),
     };
     const text = JSON.stringify(body);
     if (text === lastControl && !report) return false;
@@ -590,11 +595,12 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     if (report) opts.log('vr-layer: asked the layer for its session report');
     if (!changed) return true;
     // D8.1: the eyes asked for (`one eye (left)` / `both eyes`) are on the line.
-    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps${cameraReq.whole ? ', whole view' : ''}, ${cameraEyesWords(cameraReq)}` : 'off'}` : '';
+    const cam = protocol >= VR_LAYER_CAMERA_PROTOCOL ? `, camera ${cameraReq ? `${cameraReq.width}x${cameraReq.height} at ${cameraReq.fps} fps${cameraReq.whole ? ', whole view' : ''}, ${cameraEyesWords(cameraReq)}${cameraReq.ring ? ', to the frame ring' : ''}` : 'off'}` : '';
     const pat = protocol >= VR_LAYER_CAMERA_PROTOCOL && test ? ', calibration pattern' : '';
+    const ring = protocol >= VR_LAYER_CAMERA_PROTOCOL && videoRing ? ', theater from the frame ring' : '';
     const eye = protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? `, the sender's eyes (crop ${eyes[0]!.rect[2]}x${eyes[0]!.rect[3]} at ${eyes[0]!.rect[0]},${eyes[0]!.rect[1]} / ${eyes[1]!.rect[0]},${eyes[1]!.rect[1]} of ${eyes[0]!.render[0]}x${eyes[0]!.render[1]})` : '';
     const tuned = protocol >= VR_LAYER_CAMERA_PROTOCOL ? tuneWords(tune, feather) : '';
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${eye}${tuned})`);
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${ring}${eye}${tuned})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
     return true;
   };
@@ -764,6 +770,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     stopCounters();
     setCameraStatus({ state: 'off', why: null, api: null, source: null, size: null, lastFrameAt: null, frames: 0 });
     test = null; // D7.6.1: a test picture never outlives the overlay (the next match starts without it)
+    videoRing = null; // D10.3: nor does the ring (the match host sets it again for the next match)
     set('stopped');
     notifyBench();
   };
@@ -906,6 +913,15 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       opts.log(`vr-layer: calibration pattern ${test ? 'asked' : 'off'}${test && !(isConnected() && protocol >= VR_LAYER_CAMERA_PROTOCOL) ? ' (sent once a protocol-3 layer is connected)' : ''}`);
       sendControl();
       notifyBench();
+    },
+
+    // D10.3: theater from the video helper's `recv` ring (§6.5); null returns to the CVO2 pipe frames.
+    setVideoRing(token) {
+      const next = typeof token === 'string' && token ? token : null;
+      if (next === videoRing) return;
+      videoRing = next;
+      opts.log(`vr-layer: theater video from ${next ? 'the helper\'s frame ring' : 'the pipe (CVO2)'}${next && !(isConnected() && protocol >= VR_LAYER_CAMERA_PROTOCOL) ? ' (sent once a protocol-3 layer is connected)' : ''}`);
+      sendControl();
     },
 
     onBench(cb) {

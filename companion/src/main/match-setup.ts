@@ -419,6 +419,8 @@ export function matchSignalling(role: HostMatch | ClientMatch, localId: string, 
     if (p.sdp !== undefined) signal.sdp = p.sdp;
     if (p.candidate !== undefined) signal.candidate = { ...p.candidate };
     if (p.stereo !== undefined) signal.stereo = p.stereo;
+    // D10.3: the native helper's signals; the schema defaults it to `rtc`, which is left implicit here (as 0.2.36 read it).
+    if (p.channel === 'video') signal.channel = 'video';
     if (listener) return listener(from, signal);
     held.push([from, signal]);
     if (held.length > max) held.shift();

@@ -1153,6 +1153,77 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     return { host, cam, w };
   }
 
+  it('D10.3: native video on: the camera is asked with the send ring, the box goes to the hook, the page is never told to send; off: the 0.2.36 path, live', async () => {
+    const boxes: Array<{ width: number; height: number; fps: number } | null> = [];
+    const hook = { ring: 'send_tok_ABCDEFGH', onSource: (b: { width: number; height: number; fps: number } | null) => void boxes.push(b) };
+    const cam = fakeLayer(3);
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setCameraLayer(cam.layer);
+    host.setCameraEyes('both');
+    host.setCameraSource('layer');
+    host.setNativeVideo(hook);
+    expect(logs).toContain('media: native video on (send ring send_tok_ABCDEFGH)');
+    expect(boxes).toEqual([]);
+    await host.setVr(VD);
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    await settle();
+    expect(cam.asks).toEqual([{ width: 720, height: 1440, fps: 30, ring: 'send_tok_ABCDEFGH' }]);
+    expect(boxes).toEqual([{ width: 720, height: 1440, fps: 30 }]);
+    expect((w.webContents.sent[0]?.[1] as { sending: boolean }).sending).toBe(false);
+    // This rig's turn: the status says sending, the page's video track stays off (the helper's sender runs instead).
+    host.setSending(true);
+    expect(host.status().sending).toBe(true);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([]);
+    // A view change re-asks with the ring and tells the hook the new box.
+    host.setCameraView('whole');
+    expect(cam.asks.at(-1)).toEqual({ width: 1440, height: 1440, fps: 30, whole: true, ring: 'send_tok_ABCDEFGH' });
+    expect(boxes.at(-1)).toEqual({ width: 1440, height: 1440, fps: 30 });
+    // The camera watch does not fall back for the frames that never come over the pipe.
+    cam.status({ state: 'on', why: null, api: 'd3d11', source: { width: 2064, height: 2208 }, size: { width: 1440, height: 1440 } });
+    vi.advanceTimersByTime(30_000);
+    expect(logs.filter((l) => l.includes('back to the screen capture'))).toEqual([]);
+    expect(cam.asks.at(-1)?.ring).toBe('send_tok_ABCDEFGH');
+    // Off, live: the layer is asked again without the ring, the hook hears null, the page is told to send now.
+    host.setNativeVideo(null);
+    expect(cam.asks.at(-1)).toEqual({ width: 1440, height: 1440, fps: 30, whole: true });
+    expect(boxes.at(-1)).toBeNull();
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true]);
+    // On again: held back again; the same hook twice is a no-op.
+    host.setNativeVideo(hook);
+    host.setNativeVideo(hook);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false]);
+    expect(boxes.at(-1)).toEqual({ width: 1440, height: 1440, fps: 30 });
+    expect(cam.asks.filter((a) => a?.ring).length).toBe(3);
+    // The ball ends: nothing new to say to the page.
+    host.setSending(false);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false]);
+    await host.detach();
+    expect(boxes.at(-1)).toBeNull();
+    expect(cam.asks.at(-1)).toBeNull();
+  });
+
+  it('D10.3: native video on but the capture is the screen (the Match tab on screen capture): the Electron video flows as in 0.2.36, the hook hears nothing', async () => {
+    const boxes: unknown[] = [];
+    const cam = fakeLayer(3);
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setCameraLayer(cam.layer);
+    host.setNativeVideo({ ring: 'send_tok_ABCDEFGH', onSource: (b) => void boxes.push(b) });
+    await host.setVr(VD);
+    await host.attach(signalling('owner').sig, ['krobs']);
+    const w = fake.FakeWindow.all.at(-1)!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    await settle();
+    expect(cam.asks).toEqual([]);
+    host.setSending(true);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true]);
+    host.setSending(false);
+    expect(sentOn(w, PANEL_CHANNELS.sending)).toEqual([true, false]);
+    expect(boxes).toEqual([]);
+    await host.detach();
+  });
+
   it('the default (screen): the layer is never asked and the attach is the screen capture, with no camera line', async () => {
     const { host, cam, w } = await cameraHost();
     expect(cam.asks).toEqual([]);

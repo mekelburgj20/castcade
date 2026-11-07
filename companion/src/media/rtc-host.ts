@@ -53,7 +53,7 @@ import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
-import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
+import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -85,6 +85,12 @@ export interface RtcHostOptions {
   iniStereo?: () => Promise<VrStereo | null>;
 }
 
+/** D10.3: see `RtcHost.setNativeVideo`. `ring`: the `send` ring's token (one per companion start). */
+export interface NativeVideoHook {
+  ring: string;
+  onSource(box: { width: number; height: number; fps: number } | null): void;
+}
+
 /** `MatchMedia` plus the microphone picker the Match tab needs (the panel page lists the devices). */
 export interface RtcHost extends MatchMedia {
   microphones(): MicDevice[];
@@ -107,6 +113,16 @@ export interface RtcHost extends MatchMedia {
    * its `vrLayer`); null or one without `setCamera`: the screen capture only.
    */
   setCameraLayer(layer: VrOverlay | null): void;
+  /**
+   * D10.3 (2026-11-07, spectator-video-native.md §6.4): the native spectator video is on for this match. With a hook,
+   * the layer camera is asked with `ring` (the layer fills the helper's `send` ring instead of sending JPEG frames) and
+   * `onSource` is told the box the camera was asked for whenever a camera run starts, changes or stops (null), so the
+   * match host can point the helper at the ring; and while the camera is the capture, the panel page's VIDEO track is
+   * held back (the page is told `sending` false on this rig's turn; voice and table sound are untouched). With the
+   * screen capture (a desktop rig, SteamVR, the Match tab on screen capture, a camera fallback) the Electron video
+   * keeps flowing as in 0.2.36, since the helper has nothing to send from this rig yet (D10.6). Null: the 0.2.36 path.
+   */
+  setNativeVideo(hook: NativeVideoHook | null): void;
   /**
    * D7.5.1: the Match tab's Camera (match settings `cameraSource`). Read at each attach; while attached a change takes
    * effect at once between balls, or when this rig's ball ends.
@@ -576,8 +592,15 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let cameraEyes: CameraEyesSetting = 'one';
   /** D8.1: the box's height per eye: the one knob a quality preset (D8.2) will turn; the request path reads only this. */
   const cameraEyeHeight = LAYER_CAMERA_EYE_HEIGHT;
-  /** D8.1: the request for the settings in force (view, eyes, height): the match camera, the bench and the frames saver all ask with it. */
-  const cameraRequest = () => cameraRequestFor({ view: cameraView, eye: cameraEyeFor(cameraEyes), eyeHeight: cameraEyeHeight });
+  /** D10.3: the native video hook (`setNativeVideo`); null = the 0.2.36 path. */
+  let native: NativeVideoHook | null = null;
+  /** D8.1: the request for the settings in force (view, eyes, height): the match camera, the bench and the frames saver all ask with it. D10.3: with the send ring while the native video is on. */
+  const cameraRequest = (): LayerCameraRequest => {
+    const req = cameraRequestFor({ view: cameraView, eye: cameraEyeFor(cameraEyes), eyeHeight: cameraEyeHeight });
+    if (native) req.ring = native.ring;
+    return req;
+  };
+  const boxOf = (req: LayerCameraRequest): { width: number; height: number; fps: number } => ({ width: req.width, height: req.height, fps: req.fps });
   /** D8.1: what a camera capture declares for the eyes setting: one eye is a flat picture, both are side by side. */
   const cameraStereo = (): VrStereo => (cameraEyeFor(cameraEyes) ? 'mono' : 'sbs');
   let vrRuntime: CameraDecisionInput['runtime'] = null;
@@ -658,6 +681,25 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const q = queue;
     queue = [];
     for (const [c, p] of q) post(c, p);
+  };
+
+  /**
+   * D10.3: what the page is told about sending: this rig is up, unless the native helper carries the picture (the
+   * layer camera feeds its ring): then the page's video track stays disabled and the helper's sender runs instead.
+   */
+  const pageSending = (): boolean => sending && !(native !== null && cam !== null);
+  /**
+   * The page's `sending` follows the turn and the native path; said only when it changes (queued latest-wins before
+   * the page is up, as 0.2.36 did). Before the attach message exists it is that message's field; nothing is posted.
+   */
+  let pageSendingTold: boolean | null = null;
+  const syncPageSending = (): void => {
+    if (!attached || !attachMsg) return;
+    const on = pageSending();
+    if (!attachSent) attachMsg.sending = on;
+    if (pageSendingTold === on) return;
+    pageSendingTold = on;
+    toPage(PANEL_CHANNELS.sending, on);
   };
 
   ipcMain.on(PANEL_CHANNELS.ready, (e) => {
@@ -1189,7 +1231,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     const now = Date.now();
     const layerProtocol = cameraLayer.layerProtocol?.() ?? null;
     if (layerProtocol !== null && c.connectedAt === null) c.connectedAt = now;
-    const w = cameraWatch({ status: cameraLayer.cameraStatus(), now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status() });
+    // D10.3: asked with a ring, the layer sends no JPEG frame on the pipe: only its own answers count.
+    const w = cameraWatch({ status: cameraLayer.cameraStatus(), now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status(), ring: native !== null });
     if (w.fallBack) cameraBack(c.gen, w.reason ?? 'no reason given');
   };
   /** Ask the layer and hold the synthetic capture; the screen capture is not opened. The pid is probed for table sound. */
@@ -1207,6 +1250,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     captureError = null;
     capture = cameraCapture(req.width, req.height, cameraStereo());
     layer.setCamera(req);
+    // D10.3: the helper reads this box from the send ring; the page's video track is held back meanwhile.
+    native?.onSource(boxOf(req));
+    syncPageSending();
     void (async () => {
       try {
         const probe = await opts.probe();
@@ -1226,6 +1272,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     for (const off of run.off) off();
     camSlot.reset();
     cameraLayer?.setCamera?.(null);
+    // D10.3: nothing fills the send ring now; the page's video track (if any capture follows) is this rig's again.
+    native?.onSource(null);
+    syncPageSending();
   };
   /** D7.5.1: give the layer up for this match and pick the screen capture as today (`pickCapture`). */
   function cameraBack(gen: number, reason: string): void {
@@ -1410,6 +1459,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     releaseDisplay();
     page = null;
     sending = false;
+    pageSendingTold = null;
     coverOffSaid = false;
     peers.clear();
     lastState = null;
@@ -1466,7 +1516,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (gen !== generation) return;
     const s = opts.settings.get();
     // D2.7 (2026-11-01): a re-attach (`setVr`) replaces a page whose connections still stand on the peers' side.
-    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending, reset: restore !== null };
+    attachMsg = { localId: sig.localId, peers: [...peers], ice: iceServers(s), capture, micDeviceId: s.micDeviceId, muted: s.muted, sending: pageSending(), reset: restore !== null };
+    pageSendingTold = attachMsg.sending;
     log.info(`media: attach (${headset ? 'VR, offscreen panel' : inVr ? 'VR, desktop panel' : 'desktop panel'}),${attachMsg.peers.length} peer(s), ${describeIce(s)}, capture ${capture?.label ?? 'none'}`);
     if (capture) {
       announced = capture;
@@ -1481,8 +1532,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const setSending = (on: boolean): void => {
     if (sending === on) return;
     sending = on;
-    if (attachMsg && !attachSent) attachMsg.sending = on;
-    toPage(PANEL_CHANNELS.sending, on);
+    syncPageSending();
     // D7.5.1: a Camera change made during this ball, now that it is over.
     if (!on && cameraSwitchPending) switchCamera(generation);
     // Still no window at this rig's turn (the 3 s looks found none yet): look once more now, not at the next tick.
@@ -1640,6 +1690,20 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     setCameraLayer(layer) {
       cameraLayer = layer;
     },
+    // D10.3: the native video on or off for the match; a running camera is asked again with (or without) the ring.
+    setNativeVideo(hook) {
+      if (hook === native || (hook && native && hook.ring === native.ring && hook.onSource === native.onSource)) return;
+      const was = native;
+      native = hook;
+      log.info(`media: native video ${hook ? `on (send ring ${hook.ring})` : 'off (the Electron video path)'}`);
+      if (cam && attached && cameraUsable(cameraLayer)) {
+        const req = cameraRequest();
+        cameraLayer.setCamera(req);
+        if (was && was !== hook) was.onSource(null);
+        hook?.onSource(boxOf(req));
+      } else if (was && was !== hook) was.onSource(null);
+      syncPageSending();
+    },
     // D7.5.9: the view changes the box, live: the match camera (while asked) and the bench's camera are asked again.
     setCameraView(view) {
       if (view === cameraView) return;
@@ -1650,6 +1714,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const req = cameraRequest();
       log.info(`media: camera: ${cameraViewWords(req)} on the Match tab: ${cameraAskWords(req)}`);
       cameraLayer.setCamera(req);
+      if (cam) native?.onSource(boxOf(req));
     },
     // D8.1: the eyes change the request and the capture's shape and declaration, live: the layer is asked again and a
     // running match capture is replaced (the page reopens its camera mode on the new capture; the canvas track stays).
@@ -1662,6 +1727,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       const req = cameraRequest();
       log.info(`media: camera: ${cameraEyesWords(req)} on the Match tab: ${cameraAskWords(req)}`);
       cameraLayer.setCamera(req);
+      if (cam) native?.onSource(boxOf(req));
       if (!cam || !attached || !capture || !isCameraCapture(capture)) return;
       camSlot.reset();
       capture = cameraCapture(req.width, req.height, cameraStereo());
