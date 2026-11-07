@@ -60,6 +60,10 @@ add_executable(castcade-video
   src/gpu.cpp
   src/frame_ring.cpp
   src/source.cpp
+  src/sink.cpp
+  src/factories.cpp
+  src/sdp.cpp
+  src/peer.cpp
   src/bench.cpp
   src/selftest.cpp)
 
@@ -78,10 +82,11 @@ target_compile_definitions(castcade-video PRIVATE ${WEBRTC_DEFINES}
 string(REPLACE "/EHsc" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 # Chromium's Windows toolchain shape: no C++ exceptions (_HAS_EXCEPTIONS=0 is in the defines), no RTTI, big objects
 # (the peer connection headers are large), UTF-8 sources. Silenced: C4244/C4267/C4996 (ours), C4530 (the MSVC STL has
-# `try` in <chrono>/<xstring> even with _HAS_EXCEPTIONS=0), C4068 (`#pragma clang` in a few headers).
+# `try` in <chrono>/<xstring> even with _HAS_EXCEPTIONS=0), C4068 (`#pragma clang` in a few headers), C4146 (upstream's
+# divide_round.h).
 target_compile_options(castcade-video PRIVATE
   /EHs-c- /GR- /bigobj /utf-8 /W3 /Zc:__cplusplus /permissive-
-  /wd4244 /wd4267 /wd4996 /wd4530 /wd4068
+  /wd4244 /wd4267 /wd4996 /wd4530 /wd4068 /wd4146
   "$<$<CONFIG:Release>:/O2>")
 target_link_options(castcade-video PRIVATE "$<$<CONFIG:Release>:/OPT:REF;/OPT:ICF>")
 

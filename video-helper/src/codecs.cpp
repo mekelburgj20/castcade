@@ -35,7 +35,7 @@ bool has_nal(const uint8_t* p, size_t n, int type) {
 }
 
 void AvLogCallback(void* ptr, int level, const char* fmt, va_list vl) {
-  if (level > AV_LOG_WARNING) return;
+  if (level > AV_LOG_WARNING || level > av_log_get_level()) return;
   char line[1024];
   int print_prefix = 1;
   av_log_format_line(ptr, level, fmt, vl, line, sizeof line, &print_prefix);
