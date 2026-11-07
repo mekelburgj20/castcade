@@ -30,9 +30,9 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
 // A release's own installer cannot carry its own tag's zip (both workflows run at once), so TAG names an earlier release.
-const TAG = 'v0.2.38';
+const TAG = 'v0.2.39';
 // null means "not pinned yet" (the download is used, with a warning and the hash to pin printed).
-const SHA256 = 'f3c6913c2a53fe34a775d74fe140e6eeedd6d295e692960971f11babcdd583ac';
+const SHA256 = 'e329a5f8b486e3101fcafc2190c8bc37f1074da5883bf4a45eaffa65e6d23e04';
 /** Always required; every *.dll beside the exe (the FFmpeg shared libraries) is copied too. */
 const REQUIRED = ['castcade-video.exe', 'THIRD-PARTY.md'];
 
