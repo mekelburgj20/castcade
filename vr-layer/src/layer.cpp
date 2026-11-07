@@ -66,6 +66,7 @@
 
 #include "camera.h"
 #include "eye_crop.h"
+#include "frame_ring.h"
 #include "layer_log.h"
 #include "panel_pipe.h"
 
@@ -292,6 +293,14 @@ struct Session {
   // runs after it is turned off (to stop it).
   std::unique_ptr<Camera> camera;
   bool cameraSeen = false;
+  // D10.2 (0.6.0): the recv ring theater takes its picture from while the control names one (Control::videoRing):
+  // the consumer (null while the helper has not made the ring, or it died), the token it is for, when to try opening
+  // it again, when its last frame was taken (liveness, videoLive) and whether "waiting" was logged for this token.
+  std::unique_ptr<RingConsumer> videoRing;
+  std::string videoRingToken;
+  uint64_t videoRingRetryAt = 0;
+  uint64_t videoRingFrameAt = 0;
+  bool videoRingWaitLogged = false, videoRingFirstFrame = true;
   // D7.6.2, the session report: facts read at xrCreateSession, the last frame's layers, the last placement's inputs.
   XrSystemId systemId = XR_NULL_SYSTEM_ID;
   InstanceInfo instanceInfo;
@@ -700,11 +709,97 @@ void featherEdges(uint8_t* px, uint32_t w, uint32_t h, float feather) {
   }
 }
 
+// D10.2: the recv ring theater reads when the control names one ("video": {"ring": <token>}; frame_ring.h): opened
+// once the helper has made it (retried every second while it is missing), dropped on a control without it or with
+// another token (a disconnect resets the control, so it goes with the companion), and closed when the helper stops
+// touching it for 3 s (so its name can go; tried again every second).
+constexpr uint64_t kVideoRingRetryMs = 1000;
+
+void videoRingTick(Session& s, const Control& c) {
+  const uint64_t now = GetTickCount64();
+  if (c.videoRing != s.videoRingToken) {
+    if (s.videoRing || !s.videoRingToken.empty())
+      logLine(c.videoRing.empty() ? std::string("video: recv ring released; theater takes CVO2 frames from the pipe") : "video: recv ring token changed to '" + c.videoRing + "'");
+    s.videoRing.reset();
+    s.videoRingToken = c.videoRing;
+    s.videoRingRetryAt = 0;
+    s.videoRingFrameAt = 0;
+    s.videoRingWaitLogged = false;
+    s.videoRingFirstFrame = true;
+  }
+  if (s.videoRingToken.empty()) return;
+  if (s.videoRing) {
+    if (s.videoRing->producerAlive()) return;
+    logLine("video: the recv ring's producer (pid " + std::to_string(s.videoRing->producerPid()) + ") has not touched it for 3 s: closed; " +
+            std::to_string(s.videoRing->taken()) + " frames taken, " + std::to_string(s.videoRing->skipped()) + " skipped, " + std::to_string(s.videoRing->lapped()) +
+            " lapped; waiting for it again");
+    s.videoRing.reset();
+    s.videoRingRetryAt = now + kVideoRingRetryMs;
+    return;
+  }
+  if (now < s.videoRingRetryAt) return;
+  s.videoRingRetryAt = now + kVideoRingRetryMs;
+  std::string why;
+  bool missing = false;
+  s.videoRing = RingConsumer::open("recv", s.videoRingToken, why, missing);
+  if (s.videoRing && !s.videoRing->producerAlive()) {
+    // A ring left behind (its producer gone, something else still holding the name): not this one.
+    s.videoRing.reset();
+    missing = true;
+    why = "the ring is there but its producer is not";
+  }
+  if (s.videoRing) {
+    logLine("video: recv ring '" + s.videoRingToken + "' open: up to " + std::to_string(s.videoRing->maxWidth()) + "x" + std::to_string(s.videoRing->maxHeight()) +
+            " BGRA, producer pid " + std::to_string(s.videoRing->producerPid()) + (s.videoRing->writable() ? "" : " (header read-only: the producer may lap this side)"));
+    s.videoRingWaitLogged = false;
+    return;
+  }
+  if (missing) {
+    if (!s.videoRingWaitLogged) logLine("video: waiting for the helper's recv ring '" + s.videoRingToken + "' (" + why + "); trying every second");
+    s.videoRingWaitLogged = true;
+    return;
+  }
+  logOnce("video_ring_" + s.videoRingToken + ":" + why, "video: recv ring '" + s.videoRingToken + "' cannot be used: " + why + "; trying every second");
+}
+
+// D10.2: a live video picture. From the ring: a frame within kPanelHideAfterMs, or a producer still heartbeating (a
+// paused stream keeps its last picture; a dead helper hides theater within 3 s, as a dead companion does); without a
+// ring, the pipe's rule.
+bool videoLive(const Session& s) {
+  if (!s.videoRingToken.empty()) {
+    if (s.videoRing && s.videoRing->producerAlive()) return true;
+    return s.videoRingFrameAt != 0 && GetTickCount64() - s.videoRingFrameAt < static_cast<uint64_t>(kPanelHideAfterMs);
+  }
+  return panelPipeLive(Stream::Video);
+}
+
 // The newest video frame (if any) into its surface, its edges feathered first when the control asks and the picture
 // is side by side (D7.5.11; the mono screen keeps hard edges). Applied to every frame taken: each upload is a fresh
-// frame from the companion (it re-sends a still picture every 2 s), never one the runtime already holds.
+// frame from the companion (it re-sends a still picture every 2 s), never one the runtime already holds. D10.2: with a
+// recv ring named, the frame comes from it (the pipe's video inbox is drained, not shown); its pixels are BGRA where
+// CVO2's are RGBA, so the video surface takes its source's order and is re-made at a switch (the panel has always
+// been BGRA, so both orders are proven paths on every rig). A frame may be any size up to the ring's maximum: a new
+// size makes a new swapchain, as a CVO2 size change always has (ensureSwapchain).
 void uploadVideo(Session& s, const Control& c, std::unique_ptr<GlContextScope>& scope) {
-  if (!panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH)) return;
+  const bool ring = !s.videoRingToken.empty();
+  if (ring) {
+    panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH);
+    int64_t ptsUs = 0;
+    if (!s.videoRing || !s.videoRing->take(s.pixels, s.pixelsW, s.pixelsH, ptsUs)) return;
+    s.videoRingFrameAt = GetTickCount64();
+    if (s.videoRingFirstFrame) {
+      s.videoRingFirstFrame = false;
+      logLine("video: first ring frame " + std::to_string(s.pixelsW) + "x" + std::to_string(s.pixelsH) + ", " + std::to_string((ringNowUs() - ptsUs) / 1000) + " ms old");
+    }
+  } else if (!panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH)) {
+    return;
+  }
+  const Order want = ring ? Order::BGRA : Order::RGBA;
+  if (s.video.order != want) {
+    if (!glReady(s, scope)) return;
+    dropSwapchain(s, s.video);
+    s.video.order = want;
+  }
   const bool feather = c.feather > 0.0f && c.sbs && s.pixelsW >= 2 && s.pixels.size() >= static_cast<size_t>(s.pixelsW) * s.pixelsH * 4;
   if (feather) featherEdges(s.pixels.data(), s.pixelsW, s.pixelsH, c.feather);
   s.videoFeather = feather ? c.feather : 0.0f;
@@ -1219,7 +1314,7 @@ ViewMode wantedMode(const Session& s, const Control& c) {
   // D7.6.1: the calibration pattern needs no frame from the companion; it ends with the control (and so with the pipe).
   if (c.test == TestPattern::Pattern && s.pattern.released) return ViewMode::Theater;
   const bool panelUp = s.panel.released && panelPipeLive(Stream::Panel);
-  const bool videoUp = s.video.released && panelPipeLive(Stream::Video);
+  const bool videoUp = s.video.released && videoLive(s);
   switch (c.mode) {
     case ViewMode::Theater: return videoUp || panelUp ? ViewMode::Theater : ViewMode::Hidden;
     case ViewMode::Panel: return panelUp ? ViewMode::Panel : ViewMode::Hidden;
@@ -1785,6 +1880,7 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   }
   if (pattern) patternTick(s, scope);
   // Video frames only matter in theater; one that arrives meanwhile is still taken (newest wins), not uploaded.
+  videoRingTick(s, c);  // D10.2
   if (c.mode == ViewMode::Theater && !pattern) uploadVideo(s, c, scope);
   else panelPipeTake(Stream::Video, s.pixels, s.pixelsW, s.pixelsH);
   if (s.off) return false;
@@ -1818,7 +1914,7 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
     add(quadAt(s, used++, s.view, s.shade, XR_EYE_VISIBILITY_BOTH, 0, w(s.shade), backdropPose, {kBackdropSizeM, kBackdropSizeM}, false));
     // D7.6.1: the pattern, while asked, is a side-by-side picture like a VR sender's.
     const bool patternUp = pattern && s.pattern.released;
-    const bool videoUp = !patternUp && s.video.released && panelPipeLive(Stream::Video);
+    const bool videoUp = !patternUp && s.video.released && videoLive(s);
     const Surface& pic = patternUp ? s.pattern : videoUp ? s.video : s.panel;
     if (pic.released) {
       // Side by side (VPX's VR preview on "both eyes": left eye | right eye): one swapchain, each half to its eye as its

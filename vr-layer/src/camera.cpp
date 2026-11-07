@@ -2,6 +2,7 @@
 #include "camera.h"
 #include "eye_crop.h"
 
+#include "frame_ring.h"
 #include "jpeg_encode.h"
 #include "layer_log.h"
 
@@ -200,6 +201,12 @@ uint64_t usBetween(int64_t from, int64_t to) {
   return static_cast<uint64_t>((to - from) * 1000000 / qpcFreq());
 }
 
+// D10.2: a QPC reading as the ring's clock (microseconds; frame_ring.h ringNowUs is the same conversion).
+int64_t qpcUs(int64_t q) {
+  const int64_t f = qpcFreq();
+  return (q / f) * 1000000 + (q % f) * 1000000 / f;
+}
+
 // ---- formats ----------------------------------------------------------------------------------------------------------
 
 struct FormatInfo {
@@ -353,7 +360,33 @@ struct Shared {
   // Counters: the worker's, read by the render thread at stop.
   std::atomic<uint64_t> sent{0}, droppedRing{0}, droppedBehind{0}, droppedWrite{0};
   std::atomic<uint64_t> sumIssue{0}, sumMap{0}, sumCopy{0}, sumEnc{0}, sumWrite{0}, sumBytes{0};
+  // D10.2: the send ring the worker publishes into instead of encoding (null = JPEG over the pipe). Made before the
+  // worker starts, freed with this struct (the worker's own reference keeps both until it has left its last frame).
+  std::unique_ptr<RingProducer> ring;
 };
+
+// D10.2: RGBA rows (packRgba's output) as BGRA rows at `dstPitch` bytes: the ring's pixel order. Word-wise (the two
+// outer bytes swap), so the copy into the shared memory is the only pass over the frame.
+void rgbaToBgraRows(const uint8_t* src, uint32_t w, uint32_t h, uint8_t* dst, size_t dstPitch) {
+  for (uint32_t y = 0; y < h; y++) {
+    const auto* in = reinterpret_cast<const uint32_t*>(src + static_cast<size_t>(y) * w * 4);
+    auto* out = reinterpret_cast<uint32_t*>(dst + dstPitch * y);
+    for (uint32_t x = 0; x < w; x++) {
+      const uint32_t v = in[x];
+      out[x] = (v & 0xff00ff00u) | ((v & 0x00ff0000u) >> 16) | ((v & 0x000000ffu) << 16);
+    }
+  }
+}
+
+// A JSON string literal (quotes included) for a status field: '"' and '\' escaped, control characters as spaces.
+std::string jsonText(const std::string& s) {
+  std::string j = "\"";
+  for (char ch : s) {
+    if (ch == '"' || ch == '\\') j += '\\';
+    j += (ch >= 0x20 && ch != 0x7f) ? ch : ' ';
+  }
+  return j + "\"";
+}
 
 // The mapped rows of one eye as packed top-down RGBA at the output size: a straight (flipped, swapped) copy when the
 // sizes match (OpenGL: the blit already scaled), a box average when they do not (D3D11: the staging copy is the crop
@@ -472,10 +505,38 @@ void workerMain(std::shared_ptr<Shared> sh) {
       for (int e = 0; e < eyes; e++) packRgba(slot->data[e], slot->pitch[e], slot->dataW[e], slot->dataH[e], slot->bottomUp, slot->swapRB, slot->outW, slot->outH, sh->packed[e]);
       const uint64_t n = slot->n, issueUs = slot->issueUs, mapUs = slot->mapUs, late = slot->late;
       const uint32_t ow = slot->outW, oh = slot->outH;
-      const uint64_t tUs = usBetween(sh->startQpc, slot->issuedQpc);
+      const int64_t issuedQpc = slot->issuedQpc;
+      const uint64_t tUs = usBetween(sh->startQpc, issuedQpc);
       EyeMeta eye[2] = {slot->eye[0], slot->eye[1]};
       slot->state.store(Consumed);
       const int64_t t1 = qpc();
+      if (sh->ring) {
+        // D10.2: the BGRA box is complete in packed[]: into the send ring (the eyes side by side, left | right, when
+        // both were asked), stamped with the capture moment (the issue), no JPEG and no CVF1.
+        const uint32_t fw = ow * static_cast<uint32_t>(eyes), fh = oh;
+        uint8_t* dst = sh->ring->beginFrame(fw, fh);
+        if (!dst) {
+          sh->droppedWrite++;
+          logOnce("camera_ring_too_big", "camera: a " + std::to_string(fw) + "x" + std::to_string(fh) + " frame does not fit the send ring (" +
+                                             std::to_string(sh->ring->maxWidth()) + "x" + std::to_string(sh->ring->maxHeight()) + "); frames are dropped");
+          continue;
+        }
+        for (int e = 0; e < eyes; e++) rgbaToBgraRows(sh->packed[e].data(), ow, oh, dst + static_cast<size_t>(e) * ow * 4, static_cast<size_t>(fw) * 4);
+        sh->ring->endFrame(qpcUs(issuedQpc));
+        const int64_t t2 = qpc();
+        const uint64_t sent = ++sh->sent;
+        sh->sumIssue += issueUs;
+        sh->sumMap += mapUs;
+        sh->sumCopy += usBetween(t0, t1);
+        sh->sumWrite += usBetween(t1, t2);
+        sh->sumBytes += static_cast<uint64_t>(fw) * fh * 4;
+        if (sent <= kLogFirst || sent % kLogEvery == 0) {
+          logLine("camera: frame " + std::to_string(n) + ": issue " + std::to_string(issueUs) + " us, ready after " + std::to_string(late) + " tick(s), map " +
+                  std::to_string(mapUs) + " us, copy " + std::to_string(usBetween(t0, t1)) + " us, ring publish " + std::to_string(usBetween(t1, t2)) + " us (seq " +
+                  std::to_string(sh->ring->published()) + "); " + std::to_string(ow) + "x" + std::to_string(oh) + " per eye");
+        }
+        continue;
+      }
       // The second eye to the helper (D8.1: none for a one-eye frame; the helper was not started).
       if (eyes == 2) {
         {
@@ -944,8 +1005,23 @@ struct Camera::Impl {
     }
     sh = std::make_shared<Shared>();
     sh->startQpc = qpc();
+    // D10.2: the send ring, sized for the box (both eyes side by side when both are asked), before the worker runs. When
+    // it cannot be made the JPEG path serves and the status says so (ringState "failed").
+    std::string ringExtra, encText = "JPEG quality " + std::to_string(kJpegQuality);
+    if (!req.ring.empty()) {
+      std::string why;
+      sh->ring = RingProducer::create("send", req.ring, req.width * static_cast<uint32_t>(nEyes), req.height, why);
+      if (sh->ring) {
+        encText = "BGRA into the send ring '" + req.ring + "' (up to " + std::to_string(sh->ring->maxWidth()) + "x" + std::to_string(sh->ring->maxHeight()) +
+                  (sh->ring->reused() ? ", adopted: it existed already" : "") + ")";
+        ringExtra = ",\"ring\":" + jsonText(req.ring) + ",\"ringState\":\"ok\"";
+      } else {
+        logLine("camera: the send ring '" + req.ring + "' could not be made: " + why + "; frames go as JPEG over the pipe instead");
+        ringExtra = ",\"ring\":" + jsonText(req.ring) + ",\"ringState\":\"failed\",\"ringWhy\":" + jsonText(why);
+      }
+    }
     std::thread(workerMain, sh).detach();
-    if (nEyes == 2) std::thread(helperMain, sh).detach();  // the right eye's encoder: nothing for it with one eye (D8.1)
+    if (nEyes == 2 && !sh->ring) std::thread(helperMain, sh).detach();  // the right eye's encoder: nothing for it with one eye (D8.1) or a ring (D10.2)
     intervalQpc = qpcFreq() / static_cast<int64_t>(req.fps > 0 ? req.fps : 30);
     nextDueQpc = qpc();
     startedQpc = nextDueQpc;
@@ -960,12 +1036,12 @@ struct Camera::Impl {
             std::to_string(v.rectY) + " of a " + std::to_string(v.swapchain.width) + "x" + std::to_string(v.swapchain.height) + " swapchain, format " +
             hex(v.swapchain.format) + " " + f.name + (f.srgb ? ", sRGB" : ", linear-tagged") + "), crop " + std::to_string(c.w) + "x" + std::to_string(c.h) +
             " at " + std::to_string(c.x) + "," + std::to_string(c.y) + (req.whole ? " (whole)" : "") + " -> " + std::to_string(outW) + "x" +
-            std::to_string(outH) + " per eye at " + std::to_string(req.fps) + " fps, " + eyesText + ", JPEG quality " + std::to_string(kJpegQuality) +
+            std::to_string(outH) + " per eye at " + std::to_string(req.fps) + " fps, " + eyesText + ", " + encText +
             "; frame times follow (the first " + std::to_string(kLogFirst) + ", then every " + std::to_string(kLogEvery) + "th)");
     panelPipeSendStatus("on", "", ",\"api\":\"" + apiName + "\",\"source\":[" + std::to_string(v.rectW) + "," + std::to_string(v.rectH) + "],\"size\":[" +
                                     std::to_string(outW) + "," + std::to_string(outH) + "],\"fps\":" + std::to_string(req.fps) +
                                     ",\"whole\":" + (req.whole ? "true" : "false") +
-                                    (nEyes == 1 ? std::string(",\"eye\":\"") + eyeName(eyeView[0]) + "\"" : std::string()));
+                                    (nEyes == 1 ? std::string(",\"eye\":\"") + eyeName(eyeView[0]) + "\"" : std::string()) + ringExtra);
     return true;
   }
 
@@ -1009,11 +1085,12 @@ struct Camera::Impl {
     const uint64_t sent = s->sent.load(), ring = s->droppedRing.load(), behind = s->droppedBehind.load(), writes = s->droppedWrite.load();
     const double secs = static_cast<double>(usBetween(startedQpc, qpc())) / 1e6;
     const auto avg = [&](const std::atomic<uint64_t>& sum) { return sent ? std::to_string(sum.load() / sent) : std::string("-"); };
-    logLine("camera: off (" + why + "): " + std::to_string(sent) + " frames sent in " + fixed(secs, 1) + " s" +
+    logLine("camera: off (" + why + "): " + std::to_string(sent) + (s->ring ? " frames published to the send ring in " : " frames sent in ") + fixed(secs, 1) + " s" +
             (secs > 0.5 && sent ? " (" + fixed(static_cast<double>(sent) / secs, 1) + " fps)" : std::string()) + ", " + std::to_string(ring + behind + writes) +
             " dropped (ring full " + std::to_string(ring) + ", worker behind " + std::to_string(behind) + ", write failed " + std::to_string(writes) +
             "); average issue " + avg(s->sumIssue) + " us, map " + avg(s->sumMap) + " us, copy " + avg(s->sumCopy) + " us, encode " + avg(s->sumEnc) +
-            " us, write " + avg(s->sumWrite) + " us, " + (sent ? std::to_string(s->sumBytes.load() / sent / 1024) : std::string("-")) + " KB a frame");
+            " us, " + (s->ring ? "ring publish " : "write ") + avg(s->sumWrite) + " us, " + (sent ? std::to_string(s->sumBytes.load() / sent / 1024) : std::string("-")) +
+            " KB a frame");
     panelPipeSendStatus("off", why, "");
     sh.reset();
   }
@@ -1052,6 +1129,7 @@ void Camera::tick(const CameraRequest& req, CameraApi api, ID3D11Device* device,
   I.reap(device);
   if (I.api == CameraApi::OpenGL) I.mapReadyGl();
   else I.mapReadyD3d(device);
+  if (I.sh->ring) I.sh->ring->heartbeat();  // D10.2: the helper reads a stale heartbeat as "the layer is gone"
   if (!haveViews) return;
   const int64_t now = qpc();
   if (now < I.nextDueQpc) return;

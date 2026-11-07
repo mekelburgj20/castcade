@@ -33,6 +33,8 @@ constexpr DWORD kRetryMs = 2000;
 // of a few hundred KB; a write beyond the free space blocks the camera's worker, never the render thread).
 constexpr DWORD kInBufferBytes = 1u << 20;
 constexpr DWORD kOutBufferBytes = 4u << 20;
+// D10.2: a ring token is at most 64 characters (frame_ring.h); more than this is kept of a longer one for the status line.
+constexpr size_t kRingTokenKeepMax = 128;
 
 struct Inbox {
   std::vector<uint8_t> pixels;  // the newest complete frame not yet taken
@@ -229,7 +231,23 @@ bool jsonCamera(const std::string& body, CameraRequest& out) {
   out.whole = jsonTrue(obj, "whole");
   const std::string eye = jsonString(obj, "eye");
   out.eye = eye == "left" ? 0 : eye == "right" ? 1 : -1;
+  // D10.2: the send ring's token, as given (frame_ring.h validates it when the ring is made, so a bad one is reported
+  // in the status rather than silently dropped); bounded, since the control is copied every frame.
+  out.ring = jsonString(obj, "ring");
+  if (out.ring.size() > kRingTokenKeepMax) out.ring.resize(kRingTokenKeepMax);
   return true;
+}
+
+// D10.2: "video" in the control: {"ring": "<token>"} → the token; absent, null, not an object or without a string
+// "ring" → "" (theater takes CVO2 frames as before).
+std::string jsonVideoRing(const std::string& body) {
+  const size_t i = valueAt(body, "video");
+  if (i == std::string::npos || i >= body.size() || body[i] != '{') return "";
+  const size_t end = body.find('}', i);
+  if (end == std::string::npos) return "";
+  std::string ring = jsonString(body.substr(i, end - i + 1), "ring");
+  if (ring.size() > kRingTokenKeepMax) ring.resize(kRingTokenKeepMax);
+  return ring;
 }
 
 // D7.5.9 / D7.6.10: "tune" in the control: {"depthM": <m> | null, "dyDeg": [left, right]}. `depthM` absent, null, not
@@ -356,7 +374,9 @@ void applyControl(const std::string& body) {
   // D7.5.9, D7.5.11 (layer 0.5.2): likewise, a control without "tune" / "feather" means none.
   jsonTune(body, c.tuneDepthM, c.tuneDyDeg);
   c.feather = jsonFeather(body);
-  bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false, tuneChanged = false, featherChanged = false;
+  // D10.2: likewise, a control without "video" means theater takes CVO2 frames.
+  c.videoRing = jsonVideoRing(body);
+  bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false, tuneChanged = false, featherChanged = false, videoRingChanged = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
     changed = st.control.mode != c.mode || st.control.sbs != c.sbs || st.control.panelCentre != c.panelCentre ||
@@ -366,7 +386,11 @@ void applyControl(const std::string& body) {
     eyesChanged = st.control.eyesKnown != c.eyesKnown || st.control.eyes[0] != c.eyes[0] || st.control.eyes[1] != c.eyes[1];
     tuneChanged = st.control.tuneDepthM != c.tuneDepthM || st.control.tuneDyDeg[0] != c.tuneDyDeg[0] || st.control.tuneDyDeg[1] != c.tuneDyDeg[1];
     featherChanged = st.control.feather != c.feather;
+    videoRingChanged = st.control.videoRing != c.videoRing;
     st.control = c;
+  }
+  if (videoRingChanged) {
+    logLine(c.videoRing.empty() ? std::string("pipe: theater video from the pipe (CVO2)") : "pipe: theater video from the recv ring '" + c.videoRing + "'");
   }
   if (eyesChanged) {
     logLine(c.eyesKnown ? "pipe: the sender's eyes: left " + eyeText(c.eyes[0]) + "; right " + eyeText(c.eyes[1])
@@ -394,7 +418,8 @@ void applyControl(const std::string& body) {
   if (cameraChanged) {
     logLine(c.camera.on ? "pipe: camera asked: each eye in a " + std::to_string(c.camera.width) + "x" + std::to_string(c.camera.height) + " box at " +
                               std::to_string(c.camera.fps) + " fps" + (c.camera.whole ? ", the whole render (no crop)" : "") +
-                              (c.camera.eye >= 0 ? std::string(", one eye (") + (c.camera.eye == 0 ? "left" : "right") + ")" : std::string(", both eyes"))
+                              (c.camera.eye >= 0 ? std::string(", one eye (") + (c.camera.eye == 0 ? "left" : "right") + ")" : std::string(", both eyes")) +
+                              (c.camera.ring.empty() ? std::string() : ", into the send ring '" + c.camera.ring + "'")
                         : std::string("pipe: camera off"));
   }
 }

@@ -20,7 +20,11 @@ cmake_minimum_required(VERSION 3.20)
 #        the video window's edges into the black behind them.
 # 0.5.3: D8.1, one eye: control "camera": {"eye": "left" | "right"} copies, encodes and sends that eye only (the CVF1 header's
 #        "eyes" one entry long; the "on" status says "eye"); absent = both eyes as before. Pipe protocol stays 3 (ADR 0009).
-project(castcade_vr_layer VERSION 0.5.3 LANGUAGES CXX)
+# 0.6.0: D10.2, the frame rings to the video helper (src/frame_ring, ../video-helper/include/castcade_frame_ring.h): control
+#        "camera": {"ring": <token>} publishes the eye as BGRA into the send ring instead of CVF1 JPEG (the "on" status says
+#        "ring", "ringState"); "video": {"ring": <token>} draws theater from the recv ring instead of CVO2. Pipe protocol
+#        stays 3. tools/ring_feed.exe (not shipped) plays either side of a ring for tests without VPX.
+project(castcade_vr_layer VERSION 0.6.0 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
@@ -53,9 +57,11 @@ if(NOT openxr_sdk_POPULATED)
   FetchContent_Populate(openxr_sdk)
 endif()
 
-add_library(XrApiLayer_castcade_panel SHARED src/layer.cpp src/panel_pipe.cpp src/layer_log.cpp src/camera.cpp src/jpeg_encode.cpp)
+add_library(XrApiLayer_castcade_panel SHARED src/layer.cpp src/panel_pipe.cpp src/layer_log.cpp src/camera.cpp src/jpeg_encode.cpp src/frame_ring.cpp)
 # third_party/stb: the vendored JPEG encoder (D7.5; THIRD-PARTY.md), compiled in jpeg_encode.cpp only.
-target_include_directories(XrApiLayer_castcade_panel PRIVATE "${openxr_sdk_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb")
+# ../video-helper/include: the frame ring contract shared with the video helper (D10.2; a header, no code is shared).
+set(CASTCADE_RING_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../video-helper/include")
+target_include_directories(XrApiLayer_castcade_panel PRIVATE "${openxr_sdk_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb" "${CASTCADE_RING_INCLUDE}")
 target_compile_features(XrApiLayer_castcade_panel PRIVATE cxx_std_17)
 target_compile_definitions(XrApiLayer_castcade_panel PRIVATE
   WIN32_LEAN_AND_MEAN NOMINMAX
@@ -65,6 +71,16 @@ target_compile_definitions(XrApiLayer_castcade_panel PRIVATE
 # layer turns the panel off for the process instead of taking VPX down mid-game (D7.3: never throw across the API).
 target_compile_options(XrApiLayer_castcade_panel PRIVATE /W4 /permissive- /utf-8 /EHa "$<$<CONFIG:Release>:/O2;/GL>")
 target_link_options(XrApiLayer_castcade_panel PRIVATE "$<$<CONFIG:Release>:/LTCG;/OPT:REF;/OPT:ICF>")
+
+# D10.2: ring_feed.exe, a console tool that plays either side of a frame ring (a producer with a moving test pattern, a
+# consumer that reports what it takes) for testing the helper and the layer without VPX. Built here, never shipped: CI
+# and the fetch script take the three files above by name.
+add_executable(ring_feed tools/ring_feed.cpp src/frame_ring.cpp)
+target_include_directories(ring_feed PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CASTCADE_RING_INCLUDE}")
+target_compile_features(ring_feed PRIVATE cxx_std_17)
+target_compile_definitions(ring_feed PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(ring_feed PRIVATE /W4 /permissive- /utf-8 /EHsc "$<$<CONFIG:Release>:/O2>")
+target_link_libraries(ring_feed PRIVATE winmm)
 
 # The manifest and THIRD-PARTY.md beside the dll, so build/Release/ is the shippable set as-is (CI zips it; the
 # companion's dev fallback registers the json from there).
