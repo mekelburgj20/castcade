@@ -45,6 +45,11 @@ export const PANEL_CHANNELS = {
    */
   volume: 'castcade-panel:volume',
   /**
+   * D10.5 (2026-11-07): one short line about the native spectator video for the footer (`video: rung 3 · 1016x1080@60 ·
+   * 7.8 Mbps · rtt 41 ms`), or null to clear it; from the match host through `setVideoLine`.
+   */
+  videoLine: 'castcade-panel:video-line',
+  /**
    * D7.5.1: one frame of the layer camera (`PanelCameraFrame`: both eyes' JPEGs), only while the capture is the
    * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
    */
@@ -832,13 +837,15 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   #mic { color: var(--dim); white-space: nowrap; }
   #mic.muted, #mic.none { color: var(--bad); }
   #msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #vid { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #vid:empty { display: none; }
 </style></head>
 <body class="${opts.vr ? 'vr' : 'desktop'}">
 <div id="head">CASTCADE MATCH</div>
 <div id="stage"><video id="video" autoplay playsinline muted></video><div id="idle"></div></div>
 <video id="src" autoplay playsinline muted style="position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none"></video>
 <div id="strip"></div>
-<footer><span id="mic"></span><span id="msg"></span></footer>
+<footer><span id="mic"></span><span id="vid"></span><span id="msg"></span></footer>
 <script>
 'use strict';
 const { ipcRenderer } = require('electron');
@@ -1038,6 +1045,7 @@ function render() {
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
+  $('vid').textContent = bench ? '' : videoLine;  // D10.5: the native video's rung and rate, one short line
   $('msg').textContent = volumeNote || (bench && bench.error) || noPathMessage() || (panel && panel.message) || localError || '';
   routeTable();
 }
@@ -1766,6 +1774,9 @@ ipcRenderer.on(C.sending, (_e, on) => {
   render();
 });
 ipcRenderer.on(C.state, (_e, s) => { panel = s; render(); });
+// D10.5: the native video's footer line from the match host (null clears it).
+let videoLine = '';
+ipcRenderer.on(C.videoLine, (_e, line) => { videoLine = typeof line === 'string' ? line : ''; render(); });
 ipcRenderer.on(C.muted, (_e, on) => {
   muted = !!on;
   if (micTrack) {

@@ -434,6 +434,17 @@ interface NativeVideoStats {
   lossPct?: number | null;
   bweKbps?: number | null;
   qualityLimitation?: string | null;
+  /** D10.5 (send): the rung applied and the controller's state (`auto`, `probe`, `pin`, `trouble:<kinds>`). */
+  rung?: number | null;
+  ctrl?: string | null;
+}
+/** D10.5: one rung of the ladder for this rig's source. */
+interface NativeVideoRung {
+  rung: number;
+  width: number;
+  height: number;
+  fps: number;
+  kbps: number;
 }
 interface NativeVideoStatus {
   helper: 'ready' | 'starting' | 'stopped' | 'unavailable';
@@ -443,7 +454,11 @@ interface NativeVideoStatus {
   sending: boolean;
   source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
   sink: 'ring' | 'window' | 'none';
-  peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;
+  /** D10.5: the ladder for this rig's source, the ceiling told to the helper (kbps) and the pin (null = auto). */
+  ladder: NativeVideoRung[];
+  maxKbps: number;
+  pin: number | null;
+  peers: Record<string, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: (NativeVideoRung & { reason: string }) | null }>;
 }
 interface VrOverlayStatus {
   state: 'stopped' | 'starting' | 'showing' | 'hidden' | 'unavailable';
@@ -557,6 +572,9 @@ interface MatchStatus {
   turn: { url: string; username: string; credentialSet: boolean } | null;
   /** D10.3: which path carries the spectator video (media.json): the native helper or the 0.2.36 Electron path. */
   videoPath: 'native' | 'electron';
+  /** D10.5: the native video ladder's ceiling (media.json, kbps) and manual pin (1..6, null = auto; this run only). */
+  videoMaxKbps: number;
+  videoPin: number | null;
   locked: boolean;
   settings: MatchSettings;
   defaultName: string;
@@ -625,6 +643,8 @@ interface CastcadeBridge {
     setTurn(turn: { url: string; username: string; credential: string | null } | null): Promise<MatchStatus>;
     /** D10.3: the spectator video path (native helper / Electron), used from the next match. */
     setVideoPath(path: 'native' | 'electron'): Promise<MatchStatus>;
+    /** D10.5: the native video quality: the ceiling (kbps, saved) and the pin (1..6 or null for auto; this run only). */
+    setVideoRungs(rungs: { maxKbps?: number; pin?: number | null }): Promise<MatchStatus>;
     /** D2.6: the desktop match panel window (no-op in VR). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;

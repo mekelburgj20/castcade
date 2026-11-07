@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { MediaSignal, NativeVideoStatus } from './match-media-types.js';
 import { createVideoHelper, type VideoHelper, type VideoHelperCommand, type VideoHelperEvent, type VideoHelperStatus } from './video-helper.js';
-import { createVideoMesh, helperIceServers, initiates, pairWords, type VideoMesh } from './video-mesh.js';
+import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, helperIceServers, initiates, ladderFor, pairWords, rungGeometry, rungReadout, type VideoMesh } from './video-mesh.js';
 
 const FAKE = fileURLToPath(new URL('./__fixtures__/fake-video-helper.mjs', import.meta.url));
 
@@ -29,6 +29,46 @@ describe('video mesh rules (D10.3)', () => {
     expect(pairWords('')).toBeNull();
     expect(pairWords(null)).toBeNull();
     expect(helperIceServers([{ urls: ['stun:a', 'stun:b'] }, { urls: 'turn:t', username: 'u', credential: 'c' }])).toEqual([{ urls: ['stun:a', 'stun:b'] }, { urls: ['turn:t'], username: 'u', credential: 'c' }]);
+  });
+
+  it('D10.5: the ladder as the helper computes it (fractions of the source box, even sizes), the design box before a source is known, the clamps', () => {
+    expect(ladderFor(1354, 1440)).toEqual([
+      { rung: 1, width: 1354, height: 1440, fps: 60, kbps: 20_000 },
+      { rung: 2, width: 1354, height: 1440, fps: 30, kbps: 10_000 },
+      { rung: 3, width: 1016, height: 1080, fps: 60, kbps: 8000 },
+      { rung: 4, width: 1016, height: 1080, fps: 30, kbps: 5000 },
+      { rung: 5, width: 678, height: 720, fps: 60, kbps: 4000 },
+      { rung: 6, width: 678, height: 720, fps: 30, kbps: 2000 },
+    ]);
+    expect(rungGeometry(3, 1920, 1080)).toEqual({ rung: 3, width: 1440, height: 810, fps: 60, kbps: 8000 });
+    expect(rungGeometry(5, 1920, 1080)).toEqual({ rung: 5, width: 960, height: 540, fps: 60, kbps: 4000 });
+    expect(rungGeometry(9, 100, 100).rung).toBe(6);
+    expect(ladderFor(0, 0)).toEqual(ladderFor(1354, 1440));
+    expect(clampMaxKbps(8000.4)).toBe(8000);
+    expect(clampMaxKbps(10)).toBe(500);
+    expect(clampMaxKbps('x')).toBe(20_000);
+    expect(clampPin(2)).toBe(2);
+    expect(clampPin(7)).toBeNull();
+    expect(clampPin(null)).toBeNull();
+  });
+
+  it('D10.5: the Match tab readout and the headset line from the status', () => {
+    const ladder = ladderFor(1354, 1440);
+    const rung = { rung: 3, width: 1016, height: 1080, fps: 60, kbps: 8000, reason: 'probe' };
+    const send = { fps: 59, kbps: 7812, width: 1016, height: 1080, rttMs: 41.2 };
+    const recv = { fps: 60, kbps: 7700, width: 1016, height: 1080 };
+    expect(rungReadout({ pin: null, sending: false, ladder, peers: {} })).toBe('Auto (rung 3 to start: 1016x1080 at 60 fps)');
+    expect(rungReadout({ pin: 2, sending: false, ladder, peers: {} })).toBe('Pinned to rung 2 (rung 2 to start)');
+    expect(rungReadout({ pin: null, sending: false, ladder, peers: { k: { ice: 'connected', pair: null, send: null, recv: null, rung } } })).toBe('Auto (rung 3: 1016x1080 at 60 fps, up to 8.0 Mbps)');
+    expect(rungReadout({ pin: null, sending: true, ladder, peers: { k: { ice: 'connected', pair: null, send, recv: null, rung } } })).toBe('Auto (rung 3: 1016x1080 at 59 fps, 7.8 Mbps)');
+    expect(rungReadout({ pin: null, sending: true, ladder, peers: { k: { ice: 'connected', pair: null, send, recv: null, rung: { ...rung, reason: 'down:loss' } } } })).toBe('Auto (rung 3: 1016x1080 at 59 fps, 7.8 Mbps, stepped down on loss)');
+    expect(rungReadout({ pin: 3, sending: true, ladder, peers: { k: { ice: 'connected', pair: null, send, recv: null, rung: { ...rung, reason: 'pin' } } } })).toBe('Pinned to rung 3 (rung 3: 1016x1080 at 59 fps, 7.8 Mbps)');
+    expect(headsetVideoLine({ helper: 'starting', sending: true, peers: {} })).toBeNull();
+    expect(headsetVideoLine({ helper: 'ready', sending: true, peers: {} })).toBe('video: starting');
+    expect(headsetVideoLine({ helper: 'ready', sending: true, peers: { k: { ice: 'connected', pair: null, send, recv: null, rung } } })).toBe('video: rung 3 · 1016x1080@59 · 7.8 Mbps · rtt 41 ms');
+    expect(headsetVideoLine({ helper: 'ready', sending: true, peers: { k: { ice: 'connected', pair: null, send: null, recv: null, rung } } })).toBe('video: rung 3 · 1016x1080@60');
+    expect(headsetVideoLine({ helper: 'ready', sending: false, peers: { k: { ice: 'connected', pair: null, send: null, recv, rung: null } } })).toBe('video: in 1016x1080 · 60 fps · 7.7 Mbps');
+    expect(headsetVideoLine({ helper: 'ready', sending: false, peers: { k: { ice: 'connected', pair: null, send: null, recv: null, rung: null } } })).toBeNull();
   });
 });
 
@@ -89,7 +129,7 @@ describe('two meshes over two fake helpers (D10.3 §6.4)', () => {
     a.mesh.setPeers(['aaa', 'bbb']);
     b.mesh.setPeers(['bbb', 'aaa']);
     // Before the helpers are ready, the peers are wanted and shown, not told.
-    expect(a.mesh.status().peers).toEqual({ bbb: { ice: 'new', pair: null, send: null, recv: null } });
+    expect(a.mesh.status().peers).toEqual({ bbb: { ice: 'new', pair: null, send: null, recv: null, rung: null } });
     await until(() => peer(a, 'bbb')?.ice === 'connected' && peer(b, 'aaa')?.ice === 'connected');
     expect(peer(a, 'bbb')?.pair).toBe('srflx↔host');
     // The lower id made the offer; the other answered.
@@ -111,10 +151,19 @@ describe('two meshes over two fake helpers (D10.3 §6.4)', () => {
     a.mesh.setSink({ kind: 'ring', token: 'tok_recv_0123456' });
     b.mesh.setSink({ kind: 'window' });
     a.mesh.setIce([{ urls: ['stun:stun.l.google.com:19302'] }, { urls: 'turn:relay.example.org:3478', username: 'u', credential: 'c' }]);
+    // D10.5: the rung in force came with the connection (the helper starts at rung 3) and the status carries the ladder for the source box.
+    expect(peer(a, 'bbb')?.rung).toEqual({ rung: 3, width: 1016, height: 1080, fps: 60, kbps: 8000, reason: 'start' });
+    expect(a.mesh.status()).toMatchObject({ maxKbps: 20_000, pin: null });
+    expect(a.mesh.status().ladder[0]).toEqual({ rung: 1, width: 1354, height: 1440, fps: 60, kbps: 20_000 });
     a.mesh.setRungs({ max_kbps: 8000, pin: 2 });
     await until(() => fakeLogs(a).some((t) => t.startsWith('rungs max 8000')));
     // The first ready told it the whole (empty) state; then each change once, in the helper's order.
     expect(fakeLogs(a)).toEqual(['ice 0 server(s)', 'sink none', 'rungs max 20000 kbps', 'send off (none)', 'send on (ring)', 'sink ring tok_recv_0123456', 'ice 2 server(s)', 'rungs max 8000 kbps, pinned 2']);
+    await until(() => peer(a, 'bbb')?.rung?.reason === 'pin');
+    expect(peer(a, 'bbb')?.rung).toEqual({ rung: 2, width: 1354, height: 1440, fps: 30, kbps: 10_000, reason: 'pin' });
+    expect(a.mesh.status()).toMatchObject({ maxKbps: 8000, pin: 2 });
+    expect(a.log).toContain('video: rungs: ceiling 8000 kbps, pinned to rung 2');
+    expect(a.log).toContain('video: peer bbb: rung 2 (1354x1440 at 30 fps, 10.0 Mbps): pin');
     await until(() => a.mesh.status().source.state === 'ok');
     expect(a.mesh.status()).toMatchObject({ sending: true, sink: 'ring', source: { kind: 'ring', width: 1354, height: 1440, fps: 60, state: 'ok', fpsIn: 60 } });
     expect(a.log).toContain('video: source ring 1354x1440 at 60 fps');
@@ -221,7 +270,7 @@ describe('the mesh and a helper that restarts', () => {
     h.say({ event: 'peer', id: 'aaa', ice: 'connected', pair: { local: 'srflx', remote: 'relay' } });
     h.say({ event: 'stats', id: 'aaa', dir: 'recv', fps: 30, kbps: 5000, width: 1016, height: 1080 });
     h.say({ event: 'source', kind: 'ring', state: 'missing', fps_in: 0 });
-    expect(mesh.status().peers.aaa).toEqual({ ice: 'connected', pair: 'srflx↔relay', send: null, recv: { fps: 30, kbps: 5000, width: 1016, height: 1080 } });
+    expect(mesh.status().peers.aaa).toEqual({ ice: 'connected', pair: 'srflx↔relay', send: null, recv: { fps: 30, kbps: 5000, width: 1016, height: 1080 }, rung: null });
     expect(mesh.status().source).toMatchObject({ state: 'missing', fpsIn: 0 });
     expect(log).toContain('video: source ring: missing (the ring is not being filled)');
     // Nothing changed: nothing more is said.

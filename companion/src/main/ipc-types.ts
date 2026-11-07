@@ -67,6 +67,8 @@ export const IPC = {
   matchSetTurn: 'match:setTurn',
   /** D10.3: the spectator video path (native helper / Electron), saved in media.json. */
   matchSetVideoPath: 'match:setVideoPath',
+  /** D10.5: the native video ladder's ceiling (saved) and manual pin (this run). */
+  matchSetVideoRungs: 'match:setVideoRungs',
   matchShowPanel: 'match:showPanel',
   matchHidePanel: 'match:hidePanel',
   /** D7.6.2: write the VR report (vr-report-<date>.md / .json beside companion.log). */
@@ -246,6 +248,8 @@ export interface CastcadeApi {
     setTurn(turn: { url: string; username: string; credential: string | null } | null): Promise<MatchStatus>;
     /** D10.3: the spectator video path: the native helper (`castcade-video.exe`) or the 0.2.36 Electron path; used from the next match. */
     setVideoPath(path: 'native' | 'electron'): Promise<MatchStatus>;
+    /** D10.5: the native video quality: the ceiling in kbps (saved in media.json) and the pin (1..6, null = auto; this run only). */
+    setVideoRungs(rungs: { maxKbps?: number; pin?: number | null }): Promise<MatchStatus>;
     /** D2.6: show or hide the desktop match panel window (a separate window beside this one). */
     showPanel(): Promise<MatchStatus>;
     hidePanel(): Promise<MatchStatus>;

@@ -36,13 +36,21 @@ export interface MediaSettings {
    * the helper has a source); `electron`: the 0.2.36 path, untouched. Kept for one release (D10.7 removes it).
    */
   videoPath: VideoPath;
+  /**
+   * D10.5 (2026-11-07): the ceiling of the native video ladder this rig sends under (kbps, 500..50000; the rung the
+   * helper's controller picks never costs more). This rig's own; the host-wide ceiling of D8.2 waits for the lobby
+   * (D10.5.1). The manual pin is a session knob and is not here (match-host memory only).
+   */
+  videoMaxKbps: number;
 }
 
 export type VideoPath = 'native' | 'electron';
 
 export const DEFAULT_STUN = ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'];
+export const DEFAULT_VIDEO_MAX_KBPS = 20_000;
+const VIDEO_MAX_KBPS_RANGE = { min: 500, max: 50_000 } as const;
 
-export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN], mainBounds: null, videoPath: 'native' };
+export const DEFAULT_MEDIA_SETTINGS: MediaSettings = { micDeviceId: null, muted: false, turn: null, stun: [...DEFAULT_STUN], mainBounds: null, videoPath: 'native', videoMaxKbps: DEFAULT_VIDEO_MAX_KBPS };
 
 /** `RTCIceServer` without the DOM lib. */
 export interface IceServer {
@@ -97,7 +105,14 @@ function sanitize(o: Record<string, unknown>, d: MediaSettings): MediaSettings {
     stun: Array.isArray(o.stun) ? readStun(o.stun) : [...d.stun],
     mainBounds: o.mainBounds === null ? null : (readBounds(o.mainBounds) ?? d.mainBounds),
     videoPath: o.videoPath === 'native' || o.videoPath === 'electron' ? o.videoPath : d.videoPath,
+    videoMaxKbps: readVideoMaxKbps(o.videoMaxKbps) ?? d.videoMaxKbps,
   };
+}
+
+function readVideoMaxKbps(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const n = Math.round(v);
+  return n >= VIDEO_MAX_KBPS_RANGE.min && n <= VIDEO_MAX_KBPS_RANGE.max ? n : null;
 }
 
 function readBounds(v: unknown): MediaSettings['mainBounds'] {

@@ -20,7 +20,7 @@
  *     next match; the shell stops it at quit).
  * Nothing here ever blocks a match: the status says what the helper is doing; the Electron path serves the rest.
  */
-import type { MatchPlayerId, MediaSignal, NativeVideoStats, NativeVideoStatus } from './match-media-types.js';
+import type { MatchPlayerId, MediaSignal, NativeVideoRung, NativeVideoRungState, NativeVideoStats, NativeVideoStatus } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
 import { isPolite } from './rtc-signaling.js';
 import type { VideoHelper, VideoHelperEvent, VideoHelperStatus, VideoIceServer, VideoSignalKind, VideoSink, VideoSource, VideoStatsEvent } from './video-helper.js';
@@ -28,8 +28,101 @@ import type { VideoHelper, VideoHelperEvent, VideoHelperStatus, VideoIceServer, 
 export const MAX_HELD_SIGNALS = 64;
 /** Senders whose signals are held before the roster names them (a match has at most three others; the rest is noise). */
 export const MAX_HELD_SENDERS = 8;
-/** §3 item 4: the top rung, 20 Mbps; the ladder itself is D10.5. */
+/** §3 item 4: the top rung, 20 Mbps: the default ceiling. */
 export const DEFAULT_MAX_KBPS = 20_000;
+/** The ceiling's range as the Match tab and media.json accept it (kbps). */
+export const MIN_MAX_KBPS = 500;
+export const MAX_MAX_KBPS = 50_000;
+
+/**
+ * D10.5: the six rungs (video-helper/src/ladder.h is the one the helper applies; the numbers must agree): a fraction
+ * of the source's height (aspect kept, even sizes), a frame rate and a bitrate, ordered the owner's way ("we would
+ * sacrifice resolution for smoothness"): full size at 30 fps comes before the smaller size at 60.
+ */
+export const LADDER: ReadonlyArray<{ scale: number; fps: number; kbps: number }> = [
+  { scale: 1, fps: 60, kbps: 20_000 },
+  { scale: 1, fps: 30, kbps: 10_000 },
+  { scale: 0.75, fps: 60, kbps: 8_000 },
+  { scale: 0.75, fps: 30, kbps: 5_000 },
+  { scale: 0.5, fps: 60, kbps: 4_000 },
+  { scale: 0.5, fps: 30, kbps: 2_000 },
+];
+/** The design's eye (spectator-video-native.md §3): the ladder shown before this rig's source box is known. */
+export const DEFAULT_SOURCE_BOX = { width: 1354, height: 1440 } as const;
+
+const even = (v: number): number => {
+  const n = Math.round(v);
+  return Math.max(2, n % 2 ? n + 1 : n);
+};
+
+/** One rung's geometry for a source box, as the helper computes it (`RungFor`): 677 rounds up to 678. */
+export function rungGeometry(rung: number, width: number, height: number): NativeVideoRung {
+  const r = Math.min(LADDER.length, Math.max(1, Math.round(rung)));
+  const spec = LADDER[r - 1]!;
+  return { rung: r, width: width > 0 ? even(width * spec.scale) : 0, height: height > 0 ? even(height * spec.scale) : 0, fps: spec.fps, kbps: spec.kbps };
+}
+
+/** The whole ladder for a source box (the design's box when the source has none yet). */
+export function ladderFor(width: number, height: number): NativeVideoRung[] {
+  const w = width > 0 && height > 0 ? width : DEFAULT_SOURCE_BOX.width;
+  const h = width > 0 && height > 0 ? height : DEFAULT_SOURCE_BOX.height;
+  return LADDER.map((_, i) => rungGeometry(i + 1, w, h));
+}
+
+/** The ceiling as the helper takes it: an integer in [MIN_MAX_KBPS, MAX_MAX_KBPS]; anything else is the default. */
+export function clampMaxKbps(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return DEFAULT_MAX_KBPS;
+  return Math.min(MAX_MAX_KBPS, Math.max(MIN_MAX_KBPS, Math.round(v)));
+}
+
+/** A pin as the helper takes it: an integer rung 1..6, or null. */
+export function clampPin(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const r = Math.round(v);
+  return r >= 1 && r <= LADDER.length ? r : null;
+}
+
+/** Mbps with one decimal, for the readouts. */
+export const mbps = (kbps: number): string => `${(kbps / 1000).toFixed(1)} Mbps`;
+
+/**
+ * D10.5: the Match tab's readout: `Auto (rung 3: 1016x1080 at 60 fps, 7.8 Mbps)` or `Pinned to rung 2: …`, from the
+ * rung in force for the peer we send to (the first peer with one) and the sent kbps when sending; the nominal kbps
+ * otherwise. `Auto (rung 3 to start)` before the helper said anything.
+ */
+export function rungReadout(s: Pick<NativeVideoStatus, 'pin' | 'peers' | 'sending' | 'ladder'>): string {
+  const mode = s.pin === null ? 'Auto' : `Pinned to rung ${s.pin}`;
+  const peers = Object.values(s.peers);
+  const inForce = peers.map((p) => p.rung).find((r) => r !== null) ?? null;
+  const sent = s.sending ? (peers.map((p) => p.send).find((x) => x && x.width > 0) ?? null) : null;
+  if (!inForce) {
+    const g = s.ladder[2];
+    return `${mode} (rung ${s.pin ?? 3} to start${g && s.pin === null ? `: ${g.width}x${g.height} at ${g.fps} fps` : ''})`;
+  }
+  const rate = sent ? mbps(sent.kbps) : `up to ${mbps(inForce.kbps)}`;
+  const why = inForce.reason.startsWith('down:') ? `, stepped down on ${inForce.reason.slice(5)}` : inForce.reason === 'ceiling' ? ', at the ceiling' : '';
+  return `${mode} (rung ${inForce.rung}: ${inForce.width}x${inForce.height} at ${sent ? sent.fps : inForce.fps} fps, ${rate}${why})`;
+}
+
+/**
+ * D10.5: the headset panel's one line (`setVideoLine`): while sending, the rung in force and what goes out
+ * (`video: rung 3 · 1016x1080@60 · 7.8 Mbps · rtt 41 ms`); while a picture arrives, what comes in
+ * (`video: in 1016x1080 · 60 fps · 7.8 Mbps`); null when there is nothing to say.
+ */
+export function headsetVideoLine(s: Pick<NativeVideoStatus, 'helper' | 'sending' | 'peers'>): string | null {
+  if (s.helper !== 'ready') return null;
+  const peers = Object.values(s.peers);
+  if (s.sending) {
+    const r = peers.map((p) => p.rung).find((x) => x !== null) ?? null;
+    const sent = peers.map((p) => p.send).find((x) => x && x.width > 0) ?? null;
+    if (!r && !sent) return 'video: starting';
+    const parts = [r ? `rung ${r.rung}` : null, sent ? `${sent.width}x${sent.height}@${sent.fps}` : r ? `${r.width}x${r.height}@${r.fps}` : null, sent ? mbps(sent.kbps) : null, sent?.rttMs != null ? `rtt ${Math.round(sent.rttMs)} ms` : null];
+    return `video: ${parts.filter((x) => x).join(' · ')}`;
+  }
+  const inbound = peers.map((p) => p.recv).find((x) => x && x.width > 0 && x.fps > 0) ?? null;
+  if (!inbound) return null;
+  return `video: in ${inbound.width}x${inbound.height} · ${inbound.fps} fps · ${mbps(inbound.kbps)}`;
+}
 
 /** Who makes the offer for a pair: the lexically smaller id (UTF-16 order, the same on every machine). */
 export function initiates(localId: MatchPlayerId, remoteId: MatchPlayerId): boolean {
@@ -62,6 +155,7 @@ export function helperIceServers(servers: IceServer[]): VideoIceServer[] {
 
 export interface VideoRungs {
   max_kbps: number;
+  /** 1..6 pins the rung; null or absent: the helper's controller chooses. */
   pin?: number | null;
 }
 
@@ -102,7 +196,10 @@ const statsOf = (e: VideoStatsEvent): NativeVideoStats => ({
   ...(e.loss_pct !== undefined ? { lossPct: e.loss_pct } : {}),
   ...(e.bwe_kbps !== undefined ? { bweKbps: e.bwe_kbps } : {}),
   ...(e.quality_limitation !== undefined ? { qualityLimitation: e.quality_limitation } : {}),
+  ...(typeof e.rung === 'number' ? { rung: e.rung } : {}),
+  ...(typeof e.ctrl === 'string' ? { ctrl: e.ctrl } : {}),
 });
+const emptyPeer = (): PeerView => ({ ice: 'new', pair: null, send: null, recv: null, rung: null });
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 const sourceBox = (s: VideoSource): { width: number; height: number; fps: number } => (s.kind === 'none' ? { width: 0, height: 0, fps: 0 } : { width: s.width, height: s.height, fps: s.fps });
 
@@ -139,7 +236,10 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
     sending: wantSending,
     source: { kind: wantSource.kind, ...sourceBox(wantSource), state: sourceState?.state ?? null, fpsIn: sourceState?.fpsIn ?? null },
     sink: wantSink.kind,
-    peers: Object.fromEntries([...wantPeers].map((id) => [id, peerViews.get(id) ?? { ice: 'new', pair: null, send: null, recv: null }])),
+    ladder: ladderFor(wantSource.kind === 'none' ? 0 : wantSource.width, wantSource.kind === 'none' ? 0 : wantSource.height),
+    maxKbps: wantRungs.max_kbps,
+    pin: wantRungs.pin ?? null,
+    peers: Object.fromEntries([...wantPeers].map((id) => [id, peerViews.get(id) ?? emptyPeer()])),
   });
   const emit = (): void => {
     const s = computed();
@@ -212,14 +312,23 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
         const was = peerViews.get(e.id);
         const pair = e.pair === undefined ? (was?.pair ?? null) : pairWords(e.pair);
         const ice = typeof e.ice === 'string' ? e.ice : 'new';
-        peerViews.set(e.id, { ice, pair, send: was?.send ?? null, recv: was?.recv ?? null });
+        peerViews.set(e.id, { ...(was ?? emptyPeer()), ice, pair });
         if (was?.ice !== ice || was?.pair !== pair) log(`video: peer ${e.id}: ice ${ice}${pair ? ` (${pair})` : ''}`);
         break;
       }
       case 'stats': {
         if (typeof e.id !== 'string' || !toldPeers.has(e.id)) return;
-        const was = peerViews.get(e.id) ?? { ice: 'new', pair: null, send: null, recv: null };
+        const was = peerViews.get(e.id) ?? emptyPeer();
         peerViews.set(e.id, { ...was, [e.dir === 'recv' ? 'recv' : 'send']: statsOf(e) });
+        break;
+      }
+      case 'rung': {
+        // D10.5: the rung the helper applies to the frames sent to that peer (the controller's, the pin's or the ceiling's).
+        if (typeof e.id !== 'string' || !toldPeers.has(e.id)) return;
+        const was = peerViews.get(e.id) ?? emptyPeer();
+        const rung: NativeVideoRungState = { rung: num(e.rung), width: num(e.width), height: num(e.height), fps: num(e.fps), kbps: num(e.kbps), reason: typeof e.reason === 'string' ? e.reason : '' };
+        peerViews.set(e.id, { ...was, rung });
+        log(`video: peer ${e.id}: rung ${rung.rung} (${rung.width}x${rung.height} at ${rung.fps} fps, ${mbps(rung.kbps)}): ${rung.reason}`);
         break;
       }
       case 'source': {
@@ -315,10 +424,13 @@ export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
       sync();
     },
     setRungs(rungs) {
-      const next: VideoRungs = { max_kbps: Math.max(1, Math.round(rungs.max_kbps)), ...(rungs.pin !== undefined ? { pin: rungs.pin } : {}) };
+      const pin = clampPin(rungs.pin);
+      const next: VideoRungs = { max_kbps: clampMaxKbps(rungs.max_kbps), ...(pin !== null ? { pin } : {}) };
       if (JSON.stringify(next) === JSON.stringify(wantRungs)) return;
       wantRungs = next;
+      log(`video: rungs: ceiling ${next.max_kbps} kbps, ${pin !== null ? `pinned to rung ${pin}` : 'auto'}`);
       sync();
+      emit();
     },
     status: () => current ?? (current = computed()),
     onStatus(cb) {

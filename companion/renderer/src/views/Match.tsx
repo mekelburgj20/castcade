@@ -343,6 +343,7 @@ export function Match({ state }: { state: CastcadeState }) {
           <div className="card">
             <p className="muted">{mediaLine(st.media)}</p>
             {st.media?.nativeVideo && <p className="muted">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
+            {st.media?.nativeVideo?.helper === 'ready' && <VideoQualityRow st={st} video={st.media.nativeVideo} apply={(r) => bridge.match.setVideoRungs(r).then(setSt, (e: unknown) => setError(describe(e)))} />}
             {panelWin && (
               <div className="row">
                 <p className="muted">{panelLine(panelWin)}</p>
@@ -727,6 +728,76 @@ function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativ
     parts.push(`${peers.length > 1 ? `${name(id)} ` : ''}ice ${p.ice}${p.pair ? ` (${p.pair})` : ''}`);
   }
   return `Native video: ${parts.join(' · ')}.`;
+}
+
+type NativeVideo = NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>;
+
+const mbps = (kbps: number): string => `${(kbps / 1000).toFixed(1)} Mbps`;
+
+/**
+ * D10.5 (2026-11-07): the readout of the rung in force (mirrors `rungReadout` in media/video-mesh.ts): the mode, the
+ * rung the helper applies to the peer we send to, its size and fps, the sent Mbps while sending (else the rung's).
+ */
+function rungReadout(v: NativeVideo, pin: number | null): string {
+  const mode = pin === null ? 'Auto' : `Pinned to rung ${pin}`;
+  const peers = Object.values(v.peers);
+  const inForce = peers.map((p) => p.rung).find((r) => r !== null) ?? null;
+  const sent = v.sending ? (peers.map((p) => p.send).find((s) => s && s.width > 0) ?? null) : null;
+  if (!inForce) {
+    const g = v.ladder[2];
+    return `${mode} (rung ${pin ?? 3} to start${g && pin === null ? `: ${g.width}x${g.height} at ${g.fps} fps` : ''})`;
+  }
+  const rate = sent ? mbps(sent.kbps) : `up to ${mbps(inForce.kbps)}`;
+  const why = inForce.reason.startsWith('down:') ? `, stepped down on ${inForce.reason.slice(5)}` : inForce.reason === 'ceiling' ? ', at the ceiling' : '';
+  return `${mode} (rung ${inForce.rung}: ${inForce.width}x${inForce.height} at ${sent ? sent.fps : inForce.fps} fps, ${rate}${why})`;
+}
+
+/**
+ * D10.5: the quality controls of the native video (absorbs D8.2): the readout of the rung in force, the pin (Auto or
+ * one of the six rungs, sized for this rig's source), and this rig's ceiling in kbps (saved; the host-wide ceiling is
+ * D10.5.1). The pin applies at once to a running match and lasts for this run of the app.
+ */
+function VideoQualityRow({ st, video, apply }: { st: MatchStatus; video: NativeVideo; apply: (r: { maxKbps?: number; pin?: number | null }) => void }) {
+  const [ceiling, setCeiling] = useState<string | null>(null);
+  const shown = ceiling ?? String(st.videoMaxKbps);
+  const commit = (): void => {
+    if (ceiling === null) return;
+    const n = Number(ceiling);
+    setCeiling(null);
+    if (Number.isFinite(n) && Math.round(n) !== st.videoMaxKbps) apply({ maxKbps: Math.round(n) });
+  };
+  return (
+    <div className="row">
+      <label className="field">
+        <span>Spectator video: {rungReadout(video, st.videoPin)}</span>
+        <select value={st.videoPin === null ? 'auto' : String(st.videoPin)} onChange={(e) => apply({ pin: e.target.value === 'auto' ? null : Number(e.target.value) })}>
+          <option value="auto">Auto (the controller picks the rung)</option>
+          {video.ladder.map((r) => (
+            <option key={r.rung} value={String(r.rung)}>
+              {`${r.rung}: ${r.width}x${r.height} at ${r.fps} fps, ${mbps(r.kbps)}`}
+            </option>
+          ))}
+        </select>
+        <small>Auto steps down a rung after 3 s of trouble and up after 30 s clean; a pin holds one rung. Full size at 30 fps comes before a smaller picture at 60: smoothness first.</small>
+      </label>
+      <label className="field">
+        <span>Ceiling (kbps)</span>
+        <input
+          type="number"
+          min={500}
+          max={50000}
+          step={500}
+          value={shown}
+          onChange={(e) => setCeiling(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+          }}
+        />
+        <small>The most this rig sends (default 20000: rung 1). Saved.</small>
+      </label>
+    </div>
+  );
 }
 
 /** D2.6 (2026-11-01): the match panel is a second window; say so, and where it is. */

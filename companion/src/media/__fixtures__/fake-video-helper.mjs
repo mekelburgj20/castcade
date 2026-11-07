@@ -22,12 +22,21 @@ const statsMs = Number(env.FAKE_VIDEO_STATS_MS || 1000);
 const say = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const peers = new Map();
 let source = { kind: 'none' };
+// D10.5: the rung in force (the pin, else rung 3 as the helper starts), announced per peer as a `rung` event.
+let pin = null;
+const RUNGS = [[1354, 1440, 60, 20000], [1354, 1440, 30, 10000], [1016, 1080, 60, 8000], [1016, 1080, 30, 5000], [678, 720, 60, 4000], [678, 720, 30, 2000]];
+const sayRung = (id, reason) => {
+  const r = pin ?? 3;
+  const [width, height, fps, kbps] = RUNGS[r - 1];
+  say({ event: 'rung', id, rung: r, width, height, fps, kbps, reason });
+};
 
 const connected = (id) => {
   const p = peers.get(id);
   if (!p || p.timer) return;
   say({ event: 'peer', id, ice: 'checking' });
   say({ event: 'peer', id, ice: 'connected', pair: 'srflx<->host' });
+  sayRung(id, 'start');
   p.timer = setInterval(() => {
     say({ event: 'stats', id, dir: 'send', fps: 60, kbps: 18200, width: 1354, height: 1440, rtt_ms: 31, loss_pct: 0, bwe_kbps: 24000, encoder: 'libx264' });
     say({ event: 'stats', id, dir: 'recv', fps: 60, kbps: 17900, width: 1354, height: 1440, decoder: 'h264' });
@@ -81,8 +90,12 @@ const handle = (line) => {
       return say({ event: 'source', kind: m.kind, state: m.kind === 'ring' && m.token === 'missing-ring' ? 'missing' : 'ok', fps_in: m.kind === 'none' ? 0 : Number(m.fps) || 0 });
     case 'send':
       return say({ event: 'log', level: 'info', text: `send ${m.on ? 'on' : 'off'} (${source.kind})` });
-    case 'rungs':
-      return say({ event: 'log', level: 'info', text: `rungs max ${m.max_kbps} kbps${m.pin !== undefined && m.pin !== null ? `, pinned ${m.pin}` : ''}` });
+    case 'rungs': {
+      pin = typeof m.pin === 'number' ? m.pin : null;
+      say({ event: 'log', level: 'info', text: `rungs max ${m.max_kbps} kbps${pin !== null ? `, pinned ${pin}` : ''}` });
+      for (const [id, p] of peers) if (p.timer) sayRung(id, pin !== null ? 'pin' : 'up');
+      return;
+    }
     case 'sink':
       return say({ event: 'log', level: 'info', text: `sink ${m.kind}${m.token ? ` ${m.token}` : ''}` });
     case 'quit':

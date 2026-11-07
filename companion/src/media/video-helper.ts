@@ -103,6 +103,28 @@ export interface VideoStatsEvent {
   encoder?: string | null;
   decoder?: string | null;
   quality_limitation?: string | null;
+  /** D10.5 (send): the rung applied to this peer and the controller's state (`auto` | `probe` | `pin` | `trouble:<kinds>`). */
+  rung?: number | null;
+  rung_kbps?: number | null;
+  rung_fps?: number | null;
+  ctrl?: string | null;
+  queue_ms?: number | null;
+  peer_decode_fps?: number | null;
+}
+
+/**
+ * D10.5: the rung the helper's controller (or the pin) applies to the frames sent to peer `id`, on each change:
+ * `reason` is `start` | `probe` | `down:loss` | `down:rtt` | `down:bwe` | `down:fps` | `down:receiver` | `up` | `pin` | `ceiling`.
+ */
+export interface VideoRungEvent {
+  event: 'rung';
+  id: string;
+  rung: number;
+  width: number;
+  height: number;
+  fps: number;
+  kbps: number;
+  reason: string;
 }
 
 export type VideoHelperEvent =
@@ -110,6 +132,7 @@ export type VideoHelperEvent =
   | ({ event: 'signal' } & VideoSignalBody)
   | { event: 'peer'; id: string; ice: VideoIceState; pair?: string | null }
   | VideoStatsEvent
+  | VideoRungEvent
   | { event: 'source'; kind: VideoSource['kind']; state: 'ok' | 'missing' | 'dead'; fps_in: number }
   | { event: 'error'; code: string; text?: string }
   | { event: 'log'; level: 'info' | 'warn'; text: string };

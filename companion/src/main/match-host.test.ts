@@ -262,6 +262,25 @@ describe('match host (A6)', () => {
     expect(hostSettings.get().videoPath).toBe('electron');
     expect(H.mh.status().media?.nativeVideo).toBeDefined();
     H.mh.setVideoPath('native');
+    // D10.5: the ladder's controls. The helper was told the default ceiling at the start; a pin reaches the running
+    // mesh at once and lives in memory only; the ceiling is saved (rounded, clamped) and reaches the mesh too.
+    expect(hs.videoMaxKbps).toBe(20_000);
+    expect(hs.videoPin).toBeNull();
+    expect(hv.of('rungs').at(-1)).toEqual({ cmd: 'rungs', max_kbps: 20_000 });
+    expect(H.mh.status().media?.nativeVideo).toMatchObject({ maxKbps: 20_000, pin: null });
+    const pinned = H.mh.setVideoRungs({ pin: 4 });
+    expect(pinned.videoPin).toBe(4);
+    expect(hv.of('rungs').at(-1)).toEqual({ cmd: 'rungs', max_kbps: 20_000, pin: 4 });
+    expect(hostSettings.get()).not.toHaveProperty('videoPin');
+    const capped = H.mh.setVideoRungs({ maxKbps: 8000.4 });
+    expect(capped.videoMaxKbps).toBe(8000);
+    expect(hostSettings.get().videoMaxKbps).toBe(8000);
+    expect(hv.of('rungs').at(-1)).toEqual({ cmd: 'rungs', max_kbps: 8000, pin: 4 });
+    expect(H.mh.setVideoRungs({ pin: null, maxKbps: 10 }).videoPin).toBeNull();
+    expect(hostSettings.get().videoMaxKbps).toBe(500);
+    expect(hv.of('rungs').at(-1)).toEqual({ cmd: 'rungs', max_kbps: 500 });
+    expect(H.mh.status().media?.nativeVideo?.ladder[4]).toEqual({ rung: 5, width: 720, height: 720, fps: 60, kbps: 4000 });
+    H.mh.setVideoRungs({ maxKbps: 20_000 });
     // Leaving closes the peer, stops sending and clears the rings; the helper itself is left for the next match.
     await C.mh.leave();
     expect(cv.of('close')).toEqual([{ cmd: 'close', id: hid }]);

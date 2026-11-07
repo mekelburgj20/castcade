@@ -575,6 +575,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   let capturePidNow: number | null = null;
   /** D2.10: the volumes the match host gave (replayed to a new page without the note). */
   let volume: { voice: number; table: number } | null = null;
+  /** D10.5: the native video's footer line (`setVideoLine`); null = none shown. */
+  let videoLine: string | null = null;
 
   /** D2.6: where the desktop panel went at its last `showPanel` (the Match tab says so). */
   let panelSide: PanelSide = 'edge';
@@ -1494,6 +1496,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (videoHub.wanted()) toPage(PANEL_CHANNELS.videoWant, true);
     if (tableFlags) toPage(PANEL_CHANNELS.tableAudio, tableFlags);
     if (volume) toPage(PANEL_CHANNELS.volume, { ...volume, note: null } satisfies PanelVolume);
+    if (videoLine !== null) toPage(PANEL_CHANNELS.videoLine, videoLine);
     try {
       const file = join(opts.userData, PAGE_FILE);
       mkdirSync(opts.userData, { recursive: true });
@@ -1643,6 +1646,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (volume && volume.voice === v.voice && volume.table === v.table && !note) return;
       volume = { voice: v.voice, table: v.table };
       if (attached) toPage(PANEL_CHANNELS.volume, { ...volume, note } satisfies PanelVolume);
+    },
+    // D10.5: the native video's one footer line (kept for the next attach, cleared by null).
+    setVideoLine(line) {
+      if (line === videoLine) return;
+      videoLine = line;
+      if (attached) toPage(PANEL_CHANNELS.videoLine, line);
     },
     startBench,
     async stopBench() {

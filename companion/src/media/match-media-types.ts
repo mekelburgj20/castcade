@@ -150,6 +150,23 @@ export interface NativeVideoStats {
   lossPct?: number | null;
   bweKbps?: number | null;
   qualityLimitation?: string | null;
+  /** D10.5 (send): the rung applied and the controller's state (`auto`, `probe`, `pin`, `trouble:<kinds>`). */
+  rung?: number | null;
+  ctrl?: string | null;
+}
+
+/** D10.5: one rung of the ladder as the helper would apply it to this rig's source (sizes from the source box). */
+export interface NativeVideoRung {
+  rung: number;
+  width: number;
+  height: number;
+  fps: number;
+  kbps: number;
+}
+
+/** D10.5: the rung in force for one peer, from the helper's last `rung` event (`reason`: why it changed). */
+export interface NativeVideoRungState extends NativeVideoRung {
+  reason: string;
 }
 
 /** D10.3: see `MediaStatus.nativeVideo`. */
@@ -165,8 +182,15 @@ export interface NativeVideoStatus {
   /** Where this rig's frames come from, as last told, and the ring's health as the helper reports it. */
   source: { kind: 'ring' | 'bench' | 'none'; width: number; height: number; fps: number; state: 'ok' | 'missing' | 'dead' | null; fpsIn: number | null };
   sink: 'ring' | 'window' | 'none';
-  /** Per remote player: ICE state, the selected pair ("srflx↔host") and the last counters each way. */
-  peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null }>;
+  /**
+   * D10.5: the ladder for this rig's source (the design's 1354x1440 until the source box is known), the ceiling the
+   * helper was told (kbps) and the manual pin (null = the controller chooses).
+   */
+  ladder: NativeVideoRung[];
+  maxKbps: number;
+  pin: number | null;
+  /** Per remote player: ICE state, the selected pair ("srflx↔host"), the last counters each way and the rung in force for them. */
+  peers: Record<MatchPlayerId, { ice: string; pair: string | null; send: NativeVideoStats | null; recv: NativeVideoStats | null; rung: NativeVideoRungState | null }>;
 }
 
 /** D2.8: see `MediaStatus.tableAudio`. */
@@ -226,6 +250,11 @@ export interface MatchMedia {
   capturePid?(): number | null;
   /** D2.10 (2026-11-05): the playback volumes (kept for the next attach; applied live to a page that is up). Absent in fakes before D2.10. */
   setVolume?(volume: PanelVolume): void;
+  /**
+   * D10.5 (2026-11-07): one short line for the panel's footer about the native spectator video (the rung in force,
+   * size, fps, Mbps, rtt), from the match host; null clears it. Kept for the next attach. Absent in fakes before D10.5.
+   */
+  setVideoLine?(line: string | null): void;
   detach(): Promise<void>;
 }
 

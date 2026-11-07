@@ -24,7 +24,7 @@ describe('media settings (D2)', () => {
   });
 
   it('round-trips and drops invalid fields to the default', () => {
-    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'], mainBounds: { x: 10, y: 20, width: 420, height: 640 }, videoPath: 'electron' as const };
+    const s = { micDeviceId: 'abc123', muted: true, turn, stun: ['stun:stun.example.org:3478'], mainBounds: { x: 10, y: 20, width: 420, height: 640 }, videoPath: 'electron' as const, videoMaxKbps: 12_000 };
     expect(readMediaSettings(writeMediaSettings(s))).toEqual(s);
     const bad = readMediaSettings(JSON.stringify({ version: 1, micDeviceId: 7, muted: 'yes', turn: { url: 'http://x', username: 'u', credential: 'c' }, stun: 'stun:x' }));
     expect(bad).toEqual(DEFAULT_MEDIA_SETTINGS);
@@ -92,6 +92,21 @@ describe('spectator video path (D10.3, 2026-11-07)', () => {
     expect(patchMediaSettings(cur, { videoPath: 'native' }).videoPath).toBe('native');
     expect(patchMediaSettings(cur, { videoPath: 7 as never }).videoPath).toBe('electron');
     expect(JSON.parse(writeMediaSettings(cur))).toMatchObject({ videoPath: 'electron' });
+  });
+});
+
+describe('native video ceiling (D10.5, 2026-11-07)', () => {
+  it('20000 kbps by default; an integer 500..50000 is kept (rounded); junk and out-of-range fall back to what was there', () => {
+    expect(DEFAULT_MEDIA_SETTINGS.videoMaxKbps).toBe(20_000);
+    expect(readMediaSettings(JSON.stringify({ version: 1 })).videoMaxKbps).toBe(20_000);
+    expect(readMediaSettings(JSON.stringify({ version: 1, videoMaxKbps: 8000.4 })).videoMaxKbps).toBe(8000);
+    expect(readMediaSettings(JSON.stringify({ version: 1, videoMaxKbps: 100 })).videoMaxKbps).toBe(20_000);
+    expect(readMediaSettings(JSON.stringify({ version: 1, videoMaxKbps: '8000' })).videoMaxKbps).toBe(20_000);
+    const cur = { ...DEFAULT_MEDIA_SETTINGS, videoMaxKbps: 5000 };
+    expect(patchMediaSettings(cur, { videoMaxKbps: 10_000 }).videoMaxKbps).toBe(10_000);
+    expect(patchMediaSettings(cur, { videoMaxKbps: 90_000 }).videoMaxKbps).toBe(5000);
+    expect(patchMediaSettings(cur, { videoMaxKbps: NaN }).videoMaxKbps).toBe(5000);
+    expect(JSON.parse(writeMediaSettings(cur))).toMatchObject({ videoMaxKbps: 5000 });
   });
 });
 

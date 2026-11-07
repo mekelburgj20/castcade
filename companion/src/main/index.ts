@@ -388,6 +388,13 @@ function registerIpc(
     return mh().setTurn({ url: v.url, username: typeof v.username === 'string' ? v.username : '', credential: typeof v.credential === 'string' ? v.credential : null });
   });
   ipcMain.handle(IPC.matchSetVideoPath, (_e, path: unknown) => mh().setVideoPath(path === 'electron' ? 'electron' : 'native'));
+  ipcMain.handle(IPC.matchSetVideoRungs, (_e, r: unknown) => {
+    const v = (typeof r === 'object' && r !== null ? r : {}) as { maxKbps?: unknown; pin?: unknown };
+    return mh().setVideoRungs({
+      ...(typeof v.maxKbps === 'number' ? { maxKbps: v.maxKbps } : {}),
+      ...(v.pin === null || typeof v.pin === 'number' ? { pin: v.pin } : {}),
+    });
+  });
   ipcMain.handle(IPC.matchShowPanel, () => mh().showPanel());
   ipcMain.handle(IPC.matchHidePanel, () => mh().hidePanel());
   ipcMain.handle(IPC.matchSetVrTest, (_e, test: unknown) => mh().setVrTest(test === 'pattern' ? 'pattern' : null));

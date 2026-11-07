@@ -45,7 +45,7 @@ import { previewAdvice } from '../media/preview-stereo.js';
 import type { RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
 import type { VideoHelper, VideoSink } from '../media/video-helper.js';
-import { createVideoMesh, type VideoMesh } from '../media/video-mesh.js';
+import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import { tuneWords } from '../media/vr-layer.js';
@@ -153,6 +153,13 @@ export interface MatchStatus {
    * (`castcade-video.exe`, the default) or the 0.2.36 Electron path; used from the next match on.
    */
   videoPath: VideoPath;
+  /**
+   * D10.5 (2026-11-07): the native video ladder's controls: this rig's ceiling (media.json `videoMaxKbps`, kbps) and
+   * the manual pin (1..6, or null = the helper's controller chooses; a session knob, not saved). Applied live to the
+   * running mesh and at the next match's start.
+   */
+  videoMaxKbps: number;
+  videoPin: number | null;
   locked: boolean;
   settings: MatchSettings;
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
@@ -182,6 +189,11 @@ export interface MatchHost {
   setTurn(turn: { url: string; username: string; credential: string | null } | null): MatchStatus;
   /** D10.3 (2026-11-07): the spectator video path (saved in media.json, used from the next match on). */
   setVideoPath(path: VideoPath): MatchStatus;
+  /**
+   * D10.5 (2026-11-07): the Match tab's quality controls: the ceiling (saved in media.json, 500..50000 kbps) and the
+   * manual pin (1..6 or null for auto; kept in memory for this run). Either may be absent; both reach a running mesh at once.
+   */
+  setVideoRungs(rungs: { maxKbps?: number; pin?: number | null }): MatchStatus;
   /** D2.6 (2026-11-01): the Match tab's Show panel / Hide panel for the desktop panel window; a no-op without one. */
   showPanel(): MatchStatus;
   hidePanel(): MatchStatus;
@@ -540,6 +552,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       muted: opts.mediaSettings?.get().muted ?? false,
       turn: turnView(opts.mediaSettings?.get().turn ?? null),
       videoPath: videoPath(),
+      videoMaxKbps: videoMaxKbps(),
+      videoPin,
       locked,
       settings: { ...settings },
       defaultName: defaultName(),
@@ -695,6 +709,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /** The `video` side of each controller's signalling, for the mesh `openVideo` makes once the panel is up. */
   const videoSides = new WeakMap<MatchController, MediaSignalling>();
   const videoPath = (): VideoPath => opts.mediaSettings?.get().videoPath ?? DEFAULT_MEDIA_SETTINGS.videoPath;
+  // D10.5: the ladder's controls: the ceiling from media.json, the pin for this run only (never saved).
+  const videoMaxKbps = (): number => opts.mediaSettings?.get().videoMaxKbps ?? DEFAULT_MEDIA_SETTINGS.videoMaxKbps;
+  let videoPin: number | null = null;
+  const videoRungs = (): VideoRungs => ({ max_kbps: videoMaxKbps(), ...(videoPin !== null ? { pin: videoPin } : {}) });
+  /** D10.5: the headset panel's one line about the native video, from the mesh status; null clears it. */
+  const syncVideoLine = (a: Active): void => {
+    opts.media?.setVideoLine?.(a.video ? headsetVideoLine(a.video.status()) : null);
+  };
   /** Where decoded frames go on this rig: the layer's `recv` ring on an OpenXR rig (theater draws it), the helper's own window elsewhere. */
   const videoSink = (a: RigRuntime): VideoSink => (usesLayer(a) && opts.nativeVideo ? { kind: 'ring', token: opts.nativeVideo.recvRing } : { kind: 'window' });
   /**
@@ -714,10 +736,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.offs.push(side.onSignal((from, s) => mesh.onSignal(from, s)));
     a.offs.push(
       mesh.onStatus(() => {
-        if (active === a) emit();
+        if (active !== a) return;
+        syncVideoLine(a);
+        emit();
       }),
     );
     mesh.setIce(iceServers(opts.mediaSettings?.get() ?? DEFAULT_MEDIA_SETTINGS));
+    mesh.setRungs(videoRungs());
     opts.media?.setNativeVideo?.({ ring: nv.sendRing, onSource: (box) => mesh.setSource(box ? { kind: 'ring', token: nv.sendRing, ...box } : { kind: 'none' }) });
     const h = nv.helper.status();
     log.info(`match: native video: on for this match (helper ${h.helper}${h.reason ? `, ${h.reason}` : ''}; send ring ${nv.sendRing}, recv ring ${nv.recvRing})`);
@@ -743,6 +768,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (!a.video) return;
     a.video.close();
     a.video = null;
+    opts.media?.setVideoLine?.(null);
     opts.media?.setNativeVideo?.(null);
     opts.vrLayer?.setVideoRing?.(null);
   };
@@ -1359,6 +1385,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         store.patch({ videoPath: next });
         log.info(`match: spectator video set to ${next === 'native' ? 'the native helper' : 'the Electron path (0.2.36)'} on the Match tab (used from the next match)`);
       }
+      emit();
+      return status();
+    },
+    setVideoRungs(rungs) {
+      if (rungs.maxKbps !== undefined) {
+        const next = clampMaxKbps(rungs.maxKbps);
+        const store = opts.mediaSettings;
+        if (store && store.get().videoMaxKbps !== next) {
+          store.patch({ videoMaxKbps: next });
+          log.info(`match: native video ceiling set to ${next} kbps on the Match tab`);
+        }
+      }
+      if (rungs.pin !== undefined) {
+        const next = clampPin(rungs.pin);
+        if (next !== videoPin) {
+          videoPin = next;
+          log.info(`match: native video ${next === null ? 'back to auto (the controller chooses the rung)' : `pinned to rung ${next}`} on the Match tab`);
+        }
+      }
+      active?.video?.setRungs(videoRungs());
       emit();
       return status();
     },
