@@ -12,7 +12,7 @@
  *   --load-seconds S   how long to wait for table_loaded (default 180)
  *   --vpx-dir DIR      the VPX install (default C:\Users\mekel\Documents\Emulators\VPX\VisualPinballX)
  *   --exe NAME         the build to launch, inside --vpx-dir (default VPinballX_GL64.exe; VPinballX64.exe = desktop)
- *   --only TEXT        with --all: only tables whose file name contains TEXT
+ *   --only TEXT        with --all: only tables whose file name contains TEXT; several, separated by "|" ("Diablo 2|SMGP")
  *   --mute             PlayMusic = 0 / PlaySound = 0 in the ini copy
  *   --also 156,57      extra scancodes pressed with every plunge (default: the ini's LockbarKey; "none" for none)
  *   --in-place         do not stage: launch the table where it is, with the sidecar Castcade already wrote beside it
@@ -28,9 +28,16 @@
  *
  * VPX reads the keyboard through DirectInput, so its player window must stay in the foreground for the whole run:
  * do not use the machine meanwhile. With a headset connected the GL build plays in VR; the run works the same.
+ *
+ * What the runner does beyond credit, Start and the plunger:
+ * - it stages, beside the copy, the folders beside the original that the script loads from (a FlexDMD / UltraDMD
+ *   project: without it Game of Thrones, Sonic, Thundercats and The Goonies stop at a dialog before any key arrives);
+ * - it presses Start again while the journal shows no game start (a table still booting ignores the first press);
+ * - it follows the per-table hints in `validate-hints.ts` (a second Start for a menu the first one opens, a longer
+ *   budget): data, one record per table family, each with its evidence.
  */
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyScript } from '../src/patcher/classify.js';
@@ -38,9 +45,10 @@ import { libraryVersionOf, listVpxFiles, patchSource } from '../src/patcher/impo
 import { recipeFor, renderSidecar } from '../src/patcher/render-originals.js';
 import { LIB_VERSION, isOurSidecar } from '../src/patcher/render.js';
 import { decodeScript } from '../src/patcher/script-text.js';
-import { checkGameJournal, lintSidecar, type JournalCheck } from '../src/patcher/validate.js';
+import { checkGameJournal, lintSidecar, resourceFolders, type JournalCheck } from '../src/patcher/validate.js';
 import { nodeFs } from '../src/witness/fs.js';
 import { readVpxScript } from '../src/witness/vpx-file.js';
+import { afterStartArg, hintFor } from './validate-hints.js';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const WORK = join(REPO, 'tmp', 'validate');
@@ -71,6 +79,8 @@ interface Result {
   why: string[];
   notes: string[];
   partial: string[];
+  /** Folders beside the original that are staged beside the copy (the script loads from them, or a hint names them). */
+  folders: string[];
   ballEnds?: number;
   seconds?: number;
 }
@@ -146,7 +156,7 @@ function stageIni(o: Options): { path: string; lockbar: number | null } {
 async function prepare(vpxPath: string, o: Options): Promise<{ result: Result; sidecar?: Uint8Array; tableId: string }> {
   const table = basename(vpxPath).replace(/\.vpx$/i, '');
   const tableId = o.inPlace ? table : `validate-${table}`;
-  const base: Result = { table, cls: '?', recipe: null, verdict: 'skipped', why: [], notes: [], partial: [] };
+  const base: Result = { table, cls: '?', recipe: null, verdict: 'skipped', why: [], notes: [], partial: [], folders: [] };
   let script;
   try {
     script = await readVpxScript(nodeFs, vpxPath);
@@ -159,6 +169,16 @@ async function prepare(vpxPath: string, o: Options): Promise<{ result: Result; s
   const recipe = recipeFor(cls.cls);
   base.cls = cls.cls;
   base.recipe = recipe;
+  if (!o.inPlace) {
+    let beside: string[] = [];
+    try {
+      beside = readdirSync(dirname(vpxPath), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {
+      // an unreadable folder stages nothing
+    }
+    const hinted = hintFor(table).folders ?? [];
+    base.folders = [...new Set([...resourceFolders(text, beside), ...beside.filter((d) => hinted.some((h) => h.toLowerCase() === d.toLowerCase()))])];
+  }
   if (cls.cls === 'A') return { result: { ...base, why: ['a ROM table (recipe A): not an original'] }, tableId };
   if (recipe === null) return { result: { ...base, why: [`class ${cls.cls} has no recipe${cls.facts.reason ? ` (${cls.facts.reason})` : ''}`] }, tableId };
   const stagedVpx = join(WORK, 'tables', basename(vpxPath));
@@ -187,6 +207,14 @@ async function validateOne(vpxPath: string, o: Options): Promise<Result> {
   const exe = join(o.vpxDir, o.exe);
   log(`${table}: class ${result.cls}, recipe ${result.recipe}${result.partial.length > 0 ? `, PARTIAL (${result.partial.join('; ')})` : ''}; sidecar lints clean and compiles`);
   for (const n of result.notes) log(`   note: ${n}`);
+  const hint = hintFor(table);
+  const minutes = Math.max(o.minutes, hint.minutes ?? 0);
+  const settle = hint.settleSeconds ?? 8;
+  const afterStart = hint.afterStart ?? [];
+  for (const w of hint.why) log(`   hint: ${w}`);
+  if (afterStart.length > 0) log(`   hint: after Start, ${afterStart.map((s) => `${s.key} ${s.seconds} s later`).join(', then ')}`);
+  if (minutes !== o.minutes) log(`   hint: a ${minutes} minute budget`);
+  if (result.folders.length > 0) log(`   ${o.dryRun ? 'would stage' : 'staging'} beside the copy: ${result.folders.join(', ')}`);
   if (o.dryRun) {
     log(`   would launch: "${exe}" -Ini "${join(WORK, 'VPinballX.ini')}" -Play "${launch}"`);
     log(`   would follow: ${journal}`);
@@ -209,6 +237,8 @@ async function validateOne(vpxPath: string, o: Options): Promise<Result> {
       const side = vpxPath.replace(/\.vpx$/i, ext);
       if (existsSync(side)) copyFileSync(side, stagedVpx.replace(/\.vpx$/i, ext));
     }
+    // the folders the script loads from, as they are beside the original (a DMD project is a few MB)
+    for (const f of result.folders) cpSync(join(dirname(vpxPath), f), join(dirname(stagedVpx), f), { recursive: true, force: true });
     writeFileSync(stagedVpx.replace(/\.vpx$/i, '.vbs'), sidecar);
   }
 
@@ -216,6 +246,7 @@ async function validateOne(vpxPath: string, o: Options): Promise<Result> {
   const also = o.also === 'none' ? [] : o.also ? o.also.split(',').map((s) => s.trim()).filter((s) => /^\d+$/.test(s)) : ini.lockbar ? [String(ini.lockbar)] : [];
   const before = readLines(journal).length;
   const endsBefore = readLines(journal).filter((l) => l.includes('"event":"game_end"')).length;
+  const startsBefore = readLines(journal).filter((l) => l.includes('"event":"game_start"')).length;
   const t0 = Date.now();
   log(`   launching ${o.exe}; journal ${journal}`);
   const vpx = spawn(exe, ['-Ini', ini.path, '-Play', launch], { cwd: o.vpxDir, stdio: 'ignore' });
@@ -234,9 +265,22 @@ async function validateOne(vpxPath: string, o: Options): Promise<Result> {
     if (!fresh().some((l) => l.includes('"event":"table_loaded"'))) {
       log(exited ? '   VPX exited before the table loaded' : `   no table_loaded after ${o.loadSeconds} s`);
     } else {
-      log('   table_loaded; waiting 8 s for the table to settle, then playing');
-      await sleep(8000);
-      py(['game', '--credits', '2', '--minutes', String(o.minutes), '--plunge-every', '6', '--until-file', journal, '--until-text', '"event":"game_end"', '--until-count', String(endsBefore + 1), ...(also.length > 0 ? ['--also', also.join(',')] : [])], (o.minutes + 1) * 60_000);
+      log(`   table_loaded; waiting ${settle} s for the table to settle, then playing`);
+      await sleep(settle * 1000);
+      py(
+        [
+          'game',
+          ...['--credits', '2', '--minutes', String(minutes), '--plunge-every', '6'],
+          ...['--until-file', journal, '--until-text', '"event":"game_end"', '--until-count', String(endsBefore + 1)],
+          // Start again while the journal shows no game start (a table still booting ignores the first press)
+          ...['--started-file', journal, '--started-text', '"event":"game_start"', '--started-count', String(startsBefore + 1)],
+          // no key for 15 s after a ball end: a table whose game is over takes the plunger or the lockbar for Start
+          ...['--quiet-seconds', '15'],
+          ...(afterStart.length > 0 ? ['--after-start', afterStartArg(afterStart)] : []),
+          ...(also.length > 0 ? ['--also', also.join(',')] : []),
+        ],
+        (minutes + 3) * 60_000,
+      );
       await sleep(2000);
     }
   } finally {
@@ -334,7 +378,8 @@ async function main(): Promise<number> {
     if (!o.allowCompanion && running('Castcade.exe')) throw new Error('Castcade is running: it would follow this run as a real game and could post its score. Quit it from the tray (or pass --allow-companion).');
     if (spawnSync('python', ['--version'], { encoding: 'utf8' }).status !== 0) throw new Error('python is not on PATH (autoplay.py presses the keys)');
   }
-  const paths = all ? (await listVpxFiles(nodeFs, resolve(all))).filter((p) => !o.only || basename(p).toLowerCase().includes(o.only.toLowerCase())) : [resolve(table ?? '')];
+  const only = (o.only ?? '').split('|').map((t) => t.trim().toLowerCase()).filter((t) => t !== '');
+  const paths = all ?(await listVpxFiles(nodeFs, resolve(all))).filter((p) => only.length === 0 || only.some((t) => basename(p).toLowerCase().includes(t))) : [resolve(table ?? '')];
   const results: Result[] = [];
   for (const p of paths) {
     const r = await validateOne(p, o);

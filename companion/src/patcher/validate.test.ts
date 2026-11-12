@@ -9,8 +9,10 @@ import {
   DIABLO_B_SCRIPT,
   FUTURAMA_B_SCRIPT,
   GLF_B_SCRIPT,
+  GOT_B_SCRIPT,
   JACKS_B_SCRIPT,
   JPSALAS_B_SCRIPT,
+  MATRIX_B_SCRIPT,
   ORIGINAL_B_SCRIPT,
   RATTLECAN_B_SCRIPT,
   RATTLECAN_TILT_B_SCRIPT,
@@ -22,7 +24,7 @@ import {
   mixed,
   noFinalNewline,
 } from './test-scripts.test-support.js';
-import { blockBalance, checkGameJournal, lintSidecar } from './validate.js';
+import { blockBalance, checkGameJournal, lintSidecar, resourceFolders } from './validate.js';
 
 const OPTS: RenderOptions = { tableId: 'T', rom: null, originalPath: 'C:\\VPX\\tables\\T.vpx', originalSize: 1, originalMtimeMs: 0, sidecarPath: 'C:\\VPX\\tables\\T.vbs' };
 const rendered = (text: string): string => decodeScript(renderSidecar(text, classifyScript(text), OPTS).bytes);
@@ -31,6 +33,8 @@ const ALL: Record<string, readonly string[]> = {
   VPM_SCRIPT,
   ORIGINAL_B_SCRIPT,
   JPSALAS_B_SCRIPT,
+  MATRIX_B_SCRIPT,
+  GOT_B_SCRIPT,
   DIABLO_B_SCRIPT,
   JACKS_B_SCRIPT,
   FUTURAMA_B_SCRIPT,
@@ -174,6 +178,40 @@ describe('checkGameJournal (the live-validation verdict)', () => {
     expect(checkGameJournal([...game, 'not json']).problems).toEqual(['1 journal line is not JSON']);
   });
 
+  it('fails a game end whose scores are below the last live scores (The Matrix (Original): the end sub cleared them first)', () => {
+    const cleared = game.map((l) => l.replace('"scores":[1500]', '"scores":[0]'));
+    expect(checkGameJournal(cleared).problems).toEqual(['game_end carries scores [0], below the last live scores [500]: the table cleared its scores before the game end was journaled']);
+    // a final score above the last live one is the usual case (a bonus added outside AddScore), and equal is fine
+    expect(checkGameJournal(game.map((l) => l.replace('"scores":[1500]', '"scores":[500]'))).ok).toBe(true);
+    // per player: player 2's final below their live score
+    const two = game.map((l) => l.replace('"scores":[500],"player":1', '"scores":[500,700],"player":2').replace('"scores":[1500],"players":1', '"scores":[900,0],"players":2'));
+    expect(checkGameJournal(two).problems).toEqual(['game_end carries scores [900,0], below the last live scores [500,700]: the table cleared its scores before the game end was journaled']);
+    // live scores of an earlier game in the session do not count
+    const earlier = [loaded, '{"event":"current_scores","t":0.5,"scores":[99999],"player":1,"ball":3}', ...game.slice(1)];
+    expect(checkGameJournal(earlier).ok).toBe(true);
+  });
+
+  it('notes a final score of 0 it cannot vouch for (Diablo 2 1.2.1: nothing scored all game), and a session with more games than one', () => {
+    const zero = game.map((l) => l.replace('"scores":[500]', '"scores":[0]').replace('"scores":[1500]', '"scores":[0]'));
+    const c = checkGameJournal(zero);
+    expect(c.ok).toBe(true);
+    expect(c.notes).toEqual(['the final score is 0 and no live score was above 0: a game in which nothing scored, or a score cleared before it was journaled; the journal cannot tell which']);
+    // Game of Thrones, 2026-11-12: the runner's lockbar key began the next game after each game over
+    const again = checkGameJournal([...game.slice(0, -1), '{"event":"game_start","t":9,"players":1}', '{"event":"ball_end","t":10,"player":1,"ball":1,"extra_balls":0}']);
+    expect(again.ok).toBe(true);
+    expect(again.notes).toContain('2 game starts in the session: only the first game is judged');
+  });
+
+  it('notes a session no key press reached (a dialog over the player), by the missing lock line', () => {
+    const blocked = checkGameJournal([loaded]);
+    expect(blocked.problems).toEqual(['no game_start']);
+    expect(blocked.notes).toContain('no key press reached the table: a dialog was open over the player (a file or folder the table asks for is missing?), or the window never had the keyboard');
+    expect(blocked.summary.keysSeen).toBe(false);
+    const pressed = checkGameJournal([loaded, '{"event":"lock","t":8.2,"locked":false}']);
+    expect(pressed.summary.keysSeen).toBe(true);
+    expect(pressed.notes.some((n) => n.startsWith('no key press'))).toBe(false);
+  });
+
   it('notes, without failing, a game with no score line, hook warnings and a missing table_exit', () => {
     const quiet = game.filter((l) => !l.includes('"current_scores"') && !l.includes('"table_exit"'));
     const c = checkGameJournal([...quiet, '{"event":"warn","t":9,"msg":"lock read failed","err":"53"}']);
@@ -183,5 +221,30 @@ describe('checkGameJournal (the live-validation verdict)', () => {
       '1 warn line from the hook: lock read failed',
       'no table_exit: VPX did not close the table cleanly (or the journal was read before it did)',
     ]);
+  });
+});
+
+describe('resourceFolders (what a staged copy needs beside it)', () => {
+  const DIRS = ['B2STools', 'BloodMachinesDMD', 'Diablo 2 Beta.FlexDMD', 'Diablo 2.FlexDMD', 'gameofthrones.FlexDMD', 'Music', 'Plugins', 'Sonic.UltraDMD', 'TheGooniesDMD', 'Thundercats.UltraDMD'];
+  const of = (lines: string[]): string[] => resourceFolders(crlf(lines), DIRS);
+
+  it('takes a DMD project folder the script names whole in a string literal', () => {
+    expect(of(['With FlexDMD', '    .ProjectFolder = "./TheGooniesDMD/"', 'End With'])).toEqual(['TheGooniesDMD']);
+    // "Diablo 2.FlexDMD", not its Beta sibling
+    expect(of(['FlexDMD.ProjectFolder = "./Diablo 2.FlexDMD/"'])).toEqual(['Diablo 2.FlexDMD']);
+  });
+
+  it('takes <stem>.UltraDMD / <stem>.FlexDMD when the script builds the name from a constant', () => {
+    expect(of(['Const TableName = "Sonic"', 'DirName = curDir& "\\" &TableName& ".UltraDMD"'])).toEqual(['Sonic.UltraDMD']);
+    expect(of(['Const cGameName = "Thundercats"', 'DirName = curDir& "\\" &cGameName& ".UltraDMD"'])).toEqual(['Thundercats.UltraDMD']);
+    expect(of(['Const myGameName = "gameofthrones"', '    .ProjectFolder = ".\\"&myGameName&".FlexDMD\\"'])).toEqual(['gameofthrones.FlexDMD']);
+    // the constant alone, or the suffix alone, is not enough
+    expect(of(['Const TableName = "Sonic"'])).toEqual([]);
+    expect(of(['DirName = curDir & ".UltraDMD"'])).toEqual([]);
+  });
+
+  it('ignores comments and folders that are not a DMD project, whatever the script says', () => {
+    expect(of(["' .ProjectFolder = \"./TheGooniesDMD/\"", 'PlayMusic "Music/intro.mp3"', 'x = "Plugins"'])).toEqual([]);
+    expect(resourceFolders(crlf(JPSALAS_B_SCRIPT), DIRS)).toEqual([]);
   });
 });

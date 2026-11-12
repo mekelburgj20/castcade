@@ -9,8 +9,10 @@ import {
   BURGER_B_SCRIPT,
   DIABLO_B_SCRIPT,
   FUTURAMA_B_SCRIPT,
+  GOT_B_SCRIPT,
   JACKS_B_SCRIPT,
   JPSALAS_B_SCRIPT,
+  MATRIX_B_SCRIPT,
   ORIGINAL_B_SCRIPT,
   RATTLECAN_B_SCRIPT,
   ORIGINAL_E_SCRIPT,
@@ -55,9 +57,9 @@ const subLines = (L: string[], name: string): string[] => {
 
 describe('recipe versions', () => {
   it('each recipe carries its own version; recipe A keeps 0.3.1 so the lib bump alone re-makes A sidecars', () => {
-    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.3.0', C: '0.2.0', D: '0.1.0' });
+    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.3.2', C: '0.2.0', D: '0.1.0' });
     expect(RECIPE_VERSION).toBe('0.3.1');
-    expect(recipeVersionFor('B')).toBe('0.3.0');
+    expect(recipeVersionFor('B')).toBe('0.3.2');
     expect(recipeVersionFor('E')).toBeNull();
     expect(isRecipe('D')).toBe(true);
     expect(isRecipe('E')).toBe(false);
@@ -98,8 +100,8 @@ describe('renderRecipeB (JPSalas original)', () => {
     const { r, L, cls } = render(JPSALAS_B_SCRIPT);
     expect(cls.cls).toBe('B');
     expect(L[0]).toBe('Option Explicit');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
-    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.3.0", ""`);
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.2', libVersion: LIB_VERSION });
+    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.3.2", ""`);
     expect(L.some((l) => l.startsWith('Castcade_Guard "C:\\VPX\\tables\\Total Nuclear Annihilation'))).toBe(true);
     expect(L.some((l) => /^(Dim UseVPMNVRAM|UseVPMNVRAM =|Castcade_RegisterNVRAM|Castcade_WatchBytes)/.test(l))).toBe(false);
     expect(L).toContain('Sub Castcade_Orig_KeyDown(ByVal keycode)');
@@ -267,7 +269,7 @@ describe('renderRecipeB: the original-table vocabulary (C1.3)', () => {
   it('Diablo 2: scalar Score with CurrentPlayerIdx, start at the end of StartGame past its early exits, ball end at the top of EndPlayerTurn', () => {
     const { r, L, cls } = render(DIABLO_B_SCRIPT);
     expect(cls.cls).toBe('B');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.2', libVersion: LIB_VERSION });
     expect(subLines(L, 'AddScore')).toEqual([
       'Sub AddScore(points)',
       "    DBG \"CALL\", \"AddScore\" '##DBGINJ",
@@ -418,13 +420,105 @@ describe('renderRecipeB: the original-table vocabulary (C1.3)', () => {
       for (const text of [crlf(script), lf(script), mixed(script, 3, 20)]) {
         const a = render(script, text);
         expect(a.cls.cls).toBe('B');
-        expect(parseSidecarMarker(a.L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
+        expect(parseSidecarMarker(a.L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.2', libVersion: LIB_VERSION });
         expect(render(script, text).r.sha256).toBe(a.r.sha256);
         const undone = unpatchSidecar(a.out);
         expect(undone).toBe(text);
         expect(renderSidecar(undone!, classifyScript(undone!), OPTS).sha256).toBe(a.r.sha256);
       }
     }
+  });
+});
+
+describe('renderRecipeB 0.3.1: an end sub that clears the scores (C1.6, The Matrix (Original))', () => {
+  const GAME_END = "    Castcade_B_GameEnd   ' Castcade: game end";
+  const endOfGame = (L: string[]): string[] => subLines(L, 'EndOfGame').filter((l) => l.trim() !== '');
+  /** MATRIX_B_SCRIPT with the body of its `EndOfGame` replaced. */
+  const withEnd = (body: string[]): string[] => {
+    const s = MATRIX_B_SCRIPT.indexOf('Sub EndOfGame()');
+    const e = MATRIX_B_SCRIPT.indexOf('End Sub', s);
+    return [...MATRIX_B_SCRIPT.slice(0, s + 1), ...body, ...MATRIX_B_SCRIPT.slice(e)];
+  };
+
+  it('journals the game end in front of the loop that zeroes the score array, not at the end of the sub', () => {
+    const { L, r, text, out } = render(MATRIX_B_SCRIPT);
+    expect(endOfGame(L)).toEqual(['Sub EndOfGame()', '    Dim i', '    bGameInPlay = False', GAME_END, "    For i = 0 To MaxPlayers - 1 ' Clear scores", '        Score(i) = 0', '    Next', '    StartAttractMode', 'End Sub']);
+    expect(r.anchors['gameEnd']).toBe('before "Score(i) = 0" in Sub EndOfGame (line 53), where the table clears its scores');
+    expect(r.anchors['vars']).toBe('Score base 0, player CurrentPlayer + 1, ball Balls, players PlayersPlayingGame, extra balls ExtraBallsAwards(CurrentPlayer)');
+    expect(r.warnings).toEqual([]);
+    expect(r.partial).toEqual([]);
+    expect(L.filter((l) => l === GAME_END)).toHaveLength(1);
+    expect(unpatchSidecar(out)).toBe(text);
+    // the start sub's own reset of the scores is not a game end
+    expect(subLines(L, 'ResetForNewGame').at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
+  });
+
+  it('takes a one-line loop, a plain statement and a scalar store; the first clear wins', () => {
+    const one = render(withEnd(['    Dim i', '    For i = 0 To 3 : Score(i) = 0 : Next', '    StartAttractMode']));
+    expect(endOfGame(one.L)).toEqual(['Sub EndOfGame()', '    Dim i', GAME_END, '    For i = 0 To 3 : Score(i) = 0 : Next', '    StartAttractMode', 'End Sub']);
+    const plain = render(withEnd(['    bGameInPlay = False', '    If Tilted Then Score(0) = 0', '    Score(1) = 0']));
+    expect(endOfGame(plain.L)).toEqual(['Sub EndOfGame()', '    bGameInPlay = False', GAME_END, '    If Tilted Then Score(0) = 0', '    Score(1) = 0', 'End Sub']);
+    // Diablo 2's shape (a scalar Score): a clear in its end sub moves the anchor the same way
+    const s = DIABLO_B_SCRIPT.indexOf('Sub GameOver()');
+    expect(s).toBeGreaterThan(0);
+    const scalar = render([...DIABLO_B_SCRIPT.slice(0, s + 1), '    Score = 0', ...DIABLO_B_SCRIPT.slice(s + 1)]);
+    expect(subLines(scalar.L, 'GameOver').slice(0, 3)).toEqual(['Sub GameOver()', GAME_END, '    Score = 0']);
+    expect(scalar.r.anchors['gameEnd']).toMatch(/^before "Score = 0" in Sub GameOver \(line \d+\), where the table clears its scores$/);
+  });
+
+  it('leaves the anchor at the end when nothing in the sub clears the store, or the clear cannot take a line in front of it', () => {
+    // another array, a comparison, a score set to something else: not a clear
+    const none = render(withEnd(['    bGameInPlay = False', '    BallsRemaining(0) = 0', '    If Score(0) = 0 Then StartAttractMode', '    Score(0) = Score(0) * 1']));
+    expect(endOfGame(none.L).at(-2)).toBe(GAME_END);
+    expect(none.r.anchors['gameEnd']).toMatch(/^end of Sub EndOfGame \(line \d+\)$/);
+    // a Case line holds the clear: a call in front of it would join the Case above (or not compile)
+    const inCase = render(withEnd(['    Select Case CurrentPlayer', '        Case 0 : Score(0) = 0', '    End Select']));
+    expect(endOfGame(inCase.L).at(-2)).toBe(GAME_END);
+    // the line in front of the clear ends in a continuation
+    const cont = render(withEnd(['    If Tilted Then _', '        Score(0) = 0', '    StartAttractMode']));
+    expect(endOfGame(cont.L).at(-2)).toBe(GAME_END);
+  });
+
+  it('warns about an early Exit Sub in front of the clear, and not about one behind it', () => {
+    const before = render(withEnd(['    If bGameInPlay = False Then Exit Sub', '    Score(0) = 0', '    If Tilted Then Exit Sub', '    StartAttractMode']));
+    expect(before.r.warnings).toEqual(['Sub EndOfGame has 1 early Exit Sub; no game end is journaled on that path']);
+    const behind = render(withEnd(['    Score(0) = 0', '    If Tilted Then Exit Sub', '    StartAttractMode']));
+    expect(behind.r.warnings).toEqual([]);
+  });
+});
+
+describe('renderRecipeB 0.3.2: an end sub that is called late (C1.6, Game of Thrones)', () => {
+  const GAME_END = "    Castcade_B_GameEnd   ' Castcade: game end";
+
+  it('also journals the game end where the game flag is cleared before the end sub runs, and says so instead of the early-exit warning', () => {
+    const { L, r, text, out } = render(GOT_B_SCRIPT);
+    expect(subLines(L, 'EndOfBallComplete').slice(1, 4)).toEqual(['    If BallsRemaining(CurrentPlayer) <= 0 Then', "        bGameInPLay = False\t\t\t' the end sub sets this, but the flippers go dead now", GAME_END]);
+    expect(subLines(L, 'DoQuickRestart').slice(0, 4)).toEqual(['Sub DoQuickRestart', '    bGameInPLay = False', GAME_END, '    EndOfGame']);
+    // the end sub keeps its own anchor: a game over nobody interrupts is journaled once, by whichever comes first
+    expect(subLines(L, 'EndOfGame').at(-2)).toBe(GAME_END);
+    expect(L.filter((l) => l === GAME_END)).toHaveLength(3);
+    // not at the load-time clear, and not in the start sub
+    expect(subLines(L, 'Table1_Init')).toEqual(['Sub Table1_Init()', '    bGameInPlay = False', 'End Sub']);
+    expect(r.anchors['gameEnd']).toMatch(/^end of Sub EndOfGame \(line \d+\); after "bGameInPLay = False" in Sub EndOfBallComplete \(line \d+\); after "bGameInPLay = False" in Sub DoQuickRestart \(line \d+\)$/);
+    expect(r.warnings).toEqual([expect.stringMatching(/^Sub EndOfGame leaves early while bGameInPLay is set \(line \d+\): it runs after the game is over; the game end is also anchored after "bGameInPLay = False" in Sub EndOfBallComplete \(line \d+\); after /)]);
+    expect(r.partial).toEqual([]);
+    expect(unpatchSidecar(out)).toBe(text);
+  });
+
+  it('is only for a guard that leaves while the flag is SET: the JPSalas guard (already over) and a tilt exit change nothing', () => {
+    // JPSALAS_B_SCRIPT: "If bGameInPlay = False Then Exit Sub", with a clear in Table1_Exit only
+    const jp = render(JPSALAS_B_SCRIPT);
+    expect(jp.L.filter((l) => l === GAME_END)).toHaveLength(1);
+    expect(jp.r.warnings).toEqual(['Sub EndOfGame has 1 early Exit Sub; no game end is journaled on that path']);
+    // the guard without a clear anywhere else: nothing to anchor, the early-exit warning stays
+    const s = GOT_B_SCRIPT.indexOf('Sub EndOfBallComplete()');
+    const q = GOT_B_SCRIPT.indexOf('Sub DoQuickRestart');
+    const alone = render(GOT_B_SCRIPT.filter((l, i) => !(i > s && i < s + 6 && l.includes('bGameInPLay = False')) && !(i > q && i < q + 2)));
+    expect(alone.L.filter((l) => l === GAME_END)).toHaveLength(1);
+    expect(alone.r.warnings).toEqual(['Sub EndOfGame has 1 early Exit Sub; no game end is journaled on that path']);
+    // a second early exit in the end sub: the early-exit warning stays beside the new one
+    const two = render(GOT_B_SCRIPT.map((l) => (l === '    bShowMatch = False' ? '    If bShowMatch Then Exit Sub' : l)));
+    expect(two.r.warnings).toEqual(['Sub EndOfGame has 2 early Exit Sub; no game end is journaled on those paths', expect.stringMatching(/^Sub EndOfGame leaves early while bGameInPLay is set/)]);
   });
 });
 

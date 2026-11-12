@@ -19,7 +19,9 @@ import {
   FUTURAMA_B_SCRIPT,
   GLF_B_SCRIPT,
   JACKS_B_SCRIPT,
+  GOT_B_SCRIPT,
   JPSALAS_B_SCRIPT,
+  MATRIX_B_SCRIPT,
   RATTLECAN_B_SCRIPT,
   RATTLECAN_TILT_B_SCRIPT,
   SCORBIT_C_SCRIPT,
@@ -116,6 +118,8 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
     const scripts: Record<string, readonly string[]> = {
       VPM_SCRIPT,
       JPSALAS_B_SCRIPT,
+      MATRIX_B_SCRIPT,
+      GOT_B_SCRIPT,
       DIABLO_B_SCRIPT,
       JACKS_B_SCRIPT,
       FUTURAMA_B_SCRIPT,
@@ -158,7 +162,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       ],
     );
     expect(out.trim()).toBe('driven');
-    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.0', lib: '0.5.0' });
+    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.2', lib: '0.5.0' });
     expect(game(events)).toEqual([
       { event: 'game_start', players: 1 },
       { event: 'current_scores', scores: [100], player: 1, ball: 1 },
@@ -227,6 +231,60 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       { event: 'current_scores', scores: [150], player: 1, ball: 3 },
       { event: 'ball_end', player: 1, ball: 3, extra_balls: 0 },
       { event: 'game_end', scores: [150], players: 1 },
+    ]);
+    expect(checkGameJournal(lines)).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it('The Matrix (Original) shape: an EndOfGame that zeroes the scores still journals the final score (B 0.3.1)', () => {
+    const { out, lines, events } = play('matrix-game', MATRIX_B_SCRIPT, [], ['Table1_KeyDown StartGameKey', 'AddScore 500', 'EndOfBall', 'AddScore 20', 'EndOfBall', 'EndOfBall', 'Table1_Exit']);
+    expect(out.trim()).toBe('driven');
+    expect(game(events)).toEqual([
+      { event: 'game_start', players: 1 },
+      { event: 'current_scores', scores: [500], player: 1, ball: 1 },
+      { event: 'ball_end', player: 1, ball: 1, extra_balls: 0 },
+      { event: 'current_scores', scores: [1500], player: 1, ball: 1 },
+      { event: 'current_scores', scores: [1520], player: 1, ball: 2 },
+      { event: 'ball_end', player: 1, ball: 2, extra_balls: 0 },
+      { event: 'current_scores', scores: [2520], player: 1, ball: 2 },
+      { event: 'ball_end', player: 1, ball: 3, extra_balls: 0 },
+      { event: 'current_scores', scores: [3520], player: 1, ball: 3 },
+      { event: 'game_end', scores: [3520], players: 1 },
+    ]);
+    expect(checkGameJournal(lines)).toMatchObject({ ok: true, problems: [] });
+  });
+
+  it('Game of Thrones shape: a Start during the match sequence still leaves one game end per game, with the bonus (B 0.3.2)', () => {
+    const balls = ['EndOfBall', 'EndOfBall', 'EndOfBall'];
+    const { out, lines, events } = play(
+      'got-game',
+      GOT_B_SCRIPT,
+      [],
+      [
+        'Table1_Init',
+        'Table1_KeyDown StartGameKey',
+        'AddScore 500',
+        ...balls, // the third one is the game over: the flag is cleared, the match sequence runs
+        'Table1_KeyDown StartGameKey', // a Start during the match sequence: the next game
+        'EndOfGame', // the first game's timer fires now, and leaves at its guard
+        'AddScore 10',
+        ...balls,
+        'EndOfGame', // nobody pressed Start this time: the end sub runs whole, and journals nothing twice
+        'Table1_Exit',
+      ],
+    );
+    expect(out.trim()).toBe('driven');
+    const ends = game(events).filter((e) => e['event'] === 'game_start' || e['event'] === 'game_end' || e['event'] === 'ball_end');
+    expect(ends).toEqual([
+      { event: 'game_start', players: 1 },
+      { event: 'ball_end', player: 1, ball: 1, extra_balls: 0 },
+      { event: 'ball_end', player: 1, ball: 2, extra_balls: 0 },
+      { event: 'ball_end', player: 1, ball: 3, extra_balls: 0 },
+      { event: 'game_end', scores: [3500], players: 1 },
+      { event: 'game_start', players: 1 },
+      { event: 'ball_end', player: 1, ball: 1, extra_balls: 0 },
+      { event: 'ball_end', player: 1, ball: 2, extra_balls: 0 },
+      { event: 'ball_end', player: 1, ball: 3, extra_balls: 0 },
+      { event: 'game_end', scores: [3010], players: 1 },
     ]);
     expect(checkGameJournal(lines)).toMatchObject({ ok: true, problems: [] });
   });
