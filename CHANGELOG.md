@@ -12,6 +12,23 @@ updates together.
 
 ### Added
 
+- **Host without a port forward (D10.8).** A paired companion hosts through ArcAid: match control messages (not
+  media) go through a relay on arcaid.app, and the invite is just the six-letter code. The 27401 listener stays up
+  beside it for LAN and forwarded hosts, and address invites still work. The host locks the room when the first game
+  starts; after an ArcAid restart the host re-hosts the same code and the players re-link. When ArcAid cannot be
+  reached, Castcade asks the router to open TCP 27401 (UPnP) and removes the mapping afterwards. The Match tab says
+  which path is in use. Needs ArcAid 2.242.0 (the relay); before that a paired host waits 4 s and hosts direct.
+- **One step to a match (A14, steps 1–3).** The Match tab has a table picker (imported tables, or Browse…): Host
+  hosts, copies a `castcade://join/…` link and starts VPX on that table; a table already open is used as it is. The
+  link opens Castcade, joins, and starts the same table on that rig (found by file hash, then name); a link opened
+  while Castcade was closed asks first. Host, Join, VPX and the companion may now come up in any order
+  (`docs/design/alpha-match.md` §9.3).
+- **Originals report their ball ends (C1.4, C1.6).** Anchor overrides keyed by script signature for tables the
+  vocabulary cannot read: the VPX Game Logic Framework (Dark Chaos), the Burger template (2001 ×2, Star Wars) and
+  Rattlecan. All 34 originals on the owner's rig patch completely; 27 played a full game unattended with every ball
+  end journaled (`npm run validate-original -w companion`). Recipe B 0.3.0, C 0.2.0 (sidecars re-made on the next
+  folder look).
+
 - **The lobby says whose table cannot report ball ends, and the host can pass the turn (A13).** Three matches on an
   unpatched original (Dark Chaos, 2026-11-12) sat on `grant 1` until Forfeit while the witness had already logged that
   it could not read the table. Each companion now tells the lobby whether its table is followed live
@@ -22,6 +39,13 @@ updates together.
 
 ### Fixed
 
+- **A table locked until someone joins no longer dies mid-ball.** Hosting while a game was running locked the table
+  at once (flippers and plunger dead, the game could not end); the lock now waits for that game to end (A14).
+- **Two or more players dropping at once no longer leaves the match paused** until the host presses Resume: a
+  disconnect pause naming a player ends when that player is back on a live link (D10.8).
+- **The patcher wrapped the wrong handler** on tables that define `Table1_Exit` twice (Congo, Hook): the last
+  definition is the live one. The undo is now byte-exact for every recipe (a handler's case and a final newline
+  were changed on 17 originals). Existing ROM-table sidecars pick this up at their next re-make (C1.6).
 - **The host never got a joining player's native picture (D10.3.9).** Both helpers made their video sender with
   `AddTransceiver` and only the initiator offers; libwebrtc pairs a remote offer's video section only with a
   transceiver made by `AddTrack`, so the answerer's sender was never negotiated and its encoder never opened (owner
