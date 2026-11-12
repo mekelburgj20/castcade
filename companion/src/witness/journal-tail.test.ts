@@ -51,6 +51,34 @@ describe('JournalTail', () => {
     expect(await read(['ab\nc', 'd\r', '\né', '\n'])).toEqual([3, 7, 10]);
   });
 
+  it('A15: what was in the file before the first read is backlog; what is appended later is not', async () => {
+    const h = harness('start');
+    const seen: [string, boolean][] = [];
+    h.tail.on('line', (l) => seen.push([l, h.tail.backlog]));
+    h.fs.put(PATH, 'old1
+old2
+');
+    await h.tail.poll();
+    h.append('new
+');
+    await h.tail.poll();
+    expect(seen).toEqual([
+      ['old1', true],
+      ['old2', true],
+      ['new', false],
+    ]);
+    expect(h.tail.backlog).toBe(false);
+    // A file that did not exist at the first look: everything in it was written while this tail watched.
+    const late = harness('start');
+    const flags: boolean[] = [];
+    late.tail.on('line', () => flags.push(late.tail.backlog));
+    await late.tail.poll();
+    late.append('a
+');
+    await late.tail.poll();
+    expect(flags).toEqual([false]);
+  });
+
   it('A15: stop keeps the position, and start again continues after the last line delivered', async () => {
     const h = harness('start');
     h.fs.put(PATH, 'a\n');

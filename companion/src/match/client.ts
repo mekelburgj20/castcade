@@ -55,9 +55,16 @@ export interface ClientOptions {
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
   /**
    * Reconnect after a dropped socket to the host (A3): one attempt every `delayMs` (default 1 s),
-   * at most `attempts` (default 30); then the host counts as gone.
+   * at most `attempts` (default 30); then the host counts as gone. A15: `maxMs` also ends it by the clock (an
+   * attempt at a PC that is switched off can take the system's connect timeout).
    */
-  reconnect?: { attempts?: number; delayMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number; maxMs?: number };
+  /**
+   * A15: false: when the host is gone for good this client does not propose itself as the new host (`hostLost` is
+   * still raised). The companion passes false: over WebSocket or the relay a client has no listener the others could
+   * reach, so a client that took over was a host nobody could come back to. Default true (a full mesh).
+   */
+  hostLeftTransfer?: boolean;
 }
 
 export interface AdoptOptions {
@@ -69,7 +76,8 @@ export interface AdoptOptions {
   /** A8 (2026-10-31): the stepping-down host's `tableMismatches()`, so a later transfer back carries them on. */
   tableMismatches?: Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']>;
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
-  reconnect?: { attempts?: number; delayMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number; maxMs?: number };
+  hostLeftTransfer?: boolean;
 }
 
 export interface DroppedInfo {
@@ -160,6 +168,8 @@ interface Reconnecting {
   /** A socket was opened and RECONNECT sent; waiting for RECONNECT_ACK. */
   inFlight: boolean;
   timer: TimerHandle | null;
+  /** A15: no attempt is scheduled after this (the session's clock); null = the attempts alone bound it. */
+  deadline: number | null;
 }
 
 export class ClientMatch {
@@ -194,6 +204,8 @@ export class ClientMatch {
   private readonly gone = new Set<PlayerId>();
   private readonly reconnectAttempts: number;
   private readonly reconnectDelayMs: number;
+  private readonly reconnectMaxMs: number | null;
+  private readonly hostLeftTransfer: boolean;
   /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
   private reconnecting: Reconnecting | null = null;
   /** A10: the games whose RESULT arrived (each raises `result` once). */
@@ -217,6 +229,8 @@ export class ClientMatch {
     this.hostTimeouts = opts.hostTimeouts ?? {};
     this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? DEFAULT_RECONNECT_ATTEMPTS);
     this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+    this.reconnectMaxMs = opts.reconnect?.maxMs ?? null;
+    this.hostLeftTransfer = opts.hostLeftTransfer ?? true;
     this.attach();
   }
 
@@ -232,6 +246,7 @@ export class ClientMatch {
         companionVersion: opts.companionVersion,
         hostTimeouts: opts.hostTimeouts,
         reconnect: opts.reconnect,
+        hostLeftTransfer: opts.hostLeftTransfer,
       },
       session,
     );
@@ -474,6 +489,7 @@ export class ClientMatch {
       attemptsLeft: this.reconnectAttempts,
       inFlight: false,
       timer: null,
+      deadline: this.reconnectMaxMs === null ? null : this.s.clock.now() + this.reconnectMaxMs,
     };
     if (opts.delayFirst) this.scheduleReconnect(this.reconnecting);
     else this.attemptReconnect(this.reconnecting);
@@ -498,7 +514,7 @@ export class ClientMatch {
     if (this.reconnecting !== r || this.detached) return;
     r.inFlight = false;
     this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft });
-    if (r.attemptsLeft > 0) {
+    if (r.attemptsLeft > 0 && (r.deadline === null || this.s.clock.now() < r.deadline)) {
       this.scheduleReconnect(r);
       return;
     }
@@ -825,7 +841,7 @@ export class ClientMatch {
     if (this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
       this.hostLost = true;
       this.events.emit('hostLost', peer);
-      this.proposeIfCandidate();
+      if (this.hostLeftTransfer) this.proposeIfCandidate();
       return;
     }
     const known = this.gone.has(peer);

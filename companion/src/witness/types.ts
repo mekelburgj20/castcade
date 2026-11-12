@@ -241,6 +241,11 @@ export interface Witness {
   stop(): Promise<void>;
   /** A15: the last game event delivered from a journal (see `JournalMark`); null when none was. */
   journalMark(): JournalMark | null;
+  /**
+   * A15: the game event being delivered was in the journal before this witness began to read it (Castcade started,
+   * or the witness was rebuilt, while the table was open). Read it inside an `event` listener.
+   */
+  deliveringBacklog(): boolean;
   /** Redeem a pairing code minted at ArcAid Account Settings; stores the token through the settings store. */
   pair(code: string): Promise<void>;
   /** Forget the token locally (ArcAid-side revoke happens in Account Settings). */

@@ -802,7 +802,16 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.shutdown();
   }
 
-  private shutdown(): void {
+  /**
+   * A15: let go of the room without leaving it (Castcade restarts itself and hosts the same code again): the socket
+   * just closes, as in a crash, so the room outlives it by the server's grace and the clients are told `host_gone`,
+   * after which they ask for the room again, never `host_left`, which ends the match for them.
+   */
+  abandon(): void {
+    this.shutdown(false);
+  }
+
+  private shutdown(leave = true): void {
     this.closed = true;
     if (this.rehostTimer) clearTimeout(this.rehostTimer);
     this.rehostTimer = null;
@@ -815,7 +824,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.stale.clear();
     this.awaited.clear();
     // Going on purpose: the room closes now (the clients are told `host_left`) instead of after the 30 s grace.
-    this.dropSocket(this.code !== null && this.current !== 'closed');
+    this.dropSocket(leave && this.code !== null && this.current !== 'closed');
     this.code = null;
     this.setState('off');
   }

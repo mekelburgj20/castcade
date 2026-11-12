@@ -213,6 +213,11 @@ the three fields is logged.
   `logLength`, not its head.
 - A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
   (`host_left`, above).
+- A participant whose process restarted resumes the same way, from the log it saved: a client sends
+  `RECONNECT` from its saved head; a host rebuilds its state from its saved log, serves the same
+  endpoint again and issues the outstanding grant again under a new `grantSeq`. `seq` is per sender
+  and strictly increasing across that sender's connections (only a `HELLO` starts it over), so a
+  restarted participant starts its `seq` above anything its earlier run can have used.
 
 ## Media signalling
 

@@ -75,6 +75,7 @@ export class JournalTail {
   private running = false;
   private polling: Promise<void> | null = null;
   private lastLineEnd = 0;
+  private reading: 'backlog' | 'live' = 'live';
 
   constructor(
     readonly path: string,
@@ -107,6 +108,14 @@ export class JournalTail {
    */
   get lineEnd(): number {
     return this.lastLineEnd;
+  }
+
+  /**
+   * A15: the line being delivered was already in the file when this tail first read it (`from: 'start'`): it was
+   * written before this reader existed, however long ago. Read it inside a `line` listener.
+   */
+  get backlog(): boolean {
+    return this.reading === 'backlog';
   }
 
   /** Stop polling. The position is kept: `start()` again continues after the last line delivered. */
@@ -154,9 +163,11 @@ export class JournalTail {
       this.emitter.emit('error', err instanceof Error ? err : new Error(String(err)));
       return;
     }
+    let first = false;
     if (this.offset === null) {
       this.offset = this.from === 'end' ? size : 0;
       if (this.from === 'end') return;
+      first = true;
     }
     let start = this.offset + this.partial.length;
     if (size < start) {
@@ -179,7 +190,12 @@ export class JournalTail {
       this.emitter.emit('error', err instanceof Error ? err : new Error(String(err)));
       return;
     }
-    this.consume(chunk);
+    this.reading = first ? 'backlog' : 'live';
+    try {
+      this.consume(chunk);
+    } finally {
+      this.reading = 'live';
+    }
   }
 
   private consume(chunk: Uint8Array): void {

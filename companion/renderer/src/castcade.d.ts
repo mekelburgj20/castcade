@@ -605,6 +605,8 @@ interface MatchStatus {
   lastError: string | null;
   /** D7.6: the VR test bench while it runs, else null. */
   bench: BenchStatus | null;
+  /** A15: a match this PC was in when Castcade last closed and can go back to; `auto`: it is rejoined without asking. */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
 }
 
 /** A14 (2026-11-12): mirrors `OneStepStatus` in main/one-step.ts. */
@@ -685,6 +687,9 @@ interface CastcadeBridge {
     benchClips(): Promise<ClipSummary[]>;
     /** A10: the host's leave between games is End match (everyone is told). */
     leave(): Promise<MatchStatus>;
+    /** A15: go back into the match of `MatchStatus.resume`; `forgetResume` drops it. */
+    rejoin(): Promise<MatchStatus>;
+    forgetResume(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
     setMuted(muted: boolean): Promise<MatchStatus>;
