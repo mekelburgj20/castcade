@@ -2,9 +2,10 @@
  * Owns the one `Witness` instance for the process: creates it from the settings store, forwards
  * its events to the log and to status listeners, pauses/resumes, and recreates it when a setting
  * the module reads at start (ArcAid URL, nvram dir) changes. The shell talks to this, never to the
- * module directly, so recreation never leaks a stale instance into IPC handlers.
+ * module directly, so recreation never leaks a stale instance into IPC handlers. A recreation hands the
+ * new instance the old one's journal mark (A15), so a match is not fed the game in progress twice.
  */
-import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS } from '../witness/index.js';
+import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
 import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { VrObservation } from '../witness/vr-detect.js';
@@ -52,13 +53,14 @@ export function needsWitnessRestart(prev: WitnessSettings, next: WitnessSettings
   return prev.arcaidBaseUrl !== next.arcaidBaseUrl || prev.nvramDir !== next.nvramDir;
 }
 
-export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHost {
+/** `overrides`: the module's dependencies for a test (a memory file system, a scripted process list); the shell passes none. */
+export function createWitnessHost(store: SettingsStore, log: Logger, overrides: Partial<WitnessDeps> = {}): WitnessHost {
   const statusListeners = new Set<(status: WitnessStatus) => void>();
   let paused = false;
   let unsubscribe: Array<() => void> = [];
   // B8: ArcAid's ROM → VPS game map, fetched at start and daily; B24: the VPS index itself, rebuilt from vps-db daily.
   // Both module defaults are off for its tests.
-  const deps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS, vpsRefreshMs: DEFAULT_VPS_REFRESH_MS };
+  const deps: WitnessDeps = { log: (line: string) => log.info(line), romMapRefreshMs: DEFAULT_ROM_MAP_REFRESH_MS, vpsRefreshMs: DEFAULT_VPS_REFRESH_MS, ...overrides };
   /** D2.8: the running VPX's pid (the table-sound helper's fallback when the match capture has no window). */
   let launchPid: number | null = null;
   /** D7.3.3: its process start (the OpenXR layer's "VPX predates the registration" rule). */
@@ -181,7 +183,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger): WitnessHos
       } catch (e) {
         log.error(`witness: stop before restart failed: ${describeError(e)}`);
       }
-      witness = attach(createWitness(store, deps));
+      // A15: the new witness reads the open table's journal again from the top; what the old one already delivered
+      // (to a match: turns passed, a game started) is not delivered a second time.
+      witness = attach(createWitness(store, { ...deps, resume: witness.journalMark() }));
       if (!paused) {
         try {
           await witness.start();

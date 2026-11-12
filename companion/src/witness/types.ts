@@ -219,9 +219,28 @@ export type WitnessNotice =
   /** C10: the table's own script is Castcade's patch (the VPX editor saved a sidecar into the `.vpx`); the shell renders a fresh sidecar over it. */
   | { kind: 'embedded_patch'; table: string; vpxPath: string; title: string; message: string };
 
+/**
+ * A15: how far into a hook journal the game events were delivered (the `event` listeners, i.e. the match). A witness
+ * built with this as `WitnessDeps.resume` still reads the journal from its first byte (the detector needs every line),
+ * but delivers no event of that same table load at or before `offset` a second time.
+ */
+export interface JournalMark {
+  /** The journal file. */
+  path: string;
+  /** The hook's session stamp of the table load the events belong to (`table_loaded.session`); null on a hook without one. */
+  session: string | null;
+  /** File position just past that `table_loaded` line: with `session`, which load of the table this is. */
+  loaded: number;
+  /** File position just past the line of the last event delivered. */
+  offset: number;
+}
+
 export interface Witness {
   start(): Promise<void>;
+  /** Stops watching, the journal tails included; `start()` on the same instance continues where they stopped. */
   stop(): Promise<void>;
+  /** A15: the last game event delivered from a journal (see `JournalMark`); null when none was. */
+  journalMark(): JournalMark | null;
   /** Redeem a pairing code minted at ArcAid Account Settings; stores the token through the settings store. */
   pair(code: string): Promise<void>;
   /** Forget the token locally (ArcAid-side revoke happens in Account Settings). */

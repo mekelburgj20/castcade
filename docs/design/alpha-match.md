@@ -673,13 +673,11 @@ witness the test drives (`main/match-host-orderings.test.ts`) and fixed what fai
 | P off (no preview window) at Host or Join | The rig read `pc` until the witness sampled VR, then the panel moved into the headset (A6); the camera is the layer's (D8.1), so no window is needed | Same | `match-host.test.ts` "host on the monitor reading, then the witness reads VR…" (existing) |
 | J after the match started | Refused by the host ("the roster is final"); through ArcAid the room is locked at the first game (D10.8) | Same; a link says the answer as it came ("That match has already started (CODE): only its players can come back to it." or "Could not join that match. The host refused…") and starts no table | engine tests (existing); one-step "D10.8: a link opened after the match started…" |
 | The relay reconnecting (a pause, the client's bounded `no_such_match` retry, a host re-hosting the same code) while a link waits for the host's table | (new) | The wish is kept while this rig is still in the match; the same link stays valid | one-step "the wait for the host's table outlasts a pause…" |
+| The witness rebuilt during a match by a settings change (the ArcAid address, the NVRAM folder), A15 | **The game in progress was fed to the match a second time**: on this player's ball 2 the replayed end of ball 1 passed the turn; in a free-play lobby the replayed Start started the match in the middle of the host's game. The replaced witness also went on reading the journal and posted the game a second time at its end | The new witness is given the old one's journal mark (file, table load, byte position of the last event delivered) and delivers nothing at or before it again; the journal is still read from the top, so the game on screen, the attempt and the game count are rebuilt. A stopped witness stops its journal tails | `main/witness-restart.test.ts` (two match hosts, the real witness and witness host); `witness.test.ts` "A15: …" |
 
 **Not fixed, known:**
 - Castcade restarted in the middle of a match: the match is not picked up again (a host's match is gone; a client has
   no way back in but the link, which the host refuses once the roster is final). Needs the reconnect of A3 on the Match tab.
-- The witness restarted during a match by a settings change (the ArcAid address, the NVRAM folder): it reads the
-  running table's journal again from the session's start, and the game in progress would be fed to the match a second
-  time. Suspected from reading `witness.ts`; not tested, not fixed.
 - A VPX editor open with a table loaded but not playing counts as "a table is open": Host starts nothing and the player
   presses Play. A second VPX is never started beside it.
 
