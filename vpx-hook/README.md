@@ -120,6 +120,12 @@ calls (C1.1.1 evidence: whether a table ever says game over). Recipe A is unchan
 sidecar on the folder watch's first look (B15: a script read each, no re-hash). Checked with a `cscript` harness over
 synthetic B/C/D scripts: one game each journals start → scores → ball ends → end, with and without the library.
 
+- `spike/vbs-compile.vbs` (C1.4): `cscript //nologo vbs-compile.vbs <script.vbs>` compiles one table script or
+  rendered sidecar with the Windows VBScript engine and runs none of it (the text goes to `ExecuteGlobal` behind a
+  first line that raises, and the engine compiles a whole text before its first statement). `OK` / `SYNTAX ...`,
+  exit 0 / 1. Used by `companion/src/patcher/sidecar-cscript.test.ts` and `companion/scripts/validate-original.ts`.
+  `spike/autoplay.py game --also 156` taps extra scancodes with every plunge (a lockbar or fire button that launches
+  the ball).
 - `spike/` — Phase 0 tooling, not product code: `render-sidecar.py` (section 4 classifier + recipes A
   and B, the ancestor of the companion `patcher`), `stage.ps1`, `tail-journal.py` (map decode +
   ball-end detector; ported to `companion/src/witness/journal-detector.ts` 2026-10-21, kept as the oracle behind `fixtures/check.py`), `lock.ps1`, `capture-test.ps1`, `autoplay.py`, `play-staged.ps1` (opens a staged copy in a chosen build with the tailer alongside)

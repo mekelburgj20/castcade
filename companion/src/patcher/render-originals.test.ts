@@ -55,9 +55,9 @@ const subLines = (L: string[], name: string): string[] => {
 
 describe('recipe versions', () => {
   it('each recipe carries its own version; recipe A keeps 0.3.1 so the lib bump alone re-makes A sidecars', () => {
-    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.2.0', C: '0.1.0', D: '0.1.0' });
+    expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.3.0', C: '0.2.0', D: '0.1.0' });
     expect(RECIPE_VERSION).toBe('0.3.1');
-    expect(recipeVersionFor('B')).toBe('0.2.0');
+    expect(recipeVersionFor('B')).toBe('0.3.0');
     expect(recipeVersionFor('E')).toBeNull();
     expect(isRecipe('D')).toBe(true);
     expect(isRecipe('E')).toBe(false);
@@ -98,8 +98,8 @@ describe('renderRecipeB (JPSalas original)', () => {
     const { r, L, cls } = render(JPSALAS_B_SCRIPT);
     expect(cls.cls).toBe('B');
     expect(L[0]).toBe('Option Explicit');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
-    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.2.0", ""`);
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
+    expect(L).toContain(`Castcade_Init "Total Nuclear Annihilation (Spooky 2017) VPW v2.3", "B", "0.3.0", ""`);
     expect(L.some((l) => l.startsWith('Castcade_Guard "C:\\VPX\\tables\\Total Nuclear Annihilation'))).toBe(true);
     expect(L.some((l) => /^(Dim UseVPMNVRAM|UseVPMNVRAM =|Castcade_RegisterNVRAM|Castcade_WatchBytes)/.test(l))).toBe(false);
     expect(L).toContain('Sub Castcade_Orig_KeyDown(ByVal keycode)');
@@ -126,9 +126,11 @@ describe('renderRecipeB (JPSalas original)', () => {
       '    If n > 0 Then Castcade_B_Players = n',
       '    Castcade_B_Count = Castcade_B_Players',
       'End Function',
+      'Dim Castcade_B_InGame : Castcade_B_InGame = False',
       'Sub Castcade_B_GameStart()',
       '    On Error Resume Next',
       '    Castcade_B_Players = 1',
+      '    Castcade_B_InGame = True',
       '    Castcade_GameStart Castcade_B_Count()',
       'End Sub',
       'Sub Castcade_B_Scores()',
@@ -141,6 +143,8 @@ describe('renderRecipeB (JPSalas original)', () => {
       'End Sub',
       'Sub Castcade_B_GameEnd()',
       '    On Error Resume Next',
+      '    If Not Castcade_B_InGame Then Exit Sub',
+      '    Castcade_B_InGame = False',
       '    Castcade_GameEnd Castcade_PlayerScores(Score, 1, Castcade_B_Count()), Castcade_B_Count()',
       'End Sub',
     ]);
@@ -154,7 +158,7 @@ describe('renderRecipeB (JPSalas original)', () => {
       gameStart: 'end of Sub ResetForNewGame (line 28)',
       gameEnd: 'end of Sub EndOfGame (line 48)',
       ballEnd: 'top of Sub EndOfBall (line 35)',
-      vars: 'Score base 1, player CurrentPlayer, ball Balls, players PlayersPlayingGame',
+      vars: 'Score base 1, player CurrentPlayer, ball Balls, players PlayersPlayingGame, extra balls ExtraBallsAwards(CurrentPlayer)',
       subs: 'AddScore AddScore (line 30), start ResetForNewGame (line 18), end EndOfGame (line 45), ball end EndOfBall (line 35)',
       scoreStore: 'Score(CurrentPlayer) = Score(CurrentPlayer) + points (Sub AddScore, line 32)',
     });
@@ -165,7 +169,7 @@ describe('renderRecipeB (JPSalas original)', () => {
     const { L, r } = render(lines);
     expect(block(L, 'B')).toContain('    Castcade_Scores Castcade_PlayerScores(Score, 0, Castcade_B_Count()), CurrentPlayer + 1, BallsPerGame - BallsRemaining(CurrentPlayer) + 1');
     expect(block(L, 'B')).toContain('    Castcade_BallEnd CurrentPlayer + 1, BallsPerGame - BallsRemaining(CurrentPlayer) + 1, ExtraBallsAwards(CurrentPlayer)');
-    expect(r.anchors['vars']).toBe('Score base 0, player CurrentPlayer + 1, ball BallsPerGame - BallsRemaining(CurrentPlayer) + 1, players PlayersPlayingGame');
+    expect(r.anchors['vars']).toBe('Score base 0, player CurrentPlayer + 1, ball BallsPerGame - BallsRemaining(CurrentPlayer) + 1, players PlayersPlayingGame, extra balls ExtraBallsAwards(CurrentPlayer)');
   });
 
   it('with no EndOfBall, anchors the ball end before the BallsRemaining decrement', () => {
@@ -195,7 +199,7 @@ describe('renderRecipeB (JPSalas original)', () => {
     expect(block(L, 'B')).toContain('    Castcade_GameEnd Array(), Castcade_B_Count()');
     expect(r.warnings).toContain('no players-in-game variable (PlayersPlayingGame, PlayersPlaying, nPlayersInGame, NumPlayers, numplay); games are journaled as 1 player');
     expect(r.warnings).toContain('no current-player variable (CurrentPlayer, CurrentPlayerIdx, nPlayer, cp, Player); every event names player 1');
-    expect(r.anchors['vars']).toBe('no scores base 0, player 1, ball 0, players 1');
+    expect(r.anchors['vars']).toBe('no scores base 0, player 1, ball 0, players 1, extra balls 0');
   });
 
   it('a one-line sub cannot carry an anchor and says so', () => {
@@ -252,7 +256,7 @@ describe('renderRecipeB (JPSalas original)', () => {
   });
 });
 
-describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
+describe('renderRecipeB: the original-table vocabulary (C1.3)', () => {
   const line = (lines: readonly string[], text: string): number => lines.indexOf(text) + 1;
   const SCALAR = 'scalar score: in a multi-player game only the player up is journaled';
   const NO_PLAYER = 'no current-player variable (CurrentPlayer, CurrentPlayerIdx, nPlayer, cp, Player); every event names player 1';
@@ -263,7 +267,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
   it('Diablo 2: scalar Score with CurrentPlayerIdx, start at the end of StartGame past its early exits, ball end at the top of EndPlayerTurn', () => {
     const { r, L, cls } = render(DIABLO_B_SCRIPT);
     expect(cls.cls).toBe('B');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
     expect(subLines(L, 'AddScore')).toEqual([
       'Sub AddScore(points)',
       "    DBG \"CALL\", \"AddScore\" '##DBGINJ",
@@ -289,7 +293,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     expect(r.warnings).toEqual([SCALAR, 'Sub StartGame has 2 early Exit Sub; no game start is journaled on those paths']);
     expect(r.partial).toEqual([]);
     expect(r.anchors).toMatchObject({
-      vars: 'Array(Score) base 0, player CurrentPlayerIdx, ball BallNumber, players PlayersPlaying',
+      vars: 'Array(Score) base 0, player CurrentPlayerIdx, ball BallNumber, players PlayersPlaying, extra balls ExtraBallPending',
       scoreStore: `Score = Score + points (Sub AddScore, line ${line(DIABLO_B_SCRIPT, '    Score = Score + points')})`,
       subs: `AddScore AddScore (line ${line(DIABLO_B_SCRIPT, 'Sub AddScore(points)')}), start StartGame (line ${line(DIABLO_B_SCRIPT, 'Sub StartGame()')}), end GameOver (line ${line(DIABLO_B_SCRIPT, 'Sub GameOver()')}), ball end EndPlayerTurn (line ${line(DIABLO_B_SCRIPT, 'Sub EndPlayerTurn()')})`,
       gameStart: `end of Sub StartGame (line ${line(DIABLO_B_SCRIPT, 'Sub StartGame()') + 10})`,
@@ -307,7 +311,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     expect(block(L, 'B')).toContain('    Castcade_BallEnd 1, CurrentBall, 0');
     expect(r.warnings).toEqual([NO_PLAYER, SCALAR, NO_PLAYERS]);
     expect(r.partial).toEqual([]);
-    expect(r.anchors['vars']).toBe('Array(Score) base 0, player 1, ball CurrentBall, players 1');
+    expect(r.anchors['vars']).toBe('Array(Score) base 0, player 1, ball CurrentBall, players 1, extra balls 0');
     // the GameStarted = 0 in DelayTimer_Timer is not used while Sub GameOver exists ...
     expect(r.anchors['gameEnd']).toBe(`end of Sub GameOver (line ${line(JACKS_B_SCRIPT, 'Sub GameOver') + 2})`);
     // ... and stands in when it does not, skipping the one in Table1_Init
@@ -334,7 +338,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     expect(b).toContain('    Castcade_BallEnd nPlayer + 1, nBall, nExtraBalls');
     expect(r.warnings).toEqual([]);
     expect(r.partial).toEqual([]);
-    expect(r.anchors['vars']).toBe('anScore base 0, player nPlayer + 1, ball nBall, players nPlayersInGame');
+    expect(r.anchors['vars']).toBe('anScore base 0, player nPlayer + 1, ball nBall, players nPlayersInGame, extra balls nExtraBalls');
     expect(r.anchors['subs']).toMatch(/^AddScore Addscore \(line \d+\), start InitGame \(line \d+\), end EndGame \(line \d+\), ball end EndBall \(line \d+\)$/);
   });
 
@@ -355,7 +359,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     expect(subLines(L, 'StartGame').at(-2)).toBe("    Castcade_B_GameStart   ' Castcade: game start");
     const flagLine = line(RATTLECAN_B_SCRIPT, '\t\t\t\tGameOver=1');
     expect(r.anchors).toMatchObject({
-      vars: 'Array(CurrentScore) base 0, player 1, ball BallInPlay, players 1',
+      vars: 'Array(CurrentScore) base 0, player 1, ball BallInPlay, players 1, extra balls ExtraBalls',
       gameEnd: `after "GameOver=1" in Sub ShootAgain_Timer (line ${flagLine})`,
       scores: `end of Sub AddScore (line ${line(RATTLECAN_B_SCRIPT, 'Sub AddScore(value)') + 3}) and before its 1 early Exit Sub`,
       subs: expect.stringContaining(`end "GameOver=1" in Sub ShootAgain_Timer (line ${flagLine}), ball end none`),
@@ -393,7 +397,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     expect(r.warnings).toEqual([NO_BALL, `no Sub EndOfGame / GameOver / EndGame; the game end is anchored after "gameon = 0" in Sub Drain_Hit (line ${flagLine}), the first place the game flag is cleared`, NO_BALL_END]);
     expect(r.partial).toEqual([]);
     expect(r.anchors).toMatchObject({
-      vars: 'Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1',
+      vars: 'Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1, extra balls 0',
       scoreStore: `p1score = p1score + score (Sub SetScore, line ${line(BURGER_B_SCRIPT, 'p1score = p1score + score')})`,
       gameEnd: `after "gameon = 0" in Sub Drain_Hit (line ${flagLine})`,
     });
@@ -404,7 +408,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
     // `Dim extraBalls` inside a sub; `Dim balls` inside a timer.
     const lines = [...BURGER_B_SCRIPT, 'dim PlayersPlayingGame', 'PlayersPlayingGame=1', 'Private Sub UMD_BuildBonusList()', '    Dim extraBalls: extraBalls = DrainsThisBall - 1', 'End Sub', 'Sub BallShadowUpdate_Timer()', '    Dim balls, i', '    balls = GetBalls()', 'End Sub'];
     const { r } = render(lines);
-    expect(r.anchors['vars']).toBe('Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1');
+    expect(r.anchors['vars']).toBe('Array(p1score, p2score, p3score, p4score) base 0, player cp, ball 0, players numplay - 1, extra balls 0');
     expect(r.warnings).toContain(NO_BALL);
     expect(block(render(lines).L, 'B')).toContain('    Castcade_BallEnd cp, 0, 0');
   });
@@ -414,7 +418,7 @@ describe('renderRecipeB 0.2.0: the original-table vocabulary (C1.3)', () => {
       for (const text of [crlf(script), lf(script), mixed(script, 3, 20)]) {
         const a = render(script, text);
         expect(a.cls.cls).toBe('B');
-        expect(parseSidecarMarker(a.L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION });
+        expect(parseSidecarMarker(a.L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION });
         expect(render(script, text).r.sha256).toBe(a.r.sha256);
         const undone = unpatchSidecar(a.out);
         expect(undone).toBe(text);

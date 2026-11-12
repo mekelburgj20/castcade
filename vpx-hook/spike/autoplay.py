@@ -11,6 +11,7 @@ DirectInput, so the player window must be in the foreground (the script brings i
 
 Usage:
   autoplay.py game   [--credits 2] [--minutes 5] [--plunge-every 7] [--until-file F --until-text game_end --until-count N] [--no-start]
+                     [--also 156,57]   extra scancodes tapped with every plunge (a lockbar / fire button that launches the ball)
   autoplay.py lock   [--lock-dir DIR]        one lock/unlock exercise (table must be running)
   autoplay.py press  <scancode> [--hold MS]  one key
   autoplay.py exit                           hold the exit key (Q) for 3 s
@@ -106,6 +107,7 @@ def main():
     ap.add_argument("--until-file"); ap.add_argument("--until-text", default="game_end")
     ap.add_argument("--until-count", type=int, default=1, help="stop once --until-text occurs this many times")
     ap.add_argument("--no-start", action="store_true", help="game already running: only plunge")
+    ap.add_argument("--also", default="", help="comma-separated scancodes tapped with every plunge (lockbar / fire button)")
     ap.add_argument("--start", type=int, default=2); ap.add_argument("--plunge", type=int, default=28)
     ap.add_argument("--credit", type=int, default=6); ap.add_argument("--lflip", type=int, default=42)
     ap.add_argument("--rflip", type=int, default=54); ap.add_argument("--exit", type=int, default=16)
@@ -139,6 +141,12 @@ def main():
         return
 
     # game
+    also = [int(s) for s in a.also.split(",") if s.strip().isdigit()]
+    def plunge():
+        press(a.plunge, 600)
+        for sc in also:
+            time.sleep(0.2); press(sc, 150)
+        log("plunge" + (f" + {also}" if also else ""))
     focus()
     if not a.no_start:
         for _ in range(a.credits):
@@ -146,13 +154,13 @@ def main():
         log(f"credits x{a.credits}")
         press(a.start, 120); log("start")
         time.sleep(2.5)
-        press(a.plunge, 600); log("plunge")
+        plunge()
     t0 = time.time(); deadline = t0 + a.minutes * 60
     while time.time() < deadline:
         time.sleep(a.plunge_every)
         if a.until_file and file_count(a.until_file, a.until_text) >= a.until_count:
             log(f"'{a.until_text}' x{a.until_count} seen in {os.path.basename(a.until_file)} after {time.time()-t0:.0f}s"); return
-        focus(); press(a.plunge, 600); log("plunge")
+        focus(); plunge()
     log("time budget exhausted")
 
 if __name__ == "__main__":

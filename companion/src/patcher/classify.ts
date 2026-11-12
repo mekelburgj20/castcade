@@ -6,7 +6,12 @@
  * C1.3: class B is any original whose script has the four anchors by role, not only JPSalas' names: `AddScore`, a
  * start sub, an end sub (or a plain statement clearing the game flag, when the table has no end sub) and, optionally,
  * a ball-end sub. The vocabulary (`START_SUBS` etc.) is shared with recipe B in `render-originals.ts`.
+ *
+ * C1.4: a script that matches an anchor override (`anchor-overrides.ts`: a known framework or template the vocabulary
+ * cannot read, e.g. the VPX Game Logic Framework) is class B ahead of everything but A; recipe B takes the anchors
+ * and expressions the override names and the vocabulary for the rest.
  */
+import { findOverride } from './anchor-overrides.js';
 import { PROC_HEAD, escapeRegExp, findLine, findSub, hasIdent, lineContexts, looksUtf16, splitScript, stripComment, type LineContext } from './script-text.js';
 
 export type ScriptClass = 'A' | 'B' | 'C' | 'D' | 'E' | 'X';
@@ -56,15 +61,25 @@ export function findFirstSub(lines: readonly string[], names: readonly string[])
  * class member and not a load / unload / key handler (`Table1_Init` clears the flag at load; `StartGame` resets it).
  */
 export function findGameFlagClear(lines: readonly string[], ctx: readonly LineContext[], start: FoundSub | null): GameFlagClear | null {
+  return findGameFlagClears(lines, ctx, start)[0] ?? null;
+}
+
+/**
+ * Every such clear, in script order (recipe B 0.3.0 anchors the game end after each: Rattlecan sets `GameOver=1` in
+ * the timer of a normal drain and again in the timer of a drain after a tilt). A clear whose line ends in a line
+ * continuation is left out.
+ */
+export function findGameFlagClears(lines: readonly string[], ctx: readonly LineContext[], start: FoundSub | null): GameFlagClear[] {
+  const out: GameFlagClear[] = [];
   for (let i = 0; i < lines.length; i++) {
     const c = ctx[i];
-    if (!c || c.proc < 0 || c.inClass || FLAG_CLEAR_HANDLER.test(c.procName)) continue;
+    if (!c || c.proc < 0 || c.proc === i || c.inClass || FLAG_CLEAR_HANDLER.test(c.procName)) continue;
     if (start && c.proc === start.line - 1) continue;
     const code = stripComment(lines[i] ?? '');
-    if (!GAME_FLAG_CLEAR.test(code)) continue;
-    return { line: i + 1, sub: c.procName, text: code.trim().replace(/\s*:.*$/, '') };
+    if (!GAME_FLAG_CLEAR.test(code) || /(?:^|\s)_\s*$/.test(code)) continue;
+    out.push({ line: i + 1, sub: c.procName, text: code.trim().replace(/\s*:.*$/, '') });
   }
-  return null;
+  return out;
 }
 
 /**
@@ -94,6 +109,8 @@ export type ScriptFacts = {
   /** With no end sub: the game-flag clear that stands in for it; `null` when there is none (or an end sub exists). */
   gameEndFlag?: GameFlagClear | null;
   scoreArray?: boolean;
+  /** C1.4: the id of the anchor override the script matches (`anchor-overrides.ts`); `null` when none does. */
+  override?: string | null;
   /** `Castcade_Init` appears outside a comment: the script is already a Castcade sidecar. */
   alreadyPatched?: boolean;
 };
@@ -104,6 +121,17 @@ export interface ClassifyResult {
 }
 
 const lineNo = (idx: number): number | null => (idx < 0 ? null : idx + 1);
+
+/**
+ * The LAST line matching `rx`. VBScript keeps the last definition of a name, so when a table defines a handler twice
+ * (Congo and Hook define `Table1_Exit` twice, the second one saving the LUT) the last one is the handler that runs,
+ * and it is the one the wrapper must rename and call.
+ */
+function findLastLine(lines: readonly string[], rx: RegExp): number {
+  let at = -1;
+  for (let i = findLine(lines, rx); i >= 0; i = findLine(lines, rx, i + 1)) at = i;
+  return at;
+}
 
 export function classifyScript(text: string): ClassifyResult {
   if (looksUtf16(text)) {
@@ -116,15 +144,18 @@ export function classifyLines(lines: readonly string[]): ClassifyResult {
   const facts: ScriptFacts = {};
   facts.alreadyPatched = lines.some((l) => stripComment(l).includes('Castcade_Init'));
 
-  const kd = findLine(lines, /^\s*(Public\s+|Private\s+)?Sub\s+(\w+)_KeyDown\s*\(/);
-  if (kd < 0) return { cls: 'X', facts: { ...facts, reason: 'no _KeyDown handler' } };
-  const m = /Sub\s+(\w+)_KeyDown/i.exec(stripComment(lines[kd] ?? ''));
+  // The table object is named by the FIRST `Sub <T>_KeyDown(` (a framework's own `Glf_KeyDown` comes later in the
+  // script); of that handler, the LAST definition is the one that runs.
+  const first = findLine(lines, /^\s*(Public\s+|Private\s+)?Sub\s+(\w+)_KeyDown\s*\(/);
+  if (first < 0) return { cls: 'X', facts: { ...facts, reason: 'no _KeyDown handler' } };
+  const m = /Sub\s+(\w+)_KeyDown/i.exec(stripComment(lines[first] ?? ''));
   const t = m?.[1] ?? 'Table1';
   const T = escapeRegExp(t);
+  const kd = findLastLine(lines, new RegExp(`^\\s*(Public\\s+|Private\\s+)?Sub\\s+${T}_KeyDown\\s*\\(`));
   facts.tableObject = t;
   facts.keyDownLine = kd + 1;
-  facts.keyUpLine = lineNo(findLine(lines, new RegExp(`^\\s*(Public\\s+|Private\\s+)?Sub\\s+${T}_KeyUp\\s*\\(`)));
-  facts.exitLine = lineNo(findLine(lines, new RegExp(`^\\s*(Public\\s+|Private\\s+)?Sub\\s+${T}_Exit\\b`)));
+  facts.keyUpLine = lineNo(findLastLine(lines, new RegExp(`^\\s*(Public\\s+|Private\\s+)?Sub\\s+${T}_KeyUp\\s*\\(`)));
+  facts.exitLine = lineNo(findLastLine(lines, new RegExp(`^\\s*(Public\\s+|Private\\s+)?Sub\\s+${T}_Exit\\b`)));
   facts.optionExplicitLine = lineNo(findLine(lines, /^\s*Option\s+Explicit\b/));
   facts.nvramCallbackAlreadySet = findLine(lines, /\bSet\s+NVRAMCallback\b/) >= 0;
   facts.useVpmNvramDeclared = findLine(lines, /^\s*(Dim|Const)\s+UseVPMNVRAM\b/) >= 0;
@@ -158,6 +189,9 @@ export function classifyLines(lines: readonly string[]): ClassifyResult {
   facts.subs = { AddScore: findFirstSub(lines, ['AddScore']), start, end, ballEnd: findFirstSub(lines, BALL_END_SUBS) };
   facts.gameEndFlag = end ? null : findGameFlagClear(lines, ctx, start);
   facts.scoreArray = findLine(lines, /^\s*Dim\s+Score\s*\(/) >= 0;
+  // C1.4: a script an override knows is class B whatever else it has; the override says where its anchors are.
+  facts.override = findOverride(lines)?.id ?? null;
+  if (facts.override) return { cls: 'B', facts };
   // The JPSalas trio is class B ahead of everything, as before C1.3. A table that reaches B only through the wider
   // vocabulary yields to C and D first: Scorbit's SendUpdate arguments and the ScoreServer API say exactly what the
   // game thinks, where the vocabulary guesses at variables.

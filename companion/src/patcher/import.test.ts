@@ -7,6 +7,7 @@ import { readManifest, writeManifest } from './manifest.js';
 import { manifestPathFor, sidecarPathFor, stalePathFor, tableIdFor } from './paths.js';
 import { LIB_VERSION, RECIPE_VERSION, formatLocalStamp } from './render.js';
 import {
+  GLF_B_SCRIPT,
   JPSALAS_B_SCRIPT,
   NO_KEYDOWN_SCRIPT,
   ORIGINAL_B_SCRIPT,
@@ -136,9 +137,9 @@ describe('applyImport', () => {
     expect(sidecar).toContain('Castcade_Init "Monster Bash (Williams 1998) VPW 1.0", "A"');
     expect(sidecar?.includes('\r\n')).toBe(true);
     expect(fs.text(sidecarPathFor(FOREIGN))).toMatch(/^' somebody else's/);
-    expect(fs.text(sidecarPathFor(IRON))).toContain('Castcade_Init "Iron Maiden (Original 2022)", "B", "0.2.0", ""');
+    expect(fs.text(sidecarPathFor(IRON))).toContain('Castcade_Init "Iron Maiden (Original 2022)", "B", "0.3.0", ""');
     expect(fs.has(sidecarPathFor(GENERIC))).toBe(false);
-    expect(await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(IRON)))).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.2.0', libVersion: LIB_VERSION, rom: null });
+    expect(await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(IRON)))).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.3.0', libVersion: LIB_VERSION, rom: null });
     // the .vpx files were not touched
     expect(await fs.stat(MB)).toEqual({ size: (await fs.stat(MB)).size, mtimeMs: T0 - 86_400_000 });
 
@@ -167,7 +168,7 @@ describe('applyImport', () => {
     // second pass: nothing to do
     const plan2 = await planImport(fs, { tablesDir: TABLES, manifestDir: MANIFESTS });
     expect(plan2.counts).toEqual({ patch: 0, repatch: 0, already: 4, skip: 1, foreign: 1, unsupported: 2, unreadable: 0 });
-    expect(byPath(plan2.items, IRON).reason).toBe(`sidecar current (recipe 0.2.0, lib ${LIB_VERSION})`);
+    expect(byPath(plan2.items, IRON).reason).toBe(`sidecar current (recipe 0.3.0, lib ${LIB_VERSION})`);
     expect(byPath(plan2.items, MB).reason).toBe(`sidecar current (recipe ${RECIPE_VERSION}, lib ${LIB_VERSION})`);
     const res2 = await applyImport(fs, plan2, applyOpts);
     expect(res2).toMatchObject({ patched: [], failed: [], libInstalled: 'unchanged' });
@@ -456,6 +457,26 @@ describe("C10: the VPX editor saved Castcade's patch into the table's own script
   });
 });
 
+describe('C1.4: a table only an anchor override can read', () => {
+  it('plans a GLF table (Dark Chaos, class E until recipe B 0.3.0) as a recipe-B patch, names the override, and writes its sidecar', async () => {
+    const DARK = `${TABLES}/Dark Chaos (apophis 2025) 2.0.vpx`;
+    fs.put(DARK, vpxWithScript(crlf(GLF_B_SCRIPT)));
+    const plan = await planImport(fs, { paths: [DARK], manifestDir: MANIFESTS });
+    expect(plan.items.map((i) => [i.action, i.cls, i.reason])).toEqual([['patch', 'B', 'original table (script anchors), recipe B, anchors from the glf override']]);
+    const res = await applyImport(fs, plan, applyOpts);
+    expect(res.failed).toEqual([]);
+    expect(res.patched).toEqual([DARK]);
+    const sidecar = fs.text(sidecarPathFor(DARK)) ?? '';
+    expect(sidecar).toContain('Castcade_Init "Dark Chaos (apophis 2025) 2.0", "B", "0.3.0", ""');
+    expect(sidecar).toContain("    Castcade_B_BallEnd   ' Castcade: ball end");
+    const m = await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(DARK)));
+    expect(m).toMatchObject({ class: 'B', recipe: 'B', recipeVersion: '0.3.0', warnings: [] });
+    expect(m?.partial).toBeUndefined();
+    expect(m?.anchors['override']).toBe('glf: VPX Game Logic Framework (GLF)');
+    expect((await planImport(fs, { paths: [DARK], manifestDir: MANIFESTS })).items[0]).toMatchObject({ action: 'already' });
+  });
+});
+
 describe('C1.1: originals get recipes B / C / D', () => {
   const TNA = `${TABLES}/Total Nuclear Annihilation (Spooky 2017) VPW v2.3.vpx`;
   const TERR = `${TABLES}/Scorbit Original (2024).vpx`;
@@ -490,7 +511,7 @@ describe('C1.1: originals get recipes B / C / D', () => {
       [SS, 'D'],
     ] as const) {
       const m = await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(p)));
-      expect(m).toMatchObject({ class: recipe, recipe, recipeVersion: recipe === 'B' ? '0.2.0' : '0.1.0', warnings: expect.any(Array) });
+      expect(m).toMatchObject({ class: recipe, recipe, recipeVersion: recipe === 'B' ? '0.3.0' : recipe === 'C' ? '0.2.0' : '0.1.0', warnings: expect.any(Array) });
       expect(fs.text(sidecarPathFor(p))).toContain(`' --- end Castcade recipe ${recipe} ---`);
     }
     expect((await readManifest(fs, manifestPathFor(MANIFESTS, tableIdFor(TNA))))?.anchors).toMatchObject({ gameEnd: 'end of Sub EndOfGame (line 48)' });
@@ -506,7 +527,7 @@ describe('C1.1: originals get recipes B / C / D', () => {
     expect(await checkSidecar(fs, TNA, MANIFESTS)).toMatchObject({
       state: 'stale',
       kind: 'version',
-      why: `rendered with recipe 0.0.9 / lib ${LIB_VERSION}; this build is 0.2.0 / ${LIB_VERSION}`,
+      why: `rendered with recipe 0.0.9 / lib ${LIB_VERSION}; this build is 0.3.0 / ${LIB_VERSION}`,
     });
     expect(await checkSidecar(fs, MB, MANIFESTS)).toMatchObject({ state: 'ok' });
   });
