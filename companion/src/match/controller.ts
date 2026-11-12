@@ -876,12 +876,34 @@ export class MatchController {
     offs.push(c.on('gameOver', (m) => this.onScoreMsg(m.from, m.payload.finalScore)));
     offs.push(c.on('forfeit', () => this.push()));
     offs.push(c.on('state', (m) => this.onScoreMsg(m.from, m.payload.score)));
-    offs.push(c.on('pause', () => this.onPause()));
-    offs.push(c.on('resume', () => this.onResume()));
+    offs.push(
+      c.on('pause', () => {
+        this.onPause();
+        // D10.8: a pause for my own drop that reaches me on a live link (several players dropped at once, and the host
+        // paused for me again after I was back): I am here, so I resume. Deferred: a pause merged from RECONNECT_ACK
+        // is the `reconnected` handler's, which runs first.
+        this.opts.setTimeout(() => {
+          if (this.role === c) this.resumeAfterMyDrop(c);
+        }, 0);
+      }),
+    );
+    offs.push(
+      c.on('resume', () => {
+        this.resumeSent = false;
+        this.onResume();
+      }),
+    );
     offs.push(c.on('reject', (r) => this.onReject(r)));
-    offs.push(c.on('peerLeft', (id) => this.onPeerLeft(id)));
+    offs.push(
+      c.on('peerLeft', (id) => {
+        // A RESUME sent into a link that then dropped is lost: the next reconnect sends its own.
+        this.resumeSent = false;
+        this.onPeerLeft(id);
+      }),
+    );
     offs.push(
       c.on('reconnected', (r) => {
+        this.resumeSent = false;
         this.onPeerBack(r.host);
         this.resumeAfterMyDrop(c);
       }),
@@ -1059,11 +1081,16 @@ export class MatchController {
   /**
    * A8 (2026-10-31): back on a link after a drop. The host paused the match for it and waits for a RESUME from
    * anyone (A3); the player who dropped is the one who knows it is back, so it sends it. Only for its own drop: a
-   * pause for someone else stays theirs (or the host's Resume button).
+   * pause for someone else stays theirs (or the host's Resume button). D10.8: one RESUME per pause (`resumeSent`,
+   * cleared by the RESUME coming back, a new reconnect or a dropped link); it is also called when a pause for this
+   * player arrives on a live link.
    */
+  private resumeSent = false;
   private resumeAfterMyDrop(c: ClientRole): void {
     const p = c.state.paused;
     if (c.state.phase !== 'running' || !p || p.reason !== 'disconnect' || p.player !== this.localId || c.state.pendingTransfer) return;
+    if (this.resumeSent) return;
+    this.resumeSent = true;
     this.opts.log('match: back after a drop; resuming the match');
     try {
       c.resume();

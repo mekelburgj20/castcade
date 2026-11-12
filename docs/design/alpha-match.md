@@ -49,7 +49,8 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 
 ## 3. Match controller (A6 + C3)
 
-- Role objects come from the engine: `HostMatch` or `ClientMatch` on a `Session` over `WsPeerTransport`.
+- Role objects come from the engine: `HostMatch` or `ClientMatch` on a `Session` over `WsPeerTransport` (D10.8: or
+  the relay transports, §3a).
 - **Keys**: one Ed25519 pair per companion, `<userData>/match-keys.json` (`match/keys.ts` export/import).
 - **Participant**: `playerId` = a stable per-install id (the pairing device id when paired, else a UUID stored with the
   keys); `displayName` = the pairing username (`WitnessSettings.username`), editable on the Match tab; `rig` =
@@ -77,7 +78,8 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   "opponent up", a chord for "match over"; volume setting; the panel text changes at the same moment.
 - **Match tab**: Host (port, balls per game, invite string + copy, "forward TCP <port>"), Join (paste), roster with
   rig and table-file agreement, the big turn line, scores per player, result, Leave. The invite's public IP comes from
-  `https://api.ipify.org` (one GET, failure → the LAN address with a note to replace it).
+  `https://api.ipify.org` (one GET, failure → the LAN address with a note to replace it). D10.8 (2026-11-12): a paired
+  host's invite is the match code alone and the match goes through ArcAid; see §3a.
 - **Media hooks**: on `MATCH_READY` → `media.attach(signalling, peerIds)`; on my grant → `media.setSending(true)`; on
   my `ball_end` accepted → `setSending(false)`; every state change → `media.setPanelState(...)`; on leave → `detach()`.
   In VR (`inVr`) the controller also starts `VrOverlay` with the panel's frame source; on the desktop the panel window
@@ -86,11 +88,63 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   Castcade OpenXR layer (§5). A later reading on a runtime that needs the other one swaps them. The rig, `play_device`
   and the capture pick follow `inVr`.
 
+## 3a. Reaching the host: the ArcAid relay, and the router port as the fallback (D10.8, 2026-11-12)
+
+Until 0.2.39 the host listened on TCP 27401 and the invite carried its public address, so a host with no port forward
+could not be reached (a tester's first try: "Could not reach the host at … (no answer in 10 s)"). Media already
+crosses NAT by STUN; only the match control needed a path. Owner ruling 2026-11-12: ArcAid relays the match control
+messages (primary); a UPnP port mapping is the fallback. The protocol is unchanged: the relay is a transport.
+
+- **Transports** (`match/transport-relay.ts`): `RelayHostTransport` owns the relay room named by the match code,
+  `RelayClientTransport` joins it; both carry the exact text frames of the WebSocket transport over socket.io to
+  ArcAid (contract and limits: `docs/arcaid-side-changes.md` §4a). `CompositeTransport` lets the host serve the room
+  and its WebSocket listener at once. A relay link behaves like a socket: a peer is a link at the host from its first
+  frame (HELLO or RECONNECT), a dropped socket.io connection closes the links on that side (the engine sees leaves),
+  and `connectTo` re-joins and opens with RECONNECT, so the engine resumes from the log head as over WebSocket.
+- **Host.** Paired, and ArcAid answers (5 s to connect, beside the rig probe and the address lookup; 4 s for the
+  ack): the room is registered, the invite is **the code alone** (`JHDFEF`), and the listener still opens on 27401
+  for LAN players, a forwarded port and players who are not paired (the tab shows that address invite small). A code
+  ArcAid says is in use is replaced (three tries). A port that cannot be opened no longer stops a paired host: the
+  match goes through ArcAid only. Not paired, ArcAid unreachable, or a server without the relay: the address invite
+  as before, and the router is asked for the port in the background.
+- **Join.** Six letters (any case, `castcade:` in front allowed) → the relay; `castcade:ws://host:port#CODE` →
+  direct, as before. A code on a PC that is not paired says so. A relay failure names its cause: no such match, full,
+  ArcAid refusing the device (pair again), ArcAid holding the PC back, ArcAid unreachable, the match closed.
+- **Match tab.** One line under the turn: `Through ArcAid` (with `(reconnecting to ArcAid…)` while the host's socket
+  is away) or `Direct to <host:port>`. `MatchStatus.via`, `path`, `directInvite`, `relayNote`, `portMapping`.
+- **A drop on the relay.** The host's socket to ArcAid going away drops every relay player at once. The host takes the
+  room back when socket.io reconnects (ArcAid then names the clients in the room again; the companion does not need
+  it, a peer is a link from its first frame), tells its former peers to relink (a transport-private string, §4a), each
+  resumes with RECONNECT and RESUMEs the pause that names it. For that last step the controller now also resumes when
+  a pause for its own drop reaches it on a live link (with two or more dropped at once the host pauses for each in
+  turn, and the second one's pause arrives after it is back; before D10.8 that pause waited for the host's Resume
+  button). In the lobby a drop is a leave, as over WebSocket: the player joins again. If the host stays away more
+  than 30 s ArcAid closes the room and the clients' reconnects end with "no such match".
+- **Not carried by the relay:** a host transfer. The room belongs to the host's device, and `newHostEndpoint` is a
+  `ws://` URL; a relay client refuses to move to one. The companion never calls `transferHost` and its clients do not
+  listen, so nothing is lost that worked before; a transfer through the relay needs a contract (a room handed to
+  another device) and a protocol answer for the endpoint.
+- **Rate.** ArcAid allows 200 `match:relay` per 10 s per client socket and, for the host, per destination (amended
+  2026-11-12; the first wording counted the host's socket as a whole, which a host that is up reached with three
+  clients). `RelayPacer` keeps each bucket under it: one pacer on a client, one per destination on the host; STATE
+  and DMD_FRAME are shed first, the rest waits in order. STATE at 10 Hz is half a bucket, so nothing is shed in a
+  normal match at any size (§4a).
+- **Router port** (`main/port-mapping.ts`): UPnP IGD written directly on `node:dgram` and `fetch` (no dependency:
+  the maintained npm libraries bring an XML parser and a gateway prober for three requests): SSDP search from every
+  LAN address, the description fetched only from the device that answered, `AddPortMapping` TCP 27401 → this PC with
+  a 1 h lease (renewed every 30 min while hosting; a router that only takes permanent mappings, error 725, gets one),
+  `GetExternalIPAddress`, `DeletePortMapping` at teardown (leave, quit). One 3 s deadline; hosting never waits for
+  it. The tab says `Port opened on your router automatically`, or `Your router did not open the port: forward TCP
+  27401, or pair with ArcAid to host without it`; a router whose own address is private, CGNAT or not the public one
+  is reported as behind another router (the mapping cannot help). NAT-PMP / PCP is not done (it needs the default
+  gateway's address, which Node does not give without a dependency).
+
 ## 4. Media (D2)
 
 - **Signalling**: new protocol message `MEDIA_SIGNAL` `{ to: PlayerId, kind: 'offer' | 'answer' | 'ice', sdp?: string,
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null } }`, direction `any`; the host
-  relays it to `to` only (never logged, like STATE); protocol stays 2 (unreleased). Built: `HELLO_ACK.hostGame` was added too, so a client learns of a table-file mismatch and both panels flag it (the host accepts the HELLO in `advise` mode). Prose: a "Media signalling"
+  relays it to `to` only (never logged, like STATE; D10.8: through the ArcAid relay it rides the match channel
+  unchanged, §3a); protocol stays 2 (unreleased). Built: `HELLO_ACK.hostGame` was added too, so a client learns of a table-file mismatch and both panels flag it (the host accepts the HELLO in `advise` mode). Prose: a "Media signalling"
   section (what is signalled, that media never crosses ArcAid, that video flows only from the player up).
 - **Topology**: full mesh of `RTCPeerConnection`s (2–4 players; perfect negotiation, polite = the lexically smaller
   playerId). Voice: every peer sends its microphone, Opus, echo cancellation and noise suppression on, open mic with a

@@ -48,6 +48,19 @@ export {
   type ErrorHandler,
 } from './transport-ws.js';
 export {
+  RelayHostTransport,
+  RelayClientTransport,
+  CompositeTransport,
+  RelayPacer,
+  RelayError,
+  RELINK,
+  RELAY_MAX_BYTES,
+  RELAY_RATE,
+  type RelayOptions,
+  type RelayErrorCode,
+  type RelayHostState,
+} from './transport-relay.js';
+export {
   HostMatch,
   compareFingerprints,
   type HostOptions,

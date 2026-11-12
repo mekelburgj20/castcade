@@ -317,6 +317,10 @@ describe('one step to a match: a link (A14 step 2)', () => {
     expect(s.notice).toMatch(/^That match is gone or cannot be reached: ask the host for a new link\./);
     expect(gone.launched).toEqual([]);
     expect(linkJoinFailure('The host refused: the match has started')).toBe('Could not join that match. The host refused: the match has started');
+    // D10.8: an answer that already says what to do is passed on as it is; a code ArcAid does not know is a match that is gone.
+    const notPaired = 'This invite goes through ArcAid, and this PC is not paired with ArcAid yet: pair it in Settings, or ask the host for a direct invite (castcade:ws://…).';
+    expect(linkJoinFailure(notPaired)).toBe(notPaired);
+    expect(linkJoinFailure('No match with the code JHDFEF: check the code with the host (a match that ended, or whose host has been gone for a while, is closed).')).toMatch(/^That match is gone or cannot be reached/);
     // A refused connection is a match that is gone, not a refusal by the host; a stack never reaches the player.
     expect(linkJoinFailure('Error: connect ECONNREFUSED 203.0.113.7:27401\n    at TCPConnectWrap.afterConnect (node:net:1637:16). Check the invite.')).toBe(
       'That match is gone or cannot be reached: ask the host for a new link. (connect ECONNREFUSED 203.0.113.7:27401)',

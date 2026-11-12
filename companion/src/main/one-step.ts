@@ -124,7 +124,8 @@ export function linkJoinFailure(raw: string): string {
   // A socket error can carry its stack: only the sentences are for the player.
   const detail = raw.replace(/\n\s+at [^\n]*/g, '').replace(/^Error: /, '');
   if (/The host refused/.test(detail)) return `Could not join that match. ${detail}`;
-  if (/still working|Leave the current match/i.test(detail)) return detail;
+  // Sentences that already say what to do (D10.8's relay answers: not paired, full, held back; a request under way).
+  if (/still working|Leave the current match|not paired|pair it with ArcAid|is full\.|holding this PC back/i.test(detail)) return detail;
   return `That match is gone or cannot be reached: ask the host for a new link. (${detail})`;
 }
 

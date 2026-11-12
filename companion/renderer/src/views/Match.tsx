@@ -186,17 +186,18 @@ export function Match({ state }: { state: CastcadeState }) {
             <fieldset disabled={busy}>
               <label className="field">
                 <span>Link or invite from the host</span>
-                <input type="text" value={invite} placeholder="castcade://join/ABCDEF" onChange={(e) => setInvite(e.target.value)} />
+                <input type="text" value={invite} placeholder="castcade://join/JHDFEF, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
               <button
                 type="button"
                 onClick={() =>
                   void bridge.app.clipboardText().then((t) => {
                     const v = t.trim();
-                    if (v.startsWith('castcade:')) {
+                    // D10.8: a relay invite is the six-letter code alone.
+                    if (v.startsWith('castcade:') || /^[A-Za-z]{6}$/.test(v)) {
                       setError(null);
                       setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade link or invite (it starts with castcade:).');
+                    } else setError('The clipboard does not hold a Castcade link or invite (six letters, or one that starts with castcade:).');
                   }, (e: unknown) => setError(describe(e)))
                 }
               >
@@ -227,16 +228,37 @@ export function Match({ state }: { state: CastcadeState }) {
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <p>Forward TCP {st.port} to this PC on your router, then send the invite to the other player.</p>
-              {st.ipSource === 'lan' && (
-                <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</p>
+              {st.via === 'relay' ? (
+                <>
+                  <p>Send the code to the other players. The match goes through ArcAid: nothing to set up on your router. Each player needs Castcade paired with ArcAid.</p>
+                  {st.directInvite && (
+                    <p className="muted">
+                      For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="mono">{st.directInvite}</code>
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  {st.portMapping ? (
+                    <p className={st.portMapping.state === 'failed' ? 'warn' : 'muted'}>{st.portMapping.line}</p>
+                  ) : (
+                    <p>Forward TCP {st.port} to this PC on your router, then send the invite to the other player.</p>
+                  )}
+                  {st.relayNote && <p className="muted">{st.relayNote}: a paired host needs no port forward.</p>}
+                  {st.ipSource === 'lan' && (
+                    <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</p>
+                  )}
+                </>
               )}
             </div>
           )}
 
+
           <div className="card">
             <p className={panel?.myTurn ? 'turn-line mine' : 'turn-line'}>{turnLine(st)}</p>
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
+            {/* D10.8: which path the match control takes. */}
+            {st.path && <p className="muted">{st.path}</p>}
             {panel?.message && <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>}
             <table className="match-table">
               <thead>
