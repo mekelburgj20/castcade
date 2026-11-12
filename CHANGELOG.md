@@ -7,6 +7,16 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The host never got a joining player's native picture (D10.3.9).** Both helpers made their video sender with
+  `AddTransceiver` and only the initiator offers; libwebrtc pairs a remote offer's video section only with a
+  transceiver made by `AddTrack`, so the answerer's sender was never negotiated and its encoder never opened (owner
+  hosting, Krobs joining, 2026-11-12: six matches, `remote video track` in Krobs' log every time, never in the
+  owner's; the same silence as D10.3.8 with ChuckRibbits). The answerer now adds its track with `AddTrack`
+  (`castcade-video` 0.2.1). `tools/drive-pair.mjs --reverse` rehearses the client → host direction and exits 1 when
+  the receiver decodes nothing: the 0.2.39 helper fails it, 0.2.1 passes both directions at 60 fps.
+
 ## [0.2.39] — 2026-11-07
 
 The second-match fix round (owner + ChuckRibbits on 0.2.38, 2026-11-07 21:22Z). The ICE restarts of 0.2.38 worked:
