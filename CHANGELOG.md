@@ -41,6 +41,12 @@ updates together.
 
 ### Fixed
 
+- **A witness rebuilt mid-game no longer replays the game (A14.4).** Changing the ArcAid URL or the NVRAM folder
+  during a match re-read the journal from the top: on a player's ball 2 the turn passed at ball 1's score, and in a
+  free-play lobby the replayed Start began the match. In solo play the replaced witness kept reading beside the new
+  one and the game was posted twice. The witness now hands its journal position to its replacement and stops its
+  journal tails. Pause watching now also pauses a game in progress; it is read and posted at resume
+  (`witness.ts`, `witness-host.ts`, `witness-restart.test.ts`).
 - **An original's final score and game end (C1.6, recipe B 0.3.1 / 0.3.2).** The Matrix (Original) zeroed its
   scores before the game end was journaled, so the final read 0: the game end now goes in front of the clear. Game of
   Thrones lost a game's end when Start was pressed during its 5 s match sequence: the end is also journaled where the
