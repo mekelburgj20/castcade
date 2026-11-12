@@ -584,6 +584,29 @@ function scoreClearIn(lines: readonly string[], s: SubRange, store: ScoreStore):
   return null;
 }
 
+/** `If <game flag> [= True] Then Exit Sub` as a whole line: an end sub's guard against running once a new game began. */
+const REENTRY_GUARD = /^\s*If\s+\(?\s*(gameon|GameActive|bGameInPlay|GameInProgress|GameStarted)\s*(?:=\s*(?:True|1)\s*)?\)?\s*Then\s+Exit\s+Sub\s*$/i;
+
+/**
+ * The re-entry guard of an end sub (B 0.3.2): the flag it tests, its 1-based line, how many early `Exit Sub` the sub
+ * has, and whether the guard is the only one. `null` when the sub has no such line.
+ */
+function reentryGuard(lines: readonly string[], s: SubRange): { flag: string; line: number; exits: number; only: boolean } | null {
+  let flag: string | null = null;
+  let line = 0;
+  let exits = 0;
+  for (let i = s.start + 1; i < s.end; i++) {
+    exits += exitColumns(lines[i] ?? '').length;
+    if (flag !== null) continue;
+    const m: RegExpExecArray | null = REENTRY_GUARD.exec(code(lines, i));
+    if (m?.[1]) {
+      flag = m[1];
+      line = i + 1;
+    }
+  }
+  return flag === null ? null : { flag, line, exits, only: exits === 1 };
+}
+
 /** `<v> = 0` or `= 1` as a statement: in the start sub first, else anywhere. */
 function playerBase(lines: readonly string[], start: SubRange | null, v: string): 0 | 1 | null {
   const rx = new RegExp(`(?:^|:|\\bThen\\b)\\s*${escapeRegExp(v)}\\s*=\\s*([01])\\s*(?::|$)`, 'i');
@@ -724,6 +747,22 @@ function recipeB(r: Render): string[] {
       r.before('gameEnd', clear.idx, 'GameEnd', 'game end', `before "${clear.text}" in Sub ${end.name} (line ${clear.at + 1}), where the table clears its scores`);
       if (clear.exitsBefore > 0) r.warnings.push(`Sub ${end.name} has ${clear.exitsBefore} early Exit Sub; no game end is journaled on ${clear.exitsBefore === 1 ? 'that path' : 'those paths'}`);
     } else r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
+    // B 0.3.2: an end sub that leaves early while the game flag is SET was called late (Game of Thrones: 5 s after the
+    // game over, behind the match sequence; a Start in between begins the next game and the end sub then does nothing).
+    // The game is over where the flag was cleared before that call: the game end is anchored there too. Whichever
+    // comes first journals it; `Castcade_B_GameEnd` says it once per game start.
+    const guard = reentryGuard(L, end);
+    const early = guard === null ? [] : findGameFlagClears(L, ctx, startF).filter((c) => (c.line - 1 < end.start || c.line - 1 > end.end) && c.text.toLowerCase().startsWith(guard.flag.toLowerCase()));
+    if (guard !== null && early.length > 0) {
+      for (const c of early) r.insert(c.line, r.anchorLine('GameEnd', 'game end'));
+      const where = early.map((c) => `after "${c.text}" in Sub ${c.sub} (line ${c.line})`).join('; ');
+      r.anchors['gameEnd'] = `${r.anchors['gameEnd']}; ${where}`;
+      // the guard's exit is now a path whose game end was journaled where the flag was cleared
+      const stale = new RegExp(`^Sub ${escapeRegExp(end.name)} has ${guard.exits} early Exit Sub; no game end is journaled on `);
+      const at = guard.only ? r.warnings.findIndex((w) => stale.test(w)) : -1;
+      if (at >= 0) r.warnings.splice(at, 1);
+      r.warnings.push(`Sub ${end.name} leaves early while ${guard.flag} is set (line ${guard.line}): it runs after the game is over; the game end is also anchored ${where}`);
+    }
   } else if (flag) {
     // After every clear of the game flag (0.3.0): a game can end on more than one path (Rattlecan: a normal drain and
     // a drain after a tilt). `Castcade_B_GameEnd` journals one game end per game start, so a clear outside a game is quiet.

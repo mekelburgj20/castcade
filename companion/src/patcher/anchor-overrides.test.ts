@@ -130,7 +130,7 @@ describe('recipe B with the GLF override (Dark Chaos)', () => {
   it('anchors the four roles in the framework functions and journals from the player state', () => {
     const { r, L, cls } = render(GLF_B_SCRIPT);
     expect(cls.cls).toBe('B');
-    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.1', libVersion: LIB_VERSION });
+    expect(parseSidecarMarker(L[1] ?? '')).toEqual({ recipe: 'B', recipeVersion: '0.3.2', libVersion: LIB_VERSION });
     // the framework's own `Glf_KeyDown` comes after the table's handler and is not taken for it
     expect(cls.facts.tableObject).toBe('Table1');
     expect(L).toContain('Public Sub Glf_KeyDown(ByVal keycode)');

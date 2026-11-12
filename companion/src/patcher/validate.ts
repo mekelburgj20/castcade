@@ -281,6 +281,11 @@ export function checkGameJournal(journalLines: readonly string[], opts: JournalC
   if (state === 'playing') problems.push(`no game_end (the game journaled ${counted} ball end${counted === 1 ? '' : 's'})`);
   const notes: string[] = [];
   if (!s.keysSeen && s.gameStarts === 0) notes.push('no key press reached the table: a dialog was open over the player (a file or folder the table asks for is missing?), or the window never had the keyboard');
+  // Diablo 2 1.2.1, 2026-11-12: three ball ends in 45 s, every live score 0, final 0. Nothing in a journal tells a
+  // game that scored nothing from a score the table cleared before any of it was journaled.
+  const first = s.gameEnds[0]?.scores;
+  if (problems.length === 0 && Array.isArray(first) && first.length > 0 && first.every((v) => v === 0)) notes.push('the final score is 0 and no live score was above 0: a game in which nothing scored, or a score cleared before it was journaled; the journal cannot tell which');
+  if (s.gameStarts > 1) notes.push(`${s.gameStarts} game starts in the session: only the first game is judged`);
   if (s.scoreLines === 0 && s.gameStarts > 0) notes.push('no current_scores line: either nothing scored, or the live score is not journaled');
   if (s.warns.length > 0) notes.push(`${s.warns.length} warn line${s.warns.length === 1 ? '' : 's'} from the hook: ${s.warns.slice(0, 3).join(' | ')}`);
   if (!s.tableExit) notes.push('no table_exit: VPX did not close the table cleanly (or the journal was read before it did)');

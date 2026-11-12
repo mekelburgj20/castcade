@@ -14,7 +14,9 @@ Usage:
                      [--also 156,57]   extra scancodes tapped with every plunge (a lockbar / fire button that launches the ball)
                      [--after-start 4:start]   keys pressed after Start, each N seconds after the one before (a menu Start opens)
                      [--started-file F --started-text game_start --started-count N --start-retry 12 --start-tries 4]
-                                       press Start again while the journal shows no game start (a table still booting)
+                                       press Start again while the journal shows no game start (a table still booting);
+                                       once it shows one, Start is never pressed again
+                     [--quiet-seconds 15]      no key for 15 s after each ball end in --until-file, and none after the game end
   autoplay.py lock   [--lock-dir DIR]        one lock/unlock exercise (table must be running)
   autoplay.py press  <scancode> [--hold MS]  one key
   autoplay.py exit                           hold the exit key (Q) for 3 s
@@ -116,6 +118,8 @@ def main():
     ap.add_argument("--started-count", type=int, default=1, help="the game has started once --started-text occurs this many times in --started-file")
     ap.add_argument("--start-retry", type=float, default=12, help="seconds to wait for the game start before pressing Start again")
     ap.add_argument("--start-tries", type=int, default=4, help="Start presses in all")
+    ap.add_argument("--quiet-text", default='"event":"ball_end"', help="a new occurrence of this in --until-file stops the plunging for --quiet-seconds")
+    ap.add_argument("--quiet-seconds", type=float, default=0, help="seconds without a key after each ball end (0 = keep plunging)")
     ap.add_argument("--start", type=int, default=2); ap.add_argument("--plunge", type=int, default=28)
     ap.add_argument("--credit", type=int, default=6); ap.add_argument("--lflip", type=int, default=42)
     ap.add_argument("--rflip", type=int, default=54); ap.add_argument("--exit", type=int, default=16)
@@ -186,12 +190,25 @@ def main():
             focus(); start_game(); tries += 1
         time.sleep(2.5)
         plunge()
+    # No key after the game end, and none for --quiet-seconds after each ball end: a table that is over takes the
+    # plunger or the lockbar for Start (Game of Thrones: five games in one run, each begun during the match sequence
+    # of the one before, 2026-11-12). The journal is read twice a second, so the game end stops the keys at once.
     t0 = time.time(); deadline = t0 + a.minutes * 60
+    next_plunge = t0 + a.plunge_every
+    quiet_until = 0.0
+    seen = file_count(a.until_file, a.quiet_text) if a.until_file and a.quiet_seconds > 0 else 0
     while time.time() < deadline:
-        time.sleep(a.plunge_every)
+        time.sleep(0.5)
         if a.until_file and file_count(a.until_file, a.until_text) >= a.until_count:
             log(f"'{a.until_text}' x{a.until_count} seen in {os.path.basename(a.until_file)} after {time.time()-t0:.0f}s"); return
-        focus(); plunge()
+        if a.until_file and a.quiet_seconds > 0:
+            n = file_count(a.until_file, a.quiet_text)
+            if n > seen:
+                seen = n; quiet_until = time.time() + a.quiet_seconds
+                log(f"{a.quiet_text} x{n}; no keys for {a.quiet_seconds:.0f}s")
+        now = time.time()
+        if now >= next_plunge and now >= quiet_until:
+            focus(); plunge(); next_plunge = time.time() + a.plunge_every
     log("time budget exhausted")
 
 if __name__ == "__main__":

@@ -225,6 +225,17 @@ C1.3 turned eight of the rig's nine class-E tables into B; the ninth is built on
   a line continuation leaves the anchor at the end. Of the rig's 34 originals only that table's sidecar changes;
   `checkGameJournal` now fails a `game_end` whose scores are below the last live scores. A clear in a sub the end sub
   CALLS is not seen by the renderer (the live check catches it).
+- **Recipe B 0.3.2 (C1.6, from the rerun):** an end sub whose early exit is a re-entry guard on the game flag
+  (`If bGameInPLay = True Then Exit Sub`) is one the table calls LATE, and the game end is ALSO anchored after every
+  clear of that flag outside it. Game of Thrones is over in `EndOfBallComplete` (`bGameInPLay = False`, then the match
+  sequence); `EndOfGame` runs from a timer 5 s later and leaves at its guard when a Start in between began the next
+  game. The rerun played five games back to back (the runner's lockbar key is a Start there once the flag is clear)
+  and journaled one game end; the four lost ones had sane, bonus-included live scores (866860, 351250, 605700,
+  317030). The end sub keeps its anchor; `Castcade_B_GameEnd` journals once per game start, so whichever anchor comes
+  first reports the game. The warning "has 1 early Exit Sub; no game end is journaled on that path" is replaced by one
+  that names the flag and the extra anchors. Game of Thrones is the only original on the rig whose END sub has an
+  early exit (Diablo 2's two are in its start sub), so no other sidecar changes. This corrects the C1.3 line above:
+  the guard's path is a real game over, not one that must stay silent.
 - **Still open:** Diablo 2's own local multiplayer (the other players' scores live in `PState(p).Item("Score")`; a
   one-player game, which is what a Castcade match runs on each rig, is exact); the Burger template's ball save and
   multi-player rounds are read from the script only; class X stays unpatched (two calibration tables, one test table).
@@ -379,6 +390,12 @@ fault, and one pass was: The Matrix (Original), §5 "Recipe B 0.3.1"):
   extra folders. Today: Diablo 2 (both versions) and SMGP press Start a second time, 4 s after the first; Start opens a
   difficulty / character select there and only a second Start serves the ball (both journaled `game_start` and then
   nothing for 8 minutes). `autoplay.py` takes the steps as `--after-start 4:start`.
+- **No key after the game end, and none for 15 s after each ball end.** The runner taps the plunger and the lockbar
+  key every 6 s; Game of Thrones takes the lockbar for Start once its game flag is clear, so each game over began the
+  next game (the Start retry was not involved: it ends for good at the first journaled game start). `autoplay.py` now
+  reads the journal twice a second and holds its keys after a ball end (`--quiet-seconds`). `checkGameJournal` notes
+  a session with more than one game start, and a final score of 0 with no live score above 0 (it cannot tell a game
+  that scored nothing from a cleared score: Diablo 2 1.2.1's 0 was true, every `AddScore` of that game added 0).
 - `--only` takes several name parts separated by `|`, for a rerun of the tables that failed.
 
 **Folder import runs no verification launch.** Opening VPX once per table across a 100-table folder is hours of

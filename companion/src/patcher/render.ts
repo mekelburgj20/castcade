@@ -23,9 +23,11 @@ export const RECIPE_VERSION = '0.3.1';
  * B 0.3.0 (C1.4): anchor overrides (GLF, the Burger template, Rattlecan), a game end after every game-flag clear, the
  * score store named `Score` ahead of any other `...score...`; B 0.3.0 and C 0.2.0: a game end is journaled once per
  * journaled game start. B 0.3.1 (C1.6): an end sub that clears the score store journals the game end in front of the
- * clear (The Matrix (Original) journaled a final score of 0).
+ * clear (The Matrix (Original) journaled a final score of 0). B 0.3.2 (C1.6): an end sub with a re-entry guard on the
+ * game flag also journals the game end where that flag is cleared before it is called (Game of Thrones lost the game
+ * end of every game followed by a Start during its match sequence).
  */
-export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.3.1', C: '0.2.0', D: '0.1.0' } as const;
+export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.3.2', C: '0.2.0', D: '0.1.0' } as const;
 export type Recipe = keyof typeof RECIPE_VERSIONS;
 
 export function isRecipe(r: string): r is Recipe {

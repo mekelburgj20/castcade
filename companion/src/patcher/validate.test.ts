@@ -9,6 +9,7 @@ import {
   DIABLO_B_SCRIPT,
   FUTURAMA_B_SCRIPT,
   GLF_B_SCRIPT,
+  GOT_B_SCRIPT,
   JACKS_B_SCRIPT,
   JPSALAS_B_SCRIPT,
   MATRIX_B_SCRIPT,
@@ -33,6 +34,7 @@ const ALL: Record<string, readonly string[]> = {
   ORIGINAL_B_SCRIPT,
   JPSALAS_B_SCRIPT,
   MATRIX_B_SCRIPT,
+  GOT_B_SCRIPT,
   DIABLO_B_SCRIPT,
   JACKS_B_SCRIPT,
   FUTURAMA_B_SCRIPT,
@@ -187,6 +189,17 @@ describe('checkGameJournal (the live-validation verdict)', () => {
     // live scores of an earlier game in the session do not count
     const earlier = [loaded, '{"event":"current_scores","t":0.5,"scores":[99999],"player":1,"ball":3}', ...game.slice(1)];
     expect(checkGameJournal(earlier).ok).toBe(true);
+  });
+
+  it('notes a final score of 0 it cannot vouch for (Diablo 2 1.2.1: nothing scored all game), and a session with more games than one', () => {
+    const zero = game.map((l) => l.replace('"scores":[500]', '"scores":[0]').replace('"scores":[1500]', '"scores":[0]'));
+    const c = checkGameJournal(zero);
+    expect(c.ok).toBe(true);
+    expect(c.notes).toEqual(['the final score is 0 and no live score was above 0: a game in which nothing scored, or a score cleared before it was journaled; the journal cannot tell which']);
+    // Game of Thrones, 2026-11-12: the runner's lockbar key began the next game after each game over
+    const again = checkGameJournal([...game.slice(0, -1), '{"event":"game_start","t":9,"players":1}', '{"event":"ball_end","t":10,"player":1,"ball":1,"extra_balls":0}']);
+    expect(again.ok).toBe(true);
+    expect(again.notes).toContain('2 game starts in the session: only the first game is judged');
   });
 
   it('notes a session no key press reached (a dialog over the player), by the missing lock line', () => {

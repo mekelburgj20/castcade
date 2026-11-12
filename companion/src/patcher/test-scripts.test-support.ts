@@ -1006,6 +1006,82 @@ export const MATRIX_B_SCRIPT = [
   'End Function',
 ];
 
+/**
+ * The shape of Game of Thrones LE (VPW) 1.2.1 (C1.6; none of its text): the game is over in `EndOfBallComplete`, which
+ * clears the game flag and shows a match sequence; `EndOfGame` is called from a timer 5 s later and leaves at once
+ * when the flag is set again ("in case someone pressed Start during the match sequence"). Live validation 2026-11-12:
+ * five games, each begun during the match sequence of the one before, and one game end. `DoQuickRestart` clears the
+ * flag and calls `EndOfGame` itself.
+ */
+export const GOT_B_SCRIPT = [
+  'Option Explicit',
+  'Const BallsPerGame = 3',
+  'Const MaxPlayers = 4',
+  'Dim Score(4), BallsRemaining(4), ExtraBallsAwards(4)',
+  'Dim CurrentPlayer, PlayersPlayingGame, bGameInPlay, bShowMatch',
+  '',
+  'Sub Table1_Init()',
+  '    bGameInPlay = False',
+  'End Sub',
+  '',
+  'Sub Table1_KeyDown(ByVal keycode)',
+  '    If keycode = StartGameKey And Not bGameInPlay Then ResetForNewGame',
+  'End Sub',
+  '',
+  'Sub Table1_KeyUp(ByVal keycode)',
+  'End Sub',
+  '',
+  'Sub Table1_Exit()',
+  'End Sub',
+  '',
+  'Sub ResetForNewGame()',
+  '    Dim i',
+  '    bGameInPlay = True',
+  '    CurrentPlayer = 1',
+  '    PlayersPlayingGame = 1',
+  '    For i = 1 To MaxPlayers',
+  '        Score(i) = 0',
+  '        BallsRemaining(i) = BallsPerGame',
+  '        ExtraBallsAwards(i) = 0',
+  '    Next',
+  'End Sub',
+  '',
+  'Sub AddScore(points)',
+  '    Score(CurrentPlayer) = Score(CurrentPlayer) + points',
+  'End Sub',
+  '',
+  'Sub EndOfBall()',
+  "    AddScore 1000 ' the bonus",
+  '    BallsRemaining(CurrentPlayer) = BallsRemaining(CurrentPlayer) - 1',
+  '    EndOfBallComplete',
+  'End Sub',
+  '',
+  'Sub EndOfBallComplete()',
+  '    If BallsRemaining(CurrentPlayer) <= 0 Then',
+  "        bGameInPLay = False\t\t\t' the end sub sets this, but the flippers go dead now",
+  '        bShowMatch = True',
+  "        ' the table's timer calls EndOfGame 5 s from here",
+  '    End If',
+  'End Sub',
+  '',
+  'Sub EndOfGame()',
+  "    If bGameInPLay = True then Exit Sub ' a Start during the match sequence",
+  '',
+  '    bGameInPLay = False',
+  '    bShowMatch = False',
+  'End Sub',
+  '',
+  'Sub DoQuickRestart',
+  '    bGameInPLay = False',
+  '    EndOfGame',
+  '    ResetForNewGame',
+  'End Sub',
+  '',
+  'Function Balls',
+  '    Balls = BallsPerGame - BallsRemaining(CurrentPlayer) + 1',
+  'End Function',
+];
+
 /** A test table without a key handler. */
 export const NO_KEYDOWN_SCRIPT = ['Option Explicit', 'Sub Table1_Init', 'End Sub'];
 

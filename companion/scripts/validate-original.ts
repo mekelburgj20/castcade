@@ -274,6 +274,8 @@ async function validateOne(vpxPath: string, o: Options): Promise<Result> {
           ...['--until-file', journal, '--until-text', '"event":"game_end"', '--until-count', String(endsBefore + 1)],
           // Start again while the journal shows no game start (a table still booting ignores the first press)
           ...['--started-file', journal, '--started-text', '"event":"game_start"', '--started-count', String(startsBefore + 1)],
+          // no key for 15 s after a ball end: a table whose game is over takes the plunger or the lockbar for Start
+          ...['--quiet-seconds', '15'],
           ...(afterStart.length > 0 ? ['--after-start', afterStartArg(afterStart)] : []),
           ...(also.length > 0 ? ['--also', also.join(',')] : []),
         ],
