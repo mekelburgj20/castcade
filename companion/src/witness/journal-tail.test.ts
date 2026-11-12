@@ -55,12 +55,9 @@ describe('JournalTail', () => {
     const h = harness('start');
     const seen: [string, boolean][] = [];
     h.tail.on('line', (l) => seen.push([l, h.tail.backlog]));
-    h.fs.put(PATH, 'old1
-old2
-');
+    h.fs.put(PATH, 'old1\nold2\n');
     await h.tail.poll();
-    h.append('new
-');
+    h.append('new\n');
     await h.tail.poll();
     expect(seen).toEqual([
       ['old1', true],
@@ -73,8 +70,7 @@ old2
     const flags: boolean[] = [];
     late.tail.on('line', () => flags.push(late.tail.backlog));
     await late.tail.poll();
-    late.append('a
-');
+    late.append('a\n');
     await late.tail.poll();
     expect(flags).toEqual([false]);
   });

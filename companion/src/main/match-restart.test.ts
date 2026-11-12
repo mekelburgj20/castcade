@@ -450,7 +450,7 @@ describe('the host restarted in the middle of a match (A15)', () => {
   }, 60_000);
 
   it('during its own ball, the ball end missed while closed: the host comes back, reports it once, and the client is up', async () => {
-    const { hr, cr, H, C } = await started();
+    const { hr, H, C } = await started();
     hr.gameStart();
     hr.score(1, 300);
     await until(() => scoreOf(C.mh, 'Host') === 300);
