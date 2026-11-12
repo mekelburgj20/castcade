@@ -54,6 +54,7 @@ export {
   RelayPacer,
   RelayError,
   RELINK,
+  RELAY_UNPAIRED,
   RELAY_MAX_BYTES,
   RELAY_RATE,
   type RelayOptions,

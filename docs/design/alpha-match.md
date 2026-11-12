@@ -106,7 +106,13 @@ messages (primary); a UPnP port mapping is the fallback. The protocol is unchang
   as before, and the router is asked for the port in the background.
 - **Join.** Six letters (any case, `castcade:` in front allowed) → the relay; `castcade:ws://host:port#CODE` →
   direct, as before. A code on a PC that is not paired says so. A relay failure names its cause: no such match, full,
-  ArcAid refusing the device (pair again), ArcAid holding the PC back, ArcAid unreachable, the match closed.
+  the match already started (`locked`), ArcAid refusing the device (pair again), ArcAid holding the PC back (wait a
+  few minutes: its lockout after wrong codes is fifteen), ArcAid unreachable, the match closed. ArcAid checks the
+  device when a room is asked for, not at connect, so "refused the device" always comes from that answer; a host it
+  refuses (or holds back, or has no room for) hosts on its listener and the tab says why.
+- **Started = locked.** When the host starts the first game it tells ArcAid (`match:lock`): a device that never had a
+  seat in the room is refused from then on, the players may come back. Leaving on purpose (Leave, a match that ends,
+  quitting) tells ArcAid too (`match:leave`), so a host's room closes at once and not after the 30 s grace.
 - **Match tab.** One line under the turn: `Through ArcAid` (with `(reconnecting to ArcAid…)` while the host's socket
   is away) or `Direct to <host:port>`. `MatchStatus.via`, `path`, `directInvite`, `relayNote`, `portMapping`.
 - **A drop on the relay.** The host's socket to ArcAid going away drops every relay player at once. The host takes the
@@ -117,13 +123,28 @@ messages (primary); a UPnP port mapping is the fallback. The protocol is unchang
   turn, and the second one's pause arrives after it is back; before D10.8 that pause waited for the host's Resume
   button). In the lobby a drop is a leave, as over WebSocket: the player joins again. If the host stays away more
   than 30 s ArcAid closes the room and the clients' reconnects end with "no such match".
+- **ArcAid restarts (a deploy), or closes the room** (`expired`, `server_restart`). The room lives in the server's
+  memory, so it is gone. The host registers the same code again when its socket is back (a new room, locked again
+  once the players it had are back in it, or after 60 s), and the clients come back by the same relink path with a
+  new peer id. A client that asks before the host did is told "no such match"; ArcAid locks a device out after eight
+  of those in ten minutes, so the transport asks at most five times, further apart each time (1.5, 3, 5, 8 s), and
+  after that answers by itself while the engine's own attempts run out. A room closed because the host left
+  (`host_left`) or hosts another match (`replaced`) is not asked for again, and the host does not reopen it.
+- **A pairing revoked mid-match.** ArcAid checks a seated device again at most once a minute and takes the seat of
+  one that no longer verifies. That player's companion says "This PC is no longer paired with ArcAid" and does not
+  try to come back through ArcAid (the host sees a leave); a revoked host's room is closed and not opened again.
+- **What ArcAid drops, it says** (`match:error`): over the rate, too large, not readable, no such player, not in the
+  match. Each goes to the log in plain words, once per ten seconds. "No such player" does not name the player, so
+  the host asks who is in the room and closes the links of those who are not (the engine sees a leave); "not in the
+  match" is a closed link on a client and a room to take back on the host.
 - **Not carried by the relay:** a host transfer. The room belongs to the host's device, and `newHostEndpoint` is a
   `ws://` URL; a relay client refuses to move to one. The companion never calls `transferHost` and its clients do not
   listen, so nothing is lost that worked before; a transfer through the relay needs a contract (a room handed to
   another device) and a protocol answer for the endpoint.
-- **Rate.** ArcAid allows 200 `match:relay` per 10 s per client socket and, for the host, per destination (amended
-  2026-11-12; the first wording counted the host's socket as a whole, which a host that is up reached with three
-  clients). `RelayPacer` keeps each bucket under it: one pacer on a client, one per destination on the host; STATE
+- **Rate.** ArcAid allows 200 `match:relay` per fixed 10 s window per client socket and, for the host, per
+  destination (amended 2026-11-12; the first wording counted the host's socket as a whole, which a host that is up
+  reached with three clients); a frame it refuses for its size counts too. `RelayPacer` keeps each bucket under it
+  (180 in any 10 s, so under 200 in any fixed window): one pacer on a client, one per destination on the host; STATE
   and DMD_FRAME are shed first, the rest waits in order. STATE at 10 Hz is half a bucket, so nothing is shed in a
   normal match at any size (§4a).
 - **Router port** (`main/port-mapping.ts`): UPnP IGD written directly on `node:dgram` and `fetch` (no dependency:

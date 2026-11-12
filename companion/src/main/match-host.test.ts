@@ -1264,7 +1264,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
 
     // The host's socket to ArcAid drops: the relay player is out for a moment, resumes by itself, and the match goes on.
     r.dropDevice('dev-h');
-    await until(() => hl.lines.some((l) => l.includes('the connection to ArcAid dropped')));
+    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
     await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 8000);
     expect(H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).not.toContain('disconnected');
@@ -1318,6 +1318,52 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await expect(gone.mh.join('JHDFEF', 'Krobs')).rejects.toThrow(/^ArcAid could not be reached \(.*\): check this PC's internet connection, or ask the host for a direct invite/);
     expect(gone.mh.status().lastError).not.toContain('tok-c');
   }, 20_000);
+
+  it('ArcAid restarts mid-match (a deploy loses the room): the host opens the same code again, the relay player resumes by itself, and the room is locked again; leaving closes it at once', async () => {
+    const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c', 'dev-d': 'tok-d' } });
+    relays.push(r);
+    const hl = collect();
+    const H = mk('restart-host', { ...paired(r, 'h'), log: hl.log });
+    const C = mk('restart-client', paired(r, 'c'));
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    const code = hs.invite!;
+    await C.mh.join(code, 'Guest');
+    await until(() => H.mh.status().participants.length === 2);
+    expect(r.locked(code)).toBe(false);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && r.locked(code));
+
+    // The match started: a device that was never in it is refused by ArcAid, by name.
+    const late = mk('restart-late', { relay: () => ({ baseUrl: r.url, deviceId: 'dev-d', deviceToken: 'tok-d' }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
+    await expect(late.mh.join(code, 'Late')).rejects.toThrow(/^That match has already started/);
+
+    await r.restart(400);
+    await until(() => H.mh.status().phase === 'paused' || hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${code} again`)), 10_000);
+    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 20_000);
+    expect(H.mh.status().panel?.players.flatMap((p) => p.flags)).not.toContain('disconnected');
+    expect(r.rooms()).toEqual([code]);
+    // Locked again once its player was back, and never while the player was still on the way.
+    await until(() => r.locked(code), 5000);
+    expect(r.misses.get('dev-c') ?? 0).toBeLessThanOrEqual(5);
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true, 6000);
+
+    // A deliberate leave says so to ArcAid: the room is gone at once, not after the 30 s grace.
+    await C.mh.leave();
+    await H.mh.leave();
+    await until(() => r.rooms().length === 0, 2000);
+    expect(hl.lines.join('\n')).not.toContain('tok-h');
+  }, 60_000);
+
+  it('a host ArcAid refuses in the ack (a stale token; the socket itself connects) hosts on its listener and says to pair again', async () => {
+    const r = await fakeRelay();
+    const H = mk('relay-stale-host', { ...paired(r, 'h', 'stale'), openPort: null });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    expect(hs).toMatchObject({ role: 'host', via: 'direct', relayNote: 'ArcAid did not accept this PC: pair it again in Settings to host without a port forward' });
+    expect(hs.invite).toBe(`castcade:ws://127.0.0.1:${hs.port}#${hs.code}`);
+    expect(r.rooms()).toEqual([]);
+  }, 15_000);
 
   it('no relay (ArcAid unreachable): the address invite as before; the router is asked in the background and the tab says what came of it; leaving removes the mapping', async () => {
     const calls: string[] = [];

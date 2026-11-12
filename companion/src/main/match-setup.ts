@@ -325,14 +325,37 @@ export function relayJoinFailure(code: string | null, matchCode: string, detail:
       return `The match ${matchCode} is full.`;
     case 'unauthorized':
       return 'ArcAid did not accept this PC: pair it with ArcAid again in Settings, then join.';
+    case 'locked':
+      return `That match has already started (${matchCode}): only its players can come back to it.`;
     case 'rate_limited':
-      return 'ArcAid is holding this PC back after too many tries: wait a minute, then join again.';
+      // The server's lockout after wrong codes is fifteen minutes; its plain attempt limit is a minute.
+      return 'ArcAid is holding this PC back after too many tries: wait a few minutes, then join again.';
     case 'unreachable':
       return `ArcAid could not be reached (${detail}): check this PC's internet connection, or ask the host for a direct invite.`;
     case 'closed':
-      return `The match ${matchCode} was closed: its host has been gone too long.`;
+      return `The match ${matchCode} was closed: its host left or has been gone too long.`;
     default:
       return `Could not join ${matchCode} through ArcAid: ${detail}`;
+  }
+}
+
+/**
+ * D10.8: why a paired host is not carried by ArcAid (it then hosts on its listener), as the Match tab says it before
+ * ": a paired host needs no port forward". `code` is `RelayError.code`, null for anything else.
+ */
+export function relayHostNote(code: string | null): string {
+  switch (code) {
+    case 'unauthorized':
+      return 'ArcAid did not accept this PC: pair it again in Settings to host without a port forward';
+    case 'rate_limited':
+      return 'ArcAid is holding this PC back after too many tries (host again in a few minutes)';
+    case 'server_busy':
+      return 'ArcAid is carrying as many matches as it can right now';
+    case 'code_in_use':
+    case 'refused':
+      return 'ArcAid did not take this match';
+    default:
+      return 'ArcAid could not be reached';
   }
 }
 
@@ -340,8 +363,12 @@ export function relayJoinFailure(code: string | null, matchCode: string, detail:
 export const RELAY_NOT_PAIRED = 'This invite goes through ArcAid, and this PC is not paired with ArcAid yet: pair it in Settings, or ask the host for a direct invite (castcade:ws://…).';
 
 /** D10.8: the Match tab's one line about the path the match control takes. */
-export function pathLine(via: 'relay' | 'direct', where: string | null, relayState: 'registered' | 'reconnecting' | 'off' | null = null): string {
-  if (via === 'relay') return relayState === 'reconnecting' ? 'Through ArcAid (reconnecting to ArcAid…)' : 'Through ArcAid';
+export function pathLine(via: 'relay' | 'direct', where: string | null, relayState: 'registered' | 'reconnecting' | 'closed' | 'off' | null = null): string {
+  if (via === 'relay') {
+    if (relayState === 'reconnecting') return 'Through ArcAid (reconnecting to ArcAid…)';
+    // The server closed the room and it cannot be opened again: who is in stays in on the direct links only.
+    return relayState === 'closed' ? 'Through ArcAid (ArcAid closed this match: nobody can join or come back through it)' : 'Through ArcAid';
+  }
   return where ? `Direct to ${where}` : 'Direct';
 }
 
