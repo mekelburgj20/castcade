@@ -3,7 +3,8 @@
  * the script is extracted and classified; recipe A (VPM / ROM tables) gets a same-basename sidecar
  * and a manifest, unless its machine's live score is out of the hook's reach (`unreadable`, B12);
  * originals of class B/C/D get recipes B/C/D (C1.1; the plan names the recipe and says when it is
- * partial), class E is skipped with the reason until its guided pick exists; a `.vbs` that is
+ * partial; C1.4: a script an anchor override knows is class B and the plan names the override), class E
+ * is skipped with the reason (no vocabulary anchors and no override); a `.vbs` that is
  * not ours is never touched. The shared library `castcade.vbs` is installed into the VPX `scripts\`
  * folder once per apply. Nothing here ever writes to a `.vpx`.
  *
@@ -246,7 +247,8 @@ async function planOne(fs: WitnessFs, vpxPath: string, opts: PlanOptions): Promi
   const planned = ((): PlanItem => {
     switch (check.state) {
       case 'none':
-        if (recipe !== 'A') return item('patch', cls, rom, `${describeClass(cls)}, recipe ${recipe}${partialNote(source.text, classified)}${underneath}`);
+        // C1.4: a script read through an anchor override says which one (the log then names why an "anchorless" table patches).
+        if (recipe !== 'A') return item('patch', cls, rom, `${describeClass(cls)}, recipe ${recipe}${facts.override ? `, anchors from the ${facts.override} override` : ''}${partialNote(source.text, classified)}${underneath}`);
         return item('patch', cls, rom, `${describeClass(cls)}${rom ? `, ROM ${rom}` : ', no cGameName'}${underneath}`);
       case 'disabled':
         return item('patch', cls, rom, `previous sidecar was disabled as stale (${basenameOf(check.stalePath)}); re-render${underneath}`);
