@@ -7,6 +7,8 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.40] — 2026-11-12
+
 **Protocol 5** (a new logged message, `TURN_PASS`): a 0.2.39 companion is refused at HELLO, so everyone in a match
 updates together.
 
@@ -25,9 +27,9 @@ updates together.
   (`docs/design/alpha-match.md` §9.3).
 - **Originals report their ball ends (C1.4, C1.6).** Anchor overrides keyed by script signature for tables the
   vocabulary cannot read: the VPX Game Logic Framework (Dark Chaos), the Burger template (2001 ×2, Star Wars) and
-  Rattlecan. All 34 originals on the owner's rig patch completely; 27 played a full game unattended with every ball
-  end journaled (`npm run validate-original -w companion`). Recipe B 0.3.0, C 0.2.0 (sidecars re-made on the next
-  folder look).
+  Rattlecan. All 34 originals on the owner's rig played a full unattended game with every ball end and the game
+  end journaled (`npm run validate-original -w companion`, desktop build). Recipe B 0.3.2, C 0.2.0 (sidecars re-made
+  on the next folder look).
 
 - **The lobby says whose table cannot report ball ends, and the host can pass the turn (A13).** Three matches on an
   unpatched original (Dark Chaos, 2026-11-12) sat on `grant 1` until Forfeit while the witness had already logged that
@@ -39,6 +41,10 @@ updates together.
 
 ### Fixed
 
+- **An original's final score and game end (C1.6, recipe B 0.3.1 / 0.3.2).** The Matrix (Original) zeroed its
+  scores before the game end was journaled, so the final read 0: the game end now goes in front of the clear. Game of
+  Thrones lost a game's end when Start was pressed during its 5 s match sequence: the end is also journaled where the
+  table clears its in-play flag (`render-originals.ts`).
 - **A table locked until someone joins no longer dies mid-ball.** Hosting while a game was running locked the table
   at once (flippers and plunger dead, the game could not end); the lock now waits for that game to end (A14).
 - **Two or more players dropping at once no longer leaves the match paused** until the host presses Resume: a
@@ -58,6 +64,11 @@ updates together.
   preview window off has no title during play (Krobs 2026-11-12: `launch null` for 3.5 minutes, his Cactus Canyon turn
   with no live score and no ball end). An untitled VPX whose start time is known now takes its table from the journal
   as soon as the companion sees it.
+
+**Wire / journal:** protocol 5 (`TURN_PASS` logged; optional `ballEndReady` on HELLO / PARTICIPANT_UPDATE /
+HELLO_ACK; `protocol/test/messages.test.ts`, `companion/src/match/turn-pass.test.ts`). The relay is a transport
+(socket.io to ArcAid: `match:host` / `match:join` / `match:relay` / `match:lock` / `match:leave`), no protocol message.
+Journal format unchanged; hook library 0.5.0. Video helper 0.2.1.
 
 ## [0.2.39] — 2026-11-07
 
