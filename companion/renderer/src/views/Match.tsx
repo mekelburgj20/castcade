@@ -36,6 +36,9 @@ export function Match({ state }: { state: CastcadeState }) {
   const [balls, setBalls] = useState<3 | 5 | null>(null);
   const [invite, setInvite] = useState('');
   const [copied, setCopied] = useState(false);
+  // A13: the two host actions that ask first: a start with a table that cannot report ball ends, and Pass the turn.
+  // `pass` remembers whose ball was asked about: if the turn moves on meanwhile, the question is withdrawn.
+  const [confirming, setConfirming] = useState<{ what: 'start' } | { what: 'pass'; turn: string } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
   // D2.10 (2026-11-05): the three volume sliders while being dragged; null shows the saved setting (a key press moves it too).
   const [voice, setVoice] = useState<number | null>(null);
@@ -226,7 +229,7 @@ export function Match({ state }: { state: CastcadeState }) {
           <div className="card">
             <p className={panel?.myTurn ? 'turn-line mine' : 'turn-line'}>{turnLine(st)}</p>
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
-            {panel?.message && <p className={panel.message.startsWith('different') ? 'warn' : 'muted'}>{panel.message}</p>}
+            {panel?.message && <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>}
             <table className="match-table">
               <thead>
                 <tr>
@@ -247,6 +250,7 @@ export function Match({ state }: { state: CastcadeState }) {
                         {p.id === st.hostId ? ' · host' : ''}
                         {p.tableMatch === false && <span className="warn"> · {p.tableNote ?? 'different table file'}</span>}
                         {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
+                        {p.ballEnds === false && <span className="warn"> · cannot report ball ends</span>}
                         {row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
                       </td>
                       <td>{RIG_LABEL[p.rig]}</td>
@@ -261,8 +265,24 @@ export function Match({ state }: { state: CastcadeState }) {
             </table>
             <div className="row">
               {st.role === 'host' && st.phase === 'lobby' && (
-                <button type="button" className="primary" disabled={busy || st.participants.length < 2} onClick={() => void run(() => bridge.match.start())}>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || st.participants.length < 2 || (confirming?.what === 'start' && st.startWarnings.length > 0)}
+                  onClick={() => (st.startWarnings.length > 0 ? setConfirming({ what: 'start' }) : void run(() => bridge.match.start()))}
+                >
                   Start match
+                </button>
+              )}
+              {st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && st.pass && (
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy || (confirming?.what === 'pass' && confirming.turn === passTurnKey(st))}
+                  title="End the ball of the player who is up at their last known score and give the next player the turn"
+                  onClick={() => setConfirming({ what: 'pass', turn: passTurnKey(st) })}
+                >
+                  Pass the turn
                 </button>
               )}
               {st.role === 'host' && st.phase === 'over' && !st.series?.over && (
@@ -285,6 +305,48 @@ export function Match({ state }: { state: CastcadeState }) {
                 {st.phase === 'over' ? (st.role === 'host' && !st.series?.over ? 'End match' : 'Close match') : 'Leave'}
               </button>
             </div>
+            {st.role === 'host' && st.phase === 'lobby' && confirming?.what === 'start' && st.startWarnings.length > 0 && (
+              <div className="row">
+                <span className="warn">
+                  {st.startWarnings.join(' · ')}. Such a turn never ends by itself: you would end each of those balls with Pass the turn.
+                </span>
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(null);
+                    void run(() => bridge.match.start({ anyway: true }));
+                  }}
+                >
+                  Start anyway
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
+              <div className="row">
+                <span className="warn">
+                  End {st.pass.name}'s ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the host.
+                </span>
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(null);
+                    void run(() => bridge.match.passTurn());
+                  }}
+                >
+                  Pass the turn
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
             {st.phase === 'playing' && st.locked && <small className="muted">Your table is locked until your ball comes up.</small>}
             {st.phase === 'lobby' && st.role === 'host' && st.participants.length >= 2 && (
               <small className="muted">Starting a game on your table starts the match too (after a 5 s countdown in every headset).</small>
@@ -711,6 +773,11 @@ function mediaLine(m: MatchStatus['media']): string {
  * not running. D10.3.6 (2026-11-07): once the mesh fell back (a peer's connection failed with the helper's restarts
  * exhausted, or the helper went away), the line says the Electron video serves this match, and keeps the encoder.
  */
+/** A13: the turn Pass the turn was asked about (who and which ball), so a confirmation never lands on a later turn. */
+function passTurnKey(st: MatchStatus): string {
+  return st.pass ? `${st.pass.name}#${st.pass.ball}#${st.panel?.game ?? 1}` : '';
+}
+
 function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>, participants: MatchStatus['participants']): string {
   if (v.helper === 'unavailable') {
     const why = v.reason === 'helper_missing' ? 'this build has no video helper' : `the helper ${v.encoder ? 'is gone' : 'did not start'} (${v.reason ?? 'unknown'})`;

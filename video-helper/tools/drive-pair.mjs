@@ -4,7 +4,9 @@
 // send ring and B's sink at a recv ring (vr-layer/build/Release/ring_feed.exe fills and drains them), prints the stats.
 //
 //   node video-helper/tools/drive-pair.mjs [--exe <path>] [--seconds 15] [--send-token tokS] [--recv-token tokR]
-//        [--width 1354 --height 1440 --fps 60] [--bench]   (--bench: A uses the synthetic source instead of the ring)
+//        [--width 1354 --height 1440 --fps 60] [--bench]   (--bench: the sender uses the synthetic source instead of the ring)
+//        [--reverse]   (D10.3.9: the answerer B sends and the initiator A receives: the client → host direction)
+// Exits 1 when the receiving side decoded nothing.
 //
 // Run beside it, in two other terminals (or let --feed start them for you when ring_feed.exe is found):
 //   vr-layer\build\Release\ring_feed.exe --send tokS --width 1354 --height 1440 --fps 60 --seconds 30
@@ -43,6 +45,8 @@ function helper(name) {
 }
 
 const A = helper('A'), B = helper('B');
+// A always initiates (the host's role); --reverse makes the answerer the sender.
+const S = flag('reverse') ? B : A, R = flag('reverse') ? A : B;
 const other = { A: B, B: A };
 const ready = { A: false, B: false };
 const stats = [];
@@ -65,14 +69,14 @@ for (const h of [A, B]) {
 let feeds = [];
 function start() {
   for (const h of [A, B]) h.send({ cmd: 'ice', servers: [] });
-  if (flag('bench')) A.send({ cmd: 'source', kind: 'bench', width, height, fps });
-  else A.send({ cmd: 'source', kind: 'ring', token: sendToken, width, height, fps });
-  B.send({ cmd: 'sink', kind: 'ring', token: recvToken, width, height });
-  A.send({ cmd: 'rungs', max_kbps: 20000 });
+  if (flag('bench')) S.send({ cmd: 'source', kind: 'bench', width, height, fps });
+  else S.send({ cmd: 'source', kind: 'ring', token: sendToken, width, height, fps });
+  R.send({ cmd: 'sink', kind: 'ring', token: recvToken, width, height });
+  S.send({ cmd: 'rungs', max_kbps: 20000 });
   // B is told its peer first so A's offer finds it; A initiates.
   B.send({ cmd: 'peer', id: 'A', initiator: false });
   A.send({ cmd: 'peer', id: 'B', initiator: true });
-  A.send({ cmd: 'send', on: true });
+  S.send({ cmd: 'send', on: true });
   if (flag('feed') && existsSync(feed)) {
     const mk = (a) => { const p = spawn(feed, a, { stdio: ['ignore', 'pipe', 'inherit'] }); createInterface({ input: p.stdout }).on('line', (l) => log(a[0] === '--send' ? 'feedS' : 'feedR', l)); return p; };
     feeds = [mk(['--send', sendToken, '--width', String(width), '--height', String(height), '--fps', String(fps), '--seconds', String(seconds + 2)]), mk(['--recv', recvToken, '--seconds', String(seconds + 2)])];
@@ -81,11 +85,11 @@ function start() {
 }
 
 function stop() {
-  A.send({ cmd: 'send', on: false });
+  S.send({ cmd: 'send', on: false });
   for (const h of [A, B]) h.send({ cmd: 'quit' });
-  const recv = stats.filter((s) => s.who === 'B' && s.dir === 'recv' && s.fps > 0);
-  const send = stats.filter((s) => s.who === 'A' && s.dir === 'send' && s.fps > 0);
+  const recv = stats.filter((s) => s.who === R.name && s.dir === 'recv' && s.fps > 0);
+  const send = stats.filter((s) => s.who === S.name && s.dir === 'send' && s.fps > 0);
   const avg = (a, k) => (a.length ? (a.reduce((x, s) => x + (s[k] ?? 0), 0) / a.length).toFixed(0) : '-');
-  console.log(`summary: send ${send.length} s at ${avg(send, 'fps')} fps ${avg(send, 'kbps')} kbps enc ${avg(send, 'enc_us')} us · recv ${recv.length} s at ${avg(recv, 'fps')} fps ${avg(recv, 'kbps')} kbps dec ${avg(recv, 'dec_us')} us freeze max ${Math.max(0, ...recv.map((s) => s.freeze_ms ?? 0))} ms`);
-  setTimeout(() => { for (const h of [A, B]) h.p.kill(); for (const f of feeds) f.kill(); process.exit(0); }, 3000);
+  console.log(`summary (${S.name} → ${R.name}): send ${send.length} s at ${avg(send, 'fps')} fps ${avg(send, 'kbps')} kbps enc ${avg(send, 'enc_us')} us · recv ${recv.length} s at ${avg(recv, 'fps')} fps ${avg(recv, 'kbps')} kbps dec ${avg(recv, 'dec_us')} us freeze max ${Math.max(0, ...recv.map((s) => s.freeze_ms ?? 0))} ms`);
+  setTimeout(() => { for (const h of [A, B]) h.p.kill(); for (const f of feeds) f.kill(); process.exit(recv.length ? 0 : 1); }, 3000);
 }

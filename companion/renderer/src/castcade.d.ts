@@ -553,7 +553,20 @@ interface MatchStatus {
   code: string | null;
   localId: string | null;
   hostId: string | null;
-  participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
+  participants: Array<{
+    id: string;
+    name: string;
+    rig: 'pc' | 'vr_headset' | 'real_cabinet';
+    tableMatch: boolean | null;
+    tableNote: string | null;
+    buildMatch: boolean | null;
+    /** A13: whether this player's table can report ball ends; null = unknown. */
+    ballEnds: boolean | null;
+  }>;
+  /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
+  startWarnings: string[];
+  /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
+  pass: { name: string; ball: number; score: number } | null;
   /** A8: a host transfer under way (names), else null. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /** A10: the game being played or just played, whether the series is over, and why Next game cannot start (null: it can). */
@@ -624,8 +637,10 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: Start match in the lobby; A10: Next game between games. */
-    start(): Promise<MatchStatus>;
+    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. */
+    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
+    passTurn(): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */

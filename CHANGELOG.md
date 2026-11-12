@@ -7,6 +7,34 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+**Protocol 5** (a new logged message, `TURN_PASS`): a 0.2.39 companion is refused at HELLO, so everyone in a match
+updates together.
+
+### Added
+
+- **The lobby says whose table cannot report ball ends, and the host can pass the turn (A13).** Three matches on an
+  unpatched original (Dark Chaos, 2026-11-12) sat on `grant 1` until Forfeit while the witness had already logged that
+  it could not read the table. Each companion now tells the lobby whether its table is followed live
+  (`ballEndReady` on HELLO / PARTICIPANT_UPDATE / HELLO_ACK; absent = unknown, never warned about); the Match tab and
+  the panel name each player whose table is not, Start match asks the host for "Start anyway", and a start from the
+  table waits. During a game the host has **Pass the turn**: it ends the holder's ball at the last known score with a
+  logged, host-signed `TURN_PASS` and grants the next turn; a late `BALL_END` for that ball is rejected.
+
+### Fixed
+
+- **The host never got a joining player's native picture (D10.3.9).** Both helpers made their video sender with
+  `AddTransceiver` and only the initiator offers; libwebrtc pairs a remote offer's video section only with a
+  transceiver made by `AddTrack`, so the answerer's sender was never negotiated and its encoder never opened (owner
+  hosting, Krobs joining, 2026-11-12: six matches, `remote video track` in Krobs' log every time, never in the
+  owner's; the same silence as D10.3.8 with ChuckRibbits). The answerer now adds its track with `AddTrack`
+  (`castcade-video` 0.2.1). `tools/drive-pair.mjs --reverse` rehearses the client → host direction and exits 1 when
+  the receiver decodes nothing: the 0.2.39 helper fails it, 0.2.1 passes both directions at 60 fps.
+- **A companion started while a table was already running in VR read nothing until play ended (C14).** The table
+  was taken from the hook's journal only when the main window was titled `Visual Pinball Player`; a VR rig with the
+  preview window off has no title during play (Krobs 2026-11-12: `launch null` for 3.5 minutes, his Cactus Canyon turn
+  with no live score and no ball end). An untitled VPX whose start time is known now takes its table from the journal
+  as soon as the companion sees it.
+
 ## [0.2.39] — 2026-11-07
 
 The second-match fix round (owner + ChuckRibbits on 0.2.38, 2026-11-07 21:22Z). The ICE restarts of 0.2.38 worked:

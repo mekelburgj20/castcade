@@ -16,5 +16,9 @@
  *   shape, but a peer that does not know it would not drop the frame: zod strips the unknown key, so a 0.2.36 peer
  *   would feed the native helper's `video` offer to its Electron page as its own. A version bump makes mixed builds
  *   refuse each other at HELLO instead; every rig updates through the updater, so nothing is lost (lead's decision).
+ * 5 (2026-11-12, A13): TURN_PASS (logged): the host ends the grant holder's ball by hand. A new logged message type,
+ *   like NEXT_GAME in 3: a peer on 4 would drop the frame, miss the entry and fold a different state. The same item's
+ *   `ballEndReady` (HELLO, PARTICIPANT_UPDATE, HELLO_ACK) is optional / defaulted and never logged, and alone would
+ *   have stayed 4 (as A8's `tableMismatches` stayed 2): absent reads as unknown.
  */
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;

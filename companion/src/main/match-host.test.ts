@@ -1107,3 +1107,101 @@ describe('match host: the settings migration (D8.1, 2026-11-05)', () => {
     expect(b.mh.status().settings).toMatchObject({ cameraSource: 'screen', cameraEyes: 'both', settingsVersion: 2 });
   });
 });
+
+describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', () => {
+  type WStatus = ReturnType<WitnessHost['status']>;
+  const DARK = "Dark Chaos is an original table (no ROM). Castcade can't read an original's score yet.";
+  /** A witness whose open table is followed live or not (`captureMode`), switchable like a table change. */
+  const capturing = (sha: string, mode: 'live' | 'basic') => {
+    const listeners = new Set<(s: WStatus) => void>();
+    let now = mode;
+    const status = (): WStatus =>
+      ({
+        paired: false,
+        currentTable: 'Dark Chaos',
+        currentIdentity: { sha256: sha, tableInfo: null },
+        currentAttestation: null,
+        captureMode: now,
+        note: now === 'basic' ? DARK : null,
+      }) as unknown as WStatus;
+    const w = {
+      status,
+      sampleVr: async () => null,
+      onEvent: () => () => undefined,
+      onStatus: (cb: (s: WStatus) => void) => {
+        listeners.add(cb);
+        return () => listeners.delete(cb);
+      },
+    } as unknown as WitnessHost;
+    return {
+      w,
+      set(next: 'live' | 'basic') {
+        now = next;
+        for (const l of listeners) l(status());
+      },
+    };
+  };
+  const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
+
+  it('the flag reaches the host and every lobby, follows the table, and the start needs Start anyway; then the host passes each turn', async () => {
+    const sha = 'ab'.repeat(32);
+    const hw = capturing(sha, 'basic');
+    const cw = capturing(sha, 'basic');
+    const H = make('a13-host', sha, { witness: hw.w });
+    const C = make('a13-client', sha, { witness: cw.w });
+    const port = 47000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Owner' });
+    // Alone in the lobby the host already reads why its own table will not do.
+    expect(hs.panel?.message).toBe(`Waiting for players · Your table cannot report ball ends: ${DARK}`);
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await until(() => row(C.mh, 'Owner')?.ballEnds === false);
+    expect(row(H.mh, 'Owner')?.ballEnds).toBe(false);
+    expect(row(H.mh, 'Krobs')?.ballEnds).toBe(false);
+    expect(row(C.mh, 'Krobs')?.ballEnds).toBe(false);
+    expect(H.mh.status().startWarnings).toHaveLength(2);
+    expect(C.mh.status().startWarnings).toContain(`Your table cannot report ball ends: ${DARK}`);
+
+    // Krobs opens a patched table: the host hears of it in the lobby, and only the host's own table is left.
+    cw.set('live');
+    await until(() => row(H.mh, 'Krobs')?.ballEnds === true);
+    await until(() => row(C.mh, 'Krobs')?.ballEnds === true);
+    expect(H.mh.status().startWarnings).toEqual([`Your table cannot report ball ends: ${DARK}`]);
+    expect(C.mh.status().startWarnings).toHaveLength(1);
+    expect(C.mh.status().startWarnings[0]).toMatch(/^Owner's table cannot report ball ends: /);
+
+    // Start match is not refused for good: it asks for the host's confirmation.
+    await expect(H.mh.start()).rejects.toThrow(/Your table cannot report ball ends.*Start anyway/);
+    expect(H.mh.status()).toMatchObject({ phase: 'lobby' });
+    expect(H.mh.status().lastError).toMatch(/Start anyway/);
+    await expect(C.mh.passTurn()).rejects.toThrow(/Only the host/);
+    const started = await H.mh.start({ anyway: true });
+    expect(started).toMatchObject({ phase: 'playing', lastError: null, startWarnings: [] });
+    await until(() => C.mh.status().phase === 'playing');
+
+    // The host's ball never ends by itself: Pass the turn, for its own ball and then for the client's.
+    expect(H.mh.status().pass).toEqual({ name: 'Owner', ball: 1, score: 0 });
+    expect(C.mh.status().pass).toBeNull();
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true);
+    expect(H.mh.status()).toMatchObject({ locked: true, pass: { name: 'Krobs', ball: 1, score: 0 } });
+    expect(existsSync(H.lock)).toBe(true);
+    await H.mh.passTurn();
+    await until(() => H.mh.status().panel?.myTurn === true && H.mh.status().panel?.ball === 2);
+    await until(() => C.mh.status().locked);
+    expect(existsSync(C.lock)).toBe(true);
+    expect(C.mh.status().panel?.players.map((p) => p.ballsDone)).toEqual([1, 1]);
+  }, 20_000);
+
+  it('with nothing known about any table the start goes as before, with no confirmation', async () => {
+    const H = make('a13-plain-host', 'ab'.repeat(32));
+    const C = make('a13-plain-client', 'ab'.repeat(32));
+    const hs = await H.mh.host({ port: 47000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    expect(H.mh.status().startWarnings).toEqual([]);
+    expect(H.mh.status().participants.map((p) => p.ballEnds)).toEqual([null, null]);
+    await H.mh.start();
+    await expect(H.mh.passTurn()).resolves.toMatchObject({ phase: 'playing' });
+  }, 15_000);
+});

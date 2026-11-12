@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v4/PARTICIPANT_UPDATE.schema.json",
+  "$id": "https://castcade.dev/protocol/v5/PARTICIPANT_UPDATE.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -116,6 +116,10 @@
         "emulatorVersion"
       ],
       "additionalProperties": false
+    },
+    "ballEndReady": {
+      "description": "A13: whether the sender's table can report ball ends now (see `HELLO.ballEndReady`), when that changed since HELLO. Lobby only.",
+      "type": "boolean"
     }
   },
   "additionalProperties": false,

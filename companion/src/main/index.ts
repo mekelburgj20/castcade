@@ -371,7 +371,8 @@ function registerIpc(
     });
   });
   ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => mh().join(str(invite, 'invite'), typeof displayName === 'string' ? displayName : ''));
-  ipcMain.handle(IPC.matchStart, () => mh().start());
+  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => mh().start({ anyway: (o as { anyway?: unknown } | null | undefined)?.anyway === true }));
+  ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
   ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchSaveFrames, () => mh().saveFrames());
   ipcMain.handle(IPC.matchBenchStart, (_e, req: unknown) => mh().startBench(req));

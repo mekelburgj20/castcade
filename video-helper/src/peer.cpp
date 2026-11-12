@@ -352,22 +352,41 @@ bool Peer::Start(std::string* error) {
   pc_ = result.MoveValue();
 
   auto track = pcf_->CreateVideoTrack(pf_.source(), "castcade-video-" + id_);
-  webrtc::RtpTransceiverInit init;
-  init.direction = webrtc::RtpTransceiverDirection::kSendRecv;
-  init.stream_ids = {"castcade"};
   webrtc::RtpEncodingParameters enc;
   enc.max_bitrate_bps = limits_.max_kbps * 1000;
   enc.min_bitrate_bps = limits_.min_kbps * 1000;
   enc.max_framerate = limits_.max_fps;
   enc.active = false;  // `send on` activates it
-  init.send_encodings.push_back(enc);
-  auto r = pc_->AddTransceiver(track, init);
-  if (!r.ok()) {
-    *error = std::string("AddTransceiver: ") + r.error().message();
-    return false;
+  webrtc::scoped_refptr<webrtc::RtpTransceiverInterface> transceiver;
+  if (initiator_) {
+    webrtc::RtpTransceiverInit init;
+    init.direction = webrtc::RtpTransceiverDirection::kSendRecv;
+    init.stream_ids = {"castcade"};
+    init.send_encodings.push_back(enc);
+    auto r = pc_->AddTransceiver(track, init);
+    if (!r.ok()) {
+      *error = std::string("AddTransceiver: ") + r.error().message();
+      return false;
+    }
+    transceiver = r.value();
+    sender_ = transceiver->sender();
+  } else {
+    // D10.3.9: the answerer adds its track with AddTrack. Applying the initiator's offer pairs its video m-section
+    // only with a transceiver made by AddTrack (JSEP 5.10); one made by AddTransceiver stays unpaired, and since the
+    // answerer never offers, its sender was never negotiated: the host got no picture from any client.
+    auto r = pc_->AddTrack(track, {"castcade"}, {enc});
+    if (!r.ok()) {
+      *error = std::string("AddTrack: ") + r.error().message();
+      return false;
+    }
+    sender_ = r.value();
+    for (const auto& t : pc_->GetTransceivers())
+      if (t->sender() == sender_) transceiver = t;
+    if (!transceiver) {
+      *error = "AddTrack: no transceiver for the sender";
+      return false;
+    }
   }
-  auto transceiver = r.value();
-  sender_ = transceiver->sender();
   // H264 only (plus RTX for retransmission); the factories offer nothing else anyway.
   auto caps = pcf_->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO);
   std::vector<webrtc::RtpCodecCapability> prefs;

@@ -1351,7 +1351,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * in play is the one whose journal has a `table_loaded` inside this process's lifetime; its import manifest
    * gives the `.vpx`, so identity and live mode then arm as for `-Play`. Never throws.
    */
-  const tableFromJournal = async (session: OpenSession): Promise<void> => {
+  const tableFromJournal = async (session: OpenSession, playerUp = true): Promise<void> => {
     const { launch } = session;
     if (launch.table !== null || journalRoot === null) return;
     session.journalLooked = true;
@@ -1360,7 +1360,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       const slack = launch.startedAt !== null ? 90_000 : SESSION_STAMP_SLACK_MS;
       const c = await newestJournalSince(fs, journalRoot, session.startedAt - slack);
       if (!c) {
-        log(`witness: pid ${launch.pid}: the player is up with no table name and no journal of this process; waiting for play to end`);
+        if (playerUp) log(`witness: pid ${launch.pid}: the player is up with no table name and no journal of this process; waiting for play to end`);
         return;
       }
       const manifest = await readManifest(fs, manifestPathFor(manifestDir, c.tableId)).catch(() => null);
@@ -1693,7 +1693,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     };
     sessions.set(launch.pid, session);
     // B18: Castcade started with the player already up; name the table before the launch line goes out.
-    if (parseWindowTitle(launch.title).kind === 'player') await tableFromJournal(session);
+    // C14: a VR rig with the preview window off has no window title at all while a table plays (Krobs 2026-11-12:
+    // `launch null` for 3.5 minutes, a whole turn unread); with the process's start time known, a `table_loaded`
+    // inside its lifetime is this process's table whatever the title says. An editor title stays the editor's word.
+    const titleKind = parseWindowTitle(launch.title).kind;
+    if (titleKind === 'player' || (titleKind === 'unknown' && launch.startedAt !== null)) await tableFromJournal(session, titleKind === 'player');
     if (!baseline) await refreshBaseline();
     refreshTableStatus();
     emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt), startedAt: launch.startedAt });
