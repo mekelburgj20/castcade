@@ -149,7 +149,8 @@ departs from the sketch above, the code is right:
   front of each of its early `Exit Sub`** (a repeat is dropped by the library); **ball end at the TOP of the ball-end
   sub** (the drained ball's player and number, before anything advances: JPSalas' `EndOfBall` hands over to a timer
   and `EndOfBall2`; Diablo 2's `EndPlayerTurn` re-shoots on `ExtraBallPending` in its first line, which the
-  `extra_balls` field carries), else before the `BallsRemaining` decrement; game end at the end of the end sub, else
+  `extra_balls` field carries), else before the `BallsRemaining` decrement; game end at the end of the end sub (0.3.1:
+  in front of the statement in it that clears the score store, when there is one), else
   **on the line after the game-flag clear** (Rattlecan's `GameOver = 1`, the Burger template's `gameon = 0`), with a
   warning naming the sub and line. An early `Exit Sub` in a start/end anchor sub is a warning, not new control flow
   (GoT's `EndOfGame` re-entry guard is exactly a path that must not journal). The plan reason lists the four subs
@@ -217,6 +218,13 @@ C1.3 turned eight of the rig's nine class-E tables into B; the ninth is built on
   sidecars lint clean; all 34 originals' sidecars compile. `sidecar-cscript.test.ts` (Windows only) also DRIVES the three
   override shapes through a game under cscript with the real library and checks the journal.
 - **Live validation** (§7): `npm run validate-original -w companion -- "<table.vpx>"` (or `--all "<folder>"`).
+- **Recipe B 0.3.1 (C1.6, 2026-11-12, from the first live run of all 34 originals):** an end sub that sets the score
+  store to 0 journals the game end IN FRONT of that statement (outside any `For` / `Do` / `While` that holds it), not
+  at the end of the sub. The Matrix (Original) 0.99.0 zeroes `Score(i)` for every player near the end of `EndOfGame`:
+  its game passed with ball ends 1, 2, 3 and a final score of 0 after 1461760 live. A clear on a `Case` line or behind
+  a line continuation leaves the anchor at the end. Of the rig's 34 originals only that table's sidecar changes;
+  `checkGameJournal` now fails a `game_end` whose scores are below the last live scores. A clear in a sub the end sub
+  CALLS is not seen by the renderer (the live check catches it).
 - **Still open:** Diablo 2's own local multiplayer (the other players' scores live in `PState(p).Item("Score")`; a
   one-player game, which is what a Castcade match runs on each rig, is exact); the Burger template's ball save and
   multi-player rounds are read from the script only; class X stays unpatched (two calibration tables, one test table).
@@ -354,6 +362,24 @@ VPX or Castcade is running (Castcade would follow the run as a real game), needs
 table where it is, with the sidecar the companion wrote. Results land in `tmp/validate/results/`. A staged copy sits in
 another folder than the original, so a table that loads files by a path relative to its own folder may behave
 differently there; `--in-place` is the check of record once the companion has patched the folder.
+
+What the first run of all 34 originals taught the runner (2026-11-12: 27 passed; none of the 7 failures was a patch
+fault, and one pass was: The Matrix (Original), §5 "Recipe B 0.3.1"):
+- **Folders the script loads from are staged with the copy.** Game of Thrones, Sonic, Thundercats and The Goonies
+  load a FlexDMD / UltraDMD project from a folder beside the table; without it they stop at a dialog ("FlexDMD
+  directory gameofthrones.FlexDMD appears to be missing", "UltraDMD userfiles directory ... does not exist") or a
+  script error, no key reaches the script (the journal has `table_loaded` and not even the `lock` line of the first
+  key-down) and VPX does not close on the exit key. `resourceFolders` (`validate.ts`) picks the sibling folders whose
+  name ends in `DMD` and that the script names in a string literal, whole or as `"<stem>"` + `".UltraDMD"` /
+  `".FlexDMD"`. `checkGameJournal` notes a session no key reached.
+- **Start is pressed again while the journal shows no game start** (every 12 s, four presses in all): a table still in
+  its boot or intro sequence ignores the first one (Sonic's `BootE`, The Goonies' `enableKeys`).
+- **Per-table hints are data, in `companion/scripts/validate-hints.ts`**: a record matches a part of the file name and
+  says, with its evidence, which keys follow Start (`afterStart`), a longer budget (`minutes`), a longer settle time, or
+  extra folders. Today: Diablo 2 (both versions) and SMGP press Start a second time, 4 s after the first; Start opens a
+  difficulty / character select there and only a second Start serves the ball (both journaled `game_start` and then
+  nothing for 8 minutes). `autoplay.py` takes the steps as `--after-start 4:start`.
+- `--only` takes several name parts separated by `|`, for a rerun of the tables that failed.
 
 **Folder import runs no verification launch.** Opening VPX once per table across a 100-table folder is hours of
 windows popping up, so bulk-imported tables are `provisional` ("patched, unverified") until the first real game

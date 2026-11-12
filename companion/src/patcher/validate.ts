@@ -8,7 +8,9 @@
  * own code is misread the same way on both sides and only our lines can make a difference.
  *
  * `checkGameJournal` judges the journal of one played game (the live-validation runner,
- * `companion/scripts/validate-original.ts`): `table_loaded`, `game_start`, the ball ends in order, `game_end`.
+ * `companion/scripts/validate-original.ts`): `table_loaded`, `game_start`, the ball ends in order, `game_end` with a
+ * score that is not below the last live one. `resourceFolders` names the folders beside a table that its script loads
+ * from (a FlexDMD / UltraDMD project), which a staged copy needs beside it too.
  */
 import { ORIGINAL_EXIT_INSERT, ORIGINAL_LINE_INSERT, parseSidecarMarker, unpatchSidecar } from './render.js';
 import { lineContexts, splitScript, stripComment } from './script-text.js';
@@ -179,6 +181,8 @@ export interface JournalCheck {
     ballEnds: { player: number | null; ball: number | null; extraBalls: number | null }[];
     gameEnds: { scores: unknown; players: number | null }[];
     scoreLines: number;
+    /** A key-down reached the sidecar's wrapper (the hook journals the lock state, a `lock` line, at the first one). */
+    keysSeen: boolean;
     warns: string[];
     tableExit: boolean;
   };
@@ -219,6 +223,7 @@ export function checkGameJournal(journalLines: readonly string[], opts: JournalC
     ballEnds: [],
     gameEnds: [],
     scoreLines: 0,
+    keysSeen: false,
     warns: [],
     tableExit: false,
   };
@@ -232,12 +237,17 @@ export function checkGameJournal(journalLines: readonly string[], opts: JournalC
   let state: 'idle' | 'playing' | 'over' = 'idle';
   let counted = 0;
   let lastBall = 0;
+  let live: number[] | null = null;
   for (const e of session) {
     const ev = e['event'];
     if (ev === 'warn') s.warns.push(String(e['msg'] ?? ''));
     else if (ev === 'table_exit') s.tableExit = true;
-    else if (ev === 'current_scores') s.scoreLines++;
-    else if (ev === 'game_start') {
+    else if (ev === 'lock' || ev === 'key_blocked') s.keysSeen = true;
+    else if (ev === 'current_scores') {
+      s.scoreLines++;
+      const sc = e['scores'];
+      if (state === 'playing' && Array.isArray(sc) && sc.every((v) => typeof v === 'number')) live = sc as number[];
+    } else if (ev === 'game_start') {
       s.gameStarts++;
       if (state === 'playing') problems.push('a second game_start before the game ended');
       if (state === 'idle') state = 'playing';
@@ -261,6 +271,8 @@ export function checkGameJournal(journalLines: readonly string[], opts: JournalC
         state = 'over';
         const scores = e['scores'];
         if (!Array.isArray(scores) || scores.length === 0 || scores.some((v) => typeof v !== 'number')) problems.push(`game_end carries scores ${JSON.stringify(scores)}`);
+        // The Matrix (Original) 0.99.0, 2026-11-12: three ball ends and a final score of 0 after 1461760 live.
+        else if (live !== null && live.some((v, i) => v > ((scores as number[])[i] ?? 0))) problems.push(`game_end carries scores ${JSON.stringify(scores)}, below the last live scores ${JSON.stringify(live)}: the table cleared its scores before the game end was journaled`);
         if (counted < want) problems.push(`game_end after ${counted} ball end${counted === 1 ? '' : 's'}; expected ${want}`);
       }
     }
@@ -268,8 +280,31 @@ export function checkGameJournal(journalLines: readonly string[], opts: JournalC
   if (s.gameStarts === 0) problems.push('no game_start');
   if (state === 'playing') problems.push(`no game_end (the game journaled ${counted} ball end${counted === 1 ? '' : 's'})`);
   const notes: string[] = [];
+  if (!s.keysSeen && s.gameStarts === 0) notes.push('no key press reached the table: a dialog was open over the player (a file or folder the table asks for is missing?), or the window never had the keyboard');
   if (s.scoreLines === 0 && s.gameStarts > 0) notes.push('no current_scores line: either nothing scored, or the live score is not journaled');
   if (s.warns.length > 0) notes.push(`${s.warns.length} warn line${s.warns.length === 1 ? '' : 's'} from the hook: ${s.warns.slice(0, 3).join(' | ')}`);
   if (!s.tableExit) notes.push('no table_exit: VPX did not close the table cleanly (or the journal was read before it did)');
   return { ok: problems.length === 0, problems, notes, summary: s };
+}
+
+// ----------------------------------------------------------------------------------------- the staged copy
+
+/**
+ * Of the folders beside a table (`dirNames`), the ones its script loads files from. A table staged in another folder
+ * without them stops at a dialog before any key reaches it: 2026-11-12, Game of Thrones ("FlexDMD directory
+ * gameofthrones.FlexDMD appears to be missing"), Sonic and Thundercats ("UltraDMD userfiles directory ... does not
+ * exist"), The Goonies (`./TheGooniesDMD/`). A folder is taken when its name ends in `DMD` and
+ * - a string literal of the script holds the whole name (`"./TheGooniesDMD/"`, `"./Diablo 2.FlexDMD/"`), or
+ * - it is `<stem>.UltraDMD` / `<stem>.FlexDMD`, the script has the literal `"<stem>"` (`Const TableName = "Sonic"`)
+ *   and a literal that starts with that suffix (`TableName & ".UltraDMD"`).
+ */
+export function resourceFolders(scriptText: string, dirNames: readonly string[]): string[] {
+  const lits = splitScript(scriptText).lines.flatMap((l) => [...stripComment(l).matchAll(/"([^"]*)"/g)].map((m) => (m[1] ?? '').toLowerCase()));
+  return dirNames.filter((dir) => {
+    const d = dir.toLowerCase();
+    if (!d.endsWith('dmd')) return false;
+    if (lits.some((l) => l.includes(d))) return true;
+    const m = /^(.+)(\.(?:ultradmd|flexdmd))$/.exec(d);
+    return m !== null && lits.includes(m[1] ?? '') && lits.some((l) => l.startsWith(m[2] ?? '\0'));
+  });
 }

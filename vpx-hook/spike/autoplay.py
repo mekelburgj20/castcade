@@ -12,6 +12,9 @@ DirectInput, so the player window must be in the foreground (the script brings i
 Usage:
   autoplay.py game   [--credits 2] [--minutes 5] [--plunge-every 7] [--until-file F --until-text game_end --until-count N] [--no-start]
                      [--also 156,57]   extra scancodes tapped with every plunge (a lockbar / fire button that launches the ball)
+                     [--after-start 4:start]   keys pressed after Start, each N seconds after the one before (a menu Start opens)
+                     [--started-file F --started-text game_start --started-count N --start-retry 12 --start-tries 4]
+                                       press Start again while the journal shows no game start (a table still booting)
   autoplay.py lock   [--lock-dir DIR]        one lock/unlock exercise (table must be running)
   autoplay.py press  <scancode> [--hold MS]  one key
   autoplay.py exit                           hold the exit key (Q) for 3 s
@@ -108,6 +111,11 @@ def main():
     ap.add_argument("--until-count", type=int, default=1, help="stop once --until-text occurs this many times")
     ap.add_argument("--no-start", action="store_true", help="game already running: only plunge")
     ap.add_argument("--also", default="", help="comma-separated scancodes tapped with every plunge (lockbar / fire button)")
+    ap.add_argument("--after-start", default="", help="keys pressed after Start, e.g. '4:start,1.5:plunge' (seconds to wait : start|plunge|credit|lflip|rflip|<scancode>)")
+    ap.add_argument("--started-file"); ap.add_argument("--started-text", default='"event":"game_start"')
+    ap.add_argument("--started-count", type=int, default=1, help="the game has started once --started-text occurs this many times in --started-file")
+    ap.add_argument("--start-retry", type=float, default=12, help="seconds to wait for the game start before pressing Start again")
+    ap.add_argument("--start-tries", type=int, default=4, help="Start presses in all")
     ap.add_argument("--start", type=int, default=2); ap.add_argument("--plunge", type=int, default=28)
     ap.add_argument("--credit", type=int, default=6); ap.add_argument("--lflip", type=int, default=42)
     ap.add_argument("--rflip", type=int, default=54); ap.add_argument("--exit", type=int, default=16)
@@ -147,12 +155,35 @@ def main():
         for sc in also:
             time.sleep(0.2); press(sc, 150)
         log("plunge" + (f" + {also}" if also else ""))
-    focus()
-    if not a.no_start:
+    names = {"start": a.start, "plunge": a.plunge, "credit": a.credit, "lflip": a.lflip, "rflip": a.rflip}
+    steps = []
+    for part in [p.strip() for p in a.after_start.split(",") if p.strip()]:
+        secs, _, name = part.partition(":")
+        if name not in names and not name.isdigit():
+            raise SystemExit(f"--after-start: unknown key '{name}' in '{part}'")
+        steps.append((float(secs), name))
+    def start_game():
         for _ in range(a.credits):
             press(a.credit); time.sleep(0.4)
         log(f"credits x{a.credits}")
         press(a.start, 120); log("start")
+        for secs, name in steps:
+            time.sleep(secs); focus()
+            press(names[name] if name in names else int(name), 120); log(f"after start: {name}")
+    started = lambda: (not a.started_file) or file_count(a.started_file, a.started_text) >= a.started_count
+    focus()
+    if not a.no_start:
+        start_game()
+        tries = 1
+        # a Start the table ignored (still booting, an intro running): press it again until the journal has the game start
+        while a.started_file and tries < a.start_tries:
+            t = time.time()
+            while time.time() - t < a.start_retry and not started():
+                time.sleep(0.5)
+            if started():
+                break
+            log(f"no {a.started_text} {a.start_retry:.0f}s after Start; pressing Start again ({tries + 1}/{a.start_tries})")
+            focus(); start_game(); tries += 1
         time.sleep(2.5)
         plunge()
     t0 = time.time(); deadline = t0 + a.minutes * 60

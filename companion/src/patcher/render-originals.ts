@@ -10,7 +10,8 @@
  *   `_Scores` at the end of `AddScore` and in front of each of its early `Exit Sub`, `_BallEnd` at the TOP of the
  *   ball-end sub (`EndOfBall` / `EndBall` / `EndPlayerTurn` / `BallDrained`: the ball that just drained, before
  *   anything advances; JPSalas' `EndOfBall` hands over to a timer) or else in front of the `BallsRemaining`
- *   decrement, `_GameEnd` at the end of the end sub (`EndOfGame` / `GameOver` / `EndGame`) or, with none, right after
+ *   decrement, `_GameEnd` at the end of the end sub (`EndOfGame` / `GameOver` / `EndGame`), or in front of the
+ *   statement in it that clears the score store (0.3.1: The Matrix (Original) zeroes `Score(i)` there) or, with none, right after
  *   the first plain statement that clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`, ...).
  *   The score store is read from `AddScore`'s body (the first `X = X + ...`; a `score`-named one first; one call
  *   level down when `AddScore` only calls a helper): an array `X(I)` journals `X` with `I` as the player, 0- or
@@ -525,6 +526,64 @@ function findScoreStore(lines: readonly string[], add: SubRange | null): ScoreSt
   return null;
 }
 
+/** The statements of a line's code part: split at `:` outside string literals. */
+function lineStatements(codePart: string): string[] {
+  const out: string[] = [];
+  let inStr = false;
+  let from = 0;
+  for (let i = 0; i < codePart.length; i++) {
+    const ch = codePart[i];
+    if (ch === '"') inStr = !inStr;
+    else if (ch === ':' && !inStr) {
+      out.push(codePart.slice(from, i));
+      from = i + 1;
+    }
+  }
+  out.push(codePart.slice(from));
+  return out.map((s) => s.trim()).filter((s) => s !== '');
+}
+
+interface ScoreClear {
+  /** 0-based line the game-end call goes in front of: the clear's own line, or the outermost loop that holds it. */
+  idx: number;
+  /** 0-based line of the clear and the statement as written. */
+  at: number;
+  text: string;
+  /** Early `Exit Sub` in front of `idx`: paths that leave before the game end is journaled. */
+  exitsBefore: number;
+}
+
+/**
+ * The first statement in the end sub that sets the score store to 0 (B 0.3.1). The Matrix (Original) 0.99.0 clears
+ * `Score(i)` for every player in a loop near the end of `EndOfGame`, so a game end journaled at the end of the sub
+ * carried `[0]` (live validation, 2026-11-12: three ball ends, final score 0, last live score 1461760). The call goes
+ * in front of the clear, outside any `For` / `Do` / `While` that holds it. `null` when the sub has no such statement,
+ * or the line cannot take a statement in front of it (it follows a line continuation).
+ */
+function scoreClearIn(lines: readonly string[], s: SubRange, store: ScoreStore): ScoreClear | null {
+  const names = store.kind === 'numbered' ? store.names : [store.name];
+  const target = store.kind === 'array' ? '\\s*\\([^()]*\\)' : '';
+  const rx = new RegExp(`^(?:(?:Else)?If\\b.*\\bThen\\s+|Else\\s+)?(?:${names.map(escapeRegExp).join('|')})${target}\\s*=\\s*0$`, 'i');
+  const loops: number[] = [];
+  for (let i = s.start + 1; i < s.end; i++) {
+    for (const st of lineStatements(code(lines, i))) {
+      if (/^(For|Do|While)\b/i.test(st)) loops.push(i);
+      else if (/^(Next|Loop|Wend)\b/i.test(st)) loops.pop();
+      else if (rx.test(st)) {
+        // a loop opened on this same line is closed on it too (`For i = 0 To 3 : Score(i) = 0 : Next`)
+        const idx = loops.find((l) => l < i) ?? i;
+        // not after a line continuation, and not in front of a `Case` line (the call would join the Case above it,
+        // or sit between `Select Case` and its first `Case`, which does not compile)
+        if (/(?:^|\s)_\s*$/.test(code(lines, idx - 1)) || /^\s*Case\b/i.test(code(lines, idx))) return null;
+        let exitsBefore = 0;
+        for (let j = s.start + 1; j < idx; j++) exitsBefore += exitColumns(lines[j] ?? '').length;
+        return { idx, at: i, text: st.replace(/^.*\bThen\s+|^Else\s+/i, ''), exitsBefore };
+      }
+    }
+  }
+  return null;
+}
+
 /** `<v> = 0` or `= 1` as a statement: in the start sub first, else anywhere. */
 function playerBase(lines: readonly string[], start: SubRange | null, v: string): 0 | 1 | null {
   const rx = new RegExp(`(?:^|:|\\bThen\\b)\\s*${escapeRegExp(v)}\\s*=\\s*([01])\\s*(?::|$)`, 'i');
@@ -658,8 +717,14 @@ function recipeB(r: Render): string[] {
   else r.miss(`${start}; no game start is journaled`, true);
   if (placed('gameEnd', 'GameEnd', 'game end', true)) {
     // settled by the override
-  } else if (typeof end !== 'string') r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
-  else if (flag) {
+  } else if (typeof end !== 'string') {
+    // B 0.3.1: an end sub that clears the score store journals the game end in front of the clear, not at its end.
+    const clear = s === null ? null : scoreClearIn(L, end, s);
+    if (clear) {
+      r.before('gameEnd', clear.idx, 'GameEnd', 'game end', `before "${clear.text}" in Sub ${end.name} (line ${clear.at + 1}), where the table clears its scores`);
+      if (clear.exitsBefore > 0) r.warnings.push(`Sub ${end.name} has ${clear.exitsBefore} early Exit Sub; no game end is journaled on ${clear.exitsBefore === 1 ? 'that path' : 'those paths'}`);
+    } else r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
+  } else if (flag) {
     // After every clear of the game flag (0.3.0): a game can end on more than one path (Rattlecan: a normal drain and
     // a drain after a tilt). `Castcade_B_GameEnd` journals one game end per game start, so a clear outside a game is quiet.
     const where = flags.map((c) => `after "${c.text}" in Sub ${c.sub} (line ${c.line})`);
