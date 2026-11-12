@@ -548,7 +548,14 @@ interface MatchStatus {
   phase: 'none' | 'connecting' | 'lobby' | 'playing' | 'paused' | 'over';
   endpoint: string | null;
   invite: string | null;
+  /** D10.8: the address invite beside a code invite (LAN, a forwarded port, a player who is not paired). */
+  directInvite: string | null;
   ipSource: 'public' | 'lan' | null;
+  /** D10.8: the path of the match control and its one line ("Through ArcAid" / "Direct to <host>"). */
+  via: 'relay' | 'direct' | null;
+  path: string | null;
+  relayNote: string | null;
+  portMapping: { state: 'trying' | 'opened' | 'failed'; line: string } | null;
   port: number | null;
   code: string | null;
   localId: string | null;

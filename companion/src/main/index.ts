@@ -609,6 +609,11 @@ async function main(): Promise<void> {
       signalling: (role, localId) => matchSignalling(role, localId),
       // D2.10: the in-game volume keys (Ctrl+Alt+arrows), held only while a match is on.
       shortcuts: globalShortcut,
+      // D10.8: match control through ArcAid for a paired companion (the Witness device credentials); null: not paired.
+      relay: () => {
+        const cur = store.get();
+        return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
+      },
       appVersion,
       log: logger,
     });

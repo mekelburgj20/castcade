@@ -105,6 +105,68 @@ exists or after `event_finished_at`.
 **Size.** Small–medium. **Needed by:** Phase 5 (Phases 1–4 use a direct host address or a
 dev relay in the Castcade repo).
 
+### 4a. The match-control relay as built in the companion (D10.8, 2026-11-12)
+
+The paragraph above is the Phase 5 plan (a roster-checked channel per tournament). What the alpha needs first, and
+what the companion ships against, is smaller: **a relay of the match control messages keyed by the invite code**, so
+a host needs no port forward (a tester's host was unreachable on TCP 27401). Media still goes peer to peer; only the
+text frames the companion's WebSocket transport would have sent cross ArcAid. Owner ruling 2026-11-12: the relay is
+the primary path, a router port mapping (UPnP) the fallback.
+
+The contract (socket.io v4, default namespace, on the ArcAid base URL; a path in the base URL prefixes
+`/socket.io`). The companion's side is `companion/src/match/transport-relay.ts`; an in-process server that implements
+exactly this, for the tests and as a reference, is `companion/src/match/relay-fake.test-support.ts`.
+
+| Step | Event | Payload | Answer |
+|---|---|---|---|
+| connect | handshake | `auth: { deviceId, deviceToken }` (a paired Witness device) | a refused handshake reads as "not accepted: pair again" |
+| host | `match:host` | `{ code }` (six letters A–Z without I and O) | ack `{ ok: true }` or `{ ok: false, error }`; refused while another device holds the code |
+| client | `match:join` | `{ code }` | ack `{ ok: true, peer }` or `{ ok: false, error }`, `error` one of `no_such_match`, `full`, `unauthorized`, `rate_limited` |
+| server → host | `match:peer` | `{ peer, state }`, `state` `joined` or `left` | |
+| client → server | `match:relay` | `{ data }` | delivered to the host as `match:relay { from: peer, data }` |
+| host → server | `match:relay` | `{ to: peer, data }` | delivered to that client as `match:relay { data }` |
+| server → client | `match:closed` | `{ reason }` | when the host socket has been gone for more than 30 s |
+
+`data` is an opaque string, never read or stored. Limits: 256 KB per message, 200 messages per 10 s per socket, 8
+sockets per room, a room lives 12 h. The room survives its host socket for 30 s: the host emits `match:host` again
+with the same code from the same device and has it back.
+
+What the companion relies on, and what it does not:
+
+- **Relied on:** per-socket ordering of `match:relay`; `match:peer left` when a client socket goes; `match:closed`
+  to the clients once the grace ran out; `match:host` by the owning device succeeding again inside the grace (and,
+  after a server restart, creating the room anew); `no_such_match` for a code with no room.
+- **Not relied on:** `match:peer joined` (a peer becomes a link at the host with its first frame, HELLO or
+  RECONNECT), nor its replay to a host that re-registers; what the server does with a client's frame while the host
+  socket is away (the companion assumes it is lost); an idempotent `match:join` (the companion joins again only on a
+  new socket); the text of the `match:host` refusal for a code in use (any error that reads as in use, exists or
+  taken gets a new code; anything else sends the host to the direct path).
+- **Not in the contract, done between companions:** a client is never told that the host's socket dropped and came
+  back, yet frames sent meanwhile are lost and the client must resume with RECONNECT. The host therefore sends the
+  string `castcade-relay:relink` as `data` (not a protocol frame) to the peers it had before the drop and to any peer
+  whose frame arrives on no link; the client treats it as its link closing and reconnects. The server relays it like
+  any other string. A server event for this (the clients told that the host is away, then back) would make it
+  unnecessary, but nothing needs it.
+- **No ack on `match:relay`,** and none needed: the engine's RECONNECT covers loss.
+
+**Two limits a match can meet, and what the companion does.**
+
+- **Rate, on the host's socket.** The limit counts every `match:relay` a socket emits, and a host's send to all is
+  one emit per client. STATE runs at up to 10 Hz from the player up and the host mirrors it to the others: with the
+  host up that is 100 per 10 s per client, so 2 players sit at half the limit, 3 at the limit and 4 above it; all
+  client-to-client MEDIA_SIGNAL also passes through the host's socket (a 4-player match start is several hundred
+  candidates in a few seconds). The companion paces itself (`RelayPacer`: 180 per 10 s; STATE and DMD_FRAME, which
+  are latest-wins and never logged, are shed once 120 are used; everything else waits in order), so the server's
+  limit is never tripped, but with 3 or more players the score display thins out and a burst of signalling is
+  delayed. **Asked of ArcAid:** count the host's limit per destination (200 per 10 s per `to`), or scale it by the
+  room's size; a broadcast form (`match:relay` with no `to` = every client, counted once) would also do.
+- **Size.** The largest frame in a scripted 4-player 5-ball match was 2.7 KB and the whole log 24 KB (about 0.5 KB an
+  entry); an SDP is capped at 64 KB by the protocol. Only a RECONNECT_ACK carrying more than about 500 missed log
+  entries (a player away for ten games of a series) could pass 256 KB; the companion reports it and does not send it.
+
+**Auth.** The companion sends the same device id and token it uses for `/api/witness/*`. An unpaired companion never
+opens the socket: it hosts and joins direct, as before.
+
 ## 5. `source='castcade'`, `castcade_matches`, participant public keys
 
 **What.**
