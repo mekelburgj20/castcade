@@ -12,7 +12,9 @@ import type { MatchStatus } from './match-host.js';
 import type { MatchSettings } from './match-setup.js';
 import type { ClipSummary, SaveFramesResult } from '../media/frame-clip.js';
 import type { BenchStatus } from '../media/bench.js';
+import type { OneStepStatus, TableChoice } from './one-step.js';
 
+export type { OneStepStatus, TableChoice };
 export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
@@ -38,6 +40,16 @@ export const IPC = {
   tablesRemoveAll: 'tables:removeAll',
   tablesPatchNow: 'tables:patchNow',
   tablesProgressEvent: 'tables:progress',
+  /** A14: one step to a match (main/one-step.ts): the table picker, Host with a table, the join link, a link's confirmation. */
+  launchStatus: 'launch:status',
+  launchTables: 'launch:tables',
+  launchHost: 'launch:host',
+  launchConfirm: 'launch:confirm',
+  launchDismiss: 'launch:dismiss',
+  launchCopy: 'launch:copy',
+  /** A14: the renderer says whether the Match tab is showing (a link from outside acts without a click only then). */
+  launchViewing: 'launch:viewing',
+  launchStatusEvent: 'launch:statusEvent',
   streamStatus: 'stream:status',
   streamStart: 'stream:start',
   streamStop: 'stream:stop',
@@ -267,6 +279,24 @@ export interface CastcadeApi {
     /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
     setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
+  };
+  /**
+   * A14 (2026-11-12): one step to a match. Host with a table (the match is hosted, the join link copied, VPX started on
+   * the table), the join link and its chat line, and a `castcade://join/…` link that waits for the player's click.
+   */
+  launch: {
+    status(): Promise<OneStepStatus>;
+    /** The tables Castcade knows (imported), most recent first. */
+    tables(): Promise<TableChoice[]>;
+    /** Host, copy the join link, start VPX on `tablePath` (a `path` from `tables()`; null: host only). A table already open is used. */
+    host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    /** Join the match of the link that waits (`status.pending`) and start its table here. */
+    confirm(): Promise<OneStepStatus>;
+    dismiss(): Promise<OneStepStatus>;
+    copy(what: 'link' | 'message'): Promise<OneStepStatus>;
+    /** The Match tab is showing (or not any more). */
+    viewing(matchTab: boolean): Promise<void>;
+    onStatus(cb: (s: OneStepStatus) => void): () => void;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;

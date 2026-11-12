@@ -600,6 +600,27 @@ interface MatchStatus {
   bench: BenchStatus | null;
 }
 
+/** A14 (2026-11-12): mirrors `OneStepStatus` in main/one-step.ts. */
+interface OneStepStatus {
+  /** While hosting: the join link (`castcade://join/…`) and the line for a chat. */
+  link: string | null;
+  message: string | null;
+  copied: boolean;
+  /** A link from outside the app that waits for the player's click. */
+  pending: { code: string; address: string | null } | null;
+  launch: { state: 'idle' | 'waiting_host' | 'starting' | 'running' | 'needed' | 'failed'; table: string | null; detail: string | null };
+  notice: string | null;
+  attention: number;
+}
+
+/** A14: a table of the picker (`path` is handed back to `launch.host`). */
+interface TableChoice {
+  path: string;
+  name: string;
+  rom: string | null;
+  lastPlayedAt: string | null;
+}
+
 interface CastcadeBridge {
   readonly appVersion: string;
   readonly protocolVersion: number;
@@ -672,6 +693,17 @@ interface CastcadeBridge {
     /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
     setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
+  };
+  /** A14: one step to a match (main/one-step.ts). */
+  readonly launch: {
+    status(): Promise<OneStepStatus>;
+    tables(): Promise<TableChoice[]>;
+    host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    confirm(): Promise<OneStepStatus>;
+    dismiss(): Promise<OneStepStatus>;
+    copy(what: 'link' | 'message'): Promise<OneStepStatus>;
+    viewing(matchTab: boolean): Promise<void>;
+    onStatus(cb: (s: OneStepStatus) => void): () => void;
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;
