@@ -308,6 +308,12 @@ export class ClientMatch {
     return out;
   }
 
+  /** A14 (2026-11-12): the host's game as this client knows it: the match's once it started, else the last HELLO_ACK's; null before any. */
+  hostGame(): GameFingerprint | null {
+    const g = this.s.state.game ?? this.ackHostGame;
+    return g ? { ...g } : null;
+  }
+
   snapshot(): { role: 'client'; state: MatchState; log: LogHead; inputUnlocked: boolean; myGrant: GrantBody | null; hostId: PlayerId | null; signed: boolean } {
     return {
       role: 'client',

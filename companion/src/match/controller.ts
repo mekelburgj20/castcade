@@ -705,17 +705,28 @@ export class MatchController {
       this.waitingForHostGame = wait;
       if (wait) this.opts.log("match: the lobby is complete, but a game is running on the host's table; the match starts at the next Start after it ends");
     }
-    const lock = this.preMatchPlay === 'locked' && !complete;
+    // A14 (2026-11-12): never in the middle of a game. A host who hosts (or loses the last other player) while a game
+    // runs on the table keeps the flippers until that game ends; the lock goes on then (`onLobbyGameEnded`).
+    const lock = this.preMatchPlay === 'locked' && !complete && !this.tableGameRunning;
     if (lock !== this.lobbyLocked) {
       this.lobbyLocked = lock;
       this.setLocked(lock);
-      this.opts.log(lock ? 'match: your table is locked until the lobby is complete (Before the match: locked)' : 'match: the lobby is complete; your table is unlocked');
+      this.opts.log(
+        lock
+          ? 'match: your table is locked until the lobby is complete (Before the match: locked)'
+          : complete
+            ? 'match: the lobby is complete; your table is unlocked'
+            : 'match: a game is running on your table; it is locked once that game ends (Before the match: locked)',
+      );
     }
   }
 
   /** A12: the host's game ended in the lobby: the lobby, if complete, now waits for the Start that begins the match. */
   private onLobbyGameEnded(): void {
-    if (!this.waitingForHostGame) return;
+    const waited = this.waitingForHostGame;
+    // A14: the lock a running game held off (`syncLobby`) goes on now.
+    if (isHostRole(this.role)) this.syncLobby(this.role);
+    if (!waited) return;
     this.waitingForHostGame = false;
     this.opts.log("match: the game on the host's table ended; the next Start on the table starts the match");
     this.push();

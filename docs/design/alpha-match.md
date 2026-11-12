@@ -9,6 +9,9 @@ later, F6), ADR 0007 (functionality first, guided setup).
 
 ## 1. What a player does
 
+(A14, 2026-11-12, §9: steps 1 and 2 below are one press each now. The host picks a table and presses Host, which starts
+VPX and copies a join link; the other player opens the link. The steps as written still work, in any order.)
+
 1. Both players open the same table in VPX (same file; the fingerprint says if not) with the Castcade patch, in VR
    with `VRPreview` on and its window 1280x720 (`[PlayerVR] PreviewWidth / PreviewHeight`).
 2. The host opens Castcade → **Match** → *Host*: Castcade listens on a TCP port (setting, default 27401), shows the
@@ -578,3 +581,130 @@ way to hold N results under one Throwdown (a `game` column on the result or the 
 the series standings, and to decide what the Throwdown's own outcome is when the series ends (the last RESULT's
 series ranks, or each game as its own scored round). The end of a series is not posted as a separate message today
 (MATCH_END is peer to peer and unlogged); the post after the last game is the final one.
+
+## 9. One step to a match, and any order (A14, 2026-11-12)
+
+Owner, 2026-11-12, about hosting: "I do not want to have to start VPX, launch the table, switch views back to desktop,
+Host session, copy code, paste code in Discord, wait for player while watching Castcade, after player joins press start
+match, then switch view back to VR table, then play. It's really clunky and cumbersome and if any of that is out of
+order, things seem to fail." Target: the host picks a table, presses Host and puts the headset on; the friend opens a
+link and puts the headset on. A11 (the host's first Start on the table starts the match), A12 (free play until someone
+joins) and the headset panel already carry the rest. Built 2026-11-12; **the launch, the link registration and the Match
+tab were not run** (unit tests and typecheck only: the machine was busy with an unattended VPX run); §9.5 is the rig list.
+
+### 9.1 Host starts the table and copies a link (step 1)
+
+- The Match tab's Host card has a table picker (`renderer/src/views/OneStep.tsx` `TablePicker`): the tables Castcade
+  knows, which are the imported ones (a manifest under `<userData>/witness/tables` whose `.vpx` is still there,
+  `launch/known-tables.ts`), most recently played first (`<userData>/recent-tables.json`, noted when the witness sees a
+  table open), then most recently patched; a search box narrows by name or ROM. "No table: I open it myself" stays.
+  **Browse…** adds every other `.vpx` of the tables folder and one level of sub-folders (the listing a joining rig
+  searches, `listTableFiles`), marked "not imported", so a table Castcade never patched can be hosted; if it cannot
+  report ball ends, the lobby says so and Start asks the host to confirm (A13), as for any such table.
+- Host (`main/one-step.ts` `host`) = `MatchHost.host`, then the join link on the clipboard, then VPX on the picked
+  table: `"<VPinballX exe>" -Play "<table.vpx>"` from the exe's folder (`launch/vpx-launch.ts`; the switch the witness's
+  process watch reads back and `scripts/validate-original.ts` uses; no other switch, so the player's ini, display and VR
+  settings apply). The exe is the one the witness last saw running (`vpxExe`, settings.json): on a rig with several
+  builds, the one the player plays. Started without a shell and let go; the witness finds it like any launch.
+- **A table already open is used and nothing is started** (the witness names a current table; a VPX editor with no table
+  does not count, an editor with a table loaded does: press Play there).
+- The link is `castcade://join/<invite>` with the invite URL-encoded (`main/deep-link.ts`): the six-letter code once
+  ArcAid carries the match (D10.8: `MatchStatus.invite` is the code then), the address invite otherwise. The Match tab shows it with Copy, and a chat
+  line with Copy for chat: `Castcade match on <table>: castcade://join/… (copy the link, then in Castcade press Match,
+  Paste, Join)`. The Join box takes a link as well as an invite.
+- **Discord does not make `castcade://` clickable.** Discord's community forum has users reporting that since May 2023
+  only `http://`, `https://` and `discord://` links are clickable in messages (`steam://` links stopped then); no
+  official statement was found, and it was not tried in a Discord client here. So the chat line carries instructions.
+  The click-through fallback is a redirect page on ArcAid, `https://arcaid.app/castcade/join/<invite>`, which answers
+  with a page that opens `castcade://join/<invite>` (and says to install Castcade when nothing handles it). That is
+  ArcAid work (its WORK section W) and is **not built**; when it exists, `inviteMessage` should carry that address.
+
+### 9.2 The link joins and starts the table (step 2)
+
+- `castcade://` is registered per user: by the app at every start (`app.setAsDefaultProtocolClient`, packaged builds;
+  a development run only with `CASTCADE_REGISTER_LINKS=1`) and by the installer (`build/installer.nsh`, the same
+  `HKCU\Software\Classes\castcade` keys, removed at uninstall). electron-builder's `protocols` key is set too, but its
+  NSIS target does not read it (macOS, Linux and AppX only; checked in app-builder-lib 26).
+- Windows starts `Castcade.exe "castcade://join/…"`. A first instance finds it on its command line (`linkFromArgv`),
+  a running one gets it from `second-instance`. Either way the window comes up on the Match tab.
+- Opening a link joins that match with the saved name, then starts the host's table here: the host's game is
+  `HELLO_ACK.hostGame` (`MatchHost.hostGame()`), matched against the tables on this PC by `launch/find-table.ts`: the
+  same file (SHA-256), then the same ROM (the fingerprint carries none today), then the same name, whole or by title;
+  an imported table before a `.vpx` only found in the tables folder; then the most recently played. The advisory on the
+  panels then says what it says for a pasted invite. No copy here: "The host plays <table>. Castcade found no copy of
+  it on this PC…", and the player stays joined. A match that is gone: "That match is gone or cannot be reached: ask
+  the host for a new link."
+- **The link is untrusted input.** Only the exact shape is taken (scheme, `join`, one segment, at most 300 characters,
+  the decoded invite one of the two invite shapes); only the invite comes out of it. Nothing of a link, and nothing of
+  the host's fingerprint, is ever a path, a program, a switch or a shell string: the table started is one from this
+  PC's own lists, the exe must be an absolute `VPinballX*.exe` that exists, and the process is spawned with an argument
+  array and no shell. **A link acts without a click only when Castcade's window was already on screen with the Match tab
+  showing** (`linkIsTrusted`). Otherwise (the app closed, in the tray, minimised, on another tab, or a cold start) the
+  Match tab asks first: "Join this match? … Joining turns your microphone on for the other players and starts the
+  host's table in VPX." The click gates the join as well as the table start, which is stricter than "before launching
+  VPX": joining opens the voice mesh, and a web page must not do that silently either.
+
+### 9.3 Any order: the audit (step 3)
+
+The pieces: companion start (C), VPX start (V), the table loaded (T), Host or Join (H), the other player's join (J), the
+VR preview on or off (P). The match host already followed the witness rather than a sequence for most of these (A6's
+lobby refresh, A11's armed start, A12's wait); the audit ran each ordering as a test over two real match hosts with a
+witness the test drives (`main/match-host-orderings.test.ts`) and fixed what failed. The table start is a wish that
+`one-step.ts` `settle` re-checks on every match and witness status, so it has no order either.
+
+| Ordering | Before | Now | Tested by |
+|---|---|---|---|
+| C after V, T: Castcade started with a table already running, preview on or off | Preview off: `launch null`, the table unread for minutes | C14 (0.2.39): the table comes from the hook's journal of that process | `witness.test.ts` "C14: started with a table running and no window title…" |
+| H before V: Host with no VPX | Worked in the engine (row LOADING, then the table), but the player had to take the headset off again to start VPX | Host starts VPX on the picked table; the lobby follows when it opens | orderings "Host before any table…"; `one-step.test.ts` "hosts, puts the join link on the clipboard and starts VPX…" |
+| J before the host's T: the friend joins while the host's VPX is still loading | Joined, flagged "different table file" until the host's table opened; the friend had to guess the table | The link joins, waits for the host's fingerprint, then starts the same table here | orderings "Host with a table, the friend opens the link before the host's VPX is up…"; one-step "joined before the host's table is open…" |
+| J before the friend's own T | Row LOADING, then right (A6) | Same; the link starts the table | orderings "Host before any table…" |
+| The host's Start pressed while another table is still loading | Armed, fires when it opens (A11) | Same | orderings "the host's Start pressed while the other table is still loading…" |
+| H while a game is already running on the host's table, free play | The join waits for that game; the next Start starts the match (A12) | Same | orderings "Host while a game is already running on the table (free play)…" |
+| H while a game is running, "Table locked until someone joins" | **The lock went on in the middle of the ball**: flippers and plunger dead, the game could not end | The running game keeps its keys; the lock goes on when it ends, off when the lobby is complete (`controller.ts` `syncLobby`) | orderings "Host while a game is running, with Table locked…" |
+| T already open at Host or at the link | Worked | Used as it is; nothing is started | one-step "a table that is already open is used…", "a table already open here is kept…" |
+| T closed and reopened in the lobby | Row LOADING, then open again; the start from the table still works | Same | orderings "the table closed and reopened in the lobby…" |
+| T closed and reopened between games, either rig | The series stays open; the reopened host table starts the next game; the client stays locked until its ball | Same | orderings "the table closed and reopened between games, on both rigs…" |
+| T closed during a game | That player forfeits ("table closed"): a pinball game cannot be picked up again | Same, by design | `controller.test.ts` (table_exit) |
+| A link with Castcade closed, in the tray or on another tab | (no links) | The window comes up on the Match tab and asks; nothing is joined or started before the click | `deep-link.test.ts` "a link acts without a click only when…"; one-step "from outside…" |
+| A link while already in a match; the same link twice | (no links) | "You are already in this match." / "That link is for another match…"; nothing changes | one-step "text that is not a join link is ignored…" |
+| A link for a match that ended, or whose host left while the link waited for the click | A pasted invite said "Could not reach the host…" | "That match is gone or cannot be reached: ask the host for a new link." | orderings "a link for a match that ended while it waited…"; one-step "a link for a match that is gone says so…" |
+| The match ends while a table is still to be started | (new) | The wish is dropped; nothing starts later | one-step "the match ending while VPX is still to be started…" |
+| VPX slow, or it never shows the table | (new) | Not started twice; after 2 minutes the tab says to open it by hand; if it opens after all, the tab follows | one-step "VPX that does not start, or never shows the table…" |
+| P off (no preview window) at Host or Join | The rig read `pc` until the witness sampled VR, then the panel moved into the headset (A6); the camera is the layer's (D8.1), so no window is needed | Same | `match-host.test.ts` "host on the monitor reading, then the witness reads VR…" (existing) |
+| J after the match started | Refused by the host ("the roster is final"); through ArcAid the room is locked at the first game (D10.8) | Same; a link says the answer as it came ("That match has already started (CODE): only its players can come back to it." or "Could not join that match. The host refused…") and starts no table | engine tests (existing); one-step "D10.8: a link opened after the match started…" |
+| The relay reconnecting (a pause, the client's bounded `no_such_match` retry, a host re-hosting the same code) while a link waits for the host's table | (new) | The wish is kept while this rig is still in the match; the same link stays valid | one-step "the wait for the host's table outlasts a pause…" |
+
+**Not fixed, known:**
+- Castcade restarted in the middle of a match: the match is not picked up again (a host's match is gone; a client has
+  no way back in but the link, which the host refuses once the roster is final). Needs the reconnect of A3 on the Match tab.
+- The witness restarted during a match by a settings change (the ArcAid address, the NVRAM folder): it reads the
+  running table's journal again from the session's start, and the game in progress would be fed to the match a second
+  time. Suspected from reading `witness.ts`; not tested, not fixed.
+- A VPX editor open with a table loaded but not playing counts as "a table is open": Host starts nothing and the player
+  presses Play. A second VPX is never started beside it.
+
+### 9.4 Decisions taken alone
+
+- The link's click gates the join as well as the table start (§9.2).
+- The picker lists imported tables first (the owner's words: "the tables Castcade already knows") and the rest of the
+  tables folder behind Browse…; a joining rig also
+  looks at plain `.vpx` files in the tables folder and one level of sub-folders, by name, after the imported ones.
+- The name match takes the title before the first bracket ("Monster Bash (Williams 1998) 2.1" = "Monster Bash"). A
+  wrong pick is an advisory on the panels ("different table file"), never a refusal.
+- `-Play` and nothing else; the exe is `vpxExe` (last seen running). No `-Minimized`, no `-Ini`.
+- The link is copied, not the chat line; the chat line has its own button.
+- A development run does not register the scheme unless asked.
+- One code change in the engine: the lobby lock never goes on during a running game (the row above).
+
+### 9.5 Rig checks (none of this was run)
+
+1. Install the build; `HKCU\Software\Classes\castcade\shell\open\command` names the installed `Castcade.exe "%1"`.
+2. Host with a table picked and no VPX running: VPX starts on that table in the headset build, the link is on the
+   clipboard, the lobby row goes from LOADING to open; the log has `launch: started VPX on … (-Play, pid …)`.
+3. Host with the table already open: nothing starts; the tab says "Using the table that is already open".
+4. Win+R, paste the link, with Castcade closed: Castcade opens on the Match tab and asks; Join and start the table
+   joins and starts the same table. With Castcade open on the Match tab: no question.
+5. The same from a browser's address bar, and a look at how Discord shows the link and the chat line.
+6. The friend's rig without the table: the tab names it and the match stays joined.
+7. A second link while in a match; a link after the host left.
+8. With "Table locked until someone joins": Host during a ball; the flippers stay live until the game ends.

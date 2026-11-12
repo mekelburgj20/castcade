@@ -12,6 +12,12 @@
 ; uninstaller happens to be run as administrator.
 ;
 ; Rule name is fixed so the uninstall (and a reinstall, which deletes first) removes exactly this rule.
+;
+; A14: the join link castcade://join/<invite>. electron-builder's NSIS target registers no URL protocol, so the keys
+; are written here, per user (HKCU, which an unelevated installer may write), in the shape Electron's own
+; `app.setAsDefaultProtocolClient` writes at the app's first start: the URL is one quoted argument and nothing of it
+; is ever a switch (the app looks only at an argument that starts with castcade://, src/main/deep-link.ts). The
+; uninstaller removes the key; an update's uninstall-then-install writes it again.
 
 !macro customInstall
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Castcade video helper"'
@@ -20,9 +26,13 @@
   Pop $0
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Castcade video helper" dir=in action=allow program="$INSTDIR\resources\video-helper\castcade-video.exe" enable=yes profile=private,domain protocol=TCP'
   Pop $0
+  WriteRegStr HKCU "Software\Classes\castcade" "" "URL:castcade"
+  WriteRegStr HKCU "Software\Classes\castcade" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\castcade\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"'
 !macroend
 
 !macro customUnInstall
+  DeleteRegKey HKCU "Software\Classes\castcade"
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Castcade video helper"'
   Pop $0
 !macroend

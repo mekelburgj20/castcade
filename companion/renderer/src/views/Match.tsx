@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
 
 /**
@@ -35,6 +36,9 @@ export function Match({ state }: { state: CastcadeState }) {
   const [port, setPort] = useState<string | null>(null);
   const [balls, setBalls] = useState<3 | 5 | null>(null);
   const [invite, setInvite] = useState('');
+  // A14: the table Host starts in VPX (a path from Castcade's own list; null: the player opens one).
+  const [tablePath, setTablePath] = useState<string | null>(null);
+  const one = useOneStep(bridge);
   const [copied, setCopied] = useState(false);
   // A13: the two host actions that ask first: a start with a table that cannot report ball ends, and Pass the turn.
   // `pass` remembers whose ball was asked about: if the turn moves on meanwhile, the question is withdrawn.
@@ -129,11 +133,14 @@ export function Match({ state }: { state: CastcadeState }) {
     <section className="view">
       <h2>Match</h2>
 
+      {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
+      <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} />
+
       {!inMatch && st.phase !== 'connecting' && (
         <>
           <p className="muted">
-            Two to four players on the same table, one ball each in turn. Open the table in VPX first (with the Castcade patch): the table file is compared when you
-            join.{tableOpen ? ` Open now: ${tableOpen}.` : ' No table is open right now.'}
+            Two to four players on the same table, one ball each in turn. Pick a table and press Host: Castcade hosts the match, starts the table in VPX and copies a
+            join link for the other players. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
           </p>
           <div className="card">
             <label className="field">
@@ -167,7 +174,8 @@ export function Match({ state }: { state: CastcadeState }) {
                   <small>Free play: a game running when the others join must end first; your next Start on the table then starts the match.</small>
                 </label>
               </div>
-              <button type="button" className="primary" onClick={() => void run(() => bridge.match.host({ port: Number(portText), ballsPerGame, displayName }))}>
+              <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} />
+              <button type="button" className="primary" onClick={() => void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, port: Number(portText), ballsPerGame, displayName }))}>
                 Host
               </button>
             </fieldset>
@@ -177,8 +185,8 @@ export function Match({ state }: { state: CastcadeState }) {
             <strong>Join a match</strong>
             <fieldset disabled={busy}>
               <label className="field">
-                <span>Invite from the host</span>
-                <input type="text" value={invite} placeholder="JHDFEF, or castcade:ws://203.0.113.7:27401#ABCDEF" onChange={(e) => setInvite(e.target.value)} />
+                <span>Link or invite from the host</span>
+                <input type="text" value={invite} placeholder="castcade://join/JHDFEF, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
               <button
                 type="button"
@@ -189,7 +197,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     if (v.startsWith('castcade:') || /^[A-Za-z]{6}$/.test(v)) {
                       setError(null);
                       setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade invite (six letters, or one that starts with castcade:ws://…).');
+                    } else setError('The clipboard does not hold a Castcade link or invite (six letters, or one that starts with castcade:).');
                   }, (e: unknown) => setError(describe(e)))
                 }
               >

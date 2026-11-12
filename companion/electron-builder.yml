@@ -60,6 +60,14 @@ extraResources:
   # root; its Castcade_LibVersion must equal LIB_VERSION in src/patcher/render.ts). Packaged: resources/hook/castcade.vbs.
   - from: ../vpx-hook/castcade.vbs
     to: hook/castcade.vbs
+# A14: the join link, castcade://join/<invite> (src/main/deep-link.ts). electron-builder 26 reads `protocols` for the
+# macOS, Linux and AppX targets only; its NSIS templates write no URL-protocol keys (checked in
+# app-builder-lib/templates/nsis and out/targets). On Windows the keys come from build/installer.nsh at install time
+# and from the app itself at every start (`app.setAsDefaultProtocolClient`), both under HKCU.
+protocols:
+  - name: Castcade match link
+    schemes:
+      - castcade
 win:
   target:
     - target: nsis

@@ -274,6 +274,11 @@ export interface MatchHost {
   status(): MatchStatus;
   onStatus(cb: (s: MatchStatus) => void): () => void;
   /**
+   * A14 (2026-11-12): the host's game as this rig knows it: a client's from HELLO_ACK (`isTableOpen` says whether the
+   * host's table is open yet), the host's own as last announced; null with no match. `one-step.ts` finds the table from it.
+   */
+  hostGame(): GameFingerprint | null;
+  /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
@@ -1838,6 +1843,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return () => {
         listeners.delete(cb);
       };
+    },
+    hostGame() {
+      const a = active;
+      if (!a) return null;
+      const role = a.controller.currentRole;
+      return role instanceof ClientMatch ? role.hostGame() : { ...a.sent.game };
     },
     async saveFrames() {
       const media = opts.media;
