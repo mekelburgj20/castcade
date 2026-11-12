@@ -35,6 +35,41 @@ describe('JournalTail', () => {
     expect(h.lines).toEqual(['a', 'b']);
   });
 
+  it('A15: each line carries the file position just past it, the same on a second read of the file, across torn lines and polls', async () => {
+    const read = async (chunks: string[]): Promise<number[]> => {
+      const h = harness('start');
+      const ends: number[] = [];
+      h.tail.on('line', () => ends.push(h.tail.lineEnd));
+      for (const c of chunks) {
+        h.append(c);
+        await h.tail.poll();
+      }
+      return ends;
+    };
+    // 'ab\n' ends at 3, 'cd\r\n' at 7, 'é\n' (two bytes and a newline) at 10.
+    expect(await read(['ab\ncd\r\né\n'])).toEqual([3, 7, 10]);
+    expect(await read(['ab\nc', 'd\r', '\né', '\n'])).toEqual([3, 7, 10]);
+  });
+
+  it('A15: stop keeps the position, and start again continues after the last line delivered', async () => {
+    const h = harness('start');
+    h.fs.put(PATH, 'a\n');
+    h.tail.start();
+    h.clock.advance(0);
+    await h.tail.idle();
+    expect(h.lines).toEqual(['a']);
+    h.tail.stop();
+    await h.tail.idle();
+    h.append('b\n');
+    h.clock.advance(1000);
+    expect(h.lines).toEqual(['a']);
+    h.tail.start();
+    h.clock.advance(0);
+    await h.tail.idle();
+    expect(h.lines).toEqual(['a', 'b']);
+    h.tail.stop();
+  });
+
   it('holds a torn line until its newline arrives, strips CRLF, and keeps blank lines', async () => {
     const h = harness();
     await h.tail.poll(); // file does not exist yet

@@ -74,6 +74,7 @@ export class JournalTail {
   private timer: TimerHandle | null = null;
   private running = false;
   private polling: Promise<void> | null = null;
+  private lastLineEnd = 0;
 
   constructor(
     readonly path: string,
@@ -100,10 +101,24 @@ export class JournalTail {
     this.schedule(0);
   }
 
+  /**
+   * The file position just past the newline of the line being delivered (read it inside a `line` listener). The same
+   * line of the same file has the same value on every read, so it names "how far a reader got" across restarts.
+   */
+  get lineEnd(): number {
+    return this.lastLineEnd;
+  }
+
+  /** Stop polling. The position is kept: `start()` again continues after the last line delivered. */
   stop(): void {
     this.running = false;
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  /** Resolves once a read that was under way when `stop()` was called has delivered its lines. */
+  idle(): Promise<void> {
+    return this.polling ?? Promise.resolve();
   }
 
   /** Read whatever is new right now (what each poll tick does). Safe to call while running. */
@@ -184,6 +199,7 @@ export class JournalTail {
       const end = i > lineStart && buf[i - 1] === 0x0d ? i - 1 : i;
       const line = decoder.decode(buf.subarray(lineStart, end));
       lineStart = i + 1;
+      this.lastLineEnd = (this.offset ?? 0) + lineStart;
       this.emitter.emit('line', line);
     }
     this.offset = (this.offset ?? 0) + lineStart;
