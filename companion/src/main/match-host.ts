@@ -35,6 +35,14 @@
  * controller gets it with the witness's reason for the lobby line. `start()` in the lobby refuses while any player's
  * table cannot report ball ends unless the host confirmed (`{ anyway: true }`, the Match tab's Start anyway);
  * `passTurn()` is the host's Pass the turn during a game (TURN_PASS, logged).
+ *
+ * D10.8 (2026-11-12, a tester's host had no port forward: "Could not reach the host ... (no answer in 10 s)"): match
+ * control through ArcAid. A paired host registers a relay room named by the match code (`RelayHostTransport`) beside
+ * its listener (`CompositeTransport`), and the invite is the code alone; a join by code goes through the relay
+ * (`RelayClientTransport`), an address invite goes direct as before. With no relay (not paired, ArcAid unreachable, a
+ * server without it) the host publishes the address invite and asks the router for the port in the background
+ * (`port-mapping.ts`, UPnP, 3 s; removed at teardown, renewed at half its lease). `MatchStatus.path` says which path
+ * is in use; `portMapping` what the router said.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -44,7 +52,9 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/prot
 import { ClientMatch } from '../match/client.js';
 import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
-import { WsPeerTransport } from '../match/transport-ws.js';
+import type { Transport } from '../match/transport.js';
+import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport } from '../match/transport-relay.js';
+import { WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
@@ -59,6 +69,7 @@ import { tuneWords } from '../media/vr-layer.js';
 import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
+import { openPort, portMappingLine, type PortMapping, type PortMapResult } from './port-mapping.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
 import {
@@ -74,14 +85,19 @@ import {
   newMatchIdentity,
   parseInvite,
   parseMatchIdentity,
+  pathLine,
   patchMatchSettings,
   loadMatchSettings,
   pickLanAddress,
+  RELAY_NOT_PAIRED,
+  relayHostNote,
+  relayJoinFailure,
   rigFrom,
   rigFromStatus,
   serializeMatchIdentity,
   writeMatchSettings,
   ZERO_SHA256,
+  type Invite,
   type MatchIdentity,
   type MatchSettings,
   type Rig,
@@ -98,9 +114,28 @@ export interface MatchStatus {
   phase: MatchPhase;
   /** This companion's listener (host), e.g. `ws://0.0.0.0:27401`. */
   endpoint: string | null;
+  /** D10.8: the code alone when the match goes through ArcAid, else the address invite. */
   invite: string | null;
-  /** Where the invite's address came from: `public` (api.ipify.org) or `lan` (replace it with the public one). */
+  /**
+   * D10.8: the address invite of a host whose invite is the code (its listener still serves LAN players, forwarded
+   * ports and players who are not paired); null when `invite` already is the address one, and for a client.
+   */
+  directInvite: string | null;
+  /** Where the address invite's address came from: `public` (api.ipify.org) or `lan` (replace it with the public one). */
   ipSource: 'public' | 'lan' | null;
+  /**
+   * D10.8 (2026-11-12): how the match control travels, in one plain line: "Through ArcAid" or "Direct to <host>"
+   * (`via` is the same fact for the code). Null with no match.
+   */
+  via: 'relay' | 'direct' | null;
+  path: string | null;
+  /** D10.8: a host on the direct path: why ArcAid is not carrying the match (not paired, unreachable). Else null. */
+  relayNote: string | null;
+  /**
+   * D10.8: a host on the direct path: what the router said about opening the port (UPnP). `trying` for up to 3 s after
+   * the invite is out. Null when the relay carries the match, for a client, and with no match.
+   */
+  portMapping: { state: 'trying' | 'opened' | 'failed'; line: string } | null;
   port: number | null;
   code: string | null;
   localId: string | null;
@@ -284,12 +319,29 @@ export interface MatchHostOptions {
   nativeVideo?: { helper: VideoHelper; sendRing: string; recvRing: string };
   appVersion: string;
   log: Logger;
+  /**
+   * D10.8: what the ArcAid relay needs: the base URL and the paired device's credentials; null while not paired.
+   * Absent: no relay (every match is direct). The token never reaches a log.
+   */
+  relay?: () => { baseUrl: string; deviceId: string; deviceToken: string } | null;
+  /** Test seam: the relay's connect and ack timeouts (ms). */
+  relayTimeouts?: { connectMs?: number; ackMs?: number };
+  /**
+   * D10.8: the router port mapping tried when a host has no relay. Default `openPort` (UPnP, 3 s); null turns it off
+   * (the tests, which must not search the network they run on).
+   */
+  openPort?: ((port: number) => Promise<PortMapResult>) | null;
   /** Test seam: the public IPv4, or null. Default: one GET to api.ipify.org, 4 s. */
   publicIp?: () => Promise<string | null>;
   /** Test seam: the lock file. Default: where the hook looks (`lockPathFrom(process.env)`). */
   lockFile?: string;
   /** Test seam: the address the host listens on. Default `0.0.0.0` (the other player comes in through the router). */
   listenAddress?: string;
+  /**
+   * Test seam: `host({ port: 0 })` listens on a port the OS picks (read back into the status and the invite), so a
+   * test never picks a port and binds it later (a picked port can sit in a range Windows has reserved).
+   */
+  ephemeralPort?: boolean;
   /** Test seam: the rig decision at host / join. Default `decideRig(witness)`: the running VPX probed now (A6, 2026-10-31). */
   rig?: () => Promise<RigDecision>;
   /** D7.6.3: where saved frames go. Default `<userData>/logs/frames` (beside companion.log; `file`'s folder is userData). */
@@ -326,10 +378,30 @@ const SERIES_OVER_LINGER_MS = 20_000;
 const BENCH_HIDE_MS = 300;
 /** D10.3.8: the theater-path watch's own tick (the helper's stats come once a second too, but not when nothing arrives). */
 const THEATER_WATCH_MS = 1_000;
+/** D10.8: how long teardown waits for the router to drop the port mapping. */
+const UNMAP_TIMEOUT_MS = 2_000;
+/** D10.8: a code the relay says is in use is replaced this many times before the match goes direct. */
+const RELAY_CODE_TRIES = 3;
+
+/** D10.8: what the shell needs of a match transport, whichever path it takes. */
+type MatchTransport = Transport & { onError(cb: ErrorHandler): () => void };
 
 interface Active {
   role: 'host' | 'client';
-  transport: WsPeerTransport;
+  transport: MatchTransport;
+  /** The listener's endpoint (a host that listens), for the status. */
+  ws: WsPeerTransport | null;
+  /** D10.8: the path, and for `direct` the other end (a client: the host's address; a host: its own invite address). */
+  via: 'relay' | 'direct';
+  where: string | null;
+  /** D10.8: a host's relay room, for its state on the path line. */
+  relay: RelayHostTransport | null;
+  relayNote: string | null;
+  directInvite: string | null;
+  /** D10.8: the router mapping of a direct host: what the tab shows, the mapping to remove, its renewal clock. */
+  portMapping: MatchStatus['portMapping'];
+  mapping: PortMapping | null;
+  renewTimer: ReturnType<typeof setInterval> | null;
   engine: HostMatch | ClientMatch;
   controller: MatchController;
   code: string;
@@ -560,9 +632,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     return {
       role: a ? a.role : 'none',
       phase,
-      endpoint: a?.transport.endpoint ?? null,
+      endpoint: a?.ws?.endpoint ?? null,
       invite: a?.invite ?? null,
+      directInvite: a?.directInvite ?? null,
       ipSource: a?.ipSource ?? null,
+      via: a?.via ?? null,
+      path: a ? pathLine(a.via, a.where, a.relay?.state ?? null) : null,
+      relayNote: a?.relayNote ?? null,
+      portMapping: a?.portMapping ?? null,
       port: a?.port ?? null,
       code: a?.code ?? null,
       localId: a ? a.engine.localId : null,
@@ -1180,16 +1257,42 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (active) return fail(new Error('Leave the current match first'));
       await endBench('a match is hosted');
       lastError = null;
-      const port = o.port === undefined ? settings.port : cleanPort(o.port);
-      if (port === null) return fail(new Error('The port must be a number from 1024 to 65535'));
+      const asked = o.port === 0 && opts.ephemeralPort ? 0 : o.port === undefined ? settings.port : cleanPort(o.port);
+      if (asked === null) return fail(new Error('The port must be a number from 1024 to 65535'));
+      let port = asked;
       const ballsPerGame = o.ballsPerGame === 5 ? 5 : 3;
       const name = cleanName(o.displayName) ?? defaultName();
       saveSettings(patchMatchSettings(settings, { port, ballsPerGame, displayName: name }));
       const me = playerId();
+      // D10.8: paired → the connection to ArcAid opens beside the rig probe and the address lookup, so it adds no wait.
+      const creds = opts.relay?.() ?? null;
+      let relay = creds ? relayHost(me, creds) : null;
+      let relayNote: string | null = opts.relay && !creds ? 'This PC is not paired with ArcAid' : null;
+      const relayUp: Promise<unknown> = relay ? relay.connect().then(() => null, (e: unknown) => e) : Promise.resolve(null);
       // A8 (2026-10-31): the rig and the public address first, the listener last (module header).
-      const [rig, pub] = await Promise.all([decide(), (opts.publicIp ?? ipifyPublicIp)().catch(() => null)]);
-      const transport = new WsPeerTransport({ localId: me });
-      const code = newMatchCode();
+      const [rig, pub, relayDown] = await Promise.all([decide(), (opts.publicIp ?? ipifyPublicIp)().catch(() => null), relayUp]);
+      let code = newMatchCode();
+      // The room is registered before the engine exists (the match id is the code, and a code in use is replaced);
+      // nobody can join it yet: the invite is published last.
+      let relayError: unknown = relayDown;
+      for (let k = 1; relay && relayError === null; k++) {
+        try {
+          await relay.host(code);
+          break;
+        } catch (e) {
+          if (e instanceof RelayError && e.code === 'code_in_use' && k < RELAY_CODE_TRIES) code = newMatchCode();
+          else relayError = e;
+        }
+      }
+      if (relay && relayError !== null) {
+        relay.close();
+        relay = null;
+        // The refusal comes from the ack of `match:host` (ArcAid checks the device there, not at connect).
+        relayNote = relayHostNote(relayError instanceof RelayError ? relayError.code : null);
+        log.warn(`match: ArcAid is not carrying this match (${relayError instanceof Error ? relayError.message : String(relayError)}); hosting on the listener only`);
+      }
+      const listener = new WsPeerTransport({ localId: me });
+      const transport = new CompositeTransport(relay ? [listener, relay] : [listener]);
       const ws = witness.status();
       const game = gameFingerprintFrom(ws, RECIPE_VERSION);
       const ballEnds = ballEndsFrom(ws).ready;
@@ -1212,6 +1315,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const a: Active = {
         role: 'host',
         transport,
+        ws: listener,
+        via: relay ? 'relay' : 'direct',
+        where: null,
+        relay,
+        relayNote,
+        directInvite: null,
+        portMapping: null,
+        mapping: null,
+        renewTimer: null,
         engine,
         controller,
         code,
@@ -1234,29 +1346,126 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         theaterTimer: null,
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
+      if (relay) {
+        a.offs.push(
+          relay.onState((st) => {
+            if (active !== a) return;
+            if (st === 'reconnecting') log.warn('match: ArcAid is not carrying this match for the moment (the connection dropped, or ArcAid restarted); taking it back (players who came through ArcAid resume when it is back)');
+            else if (st === 'registered') log.info(`match: ArcAid carries ${code} again`);
+            else if (st === 'closed') log.warn(`match: ArcAid closed ${code} and it cannot be opened again; players who came through ArcAid are out`);
+            emit();
+          }),
+        );
+      }
       active = a;
       await openPanel(a);
+      let listening = true;
       try {
-        await transport.listen(port, opts.listenAddress ?? '0.0.0.0');
+        const endpoint = await listener.listen(port, opts.listenAddress ?? '0.0.0.0');
+        if (port === 0) {
+          port = Number(new URL(endpoint).port);
+          a.port = port;
+        }
       } catch (e) {
-        await teardown(a);
         const errno = (e as NodeJS.ErrnoException).code;
-        return fail(new Error(errno === 'EADDRINUSE' ? `Port ${port} is already in use on this PC: pick another port` : `Could not listen on port ${port}: ${describeError(e)}`));
+        const why = errno === 'EADDRINUSE' ? `Port ${port} is already in use on this PC` : `Could not listen on port ${port}: ${describeError(e)}`;
+        if (!relay) {
+          await teardown(a);
+          return fail(new Error(errno === 'EADDRINUSE' ? `${why}: pick another port` : why));
+        }
+        // D10.8: the relay room is up; the match needs no listener.
+        listening = false;
+        a.port = null;
+        log.warn(`match: ${why}; this match goes through ArcAid only`);
       }
       const ip = pub ?? pickLanAddress(networkInterfaces()) ?? '127.0.0.1';
-      a.ipSource = pub ? 'public' : 'lan';
-      a.invite = formatInvite(ip, port, code);
-      log.info(`match: hosting ${code} on ${transport.endpoint ?? `port ${port}`} (${ballsPerGame} balls); invite ${a.invite} (${a.ipSource} address)`);
+      const address = listening ? formatInvite(ip, port, code) : null;
+      a.ipSource = listening ? (pub ? 'public' : 'lan') : null;
+      if (relay) {
+        a.invite = code;
+        a.directInvite = address;
+        log.info(`match: hosting ${code} through ArcAid${listening ? ` and on ${listener.endpoint ?? `port ${port}`}` : ''} (${ballsPerGame} balls); the invite is the code`);
+      } else {
+        a.invite = address;
+        a.where = `${ip.includes(':') ? `[${ip}]` : ip}:${port}`;
+        log.info(`match: hosting ${code} on ${listener.endpoint ?? `port ${port}`} (${ballsPerGame} balls); invite ${a.invite} (${a.ipSource} address)${relayNote ? `; ${relayNote}` : ''}`);
+        // D10.8: the router is asked for the port in the background; the invite does not wait for it.
+        mapPort(a, port, pub, creds !== null);
+      }
       // The table may have loaded while hosting (A6, 2026-10-31).
       checkLobby(a, witness.status());
       emit();
       return status();
     });
 
-  type JoinOutcome = { kind: 'joined'; transport: WsPeerTransport; engine: ClientMatch; controller: MatchController } | { kind: 'refused'; refuse: PayloadOf<'REFUSE'> };
+  // ---- D10.8: the relay and the router port ----
+  const relayHost = (me: string, c: { baseUrl: string; deviceId: string; deviceToken: string }): RelayHostTransport =>
+    new RelayHostTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs });
 
-  const tryJoin = async (url: string, code: string, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>, ballEnds: boolean | null): Promise<JoinOutcome> => {
-    const transport = new WsPeerTransport({ localId: me });
+  /**
+   * A direct host with no relay: ask the router to forward the port (UPnP, 3 s inside `openPort`), in the background.
+   * The Match tab shows `trying`, then what came of it; a mapping is renewed at half its lease and removed in
+   * `teardown`. One that arrives after the match is gone is removed at once.
+   */
+  const mapPort = (a: Active, port: number, publicIp: string | null, paired: boolean): void => {
+    const run = opts.openPort === undefined ? (p: number) => openPort({ port: p }) : opts.openPort;
+    if (!run) return;
+    a.portMapping = { state: 'trying', line: 'Asking your router to open the port…' };
+    void run(port)
+      .catch((e: unknown): PortMapResult => ({ ok: false, reason: describeError(e) }))
+      .then((r) => {
+        if (active !== a) {
+          if (r.ok) void r.mapping.remove();
+          return;
+        }
+        a.portMapping = portMappingLine(r, port, publicIp, paired);
+        if (r.ok) {
+          const m = r.mapping;
+          a.mapping = m;
+          const lease = m.leaseSeconds > 0 ? `leased ${m.leaseSeconds} s, renewed while hosting` : 'the router only takes permanent mappings; removed when the match ends';
+          log.info(`match: the router at ${m.gateway} forwards TCP ${port} to this PC (${lease})${a.portMapping.state === 'opened' ? '' : '; but the router is behind another NAT, so the port is not reachable from outside'}`);
+          if (m.leaseSeconds > 0) {
+            a.renewTimer = setInterval(
+              () => {
+                void m.renew().then((ok) => {
+                  if (!ok) log.warn(`match: the router did not renew the mapping of TCP ${port}`);
+                });
+              },
+              (m.leaseSeconds * 1000) / 2,
+            );
+          }
+        } else {
+          log.info(`match: the router did not open TCP ${port}: ${r.reason}`);
+        }
+        emit();
+      });
+  };
+
+  /** D10.8: the transport of a join and how it connects, by the kind of invite. Throws on a code invite while not paired. */
+  const linkFor = (invite: Invite, me: string): { transport: MatchTransport; connect: () => Promise<void>; failure: (e: unknown) => Error } => {
+    if (invite.via === 'direct') {
+      const t = new WsPeerTransport({ localId: me });
+      return {
+        transport: t,
+        connect: () => withTimeout(t.connect(invite.url), CONNECT_TIMEOUT_MS, `Could not reach the host at ${invite.host}:${invite.port}`),
+        failure: (e) => new Error(`${describeError(e)}. Check the invite, and that the host forwarded the TCP port to their PC (a host paired with ArcAid needs no port forward: its invite is six letters).`, { cause: e }),
+      };
+    }
+    const c = opts.relay?.() ?? null;
+    if (!c) throw new Error(RELAY_NOT_PAIRED);
+    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs });
+    return {
+      transport: t,
+      connect: () => t.connect(invite.code),
+      failure: (e) => new Error(relayJoinFailure(e instanceof RelayError ? e.code : null, invite.code, e instanceof Error ? e.message : String(e)), { cause: e }),
+    };
+  };
+
+  type JoinOutcome = { kind: 'joined'; transport: MatchTransport; engine: ClientMatch; controller: MatchController } | { kind: 'refused'; refuse: PayloadOf<'REFUSE'> };
+
+  const tryJoin = async (invite: Invite, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>, ballEnds: boolean | null): Promise<JoinOutcome> => {
+    const code = invite.code;
+    const { transport, connect, failure } = linkFor(invite, me);
     const engine = new ClientMatch({
       transport,
       keys: matchIdentity().keys,
@@ -1280,7 +1489,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       transport.close();
     };
     try {
-      await withTimeout(transport.connect(url), CONNECT_TIMEOUT_MS, `Could not reach the host at ${url.slice('ws://'.length)}`);
+      await connect();
       engine.join();
       const r = await withTimeout(answer, JOIN_TIMEOUT_MS, 'The host did not answer');
       if (r !== 'joined') {
@@ -1290,7 +1499,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return { kind: 'joined', transport, engine, controller };
     } catch (e) {
       await cleanup();
-      throw new Error(`${describeError(e)}. Check the invite, and that the host forwarded the TCP port to their PC.`, { cause: e });
+      throw failure(e);
     } finally {
       for (const off of offs) off();
     }
@@ -1301,7 +1510,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (active) return fail(new Error('Leave the current match first'));
       await endBench('a match is joined');
       lastError = null;
-      let parsed: ReturnType<typeof parseInvite>;
+      let parsed: Invite;
       try {
         parsed = parseInvite(invite);
       } catch (e) {
@@ -1317,17 +1526,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const ws = witness.status();
         const game = gameFingerprintFrom(ws, RECIPE_VERSION);
         const ballEnds = ballEndsFrom(ws).ready;
-        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, game, ballEnds);
+        const out = await tryJoin(parsed, me, name, rig.rig, game, ballEnds);
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
         const a: Active = {
           role: 'client',
           transport: out.transport,
+          ws: null,
+          via: parsed.via,
+          where: parsed.via === 'direct' ? `${parsed.host}:${parsed.port}` : null,
+          relay: null,
+          relayNote: null,
+          directInvite: null,
+          portMapping: null,
+          mapping: null,
+          renewTimer: null,
           engine: out.engine,
           controller: out.controller,
           code: parsed.code,
-          port: parsed.port,
+          port: parsed.via === 'direct' ? parsed.port : null,
           invite: null,
           ipSource: null,
           overlay: null,
@@ -1345,10 +1563,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           theater: THEATER_ON_RING,
           theaterTimer: null,
         };
-        a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
+        a.offs.push(
+          out.transport.onError((err) => {
+            log.warn(`match: socket: ${err.message}`);
+            // D10.8: a pairing revoked mid-match is final (ArcAid took the seat): the tab says so, in those words.
+            if (err instanceof RelayError && err.code === 'unauthorized' && active === a) {
+              lastError = `${err.message}: pair it again in Settings. This match cannot be resumed through ArcAid.`;
+              emit();
+            }
+          }),
+        );
         active = a;
         connecting = false;
-        log.info(`match: joined ${parsed.code} at ${parsed.url}`);
+        log.info(`match: joined ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}`);
         await openPanel(a);
         // The table may have loaded while joining (A6, 2026-10-31).
         checkLobby(a, witness.status());
@@ -1378,6 +1605,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     await a.controller.close();
     for (const r of roles) r.close();
     a.transport.close();
+    // D10.8: the router gets its port back (a lease would drop it within the hour anyway).
+    if (a.renewTimer) clearInterval(a.renewTimer);
+    a.renewTimer = null;
+    const mapping = a.mapping;
+    a.mapping = null;
+    if (mapping) {
+      const ok = await withTimeout(mapping.remove(), UNMAP_TIMEOUT_MS, 'the router did not answer').catch(() => false);
+      log.info(`match: the router's mapping of TCP ${mapping.externalPort} ${ok ? 'was removed' : `could not be removed${mapping.leaseSeconds > 0 ? ` (its lease ends within ${mapping.leaseSeconds} s)` : ': remove it in the router'}`}`);
+    }
   };
 
   const leave = (): Promise<MatchStatus> =>
@@ -1424,6 +1660,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         return fail(e);
       }
       lastError = null;
+      // D10.8: the first game is on: ArcAid now refuses a device that was never in the room (the players may come back).
+      a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
       if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
       emit();

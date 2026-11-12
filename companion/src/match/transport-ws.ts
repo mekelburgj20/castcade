@@ -23,23 +23,32 @@ function rawToString(data: RawData): string {
   return Buffer.from(data as Uint8Array).toString('utf8');
 }
 
-/** A HELLO whose `v` differs never decodes; answer it per SPEC and close. True when it answered. */
-function refuseForeignVersion(socket: WebSocket, text: string, from: PlayerId, seq: number): boolean {
+/**
+ * A HELLO whose `v` differs never decodes: the REFUSE(protocol_version) that answers it per SPEC, or null when the
+ * text is anything else. Shared with the relay transport (D10.8), which has no socket to close.
+ */
+export function foreignVersionRefusal(text: string, from: PlayerId, seq: number): AnyMessage | null {
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    return false;
+    return null;
   }
-  if (typeof value !== 'object' || value === null) return false;
+  if (typeof value !== 'object' || value === null) return null;
   const v = (value as { v?: unknown }).v;
   const type = (value as { type?: unknown }).type;
-  if (type !== 'HELLO' || v === PROTOCOL_VERSION) return false;
-  const refuse = buildMessage(
+  if (type !== 'HELLO' || v === PROTOCOL_VERSION) return null;
+  return buildMessage(
     'REFUSE',
     { code: 'protocol_version', message: `host speaks protocol ${PROTOCOL_VERSION}, client sent ${String(v)}` },
     { matchId: null, seq, from },
   );
+}
+
+/** Answer a foreign-version HELLO and close. True when it answered. */
+function refuseForeignVersion(socket: WebSocket, text: string, from: PlayerId, seq: number): boolean {
+  const refuse = foreignVersionRefusal(text, from, seq);
+  if (!refuse) return false;
   socket.send(encodeFrame(refuse), () => socket.close());
   return true;
 }

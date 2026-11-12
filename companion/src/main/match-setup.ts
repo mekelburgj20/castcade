@@ -291,16 +291,85 @@ export function formatInvite(ip: string, port: number, code: string): string {
 }
 
 const INVITE = /^castcade:(ws:\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):(\d{1,5}))\/?#([A-Za-z]{6})$/;
+/** D10.8: a relay invite is the match code alone (`JHDFEF`); `castcade:JHDFEF` is taken too. */
+const CODE_INVITE = /^(?:castcade:)?([A-Za-z]{6})$/;
+
+/**
+ * D10.8 (2026-11-12): the two kinds of invite. `relay`: the code alone, joined through ArcAid. `direct`: the address
+ * invite of 0.2.x (`castcade:ws://host:port#CODE`), joined on the host's own listener.
+ */
+export type Invite = { via: 'relay'; code: string } | { via: 'direct'; url: string; host: string; port: number; code: string };
 
 /** The invite as pasted (Discord may wrap it in backticks or quotes); throws a sentence the Match tab shows. */
-export function parseInvite(text: string): { url: string; host: string; port: number; code: string } {
+export function parseInvite(text: string): Invite {
   const t = text.trim().replace(/^[`'"<]+|[`'">]+$/g, '');
+  const c = CODE_INVITE.exec(t);
+  if (c) return { via: 'relay', code: c[1]!.toUpperCase() };
   const m = INVITE.exec(t);
   const port = m ? Number(m[3]) : 0;
   if (!m || port < 1 || port > 65535) {
-    throw new Error('That is not a Castcade invite. It looks like castcade:ws://203.0.113.7:27401#ABCDEF: ask the host to copy it again.');
+    throw new Error('That is not a Castcade invite. It is six letters (JHDFEF), or looks like castcade:ws://203.0.113.7:27401#ABCDEF: ask the host to copy it again.');
   }
-  return { url: m[1]!, host: m[2]!, port, code: m[4]!.toUpperCase() };
+  return { via: 'direct', url: m[1]!, host: m[2]!, port, code: m[4]!.toUpperCase() };
+}
+
+/**
+ * D10.8: why a join through ArcAid failed, as the Match tab says it. `code` is the relay transport's error code
+ * (`RelayError.code`), null for anything else, which is shown as it came.
+ */
+export function relayJoinFailure(code: string | null, matchCode: string, detail: string): string {
+  switch (code) {
+    case 'no_such_match':
+      return `No match with the code ${matchCode}: check the code with the host (a match that ended, or whose host has been gone for a while, is closed).`;
+    case 'full':
+      return `The match ${matchCode} is full.`;
+    case 'unauthorized':
+      return 'ArcAid did not accept this PC: pair it with ArcAid again in Settings, then join.';
+    case 'locked':
+      return `That match has already started (${matchCode}): only its players can come back to it.`;
+    case 'rate_limited':
+      // The server's lockout after wrong codes is fifteen minutes; its plain attempt limit is a minute.
+      return 'ArcAid is holding this PC back after too many tries: wait a few minutes, then join again.';
+    case 'unreachable':
+      return `ArcAid could not be reached (${detail}): check this PC's internet connection, or ask the host for a direct invite.`;
+    case 'closed':
+      return `The match ${matchCode} was closed: its host left or has been gone too long.`;
+    default:
+      return `Could not join ${matchCode} through ArcAid: ${detail}`;
+  }
+}
+
+/**
+ * D10.8: why a paired host is not carried by ArcAid (it then hosts on its listener), as the Match tab says it before
+ * ": a paired host needs no port forward". `code` is `RelayError.code`, null for anything else.
+ */
+export function relayHostNote(code: string | null): string {
+  switch (code) {
+    case 'unauthorized':
+      return 'ArcAid did not accept this PC: pair it again in Settings to host without a port forward';
+    case 'rate_limited':
+      return 'ArcAid is holding this PC back after too many tries (host again in a few minutes)';
+    case 'server_busy':
+      return 'ArcAid is carrying as many matches as it can right now';
+    case 'code_in_use':
+    case 'refused':
+      return 'ArcAid did not take this match';
+    default:
+      return 'ArcAid could not be reached';
+  }
+}
+
+/** D10.8: what a join by code says on a PC that is not paired (the relay takes paired devices only). */
+export const RELAY_NOT_PAIRED = 'This invite goes through ArcAid, and this PC is not paired with ArcAid yet: pair it in Settings, or ask the host for a direct invite (castcade:ws://…).';
+
+/** D10.8: the Match tab's one line about the path the match control takes. */
+export function pathLine(via: 'relay' | 'direct', where: string | null, relayState: 'registered' | 'reconnecting' | 'closed' | 'off' | null = null): string {
+  if (via === 'relay') {
+    if (relayState === 'reconnecting') return 'Through ArcAid (reconnecting to ArcAid…)';
+    // The server closed the room and it cannot be opened again: who is in stays in on the direct links only.
+    return relayState === 'closed' ? 'Through ArcAid (ArcAid closed this match: nobody can join or come back through it)' : 'Through ArcAid';
+  }
+  return where ? `Direct to ${where}` : 'Direct';
 }
 
 export function isIpv4(s: string): boolean {

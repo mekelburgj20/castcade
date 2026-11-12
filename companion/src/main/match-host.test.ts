@@ -26,6 +26,9 @@ vi.mock('electron', () => {
 const { createMatchHost } = await import('./match-host.js');
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
 const { matchSignalling } = await import('./match-setup.js');
+const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
+type FakeRelay = Awaited<ReturnType<typeof startFakeRelay>>;
+type PortMapResult = Awaited<ReturnType<NonNullable<Parameters<typeof createMatchHost>[0]['openPort']>>>;
 type MatchHost = ReturnType<typeof createMatchHost>;
 type WitnessHost = Parameters<typeof createMatchHost>[0]['witness'];
 type Logger = Parameters<typeof createMatchHost>[0]['log'];
@@ -62,6 +65,8 @@ function make(name: string, sha: string, extra: Partial<Parameters<typeof create
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
     listenAddress: '127.0.0.1',
+    // D10.8: no search of the network the tests run on.
+    openPort: null,
     ...extra,
   });
   hosts.push(mh);
@@ -1203,5 +1208,225 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     expect(H.mh.status().participants.map((p) => p.ballEnds)).toEqual([null, null]);
     await H.mh.start();
     await expect(H.mh.passTurn()).resolves.toMatchObject({ phase: 'playing' });
+  }, 15_000);
+});
+
+describe('D10.8 (2026-11-12): match control through ArcAid, and the router port as the fallback', () => {
+  const relays: FakeRelay[] = [];
+  afterEach(async () => {
+    // The hosts first (their sockets), then the relay they talk to.
+    for (const h of hosts.splice(0)) await h.stop();
+    for (const r of relays.splice(0)) await r.close();
+  });
+  const fakeRelay = async (): Promise<FakeRelay> => {
+    const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c' } });
+    relays.push(r);
+    return r;
+  };
+  const paired = (r: { url: string }, id: 'h' | 'c', token = `tok-${id}`) => ({
+    relay: () => ({ baseUrl: r.url, deviceId: `dev-${id}`, deviceToken: token }),
+    relayTimeouts: { connectMs: 1500, ackMs: 1500 },
+  });
+  // The hosts here listen on a port the OS picks (`host({ port: 0 })` with the `ephemeralPort` seam): a port picked
+  // by the test and bound later can sit in a range Windows has reserved (EACCES on a CI runner).
+  const mk = (name: string, extra: Partial<Parameters<typeof createMatchHost>[0]> = {}) => make(name, 'ab'.repeat(32), { ephemeralPort: true, ...extra });
+  const collect = () => {
+    const lines: string[] = [];
+    const log = { info: (l: string) => lines.push(l), warn: (l: string) => lines.push(l), error: (l: string) => lines.push(l), file: '' } as unknown as Logger;
+    return { lines, log };
+  };
+
+  it('a paired host: the invite is the code alone; a paired player joins by code through ArcAid, an unpaired one by the address invite; the match plays, and survives the host losing ArcAid for a moment', async () => {
+    const r = await fakeRelay();
+    const hl = collect();
+    const H = mk('relay-host', { ...paired(r, 'h'), log: hl.log });
+    const C = mk('relay-client', paired(r, 'c'));
+    const D = mk('relay-direct', { relay: () => null });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    const port = hs.port!;
+    expect(port).toBeGreaterThan(0);
+    expect(hs.invite).toMatch(/^[A-HJ-NP-Z]{6}$/);
+    expect(hs).toMatchObject({ role: 'host', phase: 'lobby', via: 'relay', path: 'Through ArcAid', code: hs.invite, port, portMapping: null, relayNote: null });
+    expect(hs.directInvite).toBe(`castcade:ws://127.0.0.1:${port}#${hs.invite}`);
+    expect(r.rooms()).toEqual([hs.invite]);
+
+    const cs = await C.mh.join(` ${hs.invite!.toLowerCase()} `, 'Krobs');
+    expect(cs).toMatchObject({ role: 'client', phase: 'lobby', via: 'relay', path: 'Through ArcAid', code: hs.invite, port: null });
+    const ds = await D.mh.join(hs.directInvite!, 'Chuck');
+    expect(ds).toMatchObject({ role: 'client', via: 'direct', path: `Direct to 127.0.0.1:${port}` });
+    await until(() => H.mh.status().participants.length === 3 && C.mh.status().participants.length === 3);
+    expect(C.mh.status().participants.map((p) => p.name)).toEqual(['Owner', 'Krobs', 'Chuck']);
+
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && D.mh.status().phase === 'playing');
+    expect(C.mh.status().locked).toBe(true);
+    expect(C.mh.status().panel).toMatchObject({ myTurn: false, ball: 1 });
+
+    // The host's socket to ArcAid drops: the relay player is out for a moment, resumes by itself, and the match goes on.
+    r.dropDevice('dev-h');
+    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
+    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 8000);
+    expect(H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).not.toContain('disconnected');
+    // The token never reaches the log.
+    expect(hl.lines.join('\n')).not.toContain('tok-h');
+
+    await C.mh.leave();
+    await H.mh.leave();
+    expect(H.mh.status()).toMatchObject({ via: null, path: null, invite: null, directInvite: null });
+  }, 30_000);
+
+  it('two players through ArcAid drop at once (the host lost ArcAid): each resumes its own pause, the match plays on without the host pressing Resume', async () => {
+    const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c', 'dev-d': 'tok-d' } });
+    relays.push(r);
+    const H = mk('relay3-host', paired(r, 'h'));
+    const C = mk('relay3-c', paired(r, 'c'));
+    const D = mk('relay3-d', { relay: () => ({ baseUrl: r.url, deviceId: 'dev-d', deviceToken: 'tok-d' }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await D.mh.join(hs.invite!, 'Chuck');
+    await until(() => H.mh.status().participants.length === 3);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && D.mh.status().phase === 'playing');
+    r.dropDevice('dev-h');
+    await until(() => H.mh.status().phase === 'paused');
+    // Both come back by RECONNECT; the pause that names the other one is resumed by that one.
+    await until(() => [H, C, D].every((x) => x.mh.status().phase === 'playing'), 10_000);
+    // The turn moves on to each of them: nobody is left "disconnected" in the log.
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true || D.mh.status().panel?.myTurn === true, 6000);
+    await H.mh.passTurn();
+    await until(() => [C, D].filter((x) => x.mh.status().panel?.players.some((p) => p.ballsDone === 1)).length === 2, 6000);
+    await until(() => [H, C, D].every((x) => x.mh.status().phase === 'playing'), 6000);
+    expect(H.mh.status().panel?.players.flatMap((p) => p.flags)).not.toContain('disconnected');
+  }, 40_000);
+
+  it('a join by code says what went wrong: not paired, no such match, ArcAid refusing the device, ArcAid unreachable', async () => {
+    const r = await fakeRelay();
+    const unpaired = mk('relay-unpaired', { relay: () => null });
+    await expect(unpaired.mh.join('JHDFEF', 'Krobs')).rejects.toThrow(/goes through ArcAid, and this PC is not paired/);
+    expect(unpaired.mh.status()).toMatchObject({ role: 'none', phase: 'none' });
+    expect(unpaired.mh.status().lastError).toMatch(/not paired/);
+
+    const C = mk('relay-nomatch', paired(r, 'c'));
+    await expect(C.mh.join('JHDFEF', 'Krobs')).rejects.toThrow(/^No match with the code JHDFEF: check the code with the host/);
+
+    const bad = mk('relay-badtoken', paired(r, 'c', 'stale'));
+    await expect(bad.mh.join('JHDFEF', 'Krobs')).rejects.toThrow(/ArcAid did not accept this PC: pair it with ArcAid again/);
+
+    const gone = mk('relay-gone', { relay: () => ({ baseUrl: 'http://127.0.0.1:9', deviceId: 'dev-c', deviceToken: 'tok-c' }), relayTimeouts: { connectMs: 300, ackMs: 300 } });
+    await expect(gone.mh.join('JHDFEF', 'Krobs')).rejects.toThrow(/^ArcAid could not be reached \(.*\): check this PC's internet connection, or ask the host for a direct invite/);
+    expect(gone.mh.status().lastError).not.toContain('tok-c');
+  }, 20_000);
+
+  it('ArcAid restarts mid-match (a deploy loses the room): the host opens the same code again, the relay player resumes by itself, and the room is locked again; leaving closes it at once', async () => {
+    const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c', 'dev-d': 'tok-d' } });
+    relays.push(r);
+    const hl = collect();
+    const H = mk('restart-host', { ...paired(r, 'h'), log: hl.log });
+    const C = mk('restart-client', paired(r, 'c'));
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    const code = hs.invite!;
+    await C.mh.join(code, 'Guest');
+    await until(() => H.mh.status().participants.length === 2);
+    expect(r.locked(code)).toBe(false);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing' && r.locked(code));
+
+    // The match started: a device that was never in it is refused by ArcAid, by name.
+    const late = mk('restart-late', { relay: () => ({ baseUrl: r.url, deviceId: 'dev-d', deviceToken: 'tok-d' }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
+    await expect(late.mh.join(code, 'Late')).rejects.toThrow(/^That match has already started/);
+
+    await r.restart(400);
+    await until(() => H.mh.status().phase === 'paused' || hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${code} again`)), 10_000);
+    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 20_000);
+    expect(H.mh.status().panel?.players.flatMap((p) => p.flags)).not.toContain('disconnected');
+    expect(r.rooms()).toEqual([code]);
+    // Locked again once its player was back, and never while the player was still on the way.
+    await until(() => r.locked(code), 5000);
+    expect(r.misses.get('dev-c') ?? 0).toBeLessThanOrEqual(5);
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true, 6000);
+
+    // A deliberate leave says so to ArcAid: the room is gone at once, not after the 30 s grace.
+    await C.mh.leave();
+    await H.mh.leave();
+    await until(() => r.rooms().length === 0, 2000);
+    expect(hl.lines.join('\n')).not.toContain('tok-h');
+  }, 60_000);
+
+  it('a host ArcAid refuses in the ack (a stale token; the socket itself connects) hosts on its listener and says to pair again', async () => {
+    const r = await fakeRelay();
+    const H = mk('relay-stale-host', { ...paired(r, 'h', 'stale'), openPort: null });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    expect(hs).toMatchObject({ role: 'host', via: 'direct', relayNote: 'ArcAid did not accept this PC: pair it again in Settings to host without a port forward' });
+    expect(hs.invite).toBe(`castcade:ws://127.0.0.1:${hs.port}#${hs.code}`);
+    expect(r.rooms()).toEqual([]);
+  }, 15_000);
+
+  it('no relay (ArcAid unreachable): the address invite as before; the router is asked in the background and the tab says what came of it; leaving removes the mapping', async () => {
+    const calls: string[] = [];
+    let answer: (r: PortMapResult) => void = () => undefined;
+    const pending = new Promise<PortMapResult>((res) => (answer = res));
+    const mapping = { externalIp: null, leaseSeconds: 3600, gateway: '192.168.1.1', renew: async () => true, remove: async () => (calls.push('remove'), true) };
+    const H = mk('fallback-host', {
+      relay: () => ({ baseUrl: 'http://127.0.0.1:9', deviceId: 'dev-h', deviceToken: 'tok-h' }),
+      relayTimeouts: { connectMs: 300, ackMs: 300 },
+      openPort: (p) => (calls.push(`open ${p}`), pending),
+    });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    const port = hs.port!;
+    expect(hs.invite).toBe(`castcade:ws://127.0.0.1:${port}#${hs.code}`);
+    expect(hs).toMatchObject({ via: 'direct', path: `Direct to 127.0.0.1:${port}`, directInvite: null, relayNote: 'ArcAid could not be reached', portMapping: { state: 'trying' } });
+    expect(calls).toEqual([`open ${port}`]);
+    answer({ ok: true, mapping: { ...mapping, externalPort: port } });
+    await until(() => H.mh.status().portMapping?.state === 'opened');
+    expect(H.mh.status().portMapping?.line).toBe('Port opened on your router automatically');
+    // A player still joins on the listener.
+    const C = mk('fallback-client');
+    expect(await C.mh.join(hs.invite!, 'Krobs')).toMatchObject({ via: 'direct', path: `Direct to 127.0.0.1:${port}` });
+    await C.mh.leave();
+    await H.mh.leave();
+    expect(calls).toEqual([`open ${port}`, 'remove']);
+    expect(H.mh.status().portMapping).toBeNull();
+  }, 15_000);
+
+  it('an unpaired host whose router does not open the port is told to forward it or pair; a mapping that arrives after the match ended is removed', async () => {
+    const H = mk('fallback-unpaired', { relay: () => null, openPort: async () => ({ ok: false, reason: 'no UPnP router answered' }) });
+    const port = (await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' })).port!;
+    await until(() => H.mh.status().portMapping?.state === 'failed');
+    expect(H.mh.status()).toMatchObject({
+      via: 'direct',
+      relayNote: 'This PC is not paired with ArcAid',
+      portMapping: { line: `Your router did not open the port: forward TCP ${port}, or pair with ArcAid to host without it` },
+    });
+    await H.mh.leave();
+
+    let removed = 0;
+    let answer: (r: PortMapResult) => void = () => undefined;
+    const late = mk('fallback-late', { openPort: () => new Promise<PortMapResult>((res) => (answer = res)) });
+    await late.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await late.mh.leave();
+    answer({ ok: true, mapping: { externalPort: 1, externalIp: null, leaseSeconds: 3600, gateway: 'g', renew: async () => true, remove: async () => (removed++, true) } });
+    await until(() => removed === 1);
+    expect(late.mh.status().portMapping).toBeNull();
+  }, 15_000);
+
+  it('a paired host whose port is taken hosts through ArcAid only', async () => {
+    const r = await fakeRelay();
+    const blocker = createServer();
+    // The OS picks the blocker's port, and the host is then asked for exactly that one: taken for certain.
+    await new Promise<void>((res) => blocker.listen(0, '127.0.0.1', () => res()));
+    const p = (blocker.address() as { port: number }).port;
+    try {
+      const H = mk('relay-only', paired(r, 'h'));
+      const hs = await H.mh.host({ port: p, ballsPerGame: 3, displayName: 'Owner' });
+      expect(hs).toMatchObject({ role: 'host', via: 'relay', port: null, directInvite: null, endpoint: null });
+      const C = mk('relay-only-client', paired(r, 'c'));
+      expect(await C.mh.join(hs.invite!, 'Krobs')).toMatchObject({ role: 'client', via: 'relay' });
+    } finally {
+      blocker.close();
+    }
   }, 15_000);
 });

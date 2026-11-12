@@ -22,8 +22,12 @@ import {
   parseInvite,
   parseMatchIdentity,
   patchMatchSettings,
+  pathLine,
   pickLanAddress,
   readMatchSettings,
+  RELAY_NOT_PAIRED,
+  relayHostNote,
+  relayJoinFailure,
   rigFrom,
   rigFromStatus,
   serializeMatchIdentity,
@@ -62,12 +66,45 @@ describe('match setup (A6)', () => {
   it('invites round-trip, tolerate the wrapping a chat adds, and refuse anything else', () => {
     const inv = formatInvite('203.0.113.7', 27401, 'ABCDEF');
     expect(inv).toBe('castcade:ws://203.0.113.7:27401#ABCDEF');
-    expect(parseInvite(inv)).toEqual({ url: 'ws://203.0.113.7:27401', host: '203.0.113.7', port: 27401, code: 'ABCDEF' });
+    expect(parseInvite(inv)).toEqual({ via: 'direct', url: 'ws://203.0.113.7:27401', host: '203.0.113.7', port: 27401, code: 'ABCDEF' });
     expect(parseInvite(` \`${inv}\` `).code).toBe('ABCDEF');
     expect(parseInvite('castcade:ws://192.168.1.20:27401#abcdef').code).toBe('ABCDEF');
     for (const bad of ['', 'ws://1.2.3.4:27401#ABCDEF', 'castcade:ws://1.2.3.4#ABCDEF', 'castcade:ws://1.2.3.4:27401#ABC', 'castcade:ws://1.2.3.4:99999#ABCDEF', 'castcade:http://1.2.3.4:1#ABCDEF']) {
       expect(() => parseInvite(bad), bad).toThrow(/not a Castcade invite/);
     }
+  });
+
+  it('D10.8: a relay invite is the code alone, in any case and wrapping; the old address invite still parses as direct', () => {
+    expect(parseInvite('JHDFEF')).toEqual({ via: 'relay', code: 'JHDFEF' });
+    expect(parseInvite(' `jhdfef` ')).toEqual({ via: 'relay', code: 'JHDFEF' });
+    expect(parseInvite('castcade:JHDFEF')).toEqual({ via: 'relay', code: 'JHDFEF' });
+    expect(parseInvite('castcade:ws://[2001:db8::1]:27401#JHDFEF')).toMatchObject({ via: 'direct', host: '[2001:db8::1]', port: 27401 });
+    for (const bad of ['JHDFE', 'JHDFEFG', 'JHDF3F', 'JHD FEF']) expect(() => parseInvite(bad), bad).toThrow(/six letters \(JHDFEF\), or looks like castcade:ws:/);
+  });
+
+  it('D10.8: a relay join failure names the real cause, and the path line is one plain line', () => {
+    expect(relayJoinFailure('no_such_match', 'JHDFEF', 'x')).toMatch(/^No match with the code JHDFEF/);
+    expect(relayJoinFailure('full', 'JHDFEF', 'x')).toBe('The match JHDFEF is full.');
+    expect(relayJoinFailure('unauthorized', 'JHDFEF', 'x')).toMatch(/pair it with ArcAid again in Settings/);
+    // The server's lockout is fifteen minutes: "wait a few minutes", never "try again".
+    expect(relayJoinFailure('rate_limited', 'JHDFEF', 'x')).toBe('ArcAid is holding this PC back after too many tries: wait a few minutes, then join again.');
+    expect(relayJoinFailure('locked', 'JHDFEF', 'x')).toMatch(/^That match has already started \(JHDFEF\)/);
+    // A host ArcAid does not carry: the note names why (the Match tab adds ": a paired host needs no port forward").
+    expect(relayHostNote('unauthorized')).toMatch(/^ArcAid did not accept this PC: pair it again in Settings/);
+    expect(relayHostNote('rate_limited')).toMatch(/holding this PC back .*a few minutes/);
+    expect(relayHostNote('server_busy')).toMatch(/as many matches as it can/);
+    expect(relayHostNote('code_in_use')).toBe('ArcAid did not take this match');
+    expect(relayHostNote('unreachable')).toBe('ArcAid could not be reached');
+    expect(relayHostNote(null)).toBe('ArcAid could not be reached');
+    expect(pathLine('relay', null, 'closed')).toMatch(/^Through ArcAid \(ArcAid closed this match/);
+    expect(relayJoinFailure('unreachable', 'JHDFEF', 'ArcAid did not answer in 5 s')).toMatch(/^ArcAid could not be reached \(ArcAid did not answer in 5 s\)/);
+    expect(relayJoinFailure('closed', 'JHDFEF', 'x')).toMatch(/was closed/);
+    expect(relayJoinFailure(null, 'JHDFEF', 'The host did not answer (no answer in 10 s)')).toBe('Could not join JHDFEF through ArcAid: The host did not answer (no answer in 10 s)');
+    expect(RELAY_NOT_PAIRED).toMatch(/not paired with ArcAid yet/);
+    expect(pathLine('relay', null, 'registered')).toBe('Through ArcAid');
+    expect(pathLine('relay', null)).toBe('Through ArcAid');
+    expect(pathLine('relay', null, 'reconnecting')).toBe('Through ArcAid (reconnecting to ArcAid…)');
+    expect(pathLine('direct', '203.0.113.7:27401')).toBe('Direct to 203.0.113.7:27401');
   });
 
   it('match codes are six letters from the alphabet without I and O', () => {
