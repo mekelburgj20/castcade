@@ -43,6 +43,7 @@ export const IPC = {
   /** A14: one step to a match (main/one-step.ts): the table picker, Host with a table, the join link, a link's confirmation. */
   launchStatus: 'launch:status',
   launchTables: 'launch:tables',
+  launchBrowse: 'launch:browse',
   launchHost: 'launch:host',
   launchConfirm: 'launch:confirm',
   launchDismiss: 'launch:dismiss',
@@ -288,7 +289,9 @@ export interface CastcadeApi {
     status(): Promise<OneStepStatus>;
     /** The tables Castcade knows (imported), most recent first. */
     tables(): Promise<TableChoice[]>;
-    /** Host, copy the join link, start VPX on `tablePath` (a `path` from `tables()`; null: host only). A table already open is used. */
+    /** Browse: the other `.vpx` files in the tables folder (never patched by Castcade). */
+    browse(): Promise<TableChoice[]>;
+    /** Host, copy the join link, start VPX on `tablePath` (a `path` from `tables()` or `browse()`; null: host only). A table already open is used. */
     host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     /** Join the match of the link that waits (`status.pending`) and start its table here. */
     confirm(): Promise<OneStepStatus>;

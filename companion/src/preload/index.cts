@@ -36,6 +36,7 @@ const CH = {
   tablesProgressEvent: 'tables:progress',
   launchStatus: 'launch:status',
   launchTables: 'launch:tables',
+  launchBrowse: 'launch:browse',
   launchHost: 'launch:host',
   launchConfirm: 'launch:confirm',
   launchDismiss: 'launch:dismiss',
@@ -185,6 +186,7 @@ const castcade: CastcadeApi = {
   launch: {
     status: () => ipcRenderer.invoke(CH.launchStatus),
     tables: () => ipcRenderer.invoke(CH.launchTables),
+    browse: () => ipcRenderer.invoke(CH.launchBrowse),
     host: (opts) => ipcRenderer.invoke(CH.launchHost, opts),
     confirm: () => ipcRenderer.invoke(CH.launchConfirm),
     dismiss: () => ipcRenderer.invoke(CH.launchDismiss),

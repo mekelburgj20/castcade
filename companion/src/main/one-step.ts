@@ -61,10 +61,12 @@ export interface TableChoice {
   name: string;
   rom: string | null;
   lastPlayedAt: string | null;
+  /** False: a `.vpx` found in the tables folder that Castcade never patched (Browse). */
+  imported: boolean;
 }
 
 export interface OneStepHostOptions {
-  /** A path from `tables()`, or null: host only (a table already open, or the player opens one). */
+  /** A path from `tables()` or `browse()`, or null: host only (a table already open, or the player opens one). */
   tablePath: string | null;
   port?: number;
   ballsPerGame: 3 | 5;
@@ -73,6 +75,11 @@ export interface OneStepHostOptions {
 
 export interface OneStep {
   tables(): Promise<TableChoice[]>;
+  /**
+   * Browse: every other `.vpx` in the tables folder (and one level of sub-folders), by name. Such a table can be hosted;
+   * if it cannot report ball ends, the lobby says so and Start asks the host to confirm (A13).
+   */
+  browse(): Promise<TableChoice[]>;
   host(o: OneStepHostOptions): Promise<MatchStatus>;
   /** A link from outside the app. Never throws: what went wrong is the status's `notice`. */
   openLink(text: string, ctx: { trusted: boolean }): Promise<OneStepStatus>;
@@ -124,8 +131,9 @@ export function linkJoinFailure(raw: string): string {
   // A socket error can carry its stack: only the sentences are for the player.
   const detail = raw.replace(/\n\s+at [^\n]*/g, '').replace(/^Error: /, '');
   if (/The host refused/.test(detail)) return `Could not join that match. ${detail}`;
-  // Sentences that already say what to do (D10.8's relay answers: not paired, full, held back; a request under way).
-  if (/still working|Leave the current match|not paired|pair it with ArcAid|is full\.|holding this PC back/i.test(detail)) return detail;
+  // Sentences that already say what to do (D10.8's relay answers: not paired or no longer paired, full, held back,
+  // a match that has started and is locked to its players; a request under way).
+  if (/still working|Leave the current match|not paired|no longer paired|pair it (again )?(with ArcAid|in Settings)|is full\.|holding this PC back|has already started/i.test(detail)) return detail;
   return `That match is gone or cannot be reached: ask the host for a new link. (${detail})`;
 }
 
@@ -152,6 +160,13 @@ export function createOneStep(o: OneStepOptions): OneStep {
   let stopped = false;
 
   const tableOpen = (): string | null => witness.status().currentTable;
+  const choice = (t: KnownTable): TableChoice => ({ path: t.vpxPath, name: t.tableId, rom: t.rom, lastPlayedAt: t.lastPlayedAt, imported: t.imported });
+  /** The tables a host may pick: the imported ones, then the other files of the tables folder. Paths from this disk only. */
+  const pickable = async (): Promise<KnownTable[]> => {
+    const known = await o.tables().catch(() => [] as KnownTable[]);
+    const files = o.tableFiles ? await o.tableFiles(known).catch(() => [] as KnownTable[]) : [];
+    return [...known, ...files];
+  };
 
   const linkOf = (m: MatchStatus): string | null => (m.role === 'host' && m.invite ? formatJoinLink(m.invite) : null);
 
@@ -246,8 +261,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (w.path !== null) {
       // The host's pick. The path was checked against the known tables when it was picked.
       want = null;
-      const known = await o.tables().catch(() => [] as KnownTable[]);
-      const t = known.find((k) => k.vpxPath === w.path);
+      const t = (await pickable()).find((k) => k.vpxPath === w.path);
       if (!t) {
         setLaunch({ state: 'failed', table: null, detail: 'That table is no longer in the list. Open it in VPX yourself; the match waits.' });
         return;
@@ -335,15 +349,19 @@ export function createOneStep(o: OneStepOptions): OneStep {
 
   return {
     async tables() {
-      const known = await o.tables();
-      return known.map((t) => ({ path: t.vpxPath, name: t.tableId, rom: t.rom, lastPlayedAt: t.lastPlayedAt }));
+      return (await o.tables()).map(choice);
+    },
+
+    async browse() {
+      if (!o.tableFiles) return [];
+      return (await o.tableFiles(await o.tables().catch(() => [] as KnownTable[]))).map(choice);
     },
 
     async host(h) {
       let pick: KnownTable | null = null;
       if (h.tablePath !== null) {
         // Only a table from Castcade's own list: the renderer's string is a key into it, never a path to run.
-        pick = (await o.tables()).find((t) => t.vpxPath === h.tablePath) ?? null;
+        pick = (await pickable()).find((t) => t.vpxPath === h.tablePath) ?? null;
         if (!pick) throw new Error('That table is not in the list any more: pick it again');
       }
       notice = null;

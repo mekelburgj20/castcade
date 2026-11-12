@@ -31,6 +31,16 @@ const SHOWN = 8;
 export function TablePicker({ bridge, value, onChange, tableOpen }: { bridge: CastcadeBridge; value: string | null; onChange: (path: string | null) => void; tableOpen: string | null }) {
   const [tables, setTables] = useState<TableChoice[] | null>(null);
   const [search, setSearch] = useState('');
+  // Browse: the other .vpx files of the tables folder, loaded when asked for.
+  const [others, setOthers] = useState<TableChoice[] | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const browse = () => {
+    setBrowsing(true);
+    void bridge.launch.browse().then(
+      (t) => setOthers(t),
+      () => setOthers([]),
+    );
+  };
   useEffect(() => {
     let alive = true;
     void bridge.launch.tables().then(
@@ -46,26 +56,49 @@ export function TablePicker({ bridge, value, onChange, tableOpen }: { bridge: Ca
     return <p className="muted">Open now: {tableOpen}. Host uses this table and starts nothing.</p>;
   }
   if (tables === null) return null;
-  if (tables.length === 0) {
-    return <p className="muted">Castcade knows no table yet (Settings → Import tables). Host still works: open the table in VPX yourself, before or after.</p>;
+  const all = [...tables, ...(others ?? [])];
+  if (all.length === 0) {
+    return (
+      <p className="muted">
+        {others === null ? 'Castcade knows no table yet (Settings → Import tables). ' : 'No table file found in your tables folder. '}Host still works: open the table in VPX
+        yourself, before or after.{' '}
+        {others === null && (
+          <button type="button" className="small" disabled={browsing} onClick={browse}>
+            Browse…
+          </button>
+        )}
+      </p>
+    );
   }
   const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  const hits = tables.filter((t) => words.every((w) => t.name.toLowerCase().includes(w) || (t.rom ?? '').toLowerCase().includes(w)));
-  const picked = tables.find((t) => t.path === value) ?? null;
+  const hits = all.filter((t) => words.every((w) => t.name.toLowerCase().includes(w) || (t.rom ?? '').toLowerCase().includes(w)));
+  const picked = all.find((t) => t.path === value) ?? null;
   return (
     <div className="field">
       <span>Table to start</span>
-      <input type="search" value={search} placeholder={`Search ${tables.length} tables`} onChange={(e) => setSearch(e.target.value)} />
+      <input type="search" value={search} placeholder={`Search ${all.length} tables`} onChange={(e) => setSearch(e.target.value)} />
       <select size={Math.min(SHOWN, Math.max(2, hits.length + 1))} value={value ?? ''} onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}>
         <option value="">No table: I open it myself</option>
         {hits.map((t) => (
           <option key={t.path} value={t.path}>
             {t.name}
             {t.lastPlayedAt ? ' · played here' : ''}
+            {t.imported ? '' : ' · not imported'}
           </option>
         ))}
       </select>
-      <small>{picked ? `Host starts VPX on ${picked.name} and copies the join link.` : 'Pick a table and Host starts it in VPX for you.'}</small>
+      <small>
+        {picked
+          ? `Host starts VPX on ${picked.name} and copies the join link.${picked.imported ? '' : ' Castcade has not patched this table: if it cannot report ball ends, the lobby says so and Start asks you to confirm.'}`
+          : 'Pick a table and Host starts it in VPX for you.'}
+      </small>
+      {others === null ? (
+        <button type="button" className="small" disabled={browsing} onClick={browse}>
+          Browse… (tables Castcade has not imported)
+        </button>
+      ) : (
+        <small>{others.length === 0 ? 'No other table file in your tables folder.' : `${others.length} more from your tables folder, marked "not imported".`}</small>
+      )}
     </div>
   );
 }

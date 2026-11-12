@@ -419,6 +419,7 @@ function registerIpc(
   });
   ipcMain.handle(IPC.launchStatus, () => os().status());
   ipcMain.handle(IPC.launchTables, () => os().tables());
+  ipcMain.handle(IPC.launchBrowse, () => os().browse());
   ipcMain.handle(IPC.launchHost, (_e, o: unknown) => {
     const w = (o ?? {}) as { tablePath?: unknown; port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
     return os().host({

@@ -626,6 +626,8 @@ interface TableChoice {
   name: string;
   rom: string | null;
   lastPlayedAt: string | null;
+  /** False: a file from Browse that Castcade never patched. */
+  imported: boolean;
 }
 
 interface CastcadeBridge {
@@ -705,6 +707,7 @@ interface CastcadeBridge {
   readonly launch: {
     status(): Promise<OneStepStatus>;
     tables(): Promise<TableChoice[]>;
+    browse(): Promise<TableChoice[]>;
     host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;

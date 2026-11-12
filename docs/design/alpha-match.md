@@ -598,6 +598,9 @@ tab were not run** (unit tests and typecheck only: the machine was busy with an 
   knows, which are the imported ones (a manifest under `<userData>/witness/tables` whose `.vpx` is still there,
   `launch/known-tables.ts`), most recently played first (`<userData>/recent-tables.json`, noted when the witness sees a
   table open), then most recently patched; a search box narrows by name or ROM. "No table: I open it myself" stays.
+  **Browse…** adds every other `.vpx` of the tables folder and one level of sub-folders (the listing a joining rig
+  searches, `listTableFiles`), marked "not imported", so a table Castcade never patched can be hosted; if it cannot
+  report ball ends, the lobby says so and Start asks the host to confirm (A13), as for any such table.
 - Host (`main/one-step.ts` `host`) = `MatchHost.host`, then the join link on the clipboard, then VPX on the picked
   table: `"<VPinballX exe>" -Play "<table.vpx>"` from the exe's folder (`launch/vpx-launch.ts`; the switch the witness's
   process watch reads back and `scripts/validate-original.ts` uses; no other switch, so the player's ini, display and VR
@@ -606,7 +609,7 @@ tab were not run** (unit tests and typecheck only: the machine was busy with an 
 - **A table already open is used and nothing is started** (the witness names a current table; a VPX editor with no table
   does not count, an editor with a table loaded does: press Play there).
 - The link is `castcade://join/<invite>` with the invite URL-encoded (`main/deep-link.ts`): the six-letter code once
-  matches go through ArcAid (D10.8), today's address invite until then. The Match tab shows it with Copy, and a chat
+  ArcAid carries the match (D10.8: `MatchStatus.invite` is the code then), the address invite otherwise. The Match tab shows it with Copy, and a chat
   line with Copy for chat: `Castcade match on <table>: castcade://join/… (copy the link, then in Castcade press Match,
   Paste, Join)`. The Join box takes a link as well as an invite.
 - **Discord does not make `castcade://` clickable.** Discord's community forum has users reporting that since May 2023
@@ -668,7 +671,8 @@ witness the test drives (`main/match-host-orderings.test.ts`) and fixed what fai
 | The match ends while a table is still to be started | (new) | The wish is dropped; nothing starts later | one-step "the match ending while VPX is still to be started…" |
 | VPX slow, or it never shows the table | (new) | Not started twice; after 2 minutes the tab says to open it by hand; if it opens after all, the tab follows | one-step "VPX that does not start, or never shows the table…" |
 | P off (no preview window) at Host or Join | The rig read `pc` until the witness sampled VR, then the panel moved into the headset (A6); the camera is the layer's (D8.1), so no window is needed | Same | `match-host.test.ts` "host on the monitor reading, then the witness reads VR…" (existing) |
-| J after the match started | Refused by the host ("the roster is final") | Same; a link says "Could not join that match. The host refused…" | engine tests (existing); one-step `linkJoinFailure` |
+| J after the match started | Refused by the host ("the roster is final"); through ArcAid the room is locked at the first game (D10.8) | Same; a link says the answer as it came ("That match has already started (CODE): only its players can come back to it." or "Could not join that match. The host refused…") and starts no table | engine tests (existing); one-step "D10.8: a link opened after the match started…" |
+| The relay reconnecting (a pause, the client's bounded `no_such_match` retry, a host re-hosting the same code) while a link waits for the host's table | (new) | The wish is kept while this rig is still in the match; the same link stays valid | one-step "the wait for the host's table outlasts a pause…" |
 
 **Not fixed, known:**
 - Castcade restarted in the middle of a match: the match is not picked up again (a host's match is gone; a client has
@@ -682,7 +686,8 @@ witness the test drives (`main/match-host-orderings.test.ts`) and fixed what fai
 ### 9.4 Decisions taken alone
 
 - The link's click gates the join as well as the table start (§9.2).
-- The picker lists imported tables only (the owner's words: "the tables Castcade already knows"); a joining rig also
+- The picker lists imported tables first (the owner's words: "the tables Castcade already knows") and the rest of the
+  tables folder behind Browse…; a joining rig also
   looks at plain `.vpx` files in the tables folder and one level of sub-folders, by name, after the imported ones.
 - The name match takes the title before the first bracket ("Monster Bash (Williams 1998) 2.1" = "Monster Bash"). A
   wrong pick is an advisory on the panels ("different table file"), never a refusal.

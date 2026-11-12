@@ -42,7 +42,7 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
-function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: LaunchResult; joinError?: string } = {}) {
+function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: LaunchResult; joinError?: string; relay?: boolean } = {}) {
   const matchCbs = new Set<(s: MatchStatus) => void>();
   const witnessCbs = new Set<(s: { currentTable: string | null }) => void>();
   const m = { role: 'none' as MatchStatus['role'], phase: 'none' as MatchStatus['phase'], code: null as string | null, invite: null as string | null };
@@ -59,7 +59,8 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
     match: {
       async host() {
         if (m.role !== 'none') throw new Error('Leave the current match first');
-        Object.assign(m, { role: 'host', phase: 'lobby', code: 'HOSTED', invite: 'castcade:ws://203.0.113.7:27401#HOSTED' });
+        // D10.8: through ArcAid the invite is the code alone; on the listener it is the address invite.
+        Object.assign(m, { role: 'host', phase: 'lobby', code: 'HOSTED', invite: o.relay ? 'HOSTED' : 'castcade:ws://203.0.113.7:27401#HOSTED' });
         hostGame = fingerprint(open ?? NO_TABLE_NAME);
         sayMatch();
         return status();
@@ -114,6 +115,12 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
       sayMatch();
       await flush();
     },
+    /** The match's phase moves (a pause while the relay reconnects, the start). */
+    async phase(phase: MatchStatus['phase']) {
+      m.phase = phase;
+      sayMatch();
+      await flush();
+    },
     async leave() {
       Object.assign(m, { role: 'none', phase: 'none', code: null, invite: null });
       hostGame = null;
@@ -134,9 +141,32 @@ describe('one step to a match: Host (A14 step 1)', () => {
   it('the table picker lists the known tables as given (most recent first)', async () => {
     const w = world();
     expect(await w.one.tables()).toEqual([
-      { path: MB.vpxPath, name: MB.tableId, rom: 'mb_106b', lastPlayedAt: '2026-11-12T00:00:00.000Z' },
-      { path: AFM.vpxPath, name: AFM.tableId, rom: null, lastPlayedAt: null },
+      { path: MB.vpxPath, name: MB.tableId, rom: 'mb_106b', lastPlayedAt: '2026-11-12T00:00:00.000Z', imported: true },
+      { path: AFM.vpxPath, name: AFM.tableId, rom: null, lastPlayedAt: null, imported: true },
     ]);
+  });
+
+  it('Browse lists the other table files of the tables folder; one of them can be hosted and is started like any other', async () => {
+    const raw = table('Dark Chaos', { imported: false });
+    const w = world({ files: [raw] });
+    expect(await w.one.browse()).toEqual([{ path: raw.vpxPath, name: 'Dark Chaos', rom: null, lastPlayedAt: null, imported: false }]);
+    const st = await w.one.host({ ...HOST, tablePath: raw.vpxPath });
+    expect(st.role).toBe('host');
+    expect(w.launched).toEqual([raw.vpxPath]);
+    // Still only this disk's own listing: a path that is in neither list is refused.
+    const v = world({ files: [raw] });
+    await expect(v.one.host({ ...HOST, tablePath: 'C:\\elsewhere\\Dark Chaos.vpx' })).rejects.toThrow(/not in the list/);
+    expect(v.launched).toEqual([]);
+  });
+
+  it('D10.8: the join link is built from the relay code when ArcAid carries the match, from the address invite otherwise', async () => {
+    const relay = world({ relay: true });
+    await relay.one.host({ ...HOST, tablePath: null });
+    expect(relay.one.status().link).toBe('castcade://join/HOSTED');
+    expect(relay.clips).toEqual(['castcade://join/HOSTED']);
+    const direct = world();
+    await direct.one.host({ ...HOST, tablePath: null });
+    expect(direct.one.status().link).toBe('castcade://join/castcade%3Aws%3A%2F%2F203.0.113.7%3A27401%23HOSTED');
   });
 
   it('hosts, puts the join link on the clipboard and starts VPX on the picked table; the table opening ends the wait', async () => {
@@ -260,6 +290,30 @@ describe('one step to a match: a link (A14 step 2)', () => {
     expect(w.launched).toEqual([AFM.vpxPath]);
     await w.hostTable(fingerprint('Monster Bash'));
     expect(w.launched).toHaveLength(1);
+  });
+
+  it("the wait for the host's table outlasts a pause (the relay reconnecting, its bounded retry): the wish is kept and the table starts when the fingerprint comes", async () => {
+    const w = world();
+    await w.hostTable(fingerprint(NO_TABLE_NAME));
+    await w.one.openLink(LINK, { trusted: true });
+    await w.phase('paused');
+    await w.phase('lobby');
+    expect(w.launched).toEqual([]);
+    expect(w.one.status().launch.state).toBe('waiting_host');
+    await w.hostTable(fingerprint('Monster Bash', 'ab'.repeat(32)));
+    expect(w.launched).toEqual([MB.vpxPath]);
+  });
+
+  it("D10.8: a link opened after the match started is told so in the relay's own words, and nothing starts", async () => {
+    const locked = 'That match has already started (JHDFEF): only its players can come back to it.';
+    const w = world({ joinError: locked });
+    await w.hostTable(fingerprint('Monster Bash'));
+    const s = await w.one.openLink(LINK, { trusted: true });
+    expect(s.notice).toBe(locked);
+    expect(w.launched).toEqual([]);
+    expect(s.launch.state).toBe('idle');
+    expect(linkJoinFailure('ArcAid did not accept this PC: pair it with ArcAid again in Settings, then join.')).toBe('ArcAid did not accept this PC: pair it with ArcAid again in Settings, then join.');
+    expect(linkJoinFailure('This PC is no longer paired with ArcAid')).toBe('This PC is no longer paired with ArcAid');
   });
 
   it('a table already open here is kept: nothing is started; one that opens while waiting for the host ends the wait', async () => {
