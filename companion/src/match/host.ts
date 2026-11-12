@@ -35,6 +35,12 @@
  * - A11 (2026-11-02): `startIn(ms)` starts the match after a countdown the lobby sees (`HELLO_ACK.startsInMs`); a
  *   second call while it runs changes nothing, `start()` during it starts at once. `HELLO_ACK.loading` names the
  *   participants whose fingerprint says no table is open (`HostOptions.tableOpen`).
+ * - A13 (2026-11-12): `HELLO_ACK.ballEndReady` carries what each lobby participant said about its table's ball ends
+ *   (`HELLO` / `PARTICIPANT_UPDATE.ballEndReady`, this host's own through `HostOptions.ballEndReady` / `updateLocal`);
+ *   the engine only passes it on, and `start()` does not look at it (the shell asks the host to confirm). `passTurn()`
+ *   ends the outstanding grant's ball by hand with a logged TURN_PASS (this host's own ball or a client's), under the
+ *   same conditions as a BALL_END (running, no transfer pending, also while paused); the BALL_END that arrives for
+ *   that grant afterwards meets the usual `stale_grant` / `not_grant_holder` REJECT.
  */
 import {
   PROTOCOL_VERSION,
@@ -94,6 +100,8 @@ export interface HostOptions {
    * the host's table waits for none). Default: a table hash that is not all zeros.
    */
   tableOpen?: (game: GameFingerprint) => boolean;
+  /** A13: whether this host's own table can report ball ends (`HELLO_ACK.ballEndReady`); omitted = unknown. */
+  ballEndReady?: boolean;
 }
 
 export interface ResumeOptions {
@@ -144,6 +152,8 @@ export interface HostEvents extends Record<string, unknown> {
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
+  /** A13: this host passed the turn (`passTurn`): the holder's ball ended by hand; the next grant follows at once. */
+  turnPassed: Message<'TURN_PASS'>;
   gameOver: Message<'GAME_OVER'>;
   forfeit: Message<'FORFEIT'>;
   pause: PayloadOf<'PAUSE'>;
@@ -181,7 +191,7 @@ export type OutgoingMediaSignal = Omit<PayloadInput<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
-const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'RESULT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
+const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'TURN_PASS', 'RESULT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 const ZERO_HASH = '0'.repeat(64);
 const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
@@ -202,6 +212,8 @@ export class HostMatch {
   private readonly mismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
   /** Each lobby client's fingerprint (HELLO, then PARTICIPANT_UPDATE), so a change of `hostGame` can re-compare them. */
   private readonly lobbyGames = new Map<PlayerId, GameFingerprint>();
+  /** A13: what each lobby participant (this host included) said about its table's ball ends; not in it = unknown. */
+  private readonly ballEndReady = new Map<PlayerId, boolean>();
   /** A6.1 (2026-11-01): rigs changed after MATCH_READY, by player (the log's roster keeps the ones it started with). */
   private readonly liveRigs = new Map<PlayerId, ParticipantInfo['rig']>();
   private turnMode: 'alternating' | 'simultaneous';
@@ -238,6 +250,7 @@ export class HostMatch {
       throw new Error('hostParticipant.playerId must equal transport.localId');
     }
     this.lobby = [{ ...opts.hostParticipant, publicKey: opts.keys.publicKeyB64 }];
+    if (opts.ballEndReady !== undefined) this.ballEndReady.set(this.localId, opts.ballEndReady);
     this.ballsPerGameInit = opts.ballsPerGame;
     this.attach();
   }
@@ -317,6 +330,11 @@ export class HostMatch {
     return Object.fromEntries([...this.mismatched].map(([id, m]) => [id, m.map((x) => ({ ...x }))]));
   }
 
+  /** A13: what each participant said about its table's ball ends (false: it cannot report them); not listed = unknown. */
+  ballEndReadiness(): Record<PlayerId, boolean> {
+    return Object.fromEntries(this.ballEndReady);
+  }
+
   snapshot(): { role: 'host'; state: MatchState; log: LogHead; lobby: ParticipantInfo[]; gone: PlayerId[]; finalHead: LogHead | null; signatures: LogSignRecord[] } {
     return {
       role: 'host',
@@ -334,6 +352,7 @@ export class HostMatch {
    * Replaces its roster entry's `rig` and `hostGame`, re-compares every client's fingerprint, and re-sends HELLO_ACK
    * to every client. False (nothing done) when nothing changed. A6.1 (2026-11-01): after MATCH_READY only the rig
    * counts (the owner's rig read VR 7 s after Start): it goes to every client as this host's PARTICIPANT_UPDATE.
+   * A13: `ballEndReady` is this host's own table (lobby only), told to every client in the same HELLO_ACK.
    */
   updateLocal(u: PayloadOf<'PARTICIPANT_UPDATE'>): boolean {
     this.assertActive();
@@ -346,7 +365,9 @@ export class HostMatch {
     const me = this.lobby[0]!;
     const rigChanged = u.rig !== undefined && u.rig !== me.rig;
     const gameChanged = u.game !== undefined && !sameGame(u.game, this.hostGame);
-    if (!rigChanged && !gameChanged) return false;
+    const readyChanged = u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady.get(this.localId);
+    if (!rigChanged && !gameChanged && !readyChanged) return false;
+    if (readyChanged) this.ballEndReady.set(this.localId, u.ballEndReady!);
     if (rigChanged) this.lobby[0] = { ...me, rig: u.rig! };
     if (gameChanged) {
       this.hostGame = { ...u.game! };
@@ -529,6 +550,39 @@ export class HostMatch {
       this.matchId,
     );
     this.onBallEnd(msg);
+  }
+
+  /** A13: why the turn cannot be passed now, or null when it can: a grant must be outstanding and no transfer pending. */
+  passTurnBlocker(): string | null {
+    const st = this.s.state;
+    if (this.detached) return 'this companion is not the host any more';
+    if (st.phase !== 'running') return 'no game is being played';
+    if (st.pendingTransfer) return 'a host transfer is under way';
+    if (!st.currentGrant) return 'nobody holds the turn right now';
+    return null;
+  }
+
+  /**
+   * A13 (2026-11-12): end the outstanding grant's ball by hand and go on with the rotation, as if the holder's BALL_END
+   * (no shoot-again) had arrived: a logged TURN_PASS from this host, naming the grant, its holder and the score the
+   * ball ends at (`score`; default: the holder's last logged score). Works for this host's own ball and a client's.
+   * False, with nothing done, when `passTurnBlocker()` says why not.
+   */
+  passTurn(score?: number): boolean {
+    this.assertActive();
+    const g = this.s.state.currentGrant?.grant;
+    if (this.passTurnBlocker() !== null || !g) return false;
+    const msg = this.s.build(
+      'TURN_PASS',
+      { grantSeq: g.grantSeq, player: g.player, ballNumber: g.ballNumber, score: score ?? this.s.state.players[g.player]?.score ?? 0 },
+      this.matchId,
+    );
+    this.clearBallEndTimer();
+    this.s.commit({ ts: msg.ts, kind: 'msg', from: this.localId, message: msg });
+    this.broadcast(msg);
+    this.events.emit('turnPassed', msg);
+    this.advance();
+    return true;
   }
 
   localState(state: Omit<PayloadOf<'STATE'>, 'extraBalls'> & { extraBalls?: number }): void {
@@ -798,6 +852,7 @@ export class HostMatch {
       const wasIn = this.lobby.some((p) => p.playerId === peer);
       this.lobby = this.lobby.filter((p) => p.playerId !== peer);
       this.lobbyGames.delete(peer);
+      this.ballEndReady.delete(peer);
       if (wasIn) this.setMismatch(peer, []);
       this.events.emit('peerLeft', peer);
       // A8 (2026-10-31): the others' rosters drop the leaver too.
@@ -856,6 +911,7 @@ export class HostMatch {
     const participant: ParticipantInfo = { ...p.participant };
     this.lobby.push(participant);
     this.lobbyGames.set(participant.playerId, { ...p.game });
+    if (p.ballEndReady !== undefined) this.ballEndReady.set(participant.playerId, p.ballEndReady);
     if (mismatches.length > 0) {
       this.mismatched.set(participant.playerId, mismatches);
       this.events.emit('tableMismatch', { playerId: participant.playerId, mismatches });
@@ -895,6 +951,11 @@ export class HostMatch {
       this.lobby[i] = { ...this.lobby[i]!, rig: u.rig };
       changed = true;
     }
+    // A13: the table's ball ends can (or cannot) be reported now: the player opened another table, or patched this one.
+    if (u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady.get(msg.from)) {
+      this.ballEndReady.set(msg.from, u.ballEndReady);
+      changed = true;
+    }
     if (!changed) return;
     this.events.emit('participantUpdated', { ...this.lobby[i]! });
     this.resendAck();
@@ -932,6 +993,7 @@ export class HostMatch {
         tableMismatches: [...this.mismatched].map(([playerId, mismatches]) => ({ playerId, mismatches: mismatches.map((x) => ({ ...x })) })),
         startsInMs: this.countdownRemaining(),
         loading: this.loading(),
+        ballEndReady: [...this.ballEndReady].map(([playerId, ready]) => ({ playerId, ready })),
       },
       null,
     );

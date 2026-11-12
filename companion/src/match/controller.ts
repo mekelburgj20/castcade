@@ -40,6 +40,14 @@
  *   from Host until the lobby is complete, locked again when it falls apart, and the lock rule above takes over at
  *   MATCH_READY. A client's table is never locked in the lobby. The A11 armed start (the host's press with everyone in
  *   and a table still loading) keeps its meaning: that game is game 1.
+ * - A13 (2026-11-12, three matches stuck at grant 1 on an unpatched original): a turn only ends when the holder's
+ *   companion reports BALL_END, which needs a table whose hook journal the witness follows. Each player says whether
+ *   its open table is one (`setLocalBallEnds`, sent by the shell in HELLO / PARTICIPANT_UPDATE; the host's HELLO_ACK
+ *   carries everyone's). The lobby line names every player whose table cannot report ball ends (`startWarnings`), a
+ *   start from the host's table does not go while there is one (the Match tab's Start match asks the host to confirm
+ *   instead), and during a game the host may `passTurn()`: the holder's ball ends by hand at its last known score
+ *   (TURN_PASS, logged), for this host's own ball or a client's. The passed player's controller stops playing that
+ *   ball at once (locked, nothing more reported for it).
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
@@ -51,7 +59,7 @@ import type { MatchState } from './state.js';
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<
   HostMatch,
-  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading'
+  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker'
 >;
 /** What a client-side role must offer (structurally a ClientMatch). */
 export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume'>;
@@ -96,6 +104,16 @@ export interface ControllerStatus {
    * host between games, why the next game cannot start now (null: it can).
    */
   series: { game: number; over: boolean; nextGameBlocker: string | null };
+  /**
+   * A13 (2026-11-12): whether each player's table can report ball ends (its companion follows the table's hook
+   * journal), as each said it; a player not listed is unknown (no table open yet). False: that player's turn never
+   * ends by itself.
+   */
+  ballEnds: Record<PlayerId, boolean>;
+  /** A13: in the lobby, one line per player whose table cannot report ball ends; a start then needs the host's confirmation. */
+  startWarnings: string[];
+  /** A13: for the host while a grant is outstanding: the turn Pass the turn would end, and the score it would end at. Else null. */
+  pass: { player: PlayerId; name: string; ball: number; score: number } | null;
   panel: PanelState;
 }
 
@@ -255,6 +273,11 @@ export class MatchController {
   /** A12: the host's table is locked by the lobby rule (`preMatchPlay: 'locked'`, lobby not complete). */
   private lobbyLocked = false;
   private preMatchPlay: PreMatchPlay;
+  /** A13: what each player said about its table's ball ends (the host's engine, or a client's last HELLO_ACK). */
+  private ballEndReady = new Map<PlayerId, boolean>();
+  /** A13: this player's own table, from the witness (null: unknown, no table open), and the witness's reason when it cannot. */
+  private localBallEnds: boolean | null = null;
+  private localBallEndsReason: string | null = null;
 
   constructor(opts: MatchControllerOptions) {
     this.opts = opts;
@@ -299,6 +322,9 @@ export class MatchController {
       waitingForHostGame: this.waitingForHostGame,
       transfer: this.transfer(),
       series: { game: this.gameNumber(), over: this.seriesOver, nextGameBlocker: this.nextGameBlocker() },
+      ballEnds: this.ballEnds(),
+      startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
+      pass: this.passInfo(),
       panel: this.panel(),
     };
   }
@@ -343,6 +369,105 @@ export class MatchController {
       ok = r.endMatch('the host ended the match');
     }, 'MATCH_END');
     return ok;
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // A13: tables that cannot report ball ends, and the host's Pass the turn
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * A13: this player's own table, from the witness: it can report ball ends (true), it cannot (false, with the
+   * witness's reason when it has one), or nothing is known (null: no table open). Display only: the shell tells the
+   * others through the engine (HELLO / PARTICIPANT_UPDATE / `updateLocal`).
+   */
+  setLocalBallEnds(ready: boolean | null, reason: string | null): void {
+    if (this.closed || (this.localBallEnds === ready && this.localBallEndsReason === reason)) return;
+    this.localBallEnds = ready;
+    this.localBallEndsReason = reason;
+    this.push();
+  }
+
+  private readyOf(id: PlayerId): boolean | undefined {
+    if (id === this.localId && this.localBallEnds !== null) return this.localBallEnds;
+    return this.ballEndReady.get(id);
+  }
+
+  private ballEnds(): Record<PlayerId, boolean> {
+    const out: Record<PlayerId, boolean> = {};
+    for (const p of this.participants()) {
+      const r = this.readyOf(p.playerId);
+      if (r !== undefined) out[p.playerId] = r;
+    }
+    return out;
+  }
+
+  /**
+   * The participants whose table is known not to report ball ends (unknown is not unreadable). A player whose table is
+   * not open any more is loading, not unreadable: what it last said was about the table it closed.
+   */
+  private unreadableIds(): PlayerId[] {
+    return this.participants()
+      .map((p) => p.playerId)
+      .filter((id) => this.readyOf(id) === false && !(this.phase === 'lobby' && this.loadingIds.includes(id)));
+  }
+
+  private unreadableLines(): string[] {
+    return this.unreadableIds().map((id) =>
+      id === this.localId
+        ? `Your table cannot report ball ends: ${this.localBallEndsReason ?? 'Castcade is not reading its score (not patched, or an original table)'}`
+        : `${this.nameOf(id)}'s table cannot report ball ends: its score is not being read (not patched, or an original table)`,
+    );
+  }
+
+  private noteBallEndReady(list: Record<PlayerId, boolean>): void {
+    this.ballEndReady = new Map(Object.entries(list));
+  }
+
+  private passInfo(): ControllerStatus['pass'] {
+    const r = this.role;
+    if (this.closed || !isHostRole(r) || r.passTurnBlocker() !== null) return null;
+    const g = r.state.currentGrant?.grant;
+    if (!g) return null;
+    return { player: g.player, name: this.nameOf(g.player), ball: g.ballNumber, score: this.scores.get(g.player) ?? r.state.players[g.player]?.score ?? 0 };
+  }
+
+  /**
+   * A13: the host's Pass the turn (the Match tab's button, after its confirmation): the holder's ball ends at its last
+   * known score and the next grant goes out, as if its BALL_END had arrived; logged as the host's TURN_PASS. False,
+   * with the reason in the log, when there is no turn to pass or this player is not the host.
+   */
+  passTurn(): boolean {
+    const r = this.role;
+    if (this.closed || !isHostRole(r)) return false;
+    const info = this.passInfo();
+    if (!info) {
+      this.opts.log(`match: the turn cannot be passed: ${r.passTurnBlocker() ?? 'nobody holds the turn right now'}`);
+      return false;
+    }
+    let ok = false;
+    this.call(() => {
+      ok = r.passTurn(info.score);
+    }, 'TURN_PASS');
+    return ok;
+  }
+
+  /**
+   * A13: a TURN_PASS was logged (this host's own, or the host's as a client sees it). For the passed player it is the
+   * end of the ball it was playing: nothing more is reported for it and the table locks until the next grant (which,
+   * on a host, arrives right after this inside `passTurn`).
+   */
+  private onTurnPassed(p: PayloadOf<'TURN_PASS'>): void {
+    if (p.player === this.localId) {
+      this.clearPending();
+      this.clearStateTimer();
+      this.holding = null;
+      this.myBallsDone = Math.max(this.myBallsDone, p.ballNumber);
+      this.opts.media?.setSending(false);
+      this.setLocked(true);
+    }
+    const who = p.player === this.localId ? 'my' : `${this.nameOf(p.player)}'s`;
+    this.opts.log(`match: ${isHostRole(this.role) ? 'passed the turn' : `${this.nameOf(this.hostId)} (host) passed the turn`}: ${who} ball ${p.ballNumber} ended by hand at ${p.score}`);
+    this.onBallEndMsg(p.player, p.score);
   }
 
   private transfer(): ControllerStatus['transfer'] {
@@ -530,6 +655,17 @@ export class MatchController {
       }
       return;
     }
+    // A13: a table that cannot report ball ends would hold the first turn for ever: no start from the table; the Match
+    // tab's Start match asks the host to confirm instead.
+    const unreadable = this.unreadableIds();
+    if (unreadable.length > 0) {
+      this.startArmed = false;
+      this.opts.log(
+        `match: a game started on the table, but ${unreadable.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`)).join(', ')} table cannot report ball ends; the match does not start from the table (Start match on the Match tab starts it anyway)`,
+      );
+      this.push();
+      return;
+    }
     this.startArmed = false;
     const ms = this.opts.startCountdownMs ?? DEFAULT_START_COUNTDOWN_MS;
     let ok = false;
@@ -643,6 +779,7 @@ export class MatchController {
     this.hostId = this.localId;
     this.lobby = h.roster();
     this.noteLoading(h.loading());
+    if (h.state.phase === 'lobby') this.noteBallEndReady(h.ballEndReadiness());
     this.syncLobby(h);
     const offs = this.offs;
     offs.push(h.on('joined', () => this.onHostLobby(h)));
@@ -663,6 +800,7 @@ export class MatchController {
     offs.push(h.on('ready', (p) => this.onReady(p)));
     offs.push(h.on('grant', (g) => this.onGrant(g, g.player === this.localId)));
     offs.push(h.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
+    offs.push(h.on('turnPassed', (m) => this.onTurnPassed(m.payload)));
     offs.push(h.on('gameOver', (m) => this.onScoreMsg(m.from, m.payload.finalScore)));
     offs.push(h.on('forfeit', () => this.push()));
     offs.push(h.on('state', (m) => this.onScoreMsg(m.from, m.payload.score)));
@@ -723,6 +861,7 @@ export class MatchController {
     );
     offs.push(c.on('myTurn', (g) => this.onGrant(g, true)));
     offs.push(c.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
+    offs.push(c.on('turnPassed', (m) => this.onTurnPassed(m.payload)));
     offs.push(c.on('gameOver', (m) => this.onScoreMsg(m.from, m.payload.finalScore)));
     offs.push(c.on('forfeit', () => this.push()));
     offs.push(c.on('state', (m) => this.onScoreMsg(m.from, m.payload.score)));
@@ -763,6 +902,7 @@ export class MatchController {
   /** A host's lobby changed (a join, a leave, a table loaded): the roster, who is loading, and an armed start (A11). */
   private onHostLobby(h: HostRole): void {
     this.noteLoading(h.loading());
+    this.noteBallEndReady(h.ballEndReadiness());
     if (this.startArmed) this.tryStartFromTable(h, false);
     this.syncLobby(h);
     this.onLobby(h.roster());
@@ -770,6 +910,7 @@ export class MatchController {
 
   private onClientAck(ack: PayloadOf<'HELLO_ACK'>): void {
     this.noteLoading(ack.loading);
+    this.noteBallEndReady(Object.fromEntries(ack.ballEndReady.map((x) => [x.playerId, x.ready])));
     this.setCountdown(ack.startsInMs);
     this.onLobby(ack.participants);
   }
@@ -1166,7 +1307,8 @@ export class MatchController {
     // A11: the countdown is the one line that matters in the lobby, over a table note.
     const count = this.countdownSeconds();
     if (count !== null) return `Starting the match: ${this.participants().map((p) => (p.playerId === this.localId ? 'you' : p.displayName)).join(', ')}`;
-    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && this.loadingIds.length > 0)) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
+    // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
+    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0))) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
     if (this.phase === 'lobby') return this.lobbyMessage();
     if (this.phase === 'over') {
       if (this.seriesOver) return this.seriesOverLine;
@@ -1182,18 +1324,24 @@ export class MatchController {
     return this.opts.media?.status().lastError ?? null;
   }
 
-  /** The lobby line (A11): who is still loading, an armed start, else what starts the match. */
+  /**
+   * The lobby line (A11): who is still loading, an armed start, else what starts the match. A13: every player whose
+   * table cannot report ball ends is named, alone or after the loading note.
+   */
   private lobbyMessage(): string {
     const host = isHostRole(this.role);
+    const warn = this.unreadableLines();
+    const warned = warn.length > 0 ? ` · ${warn.join(' · ')}` : '';
     const loading = this.loadingIds.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`));
     // A12: the host's table before the match (the lobby lock, the wait for the host's own game to end).
-    if (host && this.lobbyLocked && this.participants().length < 2) return 'Waiting for players — the table unlocks when someone joins';
-    if (this.participants().length < 2) return host ? 'Waiting for players' : 'Waiting for the host to start';
+    if (host && this.lobbyLocked && this.participants().length < 2) return `Waiting for players — the table unlocks when someone joins${warned}`;
+    if (this.participants().length < 2) return `${host ? 'Waiting for players' : 'Waiting for the host to start'}${warned}`;
     if (loading.length > 0) {
       const tables = `${loading.join(', ')} table${loading.length > 1 ? 's' : ''}`;
-      if (host && this.startArmed) return `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open`;
-      return `Waiting for ${tables} to open${this.lobbyLocked ? '; your table unlocks then' : ''}`;
+      if (host && this.startArmed) return `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open${warned}`;
+      return `Waiting for ${tables} to open${this.lobbyLocked ? '; your table unlocks then' : ''}${warned}`;
     }
+    if (warn.length > 0) return `${warn.join(' · ')}${host ? ' · Start match on the Match tab starts anyway; Pass the turn then ends such a ball by hand' : ''}`;
     if (host && this.waitingForHostGame) return 'Everyone is in: finish the game on your table, then press Start on it to start the match';
     return host ? 'Everyone in? Start a game on your table (or press Start match)' : `Waiting for ${this.nameOf(this.hostId)} to start a game on the table`;
   }
@@ -1202,8 +1350,9 @@ export class MatchController {
     if (this.closed && !force) return;
     const panel = this.panel();
     const text = JSON.stringify(panel);
-    // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same.
-    const transfer = JSON.stringify(this.transfer());
+    // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
+    // the ball-end readiness of each player and the turn the host may pass.
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo()]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

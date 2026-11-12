@@ -28,6 +28,13 @@
  * `syncTableAudio`). While a match is on, `Control+Alt+Up` / `Down` step the voice and `Control+Alt+Left` / `Right`
  * my table (`VOLUME_SHORTCUTS`, global shortcuts registered at `openPanel`, released at `teardown` and on quit); a press
  * saves the setting, pushes it live, ticks the cue and shows the new level on the panel for a moment.
+ *
+ * A13 (2026-11-12, three matches stuck at grant 1 on an unpatched original table): whether this rig's open table can
+ * report ball ends is the witness's `captureMode` (`ballEndsFrom`: `live` = it follows the table's hook journal). It
+ * goes out in HELLO / the host's own roster facts and again on every lobby change (`announceLobby`), and the
+ * controller gets it with the witness's reason for the lobby line. `start()` in the lobby refuses while any player's
+ * table cannot report ball ends unless the host confirmed (`{ anyway: true }`, the Match tab's Start anyway);
+ * `passTurn()` is the host's Pass the turn during a game (TURN_PASS, logged).
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -102,7 +109,23 @@ export interface MatchStatus {
    * `tableNote` (D2.5, 2026-10-31): how the player's table differs from the host's (`mismatchWords`), null when it does
    * not; `buildMatch`: false when their VPX build differs (shown muted; the table may still be the same).
    */
-  participants: Array<{ id: string; name: string; rig: ParticipantInfo['rig']; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
+  participants: Array<{
+    id: string;
+    name: string;
+    rig: ParticipantInfo['rig'];
+    tableMatch: boolean | null;
+    tableNote: string | null;
+    buildMatch: boolean | null;
+    /** A13: whether this player's table can report ball ends (false: its turn never ends by itself); null = unknown. */
+    ballEnds: boolean | null;
+  }>;
+  /**
+   * A13 (2026-11-12): in the lobby, one line per player whose table cannot report ball ends. Not empty: the host's
+   * Start match needs `start({ anyway: true })` (the tab's Start anyway).
+   */
+  startWarnings: string[];
+  /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
+  pass: { name: string; ball: number; score: number } | null;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /**
@@ -172,8 +195,16 @@ export interface MatchStatus {
 export interface MatchHost {
   host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
   join(invite: string, displayName: string): Promise<MatchStatus>;
-  /** Host only: Start match in the lobby; A10: Next game between games (the same as a game started on the host's table). */
-  start(): Promise<MatchStatus>;
+  /**
+   * Host only: Start match in the lobby; A10: Next game between games (the same as a game started on the host's table).
+   * A13: in the lobby, while `startWarnings` is not empty, it throws unless `anyway` is true (the host confirmed).
+   */
+  start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+  /**
+   * A13 (2026-11-12): host only, during a game: end the turn holder's ball at its last known score and grant the next
+   * turn, as if its BALL_END had arrived (TURN_PASS in the match log). The Match tab confirms first.
+   */
+  passTurn(): Promise<MatchStatus>;
   /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
   resume(): Promise<MatchStatus>;
   /** Leave the match; A10: the host's leave between games is End match (MATCH_END to everyone first). */
@@ -323,7 +354,7 @@ interface Active {
    * host's own roster entry, then lobby updates), the witness reading they came from (`lobbyKey`), and a refresh
    * under way. Krobs joined before his table loaded and read "PC · different table file" for the whole match.
    */
-  sent: { rig: Rig; game: GameFingerprint };
+  sent: { rig: Rig; game: GameFingerprint; ballEnds: boolean | null };
   lobbyKey: string;
   refreshing: boolean;
   refreshAgain: boolean;
@@ -345,7 +376,18 @@ export function turnView(t: TurnServer | null): MatchStatus['turn'] {
 
 function lobbyKey(s: WitnessStatus): string {
   const vr = s.currentAttestation?.vr;
-  return JSON.stringify([gameFingerprintFrom(s, RECIPE_VERSION), vr?.sampledAt ?? null, vr?.inVr ?? null]);
+  return JSON.stringify([gameFingerprintFrom(s, RECIPE_VERSION), vr?.sampledAt ?? null, vr?.inVr ?? null, ballEndsFrom(s).ready]);
+}
+
+/**
+ * A13 (2026-11-12): whether this rig's open table can report ball ends, from the witness: `live` = it follows the
+ * table's hook journal (true); `basic` = a table is open and it does not (false, with the witness's own sentence
+ * when it has one: not patched, an original table, a machine it cannot read); no table = unknown (null).
+ */
+export function ballEndsFrom(s: Pick<WitnessStatus, 'captureMode' | 'note'>): { ready: boolean | null; reason: string | null } {
+  if (s.captureMode === 'live') return { ready: true, reason: null };
+  if (s.captureMode === 'basic') return { ready: false, reason: s.note?.trim() || null };
+  return { ready: null, reason: null };
 }
 
 async function ipifyPublicIp(): Promise<string | null> {
@@ -534,8 +576,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           tableMatch: c ? !c.tableMismatch.includes(p.playerId) : null,
           tableNote: words?.table ?? null,
           buildMatch: words ? words.build === null : null,
+          ballEnds: c?.ballEnds[p.playerId] ?? null,
         };
       }),
+      startWarnings: c?.startWarnings ?? [],
+      pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
       transfer: c?.transfer
         ? {
             proposer: nameIn(c, c.transfer.proposer),
@@ -672,6 +717,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   witness.onStatus((s) => {
     const a = active;
     if (!a) return;
+    // A13: this rig's own line about its table's ball ends follows the witness in every phase.
+    noteBallEnds(a.controller, s);
     checkLobby(a, s);
     const d = rigFromStatus(s);
     const now = d.rig;
@@ -684,6 +731,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.info('match: the witness reads the monitor now; the panel stays in the headset for this match');
     }
   });
+
+  /** A13: the controller's own-table facts (ready or not, and the witness's reason) for the lobby line. */
+  const noteBallEnds = (controller: MatchController, s: WitnessStatus): void => {
+    const be = ballEndsFrom(s);
+    controller.setLocalBallEnds(be.ready, be.reason);
+  };
 
   const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number): MatchController => {
     // D10.3: the match signalling split by channel: the panel page's mesh gets `rtc`, the native video mesh `video`.
@@ -706,6 +759,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       tableGameRunning: liveGameRunning(),
     });
     controller.onChange(() => emit());
+    noteBallEnds(controller, witness.status());
     if (split) videoSides.set(controller, split.video);
     return controller;
   };
@@ -1012,8 +1066,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const lobby = role.state.phase === 'lobby';
     const rigChanged = rig !== a.sent.rig;
     const gameChanged = lobby && JSON.stringify(game) !== JSON.stringify(a.sent.game);
-    if (!rigChanged && !gameChanged) return;
-    const u = { ...(rigChanged ? { rig } : {}), ...(gameChanged ? { game } : {}) };
+    // A13: whether this table can report ball ends, when the witness knows (no table open: nothing new to say).
+    const ballEnds = ballEndsFrom(witness.status()).ready;
+    const readyChanged = lobby && ballEnds !== null && ballEnds !== a.sent.ballEnds;
+    if (!rigChanged && !gameChanged && !readyChanged) return;
+    const u = { ...(rigChanged ? { rig } : {}), ...(gameChanged ? { game } : {}), ...(readyChanged ? { ballEndReady: ballEnds } : {}) };
     let done: boolean;
     try {
       done = role instanceof HostMatch ? role.updateLocal(u) : role.updateParticipant(u);
@@ -1021,9 +1078,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.warn(`match: the rig update did not go out: ${describeError(e)}`);
       return;
     }
-    a.sent = { rig, game: gameChanged ? game : a.sent.game };
+    a.sent = { rig, game: gameChanged ? game : a.sent.game, ballEnds: readyChanged ? ballEnds : a.sent.ballEnds };
     if (!done) return;
-    const what = [rigChanged ? `rig ${rig}` : null, gameChanged ? `table ${game.tableName} (${game.tableHash === ZERO_SHA256 ? 'no hash' : game.tableHash.slice(0, 12)})` : null].filter(Boolean).join(', ');
+    const what = [
+      rigChanged ? `rig ${rig}` : null,
+      gameChanged ? `table ${game.tableName} (${game.tableHash === ZERO_SHA256 ? 'no hash' : game.tableHash.slice(0, 12)})` : null,
+      readyChanged ? (ballEnds ? 'the table can report ball ends' : 'the table cannot report ball ends') : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
     log.info(`match: ${lobby ? 'lobby' : 'match'} update: ${what}; ${role instanceof HostMatch ? 'the players were told' : 'the host was told'}`);
     emit();
   };
@@ -1129,6 +1192,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const code = newMatchCode();
       const ws = witness.status();
       const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+      const ballEnds = ballEndsFrom(ws).ready;
       const engine = new HostMatch({
         transport,
         keys: matchIdentity().keys,
@@ -1141,6 +1205,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         companionVersion: opts.appVersion.slice(0, 32),
         // A11: who is still loading, and whether the start from this host's table may go.
         tableOpen: isTableOpen,
+        // A13: whether this host's own table can report ball ends, when a table is open.
+        ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
       });
       const controller = makeController(engine, ballsPerGame);
       const a: Active = {
@@ -1157,7 +1223,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         ...rigOf(rig),
         witnessRig: rigFrom(witness.status()),
         switching: false,
-        sent: { rig: rig.rig, game },
+        sent: { rig: rig.rig, game, ballEnds },
         lobbyKey: lobbyKey(ws),
         refreshing: false,
         refreshAgain: false,
@@ -1189,9 +1255,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
 
   type JoinOutcome = { kind: 'joined'; transport: WsPeerTransport; engine: ClientMatch; controller: MatchController } | { kind: 'refused'; refuse: PayloadOf<'REFUSE'> };
 
-  const tryJoin = async (url: string, code: string, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>): Promise<JoinOutcome> => {
+  const tryJoin = async (url: string, code: string, me: string, name: string, rig: Rig, game: ReturnType<typeof gameFingerprintFrom>, ballEnds: boolean | null): Promise<JoinOutcome> => {
     const transport = new WsPeerTransport({ localId: me });
-    const engine = new ClientMatch({ transport, keys: matchIdentity().keys, participant: participant(me, name, rig), game, throwdownCode: code, companionVersion: opts.appVersion.slice(0, 32) });
+    const engine = new ClientMatch({
+      transport,
+      keys: matchIdentity().keys,
+      participant: participant(me, name, rig),
+      game,
+      throwdownCode: code,
+      companionVersion: opts.appVersion.slice(0, 32),
+      // A13: whether this table can report ball ends, when a table is open (HELLO.ballEndReady).
+      ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
+    });
     // Built before HELLO so it sees HELLO_ACK's roster.
     const controller = makeController(engine);
     const offs: (() => void)[] = [];
@@ -1241,7 +1316,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const rig = await decide();
         const ws = witness.status();
         const game = gameFingerprintFrom(ws, RECIPE_VERSION);
-        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, game);
+        const ballEnds = ballEndsFrom(ws).ready;
+        const out = await tryJoin(parsed.url, parsed.code, me, name, rig.rig, game, ballEnds);
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
@@ -1259,7 +1335,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           ...rigOf(rig),
           witnessRig: rigFrom(witness.status()),
           switching: false,
-          sent: { rig: rig.rig, game },
+          sent: { rig: rig.rig, game, ballEnds },
           lobbyKey: lobbyKey(ws),
           refreshing: false,
           refreshAgain: false,
@@ -1323,7 +1399,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   return {
     host,
     join: joinMatch,
-    async start() {
+    async start(o) {
       const a = active;
       if (!a) return fail(new Error('No match: host one first'));
       const r = a.controller.currentRole;
@@ -1337,6 +1413,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         emit();
         return status();
       }
+      // A13: a table that cannot report ball ends holds its first turn for ever: the host confirms such a start.
+      const warnings = a.controller.status().startWarnings;
+      if (warnings.length > 0 && o?.anyway !== true) {
+        return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: Pass the turn ends such a ball.`));
+      }
       try {
         r.start();
       } catch (e) {
@@ -1344,6 +1425,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
       lastError = null;
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
+      if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
+      emit();
+      return status();
+    },
+    async passTurn() {
+      const a = active;
+      if (!a) return fail(new Error('No match'));
+      const r = a.controller.currentRole;
+      if (!(r instanceof HostMatch)) return fail(new Error('Only the host passes the turn'));
+      const p = a.controller.status().pass;
+      if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? 'the host could not pass it'}`));
+      lastError = null;
+      log.info(`match: ${a.code} turn passed from the Match tab: ${p.name}'s ball ${p.ball} ended at ${p.score}`);
       emit();
       return status();
     },

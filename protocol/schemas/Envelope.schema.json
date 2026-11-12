@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v4/Envelope.schema.json",
+  "$id": "https://castcade.dev/protocol/v5/Envelope.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "v": {
       "type": "number",
-      "const": 4,
+      "const": 5,
       "description": "Protocol version; peers with a different value refuse each other."
     },
     "type": {
@@ -19,6 +19,7 @@
         "STATE",
         "DMD_FRAME",
         "BALL_END",
+        "TURN_PASS",
         "GAME_OVER",
         "HOST_TRANSFER",
         "HOST_TRANSFER_ACK",

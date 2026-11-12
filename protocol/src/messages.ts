@@ -106,6 +106,11 @@ export const Hello = z
     throwdownCode: MatchId.describe('The Throwdown the client wants to join.'),
     participant: ParticipantInfo,
     game: GameFingerprint,
+    // A13 (2026-11-12): optional and never logged; a peer that does not know it strips it, and absent reads as unknown.
+    ballEndReady: z
+      .boolean()
+      .optional()
+      .describe("A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13)."),
   })
   .describe('client -> host. First message on a connection.');
 
@@ -141,6 +146,13 @@ export const HelloAck = z
       .array(PlayerId)
       .default([])
       .describe("Accepted participants whose table is not open yet, as the host judges from their fingerprint (A11): the match does not start from the table until this is empty."),
+    // A13 (2026-11-12): three matches stuck at grant 1 on a table no companion could read; the lobby now says so first.
+    ballEndReady: z
+      .array(z.object({ playerId: PlayerId, ready: z.boolean() }))
+      .default([])
+      .describe(
+        "A13: what each participant (the host included) said about its table's ball ends (`HELLO.ballEndReady`, then `PARTICIPANT_UPDATE.ballEndReady`): `ready` false = that player's table cannot report ball ends, so its turn would never end by itself. A participant not listed is unknown. Defaulted and never logged.",
+      ),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 
@@ -150,6 +162,10 @@ export const ParticipantUpdate = z
   .object({
     rig: RigDevice.optional().describe("The sender's rig now, when it changed since HELLO."),
     game: GameFingerprint.optional().describe("The sender's fingerprint now, when its table changed since HELLO."),
+    ballEndReady: z
+      .boolean()
+      .optional()
+      .describe("A13: whether the sender's table can report ball ends now (see `HELLO.ballEndReady`), when that changed since HELLO. Lobby only."),
   })
   .describe(
     "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
@@ -223,6 +239,19 @@ export const BallEnd = z
     shootAgain: z.boolean().describe('True when the detector saw an extra ball: the host re-grants the same player and ball.'),
   })
   .describe('client -> host. Accepted only from the current grant holder.');
+
+// A13 (2026-11-12): the host's Pass the turn. A new LOGGED message (protocol 5): the fold needs it to end a ball of a
+// player who is not the sender, which no BALL_END can say.
+export const TurnPass = z
+  .object({
+    grantSeq: z.number().int().min(1).describe('The outstanding grant this pass answers in place of a BALL_END.'),
+    player: PlayerId.describe('The holder of that grant: the player whose ball the host ended.'),
+    ballNumber: BallNumber.describe("The grant's ball."),
+    score: Score.describe("The holder's last known score (its last STATE, else its last logged score): what the ball ends at."),
+  })
+  .describe(
+    "host -> all, logged. The host ended the holder's ball by hand (the holder's table could not report its end, or the player is stuck): folded exactly like that player's BALL_END with `shootAgain: false` at `score`, and the rotation goes on. The entry's `from` is the host, so the log shows the ball was passed, not played out. A BALL_END for the passed grant that arrives later is rejected (`stale_grant` / `not_grant_holder`).",
+  );
 
 export const GameOver = z
   .object({
@@ -472,6 +501,7 @@ export const payloadSchemas = {
   STATE: State,
   DMD_FRAME: DmdFrame,
   BALL_END: BallEnd,
+  TURN_PASS: TurnPass,
   GAME_OVER: GameOver,
   HOST_TRANSFER: HostTransfer,
   HOST_TRANSFER_ACK: HostTransferAck,
@@ -505,6 +535,7 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   STATE: 'any',
   DMD_FRAME: 'any',
   BALL_END: 'client->host',
+  TURN_PASS: 'host->all',
   GAME_OVER: 'client->host',
   HOST_TRANSFER: 'any',
   HOST_TRANSFER_ACK: 'any',

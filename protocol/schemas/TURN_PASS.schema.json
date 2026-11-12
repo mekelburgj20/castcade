@@ -1,0 +1,40 @@
+{
+  "$id": "https://castcade.dev/protocol/v5/TURN_PASS.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "grantSeq": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991,
+      "description": "The outstanding grant this pass answers in place of a BALL_END."
+    },
+    "player": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_.:-]+$",
+      "description": "The holder of that grant: the player whose ball the host ended."
+    },
+    "ballNumber": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99,
+      "description": "The grant's ball."
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000000000,
+      "description": "The holder's last known score (its last STATE, else its last logged score): what the ball ends at."
+    }
+  },
+  "required": [
+    "grantSeq",
+    "player",
+    "ballNumber",
+    "score"
+  ],
+  "additionalProperties": false,
+  "description": "host -> all, logged. The host ended the holder's ball by hand (the holder's table could not report its end, or the player is stuck): folded exactly like that player's BALL_END with `shootAgain: false` at `score`, and the rotation goes on. The entry's `from` is the host, so the log shows the ball was passed, not played out. A BALL_END for the passed grant that arrives later is rejected (`stale_grant` / `not_grant_holder`)."
+}

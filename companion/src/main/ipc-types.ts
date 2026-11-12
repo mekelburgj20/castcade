@@ -53,6 +53,8 @@ export const IPC = {
   matchJoin: 'match:join',
   matchStart: 'match:start',
   matchResume: 'match:resume',
+  /** A13: the host's Pass the turn. */
+  matchPassTurn: 'match:passTurn',
   /** D7.6.3: save 2 s of eye frames to the logs folder. */
   matchSaveFrames: 'match:saveFrames',
   /** D7.6: the VR test bench. */
@@ -224,8 +226,12 @@ export interface CastcadeApi {
     /**
      * Host only: freeze the roster (two or more players) and issue the first grant. A10 (2026-11-02): between games of a
      * series, Next game (NEXT_GAME, then grant 1 of it), the same as a game started on the host's table.
+     * A13 (2026-11-12): in the lobby, while `startWarnings` is not empty (a table that cannot report ball ends), it
+     * rejects unless `anyway` is true: the host's explicit confirmation.
      */
-    start(): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
+    passTurn(): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */

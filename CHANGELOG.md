@@ -7,6 +7,19 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+**Protocol 5** (a new logged message, `TURN_PASS`): a 0.2.39 companion is refused at HELLO, so everyone in a match
+updates together.
+
+### Added
+
+- **The lobby says whose table cannot report ball ends, and the host can pass the turn (A13).** Three matches on an
+  unpatched original (Dark Chaos, 2026-11-12) sat on `grant 1` until Forfeit while the witness had already logged that
+  it could not read the table. Each companion now tells the lobby whether its table is followed live
+  (`ballEndReady` on HELLO / PARTICIPANT_UPDATE / HELLO_ACK; absent = unknown, never warned about); the Match tab and
+  the panel name each player whose table is not, Start match asks the host for "Start anyway", and a start from the
+  table waits. During a game the host has **Pass the turn**: it ends the holder's ball at the last known score with a
+  logged, host-signed `TURN_PASS` and grants the next turn; a late `BALL_END` for that ball is rejected.
+
 ### Fixed
 
 - **The host never got a joining player's native picture (D10.3.9).** Both helpers made their video sender with
