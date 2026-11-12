@@ -4,12 +4,16 @@
  * socket.io v4, default namespace, handshake `auth { deviceId, deviceToken }`, the five events, the limits.
  * Everything is in memory; `data` is never read.
  *
- * What the contract leaves open and this fake chose (the companion works either way; see each line):
- * - `match:peer joined` is not replayed to a host that re-registers (the companion links a peer on its first frame).
- * - a `match:relay` from a client while the host socket is away is dropped (the companion's host sends RELINK later).
- * - a message over the size cap or the rate limit is dropped and counted, the socket stays connected.
+ * As amended 2026-11-12:
+ * - the host socket's rate limit is per destination: 200 `match:relay` per 10 s for each `to`, a bucket each; a
+ *   client socket has one bucket of 200 per 10 s.
+ * - a `match:relay` from a client while the host socket is away is dropped silently.
  * - `match:join` from a socket already in the room answers ok with the same peer id.
  * - `match:host` for a code whose room is held by another device answers `{ ok: false, error: 'code_in_use' }`.
+ * - a host that re-registers is sent `match:peer { state: 'joined' }` again for every client in the room.
+ *
+ * Still open in the contract, chosen here: a message over the size cap or the rate limit is dropped and counted, and
+ * the socket stays connected.
  */
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server as HttpServer } from 'node:http';
@@ -27,7 +31,7 @@ export interface FakeRelayOptions {
   maxSockets?: number;
   /** Bytes per `data`. Contract: 256 KB. */
   maxBytes?: number;
-  /** `match:relay` per window per socket. Contract: 200 per 10 s. */
+  /** `match:relay` per window: per client socket, and per destination for the host socket. Contract: 200 per 10 s. */
   rate?: { limit: number; windowMs: number };
   /** Failed `match:join` per minute per socket before `rate_limited`. */
   joinFailuresPerMinute?: number;
@@ -92,12 +96,15 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
     if (room.host) room.host.data.room = undefined;
   };
 
-  /** True when this `match:relay` is inside the socket's rate window. */
-  const underRate = (s: Socket): boolean => {
+  /** True when this `match:relay` is inside its rate window: the socket's own, or for a host the destination's. */
+  const underRate = (s: Socket, to: string | null): boolean => {
     const now = Date.now();
-    const stamps = (s.data.stamps as number[] | undefined) ?? [];
+    const buckets = (s.data.buckets as Map<string, number[]> | undefined) ?? new Map<string, number[]>();
+    s.data.buckets = buckets;
+    const key = to ?? '';
+    const stamps = buckets.get(key) ?? [];
+    buckets.set(key, stamps);
     while (stamps.length > 0 && (stamps[0] as number) <= now - rate.windowMs) stamps.shift();
-    s.data.stamps = stamps;
     if (stamps.length >= rate.limit) return false;
     stamps.push(now);
     return true;
@@ -127,7 +134,10 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
         existing.host = socket;
         socket.data.room = code;
         socket.data.role = 'host';
-        return ack?.({ ok: true });
+        ack?.({ ok: true });
+        // The host is back: it is told again who is in the room.
+        for (const c of existing.peers.values()) socket.emit('match:peer', { peer: c.peer, state: 'joined' });
+        return;
       }
       const room: Room = {
         code,
@@ -173,14 +183,15 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
         dropped.size += 1;
         return;
       }
-      if (!underRate(socket)) {
+      const fromHost = room.host === socket;
+      if (fromHost && typeof p.to !== 'string') return;
+      if (!underRate(socket, fromHost ? (p.to as string) : null)) {
         dropped.rate += 1;
         return;
       }
       relayed.set(deviceOf(socket), (relayed.get(deviceOf(socket)) ?? 0) + 1);
       largest = Math.max(largest, bytes);
-      if (room.host === socket) {
-        if (typeof p.to !== 'string') return;
+      if (fromHost) {
         for (const c of room.peers.values()) {
           if (c.peer === p.to) c.socket.emit('match:relay', { data: p.data });
         }

@@ -110,7 +110,8 @@ messages (primary); a UPnP port mapping is the fallback. The protocol is unchang
 - **Match tab.** One line under the turn: `Through ArcAid` (with `(reconnecting to ArcAid…)` while the host's socket
   is away) or `Direct to <host:port>`. `MatchStatus.via`, `path`, `directInvite`, `relayNote`, `portMapping`.
 - **A drop on the relay.** The host's socket to ArcAid going away drops every relay player at once. The host takes the
-  room back when socket.io reconnects, tells its former peers to relink (a transport-private string, §4a), each
+  room back when socket.io reconnects (ArcAid then names the clients in the room again; the companion does not need
+  it, a peer is a link from its first frame), tells its former peers to relink (a transport-private string, §4a), each
   resumes with RECONNECT and RESUMEs the pause that names it. For that last step the controller now also resumes when
   a pause for its own drop reaches it on a live link (with two or more dropped at once the host pauses for each in
   turn, and the second one's pause arrives after it is back; before D10.8 that pause waited for the host's Resume
@@ -120,8 +121,11 @@ messages (primary); a UPnP port mapping is the fallback. The protocol is unchang
   `ws://` URL; a relay client refuses to move to one. The companion never calls `transferHost` and its clients do not
   listen, so nothing is lost that worked before; a transfer through the relay needs a contract (a room handed to
   another device) and a protocol answer for the endpoint.
-- **Rate.** `RelayPacer` keeps each socket under ArcAid's 200 messages per 10 s: STATE and DMD_FRAME are shed first,
-  the rest waits in order. 2 players stay well under; with 3 or more the host's socket is the bottleneck (§4a).
+- **Rate.** ArcAid allows 200 `match:relay` per 10 s per client socket and, for the host, per destination (amended
+  2026-11-12; the first wording counted the host's socket as a whole, which a host that is up reached with three
+  clients). `RelayPacer` keeps each bucket under it: one pacer on a client, one per destination on the host; STATE
+  and DMD_FRAME are shed first, the rest waits in order. STATE at 10 Hz is half a bucket, so nothing is shed in a
+  normal match at any size (§4a).
 - **Router port** (`main/port-mapping.ts`): UPnP IGD written directly on `node:dgram` and `fetch` (no dependency:
   the maintained npm libraries bring an XML parser and a gateway prober for three requests): SSDP search from every
   LAN address, the description fetched only from the device that answered, `AddPortMapping` TCP 27401 → this PC with

@@ -12,11 +12,16 @@
  *   client    -> server  match:relay { data }          delivered to the host as   match:relay { from: peer, data }
  *   host      -> server  match:relay { to: peer, data } delivered to that client as match:relay { data }
  *   server    -> client  match:closed { reason }       (the host socket gone for more than 30 s)
- *   limits    256 KB per message, 200 messages per 10 s per socket, 8 sockets per room, 12 h per room
+ *   limits    256 KB per message; 200 `match:relay` per 10 s per client socket, and for the host socket per
+ *             destination (`to`), each with its own bucket; 8 sockets per room; 12 h per room
+ *   also      a client frame while the host socket is away is dropped silently; `match:join` from a socket already
+ *             in the room answers ok with the same `peer`; a code owned by another device acks `code_in_use`; a host
+ *             that re-registers is sent `match:peer joined` again for every client in the room
  *
  * A link here behaves like a socket of `WsPeerTransport`:
- * - host: a relay peer becomes a link with its first frame, which must be HELLO or RECONNECT (`match:peer joined` is
- *   not needed and not relied on); `match:peer left` closes it (a leave).
+ * - host: a relay peer becomes a link with its first frame, which must be HELLO or RECONNECT (`match:peer joined`,
+ *   also the one re-sent after a host resume, is not needed: a socket in the room is not yet a player);
+ *   `match:peer left` closes it (a leave).
  * - client: the host's id is learned from its first frame; the link closes (a leave) when this socket drops, on
  *   `match:closed`, and when the host says so (below). `connectTo` re-joins the room if the socket changed and sends
  *   RECONNECT as the opening frame, so the engine resumes from the log head as it does over WebSocket.
@@ -28,9 +33,11 @@
  * is not a protocol frame, in `data`: to every peer it had before the drop once it is registered again, and to any
  * peer whose frame arrives on no link. The server relays it like any other string.
  *
- * The 200-per-10-s limit counts every `match:relay` this socket emits, and a host's `send('all')` is one emit per
- * client, so a host that is the player up (STATE at 10 Hz) reaches it with three clients. `RelayPacer` keeps this side
- * under the limit: STATE and DMD_FRAME (latest wins, never logged) are shed first, everything else waits in order.
+ * `RelayPacer` keeps this side under the rate limit: STATE and DMD_FRAME (latest wins, never logged) are shed first,
+ * everything else waits in order. A client has one pacer; the host has one per destination, as the server has one
+ * bucket per `to` (amended 2026-11-12: the first contract counted the host's socket as a whole, which a host that is
+ * the player up reached with three clients). STATE at 10 Hz is half a bucket, so nothing is shed in a normal match
+ * at any size; the pacer is there for a burst of signalling.
  */
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
@@ -78,7 +85,7 @@ export interface RelayOptions {
   connectTimeoutMs?: number;
   /** How long a `match:host` / `match:join` ack may take. Default 4 s (a server without the relay never acks). */
   ackTimeoutMs?: number;
-  /** Test seam: the pacer's budget. Default: 180 per 10 s, the last 60 kept for frames that must arrive. */
+  /** Test seam: the pacer's budget (per destination on a host). Default: 180 per 10 s, the last 60 kept for frames that must arrive. */
   pace?: Partial<PacerOptions>;
 }
 
@@ -184,7 +191,7 @@ function errorFromAck(event: 'match:host' | 'match:join', code: string, error: u
   if (e === 'full') return new RelayError('full', `the match ${code} is full`);
   if (e === 'unauthorized') return new RelayError('unauthorized', 'ArcAid did not accept this device');
   if (e === 'rate_limited') return new RelayError('rate_limited', 'ArcAid is rate limiting this device');
-  if (event === 'match:host' && /in.?use|exists|taken/i.test(e)) return new RelayError('code_in_use', `the code ${code} is in use`);
+  if (e === 'code_in_use') return new RelayError('code_in_use', `the code ${code} is in use`);
   return new RelayError('refused', `ArcAid refused ${event}: ${e.slice(0, 200)}`);
 }
 
@@ -364,13 +371,28 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private readonly stateHandlers = new Set<(s: RelayHostState) => void>();
   private rehostTimer: ReturnType<typeof setTimeout> | null = null;
   private seqForRefuse = 0;
-  private readonly pacer: RelayPacer<{ to: string; data: string }>;
+  /** One pacer per destination: the server keeps a rate bucket for each `to`. */
+  private readonly pacers = new Map<string, RelayPacer<string>>();
+  private shedGone = 0;
 
-  constructor(opts: RelayOptions) {
-    super(opts);
-    this.pacer = new RelayPacer((p) => {
-      if (this.socket?.connected) this.socket.emit('match:relay', p);
-    }, opts.pace);
+  private pacerFor(relayPeer: string): RelayPacer<string> {
+    let p = this.pacers.get(relayPeer);
+    if (!p) {
+      p = new RelayPacer<string>((data) => {
+        if (this.socket?.connected) this.socket.emit('match:relay', { to: relayPeer, data });
+      }, this.opts.pace);
+      this.pacers.set(relayPeer, p);
+    }
+    return p;
+  }
+
+  private emitTo(relayPeer: string, data: string, sheddable: boolean): void {
+    this.pacerFor(relayPeer).send(data, sheddable);
+  }
+
+  /** What waits for the destinations is dropped (their links are gone); the windows' history stays, as the server's does. */
+  private clearPacers(): void {
+    for (const p of this.pacers.values()) p.clear();
   }
 
   /** Open the connection to ArcAid (no room yet). Rejects with a `RelayError`. */
@@ -397,7 +419,9 @@ export class RelayHostTransport extends RelayBase implements Transport {
 
   /** Sheddable frames dropped to stay under the rate limit, for the log. */
   get shed(): number {
-    return this.pacer.shed;
+    let n = this.shedGone;
+    for (const p of this.pacers.values()) n += p.shed;
+    return n;
   }
 
   private setState(s: RelayHostState): void {
@@ -415,6 +439,13 @@ export class RelayHostTransport extends RelayBase implements Transport {
       if (typeof p?.peer !== 'string' || p.state !== 'left') return;
       this.stale.delete(p.peer);
       this.closeLink(p.peer, true);
+      // That socket is gone for good (a client that comes back has a new peer id): its pacer goes with it.
+      const pacer = this.pacers.get(p.peer);
+      if (pacer) {
+        this.shedGone += pacer.shed;
+        pacer.clear();
+        this.pacers.delete(p.peer);
+      }
     });
   }
 
@@ -426,7 +457,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
   protected onSocketDown(): void {
     if (this.code === null) return;
     for (const peer of this.links.keys()) this.stale.add(peer);
-    this.pacer.clear();
+    this.clearPacers();
     for (const peer of [...this.links.keys()]) this.closeLink(peer, true);
     this.setState('reconnecting');
   }
@@ -456,7 +487,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
     const now = Date.now();
     if (now - (this.relinkAt.get(relayPeer) ?? -Infinity) < RELINK_GAP_MS) return;
     this.relinkAt.set(relayPeer, now);
-    this.pacer.send({ to: relayPeer, data: RELINK }, false);
+    this.emitTo(relayPeer, RELINK, false);
   }
 
   private onFrame(relayPeer: string, text: string): void {
@@ -469,7 +500,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
         const refuse = foreignVersionRefusal(text, this.localId, this.seqForRefuse + 1);
         if (refuse) {
           this.seqForRefuse += 1;
-          this.pacer.send({ to: relayPeer, data: encodeFrame(refuse) }, false);
+          this.emitTo(relayPeer, encodeFrame(refuse), false);
         }
       }
       this.fail(e, link?.player ?? null);
@@ -506,7 +537,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
     const frame = this.frameOf(msg, to === 'all' ? null : to);
     if (frame === null) return;
     const sheddable = SHEDDABLE.has(msg.type);
-    for (const t of targets) if (t !== undefined) this.pacer.send({ to: t, data: frame }, sheddable);
+    for (const t of targets) if (t !== undefined) this.emitTo(t, frame, sheddable);
   }
 
   /** Forget `peer`'s link on purpose (after REFUSE or a rejected RECONNECT): no leave. The relay has no kick. */
@@ -532,7 +563,8 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.closed = true;
     if (this.rehostTimer) clearTimeout(this.rehostTimer);
     this.rehostTimer = null;
-    this.pacer.clear();
+    this.clearPacers();
+    this.pacers.clear();
     this.links.clear();
     this.byPlayer.clear();
     this.stale.clear();

@@ -57,7 +57,7 @@ const hostOn = (r: FakeRelay, extra: Partial<RelayOptions> = {}): RelayHostTrans
   open.push(t);
   return t;
 };
-const clientOn = (r: FakeRelay, id: 'a' | 'b', extra: Partial<RelayOptions> = {}): RelayClientTransport => {
+const clientOn = (r: FakeRelay, id: 'a' | 'b' | 'c', extra: Partial<RelayOptions> = {}): RelayClientTransport => {
   const t = new RelayClientTransport(optsFor(r, id, extra));
   open.push(t);
   return t;
@@ -94,25 +94,30 @@ describe('relay transports (D10.8)', () => {
     a.send('all', hello('a'));
     for (let i = 2; i <= 40; i++) a.send('all', resume('a', i));
     b.send('all', hello('b'));
-    await until(() => hSeen.length === 43);
-    expect(hSeen.slice(0, 3)).toEqual(['join a', 'a:HELLO:1', 'a:RESUME:2']);
-    expect(hSeen.filter((s) => s.startsWith('a:RESUME')).map((s) => Number(s.split(':')[2]))).toEqual(Array.from({ length: 39 }, (_, i) => i + 2));
-    expect(hSeen.slice(-2)).toEqual(['join b', 'b:HELLO:1']);
+    await until(() => hSeen.includes('a:RESUME:40') && hSeen.includes('b:HELLO:1'));
+    // The two clients are two sockets: their frames interleave at the host as the network has them, so each client's
+    // are checked on their own. Order is per link.
+    const ofA = hSeen.filter((s) => s === 'join a' || s.startsWith('a:'));
+    expect(ofA).toEqual(['join a', 'a:HELLO:1', ...Array.from({ length: 39 }, (_, i) => `a:RESUME:${i + 2}`)]);
+    expect(hSeen.filter((s) => s === 'join b' || s.startsWith('b:'))).toEqual(['join b', 'b:HELLO:1']);
+    expect(hSeen).toHaveLength(43);
     expect(h.peers().sort()).toEqual(['a', 'b']);
 
     // Host -> one client, then -> all; the client learns the host's id from the first frame.
     h.send('a', resume('h', 1));
     for (let i = 2; i <= 30; i++) h.send('all', resume('h', i));
-    await until(() => aSeen.length === 31 && bSeen.length === 30);
-    expect(aSeen.slice(0, 3)).toEqual(['join h', 'h:RESUME:1', 'h:RESUME:2']);
-    expect(bSeen[0]).toBe('join h');
-    expect(bSeen.slice(1).map((s) => Number(s.split(':')[2]))).toEqual(Array.from({ length: 29 }, (_, i) => i + 2));
+    await until(() => aSeen.includes('h:RESUME:30') && bSeen.includes('h:RESUME:30'));
+    expect(aSeen).toEqual(['join h', ...Array.from({ length: 30 }, (_, i) => `h:RESUME:${i + 1}`)]);
+    expect(bSeen).toEqual(['join h', ...Array.from({ length: 29 }, (_, i) => `h:RESUME:${i + 2}`)]);
     expect(a.peers()).toEqual(['h']);
 
-    // closePeer forgets the link on purpose: no leave, and nothing more goes to that player.
+    // closePeer forgets the link on purpose: no leave, and nothing more goes to that player. `a` gets 31 and then
+    // 32; had 31 gone to `b` too it would have been sent before 32 was, so `a` holding 32 means `b` was skipped.
     h.closePeer('b');
     h.send('all', resume('h', 31));
-    await until(() => aSeen.length === 32);
+    h.send('a', resume('h', 32));
+    await until(() => aSeen.includes('h:RESUME:32'));
+    await new Promise((res) => setTimeout(res, 50));
     expect(bSeen).toHaveLength(30);
     expect(hSeen.filter((s) => s.startsWith('leave'))).toEqual([]);
 
@@ -324,38 +329,41 @@ describe('RelayPacer (D10.8): under the relay rate limit', () => {
     expect(out.at(-1)).toBe(13);
   });
 
-  it('a host that is the player up with three clients stays under the server limit: STATE thins out, nothing else is lost or dropped by the server', async () => {
-    // The fake counts like the contract (200 per 10 s); the window here is 300 ms so the test is quick.
+  it('the host paces each destination on its own (the server has a bucket per `to`): a host up with three clients sheds nothing; one flooded destination thins out alone', async () => {
+    // The fake counts like the contract (200 per 10 s, per destination for the host), scaled down: 14 per 300 ms.
     const windowMs = 300;
-    const r = (relay = await startFakeRelay({ devices: { ...DEVICES, 'dev-c': 'tok-c' }, rate: { limit: 20, windowMs } }));
-    const pace = { limit: 18, reserve: 6, windowMs };
-    const h = hostOn(r, { pace });
+    const r = (relay = await startFakeRelay({ devices: { ...DEVICES, 'dev-c': 'tok-c' }, rate: { limit: 14, windowMs } }));
+    // STATE is shed once 8 of a destination's 12 are used.
+    const h = hostOn(r, { pace: { limit: 12, reserve: 4, windowMs } });
     await h.host('RELAYA');
-    const got: Record<string, string[]> = { a: [], b: [] };
-    for (const id of ['a', 'b'] as const) {
+    const got: Record<string, string[]> = { a: [], b: [], c: [] };
+    for (const id of ['a', 'b', 'c'] as const) {
       const c = clientOn(r, id);
       c.onMessage((_f, m) => got[id]?.push(`${m.type}:${m.seq}`));
       await c.connect('RELAYA');
       c.send('all', hello(id));
     }
-    await until(() => h.peers().length === 2);
-    // 60 STATE to all (120 emits) with a must-arrive frame every tenth, in about one window.
-    for (let i = 1; i <= 60; i++) {
-      h.send('all', state('h', i));
-      if (i % 10 === 0) h.send('all', resume('h', 1000 + i));
-      await new Promise((res) => setTimeout(res, 5));
-    }
-    await until(() => got['a']?.filter((s) => s.startsWith('RESUME')).length === 6 && got['b']?.filter((s) => s.startsWith('RESUME')).length === 6, 6000);
+    await until(() => h.peers().length === 3);
+    const states = (id: string): number[] => (got[id] ?? []).filter((s) => s.startsWith('STATE')).map((s) => Number(s.split(':')[1]));
+
+    // 7 STATE to all at once: 21 emits on the socket (over 14, had the socket been one bucket), 7 per destination.
+    for (let i = 1; i <= 7; i++) h.send('all', state('h', i));
+    await until(() => ['a', 'b', 'c'].every((id) => states(id).length === 7));
+    for (const id of ['a', 'b', 'c']) expect(states(id), id).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(h.shed).toBe(0);
     expect(r.dropped.rate).toBe(0);
-    expect(h.shed).toBeGreaterThan(0);
-    for (const id of ['a', 'b']) {
-      const resumes = got[id]?.filter((s) => s.startsWith('RESUME')).map((s) => Number(s.split(':')[1]));
-      expect(resumes).toEqual([1010, 1020, 1030, 1040, 1050, 1060]);
-      const states = got[id]?.filter((s) => s.startsWith('STATE')).map((s) => Number(s.split(':')[1])) ?? [];
-      expect(states.length).toBeGreaterThan(0);
-      expect(states.length).toBeLessThan(60);
-      expect([...states].sort((x, y) => x - y)).toEqual(states);
-    }
+
+    // Two windows later every bucket is empty (a timer never fires early). 30 STATE at once to `a` alone, then a
+    // frame that must arrive: `a`'s STATE thins out, the frame arrives, the server drops nothing; `b` is not touched.
+    await new Promise((res) => setTimeout(res, 2 * windowMs));
+    for (let i = 101; i <= 130; i++) h.send('a', state('h', i));
+    h.send('a', resume('h', 1000));
+    for (let i = 201; i <= 205; i++) h.send('b', state('h', i));
+    await until(() => got['a']?.includes('RESUME:1000') === true && states('b').length === 12);
+    expect(states('a').slice(7)).toEqual([101, 102, 103, 104, 105, 106, 107, 108]);
+    expect(h.shed).toBe(22);
+    expect(states('b').slice(7)).toEqual([201, 202, 203, 204, 205]);
+    expect(r.dropped.rate).toBe(0);
   }, 15_000);
 });
 

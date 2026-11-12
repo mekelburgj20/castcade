@@ -336,6 +336,11 @@ export interface MatchHostOptions {
   lockFile?: string;
   /** Test seam: the address the host listens on. Default `0.0.0.0` (the other player comes in through the router). */
   listenAddress?: string;
+  /**
+   * Test seam: `host({ port: 0 })` listens on a port the OS picks (read back into the status and the invite), so a
+   * test never picks a port and binds it later (a picked port can sit in a range Windows has reserved).
+   */
+  ephemeralPort?: boolean;
   /** Test seam: the rig decision at host / join. Default `decideRig(witness)`: the running VPX probed now (A6, 2026-10-31). */
   rig?: () => Promise<RigDecision>;
   /** D7.6.3: where saved frames go. Default `<userData>/logs/frames` (beside companion.log; `file`'s folder is userData). */
@@ -1251,8 +1256,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (active) return fail(new Error('Leave the current match first'));
       await endBench('a match is hosted');
       lastError = null;
-      const port = o.port === undefined ? settings.port : cleanPort(o.port);
-      if (port === null) return fail(new Error('The port must be a number from 1024 to 65535'));
+      const asked = o.port === 0 && opts.ephemeralPort ? 0 : o.port === undefined ? settings.port : cleanPort(o.port);
+      if (asked === null) return fail(new Error('The port must be a number from 1024 to 65535'));
+      let port = asked;
       const ballsPerGame = o.ballsPerGame === 5 ? 5 : 3;
       const name = cleanName(o.displayName) ?? defaultName();
       saveSettings(patchMatchSettings(settings, { port, ballsPerGame, displayName: name }));
@@ -1352,7 +1358,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       await openPanel(a);
       let listening = true;
       try {
-        await listener.listen(port, opts.listenAddress ?? '0.0.0.0');
+        const endpoint = await listener.listen(port, opts.listenAddress ?? '0.0.0.0');
+        if (port === 0) {
+          port = Number(new URL(endpoint).port);
+          a.port = port;
+        }
       } catch (e) {
         const errno = (e as NodeJS.ErrnoException).code;
         const why = errno === 'EADDRINUSE' ? `Port ${port} is already in use on this PC` : `Could not listen on port ${port}: ${describeError(e)}`;

@@ -59,8 +59,7 @@ describe('D10.8: a match through the relay', () => {
             .slice(-40)
             .map((e) => `${e.player} ${e.event} ${(JSON.stringify(e.payload) ?? '').slice(0, 90)}`)
             .join('\n');
-        // The scripted match lasts a fraction of a second, so the host's pacer meets the 200-per-10-s limit and the last
-        // frames wait for the window: about 10 s here, never in a match played by people.
+        // The whole scripted match is inside one rate window; with a bucket per destination the host stays under it.
         timer = setTimeout(() => reject(new Error(`timed out\n${trace()}\n${errors.join('\n')}`)), 25_000);
       });
       const list = await Promise.race([Promise.all(fakes.map((f) => f.done)), guard]).finally(() => timer && clearTimeout(timer));

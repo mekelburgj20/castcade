@@ -127,39 +127,45 @@ exactly this, for the tests and as a reference, is `companion/src/match/relay-fa
 | host → server | `match:relay` | `{ to: peer, data }` | delivered to that client as `match:relay { data }` |
 | server → client | `match:closed` | `{ reason }` | when the host socket has been gone for more than 30 s |
 
-`data` is an opaque string, never read or stored. Limits: 256 KB per message, 200 messages per 10 s per socket, 8
-sockets per room, a room lives 12 h. The room survives its host socket for 30 s: the host emits `match:host` again
-with the same code from the same device and has it back.
+`data` is an opaque string, never read or stored. Limits: 256 KB per message; 8 sockets per room; a room lives 12 h;
+and a rate limit of 200 `match:relay` per 10 s, counted **per client socket** and, for the host socket, **per
+destination** (a separate bucket for each `to`). The room survives its host socket for 30 s: the host emits
+`match:host` again with the same code from the same device and has it back.
+
+Amended 2026-11-12 (after the companion side was built against the first wording; both sides have these):
+
+- **The host's rate limit is per destination.** The first wording counted the host socket as a whole, and a host's
+  send to all is one emit per client: with the host up (STATE at 10 Hz, mirrored to the others) 2 players sat at half
+  the limit, 3 at it and 4 over it, and all client-to-client MEDIA_SIGNAL passes through the host's socket too.
+- **A client frame sent while the host socket is away is dropped silently.**
+- **`match:join` is idempotent** for a socket already in the room: ok, with the same `peer`.
+- **A code owned by another device** acks `{ ok: false, error: 'code_in_use' }`.
+- **On a host resume** the server sends `match:peer { state: 'joined' }` again for every client in the room.
 
 What the companion relies on, and what it does not:
 
 - **Relied on:** per-socket ordering of `match:relay`; `match:peer left` when a client socket goes; `match:closed`
   to the clients once the grace ran out; `match:host` by the owning device succeeding again inside the grace (and,
-  after a server restart, creating the room anew); `no_such_match` for a code with no room.
-- **Not relied on:** `match:peer joined` (a peer becomes a link at the host with its first frame, HELLO or
-  RECONNECT), nor its replay to a host that re-registers; what the server does with a client's frame while the host
-  socket is away (the companion assumes it is lost); an idempotent `match:join` (the companion joins again only on a
-  new socket); the text of the `match:host` refusal for a code in use (any error that reads as in use, exists or
-  taken gets a new code; anything else sends the host to the direct path).
-- **Not in the contract, done between companions:** a client is never told that the host's socket dropped and came
-  back, yet frames sent meanwhile are lost and the client must resume with RECONNECT. The host therefore sends the
-  string `castcade-relay:relink` as `data` (not a protocol frame) to the peers it had before the drop and to any peer
-  whose frame arrives on no link; the client treats it as its link closing and reconnects. The server relays it like
-  any other string. A server event for this (the clients told that the host is away, then back) would make it
-  unnecessary, but nothing needs it.
+  after a server restart, creating the room anew); `no_such_match` for a code with no room; `code_in_use` (the host
+  takes a new code, three tries; any other refusal sends it to the direct path); a bucket per destination for the host.
+- **Not used:** `match:peer joined`, the first one and the ones re-sent on a host resume. A socket in the room is not
+  yet a player: a peer becomes a link at the host with its first frame, HELLO or RECONNECT. The companion also joins
+  again only on a new socket, so it does not need the idempotent `match:join`.
+- **Not in the contract, done between companions (kept):** a client is never told that the host's socket dropped and
+  came back, yet frames sent meanwhile are dropped and the client must resume with RECONNECT. The host therefore sends
+  the string `castcade-relay:relink` as `data` (not a protocol frame) to the peers it had before the drop and to any
+  peer whose frame arrives on no link; the client treats it as its link closing and reconnects. The server relays it
+  like any other string.
 - **No ack on `match:relay`,** and none needed: the engine's RECONNECT covers loss.
 
-**Two limits a match can meet, and what the companion does.**
+**The limits in a match, and what the companion does.**
 
-- **Rate, on the host's socket.** The limit counts every `match:relay` a socket emits, and a host's send to all is
-  one emit per client. STATE runs at up to 10 Hz from the player up and the host mirrors it to the others: with the
-  host up that is 100 per 10 s per client, so 2 players sit at half the limit, 3 at the limit and 4 above it; all
-  client-to-client MEDIA_SIGNAL also passes through the host's socket (a 4-player match start is several hundred
-  candidates in a few seconds). The companion paces itself (`RelayPacer`: 180 per 10 s; STATE and DMD_FRAME, which
-  are latest-wins and never logged, are shed once 120 are used; everything else waits in order), so the server's
-  limit is never tripped, but with 3 or more players the score display thins out and a burst of signalling is
-  delayed. **Asked of ArcAid:** count the host's limit per destination (200 per 10 s per `to`), or scale it by the
-  room's size; a broadcast form (`match:relay` with no `to` = every client, counted once) would also do.
+- **Rate.** The companion paces itself under the limit (`RelayPacer`: 180 per 10 s; STATE and DMD_FRAME, which are
+  latest-wins and never logged, are shed once 120 are used; everything else waits in order): one pacer on a client,
+  one per destination on the host. STATE at 10 Hz is 100 per 10 s on any one bucket, so nothing is shed in a normal
+  match at any size (a scripted 4-player match that runs in half a second puts 268 emits through the host socket
+  with nothing shed and nothing dropped); the pacer only acts on a burst, such as ICE candidates for several peers
+  at once while a player is up, which then waits a few seconds rather than being dropped by the server.
 - **Size.** The largest frame in a scripted 4-player 5-ball match was 2.7 KB and the whole log 24 KB (about 0.5 KB an
   entry); an SDP is capped at 64 KB by the protocol. Only a RECONNECT_ACK carrying more than about 500 missed log
   entries (a player away for ten games of a series) could pass 256 KB; the companion reports it and does not send it.
