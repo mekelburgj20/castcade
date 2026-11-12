@@ -900,6 +900,34 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     expect(h.errors).toEqual([]);
   });
 
+  it('C14: started with a table running and no window title (VR, preview off), the table still comes from the journal', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(now - 30_000).text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: '' });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: TFTC_TABLE, pid: 32 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    expect(h.errors).toEqual([]);
+  });
+
+  it('C14: an editor window with no table open does not take a table from the journal', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(now - 30_000).text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: 'Visual Pinball' });
+    await h.poll();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: null, pid: 32 }]);
+    expect(h.errors).toEqual([]);
+  });
+
   it('a file-association launch takes the table from the positional .vpx', async () => {
     const h = harness();
     await h.fs.mkdir('/nv');

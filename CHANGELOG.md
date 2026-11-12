@@ -16,6 +16,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   owner's; the same silence as D10.3.8 with ChuckRibbits). The answerer now adds its track with `AddTrack`
   (`castcade-video` 0.2.1). `tools/drive-pair.mjs --reverse` rehearses the client → host direction and exits 1 when
   the receiver decodes nothing: the 0.2.39 helper fails it, 0.2.1 passes both directions at 60 fps.
+- **A companion started while a table was already running in VR read nothing until play ended (C14).** The table
+  was taken from the hook's journal only when the main window was titled `Visual Pinball Player`; a VR rig with the
+  preview window off has no title during play (Krobs 2026-11-12: `launch null` for 3.5 minutes, his Cactus Canyon turn
+  with no live score and no ball end). An untitled VPX whose start time is known now takes its table from the journal
+  as soon as the companion sees it.
 
 ## [0.2.39] — 2026-11-07
 
