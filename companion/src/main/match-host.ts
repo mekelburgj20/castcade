@@ -90,6 +90,7 @@ import {
   loadMatchSettings,
   pickLanAddress,
   RELAY_NOT_PAIRED,
+  relayHostNote,
   relayJoinFailure,
   rigFrom,
   rigFromStatus,
@@ -1291,7 +1292,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (relay && relayError !== null) {
         relay.close();
         relay = null;
-        relayNote = relayError instanceof RelayError && relayError.code === 'unauthorized' ? 'ArcAid did not accept this PC: pair it again in Settings to host without a port forward' : 'ArcAid could not be reached';
+        // The refusal comes from the ack of `match:host` (ArcAid checks the device there, not at connect).
+        relayNote = relayHostNote(relayError instanceof RelayError ? relayError.code : null);
         log.warn(`match: ArcAid is not carrying this match (${relayError instanceof Error ? relayError.message : String(relayError)}); hosting on the listener only`);
       }
       const listener = new WsPeerTransport({ localId: me });
@@ -1353,8 +1355,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         a.offs.push(
           relay.onState((st) => {
             if (active !== a) return;
-            if (st === 'reconnecting') log.warn('match: the connection to ArcAid dropped; reconnecting (players who came through ArcAid resume when it is back)');
+            if (st === 'reconnecting') log.warn('match: ArcAid is not carrying this match for the moment (the connection dropped, or ArcAid restarted); taking it back (players who came through ArcAid resume when it is back)');
             else if (st === 'registered') log.info(`match: ArcAid carries ${code} again`);
+            else if (st === 'closed') log.warn(`match: ArcAid closed ${code} and it cannot be opened again; players who came through ArcAid are out`);
             emit();
           }),
         );
@@ -1565,7 +1568,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           theater: THEATER_ON_RING,
           theaterTimer: null,
         };
-        a.offs.push(out.transport.onError((err) => log.warn(`match: socket: ${err.message}`)));
+        a.offs.push(
+          out.transport.onError((err) => {
+            log.warn(`match: socket: ${err.message}`);
+            // D10.8: a pairing revoked mid-match is final (ArcAid took the seat): the tab says so, in those words.
+            if (err instanceof RelayError && err.code === 'unauthorized' && active === a) {
+              lastError = `${err.message}: pair it again in Settings. This match cannot be resumed through ArcAid.`;
+              emit();
+            }
+          }),
+        );
         active = a;
         connecting = false;
         log.info(`match: joined ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}`);
@@ -1653,6 +1665,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         return fail(e);
       }
       lastError = null;
+      // D10.8: the first game is on: ArcAid now refuses a device that was never in the room (the players may come back).
+      a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
       if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
       emit();

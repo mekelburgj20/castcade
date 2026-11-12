@@ -114,23 +114,33 @@ text frames the companion's WebSocket transport would have sent cross ArcAid. Ow
 the primary path, a router port mapping (UPnP) the fallback.
 
 The contract (socket.io v4, default namespace, on the ArcAid base URL; a path in the base URL prefixes
-`/socket.io`). The companion's side is `companion/src/match/transport-relay.ts`; an in-process server that implements
-exactly this, for the tests and as a reference, is `companion/src/match/relay-fake.test-support.ts`.
+`/socket.io`). The companion's side is `companion/src/match/transport-relay.ts`; the server is ArcAid
+`src/api/matchRelay.ts` (ArcAid PR #481), and the table below is the contract **as that module has it**. An
+in-process double of it, for the companion's tests, is `companion/src/match/relay-fake.test-support.ts`.
 
 | Step | Event | Payload | Answer |
 |---|---|---|---|
-| connect | handshake | `auth: { deviceId, deviceToken }` (a paired Witness device) | a refused handshake reads as "not accepted: pair again" |
-| host | `match:host` | `{ code }` (six letters A–Z without I and O) | ack `{ ok: true }` or `{ ok: false, error }`; refused while another device holds the code |
-| client | `match:join` | `{ code }` | ack `{ ok: true, peer }` or `{ ok: false, error }`, `error` one of `no_such_match`, `full`, `unauthorized`, `rate_limited` |
+| connect | handshake | `auth: { deviceId, deviceToken }` (a paired Witness device) | not checked here: any socket connects, and the device is checked at `match:host` / `match:join` |
+| host | `match:host` | `{ code }` (six letters A–Z) | ack `{ ok: true, peers }` or `{ ok: false, error }`, `error` one of `bad_code`, `code_in_use`, `rate_limited`, `unauthorized`, `server_busy` |
+| client | `match:join` | `{ code }` | ack `{ ok: true, peer }` (12 base64url characters) or `{ ok: false, error }`, `error` one of `no_such_match`, `full`, `locked`, `unauthorized`, `rate_limited` |
+| host | `match:lock` | `{}` | ack `{ ok: true }`; from then on `match:join` answers `locked` to a device that never held a seat in the room |
+| either | `match:leave` | `{}` | ack `{ ok: true }`; a host leaving closes the room (`host_left`) |
 | server → host | `match:peer` | `{ peer, state }`, `state` `joined` or `left` | |
 | client → server | `match:relay` | `{ data }` | delivered to the host as `match:relay { from: peer, data }` |
 | host → server | `match:relay` | `{ to: peer, data }` | delivered to that client as `match:relay { data }` |
-| server → client | `match:closed` | `{ reason }` | when the host socket has been gone for more than 30 s |
+| server → sender | `match:error` | `{ error }`: `rate_limited`, `too_large`, `invalid_message`, `no_such_peer`, `not_in_match`, `unauthorized` | the frame was dropped; `rate_limited` comes once per window per bucket; `unauthorized` to a seated socket means its pairing was revoked and it lost its seat |
+| server → room | `match:closed` | `{ reason }`: `host_gone`, `expired`, `host_left`, `replaced`, `server_restart` | to every client, and to the host socket when it is there |
 
 `data` is an opaque string, never read or stored. Limits: 256 KB per message; 8 sockets per room; a room lives 12 h;
-and a rate limit of 200 `match:relay` per 10 s, counted **per client socket** and, for the host socket, **per
-destination** (a separate bucket for each `to`). The room survives its host socket for 30 s: the host emits
-`match:host` again with the same code from the same device and has it back.
+one hosted room per device; and a rate limit of 200 `match:relay` per fixed 10 s window, counted **per client
+socket** and, for the host socket, **per destination** (a separate bucket for each `to`); every frame counts, one
+refused for its size too. `match:host` and `match:join` are limited to 20 a minute per device (60 per address), and
+eight `no_such_match` answers in ten minutes lock the device (never its address) out for fifteen. A seated device
+is verified again at most once a minute, on its next frame: one whose pairing was revoked gets `match:error
+{ unauthorized }` and loses its seat (the host sees `match:peer left`; a revoked host's room closes with
+`host_gone`). The room survives its host socket for 30 s: the host emits `match:host` again with the same code from
+the same device and has it back. Rooms live in the server's memory: a restart (every deploy) loses them all; a new
+room on the same code starts unlocked and knows no one.
 
 Amended 2026-11-12 (after the companion side was built against the first wording; both sides have these):
 
@@ -142,15 +152,42 @@ Amended 2026-11-12 (after the companion side was built against the first wording
 - **A code owned by another device** acks `{ ok: false, error: 'code_in_use' }`.
 - **On a host resume** the server sends `match:peer { state: 'joined' }` again for every client in the room.
 
+Aligned to the server as built (2026-11-12, second pass):
+
+- **The device is refused in the ack,** never at connect: "ArcAid did not accept this PC: pair it again" comes from
+  `unauthorized` on `match:host` / `match:join`.
+- **`match:error` is logged in plain words** (each word once in ten seconds). `no_such_peer` carries no peer id, so
+  the host emits `match:host` again (idempotent for the socket that holds the room: the ack lists `peers`) and closes
+  the links of the peers that are not listed. `not_in_match` closes a client's link (it joins again) and makes a host
+  take its room back.
+- **A lost room is opened again.** After `match:closed` with `expired` or `server_restart`, and after a reconnect to
+  a server that restarted, the host emits `match:host` with the same code (retried after 3 s, then twice as long each
+  time up to 30 s, so it stays under the attempt limit; `code_in_use` ends it). Its former clients
+  join again with a new peer id and resume with RECONNECT. `replaced` and `host_left` are final on both sides.
+- **A client asks for a missing room a bounded number of times:** five `match:join` at most in ten minutes, 1.5, 3, 5
+  and 8 s apart, then it answers "no such match" by itself. This keeps a returning player under the lockout (eight
+  misses) while the host is still on its way back.
+- **`match:leave`** is emitted when a transport is closed on purpose (Leave, the match ended, the app quits).
+- **`match:lock`** is emitted when the host starts the first game, and again after the room had to be opened anew:
+  only once the players the match had are linked again (a new room knows no one and would refuse them), or after 60 s.
+
 What the companion relies on, and what it does not:
 
 - **Relied on:** per-socket ordering of `match:relay`; `match:peer left` when a client socket goes; `match:closed`
-  to the clients once the grace ran out; `match:host` by the owning device succeeding again inside the grace (and,
-  after a server restart, creating the room anew); `no_such_match` for a code with no room; `code_in_use` (the host
-  takes a new code, three tries; any other refusal sends it to the direct path); a bucket per destination for the host.
+  to the clients and to the host socket; `match:host` by the owning device succeeding again inside the grace (and,
+  after a server restart, creating the room anew), with `peers` in its ack; `no_such_match` for a code with no room;
+  `code_in_use` (the host takes a new code, three tries; any other refusal sends it to the direct path, and the tab
+  says which: not accepted, held back, no room for another match, not reachable); a bucket per destination for the
+  host; a seated device being let back into a locked room.
 - **Not used:** `match:peer joined`, the first one and the ones re-sent on a host resume. A socket in the room is not
   yet a player: a peer becomes a link at the host with its first frame, HELLO or RECONNECT. The companion also joins
   again only on a new socket, so it does not need the idempotent `match:join`.
+- **A pairing revoked mid-match is final.** The client that is told `unauthorized` (as `match:error` while seated,
+  or as the answer to a resume's `match:join`) closes its link, says "This PC is no longer paired with ArcAid" (the
+  log, and the Match tab's error line) and never asks ArcAid for the room again: the engine's remaining reconnect
+  attempts are answered by the transport. A host told so stops serving the room and does not open it again.
+- **Asked of the server, not there:** a peer id in `match:error { no_such_peer }` (the companion works without it).
+  A server without `match:lock` never acks it: the companion logs that once and the match goes on.
 - **Not in the contract, done between companions (kept):** a client is never told that the host's socket dropped and
   came back, yet frames sent meanwhile are dropped and the client must resume with RECONNECT. The host therefore sends
   the string `castcade-relay:relink` as `data` (not a protocol frame) to the peers it had before the drop and to any
@@ -170,8 +207,9 @@ What the companion relies on, and what it does not:
   entry); an SDP is capped at 64 KB by the protocol. Only a RECONNECT_ACK carrying more than about 500 missed log
   entries (a player away for ten games of a series) could pass 256 KB; the companion reports it and does not send it.
 
-**Auth.** The companion sends the same device id and token it uses for `/api/witness/*`. An unpaired companion never
-opens the socket: it hosts and joins direct, as before.
+**Auth.** The companion sends the same device id and token it uses for `/api/witness/*`, in the handshake; the
+server reads them when a room is asked for. An unpaired companion never opens the socket: it hosts and joins direct,
+as before.
 
 ## 5. `source='castcade'`, `castcade_matches`, participant public keys
 
