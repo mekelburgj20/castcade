@@ -235,7 +235,8 @@ describe('a client restarted in the middle of a match (A15)', () => {
     await C2.mh.rejoin();
     await until(() => up(H.mh, 3));
     expect(scoreOf(H.mh, 'Guest')).toBe(340);
-    expect(C2.mh.status().panel).toMatchObject({ myTurn: false });
+    // The host's grant for its own ball 3 reaches this rig a moment after the host has it.
+    await until(() => C2.mh.status().panel?.myTurn === false);
     expect(existsSync(C2.lock)).toBe(true);
     expect(C2.logs.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 2 score 340']);
     // The match goes on to its end.
