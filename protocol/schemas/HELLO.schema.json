@@ -1,11 +1,11 @@
 {
-  "$id": "https://castcade.dev/protocol/v4/HELLO.schema.json",
+  "$id": "https://castcade.dev/protocol/v5/HELLO.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "protocolVersion": {
       "type": "number",
-      "const": 4
+      "const": 5
     },
     "companionVersion": {
       "type": "string",
@@ -159,6 +159,10 @@
       ],
       "additionalProperties": false,
       "description": "Everything that must match between participants for a fair match. The host compares these at HELLO."
+    },
+    "ballEndReady": {
+      "description": "A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13).",
+      "type": "boolean"
     }
   },
   "required": [

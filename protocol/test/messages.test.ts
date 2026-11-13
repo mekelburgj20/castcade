@@ -157,6 +157,25 @@ describe('envelope', () => {
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0', channel: 'audio' as never }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
   });
 
+  it('A13: TURN_PASS round-trips; ballEndReady is optional on HELLO / PARTICIPANT_UPDATE and defaulted on HELLO_ACK', () => {
+    const pass = buildMessage('TURN_PASS', { grantSeq: 3, player: 'p2', ballNumber: 2, score: 12_500 }, { matchId: 'TD-1', seq: 9, from: 'host', ts: 1 });
+    expect(decodeFrame(encodeFrame(pass))).toEqual(pass);
+    expect(MESSAGE_DIRECTION.TURN_PASS).toBe('host->all');
+    expect(() => buildMessage('TURN_PASS', { grantSeq: 0, player: 'p2', ballNumber: 2, score: 1 }, { matchId: 'TD-1', seq: 9, from: 'host' })).toThrow(ProtocolError);
+    // A HELLO without the field (no table open): nothing is invented, absent stays absent.
+    const hello = buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.39', throwdownCode: 'TD-1', participant, game: fingerprint }, { matchId: null, seq: 0, from: 'p1', ts: 1 });
+    expect('ballEndReady' in hello.payload).toBe(false);
+    const said = buildMessage(
+      'HELLO',
+      { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.40', throwdownCode: 'TD-1', participant, game: fingerprint, ballEndReady: false },
+      { matchId: null, seq: 0, from: 'p1', ts: 1 },
+    );
+    expect(decodeFrame(encodeFrame(said))).toEqual(said);
+    expect(buildMessage('PARTICIPANT_UPDATE', { ballEndReady: true }, { matchId: 'TD-1', seq: 2, from: 'p1' }).payload).toEqual({ ballEndReady: true });
+    const ack = buildMessage('HELLO_ACK', { hostPlayerId: 'host', hostPublicKey: b64key, participants: [participant] }, { matchId: null, seq: 1, from: 'host' });
+    expect(ack.payload.ballEndReady).toEqual([]);
+  });
+
   it('MEDIA_SIGNAL stereo: `eyes` is optional and survives the wire when present (D7.5.2)', () => {
     const eye = { fov: [-0.9, 0.8, 0.8, -0.95], rect: [0, 120, 1536, 3072], render: [3072, 3264] };
     const plain = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'stereo', stereo: 'sbs' }, { matchId: 'TD-1', seq: 11, from: 'p1' });

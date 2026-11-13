@@ -45,7 +45,7 @@ import type { EngineAttestation } from './attestation-types.js';
 import { Emitter } from '../match/events.js';
 import { ArcaidClient, ArcaidError, type AttemptStartAnswer, type AttemptStartParams, type FetchLike } from './arcaid-client.js';
 import { decideCapture } from './capture.js';
-import { JournalDetector, type JournalEvent, type EngineSample } from './journal-detector.js';
+import { JournalDetector, type GameEvent, type JournalEvent, type EngineSample } from './journal-detector.js';
 import { JournalTail, journalDir, journalFileName } from './journal-tail.js';
 import { newestJournalSince, parseSessionStamp } from './journal-scan.js';
 import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Manifest, classifyScript, decodeScript, isOurSidecar, recipeFor, sidecarPathFor, stalePathFor, unpatchRecipeA } from '../patcher/index.js';
@@ -82,7 +82,7 @@ import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
 import { createVpsRefresh, shortVersion, vpsRefreshDir, type VpsRefresh } from './vps-refresh.js';
 import { createRomMapStore, fetchRomMap, withServedRoms, type CachedRomMap, type RomMap } from './rom-map.js';
-import type { AttemptStatus, CaptureOutcome, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
+import type { AttemptStatus, CaptureOutcome, JournalMark, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
   clock?: Clock;
@@ -132,6 +132,12 @@ export interface WitnessDeps {
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
   log?: (line: string) => void;
+  /**
+   * A15: where the witness this one replaces had got to (`Witness.journalMark()`), when a setting rebuilt it while a
+   * table was open. The journal is read again from the top, but the game events up to the mark were already delivered
+   * (to a match, most of all) and are not delivered again.
+   */
+  resume?: JournalMark | null;
 }
 
 /** ArcAid's `HEARTBEAT_STALE_SEC` is 300; two beats per window keeps a desktop "online" through one miss. */
@@ -242,9 +248,16 @@ interface LiveSession {
   detector: JournalDetector;
   tableId: string;
   path: string;
-  /** Lines waiting for the pump (fed to the detector inside the serial chain). */
-  lines: string[];
+  /** Lines waiting for the pump (fed to the detector inside the serial chain), each with the file position just past it. */
+  lines: { text: string; end: number; backlog: boolean }[];
   pumpScheduled: boolean;
+  /** A15: the file position just past the line being pumped, and past the accepted `table_loaded` line. */
+  lineEnd: number;
+  loadedEnd: number;
+  /** A15: the line being pumped was in the file before this witness read it (`JournalTail.backlog`). */
+  lineBacklog: boolean;
+  /** A15: game events of lines ending at or before this were delivered by the witness this one replaced (`WitnessDeps.resume`). */
+  quietUntil: number | null;
   /** The current `table_loaded` belongs to this VPX process (not an earlier session in the same file). */
   accepted: boolean;
   recipe: string | null;
@@ -1283,6 +1296,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       path,
       lines: [],
       pumpScheduled: false,
+      lineEnd: 0,
+      loadedEnd: 0,
+      lineBacklog: false,
+      quietUntil: null,
       accepted: false,
       recipe: null,
       rom: null,
@@ -1310,13 +1327,17 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     session.unpatched = null;
     session.patchablePath = null;
     live.tail.on('line', (line) => {
-      live.lines.push(line);
+      live.lines.push({ text: line, end: live.tail.lineEnd, backlog: live.tail.backlog });
       if (!live.pumpScheduled) {
         live.pumpScheduled = true;
         serial(() => pumpLive(session, live));
       }
     });
-    live.tail.on('truncated', () => log(`witness: journal ${live.tableId} restarted from the top`));
+    live.tail.on('truncated', () => {
+      // Another file now: its positions mean nothing against the mark.
+      live.quietUntil = null;
+      log(`witness: journal ${live.tableId} restarted from the top`);
+    });
     live.tail.on('error', (err) => fail(`journal ${live.tableId}: ${err.message}`));
     live.tail.start();
     log(`witness: live mode armed for ${tableId} (${path})`);
@@ -1351,7 +1372,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * in play is the one whose journal has a `table_loaded` inside this process's lifetime; its import manifest
    * gives the `.vpx`, so identity and live mode then arm as for `-Play`. Never throws.
    */
-  const tableFromJournal = async (session: OpenSession): Promise<void> => {
+  const tableFromJournal = async (session: OpenSession, playerUp = true): Promise<void> => {
     const { launch } = session;
     if (launch.table !== null || journalRoot === null) return;
     session.journalLooked = true;
@@ -1360,7 +1381,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       const slack = launch.startedAt !== null ? 90_000 : SESSION_STAMP_SLACK_MS;
       const c = await newestJournalSince(fs, journalRoot, session.startedAt - slack);
       if (!c) {
-        log(`witness: pid ${launch.pid}: the player is up with no table name and no journal of this process; waiting for play to end`);
+        if (playerUp) log(`witness: pid ${launch.pid}: the player is up with no table name and no journal of this process; waiting for play to end`);
         return;
       }
       const manifest = await readManifest(fs, manifestPathFor(manifestDir, c.tableId)).catch(() => null);
@@ -1390,9 +1411,34 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     live.pumpScheduled = false;
     while (live.lines.length > 0) {
       const line = live.lines.shift()!;
-      for (const ev of live.detector.feed(line)) await onJournalEvent(session, live, ev);
+      live.lineEnd = line.end;
+      live.lineBacklog = line.backlog;
+      for (const ev of live.detector.feed(line.text)) await onJournalEvent(session, live, ev);
     }
   };
+
+  /**
+   * A15: how far the game events were delivered. It starts as the mark of the witness this one replaces, so a second
+   * rebuild before this one has caught up still knows.
+   */
+  let mark: JournalMark | null = deps.resume ?? null;
+
+  /**
+   * A game event to the listeners (the match controller). Not a second time: an event of a line the replaced witness
+   * already delivered is dropped here, after the journal's replay rebuilt everything else from it (the detector, the
+   * game on screen, the attempt, the game count).
+   */
+  const deliver = (live: LiveSession, ev: GameEvent): void => {
+    if (live.quietUntil !== null && live.lineEnd <= live.quietUntil) return;
+    mark = { path: live.path, session: live.sessionStamp, loaded: live.loadedEnd, offset: live.lineEnd };
+    delivering = live.lineBacklog;
+    try {
+      emitter.emit('event', ev);
+    } finally {
+      delivering = false;
+    }
+  };
+  let delivering = false;
 
   const onJournalEvent = async (session: OpenSession, live: LiveSession, ev: JournalEvent): Promise<void> => {
     if (ev.kind === 'table_loaded') {
@@ -1416,6 +1462,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.loadedAtMs = stampMs ?? clock.now() - ev.t * 1000;
       live.lastGameStartMs = null;
       live.sessionStamp = ev.session ?? null;
+      // A15: the same load of the same journal the replaced witness was reading: its events up to the mark are not news.
+      live.loadedEnd = live.lineEnd;
+      live.quietUntil = mark !== null && mark.path === live.path && mark.session === live.sessionStamp && mark.loaded === live.loadedEnd ? mark.offset : null;
+      if (live.quietUntil !== null) log(`witness: journal ${live.tableId}: read again from the top after a restart; the game events up to byte ${live.quietUntil} were already delivered and are not repeated`);
       live.attempt = null;
       live.gameKey = null;
       live.skipGame = false;
@@ -1482,7 +1532,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     }
     // A6: the match controller hears every game event before the capture work below (a game_end's post can take
     // seconds); a game_start is announced once it is known not to be a replay.
-    if (!live.skipGame && (ev.kind === 'current_scores' || ev.kind === 'ball_end' || ev.kind === 'game_end' || ev.kind === 'game_abandoned')) emitter.emit('event', ev);
+    if (!live.skipGame && (ev.kind === 'current_scores' || ev.kind === 'ball_end' || ev.kind === 'game_end' || ev.kind === 'game_abandoned')) deliver(live, ev);
     switch (ev.kind) {
       case 'game_start':
         live.gameKey = postedGameKey(live.tableId, attemptKey(live.sessionStamp, live.loadedAtMs, ev.t));
@@ -1491,7 +1541,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           log(`witness: journal ${live.tableId}: game ${live.gameKey} was posted by an earlier run; not posting it again`);
           break;
         }
-        emitter.emit('event', ev);
+        deliver(live, ev);
         live.lastGameStartMs = at;
         live.games++;
         session.lastActivityAt = clock.now();
@@ -1693,7 +1743,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     };
     sessions.set(launch.pid, session);
     // B18: Castcade started with the player already up; name the table before the launch line goes out.
-    if (parseWindowTitle(launch.title).kind === 'player') await tableFromJournal(session);
+    // C14: a VR rig with the preview window off has no window title at all while a table plays (Krobs 2026-11-12:
+    // `launch null` for 3.5 minutes, a whole turn unread); with the process's start time known, a `table_loaded`
+    // inside its lifetime is this process's table whatever the title says. An editor title stays the editor's word.
+    const titleKind = parseWindowTitle(launch.title).kind;
+    if (titleKind === 'player' || (titleKind === 'unknown' && launch.startedAt !== null)) await tableFromJournal(session, titleKind === 'player');
     if (!baseline) await refreshBaseline();
     refreshTableStatus();
     emitter.emit('launch', { table: launch.table, exe: launch.exe, pid: launch.pid, at: iso(launch.seenAt), startedAt: launch.startedAt });
@@ -1792,6 +1846,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       startHeartbeat();
       await startRomMap();
       watch.start();
+      // A table that was being followed when `stop()` paused the watching: its journal continues where it stopped.
+      for (const s of sessions.values()) s.live?.tail.start();
       emitStatus();
     },
 
@@ -1804,8 +1860,23 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       vpsRefresh?.stop();
       stopNvPoll();
       queue.stop();
+      // A15: the journal tails stop too. Left running, a witness that a settings change replaced went on reading the
+      // journal beside its replacement and posted the game in progress a second time when it ended.
+      for (const s of sessions.values()) {
+        if (!s.live) continue;
+        s.live.tail.stop();
+        await s.live.tail.idle();
+      }
       await chain;
       emitStatus();
+    },
+
+    journalMark() {
+      return mark ? { ...mark } : null;
+    },
+
+    deliveringBacklog() {
+      return delivering;
     },
 
     async pair(code: string) {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
 
 /**
@@ -35,7 +36,13 @@ export function Match({ state }: { state: CastcadeState }) {
   const [port, setPort] = useState<string | null>(null);
   const [balls, setBalls] = useState<3 | 5 | null>(null);
   const [invite, setInvite] = useState('');
+  // A14: the table Host starts in VPX (a path from Castcade's own list; null: the player opens one).
+  const [tablePath, setTablePath] = useState<string | null>(null);
+  const one = useOneStep(bridge);
   const [copied, setCopied] = useState(false);
+  // A13: the two host actions that ask first: a start with a table that cannot report ball ends, and Pass the turn.
+  // `pass` remembers whose ball was asked about: if the turn moves on meanwhile, the question is withdrawn.
+  const [confirming, setConfirming] = useState<{ what: 'start' } | { what: 'pass'; turn: string } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
   // D2.10 (2026-11-05): the three volume sliders while being dragged; null shows the saved setting (a key press moves it too).
   const [voice, setVoice] = useState<number | null>(null);
@@ -126,11 +133,36 @@ export function Match({ state }: { state: CastcadeState }) {
     <section className="view">
       <h2>Match</h2>
 
+      {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
+      <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} />
+
+      {/* A15: Castcade closed during a match that is still worth going back to. */}
+      {!inMatch && st.phase !== 'connecting' && st.resume && (
+        <div className="card">
+          <strong>{st.resume.role === 'host' ? 'You were hosting a match' : 'You were in a match'}</strong>
+          <p>
+            Castcade closed during the match {st.resume.code}
+            {st.resume.names.length > 0 ? ` with ${st.resume.names.join(', ')}` : ''}.{' '}
+            {st.resume.role === 'host'
+              ? 'Host it again and the other players come back by themselves, if they are still waiting.'
+              : 'Rejoin it and you are back where the match is now. Your microphone goes on again for the other players.'}
+          </p>
+          <div className="row">
+            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.rejoin())}>
+              {st.resume.role === 'host' ? 'Host it again' : `Rejoin the match${st.resume.names.length > 0 ? ` with ${st.resume.names.join(', ')}` : ''}`}
+            </button>
+            <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.forgetResume())}>
+              Forget it
+            </button>
+          </div>
+        </div>
+      )}
+
       {!inMatch && st.phase !== 'connecting' && (
         <>
           <p className="muted">
-            Two to four players on the same table, one ball each in turn. Open the table in VPX first (with the Castcade patch): the table file is compared when you
-            join.{tableOpen ? ` Open now: ${tableOpen}.` : ' No table is open right now.'}
+            Two to four players on the same table, one ball each in turn. Pick a table and press Host: Castcade hosts the match, starts the table in VPX and copies a
+            join link for the other players. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
           </p>
           <div className="card">
             <label className="field">
@@ -164,7 +196,8 @@ export function Match({ state }: { state: CastcadeState }) {
                   <small>Free play: a game running when the others join must end first; your next Start on the table then starts the match.</small>
                 </label>
               </div>
-              <button type="button" className="primary" onClick={() => void run(() => bridge.match.host({ port: Number(portText), ballsPerGame, displayName }))}>
+              <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} />
+              <button type="button" className="primary" onClick={() => void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, port: Number(portText), ballsPerGame, displayName }))}>
                 Host
               </button>
             </fieldset>
@@ -174,18 +207,19 @@ export function Match({ state }: { state: CastcadeState }) {
             <strong>Join a match</strong>
             <fieldset disabled={busy}>
               <label className="field">
-                <span>Invite from the host</span>
-                <input type="text" value={invite} placeholder="castcade:ws://203.0.113.7:27401#ABCDEF" onChange={(e) => setInvite(e.target.value)} />
+                <span>Link or invite from the host</span>
+                <input type="text" value={invite} placeholder="The join link, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
               <button
                 type="button"
                 onClick={() =>
                   void bridge.app.clipboardText().then((t) => {
                     const v = t.trim();
-                    if (v.startsWith('castcade:')) {
+                    // D10.8: a relay invite is the six-letter code alone.
+                    if (v.startsWith('castcade:') || /^[A-Za-z]{6}$/.test(v)) {
                       setError(null);
                       setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade invite (it starts with castcade:ws://…).');
+                    } else setError('The clipboard does not hold a Castcade link or invite (six letters, or one that starts with castcade:).');
                   }, (e: unknown) => setError(describe(e)))
                 }
               >
@@ -216,17 +250,38 @@ export function Match({ state }: { state: CastcadeState }) {
                   {copied ? 'Copied' : 'Copy'}
                 </button>
               </div>
-              <p>Forward TCP {st.port} to this PC on your router, then send the invite to the other player.</p>
-              {st.ipSource === 'lan' && (
-                <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</p>
+              {st.via === 'relay' ? (
+                <>
+                  <p>Send the code to the other players. The match goes through ArcAid: nothing to set up on your router. Each player needs Castcade paired with ArcAid.</p>
+                  {st.directInvite && (
+                    <p className="muted">
+                      For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="mono">{st.directInvite}</code>
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  {st.portMapping ? (
+                    <p className={st.portMapping.state === 'failed' ? 'warn' : 'muted'}>{st.portMapping.line}</p>
+                  ) : (
+                    <p>Forward TCP {st.port} to this PC on your router, then send the invite to the other player.</p>
+                  )}
+                  {st.relayNote && <p className="muted">{st.relayNote}: a paired host needs no port forward.</p>}
+                  {st.ipSource === 'lan' && (
+                    <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</p>
+                  )}
+                </>
               )}
             </div>
           )}
 
+
           <div className="card">
             <p className={panel?.myTurn ? 'turn-line mine' : 'turn-line'}>{turnLine(st)}</p>
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
-            {panel?.message && <p className={panel.message.startsWith('different') ? 'warn' : 'muted'}>{panel.message}</p>}
+            {/* D10.8: which path the match control takes. */}
+            {st.path && <p className="muted">{st.path}</p>}
+            {panel?.message && <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>}
             <table className="match-table">
               <thead>
                 <tr>
@@ -247,6 +302,7 @@ export function Match({ state }: { state: CastcadeState }) {
                         {p.id === st.hostId ? ' · host' : ''}
                         {p.tableMatch === false && <span className="warn"> · {p.tableNote ?? 'different table file'}</span>}
                         {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
+                        {p.ballEnds === false && <span className="warn"> · cannot report ball ends</span>}
                         {row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
                       </td>
                       <td>{RIG_LABEL[p.rig]}</td>
@@ -261,8 +317,24 @@ export function Match({ state }: { state: CastcadeState }) {
             </table>
             <div className="row">
               {st.role === 'host' && st.phase === 'lobby' && (
-                <button type="button" className="primary" disabled={busy || st.participants.length < 2} onClick={() => void run(() => bridge.match.start())}>
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || st.participants.length < 2 || (confirming?.what === 'start' && st.startWarnings.length > 0)}
+                  onClick={() => (st.startWarnings.length > 0 ? setConfirming({ what: 'start' }) : void run(() => bridge.match.start()))}
+                >
                   Start match
+                </button>
+              )}
+              {st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && st.pass && (
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy || (confirming?.what === 'pass' && confirming.turn === passTurnKey(st))}
+                  title="End the ball of the player who is up at their last known score and give the next player the turn"
+                  onClick={() => setConfirming({ what: 'pass', turn: passTurnKey(st) })}
+                >
+                  Pass the turn
                 </button>
               )}
               {st.role === 'host' && st.phase === 'over' && !st.series?.over && (
@@ -285,6 +357,48 @@ export function Match({ state }: { state: CastcadeState }) {
                 {st.phase === 'over' ? (st.role === 'host' && !st.series?.over ? 'End match' : 'Close match') : 'Leave'}
               </button>
             </div>
+            {st.role === 'host' && st.phase === 'lobby' && confirming?.what === 'start' && st.startWarnings.length > 0 && (
+              <div className="row">
+                <span className="warn">
+                  {st.startWarnings.join(' · ')}. Such a turn never ends by itself: you would end each of those balls with Pass the turn.
+                </span>
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(null);
+                    void run(() => bridge.match.start({ anyway: true }));
+                  }}
+                >
+                  Start anyway
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
+              <div className="row">
+                <span className="warn">
+                  End {st.pass.name}'s ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the host.
+                </span>
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(null);
+                    void run(() => bridge.match.passTurn());
+                  }}
+                >
+                  Pass the turn
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
             {st.phase === 'playing' && st.locked && <small className="muted">Your table is locked until your ball comes up.</small>}
             {st.phase === 'lobby' && st.role === 'host' && st.participants.length >= 2 && (
               <small className="muted">Starting a game on your table starts the match too (after a 5 s countdown in every headset).</small>
@@ -711,6 +825,11 @@ function mediaLine(m: MatchStatus['media']): string {
  * not running. D10.3.6 (2026-11-07): once the mesh fell back (a peer's connection failed with the helper's restarts
  * exhausted, or the helper went away), the line says the Electron video serves this match, and keeps the encoder.
  */
+/** A13: the turn Pass the turn was asked about (who and which ball), so a confirmation never lands on a later turn. */
+function passTurnKey(st: MatchStatus): string {
+  return st.pass ? `${st.pass.name}#${st.pass.ball}#${st.panel?.game ?? 1}` : '';
+}
+
 function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>, participants: MatchStatus['participants']): string {
   if (v.helper === 'unavailable') {
     const why = v.reason === 'helper_missing' ? 'this build has no video helper' : `the helper ${v.encoder ? 'is gone' : 'did not start'} (${v.reason ?? 'unknown'})`;

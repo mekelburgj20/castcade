@@ -71,10 +71,16 @@ All matching is case-insensitive VBScript-aware (ignore `'` comments and string 
 | **B — Original, script anchors** | no VPM; `Sub AddScore` (any spelling) AND a start sub (`ResetForNewGame` / `StartGame` / `StartNewGame` / `NewGame` / `InitGame`) AND an end sub (`EndOfGame` / `GameOver` / `EndGame`), or, with no end sub, a plain statement that clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`, …) outside `_Init` / `_Exit` / the key handlers / the start sub. The JPSalas trio (`ResetForNewGame` + `EndOfGame`) is B ahead of C and D; the wider vocabulary yields to C and D (C1.3, 2026-11-07) | The score store is read from `AddScore`'s body (`X = X + …` scalar, `X(I) = X(I) + …` array with `I` the player, or a family `p1score, p2score…`); ball end from `EndOfBall` / `EndBall` / `EndPlayerTurn` / `BallDrained` or the `BallsRemaining` decrement — record what was found. |
 | **C — Original, Scorbit-anchored** | class B anchors absent or partial, but `StartSession`, `SendUpdate`, `StopSession` present (any `Scorbit*` identifiers) | Use the Scorbit call sites as the event anchors regardless of `ScorbitActive`. |
 | **D — Original, ScoreServer-integrated** | `CreateObject("VPinball.ScoreServer")` or `SetScoresArray` / `SetGameState` | Already emits scores through superhac's API surface; the sidecar provides a compatible object. (Rare on desktop; present in some ALP-targeted tables.) |
-| **E — Original, generic** | none of B–D, but `_KeyDown` exists and at least one of `Score`, `AddScore`, `Points` identifiers | Not patched: the vocabulary found no `AddScore`, no start or no end anchor. The guided pick of the first design is dropped (C1.3); per-table anchor overrides shipped as data are C1.4. |
+| **E — Original, generic** | none of B–D, but `_KeyDown` exists and at least one of `Score`, `AddScore`, `Points` identifiers | Not patched: the vocabulary found no `AddScore`, no start or no end anchor, and no anchor override knows the script. The guided pick of the first design is dropped (C1.3); a script the vocabulary cannot read gets an anchor override (C1.4, below), which makes it class B. |
 | **X — Unsupported** | no `_KeyDown` (e.g. a test table), `Option Explicit` with obfuscated/compressed script, or extraction failed | Never patched. Reason recorded. |
 
-Secondary facts captured for every class: table object name (`Sub (\w+)_KeyDown` → `Table1`), key constants in use
+**Anchor overrides come first among the originals (C1.4, 2026-11-12).** A script that matches a record in
+`companion/src/patcher/anchor-overrides.ts` is class B whatever else it has (after A): the VPX Game Logic Framework
+(`glf`: Dark Chaos), the Burger template with its ball counter (`burger`: 2001, Star Wars), Rattlecan (`rattlecan`).
+
+Secondary facts captured for every class: table object name (the FIRST `Sub (\w+)_KeyDown` → `Table1`; of each handler
+the LAST definition is the one renamed, because VBScript keeps the last: Congo and Hook define `Table1_Exit` twice, and
+a framework's own `Glf_KeyDown` comes after the table's), key constants in use
 (`LeftFlipperKey`, `RightFlipperKey`, `PlungerKey`, `LockBarKey`, nudge keys, `StartGameKey`), `UseVPMDMD`,
 B2S usage, `Option Explicit` presence (drives how we declare), and whether `NVRAMCallback` is already set
 (chain, do not replace).
@@ -143,7 +149,8 @@ departs from the sketch above, the code is right:
   front of each of its early `Exit Sub`** (a repeat is dropped by the library); **ball end at the TOP of the ball-end
   sub** (the drained ball's player and number, before anything advances: JPSalas' `EndOfBall` hands over to a timer
   and `EndOfBall2`; Diablo 2's `EndPlayerTurn` re-shoots on `ExtraBallPending` in its first line, which the
-  `extra_balls` field carries), else before the `BallsRemaining` decrement; game end at the end of the end sub, else
+  `extra_balls` field carries), else before the `BallsRemaining` decrement; game end at the end of the end sub (0.3.1:
+  in front of the statement in it that clears the score store, when there is one), else
   **on the line after the game-flag clear** (Rattlecan's `GameOver = 1`, the Burger template's `gameon = 0`), with a
   warning naming the sub and line. An early `Exit Sub` in a start/end anchor sub is a warning, not new control flow
   (GoT's `EndOfGame` re-entry guard is exactly a path that must not journal). The plan reason lists the four subs
@@ -165,9 +172,75 @@ departs from the sketch above, the code is right:
 - Partial (the plan reason says `(partial: ...)`): no scores, no game start or no game end anchor.
 - Undo (`unpatchSidecar`, formerly `unpatchRecipeA`) is exact for A–D and refuses another recipe. Each recipe has its
   own version (`RECIPE_VERSIONS`), so a B change does not re-make the A sidecars.
-- Not built: per-table anchor overrides (C1.4); recipe E's guided pick is dropped.
+- Not built: recipe E's guided pick (dropped).
 
-**Recipe E (generic original):** never rendered. The first design had a guided anchor pick here; C1.3 replaced it with the vocabulary above, and what the vocabulary cannot read is a per-table override (C1.4).
+**Anchor overrides, as built (WORK C1.4, recipe B 0.3.0 / C 0.2.0, 2026-11-12; `companion/src/patcher/anchor-overrides.ts`).**
+The cause was Dark Chaos (apophis 2025) 2.0: three matches on 2026-11-12 never left grant 1 because the table was class
+E, never patched (no manifest, no sidecar; `sidecar watch: ... not patched (skip: ... class E ...)` in the owner's log).
+C1.3 turned eight of the rig's nine class-E tables into B; the ninth is built on the VPX Game Logic Framework and has no
+`AddScore`, no start sub and no end sub for a vocabulary to find.
+- **A record is data**: an id, a SIGNATURE (regular expressions that must each match a code line), per role (`gameStart`,
+  `scores`, `ballEnd`, `gameEnd`) the places its anchor line goes (`top` / `end` of a sub, `before` / `after` a line,
+  several places allowed), and the table's own expressions for scores, player, ball, players and extra balls. Whatever a
+  record leaves out comes from the vocabulary. No code runs per table.
+- **Keyed by the script, not by TableInfo** (the WORK line proposed author + name): the patcher and the witness classify
+  from the script text alone, three of the rig's originals carry no usable TableInfo (Diablo 2, Rattlecan and SMGP are
+  "Visual Pinball Demo Table", no author), and a signature follows a table through a mod (the ChuckRibbits 2001 mod
+  matches the same record). It ships in the app like the recipes; a refresh channel like the VPS index is not built.
+- **`glf`** (any GLF table): game start at the top of `Glf_DispatchGameStarted` (`Glf_StartGame` runs for every Start
+  press), ball end at the top of `Glf_EndOfBall` (before it spends an extra ball or advances), game end at the top of
+  `Glf_EndGame` (before it empties `glf_playerState`), live scores at the end of `SetPlayerState` as
+  `Castcade_B_ScoresFor key`, which journals only when `key` is `"score"`. Scores are
+  `GetPlayerStateForPlayer(0..3, "score")`, the player `Getglf_currentPlayerNumber() + 1`, the ball
+  `GetPlayerState("ball")`, extra balls `GetPlayerState("extra_balls")`.
+- **`burger`**: ball end in front of `Select Case ballstext.text` (in `Drain_Hit` on 2001, in `endballcase_timer` on Star
+  Wars); the ball is `DMDballnum`; the extra-ball flag is read from the counter text, which the template sets one behind
+  the ball shown (999 on ball 1) so the same Case runs again.
+- **`rattlecan`**: ball end at the top of both `ShootAgain_Timer` and `ShootAgainAfterTilt_Timer`; ball `BallInPlay`,
+  extra `ExtraBalls`.
+- **For every recipe-B table (0.3.0):** the game end is anchored after EVERY game-flag clear, not the first (Rattlecan's
+  second `GameOver=1`, the drain after a tilt, was missed), and `Castcade_B_GameEnd` journals once per journaled game
+  start (`Castcade_B_InGame`), so a clear outside a game says nothing (recipe C 0.2.0 has the same guard); the score
+  store is `Score` itself ahead of any other `...score...` (JP's Foo Fighters adds into
+  `CurrentCityScore(CurrentPlayer, ModeActive)` first, and 0.2.0 journaled that). The plan reason and the manifest name
+  the override (`anchors from the glf override`).
+- **Exact undo, all recipes:** each wrapper takes its handler's own spelling (`Sub table1_Exit()`), and a sidecar ends
+  with or without a final newline as its script did; 17 of the 33 originals the rig rendered before came back from the undo with one of
+  those two differences before. F5 was not affected (its diff ignores case and line ends). Recipe A's version is NOT
+  bumped: an existing recipe-A sidecar is undone as before, and is rendered the new way at its next re-make.
+- **Static validation** (`companion/src/patcher/validate.ts`, `lintSidecar`): the undo is exact; every anchor line is
+  inside a multi-line procedure outside a Class, not after a line continuation, not between `Select Case` and its first
+  `Case`, and calls a sub the block defines; the block structure (Sub / Function / If / Select / For / Do / With /
+  Class) is the script's plus our own balanced blocks; no `Castcade_*` name is defined twice, our wrapper is the last
+  definition of each handler and the definition renamed was the table's last. Plus a real compile:
+  `vpx-hook/spike/vbs-compile.vbs` hands a script to the Windows VBScript engine behind a first line that raises, so the
+  engine compiles all of it and runs none. 2026-11-12, the rig: all 34 originals' sidecars and all 105 ROM tables'
+  sidecars lint clean; all 34 originals' sidecars compile. `sidecar-cscript.test.ts` (Windows only) also DRIVES the three
+  override shapes through a game under cscript with the real library and checks the journal.
+- **Live validation** (§7): `npm run validate-original -w companion -- "<table.vpx>"` (or `--all "<folder>"`).
+- **Recipe B 0.3.1 (C1.6, 2026-11-12, from the first live run of all 34 originals):** an end sub that sets the score
+  store to 0 journals the game end IN FRONT of that statement (outside any `For` / `Do` / `While` that holds it), not
+  at the end of the sub. The Matrix (Original) 0.99.0 zeroes `Score(i)` for every player near the end of `EndOfGame`:
+  its game passed with ball ends 1, 2, 3 and a final score of 0 after 1461760 live. A clear on a `Case` line or behind
+  a line continuation leaves the anchor at the end. Of the rig's 34 originals only that table's sidecar changes;
+  `checkGameJournal` now fails a `game_end` whose scores are below the last live scores. A clear in a sub the end sub
+  CALLS is not seen by the renderer (the live check catches it).
+- **Recipe B 0.3.2 (C1.6, from the rerun):** an end sub whose early exit is a re-entry guard on the game flag
+  (`If bGameInPLay = True Then Exit Sub`) is one the table calls LATE, and the game end is ALSO anchored after every
+  clear of that flag outside it. Game of Thrones is over in `EndOfBallComplete` (`bGameInPLay = False`, then the match
+  sequence); `EndOfGame` runs from a timer 5 s later and leaves at its guard when a Start in between began the next
+  game. The rerun played five games back to back (the runner's lockbar key is a Start there once the flag is clear)
+  and journaled one game end; the four lost ones had sane, bonus-included live scores (866860, 351250, 605700,
+  317030). The end sub keeps its anchor; `Castcade_B_GameEnd` journals once per game start, so whichever anchor comes
+  first reports the game. The warning "has 1 early Exit Sub; no game end is journaled on that path" is replaced by one
+  that names the flag and the extra anchors. Game of Thrones is the only original on the rig whose END sub has an
+  early exit (Diablo 2's two are in its start sub), so no other sidecar changes. This corrects the C1.3 line above:
+  the guard's path is a real game over, not one that must stay silent.
+- **Still open:** Diablo 2's own local multiplayer (the other players' scores live in `PState(p).Item("Score")`; a
+  one-player game, which is what a Castcade match runs on each rig, is exact); the Burger template's ball save and
+  multi-player rounds are read from the script only; class X stays unpatched (two calibration tables, one test table).
+
+**Recipe E (generic original):** never rendered. The first design had a guided anchor pick here; C1.3 replaced it with the vocabulary above, and what the vocabulary cannot read gets an anchor override (C1.4).
 
 **Block L — turn lock (all recipes):**
 ```vbs
@@ -287,6 +360,43 @@ observed `game_start` → `ball_end` → `game_end` sequence. Outcomes:
 | `unsupported` | class X, or verification failed | grey with reason |
 
 "Patched" must never read as "Castcade-ready". The two states are separate columns in the table list.
+
+**The originals' runner (C1.4, `companion/scripts/validate-original.ts`).** For one original, or every original in a
+folder: copy the `.vpx` into `tmp/validate/tables/`, render its sidecar there with the table id `validate-<name>` (its
+own journal), lint and compile it, launch VPX with `-Ini <copy>` (Start / plunger / credit / exit bound to known keys in
+the copy; the rig's ini is not touched) and `-Play`, wait for `table_loaded`, let `vpx-hook/spike/autoplay.py` press
+credit, Start and the plunger (plus the lockbar key) until the journal holds a new `game_end` or the time budget ends,
+hold the exit key, then judge the journal with `checkGameJournal`: `table_loaded`, `game_start`, at least N ball ends
+that start at ball 1 and never go down (a shoot-again is not counted), `game_end` with a score. It refuses to start while
+VPX or Castcade is running (Castcade would follow the run as a real game), needs `castcade.vbs` already in
+`<vpx>\scripts` at this build's version, and writes nothing to the tables folder. `--in-place` instead launches the
+table where it is, with the sidecar the companion wrote. Results land in `tmp/validate/results/`. A staged copy sits in
+another folder than the original, so a table that loads files by a path relative to its own folder may behave
+differently there; `--in-place` is the check of record once the companion has patched the folder.
+
+What the first run of all 34 originals taught the runner (2026-11-12: 27 passed; none of the 7 failures was a patch
+fault, and one pass was: The Matrix (Original), §5 "Recipe B 0.3.1"):
+- **Folders the script loads from are staged with the copy.** Game of Thrones, Sonic, Thundercats and The Goonies
+  load a FlexDMD / UltraDMD project from a folder beside the table; without it they stop at a dialog ("FlexDMD
+  directory gameofthrones.FlexDMD appears to be missing", "UltraDMD userfiles directory ... does not exist") or a
+  script error, no key reaches the script (the journal has `table_loaded` and not even the `lock` line of the first
+  key-down) and VPX does not close on the exit key. `resourceFolders` (`validate.ts`) picks the sibling folders whose
+  name ends in `DMD` and that the script names in a string literal, whole or as `"<stem>"` + `".UltraDMD"` /
+  `".FlexDMD"`. `checkGameJournal` notes a session no key reached.
+- **Start is pressed again while the journal shows no game start** (every 12 s, four presses in all): a table still in
+  its boot or intro sequence ignores the first one (Sonic's `BootE`, The Goonies' `enableKeys`).
+- **Per-table hints are data, in `companion/scripts/validate-hints.ts`**: a record matches a part of the file name and
+  says, with its evidence, which keys follow Start (`afterStart`), a longer budget (`minutes`), a longer settle time, or
+  extra folders. Today: Diablo 2 (both versions) and SMGP press Start a second time, 4 s after the first; Start opens a
+  difficulty / character select there and only a second Start serves the ball (both journaled `game_start` and then
+  nothing for 8 minutes). `autoplay.py` takes the steps as `--after-start 4:start`.
+- **No key after the game end, and none for 15 s after each ball end.** The runner taps the plunger and the lockbar
+  key every 6 s; Game of Thrones takes the lockbar for Start once its game flag is clear, so each game over began the
+  next game (the Start retry was not involved: it ends for good at the first journaled game start). `autoplay.py` now
+  reads the journal twice a second and holds its keys after a ball end (`--quiet-seconds`). `checkGameJournal` notes
+  a session with more than one game start, and a final score of 0 with no live score above 0 (it cannot tell a game
+  that scored nothing from a cleared score: Diablo 2 1.2.1's 0 was true, every `AddScore` of that game added 0).
+- `--only` takes several name parts separated by `|`, for a rerun of the tables that failed.
 
 **Folder import runs no verification launch.** Opening VPX once per table across a 100-table folder is hours of
 windows popping up, so bulk-imported tables are `provisional` ("patched, unverified") until the first real game

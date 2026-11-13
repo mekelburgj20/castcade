@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useCastcade } from './useCastcade.js';
 import { Match } from './views/Match.js';
 import { Pairing } from './views/Pairing.js';
@@ -26,6 +26,25 @@ export function App() {
   }, [view, state.status]);
 
   const current: View = view ?? 'pairing';
+
+  // A14 (2026-11-12): a `castcade://` join link brings up the Match tab (main counts them in `attention`; one that
+  // came with a cold start is already waiting when this mounts). Main is told when the Match tab is showing: a link
+  // from outside acts without a click only then.
+  const { bridge } = state;
+  const seen = useRef<number | null>(null);
+  useEffect(() => {
+    if (!bridge) return;
+    const note = (s: OneStepStatus) => {
+      if (seen.current === null ? s.pending !== null || s.notice !== null : s.attention !== seen.current) setView('match');
+      seen.current = s.attention;
+    };
+    void bridge.launch.status().then(note, () => undefined);
+    return bridge.launch.onStatus(note);
+  }, [bridge]);
+  useEffect(() => {
+    if (!bridge) return;
+    void bridge.launch.viewing(current === 'match').catch(() => undefined);
+  }, [bridge, current]);
   const dot = state.status ? (state.status.running ? 'dot on' : 'dot off') : 'dot';
 
   return (

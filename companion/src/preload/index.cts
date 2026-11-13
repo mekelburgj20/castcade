@@ -2,12 +2,12 @@
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
  * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`,
- * `stream:previewEvent` and `match:statusEvent`.
+ * `stream:previewEvent`, `match:statusEvent` and `launch:statusEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, EngineStatus, MatchStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, MatchStatus, OneStepStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -34,6 +34,15 @@ const CH = {
   tablesRemoveAll: 'tables:removeAll',
   tablesPatchNow: 'tables:patchNow',
   tablesProgressEvent: 'tables:progress',
+  launchStatus: 'launch:status',
+  launchTables: 'launch:tables',
+  launchBrowse: 'launch:browse',
+  launchHost: 'launch:host',
+  launchConfirm: 'launch:confirm',
+  launchDismiss: 'launch:dismiss',
+  launchCopy: 'launch:copy',
+  launchViewing: 'launch:viewing',
+  launchStatusEvent: 'launch:statusEvent',
   streamStatus: 'stream:status',
   streamStart: 'stream:start',
   streamStop: 'stream:stop',
@@ -49,12 +58,15 @@ const CH = {
   matchJoin: 'match:join',
   matchStart: 'match:start',
   matchResume: 'match:resume',
+  matchPassTurn: 'match:passTurn',
   matchSaveFrames: 'match:saveFrames',
   matchBenchStart: 'match:bench:start',
   matchBenchStop: 'match:bench:stop',
   matchBenchView: 'match:bench:view',
   matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
+  matchRejoin: 'match:rejoin',
+  matchForgetResume: 'match:forgetResume',
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
@@ -146,7 +158,8 @@ const castcade: CastcadeApi = {
     status: () => ipcRenderer.invoke(CH.matchStatus),
     host: (opts) => ipcRenderer.invoke(CH.matchHost, opts),
     join: (invite, displayName) => ipcRenderer.invoke(CH.matchJoin, invite, displayName),
-    start: () => ipcRenderer.invoke(CH.matchStart),
+    start: (opts) => ipcRenderer.invoke(CH.matchStart, opts),
+    passTurn: () => ipcRenderer.invoke(CH.matchPassTurn),
     resume: () => ipcRenderer.invoke(CH.matchResume),
     saveFrames: () => ipcRenderer.invoke(CH.matchSaveFrames),
     benchStart: (req) => ipcRenderer.invoke(CH.matchBenchStart, req),
@@ -154,6 +167,8 @@ const castcade: CastcadeApi = {
     benchView: (view) => ipcRenderer.invoke(CH.matchBenchView, view),
     benchClips: () => ipcRenderer.invoke(CH.matchBenchClips),
     leave: () => ipcRenderer.invoke(CH.matchLeave),
+    rejoin: () => ipcRenderer.invoke(CH.matchRejoin),
+    forgetResume: () => ipcRenderer.invoke(CH.matchForgetResume),
     setSettings: (patch) => ipcRenderer.invoke(CH.matchSettingsSet, patch),
     setMicrophone: (deviceId) => ipcRenderer.invoke(CH.matchSetMicrophone, deviceId),
     setMuted: (muted) => ipcRenderer.invoke(CH.matchSetMuted, muted),
@@ -169,6 +184,23 @@ const castcade: CastcadeApi = {
       ipcRenderer.on(CH.matchStatusEvent, listener);
       return () => {
         ipcRenderer.removeListener(CH.matchStatusEvent, listener);
+      };
+    },
+  },
+  launch: {
+    status: () => ipcRenderer.invoke(CH.launchStatus),
+    tables: () => ipcRenderer.invoke(CH.launchTables),
+    browse: () => ipcRenderer.invoke(CH.launchBrowse),
+    host: (opts) => ipcRenderer.invoke(CH.launchHost, opts),
+    confirm: () => ipcRenderer.invoke(CH.launchConfirm),
+    dismiss: () => ipcRenderer.invoke(CH.launchDismiss),
+    copy: (what) => ipcRenderer.invoke(CH.launchCopy, what),
+    viewing: (matchTab) => ipcRenderer.invoke(CH.launchViewing, matchTab),
+    onStatus(cb) {
+      const listener = (_e: Electron.IpcRendererEvent, s: OneStepStatus): void => cb(s);
+      ipcRenderer.on(CH.launchStatusEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(CH.launchStatusEvent, listener);
       };
     },
   },

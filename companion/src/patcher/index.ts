@@ -28,6 +28,8 @@ export {
   type SidecarMarker,
 } from './render.js';
 export { renderSidecar, renderRecipeB, renderRecipeC, renderRecipeD, recipeFor, callArgs, SCORE_SERVER_METHODS } from './render-originals.js';
+export { ANCHOR_OVERRIDES, findOverride, overrideById, checkOverride, type AnchorOverride, type AnchorPlace, type AnchorRole } from './anchor-overrides.js';
+export { lintSidecar, checkGameJournal, blockBalance, type JournalCheck, type JournalCheckOptions } from './validate.js';
 export { isManifest, readManifest, writeManifest, type Manifest, type ManifestVerification } from './manifest.js';
 export { tableIdFor, sidecarPathFor, stalePathFor, manifestPathFor, vpxPathForSidecar, joinPath, basenameOf, dirnameOf, isVpxName } from './paths.js';
 export {

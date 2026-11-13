@@ -10,7 +10,8 @@
  *   `_Scores` at the end of `AddScore` and in front of each of its early `Exit Sub`, `_BallEnd` at the TOP of the
  *   ball-end sub (`EndOfBall` / `EndBall` / `EndPlayerTurn` / `BallDrained`: the ball that just drained, before
  *   anything advances; JPSalas' `EndOfBall` hands over to a timer) or else in front of the `BallsRemaining`
- *   decrement, `_GameEnd` at the end of the end sub (`EndOfGame` / `GameOver` / `EndGame`) or, with none, right after
+ *   decrement, `_GameEnd` at the end of the end sub (`EndOfGame` / `GameOver` / `EndGame`), or in front of the
+ *   statement in it that clears the score store (0.3.1: The Matrix (Original) zeroes `Score(i)` there) or, with none, right after
  *   the first plain statement that clears the game flag (`gameon = 0`, `GameActive = False`, `GameOver = 1`, ...).
  *   The score store is read from `AddScore`'s body (the first `X = X + ...`; a `score`-named one first; one call
  *   level down when `AddScore` only calls a helper): an array `X(I)` journals `X` with `I` as the player, 0- or
@@ -26,21 +27,28 @@
  *   which hands the table the library's shim (journals, forwards to the real object when there is one). Refused,
  *   with the reason, when the table calls a method the shim does not have or with another argument count.
  *
+ * **Anchor overrides (C1.4, B 0.3.0):** a script that matches a record in `anchor-overrides.ts` (the VPX Game Logic
+ * Framework, the Burger template, Rattlecan) takes the anchor places and the expressions the record names; whatever
+ * the record leaves out comes from the vocabulary. A game end is journaled once per journaled game start, so an
+ * anchor after every game-flag clear cannot report a game that never began.
+ *
  * Early `Exit Sub`: only the scores call is put in front of one (it repeats harmlessly); a game start or end on an
  * early-exit path is not journaled, and the warning says so instead of inventing control flow. Everything injected
  * runs under `On Error Resume Next` in our own subs, so a missing variable silences one event and never stops the
  * table. Pure: text in, bytes out; `unpatchSidecar` (render.ts) undoes it exactly.
  */
 import { createHash } from 'node:crypto';
-import { BALL_END_SUBS, END_SUBS, START_SUBS, findFirstSub, findGameFlagClear, type ClassifyResult, type FoundSub, type ScriptClass } from './classify.js';
+import { findOverride, passSuffix, resolvePlace, type AnchorOverride, type AnchorRole } from './anchor-overrides.js';
+import { BALL_END_SUBS, END_SUBS, START_SUBS, findFirstSub, findGameFlagClears, type ClassifyResult, type FoundSub, type ScriptClass } from './classify.js';
 import {
   SCORE_SERVER_CREATE,
   SCORE_SERVER_SHIM_CALL,
   block0,
+  endsWithNewline,
   formatLocalStamp,
   originalsBlockEnd,
   originalsBlockStart,
-  renameHandler,
+  renameHandlers,
   renderRecipeA,
   wrappers,
   type Recipe,
@@ -267,8 +275,9 @@ class Render {
     this.inserts.push({ idx, line, seq: this.inserts.length });
   }
 
-  private anchorLine(fn: string, what: string): string {
-    return `    ${this.call(fn)}   ' Castcade: ${what}`;
+  /** The one line put at an anchor; `pass` is ` <expr>` when the place hands our sub a value. */
+  anchorLine(fn: string, what: string, pass = ''): string {
+    return `    ${this.call(fn)}${pass}   ' Castcade: ${what}`;
   }
 
   /** A missing piece: a warning, and `partial` when a game cannot be journaled whole without it. */
@@ -328,16 +337,7 @@ function renderOriginal(recipe: OriginalRecipe, scriptText: string, cls: Classif
   const oe = f.optionExplicitLine ?? 0;
   r.anchors['block0'] = oe > 0 ? `after Option Explicit (line ${oe})` : 'top of script';
   r.anchors['guard'] = `block 0: ${Math.floor(opts.originalSize)} bytes, ${formatLocalStamp(opts.originalMtimeMs)}`;
-  renameHandler(r.out, T, 'KeyDown', f.keyDownLine - 1);
-  r.anchors['keyDown'] = `Sub ${T}_KeyDown renamed Castcade_Orig_KeyDown (line ${f.keyDownLine})`;
-  if (f.keyUpLine) {
-    renameHandler(r.out, T, 'KeyUp', f.keyUpLine - 1);
-    r.anchors['keyUp'] = `Sub ${T}_KeyUp renamed Castcade_Orig_KeyUp (line ${f.keyUpLine})`;
-  }
-  if (f.exitLine) {
-    renameHandler(r.out, T, 'Exit', f.exitLine - 1);
-    r.anchors['exit'] = `Sub ${T}_Exit renamed Castcade_Orig_Exit (line ${f.exitLine})`;
-  }
+  const names = renameHandlers(r.out, f, r.anchors);
 
   let tail: string[];
   if (recipe === 'B') tail = recipeB(r);
@@ -348,17 +348,23 @@ function renderOriginal(recipe: OriginalRecipe, scriptText: string, cls: Classif
   // so below Option Explicit: block 0 goes in last.
   for (const ins of [...r.inserts].sort((a, b) => b.idx - a.idx || b.seq - a.seq)) r.splice(ins.idx, [ins.line]);
   r.splice(oe > 0 ? oe : 0, block0(recipe, opts));
-  const w = wrappers(T, Boolean(f.keyUpLine), Boolean(f.exitLine));
+  const w = wrappers(names);
   r.splice(r.out.length, [...w, '', originalsBlockStart(recipe), ...tail, originalsBlockEnd(recipe)]);
   r.anchors['wrappers'] = `appended (${w.length} lines)`;
   r.anchors['recipe'] = `recipe ${recipe} block appended (${tail.length + 2} lines)`;
 
-  const bytes = encodeScript(joinScript({ lines: r.out, endings: r.endings, newline: split.newline, trailingNewline: true }));
+  // The sidecar ends as the script did (with or without a final newline): that is how the undo is exact.
+  const bytes = encodeScript(joinScript({ lines: r.out, endings: r.endings, newline: split.newline, trailingNewline: endsWithNewline(split) }));
   return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), warnings: r.warnings, anchors: r.anchors, partial: r.partial };
 }
 
-/** The `Castcade_<R>_*` subs the anchor lines call (B and C): every one, whatever was anchored, so the block's shape is fixed. */
-function anchorSubs(r: Render, x: Exprs): string[] {
+/**
+ * The `Castcade_<R>_*` subs the anchor lines call (B and C): every one, whatever was anchored. With a game start
+ * anchored, a game end is journaled once per game start (`Castcade_<R>_InGame`): recipe B anchors the end after every
+ * game-flag clear, and a framework's end function also runs when a game is cancelled before it began. `scoresOnly`
+ * adds `Castcade_<R>_ScoresFor(a)`, the scores call for a place that passes the table's own value (C1.4).
+ */
+function anchorSubs(r: Render, x: Exprs, scoresOnly?: string): string[] {
   const R = r.recipe;
   const count = `Castcade_${R}_Count()`;
   const list = x.scores === null ? 'Array()' : `Castcade_PlayerScores(${x.scores}, ${x.base}, ${count})`;
@@ -374,10 +380,12 @@ function anchorSubs(r: Render, x: Exprs): string[] {
     `    If n > 0 Then Castcade_${R}_Players = n`,
     `    Castcade_${R}_Count = Castcade_${R}_Players`,
     'End Function',
-    ...sub('GameStart', [`Castcade_${R}_Players = 1`, `Castcade_GameStart ${count}`]),
+    `Dim Castcade_${R}_InGame : Castcade_${R}_InGame = False`,
+    ...sub('GameStart', [`Castcade_${R}_Players = 1`, `Castcade_${R}_InGame = True`, `Castcade_GameStart ${count}`]),
     ...sub('Scores', x.scores === null ? [] : [`Castcade_Scores ${list}, ${x.player}, ${x.ball}`]),
+    ...(scoresOnly === undefined ? [] : [`Sub Castcade_${R}_ScoresFor(a)`, '    On Error Resume Next', `    If a = ${scoresOnly} Then Castcade_${R}_Scores`, 'End Sub']),
     ...sub('BallEnd', [`Castcade_BallEnd ${x.player}, ${x.ball}, ${x.extra}`]),
-    ...sub('GameEnd', [`Castcade_GameEnd ${list}, ${count}`]),
+    ...sub('GameEnd', [...(r.anchors['gameStart'] === undefined ? [] : [`If Not Castcade_${R}_InGame Then Exit Sub`, `Castcade_${R}_InGame = False`]), `Castcade_GameEnd ${list}, ${count}`]),
   ];
 }
 
@@ -486,7 +494,14 @@ interface ScoreStoreFound {
 function findScoreStore(lines: readonly string[], add: SubRange | null): ScoreStoreFound | null {
   const best = (s: SubRange): ScoreStoreFound | null => {
     const all = accumulations(lines, s);
-    const a = all.find((x) => /score/i.test(x.store.name)) ?? all[0];
+    // `Score` itself first (JP's Foo Fighters adds into `CurrentCityScore(CurrentPlayer, ModeActive)` before
+    // `Score(CurrentPlayer)`), then a `...score...` with a plain index or none, then any `...score...`, then the first.
+    const plain = (x: Accumulation): boolean => x.store.kind === 'scalar' || /^\w+$/.test(x.store.index);
+    const a =
+      all.find((x) => /^score$/i.test(x.store.name) && plain(x)) ??
+      all.find((x) => /score/i.test(x.store.name) && plain(x)) ??
+      all.find((x) => /score/i.test(x.store.name)) ??
+      all[0];
     if (!a) return null;
     const at = { sub: s.name, line: a.idx + 1, text: a.text };
     if (a.store.kind === 'scalar') {
@@ -509,6 +524,87 @@ function findScoreStore(lines: readonly string[], add: SubRange | null): ScoreSt
   }
   if (findLine(lines, /^\s*(Dim|Public|Private)\s+(\w+(\(\s*\d*\s*\))?\s*,\s*)*Score\s*\(/) >= 0) return { store: { kind: 'array', name: 'Score', index: 'CurrentPlayer' } };
   return null;
+}
+
+/** The statements of a line's code part: split at `:` outside string literals. */
+function lineStatements(codePart: string): string[] {
+  const out: string[] = [];
+  let inStr = false;
+  let from = 0;
+  for (let i = 0; i < codePart.length; i++) {
+    const ch = codePart[i];
+    if (ch === '"') inStr = !inStr;
+    else if (ch === ':' && !inStr) {
+      out.push(codePart.slice(from, i));
+      from = i + 1;
+    }
+  }
+  out.push(codePart.slice(from));
+  return out.map((s) => s.trim()).filter((s) => s !== '');
+}
+
+interface ScoreClear {
+  /** 0-based line the game-end call goes in front of: the clear's own line, or the outermost loop that holds it. */
+  idx: number;
+  /** 0-based line of the clear and the statement as written. */
+  at: number;
+  text: string;
+  /** Early `Exit Sub` in front of `idx`: paths that leave before the game end is journaled. */
+  exitsBefore: number;
+}
+
+/**
+ * The first statement in the end sub that sets the score store to 0 (B 0.3.1). The Matrix (Original) 0.99.0 clears
+ * `Score(i)` for every player in a loop near the end of `EndOfGame`, so a game end journaled at the end of the sub
+ * carried `[0]` (live validation, 2026-11-12: three ball ends, final score 0, last live score 1461760). The call goes
+ * in front of the clear, outside any `For` / `Do` / `While` that holds it. `null` when the sub has no such statement,
+ * or the line cannot take a statement in front of it (it follows a line continuation).
+ */
+function scoreClearIn(lines: readonly string[], s: SubRange, store: ScoreStore): ScoreClear | null {
+  const names = store.kind === 'numbered' ? store.names : [store.name];
+  const target = store.kind === 'array' ? '\\s*\\([^()]*\\)' : '';
+  const rx = new RegExp(`^(?:(?:Else)?If\\b.*\\bThen\\s+|Else\\s+)?(?:${names.map(escapeRegExp).join('|')})${target}\\s*=\\s*0$`, 'i');
+  const loops: number[] = [];
+  for (let i = s.start + 1; i < s.end; i++) {
+    for (const st of lineStatements(code(lines, i))) {
+      if (/^(For|Do|While)\b/i.test(st)) loops.push(i);
+      else if (/^(Next|Loop|Wend)\b/i.test(st)) loops.pop();
+      else if (rx.test(st)) {
+        // a loop opened on this same line is closed on it too (`For i = 0 To 3 : Score(i) = 0 : Next`)
+        const idx = loops.find((l) => l < i) ?? i;
+        // not after a line continuation, and not in front of a `Case` line (the call would join the Case above it,
+        // or sit between `Select Case` and its first `Case`, which does not compile)
+        if (/(?:^|\s)_\s*$/.test(code(lines, idx - 1)) || /^\s*Case\b/i.test(code(lines, idx))) return null;
+        let exitsBefore = 0;
+        for (let j = s.start + 1; j < idx; j++) exitsBefore += exitColumns(lines[j] ?? '').length;
+        return { idx, at: i, text: st.replace(/^.*\bThen\s+|^Else\s+/i, ''), exitsBefore };
+      }
+    }
+  }
+  return null;
+}
+
+/** `If <game flag> [= True] Then Exit Sub` as a whole line: an end sub's guard against running once a new game began. */
+const REENTRY_GUARD = /^\s*If\s+\(?\s*(gameon|GameActive|bGameInPlay|GameInProgress|GameStarted)\s*(?:=\s*(?:True|1)\s*)?\)?\s*Then\s+Exit\s+Sub\s*$/i;
+
+/**
+ * The re-entry guard of an end sub (B 0.3.2): the flag it tests, its 1-based line, how many early `Exit Sub` the sub
+ * has, and whether the guard is the only one. `null` when the sub has no such line.
+ */
+function reentryGuard(lines: readonly string[], s: SubRange): { flag: string; line: number; exits: number; only: boolean } | null {
+  let flag: string | null = null;
+  let line = 0;
+  let exits = 0;
+  for (let i = s.start + 1; i < s.end; i++) {
+    exits += exitColumns(lines[i] ?? '').length;
+    if (flag !== null) continue;
+    const m: RegExpExecArray | null = REENTRY_GUARD.exec(code(lines, i));
+    if (m?.[1]) {
+      flag = m[1];
+      line = i + 1;
+    }
+  }
+  return flag === null ? null : { flag, line, exits, only: exits === 1 };
 }
 
 /** `<v> = 0` or `= 1` as a statement: in the start sub first, else anywhere. */
@@ -552,10 +648,17 @@ function recipeB(r: Render): string[] {
   const [startF, start] = found(START_SUBS);
   const [endF, end] = found(END_SUBS);
   const [eobF, eob] = found(BALL_END_SUBS);
-  const flag = endF ? null : findGameFlagClear(L, ctx, startF);
+  const flags = endF ? [] : findGameFlagClears(L, ctx, startF);
+  // C1.4: what an override names is taken from it; the vocabulary's warning about that value is then not raised.
+  const ov: AnchorOverride | null = findOverride(L);
+  const oe = ov?.exprs ?? {};
+  const warn = (overridden: boolean, text: string): void => {
+    if (!overridden) r.warnings.push(text);
+  };
+  if (ov) r.anchors['override'] = `${ov.id}: ${ov.title}`;
 
   // The score store, and from it the player: an array's index is the player as the table counts it.
-  const store = findScoreStore(L, ok(add));
+  const store = oe.scores === undefined ? findScoreStore(L, ok(add)) : null;
   let index: string | null = null;
   let player = '1';
   let base: 0 | 1 = 0;
@@ -577,45 +680,108 @@ function recipeB(r: Render): string[] {
     if (p) {
       index = p;
       const b = playerBase(L, ok(start), p);
-      if (b === null) r.warnings.push(`no "${p} = 0" or "= 1" found; ${p} is taken as 1-based`);
+      if (b === null) warn(oe.player !== undefined, `no "${p} = 0" or "= 1" found; ${p} is taken as 1-based`);
       player = b === 0 ? `${p} + 1` : p;
-    } else r.warnings.push(`no current-player variable (${CURRENT_PLAYER_VARS.join(', ')}); every event names player 1`);
+    } else warn(oe.player !== undefined, `no current-player variable (${CURRENT_PLAYER_VARS.join(', ')}); every event names player 1`);
     if (store?.store.kind === 'scalar') r.warnings.push('scalar score: in a multi-player game only the player up is journaled');
   }
-  const playersVar = pickVar(L, ctx, PLAYERS_VARS);
-  if (!playersVar) r.warnings.push(`no players-in-game variable (${PLAYERS_VARS.join(', ')}); games are journaled as 1 player`);
+  const playersVar = oe.players === undefined ? pickVar(L, ctx, PLAYERS_VARS) : null;
+  warn(oe.players !== undefined || playersVar !== null, `no players-in-game variable (${PLAYERS_VARS.join(', ')}); games are journaled as 1 player`);
   // The Burger template (2001, Star Wars) keeps `numplay` one above the player count: it starts at 2, the game starts
   // only when `numplay > 1`, and `If cp = numplay` is the end of a round (verified on the owner's three, 2026-11-06).
-  const players = playersVar?.toLowerCase() === 'numplay' ? `${playersVar} - 1` : playersVar;
-  const ball = ballExpr(L, ctx, index);
+  const players = oe.players ?? (playersVar?.toLowerCase() === 'numplay' ? `${playersVar} - 1` : playersVar);
+  const ball = oe.ball ?? ballExpr(L, ctx, index);
   if (ball === null) r.warnings.push(`no ball number (Balls, ${BALL_VARS.join(', ')}, BallsPerGame / BallsRemaining); ball fields are 0`);
-  const extra = hasIdent(L, 'ExtraBallsAwards') ? `ExtraBallsAwards(${index ?? 'CurrentPlayer'})` : (pickVar(L, ctx, EXTRA_BALL_VARS) ?? '0');
+  const extra = oe.extra ?? (hasIdent(L, 'ExtraBallsAwards') ? `ExtraBallsAwards(${index ?? 'CurrentPlayer'})` : (pickVar(L, ctx, EXTRA_BALL_VARS) ?? '0'));
   const s = store?.store ?? null;
-  const scores = s === null ? null : s.kind === 'array' ? s.name : s.kind === 'scalar' ? `Array(${s.name})` : `Array(${s.names.join(', ')})`;
-  const x: Exprs = { scores, base, player, ball: ball ?? '0', players: players ?? '1', extra };
-  r.anchors['vars'] = `${scores ?? 'no scores'} base ${base}, player ${player}, ball ${x.ball}, players ${x.players}`;
+  const scores = oe.scores ?? (s === null ? null : s.kind === 'array' ? s.name : s.kind === 'scalar' ? `Array(${s.name})` : `Array(${s.names.join(', ')})`);
+  if (oe.scores !== undefined) base = oe.base ?? 0;
+  const x: Exprs = { scores, base, player: oe.player ?? player, ball: ball ?? '0', players: players ?? '1', extra };
+  r.anchors['vars'] = `${scores ?? 'no scores'} base ${base}, player ${x.player}, ball ${x.ball}, players ${x.players}, extra balls ${x.extra}`;
   if (store?.at) r.anchors['scoreStore'] = `${store.at.text} (Sub ${store.at.sub}, line ${store.at.line})`;
   const named = (f: FoundSub | null): string => (f ? `${f.name} (line ${f.line})` : 'none');
-  const endNamed = endF ? named(endF) : flag ? `"${flag.text}" in Sub ${flag.sub} (line ${flag.line})` : 'none';
+  const flag = flags[0];
+  const endNamed = endF ? named(endF) : flag ? `"${flag.text}" in Sub ${flag.sub} (line ${flag.line})${flags.length > 1 ? ` and ${flags.length - 1} more` : ''}` : 'none';
   r.anchors['subs'] = `AddScore ${named(addF)}, start ${named(startF)}, end ${endNamed}, ball end ${named(eobF)}`;
 
-  if (s === null) r.miss(`no score store (no "X = X + ..." in Sub ${addF?.name ?? 'AddScore'} or a sub it calls, no Dim Score( array); scores are not journaled`, true);
-  else if (typeof add === 'string') r.miss(`${add}; live scores are not journaled (the game end carries the final scores)`, false);
+  // An override's places for a role, when it names any: true = the role is settled here (anchored, or reported).
+  const placed = (role: AnchorRole, fnName: string, what: string, partial: boolean): boolean => {
+    const places = ov?.anchors?.[role];
+    if (!ov || !places || places.length === 0) return false;
+    const where: string[] = [];
+    const why: string[] = [];
+    for (const p of places) {
+      const res = resolvePlace(L, ctx, p);
+      if (typeof res === 'string') {
+        why.push(res);
+        continue;
+      }
+      const fn = p.pass ? `${fnName}For` : fnName;
+      for (const at of res) {
+        r.insert(at.idx, r.anchorLine(fn, what, passSuffix(p)));
+        where.push(at.where);
+      }
+    }
+    if (where.length > 0) {
+      r.anchors[role] = `${where.join('; ')} (override ${ov.id})`;
+      for (const w of why) r.warnings.push(`override ${ov.id}: ${w}; no ${what} is journaled there`);
+    } else r.miss(`override ${ov.id}: ${why.join('; ')}; no ${what} is journaled`, partial);
+    return true;
+  };
+
+  if (scores === null) r.miss(`no score store (no "X = X + ..." in Sub ${addF?.name ?? 'AddScore'} or a sub it calls, no Dim Score( array); scores are not journaled`, true);
+  else if (placed('scores', 'Scores', 'current scores', false)) {
+    // settled by the override
+  } else if (typeof add === 'string') r.miss(`${add}; live scores are not journaled (the game end carries the final scores)`, false);
   else r.atEnd('scores', add, 'Scores', 'current scores', true);
-  if (typeof start !== 'string') r.atEnd('gameStart', start, 'GameStart', 'game start', false);
+  if (placed('gameStart', 'GameStart', 'game start', true)) {
+    // settled by the override
+  } else if (typeof start !== 'string') r.atEnd('gameStart', start, 'GameStart', 'game start', false);
   else r.miss(`${start}; no game start is journaled`, true);
-  if (typeof end !== 'string') r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
-  else if (flag) {
-    r.after('gameEnd', flag.line - 1, 'GameEnd', 'game end', `after "${flag.text}" in Sub ${flag.sub} (line ${flag.line})`);
-    r.warnings.push(`${end}; the game end is anchored after "${flag.text}" in Sub ${flag.sub} (line ${flag.line}), the first place the game flag is cleared`);
+  if (placed('gameEnd', 'GameEnd', 'game end', true)) {
+    // settled by the override
+  } else if (typeof end !== 'string') {
+    // B 0.3.1: an end sub that clears the score store journals the game end in front of the clear, not at its end.
+    const clear = s === null ? null : scoreClearIn(L, end, s);
+    if (clear) {
+      r.before('gameEnd', clear.idx, 'GameEnd', 'game end', `before "${clear.text}" in Sub ${end.name} (line ${clear.at + 1}), where the table clears its scores`);
+      if (clear.exitsBefore > 0) r.warnings.push(`Sub ${end.name} has ${clear.exitsBefore} early Exit Sub; no game end is journaled on ${clear.exitsBefore === 1 ? 'that path' : 'those paths'}`);
+    } else r.atEnd('gameEnd', end, 'GameEnd', 'game end', false);
+    // B 0.3.2: an end sub that leaves early while the game flag is SET was called late (Game of Thrones: 5 s after the
+    // game over, behind the match sequence; a Start in between begins the next game and the end sub then does nothing).
+    // The game is over where the flag was cleared before that call: the game end is anchored there too. Whichever
+    // comes first journals it; `Castcade_B_GameEnd` says it once per game start.
+    const guard = reentryGuard(L, end);
+    const early = guard === null ? [] : findGameFlagClears(L, ctx, startF).filter((c) => (c.line - 1 < end.start || c.line - 1 > end.end) && c.text.toLowerCase().startsWith(guard.flag.toLowerCase()));
+    if (guard !== null && early.length > 0) {
+      for (const c of early) r.insert(c.line, r.anchorLine('GameEnd', 'game end'));
+      const where = early.map((c) => `after "${c.text}" in Sub ${c.sub} (line ${c.line})`).join('; ');
+      r.anchors['gameEnd'] = `${r.anchors['gameEnd']}; ${where}`;
+      // the guard's exit is now a path whose game end was journaled where the flag was cleared
+      const stale = new RegExp(`^Sub ${escapeRegExp(end.name)} has ${guard.exits} early Exit Sub; no game end is journaled on `);
+      const at = guard.only ? r.warnings.findIndex((w) => stale.test(w)) : -1;
+      if (at >= 0) r.warnings.splice(at, 1);
+      r.warnings.push(`Sub ${end.name} leaves early while ${guard.flag} is set (line ${guard.line}): it runs after the game is over; the game end is also anchored ${where}`);
+    }
+  } else if (flag) {
+    // After every clear of the game flag (0.3.0): a game can end on more than one path (Rattlecan: a normal drain and
+    // a drain after a tilt). `Castcade_B_GameEnd` journals one game end per game start, so a clear outside a game is quiet.
+    const where = flags.map((c) => `after "${c.text}" in Sub ${c.sub} (line ${c.line})`);
+    for (const c of flags) r.insert(c.line, r.anchorLine('GameEnd', 'game end'));
+    r.anchors['gameEnd'] = where.join('; ');
+    const more = flags.length > 1 ? `, and after ${flags.length - 1} more such statement${flags.length > 2 ? 's' : ''} (${flags.slice(1).map((c) => `Sub ${c.sub} line ${c.line}`).join(', ')})` : '';
+    r.warnings.push(`${end}; the game end is anchored after "${flag.text}" in Sub ${flag.sub} (line ${flag.line}), the first place the game flag is cleared${more}`);
   } else r.miss(`${end}${endF ? '' : ' and no game-flag clear (gameon = 0, GameActive = False, GameOver = 1, ...)'}; no game end is journaled`, true);
-  if (typeof eob !== 'string') r.atTop('ballEnd', eob, 'BallEnd', 'ball end');
+  if (placed('ballEnd', 'BallEnd', 'ball end', false)) {
+    // settled by the override
+  } else if (typeof eob !== 'string') r.atTop('ballEnd', eob, 'BallEnd', 'ball end');
   else {
     const dec = findLine(L, /^\s*BallsRemaining\s*(\([^)]*\))?\s*=\s*BallsRemaining\s*(\([^)]*\))?\s*-/);
     if (dec >= 0) r.before('ballEnd', dec, 'BallEnd', 'ball end', `before the BallsRemaining decrement (line ${dec + 1})`);
     else r.miss(`${eob}${eobF ? '' : ' and no BallsRemaining decrement'}; no ball end is journaled`, false);
   }
-  return anchorSubs(r, x);
+  for (const n of ov?.notes ?? []) r.warnings.push(n);
+  return anchorSubs(r, x, ov?.scoresOnly !== undefined && (ov.anchors?.scores ?? []).some((p) => p.pass) ? ov.scoresOnly : undefined);
 }
 
 const EVENT_HANDLER = /_(KeyDown|KeyUp|Timer|Hit|UnHit|Exit|Init|Spin|Slingshot|Dropped|Raised|Collide|Animate|Paused|UnPaused|MusicDone|OptionEvent)$/i;

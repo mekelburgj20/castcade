@@ -12,7 +12,9 @@ import type { MatchStatus } from './match-host.js';
 import type { MatchSettings } from './match-setup.js';
 import type { ClipSummary, SaveFramesResult } from '../media/frame-clip.js';
 import type { BenchStatus } from '../media/bench.js';
+import type { OneStepStatus, TableChoice } from './one-step.js';
 
+export type { OneStepStatus, TableChoice };
 export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
@@ -38,6 +40,17 @@ export const IPC = {
   tablesRemoveAll: 'tables:removeAll',
   tablesPatchNow: 'tables:patchNow',
   tablesProgressEvent: 'tables:progress',
+  /** A14: one step to a match (main/one-step.ts): the table picker, Host with a table, the join link, a link's confirmation. */
+  launchStatus: 'launch:status',
+  launchTables: 'launch:tables',
+  launchBrowse: 'launch:browse',
+  launchHost: 'launch:host',
+  launchConfirm: 'launch:confirm',
+  launchDismiss: 'launch:dismiss',
+  launchCopy: 'launch:copy',
+  /** A14: the renderer says whether the Match tab is showing (a link from outside acts without a click only then). */
+  launchViewing: 'launch:viewing',
+  launchStatusEvent: 'launch:statusEvent',
   streamStatus: 'stream:status',
   streamStart: 'stream:start',
   streamStop: 'stream:stop',
@@ -53,6 +66,8 @@ export const IPC = {
   matchJoin: 'match:join',
   matchStart: 'match:start',
   matchResume: 'match:resume',
+  /** A13: the host's Pass the turn. */
+  matchPassTurn: 'match:passTurn',
   /** D7.6.3: save 2 s of eye frames to the logs folder. */
   matchSaveFrames: 'match:saveFrames',
   /** D7.6: the VR test bench. */
@@ -61,6 +76,8 @@ export const IPC = {
   matchBenchView: 'match:bench:view',
   matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
+  matchRejoin: 'match:rejoin',
+  matchForgetResume: 'match:forgetResume',
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
@@ -224,8 +241,12 @@ export interface CastcadeApi {
     /**
      * Host only: freeze the roster (two or more players) and issue the first grant. A10 (2026-11-02): between games of a
      * series, Next game (NEXT_GAME, then grant 1 of it), the same as a game started on the host's table.
+     * A13 (2026-11-12): in the lobby, while `startWarnings` is not empty (a table that cannot report ball ends), it
+     * rejects unless `anyway` is true: the host's explicit confirmation.
      */
-    start(): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
+    passTurn(): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
@@ -240,6 +261,9 @@ export interface CastcadeApi {
     benchClips(): Promise<ClipSummary[]>;
     /** A10 (2026-11-02): the host's leave between games is End match: MATCH_END to everyone, then the teardown. */
     leave(): Promise<MatchStatus>;
+    /** A15 (2026-11-12): go back into the match Castcade was in when it last closed (`MatchStatus.resume`); or drop it. */
+    rejoin(): Promise<MatchStatus>;
+    forgetResume(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
@@ -261,6 +285,26 @@ export interface CastcadeApi {
     /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
     setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
+  };
+  /**
+   * A14 (2026-11-12): one step to a match. Host with a table (the match is hosted, the join link copied, VPX started on
+   * the table), the join link and its chat line, and a `castcade://join/…` link that waits for the player's click.
+   */
+  launch: {
+    status(): Promise<OneStepStatus>;
+    /** The tables Castcade knows (imported), most recent first. */
+    tables(): Promise<TableChoice[]>;
+    /** Browse: the other `.vpx` files in the tables folder (never patched by Castcade). */
+    browse(): Promise<TableChoice[]>;
+    /** Host, copy the join link, start VPX on `tablePath` (a `path` from `tables()` or `browse()`; null: host only). A table already open is used. */
+    host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    /** Join the match of the link that waits (`status.pending`) and start its table here. */
+    confirm(): Promise<OneStepStatus>;
+    dismiss(): Promise<OneStepStatus>;
+    copy(what: 'link' | 'message'): Promise<OneStepStatus>;
+    /** The Match tab is showing (or not any more). */
+    viewing(matchTab: boolean): Promise<void>;
+    onStatus(cb: (s: OneStepStatus) => void): () => void;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;

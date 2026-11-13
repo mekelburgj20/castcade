@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "envelope": "Envelope.schema.json",
   "shared": [
     "Envelope.schema.json",
@@ -40,6 +40,10 @@
     "BALL_END": {
       "direction": "client->host",
       "schema": "BALL_END.schema.json"
+    },
+    "TURN_PASS": {
+      "direction": "host->all",
+      "schema": "TURN_PASS.schema.json"
     },
     "GAME_OVER": {
       "direction": "client->host",

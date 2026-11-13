@@ -9,6 +9,9 @@ later, F6), ADR 0007 (functionality first, guided setup).
 
 ## 1. What a player does
 
+(A14, 2026-11-12, §9: steps 1 and 2 below are one press each now. The host picks a table and presses Host, which starts
+VPX and copies a join link; the other player opens the link. The steps as written still work, in any order.)
+
 1. Both players open the same table in VPX (same file; the fingerprint says if not) with the Castcade patch, in VR
    with `VRPreview` on and its window 1280x720 (`[PlayerVR] PreviewWidth / PreviewHeight`).
 2. The host opens Castcade → **Match** → *Host*: Castcade listens on a TCP port (setting, default 27401), shows the
@@ -46,7 +49,8 @@ The contract between the three code pieces is `companion/src/media/match-media-t
 
 ## 3. Match controller (A6 + C3)
 
-- Role objects come from the engine: `HostMatch` or `ClientMatch` on a `Session` over `WsPeerTransport`.
+- Role objects come from the engine: `HostMatch` or `ClientMatch` on a `Session` over `WsPeerTransport` (D10.8: or
+  the relay transports, §3a).
 - **Keys**: one Ed25519 pair per companion, `<userData>/match-keys.json` (`match/keys.ts` export/import).
 - **Participant**: `playerId` = a stable per-install id (the pairing device id when paired, else a UUID stored with the
   keys); `displayName` = the pairing username (`WitnessSettings.username`), editable on the Match tab; `rig` =
@@ -74,7 +78,8 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   "opponent up", a chord for "match over"; volume setting; the panel text changes at the same moment.
 - **Match tab**: Host (port, balls per game, invite string + copy, "forward TCP <port>"), Join (paste), roster with
   rig and table-file agreement, the big turn line, scores per player, result, Leave. The invite's public IP comes from
-  `https://api.ipify.org` (one GET, failure → the LAN address with a note to replace it).
+  `https://api.ipify.org` (one GET, failure → the LAN address with a note to replace it). D10.8 (2026-11-12): a paired
+  host's invite is the match code alone and the match goes through ArcAid; see §3a.
 - **Media hooks**: on `MATCH_READY` → `media.attach(signalling, peerIds)`; on my grant → `media.setSending(true)`; on
   my `ball_end` accepted → `setSending(false)`; every state change → `media.setPanelState(...)`; on leave → `detach()`.
   In VR (`inVr`) the controller also starts `VrOverlay` with the panel's frame source; on the desktop the panel window
@@ -83,11 +88,84 @@ The contract between the three code pieces is `companion/src/media/match-media-t
   Castcade OpenXR layer (§5). A later reading on a runtime that needs the other one swaps them. The rig, `play_device`
   and the capture pick follow `inVr`.
 
+## 3a. Reaching the host: the ArcAid relay, and the router port as the fallback (D10.8, 2026-11-12)
+
+Until 0.2.39 the host listened on TCP 27401 and the invite carried its public address, so a host with no port forward
+could not be reached (a tester's first try: "Could not reach the host at … (no answer in 10 s)"). Media already
+crosses NAT by STUN; only the match control needed a path. Owner ruling 2026-11-12: ArcAid relays the match control
+messages (primary); a UPnP port mapping is the fallback. The protocol is unchanged: the relay is a transport.
+
+- **Transports** (`match/transport-relay.ts`): `RelayHostTransport` owns the relay room named by the match code,
+  `RelayClientTransport` joins it; both carry the exact text frames of the WebSocket transport over socket.io to
+  ArcAid (contract and limits: `docs/arcaid-side-changes.md` §4a). `CompositeTransport` lets the host serve the room
+  and its WebSocket listener at once. A relay link behaves like a socket: a peer is a link at the host from its first
+  frame (HELLO or RECONNECT), a dropped socket.io connection closes the links on that side (the engine sees leaves),
+  and `connectTo` re-joins and opens with RECONNECT, so the engine resumes from the log head as over WebSocket.
+- **Host.** Paired, and ArcAid answers (5 s to connect, beside the rig probe and the address lookup; 4 s for the
+  ack): the room is registered, the invite is **the code alone** (`JHDFEF`), and the listener still opens on 27401
+  for LAN players, a forwarded port and players who are not paired (the tab shows that address invite small). A code
+  ArcAid says is in use is replaced (three tries). A port that cannot be opened no longer stops a paired host: the
+  match goes through ArcAid only. Not paired, ArcAid unreachable, or a server without the relay: the address invite
+  as before, and the router is asked for the port in the background.
+- **Join.** Six letters (any case, `castcade:` in front allowed) → the relay; `castcade:ws://host:port#CODE` →
+  direct, as before. A code on a PC that is not paired says so. A relay failure names its cause: no such match, full,
+  the match already started (`locked`), ArcAid refusing the device (pair again), ArcAid holding the PC back (wait a
+  few minutes: its lockout after wrong codes is fifteen), ArcAid unreachable, the match closed. ArcAid checks the
+  device when a room is asked for, not at connect, so "refused the device" always comes from that answer; a host it
+  refuses (or holds back, or has no room for) hosts on its listener and the tab says why.
+- **Started = locked.** When the host starts the first game it tells ArcAid (`match:lock`): a device that never had a
+  seat in the room is refused from then on, the players may come back. Leaving on purpose (Leave, a match that ends,
+  quitting) tells ArcAid too (`match:leave`), so a host's room closes at once and not after the 30 s grace.
+- **Match tab.** One line under the turn: `Through ArcAid` (with `(reconnecting to ArcAid…)` while the host's socket
+  is away) or `Direct to <host:port>`. `MatchStatus.via`, `path`, `directInvite`, `relayNote`, `portMapping`.
+- **A drop on the relay.** The host's socket to ArcAid going away drops every relay player at once. The host takes the
+  room back when socket.io reconnects (ArcAid then names the clients in the room again; the companion does not need
+  it, a peer is a link from its first frame), tells its former peers to relink (a transport-private string, §4a), each
+  resumes with RECONNECT and RESUMEs the pause that names it. For that last step the controller now also resumes when
+  a pause for its own drop reaches it on a live link (with two or more dropped at once the host pauses for each in
+  turn, and the second one's pause arrives after it is back; before D10.8 that pause waited for the host's Resume
+  button). In the lobby a drop is a leave, as over WebSocket: the player joins again. If the host stays away more
+  than 30 s ArcAid closes the room and the clients' reconnects end with "no such match".
+- **ArcAid restarts (a deploy), or closes the room** (`expired`, `server_restart`). The room lives in the server's
+  memory, so it is gone. The host registers the same code again when its socket is back (a new room, locked again
+  once the players it had are back in it, or after 60 s), and the clients come back by the same relink path with a
+  new peer id. A client that asks before the host did is told "no such match"; ArcAid locks a device out after eight
+  of those in ten minutes, so the transport asks at most five times, further apart each time (1.5, 3, 5, 8 s), and
+  after that answers by itself while the engine's own attempts run out. A room closed because the host left
+  (`host_left`) or hosts another match (`replaced`) is not asked for again, and the host does not reopen it.
+- **A pairing revoked mid-match.** ArcAid checks a seated device again at most once a minute and takes the seat of
+  one that no longer verifies. That player's companion says "This PC is no longer paired with ArcAid" and does not
+  try to come back through ArcAid (the host sees a leave); a revoked host's room is closed and not opened again.
+- **What ArcAid drops, it says** (`match:error`): over the rate, too large, not readable, no such player, not in the
+  match. Each goes to the log in plain words, once per ten seconds. "No such player" does not name the player, so
+  the host asks who is in the room and closes the links of those who are not (the engine sees a leave); "not in the
+  match" is a closed link on a client and a room to take back on the host.
+- **Not carried by the relay:** a host transfer. The room belongs to the host's device, and `newHostEndpoint` is a
+  `ws://` URL; a relay client refuses to move to one. The companion never calls `transferHost` and its clients do not
+  listen, so nothing is lost that worked before; a transfer through the relay needs a contract (a room handed to
+  another device) and a protocol answer for the endpoint.
+- **Rate.** ArcAid allows 200 `match:relay` per fixed 10 s window per client socket and, for the host, per
+  destination (amended 2026-11-12; the first wording counted the host's socket as a whole, which a host that is up
+  reached with three clients); a frame it refuses for its size counts too. `RelayPacer` keeps each bucket under it
+  (180 in any 10 s, so under 200 in any fixed window): one pacer on a client, one per destination on the host; STATE
+  and DMD_FRAME are shed first, the rest waits in order. STATE at 10 Hz is half a bucket, so nothing is shed in a
+  normal match at any size (§4a).
+- **Router port** (`main/port-mapping.ts`): UPnP IGD written directly on `node:dgram` and `fetch` (no dependency:
+  the maintained npm libraries bring an XML parser and a gateway prober for three requests): SSDP search from every
+  LAN address, the description fetched only from the device that answered, `AddPortMapping` TCP 27401 → this PC with
+  a 1 h lease (renewed every 30 min while hosting; a router that only takes permanent mappings, error 725, gets one),
+  `GetExternalIPAddress`, `DeletePortMapping` at teardown (leave, quit). One 3 s deadline; hosting never waits for
+  it. The tab says `Port opened on your router automatically`, or `Your router did not open the port: forward TCP
+  27401, or pair with ArcAid to host without it`; a router whose own address is private, CGNAT or not the public one
+  is reported as behind another router (the mapping cannot help). NAT-PMP / PCP is not done (it needs the default
+  gateway's address, which Node does not give without a dependency).
+
 ## 4. Media (D2)
 
 - **Signalling**: new protocol message `MEDIA_SIGNAL` `{ to: PlayerId, kind: 'offer' | 'answer' | 'ice', sdp?: string,
   candidate?: { candidate: string; sdpMid: string | null; sdpMLineIndex: number | null } }`, direction `any`; the host
-  relays it to `to` only (never logged, like STATE); protocol stays 2 (unreleased). Built: `HELLO_ACK.hostGame` was added too, so a client learns of a table-file mismatch and both panels flag it (the host accepts the HELLO in `advise` mode). Prose: a "Media signalling"
+  relays it to `to` only (never logged, like STATE; D10.8: through the ArcAid relay it rides the match channel
+  unchanged, §3a); protocol stays 2 (unreleased). Built: `HELLO_ACK.hostGame` was added too, so a client learns of a table-file mismatch and both panels flag it (the host accepts the HELLO in `advise` mode). Prose: a "Media signalling"
   section (what is signalled, that media never crosses ArcAid, that video flows only from the player up).
 - **Topology**: full mesh of `RTCPeerConnection`s (2–4 players; perfect negotiation, polite = the lexically smaller
   playerId). Voice: every peer sends its microphone, Opus, echo cancellation and noise suppression on, open mic with a
@@ -503,3 +581,238 @@ way to hold N results under one Throwdown (a `game` column on the result or the 
 the series standings, and to decide what the Throwdown's own outcome is when the series ends (the last RESULT's
 series ranks, or each game as its own scored round). The end of a series is not posted as a separate message today
 (MATCH_END is peer to peer and unlogged); the post after the last game is the final one.
+
+## 9. One step to a match, and any order (A14, 2026-11-12)
+
+Owner, 2026-11-12, about hosting: "I do not want to have to start VPX, launch the table, switch views back to desktop,
+Host session, copy code, paste code in Discord, wait for player while watching Castcade, after player joins press start
+match, then switch view back to VR table, then play. It's really clunky and cumbersome and if any of that is out of
+order, things seem to fail." Target: the host picks a table, presses Host and puts the headset on; the friend opens a
+link and puts the headset on. A11 (the host's first Start on the table starts the match), A12 (free play until someone
+joins) and the headset panel already carry the rest. Built 2026-11-12; **the launch, the link registration and the Match
+tab were not run** (unit tests and typecheck only: the machine was busy with an unattended VPX run); §9.5 is the rig list.
+
+### 9.1 Host starts the table and copies a link (step 1)
+
+- The Match tab's Host card has a table picker (`renderer/src/views/OneStep.tsx` `TablePicker`): the tables Castcade
+  knows, which are the imported ones (a manifest under `<userData>/witness/tables` whose `.vpx` is still there,
+  `launch/known-tables.ts`), most recently played first (`<userData>/recent-tables.json`, noted when the witness sees a
+  table open), then most recently patched; a search box narrows by name or ROM. "No table: I open it myself" stays.
+  **Browse…** adds every other `.vpx` of the tables folder and one level of sub-folders (the listing a joining rig
+  searches, `listTableFiles`), marked "not imported", so a table Castcade never patched can be hosted; if it cannot
+  report ball ends, the lobby says so and Start asks the host to confirm (A13), as for any such table.
+- Host (`main/one-step.ts` `host`) = `MatchHost.host`, then the join link on the clipboard, then VPX on the picked
+  table: `"<VPinballX exe>" -Play "<table.vpx>"` from the exe's folder (`launch/vpx-launch.ts`; the switch the witness's
+  process watch reads back and `scripts/validate-original.ts` uses; no other switch, so the player's ini, display and VR
+  settings apply). The exe is the one the witness last saw running (`vpxExe`, settings.json): on a rig with several
+  builds, the one the player plays. Started without a shell and let go; the witness finds it like any launch.
+- **A table already open is used and nothing is started** (the witness names a current table; a VPX editor with no table
+  does not count, an editor with a table loaded does: press Play there).
+- The link is `castcade://join/<invite>` with the invite URL-encoded (`main/deep-link.ts`): the six-letter code once
+  ArcAid carries the match (D10.8: `MatchStatus.invite` is the code then), the address invite otherwise. The Match tab shows it with Copy, and a chat
+  line with Copy for chat: `Castcade match on <table>: castcade://join/… (copy the link, then in Castcade press Match,
+  Paste, Join)`. The Join box takes a link as well as an invite.
+- **Discord does not make `castcade://` clickable.** Discord's community forum has users reporting that since May 2023
+  only `http://`, `https://` and `discord://` links are clickable in messages (`steam://` links stopped then); no
+  official statement was found, and it was not tried in a Discord client here. So the chat line carries instructions.
+  The click-through fallback is a redirect page on ArcAid, `https://arcaid.app/castcade/join/<invite>`, which answers
+  with a page that opens `castcade://join/<invite>` (and says to install Castcade when nothing handles it). That is
+  ArcAid work (its W96, live from ArcAid 2.243.0).
+- **The clickable link (A14.2).** When ArcAid carries the match (the invite is the code) and this PC's ArcAid address
+  is `https://`, the link Host copies, the Match tab shows and the chat line carries is
+  `https://arcaid.app/castcade/join/JHDFEF` (`formatWebJoinLink`: upper-case code, no trailing slash), and the chat line
+  is just `Castcade match on <table>: <link>`. An address invite keeps the `castcade://` form and its instructions (the
+  web form would put the host's address in a request to ArcAid and needs an encoded `/` and `#` through its proxy,
+  untried). The Join box reads the web form like the `castcade://` one; the command line still takes only
+  `castcade://`. Not tried in a Discord client or a browser with Castcade installed.
+
+### 9.2 The link joins and starts the table (step 2)
+
+- `castcade://` is registered per user: by the app at every start (`app.setAsDefaultProtocolClient`, packaged builds;
+  a development run only with `CASTCADE_REGISTER_LINKS=1`) and by the installer (`build/installer.nsh`, the same
+  `HKCU\Software\Classes\castcade` keys, removed at uninstall). electron-builder's `protocols` key is set too, but its
+  NSIS target does not read it (macOS, Linux and AppX only; checked in app-builder-lib 26).
+- Windows starts `Castcade.exe "castcade://join/…"`. A first instance finds it on its command line (`linkFromArgv`),
+  a running one gets it from `second-instance`. Either way the window comes up on the Match tab.
+- Opening a link joins that match with the saved name, then starts the host's table here: the host's game is
+  `HELLO_ACK.hostGame` (`MatchHost.hostGame()`), matched against the tables on this PC by `launch/find-table.ts`: the
+  same file (SHA-256), then the same ROM (the fingerprint carries none today), then the same name, whole or by title;
+  an imported table before a `.vpx` only found in the tables folder; then the most recently played. The advisory on the
+  panels then says what it says for a pasted invite. No copy here: "The host plays <table>. Castcade found no copy of
+  it on this PC…", and the player stays joined. A match that is gone: "That match is gone or cannot be reached: ask
+  the host for a new link."
+- **The link is untrusted input.** Only the exact shape is taken (scheme, `join`, one segment, at most 300 characters,
+  the decoded invite one of the two invite shapes); only the invite comes out of it. Nothing of a link, and nothing of
+  the host's fingerprint, is ever a path, a program, a switch or a shell string: the table started is one from this
+  PC's own lists, the exe must be an absolute `VPinballX*.exe` that exists, and the process is spawned with an argument
+  array and no shell. **A link acts without a click only when Castcade's window was already on screen with the Match tab
+  showing** (`linkIsTrusted`). Otherwise (the app closed, in the tray, minimised, on another tab, or a cold start) the
+  Match tab asks first: "Join this match? … Joining turns your microphone on for the other players and starts the
+  host's table in VPX." The click gates the join as well as the table start, which is stricter than "before launching
+  VPX": joining opens the voice mesh, and a web page must not do that silently either.
+
+### 9.3 Any order: the audit (step 3)
+
+The pieces: companion start (C), VPX start (V), the table loaded (T), Host or Join (H), the other player's join (J), the
+VR preview on or off (P). The match host already followed the witness rather than a sequence for most of these (A6's
+lobby refresh, A11's armed start, A12's wait); the audit ran each ordering as a test over two real match hosts with a
+witness the test drives (`main/match-host-orderings.test.ts`) and fixed what failed. The table start is a wish that
+`one-step.ts` `settle` re-checks on every match and witness status, so it has no order either.
+
+| Ordering | Before | Now | Tested by |
+|---|---|---|---|
+| C after V, T: Castcade started with a table already running, preview on or off | Preview off: `launch null`, the table unread for minutes | C14 (0.2.39): the table comes from the hook's journal of that process | `witness.test.ts` "C14: started with a table running and no window title…" |
+| H before V: Host with no VPX | Worked in the engine (row LOADING, then the table), but the player had to take the headset off again to start VPX | Host starts VPX on the picked table; the lobby follows when it opens | orderings "Host before any table…"; `one-step.test.ts` "hosts, puts the join link on the clipboard and starts VPX…" |
+| J before the host's T: the friend joins while the host's VPX is still loading | Joined, flagged "different table file" until the host's table opened; the friend had to guess the table | The link joins, waits for the host's fingerprint, then starts the same table here | orderings "Host with a table, the friend opens the link before the host's VPX is up…"; one-step "joined before the host's table is open…" |
+| J before the friend's own T | Row LOADING, then right (A6) | Same; the link starts the table | orderings "Host before any table…" |
+| The host's Start pressed while another table is still loading | Armed, fires when it opens (A11) | Same | orderings "the host's Start pressed while the other table is still loading…" |
+| H while a game is already running on the host's table, free play | The join waits for that game; the next Start starts the match (A12) | Same | orderings "Host while a game is already running on the table (free play)…" |
+| H while a game is running, "Table locked until someone joins" | **The lock went on in the middle of the ball**: flippers and plunger dead, the game could not end | The running game keeps its keys; the lock goes on when it ends, off when the lobby is complete (`controller.ts` `syncLobby`) | orderings "Host while a game is running, with Table locked…" |
+| T already open at Host or at the link | Worked | Used as it is; nothing is started | one-step "a table that is already open is used…", "a table already open here is kept…" |
+| T closed and reopened in the lobby | Row LOADING, then open again; the start from the table still works | Same | orderings "the table closed and reopened in the lobby…" |
+| T closed and reopened between games, either rig | The series stays open; the reopened host table starts the next game; the client stays locked until its ball | Same | orderings "the table closed and reopened between games, on both rigs…" |
+| T closed during a game | That player forfeits ("table closed"): a pinball game cannot be picked up again | Same, by design | `controller.test.ts` (table_exit) |
+| A link with Castcade closed, in the tray or on another tab | (no links) | The window comes up on the Match tab and asks; nothing is joined or started before the click | `deep-link.test.ts` "a link acts without a click only when…"; one-step "from outside…" |
+| A link while already in a match; the same link twice | (no links) | "You are already in this match." / "That link is for another match…"; nothing changes | one-step "text that is not a join link is ignored…" |
+| A link for a match that ended, or whose host left while the link waited for the click | A pasted invite said "Could not reach the host…" | "That match is gone or cannot be reached: ask the host for a new link." | orderings "a link for a match that ended while it waited…"; one-step "a link for a match that is gone says so…" |
+| The match ends while a table is still to be started | (new) | The wish is dropped; nothing starts later | one-step "the match ending while VPX is still to be started…" |
+| VPX slow, or it never shows the table | (new) | Not started twice; after 2 minutes the tab says to open it by hand; if it opens after all, the tab follows | one-step "VPX that does not start, or never shows the table…" |
+| P off (no preview window) at Host or Join | The rig read `pc` until the witness sampled VR, then the panel moved into the headset (A6); the camera is the layer's (D8.1), so no window is needed | Same | `match-host.test.ts` "host on the monitor reading, then the witness reads VR…" (existing) |
+| J after the match started | Refused by the host ("the roster is final"); through ArcAid the room is locked at the first game (D10.8) | Same; a link says the answer as it came ("That match has already started (CODE): only its players can come back to it." or "Could not join that match. The host refused…") and starts no table | engine tests (existing); one-step "D10.8: a link opened after the match started…" |
+| The relay reconnecting (a pause, the client's bounded `no_such_match` retry, a host re-hosting the same code) while a link waits for the host's table | (new) | The wish is kept while this rig is still in the match; the same link stays valid | one-step "the wait for the host's table outlasts a pause…" |
+| The witness rebuilt during a match by a settings change (the ArcAid address, the NVRAM folder), A15 | **The game in progress was fed to the match a second time**: on this player's ball 2 the replayed end of ball 1 passed the turn; in a free-play lobby the replayed Start started the match in the middle of the host's game. The replaced witness also went on reading the journal and posted the game a second time at its end | The new witness is given the old one's journal mark (file, table load, byte position of the last event delivered) and delivers nothing at or before it again; the journal is still read from the top, so the game on screen, the attempt and the game count are rebuilt. A stopped witness stops its journal tails | `main/witness-restart.test.ts` (two match hosts, the real witness and witness host); `witness.test.ts` "A15: …" |
+
+**Not fixed, known:**
+- Castcade restarted in the middle of a match: fixed by A15, §10 (what it does not cover is listed there).
+- A VPX editor open with a table loaded but not playing counts as "a table is open": Host starts nothing and the player
+  presses Play. A second VPX is never started beside it.
+
+### 9.4 Decisions taken alone
+
+- The link's click gates the join as well as the table start (§9.2).
+- The picker lists imported tables first (the owner's words: "the tables Castcade already knows") and the rest of the
+  tables folder behind Browse…; a joining rig also
+  looks at plain `.vpx` files in the tables folder and one level of sub-folders, by name, after the imported ones.
+- The name match takes the title before the first bracket ("Monster Bash (Williams 1998) 2.1" = "Monster Bash"). A
+  wrong pick is an advisory on the panels ("different table file"), never a refusal.
+- `-Play` and nothing else; the exe is `vpxExe` (last seen running). No `-Minimized`, no `-Ini`.
+- The link is copied, not the chat line; the chat line has its own button.
+- A development run does not register the scheme unless asked.
+- One code change in the engine: the lobby lock never goes on during a running game (the row above).
+
+### 9.5 Rig checks (none of this was run)
+
+1. Install the build; `HKCU\Software\Classes\castcade\shell\open\command` names the installed `Castcade.exe "%1"`.
+2. Host with a table picked and no VPX running: VPX starts on that table in the headset build, the link is on the
+   clipboard, the lobby row goes from LOADING to open; the log has `launch: started VPX on … (-Play, pid …)`.
+3. Host with the table already open: nothing starts; the tab says "Using the table that is already open".
+4. Win+R, paste the link, with Castcade closed: Castcade opens on the Match tab and asks; Join and start the table
+   joins and starts the same table. With Castcade open on the Match tab: no question.
+5. The same from a browser's address bar, and a look at how Discord shows the link and the chat line.
+6. The friend's rig without the table: the tab names it and the match stays joined.
+7. A second link while in a match; a link after the host left.
+8. With "Table locked until someone joins": Host during a ball; the flippers stay live until the game ends.
+
+## 10. Castcade restarted in the middle of a match (A15, 2026-11-12)
+
+Before: a companion that closed or crashed during a match was out of it. A client had no way back (the host refuses a
+new HELLO once the roster is final); a host's match was gone, and its clients, after 30 s of retries, each made itself
+"host" of a match nobody could reach (the `host_left` transfer needs a listener the others can come to, which a client
+over WebSocket or the relay does not have). Built 2026-11-12; **nothing here was run in the app or on a rig** (engine
+and match-host tests only); §10.6 is the rig list. No protocol change, no journal change.
+
+### 10.1 What is saved
+
+`<userData>/match-resume.json` (`main/match-resume.ts`), from MATCH_READY on, never in the lobby. Written whole (tmp +
+rename) inside `Session.commit` at every entry of the match log, before the frame that carries the entry is sent, so the
+file is never behind what another player was told; and every 15 s as a sign of life (`aliveAt`). Removed when the match
+is left, when it ends for good (MATCH_END, the host gone), and when another match is hosted or joined.
+
+In it: the match code; a client's invite as it joined (the code, or the host's address and port for a direct match); a
+host's port and whether ArcAid carried the match; this player's id and name; the other players' names; the match log
+(the roster with names, ids and public keys, the table fingerprints, grants, ball ends, scores: what went over the
+wire); the witness's journal mark at the last log entry. Not in it: the private key (still only `match-keys.json`), the
+pairing token, anything of voice or video. The file alone gets nobody into the match: RECONNECT is signed with the key.
+
+### 10.2 At start
+
+- A record older than its bound is dropped: 20 minutes for a client (the host pauses for a dropped player until
+  someone acts; 20 minutes is the protocol's own limit for one ball), 3 minutes for a host (`HOST_WAIT_MS`: after that
+  no client is still waiting).
+- Castcade was alive in the match under 75 s ago (a minute, plus one heartbeat), or closed itself to install an update
+  (`restart: 'update'`; `quit(install)` no longer leaves the match): the shell rejoins without asking. The player did
+  not leave, and the microphone was on in that match a moment ago.
+- Otherwise the Match tab shows "You were in a match … Rejoin the match with <names>" / "Forget it" (a host: "Host it
+  again"). Hosting or joining something else drops it.
+- The turn lock is left as the last run left it while a record waits (before A15 it was always removed at start), so a
+  table that was locked for another player's ball stays locked until the rejoin or Forget it.
+
+### 10.3 The rejoin
+
+- **Client**: the saved log is loaded (its hash chain is checked), a `Session` is built on it with its `seq` started
+  from the wall clock (the host rejects a frame whose `seq` is not above the last it took from that player, and the
+  counter of the last run is gone), `ClientMatch.adopt` + `relinkTo`: the same RECONNECT / RECONNECT_ACK as after any
+  drop, through ArcAid (the room is joined again first; a locked room takes a device that held a seat) or to the host's
+  address. The controller is built from the log's state (`MatchControllerOptions.resumed`): phase, roster, scores, who
+  is up. The table keeps its keys only if the log says the outstanding grant is this player's; the host's answer
+  confirms it or locks. The player's own RESUME clears the pause the host raised for its drop (A8), and the grant comes
+  again under a new number.
+- **Host**: the same code is hosted again: the listener on the saved port, the relay room under the saved code (a room
+  that is gone is opened anew; it is locked again after a minute, so its players can come back first),
+  `HostMatch.resumeFromLog` with every other player marked gone, then `runAfterRestart`: the outstanding grant is
+  issued again (at once when it is the host's own; else the usual disconnect pause until its holder is back), or,
+  between games, the result goes out again so the next game can start. The clients come back by their own retry.
+- A rejoin that gets no answer in 20 s says so and keeps the record (Rejoin tries again); one the host refuses
+  (`unknown_log_hash`, `bad_signature`) drops it.
+
+### 10.4 The table: what happened while Castcade was closed
+
+The hook keeps journaling. `TableBacklog` (`match-resume.ts`) sits between the witness and the controller:
+
+- The witness says for each event where in the journal it is and whether it was there before the witness began to
+  read (`backlog`). After a restart, an event at or before the saved mark was already answered by the log and is
+  dropped; everything after it is held until the host's answer is merged, then fed in order. So a ball end that
+  happened while Castcade was closed is reported once, for the grant as re-issued, and an earlier ball of the same
+  game is not reported again (A15's first half, the witness mark, is the same notion one level down).
+- Ball ends the host turns out to have already (reported just before the crash, or the host passed the turn by hand
+  meanwhile) are counted from the log (this player's BALL_END and TURN_PASS entries now, minus those in the saved log)
+  and that many of the first held ball ends are skipped.
+- The same list serves a plain reconnect: what the table said since the log last grew is fed again after
+  `reconnected`, so a BALL_END sent into a link that had just dropped is sent again (before A15 it was lost and the
+  host waited for a ball that had already drained).
+- A journal from another load of the table than the saved mark names: the table was closed and opened again, the game
+  cannot be picked up, and the player forfeits it, as at any table close.
+
+### 10.5 A host that is gone, and what is not covered
+
+- A client now waits 3 minutes for its host ("The host's Castcade closed or lost its connection. The match is paused:
+  waiting up to 3 minutes for it to come back."), by the clock (`reconnect.maxMs`), then the match ends for it with
+  "The host did not come back within 3 minutes: the match is over." It never makes itself host
+  (`hostLeftTransfer: false` in the companion; the engine's default, for a full mesh, is unchanged).
+- Through ArcAid the room outlives its host by 30 s; after that a client asks for it again five times, the last 88 s
+  after the first miss (`HOST_WAIT_REJOIN`; before: five asks over 18 s). So through ArcAid a host has about two minutes
+  to come back, not three. Five misses stay under the server's lockout (eight in ten minutes).
+- Not covered: while Castcade is closed nothing locks the table, so a player can play on past the ball it was granted;
+  the match takes the first ball end and the rest is theirs to sort out (the host's Pass the turn). A host's lobby is
+  not saved (host again; the link changes). A match that changed hands by a host transfer is not saved. A player who
+  reopens Castcade with VPX closed is back in the match with no table; the forfeit comes when a table is opened. Table
+  mismatch notes and which tables can report ball ends are lobby facts the log does not carry: a host that came back
+  shows none. Voice and video are set up again from nothing.
+
+### 10.6 Rig checks (none of this was run)
+
+1. Two rigs, a match under way. On the client, during the host's ball, end Castcade from Task Manager and start it
+   again within a minute: it is back in the match by itself, the table still locked, the host's panel goes from
+   "Paused: waiting for … to reconnect" to playing. Voice and the spectator picture come back.
+2. The same during the client's own ball, the ball kept in play: the flippers never die; after the rejoin the turn is
+   still the client's and the ball end passes it once.
+3. The same, but drain the ball while Castcade is closed: after the rejoin the turn passes at once with the right
+   score; `companion.log` has "table event(s) since the log last grew go to the match now".
+4. Wait two minutes before starting Castcade again: the Match tab offers "Rejoin the match with …"; nothing is joined
+   before the click. Forget it unlocks the table.
+5. End the host's Castcade: the client's panel says it waits 3 minutes. Start the host's Castcade within a minute: it
+   hosts the same code again by itself, the client reconnects, play goes on. Once through ArcAid, once direct.
+6. End the host's Castcade and leave it: after 3 minutes the client's Match tab says the match is over and its table
+   is unlocked.
+7. With an update downloaded, "Restart to update" during a match: the others see a pause, not a forfeit; the new
+   version rejoins by itself.

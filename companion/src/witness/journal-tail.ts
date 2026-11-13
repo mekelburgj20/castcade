@@ -74,6 +74,8 @@ export class JournalTail {
   private timer: TimerHandle | null = null;
   private running = false;
   private polling: Promise<void> | null = null;
+  private lastLineEnd = 0;
+  private reading: 'backlog' | 'live' = 'live';
 
   constructor(
     readonly path: string,
@@ -100,10 +102,32 @@ export class JournalTail {
     this.schedule(0);
   }
 
+  /**
+   * The file position just past the newline of the line being delivered (read it inside a `line` listener). The same
+   * line of the same file has the same value on every read, so it names "how far a reader got" across restarts.
+   */
+  get lineEnd(): number {
+    return this.lastLineEnd;
+  }
+
+  /**
+   * A15: the line being delivered was already in the file when this tail first read it (`from: 'start'`): it was
+   * written before this reader existed, however long ago. Read it inside a `line` listener.
+   */
+  get backlog(): boolean {
+    return this.reading === 'backlog';
+  }
+
+  /** Stop polling. The position is kept: `start()` again continues after the last line delivered. */
   stop(): void {
     this.running = false;
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  /** Resolves once a read that was under way when `stop()` was called has delivered its lines. */
+  idle(): Promise<void> {
+    return this.polling ?? Promise.resolve();
   }
 
   /** Read whatever is new right now (what each poll tick does). Safe to call while running. */
@@ -139,9 +163,11 @@ export class JournalTail {
       this.emitter.emit('error', err instanceof Error ? err : new Error(String(err)));
       return;
     }
+    let first = false;
     if (this.offset === null) {
       this.offset = this.from === 'end' ? size : 0;
       if (this.from === 'end') return;
+      first = true;
     }
     let start = this.offset + this.partial.length;
     if (size < start) {
@@ -164,7 +190,12 @@ export class JournalTail {
       this.emitter.emit('error', err instanceof Error ? err : new Error(String(err)));
       return;
     }
-    this.consume(chunk);
+    this.reading = first ? 'backlog' : 'live';
+    try {
+      this.consume(chunk);
+    } finally {
+      this.reading = 'live';
+    }
   }
 
   private consume(chunk: Uint8Array): void {
@@ -184,6 +215,7 @@ export class JournalTail {
       const end = i > lineStart && buf[i - 1] === 0x0d ? i - 1 : i;
       const line = decoder.decode(buf.subarray(lineStart, end));
       lineStart = i + 1;
+      this.lastLineEnd = (this.offset ?? 0) + lineStart;
       this.emitter.emit('line', line);
     }
     this.offset = (this.offset ?? 0) + lineStart;

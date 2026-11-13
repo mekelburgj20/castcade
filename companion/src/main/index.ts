@@ -8,8 +8,9 @@
  * ends the process.
  */
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, safeStorage, screen, shell } from 'electron';
+import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +39,10 @@ import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
 import { matchSignalling } from './match-setup.js';
+import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
+import { createOneStep, type OneStep } from './one-step.js';
+import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
+import { createVpxLauncher } from '../launch/vpx-launch.js';
 import type { VrOverlay } from '../media/match-media-types.js';
 import { createMediaSettingsStore, type MediaSettingsStore } from '../media/media-settings.js';
 import { usableBounds } from '../media/panel-placement.js';
@@ -79,6 +84,12 @@ let matchLayer: VrOverlay | null = null;
 let tableAudio: TableAudioHelper | null = null;
 /** D10.3: the native spectator-video helper (`castcade-video.exe`), started by the first match that wants it. */
 let videoHelper: VideoHelper | null = null;
+/** A14: one step to a match (Host with a table, the join link); null when matches are off this run. */
+let oneStep: OneStep | null = null;
+/** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
+let matchTabShowing = false;
+/** A14: a `castcade://` link that arrived before the app was ready (a cold start, or a second instance during startup). */
+let earlyLink: string | null = linkFromArgv(argv);
 /** D10.3 (§6.1): a frame-ring token: 16 characters of `[A-Za-z0-9_-]` (12 random bytes, base64url), fresh per companion start. */
 const ringToken = (): string => randomBytes(12).toString('base64url');
 
@@ -91,7 +102,12 @@ if (argv.includes('--smoke')) {
   app.exit(0);
 } else {
   app.setAppUserModelId('app.arcaid.castcade');
-  app.on('second-instance', () => showWindow());
+  // A14: a second instance is how Windows hands over a clicked `castcade://` link while Castcade runs.
+  app.on('second-instance', (_e, secondArgv) => {
+    const link = linkFromArgv(secondArgv);
+    if (link) openLink(link);
+    else showWindow();
+  });
   app.on('window-all-closed', () => {
     /* tray app: keep running */
   });
@@ -102,6 +118,24 @@ if (argv.includes('--smoke')) {
   // D2.10: the match's volume keys are released at teardown; this covers a quit that skips it.
   app.on('will-quit', () => globalShortcut.unregisterAll());
   void app.whenReady().then(main);
+}
+
+/**
+ * A14: a `castcade://` link from Windows (untrusted: any page or chat can hand one over). Whether the player was
+ * already looking at the Match tab is read before the window is brought up; if not, the link waits there for a click.
+ * Only the text goes on: `one-step.ts` parses it and takes nothing but an invite from it.
+ */
+function openLink(link: string, atStartup = false): void {
+  const w = win && !win.isDestroyed() ? win : null;
+  const trusted = !atStartup && linkIsTrusted({ exists: w !== null, visible: w?.isVisible() ?? false, minimized: w?.isMinimized() ?? false, matchTab: matchTabShowing });
+  showWindow();
+  if (!oneStep) {
+    // Not ready yet (startup): `main` opens it when it is. Never trusted then: the window was not up.
+    earlyLink = link;
+    return;
+  }
+  log?.info(`links: a castcade:// link arrived (${trusted ? 'the Match tab was showing' : 'waits for a click on the Match tab'})`);
+  void oneStep.openLink(link, { trusted });
 }
 
 function showWindow(): void {
@@ -176,6 +210,7 @@ function createWindow(): BrowserWindow {
   });
   w.on('closed', () => {
     if (win === w) win = null;
+    matchTabShowing = false;
   });
 
   const devUrl = process.env.CASTCADE_RENDERER_URL;
@@ -214,7 +249,10 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   sidecarWatch?.stop();
   await overlay?.stop();
   await stream?.stop().catch(() => undefined);
-  await match?.stop().catch(() => undefined); // forfeits a match in progress and removes the turn lock
+  oneStep?.stop();
+  // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
+  // match is kept and rejoined at the next start.
+  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
@@ -253,6 +291,7 @@ function registerIpc(
   logger: Logger,
   maybeStream: StreamHost | null,
   maybeMatch: MatchHost | null,
+  maybeOneStep: OneStep | null,
 ): void {
   const sh = (): StreamHost => {
     if (!maybeStream) throw new Error('streaming is unavailable this run (see the log)');
@@ -261,6 +300,10 @@ function registerIpc(
   const mh = (): MatchHost => {
     if (!maybeMatch) throw new Error('matches are unavailable this run (see the log)');
     return maybeMatch;
+  };
+  const os = (): OneStep => {
+    if (!maybeOneStep) throw new Error('matches are unavailable this run (see the log)');
+    return maybeOneStep;
   };
   const str = (v: unknown, what: string): string => {
     if (typeof v !== 'string') throw new Error(`${what} must be a string`);
@@ -370,8 +413,32 @@ function registerIpc(
       displayName: typeof w.displayName === 'string' ? w.displayName : '',
     });
   });
-  ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => mh().join(str(invite, 'invite'), typeof displayName === 'string' ? displayName : ''));
-  ipcMain.handle(IPC.matchStart, () => mh().start());
+  ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => {
+    const text = str(invite, 'invite');
+    const name = typeof displayName === 'string' ? displayName : '';
+    // A14: a join link pasted into the Join box joins and starts the host's table here (the player pressed Join).
+    return looksLikePastedLink(text) ? os().joinLink(text, name) : mh().join(text, name);
+  });
+  ipcMain.handle(IPC.launchStatus, () => os().status());
+  ipcMain.handle(IPC.launchTables, () => os().tables());
+  ipcMain.handle(IPC.launchBrowse, () => os().browse());
+  ipcMain.handle(IPC.launchHost, (_e, o: unknown) => {
+    const w = (o ?? {}) as { tablePath?: unknown; port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
+    return os().host({
+      tablePath: typeof w.tablePath === 'string' && w.tablePath !== '' ? w.tablePath : null,
+      port: w.port === undefined || w.port === null ? undefined : Number(w.port),
+      ballsPerGame: w.ballsPerGame === 5 ? 5 : 3,
+      displayName: typeof w.displayName === 'string' ? w.displayName : '',
+    });
+  });
+  ipcMain.handle(IPC.launchConfirm, () => os().confirm());
+  ipcMain.handle(IPC.launchDismiss, () => os().dismiss());
+  ipcMain.handle(IPC.launchCopy, (_e, what: unknown) => os().copy(what === 'message' ? 'message' : 'link'));
+  ipcMain.handle(IPC.launchViewing, (e, on: unknown) => {
+    if (win && !win.isDestroyed() && e.sender === win.webContents) matchTabShowing = on === true;
+  });
+  ipcMain.handle(IPC.matchStart, (_e, o: unknown) => mh().start({ anyway: (o as { anyway?: unknown } | null | undefined)?.anyway === true }));
+  ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
   ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchSaveFrames, () => mh().saveFrames());
   ipcMain.handle(IPC.matchBenchStart, (_e, req: unknown) => mh().startBench(req));
@@ -379,6 +446,8 @@ function registerIpc(
   ipcMain.handle(IPC.matchBenchView, (_e, view: unknown) => mh().setBenchView(view === 'direct' ? 'direct' : 'theater'));
   ipcMain.handle(IPC.matchBenchClips, () => mh().benchClips());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
+  ipcMain.handle(IPC.matchRejoin, () => mh().rejoin());
+  ipcMain.handle(IPC.matchForgetResume, () => mh().forgetResume());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
   ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
@@ -608,6 +677,11 @@ async function main(): Promise<void> {
       signalling: (role, localId) => matchSignalling(role, localId),
       // D2.10: the in-game volume keys (Ctrl+Alt+arrows), held only while a match is on.
       shortcuts: globalShortcut,
+      // D10.8: match control through ArcAid for a paired companion (the Witness device credentials); null: not paired.
+      relay: () => {
+        const cur = store.get();
+        return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
+      },
       appVersion,
       log: logger,
     });
@@ -615,11 +689,58 @@ async function main(): Promise<void> {
     matchHost.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.matchStatusEvent, st);
     });
+    // A15: Castcade was in a match under a minute ago (a crash, a restart for an update): back into it without a click.
+    // An older one waits on the Match tab for the player's word.
+    const back = matchHost.status().resume;
+    if (back?.auto) {
+      logger.info(`match: rejoining ${back.code} (Castcade was in it a moment ago)`);
+      const mh = matchHost;
+      void mh.rejoin().catch((e: unknown) => logger.warn(`match: could not rejoin ${back.code}: ${describeError(e)}`));
+    }
   } catch (e) {
     logger.error(`match: could not set up (${describeError(e)}); matches are off this run`);
   }
 
-  registerIpc(store, host, tables, watch, logger, streamHost, matchHost);
+  // A14: one step to a match. Host with a table starts VPX the way a player does (`-Play`, the exe the witness last
+  // saw); a `castcade://join/…` link joins and starts the host's table here. The spawner, the clipboard and the table
+  // lists are handed in (one-step.ts imports no Electron); a failure here leaves Host and Join as they were.
+  if (matchHost) {
+    try {
+      const recentFile = join(userData, 'recent-tables.json');
+      const recent = createRecentTables({
+        read: () => (existsSync(recentFile) ? readFileSync(recentFile, 'utf8') : null),
+        write: (text) => writeFileSync(recentFile, text),
+      });
+      host.onStatus((st) => {
+        const file = st.currentIdentity?.filePath;
+        if (file) recent.note(file, new Date().toISOString());
+      });
+      const known = () => listKnownTables({ fs: nodeFs, manifestDir, dataDir: store.get().dataDir, recent: recent.played });
+      oneStep = createOneStep({
+        match: matchHost,
+        witness: host,
+        launcher: createVpxLauncher({
+          spawn: (command, args, options) => spawn(command, [...args], options),
+          exists: async (p) => existsSync(p),
+          exe: () => host.status().vpxExe ?? store.get().vpxExe ?? null,
+          log: (line) => logger.info(line),
+        }),
+        clipboard: { writeText: (text) => clipboard.writeText(text) },
+        tables: known,
+        tableFiles: (have) => listTableFiles(nodeFs, tables.resolveTablesDir(null), have),
+        arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
+        log: logger,
+      });
+      oneStep.onStatus((st) => {
+        if (win && !win.isDestroyed()) win.webContents.send(IPC.launchStatusEvent, st);
+      });
+      logger.info(registerLinkProtocol(app, { packaged: app.isPackaged, execPath: process.execPath, devEntry: !app.isPackaged && process.env.CASTCADE_REGISTER_LINKS === '1' && argv[0] ? resolve(argv[0]) : null }));
+    } catch (e) {
+      logger.error(`launch: could not set up (${describeError(e)}); Host and Join work as before, without the table start and the link`);
+    }
+  }
+
+  registerIpc(store, host, tables, watch, logger, streamHost, matchHost, oneStep);
   host.onNotice((n) => {
     // C11: a table the import would patch: clicking the balloon is Patch now.
     if (n.kind === 'unpatched' && n.patchable) {
@@ -643,7 +764,8 @@ async function main(): Promise<void> {
     }
   });
 
-  if (!argv.includes('--hidden')) win = createWindow();
+  // A14: a link on the command line brings the window up even with `--hidden`.
+  if (!argv.includes('--hidden') || earlyLink) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());
 
   tray = createTray(join(app.getAppPath(), 'build', 'tray.ico'), {
@@ -684,6 +806,15 @@ async function main(): Promise<void> {
 
   await host.start();
   watch.start();
+
+  // A14: the link this instance was started with (or one a second instance handed over during startup). The window
+  // was not up when it came, so it waits for the player's click on the Match tab.
+  if (earlyLink) {
+    const link = earlyLink;
+    earlyLink = null;
+    if (oneStep) openLink(link, true);
+    else logger.warn('links: a castcade:// link arrived, but matches are off this run');
+  }
 
   // D1.1: the overlay page OBS adds as a browser source. A taken port is logged, never fatal.
   const page = createOverlayServer({ state: () => overlayStateFrom(host.status(), host.liveGame()), log: (line) => logger.info(line) });

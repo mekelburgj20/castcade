@@ -16,7 +16,7 @@ import { createVpsIndex } from './vps-index.js';
 import { POSTED_GAMES_FILE } from './posted-games.js';
 import { attemptStartText, attemptStatusFor, createWitness, embeddedPatchNote, manifestDirFor, oldPatchNote, outcomeForWire, parseSessionStamp, quitWire, resolveTableName, versionOlder, type WitnessDeps } from './witness.js';
 import { RECIPE_VERSION, classifyScript, manifestPathFor, renderRecipeA } from '../patcher/index.js';
-import { JournalDetector } from './journal-detector.js';
+import { JournalDetector, type GameEvent } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
@@ -88,7 +88,8 @@ interface Call {
 }
 
 function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partial<WitnessDeps> = {}) {
-  const clock = new ManualClock(1_760_000_000_000);
+  // A15: a second witness on the same clock (a rebuild inside one run) passes the first one's.
+  const clock = (depsPatch.clock as ManualClock | undefined) ?? new ManualClock(1_760_000_000_000);
   const fs = new MemoryFs(() => clock.now());
   const settings: WitnessSettings = {
     arcaidBaseUrl: 'https://arcaid.test',
@@ -900,6 +901,34 @@ describe('createWitness: editor-driven sessions (capture while VPX stays open)',
     expect(h.errors).toEqual([]);
   });
 
+  it('C14: started with a table running and no window title (VR, preview off), the table still comes from the journal', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(now - 30_000).text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: '' });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: TFTC_TABLE, pid: 32 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+    expect(h.errors).toEqual([]);
+  });
+
+  it('C14: an editor window with no table open does not take a table from the journal', async () => {
+    const h = playerUpHarness();
+    const now = h.clock.now();
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(now - 30_000).text);
+    await h.witness.start();
+    await h.launch(`"${EXE}"`, 32, { startedAt: now - 60_000, windowTitle: 'Visual Pinball' });
+    await h.poll();
+    await h.flush();
+
+    expect(h.launches).toEqual([{ table: null, pid: 32 }]);
+    expect(h.errors).toEqual([]);
+  });
+
   it('a file-association launch takes the table from the positional .vpx', async () => {
     const h = harness();
     await h.fs.mkdir('/nv');
@@ -1556,6 +1585,139 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.flush();
     expect(h.paths('/score')).toHaveLength(1);
     expect(h.paths('/score')[0]?.params).toMatchObject({ table: 'Tales from the Crypt (Data East 1993)', score: '2318430', reason: 'game_over' });
+    await h.witness.stop();
+  });
+
+  /** A15: the TFTC session cut in the middle of ball 2 (no table_exit: the game goes on), and the whole of it. */
+  function tftcMidGameAt(atMs: number): { head: string; full: string } {
+    const full = tftcJournalAt(atMs).text;
+    const lines = full.trimEnd().split('\n');
+    const d = new JournalDetector({ mapFor: (rom) => (rom === 'tftc_400' ? tftcMap : null) });
+    for (let i = 0; i < lines.length; i++) {
+      if (d.feed(lines[i]!).some((ev) => ev.kind === 'current_scores' && ev.ball === 2 && (ev.scores[0] ?? 0) > 0)) return { head: lines.slice(0, i + 1).join('\n') + '\n', full };
+    }
+    throw new Error('fixture replay never reached ball 2');
+  }
+
+  it('A15: a witness rebuilt in the middle of a game (a settings change) delivers no game event a second time, and the game posts once', async () => {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    const journal = tftcMidGameAt(h.clock.now() - 30_000);
+    h.fs.put(TFTC_JOURNAL, journal.head);
+    const first: GameEvent[] = [];
+    h.witness.on('event', (ev) => first.push(ev));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(first.filter((ev) => ev.kind === 'game_start')).toHaveLength(1);
+    expect(first.filter((ev) => ev.kind === 'ball_end').map((ev) => ev.ball)).toEqual([1]);
+    const mark = h.witness.journalMark();
+    expect(mark).toMatchObject({ path: TFTC_JOURNAL, offset: expect.any(Number) });
+
+    // The settings change: the witness host stops this witness and builds another over the same files and clock.
+    await h.witness.stop();
+    const h2 = harness({}, { fs: h.fs, clock: h.clock, journalDir: '/journal', journalPollMs: 250, resume: mark });
+    const second: GameEvent[] = [];
+    h2.witness.on('event', (ev) => second.push(ev));
+    await h2.witness.start();
+    await h2.launch(TFTC_CMD, 32, { startedAt });
+    await h2.poll();
+    await h2.flush();
+    await h2.flush();
+    // The journal was read again from the top: the game is on screen again, and none of it was announced again.
+    expect(h2.witness.liveGame()).toMatchObject({ inGame: true, ball: 2 });
+    expect(second).toEqual([]);
+    expect(h2.witness.journalMark()).toEqual(mark);
+
+    // The game goes on to its end: what is new is delivered once, and the score is posted once (not by the old witness too).
+    h.fs.put(TFTC_JOURNAL, journal.full);
+    await h2.poll();
+    await h2.flush();
+    await h2.flush();
+    expect(second.some((ev) => ev.kind === 'game_start')).toBe(false);
+    expect(second.filter((ev) => ev.kind === 'ball_end').map((ev) => ev.ball)).toEqual([2, 3]);
+    expect(second.filter((ev) => ev.kind === 'game_end')).toHaveLength(1);
+    expect(h.paths('/score').length + h2.paths('/score').length).toBe(1);
+    expect(first.filter((ev) => ev.kind === 'ball_end')).toHaveLength(1);
+    expect(h2.paths('/score')[0]?.params).toMatchObject({ score: '2318430', reason: 'game_over' });
+    expect(h2.captures[0]?.detail).toMatch(/live: game 1 of this session/);
+    expect(h2.errors).toEqual([]);
+    await h2.witness.stop();
+  });
+
+  it('A15: without a mark (Castcade itself restarted) the game in progress is announced from its start, as before', async () => {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    h.fs.put(TFTC_JOURNAL, tftcMidGameAt(h.clock.now() - 30_000).head);
+    const seen: GameEvent[] = [];
+    const backlog: boolean[] = [];
+    h.witness.on('event', (ev) => {
+      seen.push(ev);
+      backlog.push(h.witness.deliveringBacklog());
+    });
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(seen.filter((ev) => ev.kind === 'game_start')).toHaveLength(1);
+    // Everything so far was in the journal before this witness read it; what the hook writes from now on is not.
+    expect(backlog.length).toBeGreaterThan(0);
+    expect(backlog.every((b) => b)).toBe(true);
+    expect(h.witness.deliveringBacklog()).toBe(false);
+    const before = seen.length;
+    h.fs.put(TFTC_JOURNAL, tftcMidGameAt(h.clock.now() - 30_000).full);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(seen.length).toBeGreaterThan(before);
+    expect(backlog.slice(before).some((b) => b)).toBe(false);
+    await h.witness.stop();
+  });
+
+  it('A15: a mark from another load of the table silences nothing', async () => {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    h.fs.put(TFTC_JOURNAL, tftcMidGameAt(h.clock.now() - 30_000).head);
+    const h2 = harness({}, { fs: h.fs, clock: h.clock, journalDir: '/journal', journalPollMs: 250, resume: { path: TFTC_JOURNAL, session: hookStamp(h.clock.now() - 45_000), loaded: 0, offset: 1_000_000_000 } });
+    const seen: GameEvent[] = [];
+    h2.witness.on('event', (ev) => seen.push(ev));
+    await h2.witness.start();
+    await h2.launch(TFTC_CMD, 32, { startedAt });
+    await h2.poll();
+    await h2.flush();
+    await h2.flush();
+    expect(seen.filter((ev) => ev.kind === 'game_start')).toHaveLength(1);
+    await h2.witness.stop();
+  });
+
+  it('A15: paused (stop) reads nothing more of the journal; resumed (start) continues after the last line and posts the game once', async () => {
+    const h = liveHarness();
+    const startedAt = h.clock.now() - 60_000;
+    const journal = tftcMidGameAt(h.clock.now() - 30_000);
+    h.fs.put(TFTC_JOURNAL, journal.head);
+    const seen: GameEvent[] = [];
+    h.witness.on('event', (ev) => seen.push(ev));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    const before = seen.length;
+    await h.witness.stop();
+    h.fs.put(TFTC_JOURNAL, journal.full);
+    await h.playFor(5000);
+    expect(seen).toHaveLength(before);
+    expect(h.paths('/score')).toHaveLength(0);
+    await h.witness.start();
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(seen.filter((ev) => ev.kind === 'game_start')).toHaveLength(1);
+    expect(seen.filter((ev) => ev.kind === 'ball_end').map((ev) => ev.ball)).toEqual([1, 2, 3]);
+    expect(h.paths('/score')).toHaveLength(1);
     await h.witness.stop();
   });
 

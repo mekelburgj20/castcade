@@ -46,6 +46,8 @@ export interface ClientOptions {
   game: GameFingerprint;
   throwdownCode: string;
   companionVersion?: string;
+  /** A13: whether this player's table can report ball ends (`HELLO.ballEndReady`); omitted = unknown. */
+  ballEndReady?: boolean;
   /** Where HELLO goes on a full-mesh transport; omit on a point-to-point transport. */
   hostId?: PlayerId;
   clock?: Clock;
@@ -53,9 +55,16 @@ export interface ClientOptions {
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
   /**
    * Reconnect after a dropped socket to the host (A3): one attempt every `delayMs` (default 1 s),
-   * at most `attempts` (default 30); then the host counts as gone.
+   * at most `attempts` (default 30); then the host counts as gone. A15: `maxMs` also ends it by the clock (an
+   * attempt at a PC that is switched off can take the system's connect timeout).
    */
-  reconnect?: { attempts?: number; delayMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number; maxMs?: number };
+  /**
+   * A15: false: when the host is gone for good this client does not propose itself as the new host (`hostLost` is
+   * still raised). The companion passes false: over WebSocket or the relay a client has no listener the others could
+   * reach, so a client that took over was a host nobody could come back to. Default true (a full mesh).
+   */
+  hostLeftTransfer?: boolean;
 }
 
 export interface AdoptOptions {
@@ -67,7 +76,8 @@ export interface AdoptOptions {
   /** A8 (2026-10-31): the stepping-down host's `tableMismatches()`, so a later transfer back carries them on. */
   tableMismatches?: Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']>;
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
-  reconnect?: { attempts?: number; delayMs?: number };
+  reconnect?: { attempts?: number; delayMs?: number; maxMs?: number };
+  hostLeftTransfer?: boolean;
 }
 
 export interface DroppedInfo {
@@ -104,6 +114,8 @@ export interface ClientEvents extends Record<string, unknown> {
   grant: GrantBody;
   myTurn: GrantBody;
   ballEnd: Message<'BALL_END'>;
+  /** A13: the host passed the turn (TURN_PASS, logged): `payload.player`'s ball ended by hand, at `payload.score`. */
+  turnPassed: Message<'TURN_PASS'>;
   gameOver: Message<'GAME_OVER'>;
   forfeit: Message<'FORFEIT'>;
   pause: PayloadOf<'PAUSE'>;
@@ -142,7 +154,7 @@ export interface ClientEvents extends Record<string, unknown> {
   hostGone: PlayerId;
 }
 
-const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
+const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'TURN_PASS', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 const DEFAULT_RECONNECT_ATTEMPTS = 30;
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 
@@ -156,6 +168,8 @@ interface Reconnecting {
   /** A socket was opened and RECONNECT sent; waiting for RECONNECT_ACK. */
   inFlight: boolean;
   timer: TimerHandle | null;
+  /** A15: no attempt is scheduled after this (the session's clock); null = the attempts alone bound it. */
+  deadline: number | null;
 }
 
 export class ClientMatch {
@@ -164,6 +178,8 @@ export class ClientMatch {
   /** Not readonly: `updateParticipant` corrects the rig and the fingerprint in the lobby (A6, 2026-10-31). */
   private participant: ParticipantInfo;
   private game: GameFingerprint;
+  /** A13: what the host was last told about this table's ball ends (HELLO, then lobby updates); undefined = unknown. */
+  private ballEndReady: boolean | undefined;
   /** The mismatched fields last raised as `tableMismatch`, so a re-sent HELLO_ACK raises only a change. */
   private mismatchFields = '';
   /** The host's fingerprint from the last HELLO_ACK: what this client's own entry in `tableMismatches()` compares with. */
@@ -188,6 +204,8 @@ export class ClientMatch {
   private readonly gone = new Set<PlayerId>();
   private readonly reconnectAttempts: number;
   private readonly reconnectDelayMs: number;
+  private readonly reconnectMaxMs: number | null;
+  private readonly hostLeftTransfer: boolean;
   /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
   private reconnecting: Reconnecting | null = null;
   /** A10: the games whose RESULT arrived (each raises `result` once). */
@@ -204,12 +222,15 @@ export class ClientMatch {
     if (opts.participant.playerId !== this.s.localId) throw new Error('participant.playerId must equal transport.localId');
     this.participant = { ...opts.participant, publicKey: this.s.keys.publicKeyB64 };
     this.game = { ...opts.game };
+    this.ballEndReady = opts.ballEndReady;
     this.throwdownCode = opts.throwdownCode;
     this.companionVersion = opts.companionVersion ?? '0.1.0';
     this.explicitHostId = opts.hostId ?? null;
     this.hostTimeouts = opts.hostTimeouts ?? {};
     this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? DEFAULT_RECONNECT_ATTEMPTS);
     this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
+    this.reconnectMaxMs = opts.reconnect?.maxMs ?? null;
+    this.hostLeftTransfer = opts.hostLeftTransfer ?? true;
     this.attach();
   }
 
@@ -225,6 +246,7 @@ export class ClientMatch {
         companionVersion: opts.companionVersion,
         hostTimeouts: opts.hostTimeouts,
         reconnect: opts.reconnect,
+        hostLeftTransfer: opts.hostLeftTransfer,
       },
       session,
     );
@@ -301,6 +323,12 @@ export class ClientMatch {
     return out;
   }
 
+  /** A14 (2026-11-12): the host's game as this client knows it: the match's once it started, else the last HELLO_ACK's; null before any. */
+  hostGame(): GameFingerprint | null {
+    const g = this.s.state.game ?? this.ackHostGame;
+    return g ? { ...g } : null;
+  }
+
   snapshot(): { role: 'client'; state: MatchState; log: LogHead; inputUnlocked: boolean; myGrant: GrantBody | null; hostId: PlayerId | null; signed: boolean } {
     return {
       role: 'client',
@@ -323,7 +351,14 @@ export class ClientMatch {
     if (this.joined) throw new Error('already joined');
     const msg = this.s.build(
       'HELLO',
-      { protocolVersion: PROTOCOL_VERSION, companionVersion: this.companionVersion, throwdownCode: this.throwdownCode, participant: this.participant, game: this.game },
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        companionVersion: this.companionVersion,
+        throwdownCode: this.throwdownCode,
+        participant: this.participant,
+        game: this.game,
+        ...(this.ballEndReady !== undefined ? { ballEndReady: this.ballEndReady } : {}),
+      },
       null,
     );
     this.s.transport.send(this.explicitHostId ?? 'all', msg);
@@ -334,8 +369,9 @@ export class ClientMatch {
    * with PARTICIPANT_UPDATE, which answers with a HELLO_ACK to everyone (`roster`, and `tableMismatch` on a change).
    * Only the fields that changed are sent. False (nothing sent) before the join or with no change. A6.1 (2026-11-01):
    * after MATCH_READY only the rig is sent (the host passes it on to the others); a table change then is not.
+   * A13: `ballEndReady` (whether this table can report ball ends) goes the same way, in the lobby only.
    */
-  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint }): boolean {
+  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean }): boolean {
     this.assertActive();
     if (!this.joined) return false;
     if (this.s.state.phase !== 'lobby') {
@@ -348,9 +384,11 @@ export class ClientMatch {
     const payload: PayloadOf<'PARTICIPANT_UPDATE'> = {};
     if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
     if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
-    if (payload.rig === undefined && payload.game === undefined) return false;
+    if (u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady) payload.ballEndReady = u.ballEndReady;
+    if (payload.rig === undefined && payload.game === undefined && payload.ballEndReady === undefined) return false;
     if (payload.rig !== undefined) this.participant = { ...this.participant, rig: payload.rig };
     if (payload.game !== undefined) this.game = { ...payload.game };
+    if (payload.ballEndReady !== undefined) this.ballEndReady = payload.ballEndReady;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', payload, this.matchIdForWire()));
     return true;
   }
@@ -451,6 +489,7 @@ export class ClientMatch {
       attemptsLeft: this.reconnectAttempts,
       inFlight: false,
       timer: null,
+      deadline: this.reconnectMaxMs === null ? null : this.s.clock.now() + this.reconnectMaxMs,
     };
     if (opts.delayFirst) this.scheduleReconnect(this.reconnecting);
     else this.attemptReconnect(this.reconnecting);
@@ -475,7 +514,7 @@ export class ClientMatch {
     if (this.reconnecting !== r || this.detached) return;
     r.inFlight = false;
     this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft });
-    if (r.attemptsLeft > 0) {
+    if (r.attemptsLeft > 0 && (r.deadline === null || this.s.clock.now() < r.deadline)) {
       this.scheduleReconnect(r);
       return;
     }
@@ -610,6 +649,20 @@ export class ClientMatch {
         this.events.emit('ballEnd', msg);
         this.maybeSignLog();
         return;
+      case 'TURN_PASS': {
+        // A13: only from the host, and only for the outstanding grant; anything else would fork the fold.
+        const g = this.s.state.currentGrant?.grant;
+        if (msg.from !== this.hostId) return this.drop(msg, 'not_host');
+        if (!g || g.grantSeq !== msg.payload.grantSeq || g.player !== msg.payload.player) return this.drop(msg, 'unexpected');
+        this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        if (msg.payload.player === this.localId) {
+          this._myGrant = null;
+          this._inputUnlocked = false;
+        }
+        this.events.emit('turnPassed', msg);
+        this.maybeSignLog();
+        return;
+      }
       case 'GAME_OVER':
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
         this.events.emit('gameOver', msg);
@@ -788,7 +841,7 @@ export class ClientMatch {
     if (this.s.state.phase === 'running' && !this.s.state.pendingTransfer && !this.hostLost) {
       this.hostLost = true;
       this.events.emit('hostLost', peer);
-      this.proposeIfCandidate();
+      if (this.hostLeftTransfer) this.proposeIfCandidate();
       return;
     }
     const known = this.gone.has(peer);
@@ -954,6 +1007,13 @@ export class ClientMatch {
           this._inputUnlocked = false;
         }
         this.events.emit('ballEnd', msg);
+        return;
+      case 'TURN_PASS':
+        if (msg.payload.player === this.localId) {
+          this._myGrant = null;
+          this._inputUnlocked = false;
+        }
+        this.events.emit('turnPassed', msg);
         return;
       case 'GAME_OVER':
         this.events.emit('gameOver', msg);

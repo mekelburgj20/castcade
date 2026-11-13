@@ -62,6 +62,14 @@ mismatch can appear or clear this way). The host refreshing its own rig or table
 refusing mode rejects an update whose fingerprint differs with `REJECT` (`unexpected_state`) and keeps the old
 one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and fingerprint in the log are final.
 
+Ball-end readiness (A13, protocol 5): a turn ends when the holder's companion reports `BALL_END`, which it can
+only do for a table whose hook journal it follows. `HELLO.ballEndReady` says whether the sender's open table is
+one (absent: unknown, no table open yet); a lobby `PARTICIPANT_UPDATE.ballEndReady` replaces it when that
+changes; `HELLO_ACK.ballEndReady` carries what every participant said, the host included, to every client. It
+is advice for the lobby (the companion names the players whose table cannot report ball ends and asks the host
+to confirm the start); the host still may start, and such a match is played with `TURN_PASS` (below). None of
+the three fields is logged.
+
 ## Turn rotation (alternating mode)
 
 - Every participant plays their own one-player game of `ballsPerGame` balls (Architecture B). Grants go
@@ -80,7 +88,16 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
 - `finalScore` in `BALL_END` must be sampled after the end-of-ball bonus has been added. Tables add the
   bonus after the drain (NVRAM counts it down, script tables add it after `EndOfBall`), so a detector
   reports the score at the next boundary or after a quiet period, never at the drain instant.
-- A player's game ends after `BALL_END` for ball `ballsPerGame` (with `shootAgain: false`), or on
+- `TURN_PASS {grantSeq, player, ballNumber, score}` (host -> all, logged, protocol 5): the host ends the
+  outstanding grant's ball by hand, for itself or for a client, when no `BALL_END` will come (a table the
+  holder's companion cannot read, a stuck player). It names the outstanding grant and its holder; `score` is the
+  holder's last known score. Every participant folds it exactly as that player's `BALL_END` with
+  `shootAgain: false` and `finalScore: score`; the entry's `from` is the host, which is how the log shows the
+  ball was passed. The host sends it only while a grant is outstanding and no transfer is pending (it is
+  accepted while paused, like a `BALL_END`); a client drops one that does not name the outstanding grant. A
+  `BALL_END` for the passed grant that arrives afterwards gets `REJECT` (`stale_grant`, or `not_grant_holder`
+  when another player holds the next grant) and changes nothing.
+- A player's game ends after `BALL_END` (or `TURN_PASS`) for ball `ballsPerGame` (with `shootAgain: false`), or on
   `GAME_OVER`, or on `FORFEIT`. The host keeps rotating among players whose games have not ended. A
   `GAME_OVER` for a game that has already ended is answered with `REJECT` (`unexpected_state`).
 - If the next grant would go to a player the host knows to be disconnected, the host sends
@@ -93,7 +110,7 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
   sender included: the echo is the sender's acknowledgement that it was accepted. Each participant
   appends the broadcast stream, in order, to its own append-only log, so host and clients hold the same
   entries without any further coordination.
-- Logged, in stream order: `MATCH_READY`, every `TURN_GRANT` the host issues, accepted `BALL_END`,
+- Logged, in stream order: `MATCH_READY`, every `TURN_GRANT` the host issues, accepted `BALL_END`, `TURN_PASS`,
   `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME`, `HOST_TRANSFER`, one derived `host_transfer` event per
   accepted transfer (below), and `NEXT_GAME` (Series). **Not logged**: `STATE` and `DMD_FRAME` (mirrored to the
   *other* participants only, never trusted for results), `HELLO`, `HELLO_ACK`, `REFUSE`, `REJECT`, `LOG_SIGN`,
@@ -192,6 +209,11 @@ one. After `MATCH_READY` the host ignores `PARTICIPANT_UPDATE`: the roster and f
   `logLength`, not its head.
 - A client retries the reconnect for a bounded time; when it gives up, the host is treated as gone
   (`host_left`, above).
+- A participant whose process restarted resumes the same way, from the log it saved: a client sends
+  `RECONNECT` from its saved head; a host rebuilds its state from its saved log, serves the same
+  endpoint again and issues the outstanding grant again under a new `grantSeq`. `seq` is per sender
+  and strictly increasing across that sender's connections (only a `HELLO` starts it over), so a
+  restarted participant starts its `seq` above anything its earlier run can have used.
 
 ## Media signalling
 

@@ -548,12 +548,32 @@ interface MatchStatus {
   phase: 'none' | 'connecting' | 'lobby' | 'playing' | 'paused' | 'over';
   endpoint: string | null;
   invite: string | null;
+  /** D10.8: the address invite beside a code invite (LAN, a forwarded port, a player who is not paired). */
+  directInvite: string | null;
   ipSource: 'public' | 'lan' | null;
+  /** D10.8: the path of the match control and its one line ("Through ArcAid" / "Direct to <host>"). */
+  via: 'relay' | 'direct' | null;
+  path: string | null;
+  relayNote: string | null;
+  portMapping: { state: 'trying' | 'opened' | 'failed'; line: string } | null;
   port: number | null;
   code: string | null;
   localId: string | null;
   hostId: string | null;
-  participants: Array<{ id: string; name: string; rig: 'pc' | 'vr_headset' | 'real_cabinet'; tableMatch: boolean | null; tableNote: string | null; buildMatch: boolean | null }>;
+  participants: Array<{
+    id: string;
+    name: string;
+    rig: 'pc' | 'vr_headset' | 'real_cabinet';
+    tableMatch: boolean | null;
+    tableNote: string | null;
+    buildMatch: boolean | null;
+    /** A13: whether this player's table can report ball ends; null = unknown. */
+    ballEnds: boolean | null;
+  }>;
+  /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
+  startWarnings: string[];
+  /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
+  pass: { name: string; ball: number; score: number } | null;
   /** A8: a host transfer under way (names), else null. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /** A10: the game being played or just played, whether the series is over, and why Next game cannot start (null: it can). */
@@ -585,6 +605,31 @@ interface MatchStatus {
   lastError: string | null;
   /** D7.6: the VR test bench while it runs, else null. */
   bench: BenchStatus | null;
+  /** A15: a match this PC was in when Castcade last closed and can go back to; `auto`: it is rejoined without asking. */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
+}
+
+/** A14 (2026-11-12): mirrors `OneStepStatus` in main/one-step.ts. */
+interface OneStepStatus {
+  /** While hosting: the join link (`castcade://join/…`) and the line for a chat. */
+  link: string | null;
+  message: string | null;
+  copied: boolean;
+  /** A link from outside the app that waits for the player's click. */
+  pending: { code: string; address: string | null } | null;
+  launch: { state: 'idle' | 'waiting_host' | 'starting' | 'running' | 'needed' | 'failed'; table: string | null; detail: string | null };
+  notice: string | null;
+  attention: number;
+}
+
+/** A14: a table of the picker (`path` is handed back to `launch.host`). */
+interface TableChoice {
+  path: string;
+  name: string;
+  rom: string | null;
+  lastPlayedAt: string | null;
+  /** False: a file from Browse that Castcade never patched. */
+  imported: boolean;
 }
 
 interface CastcadeBridge {
@@ -624,8 +669,10 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: Start match in the lobby; A10: Next game between games. */
-    start(): Promise<MatchStatus>;
+    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. */
+    start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+    /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
+    passTurn(): Promise<MatchStatus>;
     /** A8: host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3: save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */
@@ -640,6 +687,9 @@ interface CastcadeBridge {
     benchClips(): Promise<ClipSummary[]>;
     /** A10: the host's leave between games is End match (everyone is told). */
     leave(): Promise<MatchStatus>;
+    /** A15: go back into the match of `MatchStatus.resume`; `forgetResume` drops it. */
+    rejoin(): Promise<MatchStatus>;
+    forgetResume(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;
     setMuted(muted: boolean): Promise<MatchStatus>;
@@ -657,6 +707,18 @@ interface CastcadeBridge {
     /** D7.6.1: the layer's calibration pattern in theater ('pattern'), or off (null). */
     setVrTest(test: 'pattern' | null): Promise<MatchStatus>;
     onStatus(cb: (s: MatchStatus) => void): () => void;
+  };
+  /** A14: one step to a match (main/one-step.ts). */
+  readonly launch: {
+    status(): Promise<OneStepStatus>;
+    tables(): Promise<TableChoice[]>;
+    browse(): Promise<TableChoice[]>;
+    host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    confirm(): Promise<OneStepStatus>;
+    dismiss(): Promise<OneStepStatus>;
+    copy(what: 'link' | 'message'): Promise<OneStepStatus>;
+    viewing(matchTab: boolean): Promise<void>;
+    onStatus(cb: (s: OneStepStatus) => void): () => void;
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;

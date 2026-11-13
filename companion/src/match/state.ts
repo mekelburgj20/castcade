@@ -183,6 +183,18 @@ function applyMessage(st: MatchState, msg: AnyMessage): void {
       st.currentGrant = null;
       break;
     }
+    case 'TURN_PASS': {
+      // A13: the host ended the holder's ball by hand: that player's BALL_END without a shoot-again, at `score`. Only
+      // for the outstanding grant (the host sends no other; one that is not is folded as if it were not there).
+      const g = st.currentGrant?.grant;
+      const p = st.players[msg.payload.player];
+      if (!p || !g || g.grantSeq !== msg.payload.grantSeq || g.player !== msg.payload.player) break;
+      p.score = msg.payload.score;
+      p.ballsPlayed = Math.max(p.ballsPlayed, msg.payload.ballNumber);
+      if (p.ballsPlayed >= st.ballsPerGame && p.status === 'playing') p.status = 'finished';
+      st.currentGrant = null;
+      break;
+    }
     case 'GAME_OVER': {
       const p = st.players[msg.from];
       if (!p) break;

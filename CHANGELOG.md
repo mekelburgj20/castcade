@@ -7,6 +7,109 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **A join link Discord makes clickable (A14.2).** A match hosted through ArcAid copies
+  `https://arcaid.app/castcade/join/<code>` instead of `castcade://join/<code>`; the page (ArcAid 2.243.0) has an Open
+  in Castcade button and shows the code. The chat line is the table and the link, nothing to explain. A match hosted on
+  an address keeps the `castcade://` link. The Join box takes either form (`deep-link.ts`, `one-step.ts`,
+  `OneStep.tsx`).
+- **Castcade restarted in the middle of a match picks the match up again (A14.5).** A client that closed or
+  crashed comes back into the same match, on its own ball or another player's, through ArcAid or direct; a ball end
+  missed while it was closed is reported once after the rejoin. The host comes back too (same code, port and relay
+  room) and its players reconnect by themselves. Restart to update during a match no longer forfeits. Under 75 s,
+  or after an update restart, the rejoin is automatic; later the Match tab asks. The record is
+  `<userData>/match-resume.json`, written from the match start, never in the lobby; it holds no private key and no
+  pairing token. A lobby and a match that changed hosts are not saved; nothing locks the table while Castcade is
+  closed (`match-resume.ts`, `match-host.ts`, `match/restart.test.ts`, `main/match-restart.test.ts`;
+  docs/design/alpha-match.md §10).
+
+### Changed
+
+- **A client whose host is gone waits 3 minutes, then the match ends for it** and its table is unlocked. Before,
+  after 30 s each client made itself host of a match nobody could reach (`hostLeftTransfer: false` in the
+  companion; the engine default is unchanged).
+- **The relay asks again over 88 s, not 18 s** (five asks, gaps 2 s, 6 s, 20 s, 60 s), so a host has about two
+  minutes to come back through ArcAid; recovery from an ArcAid restart is slower from the third ask on
+  (`transport-relay.ts`).
+
+### Fixed
+
+- **A ball end sent into a link that had just dropped is sent again after the reconnect.** Before, it was lost and
+  the host waited for a ball that had drained.
+
+**Wire / journal:** no protocol or journal change; one paragraph added to `protocol/docs/prose.md` (Reconnect: a
+restarted participant starts its `seq` above its earlier run), `SPEC.md` regenerated.
+
+## [0.2.40] — 2026-11-12
+
+**Protocol 5** (a new logged message, `TURN_PASS`): a 0.2.39 companion is refused at HELLO, so everyone in a match
+updates together.
+
+### Added
+
+- **Host without a port forward (D10.8).** A paired companion hosts through ArcAid: match control messages (not
+  media) go through a relay on arcaid.app, and the invite is just the six-letter code. The 27401 listener stays up
+  beside it for LAN and forwarded hosts, and address invites still work. The host locks the room when the first game
+  starts; after an ArcAid restart the host re-hosts the same code and the players re-link. When ArcAid cannot be
+  reached, Castcade asks the router to open TCP 27401 (UPnP) and removes the mapping afterwards. The Match tab says
+  which path is in use. Needs ArcAid 2.242.0 (the relay); before that a paired host waits 4 s and hosts direct.
+- **One step to a match (A14, steps 1–3).** The Match tab has a table picker (imported tables, or Browse…): Host
+  hosts, copies a `castcade://join/…` link and starts VPX on that table; a table already open is used as it is. The
+  link opens Castcade, joins, and starts the same table on that rig (found by file hash, then name); a link opened
+  while Castcade was closed asks first. Host, Join, VPX and the companion may now come up in any order
+  (`docs/design/alpha-match.md` §9.3).
+- **Originals report their ball ends (C1.4, C1.6).** Anchor overrides keyed by script signature for tables the
+  vocabulary cannot read: the VPX Game Logic Framework (Dark Chaos), the Burger template (2001 ×2, Star Wars) and
+  Rattlecan. All 34 originals on the owner's rig played a full unattended game with every ball end and the game
+  end journaled (`npm run validate-original -w companion`, desktop build). Recipe B 0.3.2, C 0.2.0 (sidecars re-made
+  on the next folder look).
+
+- **The lobby says whose table cannot report ball ends, and the host can pass the turn (A13).** Three matches on an
+  unpatched original (Dark Chaos, 2026-11-12) sat on `grant 1` until Forfeit while the witness had already logged that
+  it could not read the table. Each companion now tells the lobby whether its table is followed live
+  (`ballEndReady` on HELLO / PARTICIPANT_UPDATE / HELLO_ACK; absent = unknown, never warned about); the Match tab and
+  the panel name each player whose table is not, Start match asks the host for "Start anyway", and a start from the
+  table waits. During a game the host has **Pass the turn**: it ends the holder's ball at the last known score with a
+  logged, host-signed `TURN_PASS` and grants the next turn; a late `BALL_END` for that ball is rejected.
+
+### Fixed
+
+- **A witness rebuilt mid-game no longer replays the game (A14.4).** Changing the ArcAid URL or the NVRAM folder
+  during a match re-read the journal from the top: on a player's ball 2 the turn passed at ball 1's score, and in a
+  free-play lobby the replayed Start began the match. In solo play the replaced witness kept reading beside the new
+  one and the game was posted twice. The witness now hands its journal position to its replacement and stops its
+  journal tails. Pause watching now also pauses a game in progress; it is read and posted at resume
+  (`witness.ts`, `witness-host.ts`, `witness-restart.test.ts`).
+- **An original's final score and game end (C1.6, recipe B 0.3.1 / 0.3.2).** The Matrix (Original) zeroed its
+  scores before the game end was journaled, so the final read 0: the game end now goes in front of the clear. Game of
+  Thrones lost a game's end when Start was pressed during its 5 s match sequence: the end is also journaled where the
+  table clears its in-play flag (`render-originals.ts`).
+- **A table locked until someone joins no longer dies mid-ball.** Hosting while a game was running locked the table
+  at once (flippers and plunger dead, the game could not end); the lock now waits for that game to end (A14).
+- **Two or more players dropping at once no longer leaves the match paused** until the host presses Resume: a
+  disconnect pause naming a player ends when that player is back on a live link (D10.8).
+- **The patcher wrapped the wrong handler** on tables that define `Table1_Exit` twice (Congo, Hook): the last
+  definition is the live one. The undo is now byte-exact for every recipe (a handler's case and a final newline
+  were changed on 17 originals). Existing ROM-table sidecars pick this up at their next re-make (C1.6).
+- **The host never got a joining player's native picture (D10.3.9).** Both helpers made their video sender with
+  `AddTransceiver` and only the initiator offers; libwebrtc pairs a remote offer's video section only with a
+  transceiver made by `AddTrack`, so the answerer's sender was never negotiated and its encoder never opened (owner
+  hosting, Krobs joining, 2026-11-12: six matches, `remote video track` in Krobs' log every time, never in the
+  owner's; the same silence as D10.3.8 with ChuckRibbits). The answerer now adds its track with `AddTrack`
+  (`castcade-video` 0.2.1). `tools/drive-pair.mjs --reverse` rehearses the client → host direction and exits 1 when
+  the receiver decodes nothing: the 0.2.39 helper fails it, 0.2.1 passes both directions at 60 fps.
+- **A companion started while a table was already running in VR read nothing until play ended (C14).** The table
+  was taken from the hook's journal only when the main window was titled `Visual Pinball Player`; a VR rig with the
+  preview window off has no title during play (Krobs 2026-11-12: `launch null` for 3.5 minutes, his Cactus Canyon turn
+  with no live score and no ball end). An untitled VPX whose start time is known now takes its table from the journal
+  as soon as the companion sees it.
+
+**Wire / journal:** protocol 5 (`TURN_PASS` logged; optional `ballEndReady` on HELLO / PARTICIPANT_UPDATE /
+HELLO_ACK; `protocol/test/messages.test.ts`, `companion/src/match/turn-pass.test.ts`). The relay is a transport
+(socket.io to ArcAid: `match:host` / `match:join` / `match:relay` / `match:lock` / `match:leave`), no protocol message.
+Journal format unchanged; hook library 0.5.0. Video helper 0.2.1.
+
 ## [0.2.39] — 2026-11-07
 
 The second-match fix round (owner + ChuckRibbits on 0.2.38, 2026-11-07 21:22Z). The ICE restarts of 0.2.38 worked:

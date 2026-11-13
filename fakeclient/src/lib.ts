@@ -363,10 +363,31 @@ export class FakePlayer {
       }
     });
     on('reject', (reject) => this.out.rejects.push(reject));
+    // D10.8: one RESUME per pause for my own drop, whether the pause came with the reconnect or after it (several
+    // players dropped at once and the host paused for me again once I was back), as the companion's controller does.
+    let resumeSent = false;
+    const resumeMyDrop = (): void => {
+      const paused = client.state.paused;
+      if (resumeSent || this.client !== client || paused?.reason !== 'disconnect' || paused.player !== this.playerId) return;
+      resumeSent = true;
+      try {
+        client.resume();
+      } catch {
+        /* the role stepped down meanwhile */
+      }
+    };
+    on('resume', () => {
+      resumeSent = false;
+    });
+    on('peerLeft', () => {
+      resumeSent = false;
+    });
     on('pause', (pause) => {
       this.out.pauses.push(pause);
       // The silent player "comes back": any participant may RESUME.
       if (pause.player === this.playerId && pause.reason === 'ball_end_timeout' && this.silenced) client.resume();
+      // Deferred: a pause merged from RECONNECT_ACK is the `reconnected` handler's, which runs first.
+      if (pause.player === this.playerId && pause.reason === 'disconnect') setTimeout(resumeMyDrop, 0);
     });
     on('logSigned', () => {
       this.out.signed = true;
@@ -379,8 +400,8 @@ export class FakePlayer {
       // A ball in flight when the link dropped was lost with it; play the re-issued grant afresh.
       if (!client.myGrant) this.playing = null;
       // Back after a drop: any participant may RESUME the pause our disconnect caused (A3).
-      const paused = client.state.paused;
-      if (paused?.reason === 'disconnect' && paused.player === this.playerId) client.resume();
+      resumeSent = false;
+      resumeMyDrop();
     });
     on('reconnectRejected', ({ code }) => {
       // Re-joining takes a fresh HELLO, which a started match refuses; this player is out.

@@ -9,7 +9,7 @@
 #   → video-helper/build/Release/castcade-video.exe + the FFmpeg DLLs it needs + THIRD-PARTY.md
 #
 cmake_minimum_required(VERSION 3.21)
-project(castcade_video VERSION 0.2.0 LANGUAGES CXX)
+project(castcade_video VERSION 0.2.1 LANGUAGES CXX)
 
 if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "castcade-video builds for Windows x64 only")

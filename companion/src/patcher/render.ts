@@ -18,8 +18,16 @@ export const LIB_VERSION = '0.5.0';
  */
 export const RECIPE_VERSION = '0.3.1';
 
-/** Each recipe's version, written into its sidecar's marker and `Castcade_Init`; a bump re-makes only that recipe's sidecars. */
-export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.2.0', C: '0.1.0', D: '0.1.0' } as const;
+/**
+ * Each recipe's version, written into its sidecar's marker and `Castcade_Init`; a bump re-makes only that recipe's sidecars.
+ * B 0.3.0 (C1.4): anchor overrides (GLF, the Burger template, Rattlecan), a game end after every game-flag clear, the
+ * score store named `Score` ahead of any other `...score...`; B 0.3.0 and C 0.2.0: a game end is journaled once per
+ * journaled game start. B 0.3.1 (C1.6): an end sub that clears the score store journals the game end in front of the
+ * clear (The Matrix (Original) journaled a final score of 0). B 0.3.2 (C1.6): an end sub with a re-entry guard on the
+ * game flag also journals the game end where that flag is cleared before it is called (Game of Thrones lost the game
+ * end of every game followed by a Start during its match sequence).
+ */
+export const RECIPE_VERSIONS = { A: RECIPE_VERSION, B: '0.3.2', C: '0.2.0', D: '0.1.0' } as const;
 export type Recipe = keyof typeof RECIPE_VERSIONS;
 
 export function isRecipe(r: string): r is Recipe {
@@ -138,29 +146,49 @@ export function block0(recipe: string, opts: RenderOptions): string[] {
   return b;
 }
 
-export function wrappers(tableObject: string, haveKeyUp: boolean, haveExit: boolean): string[] {
+/** The table's own spelling of each handler name (`table1_Exit` beside `Table1_KeyDown`); absent = no such handler. */
+export interface HandlerNames {
+  keyDown: string;
+  keyUp?: string | null;
+  exit?: string | null;
+}
+
+/**
+ * The wrapper tail. Each wrapper carries its handler's name exactly as the table spelled it, so the undo puts every
+ * `Sub` line back byte for byte (GotG and Batman 66 write `Sub table1_Exit` beside `Sub Table1_KeyDown`; before
+ * 2026-11-12 the undo gave all three the KeyDown spelling). With no `_Exit` in the table, ours takes the KeyDown
+ * prefix. The wrappers are the last thing in the file that defines these names, so they are the handlers VPX calls.
+ */
+export function wrappers(names: HandlerNames): string[] {
+  const prefix = names.keyDown.replace(/_KeyDown$/i, '');
   const w = [
     '',
     "' --- Castcade turn lock + exit hook (renamed originals: Castcade_Orig_KeyDown / _KeyUp / _Exit) ---",
-    `Sub ${tableObject}_KeyDown(ByVal KeyCode)`,
+    `Sub ${names.keyDown}(ByVal KeyCode)`,
     '    If Castcade_KeyDownBlocked(KeyCode) Then Exit Sub',
     '    Castcade_Orig_KeyDown KeyCode',
     'End Sub',
   ];
-  if (haveKeyUp) {
-    w.push(`Sub ${tableObject}_KeyUp(ByVal KeyCode)`, '    If Castcade_KeyUpBlocked(KeyCode) Then Exit Sub', '    Castcade_Orig_KeyUp KeyCode', 'End Sub');
+  if (names.keyUp) {
+    w.push(`Sub ${names.keyUp}(ByVal KeyCode)`, '    If Castcade_KeyUpBlocked(KeyCode) Then Exit Sub', '    Castcade_Orig_KeyUp KeyCode', 'End Sub');
   }
-  w.push(`Sub ${tableObject}_Exit()`, '    Castcade_Exit');
-  if (haveExit) w.push('    Castcade_Orig_Exit');
+  w.push(`Sub ${names.exit ?? `${prefix}_Exit`}()`, '    Castcade_Exit');
+  if (names.exit) w.push('    Castcade_Orig_Exit');
   w.push('End Sub', "' --- end Castcade ---");
   return w;
 }
 
-/** Rename `Sub <T>_<suffix>(...)` on line `idx` to `Sub Castcade_Orig_<suffix>(...)`. */
-export function renameHandler(lines: string[], tableObject: string, suffix: string, idx: number): void {
-  const rx = new RegExp(`(\\bSub\\s+)${escapeRegExp(tableObject)}_${suffix}\\b`, 'i');
+/**
+ * Rename `Sub <T>_<suffix>(...)` on line `idx` to `Sub Castcade_Orig_<suffix>(...)`; returns the name as the table
+ * spelled it (`table1_Exit`), which the wrapper then takes, or `null` when the line is not that handler.
+ */
+export function renameHandler(lines: string[], tableObject: string, suffix: string, idx: number): string | null {
+  const rx = new RegExp(`(\\bSub\\s+)(${escapeRegExp(tableObject)}_${suffix})\\b`, 'i');
   const line = lines[idx];
-  if (line !== undefined) lines[idx] = line.replace(rx, `$1Castcade_Orig_${suffix}`);
+  const m = line === undefined ? null : rx.exec(line);
+  if (line === undefined || !m) return null;
+  lines[idx] = line.replace(rx, `$1Castcade_Orig_${suffix}`);
+  return m[2] ?? null;
 }
 
 /**
@@ -188,16 +216,7 @@ export function renderRecipeA(scriptText: string, cls: ClassifyResult, opts: Ren
   anchors['guard'] = `block 0: ${Math.floor(opts.originalSize)} bytes, ${formatLocalStamp(opts.originalMtimeMs)}`;
 
   // handlers
-  renameHandler(out, T, 'KeyDown', f.keyDownLine - 1);
-  anchors['keyDown'] = `Sub ${T}_KeyDown renamed Castcade_Orig_KeyDown (line ${f.keyDownLine})`;
-  if (f.keyUpLine) {
-    renameHandler(out, T, 'KeyUp', f.keyUpLine - 1);
-    anchors['keyUp'] = `Sub ${T}_KeyUp renamed Castcade_Orig_KeyUp (line ${f.keyUpLine})`;
-  }
-  if (f.exitLine) {
-    renameHandler(out, T, 'Exit', f.exitLine - 1);
-    anchors['exit'] = `Sub ${T}_Exit renamed Castcade_Orig_Exit (line ${f.exitLine})`;
-  }
+  const names = renameHandlers(out, f, anchors);
 
   // recipe A
   const lv = f.loadVpmLine ?? 0;
@@ -224,14 +243,39 @@ export function renderRecipeA(scriptText: string, cls: ClassifyResult, opts: Ren
     endings.splice(idx, 0, ...block.map(() => split.newline));
   }
 
-  const tail = wrappers(T, Boolean(f.keyUpLine), Boolean(f.exitLine));
+  const tail = wrappers(names);
   out.push(...tail);
   endings.push(...tail.map(() => split.newline));
   anchors['wrappers'] = `appended (${tail.length} lines)`;
 
-  // The table's own lines keep their own endings (C13); every inserted line gets the dominant one.
-  const bytes = encodeScript(joinScript({ lines: out, endings, newline: split.newline, trailingNewline: true }));
+  // The table's own lines keep their own endings (C13); every inserted line gets the dominant one. The sidecar ends
+  // as the script did (with or without a final newline), which is how the undo knows what the last line had.
+  const bytes = encodeScript(joinScript({ lines: out, endings, newline: split.newline, trailingNewline: endsWithNewline(split) }));
   return { bytes, sha256: createHash('sha256').update(bytes).digest('hex'), warnings, anchors };
+}
+
+/** Rename the table's key and exit handlers (block L) and record them in `anchors`; the names go to `wrappers`. */
+export function renameHandlers(out: string[], f: ClassifyResult['facts'], anchors: Record<string, string>): HandlerNames {
+  const T = f.tableObject ?? 'Table1';
+  const names: HandlerNames = { keyDown: renameHandler(out, T, 'KeyDown', (f.keyDownLine ?? 0) - 1) ?? `${T}_KeyDown` };
+  anchors['keyDown'] = `Sub ${T}_KeyDown renamed Castcade_Orig_KeyDown (line ${f.keyDownLine})`;
+  if (f.keyUpLine) {
+    names.keyUp = renameHandler(out, T, 'KeyUp', f.keyUpLine - 1) ?? `${T}_KeyUp`;
+    anchors['keyUp'] = `Sub ${T}_KeyUp renamed Castcade_Orig_KeyUp (line ${f.keyUpLine})`;
+  }
+  if (f.exitLine) {
+    names.exit = renameHandler(out, T, 'Exit', f.exitLine - 1) ?? `${T}_Exit`;
+    anchors['exit'] = `Sub ${T}_Exit renamed Castcade_Orig_Exit (line ${f.exitLine})`;
+  }
+  return names;
+}
+
+/**
+ * Whether the sidecar ends with a newline: as the script did. An empty script counts as ending with one. The undo
+ * reads it back from the sidecar's own end, so a script without a final newline comes back without one.
+ */
+export function endsWithNewline(split: { lines: readonly string[]; trailingNewline: boolean }): boolean {
+  return split.trailingNewline || split.lines.every((l) => l === '');
 }
 
 /** The single lines recipe A inserts around `LoadVPM` (exact templates; see `renderRecipeA`). */
@@ -246,7 +290,7 @@ const RECIPE_A_LINE_INSERTS = [
  * (always this indent and this comment), the call put in front of an early `Exit Sub`, and recipe D's replacement
  * for the ScoreServer `CreateObject`. The undo below takes out exactly these.
  */
-export const ORIGINAL_LINE_INSERT = /^ {4}Castcade_[BCD]_[A-Za-z]+ {3}' Castcade: /;
+export const ORIGINAL_LINE_INSERT = /^ {4}Castcade_[BCD]_[A-Za-z]+(?: [A-Za-z_][\w.]*)? {3}' Castcade: /;
 export const ORIGINAL_EXIT_INSERT = /Castcade_[BCD]_[A-Za-z]+ : (?=Exit\s+(Sub|Function)\b)/gi;
 export const SCORE_SERVER_CREATE = 'CreateObject("VPinball.ScoreServer")';
 export const SCORE_SERVER_SHIM_CALL = 'Castcade_D_ScoreServer()';
@@ -275,11 +319,13 @@ export function unpatchSidecar(text: string): string | null {
   if (start0 < 0 || end0 < 0) return null;
   const wrapStart = lines.findIndex((l) => l.startsWith("' --- Castcade turn lock + exit hook"));
   const wrapEnd = lines.findIndex((l, i) => i > wrapStart && l === "' --- end Castcade ---");
-  let tableObject: string | null = null;
+  // Each wrapper carries its handler's own spelling (`Sub table1_Exit()`); a sidecar from before that was rendered
+  // has the KeyDown prefix on all three, which is what its undo always gave.
+  const spelled: Record<string, string> = {};
   if (wrapStart >= 0 && wrapEnd > wrapStart) {
     for (const l of lines.slice(wrapStart, wrapEnd)) {
-      const m = /^Sub (\w+)_KeyDown\(ByVal KeyCode\)$/.exec(l);
-      if (m) tableObject = m[1]!;
+      const m = /^Sub (\w+_(KeyDown|KeyUp|Exit))\((?:ByVal KeyCode)?\)$/i.exec(l);
+      if (m?.[1] && m[2]) spelled[m[2].toLowerCase()] = m[1];
     }
   }
   const drop = new Set<number>();
@@ -302,7 +348,7 @@ export function unpatchSidecar(text: string): string | null {
   });
   const kept = lines
     .filter((_, i) => !drop.has(i))
-    .map((l) => (tableObject ? l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, `$1${tableObject}_$2`) : l))
+    .map((l) => l.replace(/(\bSub\s+)Castcade_Orig_(KeyDown|KeyUp|Exit)\b/i, (whole: string, sub: string, suffix: string) => (spelled[suffix.toLowerCase()] ? `${sub}${spelled[suffix.toLowerCase()]}` : whole)))
     .map((l) => (recipe === 'A' ? l : l.replace(ORIGINAL_EXIT_INSERT, '').split(SCORE_SERVER_SHIM_CALL).join(SCORE_SERVER_CREATE)));
   const endings = split.endings.filter((_, i) => !drop.has(i));
   return joinScript({ lines: kept, endings, newline: split.newline, trailingNewline: split.trailingNewline });

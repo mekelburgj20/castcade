@@ -16,6 +16,12 @@ export interface SessionOptions {
   keys: KeyPair;
   clock?: Clock;
   log?: MatchLog;
+  /**
+   * A15: the outgoing `seq` continues after this number. A participant that restarted in the middle of a match has
+   * lost its counter, and the others drop a frame whose `seq` is not above the last they took from it; it starts
+   * from a number no earlier run can have reached (the shell passes the wall clock in ms).
+   */
+  seqStart?: number;
 }
 
 export class Session {
@@ -24,6 +30,11 @@ export class Session {
   readonly clock: Clock;
   readonly log: MatchLog;
   state: MatchState;
+  /**
+   * A15: called inside `commit`, after the entry is in the log and folded into the state, before the caller sends
+   * anything: the shell saves the log here, so what is on disk is never behind what another participant was sent.
+   */
+  onCommit: ((entry: LogEntry) => void) | null = null;
   private seq = 0;
   private readonly lastSeq = new Map<PlayerId, number>();
 
@@ -33,6 +44,7 @@ export class Session {
     this.clock = opts.clock ?? realClock;
     this.log = opts.log ?? new MatchLog();
     this.state = this.log.length > 0 ? replayLog(this.log) : initialState();
+    if (opts.seqStart !== undefined && Number.isSafeInteger(opts.seqStart) && opts.seqStart > 0) this.seq = opts.seqStart;
   }
 
   get localId(): PlayerId {
@@ -65,6 +77,7 @@ export class Session {
   commit(input: LogEntryInput): LogEntry {
     const entry = this.log.append(input);
     applyEntry(this.state, entry);
+    this.onCommit?.(entry);
     return entry;
   }
 
