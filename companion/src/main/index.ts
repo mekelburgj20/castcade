@@ -39,7 +39,7 @@ import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
 import { matchSignalling } from './match-setup.js';
-import { linkFromArgv, linkIsTrusted, looksLikeLink, registerLinkProtocol } from './deep-link.js';
+import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
@@ -415,7 +415,7 @@ function registerIpc(
     const text = str(invite, 'invite');
     const name = typeof displayName === 'string' ? displayName : '';
     // A14: a join link pasted into the Join box joins and starts the host's table here (the player pressed Join).
-    return looksLikeLink(text) ? os().joinLink(text, name) : mh().join(text, name);
+    return looksLikePastedLink(text) ? os().joinLink(text, name) : mh().join(text, name);
   });
   ipcMain.handle(IPC.launchStatus, () => os().status());
   ipcMain.handle(IPC.launchTables, () => os().tables());
@@ -716,6 +716,7 @@ async function main(): Promise<void> {
         clipboard: { writeText: (text) => clipboard.writeText(text) },
         tables: known,
         tableFiles: (have) => listTableFiles(nodeFs, tables.resolveTablesDir(null), have),
+        arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
         log: logger,
       });
       oneStep.onStatus((st) => {

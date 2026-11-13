@@ -1,6 +1,17 @@
 /** A14 (2026-11-12): the join link is untrusted input: only the exact shape is taken, and only an invite comes out. */
 import { describe, expect, it } from 'vitest';
-import { formatJoinLink, inviteFacts, inviteMessage, linkFromArgv, linkIsTrusted, looksLikeLink, parseJoinLink, registerLinkProtocol } from './deep-link.js';
+import {
+  formatJoinLink,
+  formatWebJoinLink,
+  inviteFacts,
+  inviteMessage,
+  linkFromArgv,
+  linkIsTrusted,
+  looksLikeLink,
+  looksLikePastedLink,
+  parseJoinLink,
+  registerLinkProtocol,
+} from './deep-link.js';
 
 const ADDRESS = 'castcade:ws://203.0.113.7:27401#ABCDEF';
 
@@ -66,6 +77,7 @@ describe('the join link (A14)', () => {
 
   it('the chat line says the table and what to do with a link that is not clickable', () => {
     expect(inviteMessage('castcade://join/JHDFEF', 'Monster Bash')).toBe('Castcade match on Monster Bash: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
+    expect(inviteMessage('https://arcaid.app/castcade/join/JHDFEF', 'Monster Bash')).toBe('Castcade match on Monster Bash: https://arcaid.app/castcade/join/JHDFEF');
     expect(inviteMessage('castcade://join/JHDFEF', null)).toBe('Castcade match: castcade://join/JHDFEF (copy the link, then in Castcade press Match, Paste, Join)');
   });
 });
@@ -109,5 +121,39 @@ describe('registering castcade:// and trusting a link (A14)', () => {
     expect(linkIsTrusted({ ...on, visible: false })).toBe(false);
     expect(linkIsTrusted({ ...on, minimized: true })).toBe(false);
     expect(linkIsTrusted({ ...on, exists: false })).toBe(false);
+  });
+});
+
+describe('the clickable web join link (A14.2)', () => {
+  it('is made only for a code invite and an https ArcAid; upper-case code, no trailing slash', () => {
+    expect(formatWebJoinLink('jhdfef', 'https://arcaid.app/')).toBe('https://arcaid.app/castcade/join/JHDFEF');
+    expect(formatWebJoinLink('JHDFEF', 'https://arcaid.app/some/path')).toBe('https://arcaid.app/castcade/join/JHDFEF');
+    expect(formatWebJoinLink('castcade:ws://203.0.113.7:27401#ABCDEF', 'https://arcaid.app')).toBeNull();
+    expect(formatWebJoinLink('JHDFEF', 'http://localhost:3001')).toBeNull();
+    expect(formatWebJoinLink('JHDFEF', null)).toBeNull();
+    expect(formatWebJoinLink('JHDFEF', 'not a url')).toBeNull();
+    expect(formatWebJoinLink('nope', 'https://arcaid.app')).toBeNull();
+  });
+
+  it('pasted into the Join box it reads like the castcade:// form, and nothing else on the web does', () => {
+    expect(parseJoinLink('https://arcaid.app/castcade/join/jhdfef')).toEqual({ invite: 'JHDFEF', code: 'JHDFEF', address: null });
+    expect(parseJoinLink(' https://arcaid.app/castcade/join/JHDFEF/ ')).toEqual({ invite: 'JHDFEF', code: 'JHDFEF', address: null });
+    expect(parseJoinLink('https://arcaid.app/castcade/join/castcade%3Aws%3A%2F%2F203.0.113.7%3A27401%23ABCDEF')?.address).toBe('203.0.113.7:27401');
+    for (const bad of [
+      'http://arcaid.app/castcade/join/JHDFEF',
+      'https://arcaid.app/castcade/join/JHDFEF?x=1',
+      'https://arcaid.app/castcade/join/JHDFEF/extra',
+      'https://arcaid.app/castcade/join/JHDFE',
+      'https://arcaid.app/other/JHDFEF',
+      'https://user@arcaid.app/castcade/join/JHDFEF',
+    ]) {
+      expect(parseJoinLink(bad), bad).toBeNull();
+    }
+    expect(looksLikePastedLink('https://arcaid.app/castcade/join/JHDFEF')).toBe(true);
+    expect(looksLikePastedLink('castcade://join/JHDFEF')).toBe(true);
+    expect(looksLikePastedLink('JHDFEF')).toBe(false);
+    expect(looksLikePastedLink('castcade:ws://203.0.113.7:27401#ABCDEF')).toBe(false);
+    // The command line still takes only castcade://.
+    expect(linkFromArgv(['Castcade.exe', 'https://arcaid.app/castcade/join/JHDFEF'])).toBeNull();
   });
 });

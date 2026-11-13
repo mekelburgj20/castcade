@@ -186,7 +186,7 @@ export function Match({ state }: { state: CastcadeState }) {
             <fieldset disabled={busy}>
               <label className="field">
                 <span>Link or invite from the host</span>
-                <input type="text" value={invite} placeholder="castcade://join/JHDFEF, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
+                <input type="text" value={invite} placeholder="The join link, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
               </label>
               <button
                 type="button"
