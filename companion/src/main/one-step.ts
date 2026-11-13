@@ -23,7 +23,7 @@ import type { GameFingerprint } from '@castcade/protocol';
 import { findLocalTable } from '../launch/find-table.js';
 import type { KnownTable } from '../launch/known-tables.js';
 import type { VpxLauncher } from '../launch/vpx-launch.js';
-import { formatJoinLink, inviteMessage, looksLikeLink, parseJoinLink, type JoinLink } from './deep-link.js';
+import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
 import { isTableOpen } from './match-setup.js';
 
@@ -113,6 +113,8 @@ export interface OneStepOptions {
   tables(): Promise<KnownTable[]>;
   /** Other `.vpx` files in the tables folder, for a joining rig. Default: none. */
   tableFiles?(known: readonly KnownTable[]): Promise<KnownTable[]>;
+  /** A14.2: the ArcAid address this PC uses, for the clickable join link. Default: none (the `castcade://` link). */
+  arcaidBaseUrl?(): string | null;
   log: { info(line: string): void; warn(line: string): void };
   /** How long a started VPX may take to show its table before the Match tab says it did not. Default 2 minutes. */
   launchWaitMs?: number;
@@ -168,7 +170,9 @@ export function createOneStep(o: OneStepOptions): OneStep {
     return [...known, ...files];
   };
 
-  const linkOf = (m: MatchStatus): string | null => (m.role === 'host' && m.invite ? formatJoinLink(m.invite) : null);
+  /** The link of the match being hosted: the clickable web form when ArcAid carries the match (A14.2), else `castcade://`. */
+  const linkOf = (m: MatchStatus): string | null =>
+    m.role === 'host' && m.invite ? (formatWebJoinLink(m.invite, o.arcaidBaseUrl?.() ?? null) ?? formatJoinLink(m.invite)) : null;
 
   const status = (): OneStepStatus => {
     const m = match.status();
@@ -409,7 +413,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     },
 
     async joinLink(text, displayName = '') {
-      const link = looksLikeLink(text) ? parseJoinLink(text) : null;
+      const link = looksLikePastedLink(text) ? parseJoinLink(text) : null;
       if (!link) throw new Error('That is not a Castcade match link. It looks like castcade://join/ABCDEF: ask the host to copy it again.');
       pending = null;
       try {

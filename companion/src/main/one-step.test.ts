@@ -42,7 +42,7 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
-function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: LaunchResult; joinError?: string; relay?: boolean } = {}) {
+function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: LaunchResult; joinError?: string; relay?: boolean; arcaid?: string } = {}) {
   const matchCbs = new Set<(s: MatchStatus) => void>();
   const witnessCbs = new Set<(s: { currentTable: string | null }) => void>();
   const m = { role: 'none' as MatchStatus['role'], phase: 'none' as MatchStatus['phase'], code: null as string | null, invite: null as string | null };
@@ -89,6 +89,7 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
     clipboard: { writeText: (t) => void clips.push(t) },
     tables: async () => o.tables ?? [MB, AFM],
     tableFiles: async () => o.files ?? [],
+    arcaidBaseUrl: () => o.arcaid ?? null,
     log: { info: (l) => void logs.push(l), warn: (l) => void logs.push(l) },
     setTimeout: (fn, ms) => {
       const t = { fn, ms, dead: false };
@@ -167,6 +168,18 @@ describe('one step to a match: Host (A14 step 1)', () => {
     const direct = world();
     await direct.one.host({ ...HOST, tablePath: null });
     expect(direct.one.status().link).toBe('castcade://join/castcade%3Aws%3A%2F%2F203.0.113.7%3A27401%23HOSTED');
+    // A14.2: with an https ArcAid the relay match's link is the clickable web form; an address invite keeps castcade://.
+    const web = world({ relay: true, arcaid: 'https://arcaid.app' });
+    await web.one.host({ ...HOST, tablePath: null });
+    expect(web.one.status().link).toBe('https://arcaid.app/castcade/join/HOSTED');
+    expect(web.one.status().message).toBe('Castcade match: https://arcaid.app/castcade/join/HOSTED');
+    expect(web.clips).toEqual(['https://arcaid.app/castcade/join/HOSTED']);
+    const webDirect = world({ arcaid: 'https://arcaid.app' });
+    await webDirect.one.host({ ...HOST, tablePath: null });
+    expect(webDirect.one.status().link).toBe('castcade://join/castcade%3Aws%3A%2F%2F203.0.113.7%3A27401%23HOSTED');
+    // The web link pasted into the Join box joins like the castcade:// one.
+    const guest = world();
+    expect((await guest.one.joinLink('https://arcaid.app/castcade/join/JHDFEF')).role).toBe('client');
   });
 
   it('hosts, puts the join link on the clipboard and starts VPX on the picked table; the table opening ends the wait', async () => {

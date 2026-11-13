@@ -7,6 +7,14 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **A join link Discord makes clickable (A14.2).** A match hosted through ArcAid copies
+  `https://arcaid.app/castcade/join/<code>` instead of `castcade://join/<code>`; the page (ArcAid 2.243.0) has an Open
+  in Castcade button and shows the code. The chat line is the table and the link, nothing to explain. A match hosted on
+  an address keeps the `castcade://` link. The Join box takes either form (`deep-link.ts`, `one-step.ts`,
+  `OneStep.tsx`).
+
 ## [0.2.40] — 2026-11-12
 
 **Protocol 5** (a new logged message, `TURN_PASS`): a 0.2.39 companion is refused at HELLO, so everyone in a match

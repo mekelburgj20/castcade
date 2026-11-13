@@ -617,7 +617,14 @@ tab were not run** (unit tests and typecheck only: the machine was busy with an 
   official statement was found, and it was not tried in a Discord client here. So the chat line carries instructions.
   The click-through fallback is a redirect page on ArcAid, `https://arcaid.app/castcade/join/<invite>`, which answers
   with a page that opens `castcade://join/<invite>` (and says to install Castcade when nothing handles it). That is
-  ArcAid work (its WORK section W) and is **not built**; when it exists, `inviteMessage` should carry that address.
+  ArcAid work (its W96, live from ArcAid 2.243.0).
+- **The clickable link (A14.2).** When ArcAid carries the match (the invite is the code) and this PC's ArcAid address
+  is `https://`, the link Host copies, the Match tab shows and the chat line carries is
+  `https://arcaid.app/castcade/join/JHDFEF` (`formatWebJoinLink`: upper-case code, no trailing slash), and the chat line
+  is just `Castcade match on <table>: <link>`. An address invite keeps the `castcade://` form and its instructions (the
+  web form would put the host's address in a request to ArcAid and needs an encoded `/` and `#` through its proxy,
+  untried). The Join box reads the web form like the `castcade://` one; the command line still takes only
+  `castcade://`. Not tried in a Discord client or a browser with Castcade installed.
 
 ### 9.2 The link joins and starts the table (step 2)
 

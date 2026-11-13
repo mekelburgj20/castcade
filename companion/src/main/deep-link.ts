@@ -19,6 +19,12 @@ const CODE = /^[A-Za-z]{6}$/;
 /** The address invite, as `match-setup.ts` `parseInvite` takes it. */
 const ADDRESS = /^castcade:ws:\/\/(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253}):(\d{1,5})\/?#([A-Za-z]{6})$/;
 const LINK = /^castcade:\/\/join\/([A-Za-z0-9%._~-]{1,280})\/?$/i;
+/**
+ * A14.2: the same link as a web address chat apps make clickable, `https://arcaid.app/castcade/join/<invite>` (ArcAid
+ * 2.243.0 serves a page there that opens `castcade://join/<invite>`). Pasted into the Join box it is read like the
+ * `castcade://` form: only the invite comes out of it, whatever the host name.
+ */
+const WEB_LINK = /^https:\/\/[A-Za-z0-9.-]{1,253}(?::\d{1,5})?\/castcade\/join\/([A-Za-z0-9%._~-]{1,280})\/?$/i;
 
 export interface JoinLink {
   /** The invite to give `MatchHost.join`: `ABCDEF` or `castcade:ws://host:port#ABCDEF`. */
@@ -45,10 +51,29 @@ export function formatJoinLink(invite: string): string | null {
   return f ? `${LINK_SCHEME}://join/${encodeURIComponent(f.invite)}` : null;
 }
 
+/**
+ * A14.2: the clickable form, for a match that goes through ArcAid (the invite is the code) and an ArcAid reached over
+ * https. Null otherwise: an address invite keeps the `castcade://` form (it would put the host's address in a web
+ * request, and needs an encoded `/` and `#` through ArcAid's proxy). The page takes the code in upper case, with no
+ * trailing slash.
+ */
+export function formatWebJoinLink(invite: string, arcaidBaseUrl: string | null): string | null {
+  const f = inviteFacts(invite.trim());
+  if (!f || f.address !== null || !arcaidBaseUrl) return null;
+  let base: URL;
+  try {
+    base = new URL(arcaidBaseUrl);
+  } catch {
+    return null;
+  }
+  if (base.protocol !== 'https:') return null;
+  return `${base.origin}/castcade/join/${f.code}`;
+}
+
 /** A join link, or null: anything that is not exactly one is refused whole. */
 export function parseJoinLink(text: string): JoinLink | null {
   if (typeof text !== 'string' || text.length > LINK_MAX) return null;
-  const m = LINK.exec(text.trim());
+  const m = LINK.exec(text.trim()) ?? WEB_LINK.exec(text.trim());
   if (!m) return null;
   let invite: string;
   try {
@@ -64,6 +89,11 @@ export function looksLikeLink(text: string): boolean {
   return /^castcade:\/\//i.test(text.trim());
 }
 
+/** True for text pasted into the Join box that claims to be a link: `castcade://…`, or the web form (A14.2). */
+export function looksLikePastedLink(text: string): boolean {
+  return looksLikeLink(text) || /^https:\/\/[^/\s]+\/castcade\/join\//i.test(text.trim());
+}
+
 /**
  * The link Windows put on the command line (`"Castcade.exe" "castcade://join/…"`; a second instance hands its
  * arguments to the first): the first argument that starts with `castcade://`, as it came. Null when there is none.
@@ -73,8 +103,9 @@ export function linkFromArgv(argv: readonly string[]): string | null {
   return null;
 }
 
-/** The line for Discord and other chats, where a `castcade://` link is plain text. */
+/** The line for Discord and other chats: a web link is clickable there, a `castcade://` link is plain text. */
 export function inviteMessage(link: string, table: string | null): string {
+  if (/^https:\/\//i.test(link)) return `Castcade match${table ? ` on ${table}` : ''}: ${link}`;
   return `Castcade match${table ? ` on ${table}` : ''}: ${link} (copy the link, then in Castcade press Match, Paste, Join)`;
 }
 

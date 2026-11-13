@@ -152,7 +152,11 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
               {copied === 'message' ? 'Copied' : 'Copy for chat'}
             </button>
           </div>
-          <p className="muted">Discord shows a castcade:// link as plain text, so this line says what to do with it.</p>
+          <p className="muted">
+            {one.link?.startsWith('https://')
+              ? 'Discord makes this link clickable: it opens a page with an Open in Castcade button and the code.'
+              : 'Discord shows a castcade:// link as plain text, so this line says what to do with it.'}
+          </p>
         </>
       )}
       {showLaunch && <p className={launch.state === 'failed' || launch.state === 'needed' ? 'warn' : 'muted'}>{launch.detail}</p>}
