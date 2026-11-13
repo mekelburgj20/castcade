@@ -142,6 +142,13 @@ is verified again at most once a minute, on its next frame: one whose pairing wa
 the same device and has it back. Rooms live in the server's memory: a restart (every deploy) loses them all; a new
 room on the same code starts unlocked and knows no one.
 
+**The join page and the pairing cap (ArcAid 2.243.0, W96 / W97, 2026-11-12).** `GET /castcade/join/<invite>` is a
+server-rendered page with an Open in Castcade button (`castcade://join/<invite>`), the code in plain text and an
+install link; no login, nothing stored or logged, one fixed preview title for every invite, one fixed page for
+anything that is not an invite. It takes the code in upper case and no trailing slash. The companion builds the
+address for a relay code only (`formatWebJoinLink`, A14.2). An account holds at most 10 active paired devices and
+pairs at most 5 new ones in 24 hours (a re-pair is never counted; the refusal is `DEVICE_LIMIT`, 400).
+
 Amended 2026-11-12 (after the companion side was built against the first wording; both sides have these):
 
 - **The host's rate limit is per destination.** The first wording counted the host socket as a whole, and a host's
