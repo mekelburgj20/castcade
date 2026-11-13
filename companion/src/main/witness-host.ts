@@ -6,7 +6,7 @@
  * new instance the old one's journal mark (A15), so a match is not fed the game in progress twice.
  */
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
-import type { LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
+import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { VrObservation } from '../witness/vr-detect.js';
 import type { Logger } from './log.js';
@@ -39,13 +39,22 @@ export interface WitnessHost {
   onCapture(listener: (capture: LastCapture) => void): () => void;
   /**
    * A6 (2026-10-30): every detector game event of the live session, plus `table_exit` when the VPX process ends,
-   * for the match controller.
+   * for the match controller. A15: `meta.backlog`: the event was in the journal before the witness began to read it
+   * (Castcade started while the table was open); `meta.mark`: where in the journal it is, null for `table_exit`.
    */
-  onEvent(listener: (event: GameEvent | { kind: 'table_exit' }) => void): () => void;
+  onEvent(listener: (event: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void): () => void;
+  /** A15: how far into the open table's journal the game events were delivered (`Witness.journalMark`). */
+  journalMark?(): JournalMark | null;
   /** D2.8 (2026-11-01): the pid of the VPX the witness last saw launch, until it exits; null when none runs. */
   vpxPid?(): number | null;
   /** D7.3.3 (2026-11-02): that VPX's process start, epoch ms (the process watch's own query); null when unknown or none runs. */
   vpxStartedAt?(): number | null;
+}
+
+/** A15: what `onEvent` says about an event beside the event itself. */
+export interface WitnessEventMeta {
+  backlog: boolean;
+  mark: JournalMark | null;
 }
 
 /** Which settings require a restart of the module when they change. */
@@ -71,7 +80,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
   const noticeListeners = new Set<(n: WitnessNotice) => void>();
   const gameListeners = new Set<(g: LiveGame | null) => void>();
   const captureListeners = new Set<(c: LastCapture) => void>();
-  const eventListeners = new Set<(e: GameEvent | { kind: 'table_exit' }) => void>();
+  const eventListeners = new Set<(e: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -98,7 +107,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         log.info(`witness: exit ${i.table} after ${i.durationSec}s`);
         launchPid = null;
         launchStartedAt = null;
-        for (const l of eventListeners) l({ kind: 'table_exit' });
+        for (const l of eventListeners) l({ kind: 'table_exit' }, { backlog: false, mark: null });
       }),
       w.on('capture', (c) => {
         log.info(
@@ -112,7 +121,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         for (const l of gameListeners) l(g);
       }),
       w.on('event', (e) => {
-        for (const l of eventListeners) l(e);
+        const meta: WitnessEventMeta = { backlog: w.deliveringBacklog(), mark: w.journalMark() };
+        for (const l of eventListeners) l(e, meta);
       }),
     ];
     return w;
@@ -221,6 +231,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         captureListeners.delete(listener);
       };
     },
+    journalMark: () => witness.journalMark(),
     vpxPid: () => launchPid,
     vpxStartedAt: () => launchStartedAt,
     onEvent(listener) {

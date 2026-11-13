@@ -52,8 +52,14 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/prot
 import { ClientMatch } from '../match/client.js';
 import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { HostMatch } from '../match/host.js';
+import { MatchLog } from '../match/log.js';
+import { Session } from '../match/session.js';
+import { replayLog, type MatchState } from '../match/state.js';
+import type { GameEvent } from '../witness/journal-detector.js';
+import type { JournalMark } from '../witness/types.js';
+import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
-import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport } from '../match/transport-relay.js';
+import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
 import { WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
@@ -225,6 +231,12 @@ export interface MatchStatus {
   lastError: string | null;
   /** D7.6 (2026-11-03): the VR test bench while it runs (media/bench.ts), else null. */
   bench: BenchStatus | null;
+  /**
+   * A15: a match this PC was in when Castcade last closed, still worth going back to (`match-resume.ts`); null with
+   * none, or while a match is on. `auto`: Castcade was in it under a minute ago or restarted itself for an update, so
+   * the shell rejoins without asking.
+   */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
 }
 
 export interface MatchHost {
@@ -294,8 +306,18 @@ export interface MatchHost {
   setBenchView(view: BenchView): MatchStatus;
   /** D7.6: the saved clips under the frames folder, newest first (D7.6.3 makes them). */
   benchClips(): ClipSummary[];
-  /** On quit: leave any match and close the cue window. */
-  stop(): Promise<void>;
+  /**
+   * A15: go back into the match of `status().resume`: a client reconnects to the host from its saved log; a host
+   * opens the match again under the same code and waits for its players. Throws with a sentence when it cannot.
+   */
+  rejoin(): Promise<MatchStatus>;
+  /** A15: drop the saved match (the Match tab's "Forget it"); the table is unlocked. */
+  forgetResume(): MatchStatus;
+  /**
+   * On quit: leave any match and close the cue window. A15: `keepForRestart` (Castcade restarts to install an update):
+   * a started match is not left; it is closed here and rejoined at the next start.
+   */
+  stop(opts?: { keepForRestart?: boolean }): Promise<void>;
 }
 
 export interface MatchHostOptions {
@@ -353,7 +375,25 @@ export interface MatchHostOptions {
   framesDir?: string;
   /** D2.10 (2026-11-05): Electron's `globalShortcut` in the app (the in-game volume keys); absent → no keys (tests pass a fake). */
   shortcuts?: ShortcutRegistrar;
+  /** A15: the saved match. Default `match-resume.json` beside `file`. */
+  resumeFile?: string;
+  /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
+  hostWaitMs?: number;
+  rejoinTimeoutMs?: number;
+  /** A15 test seam: how a relay client asks again for a room that is gone. Default `HOST_WAIT_REJOIN`. */
+  relayRejoin?: Partial<RejoinPolicy>;
 }
+
+/**
+ * A15: a relay client's asks for a room that is gone, while it waits for its host (`HOST_WAIT_MS`): five asks, the
+ * first two soon (ArcAid restarted and the host opened the room again within seconds), the last 88 s after the first
+ * miss (a host whose Castcade restarted). Five misses stay under the server's lockout (eight in ten minutes).
+ */
+export const HOST_WAIT_REJOIN: RejoinPolicy = { gapsMs: [2_000, 6_000, 20_000, 60_000], maxMisses: 5, windowMs: 10 * 60_000 };
+/** A15: how long a rejoin waits for the host's RECONNECT_ACK before it gives up (the saved match is kept). */
+const REJOIN_TIMEOUT_MS = 20_000;
+/** A15: a host that opened its relay room again lets its players back in for this long before it locks the room again. */
+const REHOST_LOCK_MS = 60_000;
 
 /** D2.10: what `globalShortcut` offers: `register` is false when another app holds the key. */
 export interface ShortcutRegistrar {
@@ -443,6 +483,21 @@ interface Active {
   /** D10.3.8: theater's picture source while the sink is the layer's ring (`syncNativeVideo`), and its 1 s clock. */
   theater: TheaterPathState;
   theaterTimer: ReturnType<typeof setInterval> | null;
+  /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
+  joinInvite: string | null;
+  /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
+  backlog: TableBacklog<GameEvent>;
+  mark: JournalMark | null;
+  /** A15: picked up after a restart: the table's events wait until the host's answer is merged (`tryReconcile`). */
+  hold: boolean;
+  /** A15: a reconnect happened: what the table said since the log last grew is fed (again) once the grant is settled. */
+  reconcileDue: boolean;
+  /** A15: this player's turn ends in the saved log, and VPX closed while the saved match waited. */
+  savedTurnEnds: number;
+  pendingExit: boolean;
+  heartbeat: ReturnType<typeof setInterval> | null;
+  /** A15: no (more) record for this match: it ended, or it changed hands. */
+  recordOff: boolean;
 }
 
 /** A6 (2026-10-31): the witness facts a lobby refresh follows: the table's fingerprint and the VR sample. */
@@ -552,8 +607,34 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       locked = false;
     },
   };
-  // A lock left by a crash would keep every solo game dead: no match is running at startup.
-  if (existsSync(lockFile)) {
+  // ---- A15: the match Castcade was in when it last closed (match-resume.ts) ----
+  const resumeStore = createResumeStore(opts.resumeFile ?? join(dirname(opts.file), RESUME_FILE), (l) => log.warn(l));
+  const hostWaitMs = opts.hostWaitMs ?? HOST_WAIT_MS;
+  const waitWords = `${Math.max(1, Math.round(hostWaitMs / 60_000))} minute${Math.round(hostWaitMs / 60_000) > 1 ? 's' : ''}`;
+  let pendingResume: ResumeRecord | null = resumeStore.read();
+  if (pendingResume && resumeFreshness(pendingResume, Date.now()) === 'stale') {
+    log.info(`match: the saved match ${pendingResume.code} is too old to go back to (last seen ${new Date(pendingResume.aliveAt).toISOString()}); dropped`);
+    pendingResume = null;
+  }
+  if (!pendingResume) resumeStore.remove();
+  else log.info(`match: Castcade closed during the match ${pendingResume.code} (${pendingResume.role}); it can be rejoined`);
+  /** The table's events while the saved match waits for its rejoin, and whether VPX closed meanwhile. */
+  let pendingBacklog: TableBacklog<GameEvent> | null = pendingResume ? new TableBacklog<GameEvent>(pendingResume.mark, true) : null;
+  let pendingExit = false;
+  const forget = (why: string): void => {
+    if (!pendingResume) return;
+    log.info(`match: the saved match ${pendingResume.code} is dropped: ${why}`);
+    pendingResume = null;
+    pendingBacklog = null;
+    pendingExit = false;
+    resumeStore.remove();
+    if (!active) lock.unlock();
+  };
+
+  // A lock left by a crash would keep every solo game dead: no match is running at startup. A15: unless a match can
+  // be rejoined: then the table stays as the last run left it (locked while another player was up).
+  if (pendingResume) locked = existsSync(lockFile);
+  else if (existsSync(lockFile)) {
     try {
       rmSync(lockFile, { force: true });
       log.warn(`match: removed a turn lock left from an earlier run (${lockFile})`);
@@ -691,7 +772,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       defaultName: defaultName(),
       lastError,
       bench: benchView(),
+      resume: resumeView(),
     };
+  };
+  const resumeView = (): MatchStatus['resume'] => {
+    const rec = pendingResume;
+    if (!rec || active) return null;
+    const fresh = resumeFreshness(rec, Date.now());
+    return fresh === 'stale' ? null : { code: rec.code, role: rec.role, names: [...rec.names], auto: fresh === 'auto' };
   };
   /** D7.6: the bench for the Match tab: the media layer's readout, plus the layer's own state while it is not showing. */
   const benchView = (): BenchStatus | null => {
@@ -751,6 +839,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   const emit = (): void => {
     if (active) {
+      // A15: a match that is over for good leaves nothing to go back to; a reconnect's replay runs once the grant is settled.
+      if (!active.recordOff && active.controller.status().series.over) dropRecord(active);
+      tryReconcile(active);
+    }
+    if (active) {
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
       syncNativeVideo(active);
@@ -790,7 +883,156 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) emit();
   });
   opts.media?.onMicrophones?.(() => emit());
-  witness.onEvent((ev) => active?.controller.feed(ev));
+  witness.onEvent((ev, meta) => {
+    const a = active;
+    if (!a) {
+      // A15: a saved match waits for its rejoin: what the table says meanwhile is kept for it.
+      if (ev.kind === 'table_exit') pendingExit = pendingBacklog !== null;
+      else pendingBacklog?.take(ev, meta);
+      return;
+    }
+    if (ev.kind === 'table_exit') {
+      a.controller.feed(ev);
+      return;
+    }
+    if (!a.backlog.take(ev, meta)) return;
+    if (a.hold) return;
+    if (a.backlog.tableReopened()) a.controller.feed({ kind: 'table_exit' });
+    a.controller.feed(ev);
+  });
+
+  // ---- A15: the saved match while one is on ----
+  const dropRecord = (a: Active): void => {
+    if (a.recordOff) return;
+    a.recordOff = true;
+    resumeStore.remove();
+  };
+  const saveResume = (a: Active, restart: 'update' | null = null): void => {
+    if (a.recordOff || active !== a) return;
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    const st = role.state;
+    if (st.phase === 'lobby') return;
+    // A match that changed hands (a host transfer) is not one this file can bring back.
+    if (role instanceof HostMatch !== (a.role === 'host')) return dropRecord(a);
+    const me = role.localId;
+    resumeStore.write({
+      version: 1,
+      role: a.role,
+      code: a.code,
+      invite: a.joinInvite,
+      port: a.role === 'host' ? a.port : null,
+      relay: a.role === 'host' ? a.relay !== null : a.via === 'relay',
+      playerId: me,
+      displayName: st.participants.find((p) => p.playerId === me)?.displayName ?? defaultName(),
+      names: st.participants.filter((p) => p.playerId !== me).map((p) => p.displayName),
+      log: role.log.toJSON(),
+      mark: a.mark,
+      aliveAt: Date.now(),
+      restart,
+    });
+  };
+  /** Every entry of the match log is saved as it is made (before anything is sent), and the record is touched every 15 s. */
+  const followLog = (a: Active): void => {
+    const me = a.engine.localId;
+    a.engine.session.onCommit = (entry) => {
+      if (active !== a) return;
+      const m = entry.message;
+      const mine =
+        m !== undefined &&
+        (m.type === 'MATCH_READY' ||
+          m.type === 'NEXT_GAME' ||
+          ((m.type === 'BALL_END' || m.type === 'GAME_OVER') && m.from === me) ||
+          ((m.type === 'TURN_PASS' || m.type === 'FORFEIT') && m.payload.player === me));
+      // The table's events up to here are answered, unless one of them is an end the log has not taken yet (it stays
+      // to be reported again after a reconnect or a restart).
+      if (!a.hold && (mine || !a.backlog.holdsEnd())) {
+        a.backlog.clear();
+        a.mark = witness.journalMark?.() ?? null;
+      }
+      saveResume(a);
+      // A grant re-issued for the same ball changes nothing on the panel, so no status follows it: look here, once the
+      // engine's own listeners (the controller) have had the entry.
+      if (a.reconcileDue) queueMicrotask(() => tryReconcile(a));
+    };
+    a.heartbeat = setInterval(() => saveResume(a), RESUME_HEARTBEAT_MS);
+    (a.heartbeat as { unref?: () => void }).unref?.();
+    saveResume(a);
+  };
+  /**
+   * After a reconnect (and once after a rejoin): what the table said since the log last grew goes to the controller,
+   * again if it had it already: a ball end reported into a dropped link, or one that happened while Castcade was
+   * closed, is reported now. It waits while the log names this player as up and the engine has not confirmed the
+   * grant yet (the host re-issues it after RESUME).
+   */
+  const tryReconcile = (a: Active): void => {
+    if (!a.reconcileDue || active !== a) return;
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    const st = role.state;
+    const me = role.localId;
+    // Not during a pause either: a RESUME re-issues the grant under a new number, and a ball end reported for the old
+    // one just before it would be refused.
+    if (st.phase === 'running' && (st.paused !== null || st.pendingReissue !== null)) return;
+    if (st.phase === 'running' && st.currentGrant?.grant.player === me && !a.controller.status().myTurn) return;
+    a.reconcileDue = false;
+    if (a.hold) {
+      a.hold = false;
+      // Ball ends the host already had (reported just before Castcade closed, or passed by the host meanwhile).
+      a.backlog.skipEnds(turnEndsOf(role.log.entries(), me) - a.savedTurnEnds);
+      if (a.pendingExit || a.backlog.tableReopened()) {
+        a.pendingExit = false;
+        log.warn('match: the table was closed while Castcade was closed');
+        a.controller.feed({ kind: 'table_exit' });
+      }
+    }
+    const events = a.backlog.pending();
+    if (events.length > 0) log.info(`match: ${events.length} table event(s) since the log last grew go to the match now (${events.filter((e) => e.kind === 'ball_end').length} ball end(s))`);
+    for (const ev of events) a.controller.feed(ev);
+  };
+  /** A fresh match's share of `Active`; `rec`: one picked up from the saved record. */
+  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'pendingExit' | 'heartbeat' | 'recordOff'> => ({
+    joinInvite: invite,
+    backlog: rec ? (pendingBacklog ?? new TableBacklog<GameEvent>(rec.mark, true)) : new TableBacklog<GameEvent>(null, false),
+    mark: rec?.mark ?? null,
+    hold: rec !== null,
+    reconcileDue: rec !== null,
+    savedTurnEnds: rec ? turnEndsOf(rec.log, rec.playerId) : 0,
+    pendingExit: rec !== null && pendingExit,
+    heartbeat: null,
+    recordOff: false,
+  });
+  /** The match is over for this PC without its doing: closed, with the reason on the Match tab. */
+  const endMatch = async (a: Active, why: string): Promise<void> => {
+    if (active !== a) return;
+    await teardown(a);
+    lastError = why;
+    log.warn(`match: ${why}`);
+    emit();
+  };
+  /**
+   * A client and its host's link. While the host is gone the panel says so and for how long it is waited for; when the
+   * wait runs out the match ends here (a client has no listener the others could come to, so it never takes over).
+   */
+  const watchHost = (a: Active, engine: ClientMatch): void => {
+    a.offs.push(
+      engine.on('peerLeft', (peer) => {
+        if (active !== a || peer !== engine.hostId || engine.state.phase === 'lobby' || engine.matchEnded) return;
+        log.warn(`match: the link to the host dropped; waiting up to ${waitWords} for it`);
+        a.controller.setMessage(`The host's Castcade closed or lost its connection. The match is paused: waiting up to ${waitWords} for it to come back.`);
+      }),
+    );
+    a.offs.push(
+      engine.on('reconnected', () => {
+        if (active !== a) return;
+        a.controller.setMessage(null);
+        a.reconcileDue = true;
+        tryReconcile(a);
+      }),
+    );
+    a.offs.push(engine.on('hostLost', () => void endMatch(a, `The host did not come back within ${waitWords}: the match is over.`)));
+    a.offs.push(engine.on('reconnectRejected', (r) => void endMatch(a, `The host did not take this PC back into the match ${a.code}${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}: the match is over for this PC.`)));
+  };
+  /** A15: a client's reconnect budget: by the clock, and never a take-over. */
+  const clientLink = { reconnect: { attempts: 1_000_000, delayMs: 1000, maxMs: hostWaitMs }, hostLeftTransfer: false } as const;
   // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
   // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
   // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. D7.3
@@ -820,7 +1062,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     controller.setLocalBallEnds(be.ready, be.reason);
   };
 
-  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number): MatchController => {
+  const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false): MatchController => {
     // D10.3: the match signalling split by channel: the panel page's mesh gets `rtc`, the native video mesh `video`.
     const sig = opts.signalling?.(engine, engine.localId);
     const split = sig ? splitSignalling(sig) : null;
@@ -839,6 +1081,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // A12 (2026-11-05): the host's table before the match, and whether a game is already running on it.
       preMatchPlay: settings.preMatchPlay,
       tableGameRunning: liveGameRunning(),
+      resumed,
     });
     controller.onChange(() => emit());
     noteBallEnds(controller, witness.status());
@@ -1260,6 +1503,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const host = (o: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus> =>
     guard(async () => {
       if (active) return fail(new Error('Leave the current match first'));
+      forget('another match is hosted');
       await endBench('a match is hosted');
       lastError = null;
       const asked = o.port === 0 && opts.ephemeralPort ? 0 : o.port === undefined ? settings.port : cleanPort(o.port);
@@ -1349,6 +1593,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         video: null,
         theater: THEATER_ON_RING,
         theaterTimer: null,
+        ...tracking(null, null),
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
       if (relay) {
@@ -1363,6 +1608,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         );
       }
       active = a;
+      followLog(a);
       await openPanel(a);
       let listening = true;
       try {
@@ -1458,7 +1704,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     const c = opts.relay?.() ?? null;
     if (!c) throw new Error(RELAY_NOT_PAIRED);
-    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs });
+    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs, rejoin: opts.relayRejoin ?? HOST_WAIT_REJOIN });
     return {
       transport: t,
       connect: () => t.connect(invite.code),
@@ -1480,6 +1726,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       companionVersion: opts.appVersion.slice(0, 32),
       // A13: whether this table can report ball ends, when a table is open (HELLO.ballEndReady).
       ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
+      ...clientLink,
     });
     // Built before HELLO so it sees HELLO_ACK's roster.
     const controller = makeController(engine);
@@ -1513,6 +1760,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const joinMatch = (invite: string, displayName: string): Promise<MatchStatus> =>
     guard(async () => {
       if (active) return fail(new Error('Leave the current match first'));
+      forget('another match is joined');
       await endBench('a match is joined');
       lastError = null;
       let parsed: Invite;
@@ -1535,51 +1783,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         if (out.kind === 'refused') throw new Error(`The host refused: ${out.refuse.message}`);
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: the host's table file differs from this one; joined anyway, flagged on both panels");
-        const a: Active = {
-          role: 'client',
-          transport: out.transport,
-          ws: null,
-          via: parsed.via,
-          where: parsed.via === 'direct' ? `${parsed.host}:${parsed.port}` : null,
-          relay: null,
-          relayNote: null,
-          directInvite: null,
-          portMapping: null,
-          mapping: null,
-          renewTimer: null,
-          engine: out.engine,
-          controller: out.controller,
-          code: parsed.code,
-          port: parsed.via === 'direct' ? parsed.port : null,
-          invite: null,
-          ipSource: null,
-          overlay: null,
-          vrMode: null,
-          ...rigOf(rig),
-          witnessRig: rigFrom(witness.status()),
-          switching: false,
-          sent: { rig: rig.rig, game, ballEnds },
-          lobbyKey: lobbyKey(ws),
-          refreshing: false,
-          refreshAgain: false,
-          endTimer: null,
-          offs: [],
-          video: null,
-          theater: THEATER_ON_RING,
-          theaterTimer: null,
-        };
-        a.offs.push(
-          out.transport.onError((err) => {
-            log.warn(`match: socket: ${err.message}`);
-            // D10.8: a pairing revoked mid-match is final (ArcAid took the seat): the tab says so, in those words.
-            if (err instanceof RelayError && err.code === 'unauthorized' && active === a) {
-              lastError = `${err.message}: pair it again in Settings. This match cannot be resumed through ArcAid.`;
-              emit();
-            }
-          }),
-        );
+        const a = clientActive(parsed, out, rig, game, ballEnds, ws, invite.trim(), null);
         active = a;
         connecting = false;
+        followLog(a);
+        watchHost(a, out.engine);
         log.info(`match: joined ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}`);
         await openPanel(a);
         // The table may have loaded while joining (A6, 2026-10-31).
@@ -1592,9 +1800,257 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
     });
 
-  /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. */
-  const teardown = async (a: Active): Promise<void> => {
+  /** A client's `Active`, from a join or (A15, `rec`) a rejoin. */
+  const clientActive = (
+    parsed: Invite,
+    out: { transport: MatchTransport; engine: ClientMatch; controller: MatchController },
+    rig: RigDecision,
+    game: GameFingerprint,
+    ballEnds: boolean | null,
+    ws: WitnessStatus,
+    invite: string,
+    rec: ResumeRecord | null,
+  ): Active => {
+    const a: Active = {
+      role: 'client',
+      transport: out.transport,
+      ws: null,
+      via: parsed.via,
+      where: parsed.via === 'direct' ? `${parsed.host}:${parsed.port}` : null,
+      relay: null,
+      relayNote: null,
+      directInvite: null,
+      portMapping: null,
+      mapping: null,
+      renewTimer: null,
+      engine: out.engine,
+      controller: out.controller,
+      code: parsed.code,
+      port: parsed.via === 'direct' ? parsed.port : null,
+      invite: null,
+      ipSource: null,
+      overlay: null,
+      vrMode: null,
+      ...rigOf(rig),
+      witnessRig: rigFrom(witness.status()),
+      switching: false,
+      sent: { rig: rig.rig, game, ballEnds },
+      lobbyKey: lobbyKey(ws),
+      refreshing: false,
+      refreshAgain: false,
+      endTimer: null,
+      offs: [],
+      video: null,
+      theater: THEATER_ON_RING,
+      theaterTimer: null,
+      ...tracking(invite, rec),
+    };
+    a.offs.push(
+      out.transport.onError((err) => {
+        log.warn(`match: socket: ${err.message}`);
+        // D10.8: a pairing revoked mid-match is final (ArcAid took the seat): the tab says so, in those words.
+        if (err instanceof RelayError && err.code === 'unauthorized' && active === a) {
+          lastError = `${err.message}: pair it again in Settings. This match cannot be resumed through ArcAid.`;
+          emit();
+        }
+      }),
+    );
+    return a;
+  };
+
+  // ---- A15: back into the saved match ----
+  const rejoinClient = async (rec: ResumeRecord, saved: MatchLog, st0: MatchState, meInfo: ParticipantInfo, rig: RigDecision): Promise<Active> => {
+    const parsed = parseInvite(rec.invite ?? '');
+    const hostId = st0.hostId;
+    if (!hostId) throw new Error('The saved match names no host');
+    const { transport, connect, failure } = linkFor(parsed, rec.playerId);
+    const ws = witness.status();
+    const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+    // The counter of the last run is lost; the wall clock is above anything it reached (Session.seqStart).
+    const session = new Session({ transport, keys: matchIdentity().keys, log: saved, seqStart: Date.now() });
+    const engine = ClientMatch.adopt(session, { participant: meInfo, game, throwdownCode: rec.code, companionVersion: opts.appVersion.slice(0, 32), ...clientLink });
+    const controller = makeController(engine, undefined, true);
+    const offs: (() => void)[] = [];
+    const answer = new Promise<{ ok: true } | { ok: false; code: string | null }>((resolve) => {
+      offs.push(engine.on('reconnected', () => resolve({ ok: true })));
+      offs.push(engine.on('reconnectRejected', (r) => resolve({ ok: false, code: r.code })));
+    });
+    const cleanup = async (): Promise<void> => {
+      await controller.close();
+      engine.close();
+      transport.close();
+    };
+    let r: Awaited<typeof answer>;
+    try {
+      // Through ArcAid the room is joined first; either way the first frame is RECONNECT from the saved log's head.
+      if (parsed.via === 'relay') await connect().catch((e: unknown) => Promise.reject(failure(e)));
+      engine.relinkTo(hostId, parsed.via === 'direct' ? { endpoint: parsed.url } : {});
+      r = await withTimeout(answer, opts.rejoinTimeoutMs ?? REJOIN_TIMEOUT_MS, `The host of ${rec.code} did not answer`);
+    } catch (e) {
+      await cleanup();
+      throw new Error(`${describeError(e)}. The match may be over, or its host away for the moment: Rejoin tries again, Forget it drops it.`, { cause: e });
+    } finally {
+      for (const off of offs) off();
+    }
+    if (!r.ok) {
+      await cleanup();
+      forget(`the host refused the reconnect (${r.code ?? '?'})`);
+      throw new Error(`The host did not take this PC back into the match ${rec.code}${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}.`);
+    }
+    const a = clientActive(parsed, { transport, engine, controller }, rig, game, ballEndsFrom(ws).ready, ws, rec.invite ?? '', rec);
+    return a;
+  };
+
+  const rejoinHost = async (rec: ResumeRecord, saved: MatchLog, st0: MatchState, rig: RigDecision): Promise<Active> => {
+    const me = rec.playerId;
+    const code = rec.code;
+    const creds = rec.relay ? (opts.relay?.() ?? null) : null;
+    let relay = creds ? relayHost(me, creds) : null;
+    let relayNote: string | null = rec.relay && !creds ? 'This PC is not paired with ArcAid' : null;
+    if (relay) {
+      try {
+        await relay.connect();
+        await relay.host(code);
+      } catch (e) {
+        relay.close();
+        relay = null;
+        relayNote = relayHostNote(e instanceof RelayError ? e.code : null);
+        log.warn(`match: ArcAid is not carrying ${code} again (${describeError(e)})`);
+      }
+    }
+    if (!relay && rec.port === null) throw new Error(`ArcAid is not carrying the match ${code} again, and it had no port of its own: the other players cannot come back to it`);
+    const listener = new WsPeerTransport({ localId: me });
+    const transport = new CompositeTransport(relay ? [listener, relay] : [listener]);
+    const session = new Session({ transport, keys: matchIdentity().keys, log: saved, seqStart: Date.now() });
+    const others = st0.participants.map((p) => p.playerId).filter((id) => id !== me);
+    let engine: HostMatch;
+    try {
+      // Nobody is on a link yet: each player comes back with RECONNECT, as after any drop.
+      engine = HostMatch.resumeFromLog(saved, { transport, keys: session.keys, session, gone: others });
+    } catch (e) {
+      transport.close();
+      throw e;
+    }
+    const controller = makeController(engine, st0.ballsPerGame, true);
+    const ws = witness.status();
+    const game = gameFingerprintFrom(ws, RECIPE_VERSION);
+    const a: Active = {
+      role: 'host',
+      transport,
+      ws: listener,
+      via: relay ? 'relay' : 'direct',
+      where: null,
+      relay,
+      relayNote,
+      directInvite: null,
+      portMapping: null,
+      mapping: null,
+      renewTimer: null,
+      engine,
+      controller,
+      code,
+      port: rec.port,
+      invite: relay ? code : null,
+      ipSource: null,
+      overlay: null,
+      vrMode: null,
+      ...rigOf(rig),
+      witnessRig: rigFrom(ws),
+      switching: false,
+      sent: { rig: rig.rig, game, ballEnds: ballEndsFrom(ws).ready },
+      lobbyKey: lobbyKey(ws),
+      refreshing: false,
+      refreshAgain: false,
+      endTimer: null,
+      offs: [],
+      video: null,
+      theater: THEATER_ON_RING,
+      theaterTimer: null,
+      ...tracking(null, rec),
+    };
+    a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
+    if (relay) {
+      const room = relay;
+      a.offs.push(room.onState(() => (active === a ? emit() : undefined)));
+      // The room may be a new one, which knows no seats yet: the players get a minute to come back before it is locked again.
+      const t = setTimeout(() => void room.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${code} against new joins: ${describeError(e)}`)), REHOST_LOCK_MS);
+      (t as { unref?: () => void }).unref?.();
+      a.offs.push(() => clearTimeout(t));
+    }
+    if (rec.port !== null) {
+      try {
+        await listener.listen(rec.port, opts.listenAddress ?? '0.0.0.0');
+      } catch (e) {
+        if (!relay) {
+          await controller.close();
+          engine.close();
+          transport.close();
+          throw new Error(`Could not listen on port ${rec.port} again (${describeError(e)}): the other players cannot come back`, { cause: e });
+        }
+        a.port = null;
+        log.warn(`match: could not listen on port ${rec.port} again (${describeError(e)}); ${code} goes through ArcAid only`);
+      }
+    }
+    return a;
+  };
+
+  const rejoin = (): Promise<MatchStatus> =>
+    guard(async () => {
+      if (active) return fail(new Error('Leave the current match first'));
+      const rec = pendingResume;
+      if (!rec || resumeFreshness(rec, Date.now()) === 'stale') {
+        forget('it is too old to go back to');
+        return fail(new Error('There is no match to rejoin any more'));
+      }
+      await endBench('a match is rejoined');
+      lastError = null;
+      let saved: MatchLog;
+      let st0: MatchState;
+      try {
+        saved = MatchLog.fromJSON(rec.log);
+        st0 = replayLog(saved);
+      } catch (e) {
+        forget('its saved log does not read');
+        return fail(e);
+      }
+      const meInfo = st0.participants.find((p) => p.playerId === rec.playerId);
+      if (!meInfo || meInfo.publicKey !== matchIdentity().keys.publicKeyB64 || st0.phase === 'lobby') {
+        forget("it was not played with this PC's match keys");
+        return fail(new Error("The saved match was not played with this PC's match keys: it cannot be rejoined"));
+      }
+      connecting = true;
+      emit();
+      try {
+        const rig = await decide();
+        const a = rec.role === 'client' ? await rejoinClient(rec, saved, st0, meInfo, rig) : await rejoinHost(rec, saved, st0, rig);
+        pendingResume = null;
+        pendingBacklog = null;
+        pendingExit = false;
+        active = a;
+        connecting = false;
+        followLog(a);
+        if (a.engine instanceof ClientMatch) watchHost(a, a.engine);
+        log.info(`match: back in ${rec.code} as ${rec.role === 'host' ? 'its host; waiting for the players to come back' : 'a player'} (${saved.length} log entries saved, ${a.engine.log.length} now)`);
+        await openPanel(a);
+        // A host: the outstanding grant goes out again (or the result, between games), as after a transfer.
+        if (a.engine instanceof HostMatch) a.engine.runAfterRestart();
+        tryReconcile(a);
+        emit();
+        return status();
+      } catch (e) {
+        connecting = false;
+        return fail(e);
+      }
+    });
+
+  /** Close everything a match holds: the overlay, the controller (the panel, the media), the engine(s), the sockets. A15: `keep`: its saved record stays. */
+  const teardown = async (a: Active, keep = false): Promise<void> => {
     if (active === a) active = null;
+    if (a.heartbeat) clearInterval(a.heartbeat);
+    a.heartbeat = null;
+    a.engine.session.onCommit = null;
+    if (keep) a.recordOff = true;
+    else dropRecord(a);
     if (a.endTimer) clearTimeout(a.endTimer);
     a.endTimer = null;
     for (const off of a.offs) off();
@@ -1609,6 +2065,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const roles = new Set<{ close(): void }>([a.engine, a.controller.currentRole as HostMatch | ClientMatch]);
     await a.controller.close();
     for (const r of roles) r.close();
+    // A15: a host that closes to come straight back does not tell ArcAid it left: the room would end for its players.
+    if (keep) a.relay?.abandon();
     a.transport.close();
     // D10.8: the router gets its port back (a lease would drop it within the hour anyway).
     if (a.renewTimer) clearInterval(a.renewTimer);
@@ -1702,6 +2160,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return status();
     },
     leave,
+    rejoin,
+    forgetResume() {
+      forget('the player dropped it');
+      emit();
+      return status();
+    },
     setSettings(patch) {
       const before = settings.previewStereo;
       const cameraBefore = settings.cameraSource;
@@ -1882,9 +2346,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return status();
     },
     benchClips: () => listClips(framesRoot()),
-    async stop() {
+    async stop(o) {
       await endBench('Castcade quits');
-      await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
+      const a = active;
+      if (o?.keepForRestart && a && !a.recordOff && a.engine.state.phase !== 'lobby') {
+        // A15: Castcade restarts itself (an update): the match is not left; the others see a drop, and the next start rejoins.
+        saveResume(a, 'update');
+        await teardown(a, true);
+        log.info(`match: ${a.code} is kept for the restart; Castcade rejoins it when it is back`);
+      } else await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
       unregisterKeys();
       cue.destroy();
     },

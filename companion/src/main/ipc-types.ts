@@ -76,6 +76,8 @@ export const IPC = {
   matchBenchView: 'match:bench:view',
   matchBenchClips: 'match:bench:clips',
   matchLeave: 'match:leave',
+  matchRejoin: 'match:rejoin',
+  matchForgetResume: 'match:forgetResume',
   matchSettingsSet: 'match:settings:set',
   matchSetMicrophone: 'match:setMicrophone',
   matchSetMuted: 'match:setMuted',
@@ -259,6 +261,9 @@ export interface CastcadeApi {
     benchClips(): Promise<ClipSummary[]>;
     /** A10 (2026-11-02): the host's leave between games is End match: MATCH_END to everyone, then the teardown. */
     leave(): Promise<MatchStatus>;
+    /** A15 (2026-11-12): go back into the match Castcade was in when it last closed (`MatchStatus.resume`); or drop it. */
+    rejoin(): Promise<MatchStatus>;
+    forgetResume(): Promise<MatchStatus>;
     setSettings(patch: Partial<MatchSettings>): Promise<MatchStatus>;
     /** D2: the microphone the match sends (null = the Windows default), saved in media.json. */
     setMicrophone(deviceId: string | null): Promise<MatchStatus>;

@@ -529,6 +529,23 @@ export class HostMatch {
     this.advance();
   }
 
+  /**
+   * A15: after `resumeFromLog` from a saved log (Castcade restarted; nobody is on a link yet). The grant that was
+   * outstanding is issued again under a new number, as after a RESUME: at once when it is this host's own, else once
+   * its holder is back (the usual disconnect pause, which that player's RESUME clears). So a ball end that was
+   * reported into the dead link, or happened while Castcade was closed, has a live grant to be reported for. Between
+   * games the result goes out again (each player gets it at its RECONNECT), so the next game can start.
+   */
+  runAfterRestart(): void {
+    this.assertActive();
+    const st = this.s.state;
+    if (st.phase === 'running' && st.currentGrant && !st.paused && !st.pendingTransfer) {
+      st.pendingReissue = { player: st.currentGrant.grant.player, ballNumber: st.currentGrant.grant.ballNumber };
+      st.currentGrant = null;
+    }
+    this.advance();
+  }
+
   /** The host's own ball end; same validation as a client's BALL_END. */
   localBallEnd(
     finalScore: number,

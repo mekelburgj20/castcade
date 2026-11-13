@@ -141,6 +141,11 @@ export interface MatchControllerOptions {
   preMatchPlay?: PreMatchPlay;
   /** A12: a game is already running on this player's table when the controller is made (the witness's live game). */
   tableGameRunning?: boolean;
+  /**
+   * A15: the role was rebuilt from a saved log in the middle of a match (Castcade restarted): the controller takes
+   * the phase, the roster, the scores and who is up from the role's state instead of waiting for MATCH_READY.
+   */
+  resumed?: boolean;
 }
 
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
@@ -288,6 +293,39 @@ export class MatchController {
     this.tableGameRunning = opts.tableGameRunning ?? false;
     this.preMatchPlay = opts.preMatchPlay ?? 'free';
     this.bind(opts.role);
+    if (opts.resumed && opts.role.state.phase !== 'lobby') this.restore();
+  }
+
+  /**
+   * A15: a match picked up again after a restart. Everything the log knows is taken from it. The table keeps its keys
+   * only while the outstanding grant is this player's (locking in the middle of a ball would drain it): the engine
+   * confirms that grant after the reconnect (`myTurn`, or the host's own re-issue), and any other answer locks.
+   */
+  private restore(): void {
+    const st = this.role.state;
+    this.hostId = st.hostId ?? this.hostId;
+    this.lobby = st.participants.map((p) => ({ ...p }));
+    for (const p of Object.values(st.players)) if (p.score > 0 || p.ballsPlayed > 0) this.scores.set(p.playerId, p.score);
+    const me = st.players[this.localId];
+    this.myBallsDone = me?.ballsPlayed ?? 0;
+    this.myScore = me && (me.score > 0 || me.ballsPlayed > 0) ? me.score : null;
+    this.myGameOver = me === undefined || me.status !== 'playing';
+    this.tableStarted = true;
+    const g = st.currentGrant?.grant ?? null;
+    this.upPlayer = g?.player ?? null;
+    this.upBall = g?.ballNumber ?? null;
+    const mine = st.phase === 'running' && g?.player === this.localId;
+    if (st.phase === 'ended') this.phase = 'over';
+    else this.phase = st.paused ? 'paused' : 'playing';
+    // Forced either way: the lock file is whatever the last run left.
+    this.locked = mine;
+    this.setLocked(!mine && !(st.phase === 'ended' && isHostRole(this.role)));
+    const peers = st.participants.map((p) => p.playerId).filter((id) => id !== this.localId);
+    void this.ensureAttached().then(() => {
+      if (this.closed) return;
+      for (const id of peers) this.opts.media?.addPeer(id);
+    });
+    this.opts.log(`match: picked up again from the saved log: game ${this.gameNumber()}, ${this.phase}${g ? `, ${g.player === this.localId ? 'my' : `${this.nameOf(g.player)}'s`} ball ${g.ballNumber}` : ''}`);
   }
 
   /** A12: the Match tab changed the setting during a lobby: the lobby lock follows at once. */
@@ -905,6 +943,9 @@ export class MatchController {
       c.on('reconnected', (r) => {
         this.resumeSent = false;
         this.onPeerBack(r.host);
+        // A15: a match picked up after a restart left the table as it was for a grant the log said was this player's;
+        // the host's answer is in now, and without that grant the table locks.
+        if (!this.holding && (this.phase === 'playing' || this.phase === 'paused')) this.setLocked(true);
         this.resumeAfterMyDrop(c);
       }),
     );
@@ -1112,7 +1153,8 @@ export class MatchController {
       this.push();
       return;
     }
-    if (this.phase === 'over') return;
+    // A15: a match picked up between games is `over` with no result on the panel until the host sends it again.
+    if (this.phase === 'over' && this.result !== null) return;
     this.phase = 'over';
     this.clearPending();
     this.clearStateTimer();

@@ -1652,13 +1652,28 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     const startedAt = h.clock.now() - 60_000;
     h.fs.put(TFTC_JOURNAL, tftcMidGameAt(h.clock.now() - 30_000).head);
     const seen: GameEvent[] = [];
-    h.witness.on('event', (ev) => seen.push(ev));
+    const backlog: boolean[] = [];
+    h.witness.on('event', (ev) => {
+      seen.push(ev);
+      backlog.push(h.witness.deliveringBacklog());
+    });
     await h.witness.start();
     await h.launch(TFTC_CMD, 32, { startedAt });
     await h.poll();
     await h.flush();
     await h.flush();
     expect(seen.filter((ev) => ev.kind === 'game_start')).toHaveLength(1);
+    // Everything so far was in the journal before this witness read it; what the hook writes from now on is not.
+    expect(backlog.length).toBeGreaterThan(0);
+    expect(backlog.every((b) => b)).toBe(true);
+    expect(h.witness.deliveringBacklog()).toBe(false);
+    const before = seen.length;
+    h.fs.put(TFTC_JOURNAL, tftcMidGameAt(h.clock.now() - 30_000).full);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(seen.length).toBeGreaterThan(before);
+    expect(backlog.slice(before).some((b) => b)).toBe(false);
     await h.witness.stop();
   });
 

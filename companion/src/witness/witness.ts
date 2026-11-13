@@ -249,11 +249,13 @@ interface LiveSession {
   tableId: string;
   path: string;
   /** Lines waiting for the pump (fed to the detector inside the serial chain), each with the file position just past it. */
-  lines: { text: string; end: number }[];
+  lines: { text: string; end: number; backlog: boolean }[];
   pumpScheduled: boolean;
   /** A15: the file position just past the line being pumped, and past the accepted `table_loaded` line. */
   lineEnd: number;
   loadedEnd: number;
+  /** A15: the line being pumped was in the file before this witness read it (`JournalTail.backlog`). */
+  lineBacklog: boolean;
   /** A15: game events of lines ending at or before this were delivered by the witness this one replaced (`WitnessDeps.resume`). */
   quietUntil: number | null;
   /** The current `table_loaded` belongs to this VPX process (not an earlier session in the same file). */
@@ -1296,6 +1298,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       pumpScheduled: false,
       lineEnd: 0,
       loadedEnd: 0,
+      lineBacklog: false,
       quietUntil: null,
       accepted: false,
       recipe: null,
@@ -1324,7 +1327,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     session.unpatched = null;
     session.patchablePath = null;
     live.tail.on('line', (line) => {
-      live.lines.push({ text: line, end: live.tail.lineEnd });
+      live.lines.push({ text: line, end: live.tail.lineEnd, backlog: live.tail.backlog });
       if (!live.pumpScheduled) {
         live.pumpScheduled = true;
         serial(() => pumpLive(session, live));
@@ -1409,6 +1412,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     while (live.lines.length > 0) {
       const line = live.lines.shift()!;
       live.lineEnd = line.end;
+      live.lineBacklog = line.backlog;
       for (const ev of live.detector.feed(line.text)) await onJournalEvent(session, live, ev);
     }
   };
@@ -1427,8 +1431,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const deliver = (live: LiveSession, ev: GameEvent): void => {
     if (live.quietUntil !== null && live.lineEnd <= live.quietUntil) return;
     mark = { path: live.path, session: live.sessionStamp, loaded: live.loadedEnd, offset: live.lineEnd };
-    emitter.emit('event', ev);
+    delivering = live.lineBacklog;
+    try {
+      emitter.emit('event', ev);
+    } finally {
+      delivering = false;
+    }
   };
+  let delivering = false;
 
   const onJournalEvent = async (session: OpenSession, live: LiveSession, ev: JournalEvent): Promise<void> => {
     if (ev.kind === 'table_loaded') {
@@ -1863,6 +1873,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
     journalMark() {
       return mark ? { ...mark } : null;
+    },
+
+    deliveringBacklog() {
+      return delivering;
     },
 
     async pair(code: string) {

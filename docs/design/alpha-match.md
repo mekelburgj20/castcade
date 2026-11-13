@@ -683,8 +683,7 @@ witness the test drives (`main/match-host-orderings.test.ts`) and fixed what fai
 | The witness rebuilt during a match by a settings change (the ArcAid address, the NVRAM folder), A15 | **The game in progress was fed to the match a second time**: on this player's ball 2 the replayed end of ball 1 passed the turn; in a free-play lobby the replayed Start started the match in the middle of the host's game. The replaced witness also went on reading the journal and posted the game a second time at its end | The new witness is given the old one's journal mark (file, table load, byte position of the last event delivered) and delivers nothing at or before it again; the journal is still read from the top, so the game on screen, the attempt and the game count are rebuilt. A stopped witness stops its journal tails | `main/witness-restart.test.ts` (two match hosts, the real witness and witness host); `witness.test.ts` "A15: …" |
 
 **Not fixed, known:**
-- Castcade restarted in the middle of a match: the match is not picked up again (a host's match is gone; a client has
-  no way back in but the link, which the host refuses once the roster is final). Needs the reconnect of A3 on the Match tab.
+- Castcade restarted in the middle of a match: fixed by A15, §10 (what it does not cover is listed there).
 - A VPX editor open with a table loaded but not playing counts as "a table is open": Host starts nothing and the player
   presses Play. A second VPX is never started beside it.
 
@@ -713,3 +712,107 @@ witness the test drives (`main/match-host-orderings.test.ts`) and fixed what fai
 6. The friend's rig without the table: the tab names it and the match stays joined.
 7. A second link while in a match; a link after the host left.
 8. With "Table locked until someone joins": Host during a ball; the flippers stay live until the game ends.
+
+## 10. Castcade restarted in the middle of a match (A15, 2026-11-12)
+
+Before: a companion that closed or crashed during a match was out of it. A client had no way back (the host refuses a
+new HELLO once the roster is final); a host's match was gone, and its clients, after 30 s of retries, each made itself
+"host" of a match nobody could reach (the `host_left` transfer needs a listener the others can come to, which a client
+over WebSocket or the relay does not have). Built 2026-11-12; **nothing here was run in the app or on a rig** (engine
+and match-host tests only); §10.6 is the rig list. No protocol change, no journal change.
+
+### 10.1 What is saved
+
+`<userData>/match-resume.json` (`main/match-resume.ts`), from MATCH_READY on, never in the lobby. Written whole (tmp +
+rename) inside `Session.commit` at every entry of the match log, before the frame that carries the entry is sent, so the
+file is never behind what another player was told; and every 15 s as a sign of life (`aliveAt`). Removed when the match
+is left, when it ends for good (MATCH_END, the host gone), and when another match is hosted or joined.
+
+In it: the match code; a client's invite as it joined (the code, or the host's address and port for a direct match); a
+host's port and whether ArcAid carried the match; this player's id and name; the other players' names; the match log
+(the roster with names, ids and public keys, the table fingerprints, grants, ball ends, scores: what went over the
+wire); the witness's journal mark at the last log entry. Not in it: the private key (still only `match-keys.json`), the
+pairing token, anything of voice or video. The file alone gets nobody into the match: RECONNECT is signed with the key.
+
+### 10.2 At start
+
+- A record older than its bound is dropped: 20 minutes for a client (the host pauses for a dropped player until
+  someone acts; 20 minutes is the protocol's own limit for one ball), 3 minutes for a host (`HOST_WAIT_MS`: after that
+  no client is still waiting).
+- Castcade was alive in the match under 75 s ago (a minute, plus one heartbeat), or closed itself to install an update
+  (`restart: 'update'`; `quit(install)` no longer leaves the match): the shell rejoins without asking. The player did
+  not leave, and the microphone was on in that match a moment ago.
+- Otherwise the Match tab shows "You were in a match … Rejoin the match with <names>" / "Forget it" (a host: "Host it
+  again"). Hosting or joining something else drops it.
+- The turn lock is left as the last run left it while a record waits (before A15 it was always removed at start), so a
+  table that was locked for another player's ball stays locked until the rejoin or Forget it.
+
+### 10.3 The rejoin
+
+- **Client**: the saved log is loaded (its hash chain is checked), a `Session` is built on it with its `seq` started
+  from the wall clock (the host rejects a frame whose `seq` is not above the last it took from that player, and the
+  counter of the last run is gone), `ClientMatch.adopt` + `relinkTo`: the same RECONNECT / RECONNECT_ACK as after any
+  drop, through ArcAid (the room is joined again first; a locked room takes a device that held a seat) or to the host's
+  address. The controller is built from the log's state (`MatchControllerOptions.resumed`): phase, roster, scores, who
+  is up. The table keeps its keys only if the log says the outstanding grant is this player's; the host's answer
+  confirms it or locks. The player's own RESUME clears the pause the host raised for its drop (A8), and the grant comes
+  again under a new number.
+- **Host**: the same code is hosted again: the listener on the saved port, the relay room under the saved code (a room
+  that is gone is opened anew; it is locked again after a minute, so its players can come back first),
+  `HostMatch.resumeFromLog` with every other player marked gone, then `runAfterRestart`: the outstanding grant is
+  issued again (at once when it is the host's own; else the usual disconnect pause until its holder is back), or,
+  between games, the result goes out again so the next game can start. The clients come back by their own retry.
+- A rejoin that gets no answer in 20 s says so and keeps the record (Rejoin tries again); one the host refuses
+  (`unknown_log_hash`, `bad_signature`) drops it.
+
+### 10.4 The table: what happened while Castcade was closed
+
+The hook keeps journaling. `TableBacklog` (`match-resume.ts`) sits between the witness and the controller:
+
+- The witness says for each event where in the journal it is and whether it was there before the witness began to
+  read (`backlog`). After a restart, an event at or before the saved mark was already answered by the log and is
+  dropped; everything after it is held until the host's answer is merged, then fed in order. So a ball end that
+  happened while Castcade was closed is reported once, for the grant as re-issued, and an earlier ball of the same
+  game is not reported again (A15's first half, the witness mark, is the same notion one level down).
+- Ball ends the host turns out to have already (reported just before the crash, or the host passed the turn by hand
+  meanwhile) are counted from the log (this player's BALL_END and TURN_PASS entries now, minus those in the saved log)
+  and that many of the first held ball ends are skipped.
+- The same list serves a plain reconnect: what the table said since the log last grew is fed again after
+  `reconnected`, so a BALL_END sent into a link that had just dropped is sent again (before A15 it was lost and the
+  host waited for a ball that had already drained).
+- A journal from another load of the table than the saved mark names: the table was closed and opened again, the game
+  cannot be picked up, and the player forfeits it, as at any table close.
+
+### 10.5 A host that is gone, and what is not covered
+
+- A client now waits 3 minutes for its host ("The host's Castcade closed or lost its connection. The match is paused:
+  waiting up to 3 minutes for it to come back."), by the clock (`reconnect.maxMs`), then the match ends for it with
+  "The host did not come back within 3 minutes: the match is over." It never makes itself host
+  (`hostLeftTransfer: false` in the companion; the engine's default, for a full mesh, is unchanged).
+- Through ArcAid the room outlives its host by 30 s; after that a client asks for it again five times, the last 88 s
+  after the first miss (`HOST_WAIT_REJOIN`; before: five asks over 18 s). So through ArcAid a host has about two minutes
+  to come back, not three. Five misses stay under the server's lockout (eight in ten minutes).
+- Not covered: while Castcade is closed nothing locks the table, so a player can play on past the ball it was granted;
+  the match takes the first ball end and the rest is theirs to sort out (the host's Pass the turn). A host's lobby is
+  not saved (host again; the link changes). A match that changed hands by a host transfer is not saved. A player who
+  reopens Castcade with VPX closed is back in the match with no table; the forfeit comes when a table is opened. Table
+  mismatch notes and which tables can report ball ends are lobby facts the log does not carry: a host that came back
+  shows none. Voice and video are set up again from nothing.
+
+### 10.6 Rig checks (none of this was run)
+
+1. Two rigs, a match under way. On the client, during the host's ball, end Castcade from Task Manager and start it
+   again within a minute: it is back in the match by itself, the table still locked, the host's panel goes from
+   "Paused: waiting for … to reconnect" to playing. Voice and the spectator picture come back.
+2. The same during the client's own ball, the ball kept in play: the flippers never die; after the rejoin the turn is
+   still the client's and the ball end passes it once.
+3. The same, but drain the ball while Castcade is closed: after the rejoin the turn passes at once with the right
+   score; `companion.log` has "table event(s) since the log last grew go to the match now".
+4. Wait two minutes before starting Castcade again: the Match tab offers "Rejoin the match with …"; nothing is joined
+   before the click. Forget it unlocks the table.
+5. End the host's Castcade: the client's panel says it waits 3 minutes. Start the host's Castcade within a minute: it
+   hosts the same code again by itself, the client reconnects, play goes on. Once through ArcAid, once direct.
+6. End the host's Castcade and leave it: after 3 minutes the client's Match tab says the match is over and its table
+   is unlocked.
+7. With an update downloaded, "Restart to update" during a match: the others see a pause, not a forfeit; the new
+   version rejoins by itself.

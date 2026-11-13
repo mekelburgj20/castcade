@@ -250,7 +250,9 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await overlay?.stop();
   await stream?.stop().catch(() => undefined);
   oneStep?.stop();
-  await match?.stop().catch(() => undefined); // forfeits a match in progress and removes the turn lock
+  // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
+  // match is kept and rejoined at the next start.
+  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
@@ -444,6 +446,8 @@ function registerIpc(
   ipcMain.handle(IPC.matchBenchView, (_e, view: unknown) => mh().setBenchView(view === 'direct' ? 'direct' : 'theater'));
   ipcMain.handle(IPC.matchBenchClips, () => mh().benchClips());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
+  ipcMain.handle(IPC.matchRejoin, () => mh().rejoin());
+  ipcMain.handle(IPC.matchForgetResume, () => mh().forgetResume());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
   ipcMain.handle(IPC.matchSetMuted, (_e, muted: unknown) => mh().setMuted(muted === true));
@@ -685,6 +689,14 @@ async function main(): Promise<void> {
     matchHost.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.matchStatusEvent, st);
     });
+    // A15: Castcade was in a match under a minute ago (a crash, a restart for an update): back into it without a click.
+    // An older one waits on the Match tab for the player's word.
+    const back = matchHost.status().resume;
+    if (back?.auto) {
+      logger.info(`match: rejoining ${back.code} (Castcade was in it a moment ago)`);
+      const mh = matchHost;
+      void mh.rejoin().catch((e: unknown) => logger.warn(`match: could not rejoin ${back.code}: ${describeError(e)}`));
+    }
   } catch (e) {
     logger.error(`match: could not set up (${describeError(e)}); matches are off this run`);
   }

@@ -136,6 +136,28 @@ export function Match({ state }: { state: CastcadeState }) {
       {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
       <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} />
 
+      {/* A15: Castcade closed during a match that is still worth going back to. */}
+      {!inMatch && st.phase !== 'connecting' && st.resume && (
+        <div className="card">
+          <strong>{st.resume.role === 'host' ? 'You were hosting a match' : 'You were in a match'}</strong>
+          <p>
+            Castcade closed during the match {st.resume.code}
+            {st.resume.names.length > 0 ? ` with ${st.resume.names.join(', ')}` : ''}.{' '}
+            {st.resume.role === 'host'
+              ? 'Host it again and the other players come back by themselves, if they are still waiting.'
+              : 'Rejoin it and you are back where the match is now. Your microphone goes on again for the other players.'}
+          </p>
+          <div className="row">
+            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.rejoin())}>
+              {st.resume.role === 'host' ? 'Host it again' : `Rejoin the match${st.resume.names.length > 0 ? ` with ${st.resume.names.join(', ')}` : ''}`}
+            </button>
+            <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.forgetResume())}>
+              Forget it
+            </button>
+          </div>
+        </div>
+      )}
+
       {!inMatch && st.phase !== 'connecting' && (
         <>
           <p className="muted">
