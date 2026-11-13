@@ -14,6 +14,32 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   in Castcade button and shows the code. The chat line is the table and the link, nothing to explain. A match hosted on
   an address keeps the `castcade://` link. The Join box takes either form (`deep-link.ts`, `one-step.ts`,
   `OneStep.tsx`).
+- **Castcade restarted in the middle of a match picks the match up again (A14.5).** A client that closed or
+  crashed comes back into the same match, on its own ball or another player's, through ArcAid or direct; a ball end
+  missed while it was closed is reported once after the rejoin. The host comes back too (same code, port and relay
+  room) and its players reconnect by themselves. Restart to update during a match no longer forfeits. Under 75 s,
+  or after an update restart, the rejoin is automatic; later the Match tab asks. The record is
+  `<userData>/match-resume.json`, written from the match start, never in the lobby; it holds no private key and no
+  pairing token. A lobby and a match that changed hosts are not saved; nothing locks the table while Castcade is
+  closed (`match-resume.ts`, `match-host.ts`, `match/restart.test.ts`, `main/match-restart.test.ts`;
+  docs/design/alpha-match.md §10).
+
+### Changed
+
+- **A client whose host is gone waits 3 minutes, then the match ends for it** and its table is unlocked. Before,
+  after 30 s each client made itself host of a match nobody could reach (`hostLeftTransfer: false` in the
+  companion; the engine default is unchanged).
+- **The relay asks again over 88 s, not 18 s** (five asks, gaps 2 s, 6 s, 20 s, 60 s), so a host has about two
+  minutes to come back through ArcAid; recovery from an ArcAid restart is slower from the third ask on
+  (`transport-relay.ts`).
+
+### Fixed
+
+- **A ball end sent into a link that had just dropped is sent again after the reconnect.** Before, it was lost and
+  the host waited for a ball that had drained.
+
+**Wire / journal:** no protocol or journal change; one paragraph added to `protocol/docs/prose.md` (Reconnect: a
+restarted participant starts its `seq` above its earlier run), `SPEC.md` regenerated.
 
 ## [0.2.40] — 2026-11-12
 
