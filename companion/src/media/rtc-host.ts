@@ -1298,7 +1298,9 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (cameraStopReason(status) === null) c.stopSeenAt = null;
     else c.stopSeenAt ??= now;
     // D10.3: asked with a ring, the layer sends no JPEG frame on the pipe: only its own answers count.
-    const w = cameraWatch({ status, now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status(), ring: native !== null, ...(c.stopSeenAt !== null ? { stoppedSince: c.stopSeenAt } : {}) });
+    // D10.3.10: the 8 s clock waits for VPX's first VR frame (the layer's session report on this connection).
+    const sessionAt = cameraLayer.sessionSeenAt ? { sessionAt: cameraLayer.sessionSeenAt() } : {};
+    const w = cameraWatch({ status, now, askedAt: c.askedAt, connectedAt: c.connectedAt, sending, layerProtocol, overlay: cameraLayer.status(), ring: native !== null, ...sessionAt, ...(c.stopSeenAt !== null ? { stoppedSince: c.stopSeenAt } : {}) });
     if (w.fallBack) cameraBack(c.gen, w.reason ?? 'no reason given');
   };
   /** Ask the layer and hold the synthetic capture; the screen capture is not opened. The pid is probed for table sound. */
@@ -1605,8 +1607,16 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!on && cameraSwitchPending) switchCamera(generation);
     // Still no window at this rig's turn (the 3 s looks found none yet): look once more now, not at the next tick.
     if (on && attached && !capture) {
-      stopCaptureTimer();
-      void lookForCapture(generation);
+      // D10.3.10: the layer was given up earlier in this match and the screen has nothing to send either: ask the
+      // layer once more at this ball (VPX is rendering now; a layer that still cannot falls back again, one line).
+      if (cameraSetting === 'layer' && cameraGaveUp && !cam) {
+        log.info(`media: camera: nothing to send at this rig's turn; asking the VR layer again (given up earlier: ${cameraGaveUp})`);
+        switchCamera(generation);
+      }
+      if (!cam) {
+        stopCaptureTimer();
+        void lookForCapture(generation);
+      }
     }
     emitStatus();
   };

@@ -7,6 +7,8 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.41] — 2026-11-13
+
 ### Added
 
 - **A join link Discord makes clickable (A14.2).** A match hosted through ArcAid copies
@@ -24,6 +26,12 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   closed (`match-resume.ts`, `match-host.ts`, `match/restart.test.ts`, `main/match-restart.test.ts`;
   docs/design/alpha-match.md §10).
 
+- **A tester's logs can be asked for through ArcAid (E8).** When ArcAid's heartbeat answer carries a log request
+  (ArcAid W99: a player presses Get logs for a paired device), the companion sends one archive: `companion.log` and
+  `vr-layer.log` (each with its `.1`), the newest VR report and the six newest table journals, with a manifest.
+  Never `settings.json` (the device token) or `media.json`. Nothing is sent unless ArcAid asks, and ArcAid does not
+  ask a desktop device yet (WORK F27) (`witness/log-bundle.ts`, `arcaid-client.ts`, `witness.ts`).
+
 ### Changed
 
 - **A client whose host is gone waits 3 minutes, then the match ends for it** and its table is unlocked. Before,
@@ -35,6 +43,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ### Fixed
 
+- **No picture in a match started from a cold VPX (D10.3.10).** Since 0.2.40 hosting or joining starts the table,
+  so the VR layer was on the pipe while the table loaded; the camera's 8 s wait ran out before VPX's first frame
+  on a slow table (Game of Thrones: 9.2 s) and the rig sent nothing for the whole match. The wait now starts at
+  VPX's first VR frame, and a rig with nothing to send asks the layer again at its turn (`layer-camera.ts`,
+  `rtc-host.ts`, `vr-layer.ts`).
 - **A ball end sent into a link that had just dropped is sent again after the reconnect.** Before, it was lost and
   the host waited for a ball that had drained.
 

@@ -608,6 +608,31 @@ device-name match. A name match that finds several rows must not override an ear
 catalogue rows share one `vps_id` the admin UI should show them as a duplicate to merge. Answer the miss with the
 reason, as today. Badge, never gate: this widens matching, it refuses nothing.
 
+## 24. Log pull for desktop devices (Castcade E8 / F27; ArcAid W99, ADR 0040)
+
+ArcAid's log pull (branch `feature/witness-logs-and-self-update`, 2.246.0, not merged on 2026-11-13) is for cabinets:
+`logsSupported()` in `src/utils/witnessVersion.ts` returns false unless `device_type` is `atgames`, and ADR 0040 puts
+Castcade out of scope. The owner asked on 2026-11-13 for testers' Castcade logs through the same path.
+
+**What the companion does from 0.2.41 (E8), to the contract as built on that branch:**
+
+- reads `logs` (32 lowercase hex) on the heartbeat answer; one answer per id;
+- `POST /api/witness/logs?device=<id>&request=<id>` with `x-witness-token`, body one uncompressed ustar archive
+  (`content-type: application/x-tar`), at most 12 MB: `manifest.txt`, `companion.log`, `companion.log.1`,
+  `vr-layer.log`, `vr-layer.log.1`, `vr-report/<newest>.md` + `.json`, `journal/<six newest>.jsonl`;
+- on a failure, `GET /api/witness/logs/fail?device&request&reason` with `collect_failed` or `upload_failed`.
+
+**Asked of ArcAid:**
+
+1. Let a `desktop` device answer: `logsSupported` true for it, Get logs enabled in `WitnessDeviceSupport.tsx`. The
+   companion sends no `v` on its heartbeat (a version there would meet the cabinet update offer); if a minimum
+   build is wanted, say which parameter carries it. A request to a companion before 0.2.41 expires unanswered.
+2. The owner's ask is to "just grab" a tester's logs. As built, the tester presses Get logs, then Send to Arcaid
+   support. Decide whether that stays (two presses by the tester, their consent each time) or whether a Super
+   Admin may request a bundle from a device whose player opted in once.
+
+No change to the upload route, the tar check or the storage.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).

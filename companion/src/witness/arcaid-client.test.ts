@@ -200,4 +200,31 @@ describe('ArcaidClient', () => {
     const client = new ArcaidClient({ baseUrl: 'https://a', fetch: hanging, timeoutMs: 20 });
     await expect(client.heartbeat('t', 'd')).rejects.toMatchObject({ kind: 'network', message: /did not answer within 20 ms/ });
   });
+
+  it('E8 (ArcAid W99): the heartbeat answer carries a log request id; the bundle is one POST with the token; a failure is a GET', async () => {
+    const id = 'ab'.repeat(16);
+    const sent: Array<{ method: string; path: string; query: Record<string, string>; token: string | undefined; type: string | undefined; bytes: number | null }> = [];
+    let answer: unknown = { ok: true, logs: id };
+    const fetch: FetchLike = async (input, init) => {
+      const url = new URL(input);
+      sent.push({ method: init.method, path: url.pathname, query: Object.fromEntries(url.searchParams), token: init.headers['x-witness-token'], type: init.headers['content-type'], bytes: init.body?.length ?? null });
+      return { status: 200, text: async () => JSON.stringify(answer) };
+    };
+    const lines: string[] = [];
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch, log: (l) => lines.push(l) });
+    expect(await client.heartbeat('tok', 'd')).toEqual({ logs: id });
+    for (const bad of [{ ok: true }, { ok: true, logs: 'NOT-AN-ID' }, { ok: true, logs: 7 }]) {
+      answer = bad;
+      expect(await client.heartbeat('tok', 'd')).toEqual({ logs: null });
+    }
+    sent.length = 0;
+    await client.uploadLogs('tok', 'd', id, new Uint8Array(2048));
+    await client.logsFailed('tok', 'd', id, 'upload_failed');
+    expect(sent).toEqual([
+      { method: 'POST', path: '/api/witness/logs', query: { device: 'd', request: id }, token: 'tok', type: 'application/x-tar', bytes: 2048 },
+      { method: 'GET', path: '/api/witness/logs/fail', query: { device: 'd', request: id, reason: 'upload_failed' }, token: 'tok', type: undefined, bytes: null },
+    ]);
+    expect(lines.some((l) => /POST api\/witness\/logs 2048 bytes$/.test(l))).toBe(true);
+    expect(lines.join('\n')).not.toContain('tok');
+  });
 });

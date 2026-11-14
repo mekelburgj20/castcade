@@ -14,6 +14,7 @@ import {
   LAYER_CAMERA_DEFAULT_REQUEST,
   LAYER_CAMERA_FALLBACK_MS,
   LAYER_CAMERA_PIPE_WAIT_MS,
+  LAYER_CAMERA_SESSION_WAIT_MS,
   LAYER_CAMERA_RESTART_WHY,
   LAYER_CAMERA_STALL_MS,
   LAYER_CAMERA_STOP_GRACE_MS,
@@ -154,6 +155,23 @@ describe('cameraWatch (D7.5.1)', () => {
     expect(cameraWatch({ ...on, now: 15_001, status: st({ why: 'xrEndFrame saw no projection layer' }) })).toEqual({ fallBack: true, reason: 'the layer stopped the camera: xrEndFrame saw no projection layer' });
     expect(cameraWatch({ ...on, now: 15_000 + LAYER_CAMERA_FALLBACK_MS, status: st({ state: 'on' }) }).reason).toBe('the layer said the camera is on but sent no frame within 8 s');
     expect(cameraWatch({ ...on, now: 16_000, status: st({ state: 'refused', why: 'GL 3.1' }) }).reason).toBe('the layer refused the camera: GL 3.1');
+  });
+
+  it('D10.3.10 (2026-11-13): no session report on this connection (the table is loading): the 8 s clock waits; it runs from the report; 120 s for a VPX that never renders', () => {
+    // The owner's rig, 0.2.40: on the pipe at 0, VPX's first VR frame (the report) at 9.2 s, the camera answering after.
+    const loading = { ...base, layerProtocol: 3, askedAt: 0, connectedAt: 0, sessionAt: null };
+    expect(cameraWatch({ ...loading, now: LAYER_CAMERA_FALLBACK_MS }).fallBack).toBe(false);
+    expect(cameraWatch({ ...loading, now: LAYER_CAMERA_SESSION_WAIT_MS - 1 }).fallBack).toBe(false);
+    expect(cameraWatch({ ...loading, now: LAYER_CAMERA_SESSION_WAIT_MS })).toEqual({ fallBack: true, reason: 'VPX rendered no VR frame within 120 s of the layer coming on the pipe' });
+    const rendering = { ...loading, sessionAt: 9_200 };
+    expect(cameraWatch({ ...rendering, now: 9_200 + LAYER_CAMERA_FALLBACK_MS - 1 }).fallBack).toBe(false);
+    expect(cameraWatch({ ...rendering, now: 9_200 + LAYER_CAMERA_FALLBACK_MS }).reason).toBe('no frame from the layer within 8 s of asking');
+    expect(cameraWatch({ ...rendering, ring: true, now: 9_200 + LAYER_CAMERA_FALLBACK_MS - 1 }).fallBack).toBe(false);
+    // The layer's own answers still count while loading: refused at once, a stop as before.
+    expect(cameraWatch({ ...loading, now: 1_000, status: st({ state: 'refused', why: 'GL 3.1' }) }).reason).toBe('the layer refused the camera: GL 3.1');
+    expect(cameraWatch({ ...loading, now: 1_000, status: st({ why: 'the session ended' }) }).reason).toBe('the layer stopped the camera: the session ended');
+    // A report older than the ask (a camera asked again mid-match): the clock runs from the ask.
+    expect(cameraWatch({ ...base, layerProtocol: 3, askedAt: 50_000, connectedAt: 50_000, sessionAt: 9_200, now: 50_000 + LAYER_CAMERA_FALLBACK_MS }).fallBack).toBe(true);
   });
 
   it('frames flowing: fine; stopped for 3 s while up: the screen', () => {

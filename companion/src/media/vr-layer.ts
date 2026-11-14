@@ -462,6 +462,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   let oldCameraLogged = false;
   // D7.6: the bench: the last session report, the last controls written, report requests waiting, the listeners.
   let session: LayerSessionReport | null = null;
+  /** D10.3.10: when a session report last came on this connection (null again on every connect and close). */
+  let sessionAt: number | null = null;
   /** D7.6.1: the calibration pattern, while asked. */
   let test: VrTestPattern | null = null;
   /** D10.3: the `recv` frame ring theater reads instead of CVO2 (`video: {ring}` on a protocol-3 control, only while set). */
@@ -623,6 +625,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       }
       case 'session': {
         session = { receivedAt: now(), facts: m.facts };
+        sessionAt = session.receivedAt;
         opts.log(`vr-layer: session report from the layer: ${sessionSummary(m.facts)}`);
         for (const w of [...sessionWaiters]) w(session);
         notifyBench();
@@ -706,6 +709,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       everConnected = true;
       protocol = 1;
       spoke = false;
+      sessionAt = null;
       lastControl = null;
       opts.log(`vr-layer: connected to the layer in VPX (${pipePath})`);
       set('showing');
@@ -738,6 +742,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       writer.attach(null);
       protocol = 1;
       spoke = false;
+      sessionAt = null;
       lastControl = null;
       updateVideo();
       // D7.5: frames end with the pipe; a camera still asked is asked again of the next connection.
@@ -898,6 +903,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     cameraStatus: () => camera,
 
     layerProtocol: () => (socket && spoke ? protocol : null),
+
+    sessionSeenAt: () => (socket ? sessionAt : null),
 
     onCameraStatus(cb) {
       cameraListeners.add(cb);

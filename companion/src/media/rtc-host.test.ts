@@ -1468,6 +1468,50 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     await host.detach();
   });
 
+  it('D10.3.10 (2026-11-13): a table still loading does not cost the camera; a camera given up with nothing else to send is asked again at this rig\'s turn', async () => {
+    const fallbacks = () => logs.filter((l) => l.includes('back to the screen capture'));
+    {
+      // The layer is on the pipe 9.2 s before VPX's first VR frame (the owner's Game of Thrones, 0.2.40): no fallback.
+      const { host, cam } = await cameraHost({ setting: 'layer' });
+      const seen: { at: number | null } = { at: null };
+      cam.layer.sessionSeenAt = () => seen.at;
+      vi.advanceTimersByTime(9_200);
+      expect(fallbacks()).toEqual([]);
+      seen.at = Date.now();
+      vi.advanceTimersByTime(7_000);
+      expect(fallbacks()).toEqual([]);
+      cam.frame(1);
+      vi.advanceTimersByTime(30_000);
+      expect(fallbacks()).toEqual([]);
+      expect(cam.asks).toHaveLength(1);
+      await host.detach();
+    }
+    logs.length = 0;
+    {
+      // Given up (no report-capable layer: the 8 s clock), no window and no screen to send: the next turn asks again.
+      fake.sources.list = [];
+      const cam = fakeLayer(3);
+      const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [] }), settings: store() });
+      host.setCameraLayer(cam.layer);
+      host.setCameraSource('layer');
+      await host.setVr(VD);
+      await host.attach(signalling('owner').sig, ['krobs']);
+      fromPage(fake.FakeWindow.all.at(-1)!, PANEL_CHANNELS.ready);
+      await settle();
+      vi.advanceTimersByTime(10_000);
+      await settle();
+      expect(fallbacks()).toEqual(['media: camera: back to the screen capture: no frame from the layer within 8 s of asking']);
+      expect(cam.asks.at(-1)).toBeNull();
+      host.setSending(true);
+      expect(logs).toContain("media: camera: nothing to send at this rig's turn; asking the VR layer again (given up earlier: no frame from the layer within 8 s of asking)");
+      expect(cam.asks.at(-1)).toMatchObject({ width: 720, height: 1440, fps: 30 });
+      cam.frame(1, 720, 1440, 1);
+      await settle();
+      expect(fallbacks()).toHaveLength(1);
+      await host.detach();
+    }
+  });
+
   it('the watch: no layer on the pipe for 20 s; a protocol-2 layer; frames that stop for 3 s while up; the page seeing a stall', async () => {
     {
       const { host, cam } = await cameraHost({ setting: 'layer', protocol: null });

@@ -182,6 +182,13 @@ export function cameraFallback(s: LayerCameraStatus, now: number, askedAt: numbe
  * layer gets, because at host / join the overlay starts only after the panel has opened.
  */
 export const LAYER_CAMERA_PIPE_WAIT_MS = 20_000;
+/**
+ * D10.3.10 (2026-11-13, the owner + Krobs on 0.2.40): the layer is on the pipe but VPX has rendered no VR frame yet
+ * (the layer loads with VPX, seconds before a table finishes loading: Game of Thrones took 9.2 s and the 8 s clock gave
+ * the camera up 150 ms before the first frame, for the whole match). While the layer has sent no session report on
+ * this connection the camera waits this long, not `LAYER_CAMERA_FALLBACK_MS`; the 8 s run from the report.
+ */
+export const LAYER_CAMERA_SESSION_WAIT_MS = 120_000;
 
 export interface CameraWatchInput {
   status: LayerCameraStatus;
@@ -207,6 +214,12 @@ export interface CameraWatchInput {
    * `LAYER_CAMERA_STOP_GRACE_MS` from then for the layer's `on`. Absent: no grace (a stop falls back at once).
    */
   stoppedSince?: number;
+  /**
+   * D10.3.10: when the layer last sent a session report on this connection (`VrOverlay.sessionSeenAt`: VPX's first VR
+   * frame, the earliest the camera can answer), null while none came. Absent (an overlay that cannot say): the clock
+   * runs from the pipe as before.
+   */
+  sessionAt?: number | null;
 }
 
 /**
@@ -216,7 +229,8 @@ export interface CameraWatchInput {
  * layer that stopped the camera on its own while still asked (`vr-layer.ts` then keeps the state `asked` with the
  * layer's `why`; D10.3.7: never for its own restart, `LAYER_CAMERA_RESTART_WHY`, and otherwise only once no `on`
  * followed within `LAYER_CAMERA_STOP_GRACE_MS` of `stoppedSince`), and a layer that said `on` and sent nothing. The 8 s
- * "no frame" clock runs from when the layer came on the pipe, not from the ask.
+ * "no frame" clock runs from when the layer came on the pipe, not from the ask; D10.3.10: and not before the layer's
+ * session report on this connection (`sessionAt`), with `LAYER_CAMERA_SESSION_WAIT_MS` for a VPX that never renders.
  */
 export function cameraWatch(i: CameraWatchInput): CameraFallback {
   if (i.layerProtocol !== null && i.layerProtocol < LAYER_CAMERA_MIN_PROTOCOL) {
@@ -228,7 +242,15 @@ export function cameraWatch(i: CameraWatchInput): CameraFallback {
     if (i.now - i.askedAt >= LAYER_CAMERA_PIPE_WAIT_MS) return { fallBack: true, reason: `the layer did not answer on the pipe within ${LAYER_CAMERA_PIPE_WAIT_MS / 1000} s` };
     return { fallBack: false, reason: null };
   }
-  const since = Math.max(i.askedAt, i.connectedAt ?? i.askedAt);
+  const piped = Math.max(i.askedAt, i.connectedAt ?? i.askedAt);
+  // D10.3.10: no VR frame from VPX yet (the table is loading): nothing to time against but the long wait.
+  if (i.sessionAt === null && i.status.state === 'asked' && cameraStopReason(i.status) === null) {
+    if (i.now - piped >= LAYER_CAMERA_SESSION_WAIT_MS) {
+      return { fallBack: true, reason: `VPX rendered no VR frame within ${LAYER_CAMERA_SESSION_WAIT_MS / 1000} s of the layer coming on the pipe` };
+    }
+    return { fallBack: false, reason: null };
+  }
+  const since = Math.max(piped, i.sessionAt ?? piped);
   const stop = cameraStopReason(i.status);
   if (stop !== null) {
     if (stop === LAYER_CAMERA_RESTART_WHY) return { fallBack: false, reason: null };

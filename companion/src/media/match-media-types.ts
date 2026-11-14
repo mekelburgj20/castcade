@@ -467,6 +467,12 @@ export interface VrOverlay {
    */
   layerProtocol?(): number | null;
   /**
+   * D10.3.10 (2026-11-13): `Date.now()` of the last session report the layer sent on THIS connection (it sends one at
+   * a session's first frame, and at once on a connection made after that), or null: VPX has rendered no VR frame the
+   * layer saw yet (the table is still loading). `cameraWatch` starts its "asked, no frame" clock there.
+   */
+  sessionSeenAt?(): number | null;
+  /**
    * D7.6 (2026-11-03), the OpenXR layer only: the test bench's view of the pipe (connected, its protocol, the last
    * session report, the last controls sent) and its changes.
    */
