@@ -30,6 +30,7 @@ import {
 } from './settings.js';
 import { createTray, type TrayHandle } from './tray.js';
 import { startUpdater, type UpdaterHandle } from './updater.js';
+import { collectLogBundle } from '../witness/log-bundle.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
 import { createTablesHost, type TablePatchResult, type TablesHost } from './tables-host.js';
 import { SidecarWatch } from './sidecar-watch.js';
@@ -516,7 +517,17 @@ async function main(): Promise<void> {
   logger.info(`settings: arcaid=${s.arcaidBaseUrl} device=${s.deviceId} label=${s.deviceLabel} paired=${s.token !== null} maps=${s.mapsDir}`);
   if (s.arcaidBaseUrl !== DEFAULT_ARCAID_BASE_URL) logger.warn(`settings: non-production ArcAid URL ${s.arcaidBaseUrl}`);
 
-  const host = createWitnessHost(store, logger);
+  // E8: ArcAid's log pull (W99): the bundle is this rig's logs, newest VR report and newest journals; never settings.
+  const localAppData = process.env.LOCALAPPDATA ?? null;
+  const host = createWitnessHost(store, logger, {
+    logBundle: () =>
+      collectLogBundle({
+        companionLog: logger.file,
+        layerLog: localAppData ? join(localAppData, 'Castcade', 'logs', 'vr-layer.log') : null,
+        journalDir: localAppData ? join(localAppData, 'Castcade', 'journal') : null,
+        about: [`castcade ${appVersion} protocol ${PROTOCOL_VERSION}`, `device ${store.get().deviceLabel} (${store.get().deviceId})`],
+      }),
+  });
   store.onChange((next, prev) => {
     if (needsWitnessRestart(prev, next)) void host.restart('settings changed');
   });

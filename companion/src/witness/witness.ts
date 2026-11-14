@@ -116,6 +116,11 @@ export interface WitnessDeps {
   nvAlivePollMs?: number;
   heartbeatIntervalMs?: number;
   /**
+   * E8: this rig's logs as one ustar archive, built when a heartbeat answer carries a log request (ArcAid W99).
+   * Omitted = requests are ignored (tests; the shell passes `collectLogBundle` over its log folders).
+   */
+  logBundle?: () => Promise<{ tar: Uint8Array; files: Array<{ name: string; bytes: number }> }>;
+  /**
    * B8: how often the ROM → VPS game map ArcAid serves is re-fetched (once at start, then this often). Omitted or
    * null = never, and the shipped seed alone maps ROMs: the shell passes `DEFAULT_ROM_MAP_REFRESH_MS`, so tests that
    * do not exercise B8 keep their exact call lists.
@@ -590,13 +595,37 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitStatus();
   };
 
+  /**
+   * E8: a player asked ArcAid for this device's logs (the id came on a heartbeat answer): build the bundle and send
+   * it, once per id. Never touches the Witness status: a failed upload is a log line and a `fail` to ArcAid.
+   */
+  const logRequestsSeen = new Set<string>();
+  const sendLogs = async (request: string, token: string, deviceId: string): Promise<void> => {
+    if (!deps.logBundle || logRequestsSeen.has(request)) return;
+    logRequestsSeen.add(request);
+    log(`witness: ArcAid asked for this device's logs (request ${request.slice(0, 8)})`);
+    let reason = 'collect_failed';
+    try {
+      const bundle = await deps.logBundle();
+      reason = 'upload_failed';
+      await arcaid().uploadLogs(token, deviceId, request, bundle.tar);
+      log(`witness: logs sent to ArcAid: ${bundle.files.length} file(s), ${Math.round(bundle.tar.length / 1024)} KB (${bundle.files.map((f) => f.name).join(', ')})`);
+    } catch (err) {
+      log(`witness: logs not sent (${reason}): ${err instanceof Error ? err.message : String(err)}`);
+      await arcaid()
+        .logsFailed(token, deviceId, request, reason)
+        .catch(() => undefined);
+    }
+  };
+
   const beat = async (): Promise<void> => {
     const { token, deviceId } = store.get();
     if (!token) return;
     try {
-      await arcaid().heartbeat(token, deviceId);
+      const { logs } = await arcaid().heartbeat(token, deviceId);
       status.lastHeartbeatAt = iso(clock.now());
       clearArcaidError();
+      if (logs) void sendLogs(logs, token, deviceId);
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
     }

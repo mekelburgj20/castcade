@@ -1,7 +1,7 @@
 /**
  * Thin client for ArcAid's device-facing Witness endpoints. Every call is a GET with query
  * parameters (the shape the AtGames cabinet SDK forced on the server) and the device token in the
- * `x-witness-token` header. Timestamps on the wire are epoch SECONDS (`WitnessService` floors
+ * `x-witness-token` header; the one POST is the log bundle (E8, ArcAid W99). Timestamps on the wire are epoch SECONDS (`WitnessService` floors
  * them and `VpxScoreIngestService` converts seconds to SQLite datetimes).
  *
  * `fetch` is injectable so tests never open a socket. Failures are classified, never swallowed:
@@ -9,7 +9,7 @@
  * (other 4xx) are final.
  */
 
-export type FetchLike = (input: string, init: { method: 'GET'; headers: Record<string, string>; signal: AbortSignal }) => Promise<FetchResponseLike>;
+export type FetchLike = (input: string, init: { method: 'GET' | 'POST'; headers: Record<string, string>; signal: AbortSignal; body?: Uint8Array }) => Promise<FetchResponseLike>;
 
 export interface FetchResponseLike {
   status: number;
@@ -173,6 +173,10 @@ export interface ArcaidClientOptions {
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
+/** E8: the log bundle is up to 12 MB over a tester's uplink. */
+export const UPLOAD_TIMEOUT_MS = 180_000;
+/** ArcAid's log request id (W99): 32 lowercase hex. */
+const LOG_REQUEST_ID = /^[0-9a-f]{32}$/;
 
 export function buildUrl(baseUrl: string, path: string, params: QueryParams): string {
   const url = new URL(path, baseUrl.replace(/\/+$/, '') + '/');
@@ -218,22 +222,32 @@ export class ArcaidClient {
   }
 
   /** One GET. Resolves on 2xx; throws `ArcaidError` for everything else. */
-  async get(path: string, params: QueryParams, token: string | null): Promise<ArcaidResponse> {
+  get(path: string, params: QueryParams, token: string | null): Promise<ArcaidResponse> {
+    return this.send('GET', path, params, token, null, this.timeoutMs);
+  }
+
+  /** E8: one POST with a raw body (the log bundle); the same answers and errors as `get`. */
+  post(path: string, params: QueryParams, token: string | null, body: Uint8Array, timeoutMs = UPLOAD_TIMEOUT_MS): Promise<ArcaidResponse> {
+    return this.send('POST', path, params, token, body, timeoutMs);
+  }
+
+  private async send(method: 'GET' | 'POST', path: string, params: QueryParams, token: string | null, payload: Uint8Array | null, timeoutMs: number): Promise<ArcaidResponse> {
     const url = buildUrl(this.baseUrl, path, params);
     const headers: Record<string, string> = { accept: 'application/json' };
     if (token) headers['x-witness-token'] = token;
+    if (payload) headers['content-type'] = 'application/x-tar';
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const seq = ++requestSeq;
     const startedAt = Date.now();
     // Never the token; the score and table are enough to tie a send to a capture.
-    this.log?.(`arcaid: #${seq} GET ${path}${params['score'] !== undefined ? ` score=${String(params['score'])}` : ''}${params['table'] !== undefined ? ` table="${String(params['table'])}"` : ''}`);
+    this.log?.(`arcaid: #${seq} ${method} ${path}${payload ? ` ${payload.length} bytes` : ''}${params['score'] !== undefined ? ` score=${String(params['score'])}` : ''}${params['table'] !== undefined ? ` table="${String(params['table'])}"` : ''}`);
     let res: FetchResponseLike;
     try {
-      res = await this.fetchImpl(url, { method: 'GET', headers, signal: controller.signal });
+      res = await this.fetchImpl(url, { method, headers, signal: controller.signal, ...(payload ? { body: payload } : {}) });
     } catch (err) {
       clearTimeout(timer);
-      const msg = err instanceof Error && err.name === 'AbortError' ? `ArcAid did not answer within ${this.timeoutMs} ms` : `ArcAid unreachable: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = err instanceof Error && err.name === 'AbortError' ? `ArcAid did not answer within ${timeoutMs} ms` : `ArcAid unreachable: ${err instanceof Error ? err.message : String(err)}`;
       this.log?.(`arcaid: #${seq} failed after ${Date.now() - startedAt} ms: ${msg}`);
       throw new ArcaidError('network', msg);
     }
@@ -388,7 +402,23 @@ export class ArcaidClient {
   }
 
   /** `GET /api/witness/heartbeat` — "still here"; stale on the server after `HEARTBEAT_STALE_SEC` (300 s). */
-  async heartbeat(token: string, device: string): Promise<void> {
-    await this.get('api/witness/heartbeat', { device }, token);
+  /**
+   * E8: the answer may carry `logs`, the id of a log request a player made for this device (ArcAid W99, ADR 0040:
+   * the heartbeat is the only moment the server can speak to a device); null when there is none.
+   */
+  async heartbeat(token: string, device: string): Promise<{ logs: string | null }> {
+    const { body } = await this.get('api/witness/heartbeat', { device }, token);
+    const logs = body['logs'];
+    return { logs: typeof logs === 'string' && LOG_REQUEST_ID.test(logs) ? logs : null };
+  }
+
+  /** E8: `POST /api/witness/logs?device&request`: the bundle (one ustar archive) answering a log request. */
+  async uploadLogs(token: string, device: string, request: string, tar: Uint8Array): Promise<void> {
+    await this.post('api/witness/logs', { device, request }, token, tar);
+  }
+
+  /** E8: `GET /api/witness/logs/fail?device&request&reason`: this device could not answer; `reason` is `[a-z][a-z0-9_]*`. */
+  async logsFailed(token: string, device: string, request: string, reason: string): Promise<void> {
+    await this.get('api/witness/logs/fail', { device, request, reason }, token);
   }
 }

@@ -232,6 +232,48 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
 }
 
 describe('createWitness: -Play sessions (capture at exit)', () => {
+  it('E8 (ArcAid W99): a log request on the heartbeat answer is answered with one bundle, once per id; a failed upload is reported', async () => {
+    const id = 'cd'.repeat(16);
+    let built = 0;
+    const logBundle = async () => {
+      built++;
+      return { tar: new Uint8Array(1024), files: [{ name: 'companion.log', bytes: 10 }] };
+    };
+    const h = harness({}, { logBundle });
+    h.setRespond((path) => (path.endsWith('/heartbeat') ? { status: 200, body: { ok: true, logs: id } } : { status: 200, body: { ok: true } }));
+    await h.witness.start();
+    await h.flush();
+    expect(h.calls.filter((c) => c.path === '/api/witness/logs').map((c) => c.params)).toEqual([{ device: 'dev-1', request: id }]);
+    // The same id on the next heartbeat (ArcAid had not marked it ready yet): not built or sent again.
+    h.clock.advance(120_000);
+    await h.flush();
+    expect(h.paths('/heartbeat').length).toBeGreaterThanOrEqual(2);
+    expect(built).toBe(1);
+    expect(h.paths('/witness/logs')).toHaveLength(1);
+    expect(h.witness.status().lastError).toBeNull();
+    await h.witness.stop();
+
+    // The upload is refused: one `fail` with the reason, and the Witness status is untouched.
+    const other = 'ef'.repeat(16);
+    const f = harness({}, { logBundle });
+    f.setRespond((path) =>
+      path.endsWith('/heartbeat') ? { status: 200, body: { ok: true, logs: other } } : path.endsWith('/witness/logs') ? { status: 413, body: { code: 'TOO_LARGE' } } : { status: 200, body: { ok: true } },
+    );
+    await f.witness.start();
+    await f.flush();
+    expect(f.calls.filter((c) => c.path === '/api/witness/logs/fail').map((c) => c.params)).toEqual([{ device: 'dev-1', request: other, reason: 'upload_failed' }]);
+    expect(f.witness.status().lastError).toBeNull();
+    await f.witness.stop();
+
+    // No bundle builder (a build before E8, tests): the request is ignored.
+    const n = harness();
+    n.setRespond((path) => (path.endsWith('/heartbeat') ? { status: 200, body: { ok: true, logs: id } } : { status: 200, body: { ok: true } }));
+    await n.witness.start();
+    await n.flush();
+    expect(n.paths('/witness/logs')).toHaveLength(0);
+    await n.witness.stop();
+  });
+
   it('heartbeats and checks in on start, opens the session at launch, closes it with the score on exit', async () => {
     const h = harness({}, { registry: createStaticRegistry(RIG_REGISTRY), env: {} });
     await h.fs.mkdir('/nv');
