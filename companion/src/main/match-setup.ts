@@ -11,6 +11,7 @@ import { PlayerId, type GameFingerprint, type PayloadOf } from '@castcade/protoc
 import type { ClientMatch } from '../match/client.js';
 import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
+import { cleanShortcut } from '../match/match-menu.js';
 import type { MediaSignal, MediaSignalling } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import { describeVrEvidence, vrRuntimeOf, type VrObservation, type VrRuntime } from '../witness/vr-detect.js';
@@ -92,6 +93,13 @@ export interface MatchSettings {
   othersTableVolume: number;
   /** This rig's own VPX session volume while this player is up, 10–100 (100 = untouched; the helper's `level`). */
   myTableWhileUp: number;
+  /**
+   * D8.10 (2026-11-14): the in-game menu's keys (Electron accelerators, `cleanShortcut` in match/match-menu.ts), held
+   * as global shortcuts while a match is on. `menuKey` opens the menu and moves down it; `menuChooseKey` chooses a
+   * line (null: none; the menu key pressed twice quickly chooses too).
+   */
+  menuKey: string;
+  menuChooseKey: string | null;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -119,6 +127,9 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   voiceVolume: 150,
   othersTableVolume: 100,
   myTableWhileUp: 100,
+  // D8.10 (2026-11-14)
+  menuKey: 'Control+Alt+M',
+  menuChooseKey: 'Control+Alt+K',
 };
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
@@ -202,6 +213,10 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   for (const k of ['voiceVolume', 'othersTableVolume', 'myTableWhileUp'] as const) {
     if (k in p) next[k] = cleanPercent(p[k], VOLUME_RANGE[k][0], VOLUME_RANGE[k][1]) ?? current[k];
   }
+  // D8.10: a key that is not one the menu takes keeps the current one; the two never share a key.
+  if ('menuKey' in p) next.menuKey = cleanShortcut(p.menuKey) ?? current.menuKey;
+  if ('menuChooseKey' in p) next.menuChooseKey = p.menuChooseKey === null || p.menuChooseKey === '' ? null : (cleanShortcut(p.menuChooseKey) ?? current.menuChooseKey);
+  if (next.menuChooseKey === next.menuKey) next.menuChooseKey = null;
   return next;
 }
 

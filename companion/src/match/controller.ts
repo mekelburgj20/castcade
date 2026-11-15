@@ -190,8 +190,18 @@ export const DEFAULT_VR_VIEW: VrViewSettings = { theaterDuringMyTurn: 'hidden', 
 /**
  * D7.4: the headset's mode for a panel state. My ball → `theaterDuringMyTurn`; another player's ball → `spectate`;
  * the lobby, a pause (someone dropped: the panel says why), the gap between grants and the result → the panel.
+ * D8.9 / D8.10 (2026-11-14): `now.menuOpen` → the panel (the menu is drawn on it); `now.lobbyQuiet` (the match host:
+ * this table is free to play and the lobby has said nothing new for a few seconds) → nothing over the table.
  */
-export function vrViewMode(p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'>, settings: VrViewSettings = DEFAULT_VR_VIEW): VrViewMode {
+export function vrViewMode(
+  p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'>,
+  settings: VrViewSettings = DEFAULT_VR_VIEW,
+  now: { menuOpen?: boolean; lobbyQuiet?: boolean } = {},
+): VrViewMode {
+  // D8.10: the in-game menu is on the panel, whatever the turn. D8.9: a lobby with nothing new to say stays out of
+  // the way of a player whose table is free to play.
+  if (now.menuOpen) return 'panel';
+  if (p.phase === 'idle' && now.lobbyQuiet) return 'hidden';
   if (p.phase !== 'playing') return 'panel';
   if (p.myTurn) return settings.theaterDuringMyTurn;
   return p.playerUp !== null ? settings.spectate : 'panel';

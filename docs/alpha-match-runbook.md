@@ -133,6 +133,16 @@ Both of you heard the table over the other player's voice on 2026-11-04. Three s
   Right lowers / raises your table while you play. Each press ticks at the turn-cue volume so you hear where it is
   without looking; the Match tab's sliders follow. If a chord does nothing, another program holds it (the log says
   `match: Control+Alt+Up is held by another app`); tell the lead which one.
+- **The in-game menu (after 0.2.41):** with VPX in focus, Ctrl+Alt+M brings up a menu on the match panel (in the
+  headset too): Start match and Next game for the host, the three volumes, the microphone, Leave match. Ctrl+Alt+M
+  again moves down a line; Ctrl+Alt+K, or Ctrl+Alt+M twice quickly, chooses; the arrow keys work while it is open
+  (Right raises a volume, Left lowers it). It closes by itself after 12 seconds without a key. Both keys can be
+  changed on the Match tab under "In-game menu": click the box and press the key. For a controller button, map the
+  button to a key first (JoyToKey), then press the button in the box. Enter and Esc cannot be used: VPX would act on
+  them as well.
+- **In the lobby, in the headset:** the panel shows for 8 seconds when someone joins, leaves or loads a table, and
+  during the start countdown; otherwise it stays out of the way so you can play while you wait. The menu key brings
+  it up.
 
 ## 4. If something goes wrong
 

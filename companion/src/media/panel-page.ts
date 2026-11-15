@@ -44,6 +44,8 @@ export const PANEL_CHANNELS = {
    * them; applied at once to every connection (`volumeGains`). With a `note`, the footer shows it for `VOLUME_NOTE_MS`.
    */
   volume: 'castcade-panel:volume',
+  /** D8.10 (2026-11-14): `PanelMenu` or null: the in-game menu, drawn over the stage and the score strip while it is open. */
+  menu: 'castcade-panel:menu',
   /**
    * D10.5 (2026-11-07): one short line about the native spectator video for the footer (`video: rung 3 · 1016x1080@60 ·
    * 7.8 Mbps · rtt 41 ms`), or null to clear it; from the match host through `setVideoLine`.
@@ -839,12 +841,26 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   #msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #vid { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #vid:empty { display: none; }
+  /* D8.10: the in-game menu covers the stage and the score strip; the header and the footer stay. */
+  #menu { display: none; grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 2; background: var(--panel);
+    border-radius: 1vmin; padding: 2vmin; flex-direction: column; gap: 0.8vmin; min-height: 0; overflow: hidden; }
+  #menu.open { display: flex; }
+  #menuitems { display: grid; gap: 0.8vmin; }
+  #head { grid-row: 1; } #stage { grid-row: 2; grid-column: 1; } #strip { grid-row: 3; grid-column: 1; } footer { grid-row: 4; }
+  .mi { display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin; border-radius: 0.8vmin;
+    font-size: 5vmin; background: #1b2029; }
+  .mi.sel { outline: 0.6vmin solid var(--mine); color: var(--mine); }
+  .mi.off { color: var(--dim); }
+  .mi .val { font-variant-numeric: tabular-nums; }
+  #menunote { margin-top: auto; font-size: 3.8vmin; color: var(--mine); min-height: 4.5vmin; }
+  #menuhint { font-size: 3vmin; font-weight: 400; color: var(--dim); }
 </style></head>
 <body class="${opts.vr ? 'vr' : 'desktop'}">
 <div id="head">CASTCADE MATCH</div>
 <div id="stage"><video id="video" autoplay playsinline muted></video><div id="idle"></div></div>
 <video id="src" autoplay playsinline muted style="position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none"></video>
 <div id="strip"></div>
+<div id="menu"><div id="menuitems"></div><div id="menunote"></div><div id="menuhint"></div></div>
 <footer><span id="mic"></span><span id="vid"></span><span id="msg"></span></footer>
 <script>
 'use strict';
@@ -960,6 +976,8 @@ let bench = null;
 let gains = volumeGains(null);
 let volumeNote = null;
 let volumeNoteTimer = null;
+// D8.10: the in-game menu while it is open (PanelMenu), else null.
+let menu = null;
 const $ = (id) => document.getElementById(id);
 const errText = (e) => (e && e.message ? e.message : String(e));
 
@@ -1045,9 +1063,31 @@ function render() {
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);
   $('mic').className = mic === 'open' ? '' : mic === 'muted' ? 'muted' : 'none';
+  renderMenu();
   $('vid').textContent = bench ? '' : videoLine;  // D10.5: the native video's rung and rate, one short line
   $('msg').textContent = volumeNote || (bench && bench.error) || noPathMessage() || (panel && panel.message) || localError || '';
   routeTable();
+}
+
+// D8.10: the in-game menu (main's C.menu): the lines, the chosen one outlined, a note and the keys under them.
+function renderMenu() {
+  $('menu').className = menu ? 'open' : '';
+  const list = $('menuitems');
+  list.replaceChildren();
+  if (!menu) return;
+  menu.items.forEach((it, i) => {
+    const el = document.createElement('div');
+    el.className = 'mi' + (i === menu.index ? ' sel' : '') + (it.off ? ' off' : '');
+    const label = document.createElement('span');
+    label.textContent = it.label;
+    const val = document.createElement('span');
+    val.className = 'val';
+    val.textContent = it.value || '';
+    el.append(label, val);
+    list.appendChild(el);
+  });
+  $('menunote').textContent = menu.note || '';
+  $('menuhint').textContent = menu.hint || '';
 }
 
 async function sendDevices() {
@@ -1743,6 +1783,7 @@ function detach() {
   if (volumeNoteTimer) clearTimeout(volumeNoteTimer);
   volumeNoteTimer = null;
   volumeNote = null;
+  menu = null;
   stopBench();
   // D2.8: the table track outlives an attach (one AudioContext per page); it goes quiet until main says send again.
   setTableSend(false);
@@ -1776,6 +1817,10 @@ ipcRenderer.on(C.sending, (_e, on) => {
 ipcRenderer.on(C.state, (_e, s) => { panel = s; render(); });
 // D10.5: the native video's footer line from the match host (null clears it).
 let videoLine = '';
+ipcRenderer.on(C.menu, (_e, m) => {
+  menu = m && Array.isArray(m.items) ? m : null;
+  render();
+});
 ipcRenderer.on(C.videoLine, (_e, line) => { videoLine = typeof line === 'string' ? line : ''; render(); });
 ipcRenderer.on(C.muted, (_e, on) => {
   muted = !!on;

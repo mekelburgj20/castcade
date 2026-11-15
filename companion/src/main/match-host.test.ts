@@ -421,7 +421,8 @@ describe('match host (A6)', () => {
     expect(ha.levels()).toEqual([]); // no match: nothing levelled
     const port = 43000 + Math.floor(Math.random() * 2000);
     const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
-    expect([...held.keys()].sort()).toEqual(['Control+Alt+Left', 'Control+Alt+Right', 'Control+Alt+Up']);
+    // D8.10: the menu's two keys are held with them.
+    expect([...held.keys()].sort()).toEqual(['Control+Alt+K', 'Control+Alt+Left', 'Control+Alt+M', 'Control+Alt+Right', 'Control+Alt+Up']);
     await C.mh.join(hs.invite!, 'Krobs');
     await H.mh.start();
     await until(() => H.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
@@ -1429,4 +1430,96 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
       blocker.close();
     }
   }, 15_000);
+});
+
+describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-11-14)', () => {
+  it('the lobby panel gets out of the way, the menu key brings up the menu, and its lines start the match, move the volumes and mute the mic', async () => {
+    type Menu = { items: Array<{ label: string; value: string | null; off: boolean }>; index: number; note: string | null; hint: string } | null;
+    const menus: Menu[] = [];
+    const volumes: Array<{ voice: number; table: number }> = [];
+    const muted: boolean[] = [];
+    const m = fakeMedia();
+    const media = { ...m.media, setMenu: (v: Menu) => void menus.push(v), setVolume: (v: { voice: number; table: number }) => void volumes.push({ voice: v.voice, table: v.table }), setMuted: (on: boolean) => void muted.push(on) };
+    const o = fakeOverlay();
+    const held = new Map<string, () => void>();
+    const shortcuts = { register: (acc: string, cb: () => void) => (held.set(acc, cb), true), unregister: (acc: string) => void held.delete(acc) };
+    let t = 1_000_000;
+    const H = make('menu-host', 'ab'.repeat(32), { witness: liveWitness(VR_ON, VR_OFF).w, media: media as never, vrOverlay: o.overlay, shortcuts, now: () => t });
+    const C = make('menu-client', 'ab'.repeat(32));
+    const press = (acc: string, after = 1000): void => {
+      t += after;
+      held.get(acc)!();
+    };
+    const hs = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    // D8.9: the panel shows at Host, then leaves the table alone once the lobby has been quiet for 8 s.
+    expect(o.modes.at(-1)).toBe('panel');
+    t += 9000;
+    H.mh.setSettings({ cueVolume: 70 });
+    expect(o.modes.at(-1)).toBe('hidden');
+    expect([...held.keys()]).toEqual(expect.arrayContaining(['Control+Alt+M', 'Control+Alt+K']));
+    expect(held.has('Up')).toBe(false);
+    // The menu key: the panel is back with the menu on it; the arrows are held only while it is open.
+    press('Control+Alt+M');
+    expect(o.modes.at(-1)).toBe('panel');
+    expect(menus.at(-1)).toMatchObject({ index: 0, note: null });
+    expect(menus.at(-1)!.items[0]).toEqual({ label: 'Start match', value: null, off: true });
+    expect(menus.at(-1)!.hint).toBe('Ctrl+Alt+M: next line · Ctrl+Alt+K, or Ctrl+Alt+M twice quickly: choose · the arrow keys work too');
+    expect([...held.keys()]).toEqual(expect.arrayContaining(['Up', 'Down', 'Left', 'Right']));
+    press('Control+Alt+K');
+    expect(menus.at(-1)!.note).toBe('Nobody has joined yet');
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && menus.at(-1)?.items[0]?.off === false);
+    // One spare button: the menu key moves down a line; pressed again within a moment it chooses the line it left.
+    press('Control+Alt+M');
+    expect(menus.at(-1)!.index).toBe(1);
+    press('Control+Alt+M', 200);
+    await until(() => H.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+    expect(menus.at(-1)).toBeNull();
+    expect(held.has('Up')).toBe(false);
+    expect(o.modes.at(-1)).toBe('hidden'); // my ball: nothing over the table
+    // A key held down (repeats 33 ms apart) is one press.
+    press('Control+Alt+M');
+    press('Control+Alt+M', 33);
+    press('Control+Alt+M', 33);
+    expect(o.modes.at(-1)).toBe('panel');
+    expect(menus.at(-1)).toMatchObject({ index: 0 });
+    expect(menus.at(-1)!.items.map((i) => i.label)).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Leave match', 'Close menu']);
+    // The volumes: the arrow raises, the choose key raises too; saved and pushed live.
+    press('Right');
+    expect(H.mh.status().settings.voiceVolume).toBe(175);
+    expect(volumes.at(-1)).toEqual({ voice: 175, table: 100 });
+    press('Control+Alt+K');
+    expect(menus.at(-1)!.items[0]!.value).toBe('200 %');
+    press('Down');
+    press('Left');
+    expect(H.mh.status().settings.othersTableVolume).toBe(90);
+    press('Down');
+    press('Left');
+    expect(H.mh.status().settings.myTableWhileUp).toBe(90);
+    // The microphone, then Close menu: the table is clear again and the arrows are let go.
+    press('Down');
+    press('Control+Alt+K');
+    expect(muted).toEqual([true]);
+    press('Down');
+    press('Down');
+    press('Control+Alt+K');
+    expect(menus.at(-1)).toBeNull();
+    expect(o.modes.at(-1)).toBe('hidden');
+    expect(held.has('Left')).toBe(false);
+    // A new key on the Match tab is taken at once; leaving lets every key go.
+    H.mh.setSettings({ menuKey: 'F9' });
+    expect(held.has('F9')).toBe(true);
+    expect(held.has('Control+Alt+M')).toBe(false);
+    await H.mh.leave();
+    expect(held.size).toBe(0);
+  }, 15_000);
+
+  it('says so when another program holds the menu key', async () => {
+    const shortcuts = { register: (acc: string) => acc !== 'Control+Alt+M', unregister: () => undefined };
+    const H = make('menu-taken', 'ab'.repeat(32), { shortcuts });
+    const st = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    expect(st.menuKeyProblem).toBe('Ctrl+Alt+M could not be taken (another program holds it): choose another key');
+    await H.mh.leave();
+    expect(H.mh.status().menuKeyProblem).toBeNull();
+  });
 });
