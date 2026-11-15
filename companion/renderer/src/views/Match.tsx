@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
 import { OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
@@ -48,6 +48,8 @@ export function Match({ state }: { state: CastcadeState }) {
   const [voice, setVoice] = useState<number | null>(null);
   const [theirTable, setTheirTable] = useState<number | null>(null);
   const [myTable, setMyTable] = useState<number | null>(null);
+  // D8.10: what the last key pressed into a menu-key field came to ("that key cannot be used"), per field.
+  const [keyNote, setKeyNote] = useState<{ field: 'menuKey' | 'menuChooseKey'; text: string } | null>(null);
 
   useEffect(() => {
     if (!bridge) return;
@@ -113,6 +115,20 @@ export function Match({ state }: { state: CastcadeState }) {
     };
     if (Object.keys(patch).length === 0) done(st);
     else void bridge.match.setSettings(patch).then(done, (e: unknown) => setError(describe(e)));
+  };
+  // D8.10: a key pressed in a menu-key field becomes that key (a controller button mapped to a key works the same way).
+  const captureKey = (field: 'menuKey' | 'menuChooseKey') => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Tab') return;
+    e.preventDefault();
+    const acc = acceleratorOf(e);
+    if (acc === null) return;
+    void bridge.match.setSettings({ [field]: acc }).then(
+      (s) => {
+        setSt(s);
+        setKeyNote(s.settings[field] === acc ? null : { field, text: `${keyWords(acc)} cannot be used here: try a function key, or a letter with Ctrl and Alt.` });
+      },
+      (err: unknown) => setError(describe(err)),
+    );
   };
   const pickMic = (deviceId: string) => {
     void bridge.match.setMicrophone(deviceId === '' ? null : deviceId).then(setSt, (e: unknown) => setError(describe(e)));
@@ -648,6 +664,43 @@ export function Match({ state }: { state: CastcadeState }) {
       </div>
 
       <div className="card">
+        <strong>In-game menu</strong>
+        <small>
+          While a match is on, the menu key brings up a menu on the match panel (in the headset too): start the match or the next game, the three volumes, the
+          microphone, leave. Press the menu key again to move down; the choose key, or the menu key twice quickly, chooses. The arrow keys work while it is open.
+          To use a controller button, map it to a key first (JoyToKey), then click a box and press the button.
+        </small>
+        <label className="field">
+          <span>Menu key</span>
+          <input type="text" readOnly className="port" value={keyWords(st.settings.menuKey)} onKeyDown={captureKey('menuKey')} title="Click, then press the key" />
+          {keyNote?.field === 'menuKey' && <small className="warn">{keyNote.text}</small>}
+        </label>
+        <label className="field">
+          <span>Choose key</span>
+          <span className="row">
+            <input
+              type="text"
+              readOnly
+              className="port"
+              value={st.settings.menuChooseKey === null ? 'none' : keyWords(st.settings.menuChooseKey)}
+              onKeyDown={captureKey('menuChooseKey')}
+              title="Click, then press the key"
+            />
+            <button
+              type="button"
+              className="small"
+              disabled={st.settings.menuChooseKey === null}
+              onClick={() => void bridge.match.setSettings({ menuChooseKey: null }).then(setSt, (e: unknown) => setError(describe(e)))}
+            >
+              None
+            </button>
+          </span>
+          {keyNote?.field === 'menuChooseKey' && <small className="warn">{keyNote.text}</small>}
+        </label>
+        {st.menuKeyProblem && <small className="warn">{st.menuKeyProblem}</small>}
+      </div>
+
+      <div className="card">
         <label className="field">
           <span>Turn sound volume ({volume ?? st.settings.cueVolume})</span>
           <input
@@ -971,4 +1024,27 @@ function rigLine(st: MatchStatus): string {
 function overlayLine(o: MatchStatus['vrOverlay']): string {
   if (!o) return 'Headset panel: not in this build yet (the panel shows on the desktop).';
   return `Headset panel: ${o.state}${o.reason ? ` (${o.reason})` : ''}.`;
+}
+
+/** D8.10: a shortcut in the words of a keyboard ("Ctrl+Alt+M"). */
+function keyWords(acc: string): string {
+  return acc.replace(/\bControl\b/g, 'Ctrl');
+}
+
+/**
+ * D8.10: the key press as an Electron accelerator, or null for a modifier alone or a key the menu does not take (main
+ * checks it again: `cleanShortcut`). The numeric pad goes by its position (`code`), everything else by the key.
+ */
+function acceleratorOf(e: { key: string; code: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }): string | null {
+  const named: Record<string, string> = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert', Delete: 'Delete', Backspace: 'Backspace' };
+  const pad: Record<string, string> = { NumpadAdd: 'numadd', NumpadSubtract: 'numsub', NumpadMultiply: 'nummult', NumpadDivide: 'numdiv', NumpadDecimal: 'numdec' };
+  let key: string | null;
+  if (/^Numpad\d$/.test(e.code)) key = `num${e.code.slice(-1)}`;
+  else if (pad[e.code]) key = pad[e.code]!;
+  else if (/^F\d{1,2}$/.test(e.key)) key = e.key;
+  else if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(-1);
+  else if (/^Digit\d$/.test(e.code)) key = e.code.slice(-1);
+  else key = named[e.key] ?? null;
+  if (key === null) return null;
+  return [e.ctrlKey ? 'Control' : null, e.altKey ? 'Alt' : null, e.shiftKey ? 'Shift' : null, key].filter((x) => x !== null).join('+');
 }

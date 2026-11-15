@@ -55,7 +55,7 @@ import type { Logger } from '../main/log.js';
 import { CoverGate, fitWarning, matchScreenSource, sameCrop, screenCropFor, type ScreenDisplay, type ScreenTarget } from './capture-crop.js';
 import { isVpxExe, type FocusChange, type FocusWatch } from './focus-watch.js';
 import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, cameraStopReason, cameraViewWords, cameraWatch, createFrameSlot, decideCamera, LAYER_CAMERA_EYE_HEIGHT, type CameraDecision, type CameraDecisionInput, type CameraEyesSetting, type CameraSourceSetting, type CameraViewSetting } from './layer-camera.js';
-import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
+import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelMenu, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, PANEL_VIDEO, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
@@ -192,6 +192,8 @@ export interface RtcHost extends MatchMedia {
   capturePid(): number | null;
   /** D2.10 (2026-11-05): the playback volumes (MatchMedia); kept for a new page, sent live to one that is up, the note only live. */
   setVolume(volume: PanelVolume): void;
+  /** D8.10 (2026-11-14): the in-game menu over the panel (MatchMedia); here always present. */
+  setMenu(menu: PanelMenu | null): void;
   /**
    * D7.6.3 (2026-11-03): save the next 2 s of frames into `dir` (`frame-clip.ts`): every layer-camera frame while the
    * camera runs (the sender side), and every theater frame the panel page hands to the layer while it does (the receiver
@@ -701,6 +703,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     PANEL_CHANNELS.videoWant,
     PANEL_CHANNELS.tableAudio,
     PANEL_CHANNELS.volume,
+    PANEL_CHANNELS.menu,
   ]);
   const toPage = (channel: string, payload?: unknown): void => {
     if (win && ready && (attachSent || benchSent)) return post(channel, payload);
@@ -1721,6 +1724,10 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       if (volume && volume.voice === v.voice && volume.table === v.table && !note) return;
       volume = { voice: v.voice, table: v.table };
       if (attached) toPage(PANEL_CHANNELS.volume, { ...volume, note } satisfies PanelVolume);
+    },
+    // D8.10: the in-game menu, live only.
+    setMenu(menu) {
+      if (attached) toPage(PANEL_CHANNELS.menu, menu);
     },
     // D10.5: the native video's one footer line (kept for the next attach, cleared by null).
     setVideoLine(line) {

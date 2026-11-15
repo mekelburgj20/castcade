@@ -241,6 +241,15 @@ export interface PanelVolume {
   note?: string | null;
 }
 
+/** D8.10: the in-game menu as the panel page draws it (built by `menuView`, match/match-menu.ts). */
+export interface PanelMenu {
+  items: Array<{ label: string; value: string | null; off: boolean }>;
+  index: number;
+  note: string | null;
+  /** The keys, in one line under the menu. */
+  hint: string;
+}
+
 /** What the match controller drives (implemented by `media/rtc-host.ts`, D2). */
 export interface MatchMedia {
   /** Called at MATCH_READY with every other participant; opens the mesh. */
@@ -278,6 +287,11 @@ export interface MatchMedia {
    * size, fps, Mbps, rtt), from the match host; null clears it. Kept for the next attach. Absent in fakes before D10.5.
    */
   setVideoLine?(line: string | null): void;
+  /**
+   * D8.10 (2026-11-14): the in-game menu over the panel (match/match-menu.ts), or null to take it away. Live only: a
+   * new page starts without one. Absent in fakes before D8.10.
+   */
+  setMenu?(menu: PanelMenu | null): void;
   detach(): Promise<void>;
 }
 

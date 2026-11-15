@@ -51,6 +51,7 @@ import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
 import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
@@ -229,6 +230,8 @@ export interface MatchStatus {
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
   defaultName: string;
   lastError: string | null;
+  /** D8.10 (2026-11-14): why a menu key does nothing this match (another program holds it), else null. */
+  menuKeyProblem: string | null;
   /** D7.6 (2026-11-03): the VR test bench while it runs (media/bench.ts), else null. */
   bench: BenchStatus | null;
   /**
@@ -375,6 +378,8 @@ export interface MatchHostOptions {
   framesDir?: string;
   /** D2.10 (2026-11-05): Electron's `globalShortcut` in the app (the in-game volume keys); absent → no keys (tests pass a fake). */
   shortcuts?: ShortcutRegistrar;
+  /** D8.10: the clock the menu key's double press and the lobby's quiet time are read by; `Date.now` when absent. */
+  now?: () => number;
   /** A15: the saved match. Default `match-resume.json` beside `file`. */
   resumeFile?: string;
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
@@ -410,6 +415,12 @@ export const VOLUME_SHORTCUTS = {
 } as const;
 /** D2.10: one press moves a volume by this many percent. */
 export const VOLUME_STEP = 10;
+/** D8.9: how long the headset shows the lobby panel after the lobby changed, before it gets out of the way again. */
+export const LOBBY_PEEK_MS = 8000;
+/** D8.10: the in-game menu closes by itself this long after the last key. */
+export const MENU_IDLE_MS = 12_000;
+/** D8.10: the arrows, held only while the menu is open. */
+const MENU_ARROWS: Record<string, MenuKey> = { Up: 'up', Down: 'down', Left: 'left', Right: 'right' };
 
 const CUE_CHANNEL = 'castcade-cue:play';
 const CUE_STATUS_CHANNEL = 'castcade-cue:status';
@@ -771,6 +782,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       settings: { ...settings },
       defaultName: defaultName(),
       lastError,
+      menuKeyProblem,
       bench: benchView(),
       resume: resumeView(),
     };
@@ -795,11 +807,41 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * D7.4 (2026-10-31): the headset follows the turn: hidden on this player's ball, theater while another is up, the
    * panel otherwise (`vrViewMode`, with the Match tab's two settings). Given to the overlay running now, once per change.
    */
+  // ---- D8.9 (2026-11-14): the lobby panel stays out of the way of a table that is free to play ----
+  const clock = opts.now ?? Date.now;
+  let peekKey = '';
+  let peekUntil = 0;
+  let peekTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * True while the headset should show nothing in the lobby: this table is not locked (free play before the match, and
+   * every client's table), no start is counting down, and the lobby last changed (someone joined, left, loaded a
+   * table; the panel's one line changed) more than `LOBBY_PEEK_MS` ago. Each change shows the panel for that long; the
+   * menu key brings it up at any time.
+   */
+  const lobbyQuiet = (p: PanelState): boolean => {
+    if (p.phase !== 'idle' || locked || typeof p.countdown === 'number') {
+      peekKey = '';
+      return false;
+    }
+    const key = JSON.stringify([p.players.map((x) => [x.id, x.flags]), p.message]);
+    const now = clock();
+    if (key !== peekKey) {
+      peekKey = key;
+      peekUntil = now + LOBBY_PEEK_MS;
+      if (peekTimer) clearTimeout(peekTimer);
+      peekTimer = setTimeout(() => {
+        peekTimer = null;
+        if (active) emit();
+      }, LOBBY_PEEK_MS + 20);
+    }
+    return now >= peekUntil;
+  };
   const syncVrMode = (a: Active): void => {
     const to = a.overlay;
     if (!to) return;
     syncWindowTune(to);
-    const mode = vrViewMode(a.controller.panel(), settings);
+    const p = a.controller.panel();
+    const mode = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p) });
     if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
     a.vrMode = { mode, to };
     log.info(`match: headset mode ${mode}`);
@@ -849,6 +891,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       syncNativeVideo(active);
       scheduleSeriesEnd(active);
     }
+    // D8.10: the menu's lines follow the match (Start match goes at the start, the volumes as they move).
+    pushMenu();
     // D7.6: Theater size applies to the bench live, as in a match; D7.5.10 / D7.5.11: the window's tuning and soft edge too.
     syncWindowTune(bench?.overlay);
     syncTableAudio();
@@ -1259,36 +1303,203 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // The Match tab's sliders follow; for my table, `syncTableAudio` levels the helper.
     emit();
   };
-  const registerKeys = (): void => {
+  /** One global shortcut; false when it could not be taken (logged with `what` it was for). */
+  const bind = (acc: string, what: string, fn: () => void): boolean => {
     const reg = opts.shortcuts;
-    if (!reg || keysHeld) return;
+    if (!reg) return false;
+    let ok: boolean;
+    try {
+      ok = reg.register(acc, fn);
+    } catch (e) {
+      log.warn(`match: ${acc} could not be registered: ${describeError(e)}`);
+      return false;
+    }
+    if (!ok) log.warn(`match: ${acc} is held by another app; ${what} is off this match`);
+    return ok;
+  };
+  const unbind = (acc: string): void => {
+    try {
+      opts.shortcuts?.unregister(acc);
+    } catch {
+      /* already gone */
+    }
+  };
+  /** D8.10: the menu's two keys as they were registered (the settings may change under a match). */
+  let menuKeysHeld: string[] = [];
+  let menuKeyProblem: string | null = null;
+  const registerMenuKeys = (): void => {
+    const taken: string[] = [];
+    if (bind(settings.menuKey, 'the menu key', () => onMenuKey())) menuKeysHeld.push(settings.menuKey);
+    else taken.push(shortcutWords(settings.menuKey));
+    const choose = settings.menuChooseKey;
+    if (choose !== null) {
+      if (bind(choose, 'the choose key', () => pressMenu('choose'))) menuKeysHeld.push(choose);
+      else taken.push(shortcutWords(choose));
+    }
+    menuKeyProblem = taken.length > 0 ? `${taken.join(' and ')} could not be taken (another program holds ${taken.length > 1 ? 'them' : 'it'}): choose another key` : null;
+    log.info(`match: menu key ${shortcutWords(settings.menuKey)}${choose !== null ? `, choose key ${shortcutWords(choose)}` : ''}${menuKeyProblem ? ` (${menuKeyProblem})` : ''}`);
+  };
+  const unregisterMenuKeys = (): void => {
+    for (const acc of menuKeysHeld) unbind(acc);
+    menuKeysHeld = [];
+    menuKeyProblem = null;
+  };
+  const registerKeys = (): void => {
+    if (!opts.shortcuts || keysHeld) return;
     keysHeld = true;
-    const bind = (acc: string, fn: () => void): void => {
-      let ok: boolean;
-      try {
-        ok = reg.register(acc, fn);
-      } catch (e) {
-        log.warn(`match: ${acc} could not be registered: ${describeError(e)}`);
-        return;
-      }
-      if (!ok) log.warn(`match: ${acc} is held by another app; that volume key is off this match`);
-    };
-    bind(VOLUME_SHORTCUTS.voiceUp, () => nudge('voiceVolume', VOLUME_STEP, VOLUME_SHORTCUTS.voiceUp));
-    bind(VOLUME_SHORTCUTS.voiceDown, () => nudge('voiceVolume', -VOLUME_STEP, VOLUME_SHORTCUTS.voiceDown));
-    bind(VOLUME_SHORTCUTS.tableUp, () => nudge('myTableWhileUp', VOLUME_STEP, VOLUME_SHORTCUTS.tableUp));
-    bind(VOLUME_SHORTCUTS.tableDown, () => nudge('myTableWhileUp', -VOLUME_STEP, VOLUME_SHORTCUTS.tableDown));
+    bind(VOLUME_SHORTCUTS.voiceUp, 'that volume key', () => nudge('voiceVolume', VOLUME_STEP, VOLUME_SHORTCUTS.voiceUp));
+    bind(VOLUME_SHORTCUTS.voiceDown, 'that volume key', () => nudge('voiceVolume', -VOLUME_STEP, VOLUME_SHORTCUTS.voiceDown));
+    bind(VOLUME_SHORTCUTS.tableUp, 'that volume key', () => nudge('myTableWhileUp', VOLUME_STEP, VOLUME_SHORTCUTS.tableUp));
+    bind(VOLUME_SHORTCUTS.tableDown, 'that volume key', () => nudge('myTableWhileUp', -VOLUME_STEP, VOLUME_SHORTCUTS.tableDown));
     log.info('match: volume keys on while the match runs: Ctrl+Alt+Up / Down the voice, Ctrl+Alt+Left / Right my table while I play');
+    registerMenuKeys();
   };
   const unregisterKeys = (): void => {
     if (!keysHeld) return;
     keysHeld = false;
-    for (const acc of Object.values(VOLUME_SHORTCUTS)) {
-      try {
-        opts.shortcuts?.unregister(acc);
-      } catch {
-        /* already gone */
-      }
+    for (const acc of Object.values(VOLUME_SHORTCUTS)) unbind(acc);
+    unregisterMenuKeys();
+    holdArrows(false);
+  };
+
+  // ---- D8.10 (2026-11-14): the in-game menu (match/match-menu.ts) ----
+  let menu: MenuState = MENU_CLOSED;
+  /** The menu key's last press, and the menu as it was before that press moved it (a quick second press chooses there). */
+  let menuKeyAt: number | null = null;
+  let menuBefore: MenuState | null = null;
+  let menuTimer: ReturnType<typeof setTimeout> | null = null;
+  let arrowsHeld = false;
+  let menuSent = 'null';
+  const menuFacts = (a: Active): MenuFacts => {
+    const st = a.controller.status();
+    return {
+      role: a.controller.currentRole instanceof HostMatch ? 'host' : 'client',
+      phase: st.phase,
+      players: st.participants.length,
+      startWarnings: st.startWarnings,
+      seriesOver: st.series.over,
+      nextGameBlocker: st.series.nextGameBlocker,
+      voice: settings.voiceVolume,
+      theirTable: settings.othersTableVolume,
+      myTable: settings.myTableWhileUp,
+      mic: st.panel.mic,
+    };
+  };
+  const menuHint = (): string => {
+    const key = shortcutWords(settings.menuKey);
+    const choose = settings.menuChooseKey !== null ? `${shortcutWords(settings.menuChooseKey)}, or ${key} twice quickly` : `${key} twice quickly`;
+    return `${key}: next line · ${choose}: choose · the arrow keys work too`;
+  };
+  /** The menu as it is now to the panel page; only when it changed (a status emit calls this often). */
+  const pushMenu = (): void => {
+    const view = active ? menuView(menu, menuItems(menuFacts(active)), menuHint()) : null;
+    const text = JSON.stringify(view);
+    if (text === menuSent) return;
+    menuSent = text;
+    opts.media?.setMenu?.(view);
+  };
+  const holdArrows = (on: boolean): void => {
+    if (on === arrowsHeld) return;
+    arrowsHeld = on;
+    for (const [acc, key] of Object.entries(MENU_ARROWS)) {
+      if (on) bind(acc, 'that arrow in the menu', () => pressMenu(key));
+      else unbind(acc);
     }
+  };
+  const closeMenu = (): void => {
+    if (menuTimer) clearTimeout(menuTimer);
+    menuTimer = null;
+    menu = MENU_CLOSED;
+    menuKeyAt = null;
+    menuBefore = null;
+    holdArrows(false);
+  };
+  const armMenuTimer = (): void => {
+    if (menuTimer) clearTimeout(menuTimer);
+    menuTimer = setTimeout(() => {
+      menuTimer = null;
+      if (!menu.open) return;
+      closeMenu();
+      log.info('match: menu closed (no key for a while)');
+      emit();
+    }, MENU_IDLE_MS);
+  };
+  const runMenuEffect = (effect: MenuEffect): void => {
+    // A refusal (the lobby is not complete, no next game yet) comes back onto the menu, on the line that asked.
+    const refused =
+      (at: 'start' | 'next') =>
+      (e: unknown): void => {
+        if (!active) return;
+        menu = { open: true, at, confirming: null, note: describeError(e) };
+        holdArrows(true);
+        armMenuTimer();
+        emit();
+      };
+    switch (effect.kind) {
+      case 'start':
+        log.info(`match: Start match chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
+        void api.start({ anyway: effect.anyway }).catch(refused('start'));
+        return;
+      case 'next':
+        log.info('match: Next game chosen in the menu');
+        void api.start().catch(refused('next'));
+        return;
+      case 'volume': {
+        const key = effect.which === 'voice' ? 'voiceVolume' : effect.which === 'theirTable' ? 'othersTableVolume' : 'myTableWhileUp';
+        saveSettings(patchMatchSettings(settings, { [key]: effect.to }));
+        log.info(`match: ${effect.which === 'voice' ? 'voice volume' : effect.which === 'theirTable' ? 'their table sound' : 'my table while I play'} ${settings[key]} % (menu)`);
+        pushVolume();
+        return;
+      }
+      case 'mic':
+        log.info(`match: microphone ${effect.muted ? 'muted' : 'on'} (menu)`);
+        api.setMuted(effect.muted);
+        return;
+      case 'leave':
+        log.info('match: Leave chosen in the menu');
+        void api.leave().catch((e: unknown) => log.warn(`match: leave from the menu: ${describeError(e)}`));
+        return;
+    }
+  };
+  const pressMenu = (key: MenuKey): void => {
+    const a = active;
+    if (!a) return;
+    const facts = menuFacts(a);
+    const wasOpen = menu.open;
+    const r = menuPress(menu, menuItems(facts), facts, key);
+    if (r.state === menu && r.effect === null) return;
+    menu = r.state;
+    if (menu.open) {
+      if (!wasOpen) {
+        log.info('match: menu opened');
+        // A desktop rig: the panel window comes up if it was put away (focus stays with VPX).
+        if (!headsetPanel(a)) opts.media?.showPanel();
+      }
+      holdArrows(true);
+      armMenuTimer();
+    } else {
+      closeMenu();
+      if (wasOpen) log.info('match: menu closed');
+    }
+    cue.play('tick');
+    if (r.effect) runMenuEffect(r.effect);
+    emit();
+  };
+  /** The menu key: open, then next line; twice quickly: choose the line the first press left (`readMenuKey`). */
+  const onMenuKey = (): void => {
+    const now = clock();
+    const read = readMenuKey(menuKeyAt === null ? null : now - menuKeyAt);
+    menuKeyAt = now;
+    if (read === 'repeat') return;
+    if (read === 'double' && menuBefore?.open && menu.open) {
+      menu = menuBefore;
+      menuBefore = null;
+      menuKeyAt = null;
+      pressMenu('choose');
+      return;
+    }
+    menuBefore = menu;
+    pressMenu('menu');
   };
 
   /** §3 / coordinator 2026-10-30: the panel goes up at host / join, before the match starts, of the kind decided then. */
@@ -2055,6 +2266,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.endTimer = null;
     for (const off of a.offs) off();
     unregisterKeys();
+    closeMenu();
+    pushMenu();
+    if (peekTimer) clearTimeout(peekTimer);
+    peekTimer = null;
+    peekKey = '';
     // D10.3: the helper's peers are closed and the rings let go; the helper itself stays for the next match.
     closeVideo(a);
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
@@ -2095,7 +2311,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return status();
     });
 
-  return {
+  const api: MatchHost = {
     host,
     join: joinMatch,
     async start(o) {
@@ -2174,7 +2390,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const tuneBefore = windowTuneWords(settings);
       const preMatchBefore = settings.preMatchPlay;
       const volumeBefore = `${settings.voiceVolume}/${settings.othersTableVolume}/${settings.myTableWhileUp}`;
+      const menuKeysBefore = `${settings.menuKey}/${settings.menuChooseKey}`;
       saveSettings(patchMatchSettings(settings, patch));
+      // D8.10: new menu keys are taken at once when a match holds the old ones.
+      if (`${settings.menuKey}/${settings.menuChooseKey}` !== menuKeysBefore) {
+        log.info(`match: menu key ${shortcutWords(settings.menuKey)}, choose key ${settings.menuChooseKey !== null ? shortcutWords(settings.menuChooseKey) : 'none'} (Match tab)`);
+        if (keysHeld) {
+          unregisterMenuKeys();
+          registerMenuKeys();
+        }
+      }
       // A12 (2026-11-05): the host's table before the match; a lobby under way follows the new choice at once.
       if (settings.preMatchPlay !== preMatchBefore) {
         log.info(`match: before the match: ${settings.preMatchPlay === 'locked' ? 'the table is locked until someone joins' : 'free play until someone joins'} (Match tab)`);
@@ -2356,9 +2581,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         log.info(`match: ${a.code} is kept for the restart; Castcade rejoins it when it is back`);
       } else await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
       unregisterKeys();
+      closeMenu();
+      if (peekTimer) clearTimeout(peekTimer);
+      peekTimer = null;
       cue.destroy();
     },
   };
+  return api;
 }
 
 function readText(file: string): string | null {

@@ -383,6 +383,20 @@ describe('panel page script (D2)', () => {
     expect(p.el('mic').textContent).toBe('MIC MUTED');
   });
 
+  it('D8.10 (2026-11-14): draws the in-game menu over the panel while main sends one, and takes it away on null', () => {
+    const p = loadPage({ mic: true, capture: true });
+    expect(p.el('menu').className).toBe('');
+    p.emit(PANEL_CHANNELS.menu, { items: [{ label: 'Start match', value: null, off: true }, { label: 'Voice volume', value: '150 %', off: false }], index: 1, note: 'Nobody has joined yet', hint: 'Ctrl+Alt+M: next line' });
+    expect(p.el('menu').className).toBe('open');
+    expect(p.el('menuitems').children.map((c) => c.className)).toEqual(['mi off', 'mi sel']);
+    expect(p.el('menuitems').text()).toContain('Voice volume 150 %');
+    expect(p.el('menunote').textContent).toBe('Nobody has joined yet');
+    expect(p.el('menuhint').textContent).toBe('Ctrl+Alt+M: next line');
+    p.emit(PANEL_CHANNELS.menu, null);
+    expect(p.el('menu').className).toBe('');
+    expect(p.el('menuitems').children).toEqual([]);
+  });
+
   it('attach: mic and capture on every connection, video enabled only while sending, 2.5 Mbps cap, offers addressed to the peer', async () => {
     const p = loadPage({ mic: true, capture: true });
     p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'third'], ice: [{ urls: ['stun:x'] }], capture: CAP, micDeviceId: 'hs', muted: false, sending: false });

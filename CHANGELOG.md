@@ -7,6 +7,24 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **An in-game menu on a key (D8.10).** While a match is on, the menu key (Ctrl+Alt+M) brings up a menu on the match
+  panel, in the headset or on the desktop panel: Start match and Next game for the host, voice volume, their table
+  sound, my table while I play, the microphone, Leave match. The menu key moves down a line; the choose key
+  (Ctrl+Alt+K), or the menu key twice quickly, chooses, so one controller button mapped to a key is enough; the arrow
+  keys work while it is open. Both keys are set on the Match tab by clicking the box and pressing the key. Enter and
+  Esc are never used: VPX reads the keyboard itself and would act on them. `match/match-menu.ts`, `main/match-host.ts`,
+  `media/panel-page.ts`, the Match tab.
+
+### Changed
+
+- **The lobby panel leaves a free-play table alone (D8.9).** In the headset the panel no longer sits over the table
+  while a player waits in the lobby with a table that is free to play: it shows for 8 seconds when the lobby changes
+  (someone joins, leaves, loads a table), stays up during the start countdown, and is hidden otherwise. The menu key
+  brings it up at any time. A locked table (Before the match: locked) keeps the panel as before.
+  `match/controller.ts` (`vrViewMode`), `main/match-host.ts`.
+
 ## [0.2.41] — 2026-11-13
 
 ### Added

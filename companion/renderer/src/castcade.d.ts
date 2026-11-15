@@ -540,6 +540,9 @@ interface MatchSettings {
   othersTableVolume: number;
   /** D2.10: this rig's own VPX volume while this player is up, 10–100 % (100 = untouched). */
   myTableWhileUp: number;
+  /** D8.10: the in-game menu's keys (Electron accelerators): open / next line, and choose (null: none). */
+  menuKey: string;
+  menuChooseKey: string | null;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
@@ -603,6 +606,8 @@ interface MatchStatus {
   settings: MatchSettings;
   defaultName: string;
   lastError: string | null;
+  /** D8.10: why a menu key does nothing this match (another program holds it), else null. */
+  menuKeyProblem: string | null;
   /** D7.6: the VR test bench while it runs, else null. */
   bench: BenchStatus | null;
   /** A15: a match this PC was in when Castcade last closed and can go back to; `auto`: it is rejoined without asking. */
