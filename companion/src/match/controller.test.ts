@@ -9,7 +9,7 @@ import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../me
 import { headerText } from '../media/panel-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
+import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -659,12 +659,98 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     expect(H.media.panel.message).toBe('Press Start on the table to begin your game');
   });
 
+  it("A16 (2026-11-15, match LPHDUW): the table stays unlocked after my last ball until its own game ends (initials), and that game's end is never the next game's", async () => {
+    const s = await rig(1);
+    const { host, clock, H, C } = s;
+    host.start();
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(500));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(scores(500));
+    H.ctl.feed(gameEnd(500));
+    await flush();
+    // The client's only ball ends at 82,347,460; the machine asks for initials, so its game is not over yet.
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(82_347_460));
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(scores(82_347_460));
+    await flush();
+    expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
+    expect(host.state.players['c']).toMatchObject({ score: 82_347_460, status: 'finished' });
+    // Unlocked for the initials, although a client's table is locked between games.
+    expect(C.ctl.status().locked).toBe(false);
+    expect(C.logs.some((l) => l.includes("the table's own game is still on"))).toBe(true);
+    // The host starts game 2 and plays its ball; the client is still at the initials when its turn comes.
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(host.state.gameNumber).toBe(2);
+    expect(C.ctl.status().locked).toBe(false);
+    H.ctl.feed(scores(900));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(scores(900));
+    H.ctl.feed(gameEnd(900));
+    await flush();
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false });
+    // The old game's last words (the match bonus, then its end) are not game 2's: no score, no ball end, no GAME_OVER.
+    const gameOvers: string[] = [];
+    host.on('gameOver', (m) => gameOvers.push(m.from));
+    C.ctl.feed(scores(93_465_460));
+    C.ctl.feed(gameEnd(93_465_460));
+    await flush();
+    expect(gameOvers).toEqual([]);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false });
+    expect(host.state.players['c']).toMatchObject({ ballsPlayed: 0, status: 'playing' });
+    expect(C.media.panel.players.find((x) => x.id === 'c')?.score ?? null).toBeNull();
+    expect(C.logs.some((l) => l.includes("the table's finished game ended; nothing reported for it"))).toBe(true);
+    // Game 2 on the client's table then plays as any game does.
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(1200));
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(scores(1200));
+    C.ctl.feed(gameEnd(1200));
+    await flush();
+    expect(headerText(C.media.panel)).toBe('GAME 2 OVER');
+    expect(host.state.players['c']).toMatchObject({ score: 1200, status: 'finished' });
+    expect(C.ctl.status().locked).toBe(true);
+    void clock;
+  });
+
+  it('A16: a table game that never ends keeps the table unlocked for three minutes only; a new game on it ends the wait at once', async () => {
+    const s = await rig(1);
+    const { host, clock, H, C } = s;
+    host.start();
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(500));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(scores(500));
+    await flush();
+    // The host's game is done while the client plays: unlocked for its ending, then locked again by the clock.
+    expect(H.ctl.status()).toMatchObject({ myTurn: false, locked: false });
+    clock.advance(SPENT_UNLOCK_MS - 1);
+    expect(H.ctl.status().locked).toBe(false);
+    clock.advance(1);
+    expect(H.ctl.status().locked).toBe(true);
+    // The client: the same wait, ended by a game started on its table (locked: the game is between games' business).
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(800));
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(scores(800));
+    await flush();
+    expect(C.ctl.status().locked).toBe(false);
+    C.ctl.feed(gameStart);
+    expect(C.ctl.status().locked).toBe(true);
+  });
+
   it('the host leaving between games ends the series for the client (hostGone): unlocked, said on the panel', async () => {
     const s = await rig(1);
     const { host, bus, C } = s;
     host.start();
     await flush();
     await playGame(s, 100, 200);
+    // A16: the client's table game ends (no initials to enter); between games its table is locked.
+    C.ctl.feed(gameEnd(200));
     expect(C.ctl.status().locked).toBe(true);
     bus.disconnect('h');
     await flush();

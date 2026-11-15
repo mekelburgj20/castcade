@@ -7,6 +7,14 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **High-score initials after the last ball (A16).** In the match of 2026-11-14 the table locked when the owner's
+  third ball ended, so the machine's initials prompt took no input; his first turn of the next game unlocked it, and
+  the old game's end was then reported as the new game's, over after one ball at the old score. The table now stays
+  unlocked after a player's last ball until the table's own game ends (three minutes at most), whoever is up, and
+  nothing that finished game says (scores, a ball end, its end) is reported into the match. `match/controller.ts`.
+
 ## [0.2.42] — 2026-11-15
 
 Companion only: the OpenXR layer and the native helpers are the v0.2.40 zips, protocol 5 is unchanged, so 0.2.41 and

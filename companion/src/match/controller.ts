@@ -48,6 +48,14 @@
  *   instead), and during a game the host may `passTurn()`: the holder's ball ends by hand at its last known score
  *   (TURN_PASS, logged), for this host's own ball or a client's. The passed player's controller stops playing that
  *   ball at once (locked, nothing more reported for it).
+ * - A16 (2026-11-15, the owner's match LPHDUW of 2026-11-14): the table's own game outlives this player's last ball
+ *   (the bonus, the match animation, the high-score initials). The owner's third ball ended at 82,347,460, the table
+ *   locked, and the machine's initials prompt could not be answered; his first turn of game 2 unlocked it, he entered
+ *   the initials, and that old game's `game_end` was reported as GAME_OVER of game 2 at 93,465,460 after one ball. So:
+ *   when this player's last ball of a game is reported while the table's game is still running, that table game is
+ *   `spent`: the table stays unlocked until it ends (at most `SPENT_UNLOCK_MS`), whoever is up and across the RESULT
+ *   and a NEXT_GAME, and until it ends (its `game_end`, or the next `game_start`) nothing it says is reported:
+ *   scores, ball ends and its end belong to the game already finished.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
@@ -169,6 +177,8 @@ export function mismatchWords(fields: readonly string[]): { table: string | null
   return { table, build };
 }
 
+/** A16: how long a table whose game outlives this player's last ball stays unlocked for the machine's own ending. */
+export const SPENT_UNLOCK_MS = 180_000;
 const DEFAULT_SETTLE_MS = 2000;
 const DEFAULT_START_COUNTDOWN_MS = 5000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
@@ -238,6 +248,13 @@ export class MatchController {
 
   private phase: ControllerPhase = 'lobby';
   private locked = false;
+  /** What the lock rules ask for; `locked` is that, minus the A16 window (`spentUnlock`). */
+  private wantLocked = false;
+  /** A16: the table's running game is the one this player already finished; nothing it says is reported. */
+  private spentTableGame = false;
+  /** A16: the table is held unlocked for that game's ending (initials); ends with the game or the timer. */
+  private spentUnlock = false;
+  private spentTimer: unknown = null;
   private lobby: ParticipantInfo[] = [];
   /**
    * A6.1 (2026-11-01): rigs that changed after MATCH_READY (`rigUpdated`), laid over the log's roster wherever this
@@ -511,6 +528,7 @@ export class MatchController {
       this.holding = null;
       this.myBallsDone = Math.max(this.myBallsDone, p.ballNumber);
       this.opts.media?.setSending(false);
+      this.noteMyGameDone();
       this.setLocked(true);
     }
     const who = p.player === this.localId ? 'my' : `${this.nameOf(p.player)}'s`;
@@ -556,6 +574,15 @@ export class MatchController {
     // A12: this player's own table game, any phase (the lobby rules read it).
     if (ev.kind === 'game_start') this.tableGameRunning = true;
     else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.tableGameRunning = false;
+    // A16: the table game this player already finished: its scores, ball ends and end are not this turn's.
+    if (this.spentTableGame) {
+      if (ev.kind === 'current_scores' || ev.kind === 'ball_end') return;
+      if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') {
+        this.endSpentGame("the table's finished game ended; nothing reported for it");
+        return;
+      }
+      this.endSpentGame(ev.kind === 'game_start' ? "a new game started on the table; the finished one's end was not seen" : 'the table closed');
+    }
     switch (ev.kind) {
       case 'game_start':
         this.onTableGameStart();
@@ -621,6 +648,9 @@ export class MatchController {
     this.clearPending();
     this.clearStateTimer();
     this.clearCountdown();
+    if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
+    this.spentTimer = null;
+    this.spentUnlock = false;
     for (const off of this.offs) off();
     this.offs = [];
     this.setLocked(false);
@@ -1211,6 +1241,7 @@ export class MatchController {
     // Bookkeeping first: a HostMatch issues the next grant inside localBallEnd.
     this.holding = null;
     this.opts.media?.setSending(false);
+    this.noteMyGameDone();
     this.setLocked(true);
     this.opts.log(`match: BALL_END ball ${p.grant.ballNumber} score ${finalScore}${p.shootAgain ? ' (shoot again)' : ''}`);
     this.call(() => {
@@ -1298,7 +1329,39 @@ export class MatchController {
     this.stateTimer = null;
   }
 
-  private setLocked(on: boolean): void {
+  /**
+   * A16: this player's last ball of the game has just been reported. If the table's own game is still running, it is
+   * spent, and the table stays unlocked for its ending.
+   */
+  private noteMyGameDone(): void {
+    if (this.spentTableGame || !this.tableGameRunning || !this.myGameDone()) return;
+    this.spentTableGame = true;
+    this.spentUnlock = true;
+    if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
+    this.spentTimer = this.opts.setTimeout(() => {
+      this.spentTimer = null;
+      if (!this.spentUnlock) return;
+      this.spentUnlock = false;
+      this.opts.log(`match: the table's finished game has not ended after ${Math.round(SPENT_UNLOCK_MS / 1000)} s; the table follows the turn lock again`);
+      this.setLocked(this.wantLocked);
+    }, SPENT_UNLOCK_MS);
+    this.opts.log("match: my game is done and the table's own game is still on (bonus, initials): the table stays unlocked until it ends");
+  }
+
+  /** A16: the spent table game is over (its end, or a new game started): the turn lock rules again. */
+  private endSpentGame(why: string): void {
+    if (!this.spentTableGame) return;
+    this.spentTableGame = false;
+    this.spentUnlock = false;
+    if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
+    this.spentTimer = null;
+    this.opts.log(`match: ${why}`);
+    this.setLocked(this.wantLocked);
+  }
+
+  private setLocked(want: boolean): void {
+    this.wantLocked = want;
+    const on = want && !this.spentUnlock;
     if (this.locked === on) return;
     this.locked = on;
     try {
