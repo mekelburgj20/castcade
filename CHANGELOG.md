@@ -7,6 +7,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.42] — 2026-11-15
+
+Companion only: the OpenXR layer and the native helpers are the v0.2.40 zips, protocol 5 is unchanged, so 0.2.41 and
+0.2.42 play together.
+
 ### Added
 
 - **An in-game menu on a key (D8.10).** While a match is on, the menu key (Ctrl+Alt+M) brings up a menu on the match
