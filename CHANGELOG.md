@@ -7,6 +7,11 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.43] — 2026-11-15
+
+Companion only: the OpenXR layer and the native helpers are the v0.2.40 zips, protocol 5 is unchanged, so 0.2.41 to
+0.2.43 play together.
+
 ### Fixed
 
 - **High-score initials after the last ball (A16).** In the match of 2026-11-14 the table locked when the owner's
