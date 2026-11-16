@@ -5,7 +5,9 @@
  * module directly, so recreation never leaks a stale instance into IPC handlers. A recreation hands the
  * new instance the old one's journal mark (A15), so a match is not fed the game in progress twice.
  */
+import { win32 } from 'node:path';
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
+import { nodeFs } from '../witness/fs.js';
 import { isForkExe } from '../witness/process-watch.js';
 import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
@@ -67,6 +69,9 @@ export interface WitnessEventMeta {
   mark: JournalMark | null;
 }
 
+/** The stock VPX the fork is installed beside (the fork's drop-in package: `VPinballX_GL64_castcade.exe` next to it). */
+const STOCK_EXE_BESIDE_FORK = 'VPinballX_GL64.exe';
+
 /** Which settings require a restart of the module when they change. */
 export function needsWitnessRestart(prev: WitnessSettings, next: WitnessSettings): boolean {
   return prev.arcaidBaseUrl !== next.arcaidBaseUrl || prev.nvramDir !== next.nvramDir;
@@ -85,6 +90,26 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
   /** D7.3.3: its process start (the OpenXR layer's "VPX predates the registration" rule). */
   let launchStartedAt: number | null = null;
   let witness: Witness = attach(createWitness(store, deps));
+
+  // I11.4.1 (0.2.44): a build before this one remembered the VPX fork as "the VPX exe" whenever the fork was started
+  // from its own launchers, and A14 then started match tables with it. Put back the stock exe that sits beside it
+  // (the drop-in install), or forget the exe when there is none; any VPX launch sets it again.
+  const remembered = store.get().vpxExe;
+  if (remembered && isForkExe(remembered)) {
+    const stock = win32.join(win32.dirname(remembered), STOCK_EXE_BESIDE_FORK);
+    void (deps.fs ?? nodeFs)
+      .stat(stock)
+      .then(
+        () => stock,
+        () => null,
+      )
+      .then(async (exe) => {
+        if (!isForkExe(store.get().vpxExe)) return; // a launch in the meantime already set it
+        log.info(`settings: the remembered VPX exe was the Castcade VPX build: ${exe ? `now ${exe}` : 'forgotten until a table is opened in VPX'}`);
+        await store.set({ vpxExe: exe });
+      })
+      .catch((err: unknown) => log.warn(`settings: could not correct the remembered VPX exe: ${describeError(err)}`));
+  }
 
   let lastCheckin: string | null = null;
   const noticeListeners = new Set<(n: WitnessNotice) => void>();

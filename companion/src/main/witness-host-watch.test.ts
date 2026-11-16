@@ -32,7 +32,7 @@ afterEach(async () => {
   for (const h of hosts.splice(0)) await h.stop();
 });
 
-function rig() {
+function rig(start: { vpxExe?: string | null; fs?: MemoryFs } = {}) {
   const settings = {
     arcaidBaseUrl: 'https://arcaid.test',
     deviceId: 'dev-1',
@@ -43,7 +43,7 @@ function rig() {
     dataDir: '/data',
     vpsDir: repo('fixtures/vps'),
     tablesDir: null,
-    vpxExe: OLD as string | null,
+    vpxExe: (start.vpxExe === undefined ? OLD : start.vpxExe) as string | null,
   };
   const store = {
     file: '',
@@ -56,7 +56,7 @@ function rig() {
   let procs: ProcessInfo[] = [];
   const hidden = new HiddenVpx();
   const wh = createWitnessHost(store, log, {
-    fs: new MemoryFs(),
+    fs: start.fs ?? new MemoryFs(),
     lister: { list: async () => procs.map((p) => ({ ...p })) },
     hideProcess: (p) => hidden.hides(p),
     vrProbe: null,
@@ -107,6 +107,23 @@ describe('the witness host and the VPX fork (I11.4.1)', () => {
     r.run([vpx(41, STOCK)]);
     await until(() => r.settings.vpxExe === STOCK);
     expect(r.wh.status().vpxExe).toBe(STOCK);
+  });
+
+  it('a fork exe an older build remembered is put right at start: the stock exe beside it, or forgotten when there is none', async () => {
+    // The drop-in install: the stock exe sits beside the fork.
+    const fs = new MemoryFs();
+    fs.put(STOCK, 'exe');
+    const a = rig({ vpxExe: FORK, fs });
+    await until(() => a.settings.vpxExe === STOCK);
+    expect(a.logs.some((l) => l.includes('the remembered VPX exe was the Castcade VPX build: now'))).toBe(true);
+    // The fork in a folder of its own: nothing to put back, so the exe is forgotten until a table is opened in VPX.
+    const b = rig({ vpxExe: FORK });
+    await until(() => b.settings.vpxExe === null);
+    // A stock exe is left alone.
+    const c = rig({ vpxExe: STOCK });
+    await sleep(60);
+    expect(c.settings.vpxExe).toBe(STOCK);
+    expect(c.logs.some((l) => l.includes('the remembered VPX exe was'))).toBe(false);
   });
 
   it("a watcher Castcade announced leaves the running game's pid, start and table_exit feed alone", async () => {
