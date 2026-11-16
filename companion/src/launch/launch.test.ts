@@ -8,7 +8,7 @@ import { MemoryFs } from '../witness/fs.js';
 import { createIdentityStore } from '../witness/identity-store.js';
 import { findLocalTable, titleOf } from './find-table.js';
 import { createRecentTables, listKnownTables, listTableFiles, type KnownTable } from './known-tables.js';
-import { createVpxLauncher, planLaunch, type SpawnOptions } from './vpx-launch.js';
+import { FORK_EXE_NAME, createVpxLauncher, forkExeFor, forkStreamEnv, launchEnv, planLaunch, type SpawnOptions } from './vpx-launch.js';
 
 const TABLES = 'C:\\vpx\\tables';
 const MANIFESTS = 'C:\\data\\witness\\tables';
@@ -224,5 +224,90 @@ describe('the VPX launcher (A14)', () => {
 
   it('planLaunch is the whole command: two arguments, never a string to split', () => {
     expect(planLaunch(EXE, TABLE)).toEqual({ ok: true, plan: { command: EXE, args: ['-Play', TABLE], cwd: 'C:\\vpx' } });
+  });
+});
+
+describe('the VPX fork launch (I11.4.1)', () => {
+  const DIR = String.raw`C:\vpx`;
+  const EXE = String.raw`C:\vpx\VPinballX_GL64.exe`;
+  const FORK = String.raw`C:\vpx\VPinballX_GL64_castcade.exe`;
+  const TABLE = String.raw`C:\vpx\tables\Nudge Test and Calibration.vpx`;
+
+  it('the fork goes beside the VPX exe Castcade knows', () => {
+    expect(forkExeFor(EXE)).toBe(FORK);
+    expect(forkExeFor(FORK)).toBe(FORK);
+    expect(FORK_EXE_NAME).toBe('VPinballX_GL64_castcade.exe');
+    expect(forkExeFor(null)).toBeNull();
+    expect(forkExeFor('VPinballX_GL64.exe')).toBeNull();
+  });
+
+  it('a player listens and a watcher connects, both on loopback, as the fork launchers set them', () => {
+    expect(forkStreamEnv('play', 51000, 'play.log')).toEqual({ CASTCADE_STREAM: 'play', CASTCADE_STREAM_ADDR: 'listen:127.0.0.1:51000', CASTCADE_STREAM_LOG: 'play.log' });
+    expect(forkStreamEnv('watch', 51001, 'watch.log')).toEqual({
+      CASTCADE_STREAM: 'watch',
+      CASTCADE_STREAM_ADDR: 'connect:127.0.0.1:51001',
+      CASTCADE_STREAM_DELAY_MS: '100',
+      CASTCADE_STREAM_SOUND: '1',
+      CASTCADE_STREAM_LOG: 'watch.log',
+    });
+    expect(() => forkStreamEnv('play', 0, 'x')).toThrow();
+  });
+
+  it("the child's environment drops inherited stream and test variables, whatever their case", () => {
+    const env = launchEnv({ PATH: 'Windows', castcade_stream: 'watch', CASTCADE_TEST_INPUT: 'x', CASTCADE_TEST_NOPAUSE: '1', CASTCADE_OTHER: 'kept' }, { CASTCADE_STREAM: 'play' });
+    expect(env).toEqual({ PATH: 'Windows', CASTCADE_OTHER: 'kept', CASTCADE_STREAM: 'play' });
+  });
+
+  it('planLaunch carries the environment only when asked', () => {
+    expect(planLaunch(FORK, TABLE, { CASTCADE_STREAM: 'play' })).toEqual({ ok: true, plan: { command: FORK, args: ['-Play', TABLE], cwd: DIR, env: { CASTCADE_STREAM: 'play' } } });
+    expect(planLaunch(EXE, TABLE)).toEqual({ ok: true, plan: { command: EXE, args: ['-Play', TABLE], cwd: DIR } });
+  });
+
+  function forkLauncher(missing: string[] = []) {
+    const spawned: Array<{ command: string; args: readonly string[]; options: SpawnOptions }> = [];
+    const exits: Array<(code: number | null) => void> = [];
+    const errors: Array<(e: Error) => void> = [];
+    const logs: string[] = [];
+    const l = createVpxLauncher({
+      spawn: (command, args, options) => {
+        spawned.push({ command, args, options });
+        return {
+          pid: 77,
+          unref: () => undefined,
+          on: (event: string, cb: (x: never) => void) => void (event === 'exit' ? exits.push(cb as (c: number | null) => void) : errors.push(cb as (e: Error) => void)),
+        };
+      },
+      exists: async (p) => !missing.includes(p),
+      exe: () => EXE,
+      log: (line) => void logs.push(line),
+      baseEnv: () => ({ PATH: 'Windows', CASTCADE_STREAM_ADDR: 'listen:47800' }),
+    });
+    return { l, spawned, exits, errors, logs };
+  }
+
+  it('starts the fork with the stream added to a clean environment, and hears it end once', async () => {
+    const t = forkLauncher();
+    const codes: Array<number | null> = [];
+    const env = forkStreamEnv('watch', 51001, 'w.log');
+    expect(await t.l.launch(TABLE, { exe: FORK, env, onExit: (c) => codes.push(c), what: 'as the 3D watch watcher' })).toEqual({ ok: true, pid: 77 });
+    expect(t.spawned[0]).toEqual({ command: FORK, args: ['-Play', TABLE], options: { cwd: DIR, detached: true, stdio: 'ignore', shell: false, windowsHide: false, env: { PATH: 'Windows', ...env } } });
+    expect(t.logs.at(-1)).toBe('launch: started VPX on Nudge Test and Calibration.vpx (VPinballX_GL64_castcade.exe -Play, pid 77) as the 3D watch watcher');
+    t.exits[0]!(0);
+    t.errors[0]!(new Error('late'));
+    expect(codes).toEqual([0]);
+  });
+
+  it('a fork that is not there is said plainly, with its folder', async () => {
+    const t = forkLauncher([FORK]);
+    expect(await t.l.launch(TABLE, { exe: FORK })).toEqual({ ok: false, reason: `VPinballX_GL64_castcade.exe is not in ${DIR}` });
+    expect(t.spawned).toEqual([]);
+  });
+
+  it('a spawn error counts as the end of a launch that wanted to hear it', async () => {
+    const t = forkLauncher();
+    const codes: Array<number | null> = [];
+    await t.l.launch(TABLE, { exe: FORK, onExit: (c) => codes.push(c) });
+    t.errors[0]!(new Error('ENOENT'));
+    expect(codes).toEqual([null]);
   });
 });
