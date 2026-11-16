@@ -84,11 +84,22 @@ opaque to the companion. It is offered as a **3D watch session** on the Match ta
 is still a player or a watcher for as long as the table is open (I11.3). The directly reachable port remains as the
 `.bat` launchers' fallback. A router pair with no direct path needs a TURN relay (WORK F23), as voice does.
 
+### 7. A recording is the stream with timestamps (added 2026-11-16, I11.7)
+
+After the watcher's hello the stream flows one way, and a watcher sets its clock from arrival times alone. So a file
+of the player's messages, each stamped with its capture time and sent again at that pace, is to a watcher a live
+player. `CASTCADE_STREAM_RECORD=<file or folder>` on a player writes that file (with no address set it opens no socket
+at all); `castcade-replay.ps1` serves it to an ordinary watcher over loopback, with optional made-up delay, jitter and
+stalls. It is how the owner watches a game alone, the test data for the stream, and a way for a tester to prove their
+PC, build and table file without being online at the same time. Measured: replays arrive frame for frame (9,696 of
+9,696 on Nudge Test, 22,771 of 22,771 on Attack from Mars, 0 failed calls) and match the player's picture at the same
+recording time.
+
 ## What was measured (2026-11-16, the owner's rig, two instances on one PC, desktop, loopback)
 
 | Table | Parts | Stream | Replayed calls failed | Picture, player vs watcher |
 |---|---|---|---|---|
-| Nudge Test (no ROM, 10 balls) | 111 | about 12 KB/s at 150 fps | 0 | the watcher shows the same ten balls, including in flight while the shaker runs |
+| Nudge Test (no ROM, 10 balls) | 111 | 117 to 140 KB/s at 150 fps with the balls in motion (corrected 2026-11-16: the 12 KB/s first written here was not the busy figure; a recording is 7.9 MB a minute) | 0 | the watcher shows the same ten balls, including in flight while the shaker runs |
 | Flash (Williams 1979) | 484 | about 46 KB/s | 0 | lamps, reel digits, score match |
 | Attack from Mars (JP v600) | 553 | 26–65 KB/s | 0 | lamps, in-table DMD, flippers match; mean pixel difference 0.3–1.2 of 255 |
 | Monster Bash (VPW) | 1,177 | 43–92 KB/s | 0 | matches across a 60 s scripted game |
