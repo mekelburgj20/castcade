@@ -7,6 +7,7 @@
 import { applyImport, planImport, removeAllSidecars, type ImportPlan, type PlanItem } from '../patcher/index.js';
 import { nodeFs, type WitnessFs } from '../witness/fs.js';
 import { createMapCorpus, liveSupport, watchOffsets } from '../witness/maps.js';
+import { midnightWatchOffsets } from '../witness/midnight.js';
 import type { WitnessStatus } from '../witness/types.js';
 import type { TablesApplyResult, TablesDefaults, TablesPlan, TablesRemoveResult } from './ipc-types.js';
 import type { Logger } from './log.js';
@@ -87,7 +88,8 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
   const corpus = createMapCorpus(store.get().mapsDir, fs);
   const watchOffsetsFor = async (rom: string): Promise<number[]> => {
     const map = await corpus.mapFor(rom).catch(() => null);
-    return map ? watchOffsets(map) : [];
+    // B26.4: with the bytes of the ROM's Midnight Madness counter and setting, where it has them.
+    return map ? watchOffsets(map, midnightWatchOffsets(map, rom)) : [];
   };
   // B12: the import patches only machines whose live score the hook can see.
   const liveSupportFor = async (rom: string) => liveSupport(await corpus.mapFor(rom).catch(() => null));

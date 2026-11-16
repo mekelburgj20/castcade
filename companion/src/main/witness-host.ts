@@ -7,7 +7,8 @@
  */
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
 import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
-import type { GameEvent, HighScoreEvent } from '../witness/journal-detector.js';
+import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
+import type { MidnightSettingReport } from '../witness/midnight.js';
 import type { VrObservation } from '../witness/vr-detect.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
@@ -45,8 +46,10 @@ export interface WitnessHost {
   onEvent(listener: (event: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void): () => void;
   /** A16.2: a finished game's score has a place on the open table's high-score list (`Witness.highScoreQualifies`). */
   highScoreQualifies?(score: number): boolean;
-  /** B26: the open table's machine is one that may start Midnight Madness at the PC's midnight (`Witness.midnightInScope`). */
-  midnightInScope?(): boolean;
+  /** B26.4: how the Midnight Madness adjustment reads on the open table (`Witness.midnightSetting`); null = not known. */
+  midnightSetting?(): MidnightSettingReport | null;
+  /** B26.4: the ROM on the open table counted a Midnight Madness during a game (the witness's `midnightMadness` event). */
+  onMidnightMadness?(listener: (event: MidnightEvent) => void): () => void;
   /** A16.2: the open table's machine wrote its high-score list (the witness's `highScores` event). */
   onHighScores?(listener: (event: HighScoreEvent) => void): () => void;
   /** A15: how far into the open table's journal the game events were delivered (`Witness.journalMark`). */
@@ -88,6 +91,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
   const captureListeners = new Set<(c: LastCapture) => void>();
   const eventListeners = new Set<(e: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void>();
   const highScoreListeners = new Set<(e: HighScoreEvent) => void>();
+  const midnightListeners = new Set<(e: MidnightEvent) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -133,6 +137,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
       }),
       w.on('highScores', (e) => {
         for (const l of highScoreListeners) l(e);
+      }),
+      w.on('midnightMadness', (e) => {
+        for (const l of midnightListeners) l(e);
       }),
     ];
     return w;
@@ -242,7 +249,13 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
       };
     },
     highScoreQualifies: (score) => witness.highScoreQualifies(score),
-    midnightInScope: () => witness.midnightInScope(),
+    midnightSetting: () => witness.midnightSetting(),
+    onMidnightMadness(listener) {
+      midnightListeners.add(listener);
+      return () => {
+        midnightListeners.delete(listener);
+      };
+    },
     onHighScores(listener) {
       highScoreListeners.add(listener);
       return () => {

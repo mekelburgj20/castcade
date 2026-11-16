@@ -153,8 +153,26 @@ export const HelloAck = z
       .describe(
         "A13: what each participant (the host included) said about its table's ball ends (`HELLO.ballEndReady`, then `PARTICIPANT_UPDATE.ballEndReady`): `ready` false = that player's table cannot report ball ends, so its turn would never end by itself. A participant not listed is unknown. Defaulted and never logged.",
       ),
+    // B26.4 (2026-11-16): defaulted and never logged, like `ballEndReady`, so still protocol 5.
+    midnightModes: z
+      .array(z.object({ playerId: PlayerId, enabled: z.boolean(), adjustment: z.string().min(1).max(64) }))
+      .default([])
+      .describe(
+        'B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged.',
+      ),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
+
+// B26.4 (2026-11-16): what a player's companion read on its own table: the operator adjustment that enables Midnight
+// Madness (the bonus multiball some WPC ROMs start when the machine's clock, the PC's under VPinMAME, passes
+// midnight during a ball). Shown to every player; never logged, never a verdict.
+export const MidnightMode = z
+  .object({
+    enabled: z.boolean().describe("The adjustment reads YES (true) or NO (false) in the table's NVRAM."),
+    adjustment: z.string().min(1).max(64).describe('The adjustment as the service menu numbers and names it, e.g. `A.2 14 Special Mode`.'),
+  })
+  .describe("The Midnight Madness setting on the sender's table, as its companion read it. Display only.");
+export type MidnightMode = z.infer<typeof MidnightMode>;
 
 // B26 (2026-11-16): a flag a player's own companion raises about one of its balls. Never logged, never a verdict:
 // nothing in the fold, a score, a turn or a RESULT reads it.
@@ -162,7 +180,7 @@ export const PlayerAdvisory = z
   .object({
     kind: z
       .enum(['midnight'])
-      .describe("`midnight`: the sender's PC clock passed local midnight while it played this ball on a WPC machine, whose ROM starts a bonus multiball then (Midnight Madness): it may have run."),
+      .describe("`midnight`: Midnight Madness ran on this ball. B26.4: a fact, not a guess from the clock: the ROM's own audit of the mode went up in the sender's table NVRAM while the ball was in play."),
     game: GameNumber.describe('The game of the series the ball belongs to.'),
     ballNumber: BallNumber.describe("The sender's ball the flag is about."),
   })
@@ -184,9 +202,13 @@ export const ParticipantUpdate = z
     advisory: PlayerAdvisory.optional().describe(
       "B26: after MATCH_READY only: a flag about one of the sender's own balls (see `PlayerAdvisory`). The host passes the update on to every other participant like a rig change (`from` preserved) and sends its own the same way. A peer from before B26 ignores it.",
     ),
+    // B26.4 (2026-11-16): optional and never logged, so still protocol 5; a peer that does not know it strips the key.
+    midnightMode: MidnightMode.optional().describe(
+      "B26.4: the Midnight Madness setting on the sender's table (see `MidnightMode`), when its companion could read it, in any phase. In the lobby the host lists it in HELLO_ACK `midnightModes`; after MATCH_READY it passes the update on like a rig change. A peer from before B26.4 ignores it.",
+    ),
   })
   .describe(
-    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` and (B26) `advisory` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
   );
 
 export const Refuse = z

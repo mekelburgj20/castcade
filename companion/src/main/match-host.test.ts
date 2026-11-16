@@ -247,51 +247,53 @@ describe('match host (A6)', () => {
     expect(ca.last()).toEqual({ mutePid: null, tapPid: 222 });
   }, 15_000);
 
-  it("B26 (2026-11-16): a client's ball across its local midnight on a WPC machine (the witness's answer) is flagged on both Match tabs over the real socket; the host, out of scope, is not", async () => {
+  it("B26.4 (2026-11-16): over the real socket: the client's witness reads the setting (ON) and both Match tabs say so from the lobby on; its ROM counts a Midnight Madness on ball 3 and both tabs flag that ball; the host's witness, which knows nothing, reports nothing", async () => {
     type Feed = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
-    const playing = (inScope: boolean) => {
+    type Ran = Parameters<Parameters<NonNullable<WitnessHost['onMidnightMadness']>>[0]>[0];
+    const playing = (setting: { enabled: boolean; adjustment: string } | null) => {
       const cbs: ((ev: Feed) => void)[] = [];
-      const w = { ...witness('ab'.repeat(32)), onEvent: (cb: (ev: Feed) => void) => (cbs.push(cb), () => undefined), midnightInScope: () => inScope } as unknown as WitnessHost;
-      return { w, feed: (ev: Feed) => cbs.forEach((cb) => cb(ev)) };
+      const ran: ((ev: Ran) => void)[] = [];
+      const w = {
+        ...witness('ab'.repeat(32)),
+        onEvent: (cb: (ev: Feed) => void) => (cbs.push(cb), () => undefined),
+        onMidnightMadness: (cb: (ev: Ran) => void) => (ran.push(cb), () => undefined),
+        midnightSetting: () => setting,
+      } as unknown as WitnessHost;
+      return { w, feed: (ev: Feed) => cbs.forEach((cb) => cb(ev)), midnight: (ev: Ran) => ran.forEach((cb) => cb(ev)) };
     };
-    // The test's stand-in for a time zone: this rig's local day changes at `turn` (never, until the test sets it).
-    let turn = Number.POSITIVE_INFINITY;
-    const offset = (ms: number): number => (ms >= turn ? 24 * 60 : 0);
-    const hw = playing(false);
-    const cw = playing(true);
-    const H = make('mid-host', 'ab'.repeat(32), { witness: hw.w, utcOffsetMinutes: offset });
-    const C = make('mid-client', 'ab'.repeat(32), { witness: cw.w, utcOffsetMinutes: offset });
+    const hw = playing(null);
+    const cw = playing({ enabled: true, adjustment: 'A.2 14 Special Mode' });
+    const H = make('mid-host', 'ab'.repeat(32), { witness: hw.w });
+    const C = make('mid-client', 'ab'.repeat(32), { witness: cw.w });
     const port = 41000 + Math.floor(Math.random() * 2000);
     const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
     await C.mh.join(hs.invite!, 'Krobs');
+    // The lobby: the client read its table; the host could not read its own and is left out, not guessed.
+    const ON_KROBS = "Midnight Madness is ON on Krobs' table (adjustment A.2 14 Special Mode)";
+    const ON_MINE = 'Midnight Madness is ON on your table (adjustment A.2 14 Special Mode)';
+    await until(() => H.mh.status().advisories.length === 1);
+    expect(H.mh.status()).toMatchObject({ phase: 'lobby', advisories: [ON_KROBS] });
+    expect(C.mh.status().advisories).toEqual([ON_MINE]);
     await H.mh.start();
-    const play = async (mh: MatchHost, seat: { feed: (ev: Feed) => void }, ball: number, score: number, midnight = false): Promise<void> => {
+    const play = async (mh: MatchHost, seat: ReturnType<typeof playing>, ball: number, score: number, midnight = false): Promise<void> => {
       await until(() => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball);
       seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
-      if (midnight) {
-        await new Promise((r) => setTimeout(r, 5));
-        turn = Date.now();
-        await new Promise((r) => setTimeout(r, 5));
-      }
+      if (midnight) seat.midnight({ kind: 'midnight_madness', t: 0, audit: 'B.4 31 SPECIAL MODES', from: 3, to: 4, player: 1, ball });
       seat.feed({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 } as Feed);
       seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
       await until(() => mh.status().panel?.myTurn !== true);
     };
     await play(H.mh, hw, 1, 1000);
     await play(C.mh, cw, 1, 900);
-    expect(H.mh.status().advisories).toEqual([]);
-    // "Midnight" falls inside the host's ball 2 (its machine is not WPC: no flag), then is long past for Krobs' ball 2.
-    await play(H.mh, hw, 2, 2000, true);
+    await play(H.mh, hw, 2, 2000);
     await play(C.mh, cw, 2, 1800);
-    expect(H.mh.status().advisories).toEqual([]);
-    expect(C.mh.status().advisories).toEqual([]);
-    // And inside Krobs' ball 3, on a WPC machine.
+    expect(H.mh.status().advisories).toEqual([ON_KROBS]);
+    expect(C.mh.status().advisories).toEqual([ON_MINE]);
     await play(H.mh, hw, 3, 3000);
-    turn = Number.POSITIVE_INFINITY;
     await play(C.mh, cw, 3, 2700, true);
-    await until(() => H.mh.status().advisories.length === 1 && H.mh.status().phase === 'over');
-    expect(H.mh.status().advisories).toEqual(["Midnight Madness may have run on Krobs' ball 3 (that table's clock passed midnight)"]);
-    expect(C.mh.status().advisories).toEqual(["Midnight Madness may have run on your ball 3 (your table's clock passed midnight)"]);
+    await until(() => H.mh.status().advisories.length === 2 && H.mh.status().phase === 'over');
+    expect(H.mh.status().advisories).toEqual([ON_KROBS, "Midnight Madness ran on Krobs' ball 3 (counted by that table's ROM)"]);
+    expect(C.mh.status().advisories).toEqual([ON_MINE, "Midnight Madness ran on your ball 3 (counted by your table's ROM)"]);
     // The result is the scores': the host won; Krobs' row carries the flag.
     expect(H.mh.status().panel?.result).toEqual([
       { id: H.mh.status().localId, name: 'Hosty', score: 3000, place: 1 },

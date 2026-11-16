@@ -282,6 +282,37 @@
         ],
         "additionalProperties": false
       }
+    },
+    "midnightModes": {
+      "default": [],
+      "description": "B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "adjustment": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "playerId",
+          "enabled",
+          "adjustment"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
@@ -292,7 +323,8 @@
     "tableMismatches",
     "startsInMs",
     "loading",
-    "ballEndReady"
+    "ballEndReady",
+    "midnightModes"
   ],
   "additionalProperties": false,
   "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint."

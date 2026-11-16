@@ -8,7 +8,8 @@
 import type { Attestation } from './attestation-types.js';
 import type { TableIdentity, VpsIndexInfo } from './identity-types.js';
 import type { ScoreTournament } from './arcaid-client.js';
-import type { GameEvent, HighScoreEvent } from './journal-detector.js';
+import type { GameEvent, HighScoreEvent, MidnightEvent } from './journal-detector.js';
+import type { MidnightSettingReport } from './midnight.js';
 import type { VrObservation } from './vr-detect.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
@@ -190,6 +191,12 @@ export interface WitnessEvents {
    * initials hold on it.
    */
   highScores: (event: HighScoreEvent) => void;
+  /**
+   * B26.4: the ROM on the open table counted a Midnight Madness while a game was in play (its audit of the mode went
+   * up in the journal). Only from a ROM that has such an audit and a table whose patch journals its bytes. Not for a
+   * journal line read again after a restart. The match controller flags the ball on it.
+   */
+  midnightMadness: (event: MidnightEvent) => void;
 }
 
 /**
@@ -276,10 +283,12 @@ export interface Witness {
    */
   highScoreQualifies(score: number): boolean;
   /**
-   * B26: is the machine on the open table one whose ROM may start Midnight Madness when the PC's clock passes
-   * midnight (its map is on a WPC platform, `midnightInScope`)? False with no live table, no ROM or no map.
+   * B26.4: how the adjustment that enables Midnight Madness reads on the open table (the journal's NVRAM, which
+   * starts as the hook's snapshot at table load and follows the bytes after): ON or OFF, and which adjustment. Null
+   * when it cannot be told: no live table, not a ROM table, a ROM with no known setting, or bytes that are neither.
+   * A `status` update follows every change of it.
    */
-  midnightInScope(): boolean;
+  midnightSetting(): MidnightSettingReport | null;
   /**
    * A6 (2026-10-31): probe the running VPX process for VR now (the match host decides the rig at host / join with
    * it). Null when no VPX process is open or the probe did not answer. Does not change the attestation.

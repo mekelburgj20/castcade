@@ -53,7 +53,7 @@ import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffRe
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
-import { localUtcOffsetMinutes, MIDNIGHT_GAME_NOTE, midnightInScope, spansLocalMidnight, type UtcOffset } from './midnight.js';
+import { MIDNIGHT_GAME_NOTE } from './midnight.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
 import {
@@ -138,11 +138,6 @@ export interface WitnessDeps {
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
   log?: (line: string) => void;
-  /**
-   * B26: this PC's offset from UTC, minutes east, fixed or at an instant: where local midnight falls for the Midnight
-   * Madness flag. Omitted = the machine's own time zone (`localUtcOffsetMinutes`); tests pass a fixed one.
-   */
-  utcOffsetMinutes?: UtcOffset;
   /**
    * A15: where the witness this one replaces had got to (`Witness.journalMark()`), when a setting rebuilt it while a
    * table was open. The journal is read again from the top, but the game events up to the mark were already delivered
@@ -295,6 +290,11 @@ interface LiveSession {
   engineGame: EngineSample[];
   /** B6.1: player 1's score moves in the game in progress (flag only, never a gate). */
   scoreTrack: ScoreTrack;
+  /**
+   * B26.4: the ROM counted a Midnight Madness during the game in progress (the detector's `midnight_madness`): set
+   * when its audit goes up, cleared at the next game start. The capture of that game says so.
+   */
+  midnightRan: boolean;
   /**
    * B12: why live mode cannot read this ROM's machine (`liveSupport`), set when the hook names the ROM; null
    * when it can. The journal is still followed, but Status says what really happens: at most one score at close.
@@ -454,7 +454,6 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const lister = deps.lister ?? createPowershellLister();
   const vrProbe: VrProbe = deps.vrProbe === undefined ? createPowershellVrProbe() : (deps.vrProbe ?? NO_VR_PROBE);
   const log = deps.log ?? (() => {});
-  const utcOffset: UtcOffset = deps.utcOffsetMinutes ?? localUtcOffsetMinutes;
   const corpus = deps.corpus ?? createMapCorpus(store.get().mapsDir, fs);
   const emitter = new Emitter<EventPayloads>();
   const settleMs = deps.nvSettleMs ?? DEFAULT_NV_SETTLE_MS;
@@ -972,6 +971,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     plausibility?: ScorePlausibility | null;
     /** C11: why this score was read only at close (`<reason>: <rung detail>`); leads the detail. */
     lead?: string | null;
+    /** B26.4: the ROM counted a Midnight Madness during this game (live mode, a ROM with such an audit). */
+    midnightRan?: boolean;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -1010,10 +1011,11 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
     if (resolved) details.push(SOURCE_TEXT[resolved.source]);
     if (wireTable !== table) details.push(`sent to ArcAid as "${wireTable}"${wireSlug ? ` (or "${wireSlug}")` : ''}`);
-    // B26 step 1: a WPC machine starts a bonus multiball when its clock (the PC's, through VPinMAME) passes midnight
-    // with a ball in play. A flag in the log and the capture detail only: nothing on the wire yet (ArcAid has no
-    // param for it), and the score posts as ever.
-    if (decision.kind === 'score' && midnightInScope(map) && spansLocalMidnight(started, ended, utcOffset)) {
+    // B26: some WPC ROMs start a bonus multiball when the machine's clock (the PC's, through VPinMAME) passes midnight
+    // during a ball. B26.4: said only when the ROM's own audit of the mode went up during this game (live mode), never
+    // guessed from the clock; a ROM without such an audit is not monitored. A flag in the log and the capture detail
+    // only: nothing on the wire yet (ArcAid has no param for it), and the score posts as ever.
+    if (decision.kind === 'score' && p.midnightRan) {
       details.push(MIDNIGHT_GAME_NOTE);
       log(`witness: ${table}: ${MIDNIGHT_GAME_NOTE}`);
     }
@@ -1358,6 +1360,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       engineLast: null,
       engineGame: [],
       scoreTrack: new ScoreTrack(),
+      midnightRan: false,
       unreadable: null,
       oldPatchNote: null,
       embedded,
@@ -1515,6 +1518,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       live.engineLast = null;
       live.engineGame = [];
       live.scoreTrack = new ScoreTrack(ev.recipe === 'A' ? ROM_SCORE_STEP : null);
+      live.midnightRan = false;
       live.recipe = ev.recipe;
       live.rom = ev.rom;
       live.lib = ev.lib ?? null;
@@ -1538,6 +1542,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         live.detector.setMap(map);
         live.map = map;
         if (!map) fail(`live mode: no map for ROM ${ev.rom}; games on ${live.tableId} will be captured at close only`);
+        // B26.4: said once per load, so a log shows whether a game on this table could have been flagged at all.
+        const audit = live.detector.midnightCounter;
+        if (audit) log(`witness: ${live.tableId}: Midnight Madness is monitored on this machine (ROM ${ev.rom}, audit ${audit}); it is flagged when that count goes up during a game`);
         const support = liveSupport(map);
         live.unreadable = support.readable ? null : support.reason;
         if (!support.readable) {
@@ -1558,6 +1565,28 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       if (live.quietUntil !== null && live.lineEnd <= live.quietUntil) return;
       log(`witness: ${live.tableId}: the machine wrote its high-score list (${ev.entries.map((h) => `${h.initials ?? '---'} ${h.score ?? '?'}`).join(', ')})`);
       emitter.emit('highScores', ev);
+      return;
+    }
+    if (ev.kind === 'midnight_setting') {
+      // B26.4: the adjustment that enables Midnight Madness, as the table's NVRAM reads now. The match shows it to
+      // every player (`Witness.midnightSetting`, asked again on this status update).
+      log(
+        ev.setting
+          ? `witness: ${live.tableId}: Midnight Madness is ${ev.setting.enabled ? 'ON' : 'OFF'} on this table (adjustment ${ev.setting.adjustment}, read from the table's NVRAM)`
+          : `witness: ${live.tableId}: the Midnight Madness adjustment cannot be read right now`,
+      );
+      emitStatus();
+      return;
+    }
+    if (ev.kind === 'midnight_madness') {
+      // B26.4: the ROM counted a Midnight Madness while a game was in play. The capture of this game says so; a match
+      // flags the ball. Not a game event (no mark). A line read again after a restart (A15, or the journal's backlog
+      // at start-up) still marks the game for its capture, but is not told to the match a second time, or late: the
+      // ball it belongs to is not known any more.
+      live.midnightRan = true;
+      log(`witness: ${live.tableId}: Midnight Madness ran (the ROM's audit ${ev.audit} went from ${ev.from} to ${ev.to} during the game${ev.ball !== null ? `, ball ${ev.ball}` : ''})`);
+      if ((live.quietUntil !== null && live.lineEnd <= live.quietUntil) || live.lineBacklog) return;
+      emitter.emit('midnightMadness', ev);
       return;
     }
     const at = (live.loadedAtMs ?? clock.now()) + ev.t * 1000;
@@ -1598,6 +1627,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         session.lastActivityAt = clock.now();
         live.engineGame = live.engineLast ? [{ ...live.engineLast, t: ev.t }] : [];
         live.scoreTrack.reset();
+        live.midnightRan = false;
         setGame({ table: live.tableId, inGame: true, scores: [], player: null, ball: null });
         await reportAttempt(session, live, ev.players ?? null, at, ev.t);
         break;
@@ -1662,7 +1692,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const engine: EngineAttestation | null = live.engineGame.length > 0 || live.engineLast
       ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
       : null;
-    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result() });
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result(), midnightRan: live.midnightRan });
     // B17: whatever the outcome (the persisted queue owns delivery retries), this game is done: a restart must not replay it.
     if (live.gameKey) await postedGames.add(live.gameKey).catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
     live.gameKey = null;
@@ -2025,10 +2055,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       return check.qualifies;
     },
 
-    // B26: asked by the match controller when one of this player's balls ends across a local midnight.
-    midnightInScope() {
+    // B26.4: asked by the match host at host / join and on every status update.
+    midnightSetting() {
       const live = activeSession()?.live;
-      return !!live && live.accepted && midnightInScope(live.map);
+      return live && live.accepted ? live.detector.midnightSetting : null;
     },
 
     // A6 (2026-10-31): the match host's fresh rig decision at host / join. Read-only: the attestation keeps its own samples.

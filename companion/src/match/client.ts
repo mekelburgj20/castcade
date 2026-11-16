@@ -27,7 +27,7 @@
  * game's end, not the head. MATCH_END ends the series (`matchEnded`); after it a dropped host is not reconnected to.
  * The host dropping between games and not coming back is `hostGone` (no transfer: no game is running).
  */
-import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
+import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
@@ -151,6 +151,12 @@ export interface ClientEvents extends Record<string, unknown> {
    * PARTICIPANT_UPDATE, or sent its own), or this player did (`reportAdvisory`). Never logged; a flag only.
    */
   advisory: { playerId: PlayerId; advisory: PlayerAdvisory };
+  /**
+   * B26.4 (2026-11-16): after MATCH_READY another player said how the Midnight Madness setting reads on its table
+   * (the host passed on its PARTICIPANT_UPDATE, or sent its own). In the lobby HELLO_ACK `midnightModes` says it
+   * (`joined` / `roster`). Never logged; display only.
+   */
+  midnightMode: { playerId: PlayerId; mode: MidnightMode };
   /** A10: the host started the next game of the series (logged); its grant 1 follows. */
   nextGame: PayloadOf<'NEXT_GAME'>;
   /** A10: the host ended the series (MATCH_END). */
@@ -409,6 +415,18 @@ export class ClientMatch {
     const msg = this.s.build('PARTICIPANT_UPDATE', { advisory }, this.matchIdForWire());
     this.sendToHost(msg);
     this.events.emit('advisory', { playerId: this.localId, advisory: msg.payload.advisory! });
+    return true;
+  }
+
+  /**
+   * B26.4 (2026-11-16): how the Midnight Madness setting reads on this player's own table, to the host as a
+   * PARTICIPANT_UPDATE in any phase: in the lobby the host lists it in HELLO_ACK for everyone, after MATCH_READY it
+   * passes the update on (a host from before B26.4 does neither). Never logged. False (nothing sent) before the join.
+   */
+  reportMidnightMode(mode: MidnightMode): boolean {
+    this.assertActive();
+    if (!this.joined) return false;
+    this.sendToHost(this.s.build('PARTICIPANT_UPDATE', { midnightMode: { enabled: mode.enabled, adjustment: mode.adjustment } }, this.matchIdForWire()));
     return true;
   }
 
@@ -739,9 +757,11 @@ export class ClientMatch {
       case 'PARTICIPANT_UPDATE':
         // A6.1 (2026-11-01): another player's rig (or the host's own) after MATCH_READY; in the lobby HELLO_ACK says it.
         // B26: or a flag about one of that player's own balls (`advisory`).
-        if (this.s.state.phase === 'lobby' || (msg.payload.rig === undefined && msg.payload.advisory === undefined) || msg.from === this.localId) return this.drop(msg, 'unexpected');
+        // B26.4: or how the Midnight Madness setting reads on that player's table (`midnightMode`).
+        if (this.s.state.phase === 'lobby' || (msg.payload.rig === undefined && msg.payload.advisory === undefined && msg.payload.midnightMode === undefined) || msg.from === this.localId) return this.drop(msg, 'unexpected');
         if (msg.payload.rig !== undefined) this.events.emit('rigUpdated', { playerId: msg.from, rig: msg.payload.rig });
         if (msg.payload.advisory !== undefined) this.events.emit('advisory', { playerId: msg.from, advisory: msg.payload.advisory });
+        if (msg.payload.midnightMode !== undefined) this.events.emit('midnightMode', { playerId: msg.from, mode: msg.payload.midnightMode });
         return;
       case 'RESULT':
         this.onResult(msg);
