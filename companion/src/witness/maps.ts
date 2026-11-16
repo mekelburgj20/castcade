@@ -40,9 +40,14 @@ export interface HighScoreDescriptor {
   initials: JsonObject | null;
 }
 
-/** One operator adjustment from a map's `adjustments` block: its group, label and raw descriptor. */
+/**
+ * One operator adjustment from a map's `adjustments` block (or one audit from its `audits` block, which has the same
+ * shape): its group, its number in the group (`"14"` of `A.2 14`; null when the group is a list), label and raw
+ * descriptor.
+ */
 export interface AdjustmentDescriptor {
   group: string;
+  key: string | null;
   label: string;
   entry: JsonObject;
 }
@@ -64,6 +69,8 @@ export interface CompiledMap {
   lastPlayed: JsonObject | null;
   /** Operator adjustments (F2), empty for the many maps without an `adjustments` block. */
   adjustments: AdjustmentDescriptor[];
+  /** B26.4: the bookkeeping audits (`B.4 31 SPECIAL MODES` …), empty for a map without an `audits` block. */
+  audits: AdjustmentDescriptor[];
 }
 
 export interface GameState {
@@ -176,18 +183,16 @@ export function flattenAdjustments(adjustments: Json | undefined): AdjustmentDes
   const out: AdjustmentDescriptor[] = [];
   for (const [group, entries] of Object.entries(adjustments)) {
     if (group.startsWith('_')) continue;
-    const list: JsonObject[] = Array.isArray(entries)
-      ? entries.filter(isObject)
+    const list: Array<[string | null, Json]> = Array.isArray(entries)
+      ? entries.map((v): [null, Json] => [null, v])
       : isObject(entries)
-        ? Object.entries(entries)
-            .filter(([k]) => !k.startsWith('_'))
-            .map(([, v]) => v)
-            .filter(isObject)
+        ? Object.entries(entries).filter(([k]) => !k.startsWith('_'))
         : [];
-    for (const entry of list) {
+    for (const [key, entry] of list) {
+      if (!isObject(entry)) continue;
       const label = entry['label'];
       if (typeof label !== 'string' || !label) continue;
-      out.push({ group, label, entry });
+      out.push({ group, key, label, entry });
     }
   }
   return out;
@@ -272,6 +277,7 @@ export function compileMap(mapJson: Json, loadPlatform: (name: string) => Json |
     highScores,
     lastPlayed: isObject(mapJson['last_played']) ? mapJson['last_played'] : null,
     adjustments: flattenAdjustments(mapJson['adjustments']),
+    audits: flattenAdjustments(mapJson['audits']),
   };
 }
 
@@ -588,9 +594,14 @@ export function highScoreOffsets(map: CompiledMap): number[] {
   return [...out].sort((a, b) => a - b);
 }
 
-/** What the hook is told to journal for a ROM (`Castcade_WatchBytes`): the game-state bytes and the high-score bytes. */
-export function watchOffsets(map: CompiledMap): number[] {
-  return [...new Set([...gameStateOffsets(map), ...highScoreOffsets(map)])].sort((a, b) => a - b);
+/**
+ * What the hook is told to journal for a ROM (`Castcade_WatchBytes`): the game-state bytes, the high-score bytes and
+ * `extra`, which is what a feature outside this file reads (B26.4: the Midnight Madness counter and setting,
+ * `midnightWatchOffsets`, which needs the ROM's name as well as its map).
+ */
+export function watchOffsets(map: CompiledMap, extra: readonly number[] = []): number[] {
+  const more = extra.filter((o) => Number.isInteger(o) && o >= 0);
+  return [...new Set([...gameStateOffsets(map), ...highScoreOffsets(map), ...more])].sort((a, b) => a - b);
 }
 
 /**

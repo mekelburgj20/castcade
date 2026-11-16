@@ -291,8 +291,8 @@ export function stripRows(s: PanelState): StripRow[] {
       .map((r) => {
         const sr = series.find((x) => x.id === r.id);
         const detail = '#' + r.place + (many && sr ? ' · SERIES #' + sr.place + ' · ' + wins(sr.wins) : '');
-        // B26: a player with a ball on which Midnight Madness may have run is marked on the result too.
-        const flags = (r.flags || []).indexOf('midnight') >= 0 ? ['MIDNIGHT MADNESS?'] : [];
+        // B26: a player with a ball on which Midnight Madness ran is marked on the result too.
+        const flags = (r.flags || []).indexOf('midnight') >= 0 ? ['MIDNIGHT MADNESS'] : [];
         return { id: r.id, name: r.name, score: scoreText(r.score), detail, up: false, flags, notes: [] };
       });
   }
@@ -300,7 +300,7 @@ export function stripRows(s: PanelState): StripRow[] {
     const detail = p.isUp && s.ball !== null ? 'BALL ' + s.ball : p.ballsDone >= s.ballsPerGame ? 'DONE' : p.ballsDone + '/' + s.ballsPerGame;
     const flags = p.flags
       .filter((f) => f !== 'build_mismatch')
-      .map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : f === 'loading' ? 'LOADING' : f === 'midnight' ? 'MIDNIGHT MADNESS?' : String(f).toUpperCase()));
+      .map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : f === 'loading' ? 'LOADING' : f === 'midnight' ? 'MIDNIGHT MADNESS' : String(f).toUpperCase()));
     const notes = p.flags.includes('build_mismatch') ? ['DIFFERENT VPX BUILD'] : [];
     const sr = series.find((x) => x.id === p.id);
     if (sr && (s.game || 1) > 1) notes.push(wins(sr.wins));

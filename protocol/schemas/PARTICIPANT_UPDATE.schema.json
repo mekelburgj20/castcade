@@ -130,7 +130,7 @@
           "enum": [
             "midnight"
           ],
-          "description": "`midnight`: the sender's PC clock passed local midnight while it played this ball on a WPC machine, whose ROM starts a bonus multiball then (Midnight Madness): it may have run."
+          "description": "`midnight`: Midnight Madness ran on this ball. B26.4: a fact, not a guess from the clock: the ROM's own audit of the mode went up in the sender's table NVRAM while the ball was in play."
         },
         "game": {
           "type": "integer",
@@ -151,8 +151,29 @@
         "ballNumber"
       ],
       "additionalProperties": false
+    },
+    "midnightMode": {
+      "description": "B26.4: the Midnight Madness setting on the sender's table (see `MidnightMode`), when its companion could read it, in any phase. In the lobby the host lists it in HELLO_ACK `midnightModes`; after MATCH_READY it passes the update on like a rig change. A peer from before B26.4 ignores it.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "The adjustment reads YES (true) or NO (false) in the table's NVRAM."
+        },
+        "adjustment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The adjustment as the service menu numbers and names it, e.g. `A.2 14 Special Mode`."
+        }
+      },
+      "required": [
+        "enabled",
+        "adjustment"
+      ],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
-  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` and (B26) `advisory` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
+  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
 }

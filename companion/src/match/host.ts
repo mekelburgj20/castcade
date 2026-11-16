@@ -49,6 +49,7 @@ import {
   type GrantBody,
   type Message,
   type MessageType,
+  type MidnightMode,
   type ParticipantInfo,
   type PayloadInput,
   type PayloadOf,
@@ -155,6 +156,11 @@ export interface HostEvents extends Record<string, unknown> {
    * to the others, or this host's own `localAdvisory`). Never logged; a flag only.
    */
   advisory: { playerId: PlayerId; advisory: PlayerAdvisory };
+  /**
+   * B26.4 (2026-11-16): a player said how the Midnight Madness setting reads on its table (a client's
+   * PARTICIPANT_UPDATE, or this host's own `localMidnightMode`), in any phase. Never logged; display only.
+   */
+  midnightMode: { playerId: PlayerId; mode: MidnightMode };
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
@@ -220,6 +226,8 @@ export class HostMatch {
   private readonly lobbyGames = new Map<PlayerId, GameFingerprint>();
   /** A13: what each lobby participant (this host included) said about its table's ball ends; not in it = unknown. */
   private readonly ballEndReady = new Map<PlayerId, boolean>();
+  /** B26.4: what each participant said about the Midnight Madness setting on its table (HELLO_ACK `midnightModes`). */
+  private readonly midnightModeOf = new Map<PlayerId, MidnightMode>();
   /** A6.1 (2026-11-01): rigs changed after MATCH_READY, by player (the log's roster keeps the ones it started with). */
   private readonly liveRigs = new Map<PlayerId, ParticipantInfo['rig']>();
   private turnMode: 'alternating' | 'simultaneous';
@@ -341,6 +349,11 @@ export class HostMatch {
     return Object.fromEntries(this.ballEndReady);
   }
 
+  /** B26.4: what each participant said about the Midnight Madness setting on its table; not listed = it said nothing. */
+  midnightModes(): Record<PlayerId, MidnightMode> {
+    return Object.fromEntries([...this.midnightModeOf].map(([id, m]) => [id, { ...m }]));
+  }
+
   snapshot(): { role: 'host'; state: MatchState; log: LogHead; lobby: ParticipantInfo[]; gone: PlayerId[]; finalHead: LogHead | null; signatures: LogSignRecord[] } {
     return {
       role: 'host',
@@ -394,6 +407,32 @@ export class HostMatch {
     const msg = this.s.build('PARTICIPANT_UPDATE', { advisory }, this.matchId);
     for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
     this.events.emit('advisory', { playerId: this.localId, advisory: msg.payload.advisory! });
+    return true;
+  }
+
+  /**
+   * B26.4 (2026-11-16): how the Midnight Madness setting reads on this host's own table. In the lobby every client
+   * hears it in a re-sent HELLO_ACK (`midnightModes`); after MATCH_READY as this host's PARTICIPANT_UPDATE. Never
+   * logged. False (nothing sent) when it is what this host said last.
+   */
+  localMidnightMode(mode: MidnightMode): boolean {
+    this.assertActive();
+    if (!this.noteMidnightMode(this.localId, mode)) return false;
+    if (this.s.state.phase === 'lobby') {
+      this.resendAck();
+      return true;
+    }
+    const msg = this.s.build('PARTICIPANT_UPDATE', { midnightMode: mode }, this.matchId);
+    for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
+    return true;
+  }
+
+  /** B26.4: records a player's setting and raises `midnightMode`; false when it is the one already known. */
+  private noteMidnightMode(id: PlayerId, mode: MidnightMode): boolean {
+    const known = this.midnightModeOf.get(id);
+    if (known && known.enabled === mode.enabled && known.adjustment === mode.adjustment) return false;
+    this.midnightModeOf.set(id, { enabled: mode.enabled, adjustment: mode.adjustment });
+    this.events.emit('midnightMode', { playerId: id, mode: { enabled: mode.enabled, adjustment: mode.adjustment } });
     return true;
   }
 
@@ -889,6 +928,7 @@ export class HostMatch {
       this.lobby = this.lobby.filter((p) => p.playerId !== peer);
       this.lobbyGames.delete(peer);
       this.ballEndReady.delete(peer);
+      this.midnightModeOf.delete(peer);
       if (wasIn) this.setMismatch(peer, []);
       this.events.emit('peerLeft', peer);
       // A8 (2026-10-31): the others' rosters drop the leaver too.
@@ -963,14 +1003,16 @@ export class HostMatch {
    * After MATCH_READY the roster and fingerprint in the log are final; A6.1 (2026-11-01): a new rig is still noted and
    * passed on to the other participants (`from` preserved), so their Match tab and panel know it. A refusing host keeps
    * the old fingerprint and rejects one that differs, as it would have refused that HELLO. B26 (2026-11-16): an
-   * `advisory` (a flag about one of the sender's own balls) is raised here and passed on the same way.
+   * `advisory` (a flag about one of the sender's own balls) is raised here and passed on the same way. B26.4: so is
+   * `midnightMode` (the Midnight Madness setting on the sender's table); in the lobby it goes into HELLO_ACK.
    */
   private onParticipantUpdate(msg: Message<'PARTICIPANT_UPDATE'>): void {
     if (this.s.state.phase !== 'lobby') {
       const rigChanged = msg.payload.rig !== undefined && this.noteLiveRig(msg.from, msg.payload.rig);
       const advisory = msg.payload.advisory;
       if (advisory !== undefined) this.events.emit('advisory', { playerId: msg.from, advisory });
-      if (rigChanged || advisory !== undefined) this.mirror(msg);
+      const modeChanged = msg.payload.midnightMode !== undefined && this.isParticipant(msg.from) && this.noteMidnightMode(msg.from, msg.payload.midnightMode);
+      if (rigChanged || advisory !== undefined || modeChanged) this.mirror(msg);
       return;
     }
     const i = this.lobby.findIndex((p) => p.playerId === msg.from);
@@ -996,6 +1038,8 @@ export class HostMatch {
       this.ballEndReady.set(msg.from, u.ballEndReady);
       changed = true;
     }
+    // B26.4: how the Midnight Madness setting reads on that player's table.
+    if (u.midnightMode !== undefined && this.noteMidnightMode(msg.from, u.midnightMode)) changed = true;
     if (!changed) return;
     this.events.emit('participantUpdated', { ...this.lobby[i]! });
     this.resendAck();
@@ -1034,6 +1078,7 @@ export class HostMatch {
         startsInMs: this.countdownRemaining(),
         loading: this.loading(),
         ballEndReady: [...this.ballEndReady].map(([playerId, ready]) => ({ playerId, ready })),
+        midnightModes: [...this.midnightModeOf].map(([playerId, m]) => ({ playerId, enabled: m.enabled, adjustment: m.adjustment })),
       },
       null,
     );
