@@ -94,7 +94,7 @@ export function Match({ state }: { state: CastcadeState }) {
     );
   };
   const setView = (
-    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'scoreboard' | 'scoreboardCorner'>>,
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner'>>,
   ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -177,8 +177,8 @@ export function Match({ state }: { state: CastcadeState }) {
       {!inMatch && st.phase !== 'connecting' && (
         <>
           <p className="muted">
-            Two to four players on the same table, one ball each in turn. Pick a table and press Host: Castcade hosts the match, starts the table in VPX and copies a
-            join link for the other players. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
+            Two to four players on the same table, one ball each in turn. Pick a table and press Host: Castcade hosts the match and copies an invite link for the
+            other players. Send it, then press Start the table. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
           </p>
           <div className="card">
             <label className="field">
@@ -212,8 +212,20 @@ export function Match({ state }: { state: CastcadeState }) {
                   <small>Free play: a game running when the others join must end first; your next Start on the table then starts the match.</small>
                 </label>
               </div>
-              <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} />
-              <button type="button" className="primary" onClick={() => void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, port: Number(portText), ballsPerGame, displayName }))}>
+              <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} startOnHost={st.settings.startTableOnHost} />
+              {/* A14.7 (2026-11-15): off, Host gives the invite first and the table starts from its own button. */}
+              <label className="check">
+                <input type="checkbox" checked={st.settings.startTableOnHost} onChange={(e) => setView({ startTableOnHost: e.target.checked })} />
+                Start the table as soon as I host
+              </label>
+              <p className="muted">Off: Host shows the invite first, so you can send it before VPX starts. Then press Start the table.</p>
+              <button
+                type="button"
+                className="primary"
+                onClick={() =>
+                  void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, startTable: st.settings.startTableOnHost, port: Number(portText), ballsPerGame, displayName }))
+                }
+              >
                 Host
               </button>
             </fieldset>
@@ -263,7 +275,7 @@ export function Match({ state }: { state: CastcadeState }) {
               <div className="row">
                 <code className="mono invite">{st.invite}</code>
                 <button type="button" className="small" onClick={copyInvite}>
-                  {copied ? 'Copied' : 'Copy'}
+                  {copied ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy'}
                 </button>
               </div>
               {st.via === 'relay' ? (

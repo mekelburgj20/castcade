@@ -534,6 +534,8 @@ interface MatchSettings {
   softEdge: number;
   /** A12 (2026-11-05): the host's table before the match: free play until the lobby is complete, or locked until then. */
   preMatchPlay: 'free' | 'locked';
+  /** A14.7 (2026-11-15): Host also starts the picked table; off: the table waits for Start the table. */
+  startTableOnHost: boolean;
   /** D2.10: the other players' voices, 0–300 % (over 100 is a boost). */
   voiceVolume: number;
   /** D2.10: the up player's table sound as this rig plays it, 0–100 %. */
@@ -628,6 +630,8 @@ interface OneStepStatus {
   /** A link from outside the app that waits for the player's click. */
   pending: { code: string; address: string | null } | null;
   launch: { state: 'idle' | 'waiting_host' | 'starting' | 'running' | 'needed' | 'failed'; table: string | null; detail: string | null };
+  /** A14.7: hosting, and this picked table waits for Start the table. */
+  tableToStart: string | null;
   notice: string | null;
   attention: number;
 }
@@ -723,7 +727,9 @@ interface CastcadeBridge {
     status(): Promise<OneStepStatus>;
     tables(): Promise<TableChoice[]>;
     browse(): Promise<TableChoice[]>;
-    host(opts: { tablePath: string | null; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    host(opts: { tablePath: string | null; startTable?: boolean; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
+    /** A14.7: start the table Host held back (`OneStepStatus.tableToStart`). */
+    startTable(): Promise<OneStepStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;

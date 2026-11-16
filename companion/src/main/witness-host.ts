@@ -7,7 +7,7 @@
  */
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
 import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
-import type { GameEvent } from '../witness/journal-detector.js';
+import type { GameEvent, HighScoreEvent } from '../witness/journal-detector.js';
 import type { VrObservation } from '../witness/vr-detect.js';
 import type { Logger } from './log.js';
 import type { SettingsStore } from './settings.js';
@@ -43,6 +43,10 @@ export interface WitnessHost {
    * (Castcade started while the table was open); `meta.mark`: where in the journal it is, null for `table_exit`.
    */
   onEvent(listener: (event: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void): () => void;
+  /** A16.2: a finished game's score has a place on the open table's high-score list (`Witness.highScoreQualifies`). */
+  highScoreQualifies?(score: number): boolean;
+  /** A16.2: the open table's machine wrote its high-score list (the witness's `highScores` event). */
+  onHighScores?(listener: (event: HighScoreEvent) => void): () => void;
   /** A15: how far into the open table's journal the game events were delivered (`Witness.journalMark`). */
   journalMark?(): JournalMark | null;
   /** D2.8 (2026-11-01): the pid of the VPX the witness last saw launch, until it exits; null when none runs. */
@@ -81,6 +85,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
   const gameListeners = new Set<(g: LiveGame | null) => void>();
   const captureListeners = new Set<(c: LastCapture) => void>();
   const eventListeners = new Set<(e: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void>();
+  const highScoreListeners = new Set<(e: HighScoreEvent) => void>();
 
   function attach(w: Witness): Witness {
     for (const off of unsubscribe) off();
@@ -123,6 +128,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
       w.on('event', (e) => {
         const meta: WitnessEventMeta = { backlog: w.deliveringBacklog(), mark: w.journalMark() };
         for (const l of eventListeners) l(e, meta);
+      }),
+      w.on('highScores', (e) => {
+        for (const l of highScoreListeners) l(e);
       }),
     ];
     return w;
@@ -229,6 +237,13 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
       captureListeners.add(listener);
       return () => {
         captureListeners.delete(listener);
+      };
+    },
+    highScoreQualifies: (score) => witness.highScoreQualifies(score),
+    onHighScores(listener) {
+      highScoreListeners.add(listener);
+      return () => {
+        highScoreListeners.delete(listener);
       };
     },
     journalMark: () => witness.journalMark(),

@@ -8,7 +8,7 @@
 import type { Attestation } from './attestation-types.js';
 import type { TableIdentity, VpsIndexInfo } from './identity-types.js';
 import type { ScoreTournament } from './arcaid-client.js';
-import type { GameEvent } from './journal-detector.js';
+import type { GameEvent, HighScoreEvent } from './journal-detector.js';
 import type { VrObservation } from './vr-detect.js';
 
 export type { TableIdentity, VpsGameRef, VpsTableRef, MatchConfidence, VpxTableInfo, VpxTablePhysics } from './identity-types.js';
@@ -184,6 +184,12 @@ export interface WitnessEvents {
    * posted is not re-emitted). The match controller turns these into BALL_END / GAME_OVER / STATE.
    */
   event: (event: GameEvent) => void;
+  /**
+   * A16.2: the open table's machine wrote its high-score list (a byte of the map's `high_scores` block changed in the
+   * journal). Only from a table whose patch journals those bytes (recipe A 0.3.2). The match controller ends its
+   * initials hold on it.
+   */
+  highScores: (event: HighScoreEvent) => void;
 }
 
 /**
@@ -263,6 +269,12 @@ export interface Witness {
   status(): WitnessStatus;
   /** D1.1: the game on screen right now (live mode), or null. */
   liveGame(): LiveGame | null;
+  /**
+   * A16.2: does `score`, a game just finished on the open table, have a place on the machine's high-score list (the
+   * ROM's map `high_scores` over the journal's NVRAM, this sitting's earlier games counted in)? False when there is
+   * no way to tell: no live table, not a ROM table, no map, no `high_scores` in it.
+   */
+  highScoreQualifies(score: number): boolean;
   /**
    * A6 (2026-10-31): probe the running VPX process for VR now (the match host decides the rig at host / join with
    * it). Null when no VPX process is open or the probe did not answer. Does not change the attestation.

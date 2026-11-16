@@ -83,6 +83,11 @@ export interface MatchSettings {
   // game must end before the Start that begins the match), or locked until someone joins. The owner's 2026-11-05
   // match: Start pressed before the other player joined, the join started nothing, host again.
   preMatchPlay: 'free' | 'locked';
+  /**
+   * A14.7 (2026-11-15): Host also starts the picked table (one press, as 0.2.40 did). Off by default: Host gives the
+   * invite first and the table starts from "Start the table", so the invite is sent before VPX takes the headset.
+   */
+  startTableOnHost: boolean;
   /*
    * D2.10 (2026-11-05): voice over the game. Both testers heard the table over the other player's voice; these three
    * are percentages, saved like the rest and applied live mid-match (Ctrl+Alt+arrows while playing, match-host.ts).
@@ -136,6 +141,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   softEdge: 0.03,
   // A12 (2026-11-05)
   preMatchPlay: 'free',
+  // A14.7 (2026-11-15)
+  startTableOnHost: false,
   // D2.10 (2026-11-05)
   voiceVolume: 150,
   othersTableVolume: 100,
@@ -244,6 +251,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('softEdge' in p) next.softEdge = cleanSoftEdge(p.softEdge) ?? current.softEdge;
   // A12 (2026-11-05)
   if (p.preMatchPlay === 'free' || p.preMatchPlay === 'locked') next.preMatchPlay = p.preMatchPlay;
+  // A14.7
+  if (typeof p.startTableOnHost === 'boolean') next.startTableOnHost = p.startTableOnHost;
   // D2.10: the three volumes, each clamped to its range; anything that is not a number keeps the current value.
   for (const k of ['voiceVolume', 'othersTableVolume', 'myTableWhileUp'] as const) {
     if (k in p) next[k] = cleanPercent(p[k], VOLUME_RANGE[k][0], VOLUME_RANGE[k][1]) ?? current[k];

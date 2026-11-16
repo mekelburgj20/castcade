@@ -1735,6 +1735,42 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h2.witness.stop();
   });
 
+  it("A16.2: the open table's high-score list: a score is compared with it, and a journaled write of its bytes is announced (highScores), not as a game event", async () => {
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    const startedAt = h.clock.now() - 60_000;
+    const head = tftcMidGameAt(h.clock.now() - 30_000).head;
+    expect(h.witness.highScoreQualifies(999_999_999_999)).toBe(false); // no table open
+    h.fs.put(TFTC_JOURNAL, head);
+    const games: GameEvent[] = [];
+    const writes: { kind: string; entries: { initials: string | null; score: number | null }[] }[] = [];
+    h.witness.on('event', (ev) => games.push(ev));
+    h.witness.on('highScores', (ev) => writes.push(ev));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(writes).toEqual([]);
+    expect(h.witness.highScoreQualifies(999_999_999_999)).toBe(true);
+    expect(h.witness.highScoreQualifies(1)).toBe(false);
+    expect(logs.some((l) => /score 999999999999 makes the machine's high-score list \(lowest entry \d+\)/.test(l))).toBe(true);
+    // The machine writes the first entry's initials (0x175A..0x175C): one delta line, as a 0.3.2 patch journals it.
+    const before = games.length;
+    h.fs.put(TFTC_JOURNAL, head + JSON.stringify({ event: 'nvram_delta', t: 9000, n: 3, d: [[0x175a, 0x4a, 0], [0x175b, 0x54, 0], [0x175c, 0x4d, 0]] }) + '\n');
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ kind: 'high_scores_changed' });
+    expect(writes[0]!.entries[0]).toMatchObject({ initials: 'JTM' });
+    expect(games).toHaveLength(before);
+    expect(logs.some((l) => l.includes('the machine wrote its high-score list (JTM '))).toBe(true);
+    await h.witness.stop();
+  });
+
   it('A15: paused (stop) reads nothing more of the journal; resumed (start) continues after the last line and posts the game once', async () => {
     const h = liveHarness();
     const startedAt = h.clock.now() - 60_000;

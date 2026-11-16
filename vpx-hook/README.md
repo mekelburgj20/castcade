@@ -66,8 +66,13 @@ System 1/80/80B (0x1800), Bally and Stern M100/200 (0x200) and Williams System 4
 delta was journaled. The bump makes every sidecar stale, so the folder watch re-makes them all on its first look.
 For Stern SAM the list also carries the end-of-game counter (`samEndCounter` in `companion/src/witness/maps.ts`).
 `table_exit` gains `filtered_bytes`. Without a watch list (0.1.0 / 0.2.0 sidecars) the old behaviour stands.
-The companion computes the list with `gameStateOffsets(map)` (`companion/src/witness/maps.ts`) when it renders
+The companion computes the list with `watchOffsets(map)` (`companion/src/witness/maps.ts`) when it renders
 a sidecar; re-importing the folder re-renders every table with it (an older recipe version plans as `repatch`).
+
+**Recipe 0.3.2 (A16.2):** the watch list also holds the bytes of the map's `high_scores` block (each entry's
+initials and score, `highScoreOffsets(map)`), so the journal shows the machine writing a high-score entry: the
+companion ends a match's initials hold on it. Still `nvram_delta` lines; no lib change. Those bytes change only when
+the machine writes its list, so the journal volume during play is what it was.
 ### 0.4.0 — `Castcade_EngineSample`: what VPX has in force, from inside the table (F6)
 
 Ini reading is a *settings at launch* statement (`docs/design/fairness-and-table-identity.md` §5): VPX's tweak

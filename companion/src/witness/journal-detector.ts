@@ -29,7 +29,7 @@
  * attached by the owner (`setMap`), because the corpus loads lazily and asynchronously; deltas
  * that arrive before the map still patch the shadow buffer, decoding starts when the map lands.
  */
-import { ballyLiveInputs, decodeFinalScores, decodeGameState, samEndCounter, type CompiledMap, type GameState } from './maps.js';
+import { ballyLiveInputs, decodeFinalScores, decodeGameState, decodeHighScores, highScoreOffsets, samEndCounter, type CompiledMap, type GameState, type HighScore } from './maps.js';
 
 /** Events every consumer understands, whichever recipe produced them. */
 export type GameEvent =
@@ -89,7 +89,29 @@ export interface EngineSample {
   nudge: { xmax: number | null; ymax: number | null; xgain: number | null; ygain: number | null; deadZone: number | null; tilt: number | null } | null;
 }
 
-export type JournalEvent = GameEvent | HookEvent;
+/**
+ * A16.2 (recipe A): a byte of the map's `high_scores` block changed in the journal (the machine wrote its high-score
+ * list: a new entry, its initials). `entries` is the list as it reads now. Companion-internal: the journal carries
+ * only `nvram_delta` / `nvram_full` lines, and only a sidecar whose watch list holds those bytes (recipe A 0.3.2)
+ * journals them. Not a game event: it starts, ends and counts nothing.
+ */
+export interface HighScoreEvent {
+  kind: 'high_scores_changed';
+  t: number;
+  entries: HighScore[];
+}
+
+/** A16.2: what `JournalDetector.highScoreCheck` answers about a finished game's score. */
+export interface HighScoreCheck {
+  /** The score has a place on the table's high-score list. */
+  qualifies: boolean;
+  /** The list already holds this score (the machine wrote the entry before the question was asked). */
+  listed: boolean;
+  /** The lowest score still on the list, the earlier games of this sitting counted in; null when no entry has a score. */
+  lowest: number | null;
+}
+
+export type JournalEvent = GameEvent | HookEvent | HighScoreEvent;
 
 export type GameEventKind = GameEvent['kind'];
 
@@ -340,6 +362,14 @@ interface Session {
   finalsAtStart: (number | null)[] | null;
   /** Recipe A: the last plausible in-game state with a ball in play (`detectTransition`'s `lastInPlay`); null between games. */
   lastInPlay: LastInPlay | null;
+  /** A16.2: the NVRAM offsets of the map's `high_scores` block (`highScoreOffsets`); empty without a map or a block. */
+  highScoreBytes: Set<number>;
+  /**
+   * A16.2: the scores of the games that ended in this session, in order. An older sidecar does not journal the
+   * high-score bytes, so the shadow keeps the list as it was at table load; these stand in for what the machine
+   * wrote since (`highScoreCheck`).
+   */
+  finished: number[];
 }
 
 export interface JournalDetectorOptions {
@@ -374,6 +404,7 @@ export class JournalDetector {
     s.map = map;
     s.samCounter = map ? samEndCounter(map) : null;
     s.bally = map ? ballyLiveInputs(map) !== null : false;
+    s.highScoreBytes = new Set(map ? highScoreOffsets(map) : []);
     if (map && s.shadow) {
       s.samCount = this.counterValue(s);
       s.finals = this.finalsValue(s);
@@ -381,6 +412,32 @@ export class JournalDetector {
       s.state = plausible(st) ? st : null;
       s.summary.scores = s.state ? s.state.scores : null;
     }
+  }
+
+  /**
+   * A16.2: does `score`, the final score of a game on this table, have a place on the machine's high-score list?
+   * The list is the map's `high_scores` read from the shadow (as of table load with an older sidecar, live with one
+   * that journals those bytes), with the scores of this session's earlier games put in where the shadow does not
+   * show them and the list cut back to its length. Null: no way to tell (not a ROM table, no map, no `high_scores`,
+   * no NVRAM yet), which the caller takes as "does not qualify". A tie does not qualify.
+   */
+  highScoreCheck(score: number): HighScoreCheck | null {
+    const s = this.session;
+    if (!s || !s.recipeA || !s.map || !s.shadow || s.map.highScores.length === 0) return null;
+    const listed = decodeHighScores(s.map, s.shadow)
+      .map((h) => h.score)
+      .filter((x): x is number => x !== null);
+    if (listed.length === 0) return null;
+    const sorted = [...listed].sort((a, b) => b - a);
+    if (!(Number.isFinite(score) && score > 0)) return { qualifies: false, listed: false, lowest: sorted[sorted.length - 1] ?? null };
+    if (listed.includes(score)) return { qualifies: true, listed: true, lowest: sorted[sorted.length - 1] ?? null };
+    // The game asked about may already be among the finished ones (its `game_end` came with its last ball): leave one out.
+    const earlier = [...s.finished];
+    const own = earlier.lastIndexOf(score);
+    if (own >= 0) earlier.splice(own, 1);
+    const merged = [...listed, ...earlier.filter((x) => !listed.includes(x))].sort((a, b) => b - a).slice(0, listed.length);
+    const lowest = merged[merged.length - 1] ?? null;
+    return { qualifies: lowest !== null && score > lowest, listed: false, lowest };
   }
 
   summary(): SessionSummary | null {
@@ -478,7 +535,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null, lastInPlay: null };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null, lastInPlay: null, highScoreBytes: new Set(map ? highScoreOffsets(map) : []), finished: [] };
     return [
       {
         kind: 'table_loaded',
@@ -496,6 +553,7 @@ export class JournalDetector {
 
   private onFull(s: Session, e: RawLine, t: number): JournalEvent[] {
     if (!Array.isArray(e.bytes)) return [];
+    const before = s.shadow;
     s.shadow = Uint8Array.from(e.bytes, (x) => Number(x) & 0xff);
     if (!s.map) return [];
     const cur = decodeGameState(s.map, s.shadow);
@@ -503,8 +561,16 @@ export class JournalDetector {
     // attached has no observed start, and the boot pattern is simply ignored. A later periodic
     // snapshot is ground truth and goes through the same transition as a delta would, so a change
     // that a dropped delta hid is still seen.
-    const events = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
-    for (const ev of events) this.record(s, ev);
+    const game = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
+    for (const ev of game) this.record(s, ev);
+    const events: JournalEvent[] = [...game];
+    // A16.2: a later snapshot that differs in the high-score block (never the first one: that is the baseline).
+    if (before) {
+      const shadow = s.shadow;
+      let changed = false;
+      for (const off of s.highScoreBytes) if (before[off] !== shadow[off]) changed = true;
+      if (changed) events.push(this.highScoresChanged(s, t));
+    }
     if (plausible(cur)) {
       s.state = cur;
       s.samCount = this.counterValue(s);
@@ -520,17 +586,25 @@ export class JournalDetector {
       s.summary.orphanDeltas++;
       return [];
     }
+    let highScores = false;
     if (Array.isArray(e.d)) {
       for (const triple of e.d) {
         if (!Array.isArray(triple)) continue;
         const index = Number(triple[0]);
-        if (index >= 0 && index < s.shadow.length) s.shadow[index] = Number(triple[1]) & 0xff;
+        if (index >= 0 && index < s.shadow.length) {
+          const value = Number(triple[1]) & 0xff;
+          if (s.shadow[index] !== value && s.highScoreBytes.has(index)) highScores = true;
+          s.shadow[index] = value;
+        }
       }
     }
     if (!s.map) return [];
     const cur = decodeGameState(s.map, s.shadow);
-    const events = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
-    for (const ev of events) this.record(s, ev);
+    const game = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
+    for (const ev of game) this.record(s, ev);
+    const events: JournalEvent[] = [...game];
+    // A16.2: after the game events of the same line, so a game end that comes with the write is heard first.
+    if (highScores) events.push(this.highScoresChanged(s, t));
     if (!plausible(cur)) return events;
     if (cur.currentBall !== null && cur.currentBall > s.summary.maxBall) s.summary.maxBall = cur.currentBall;
     s.state = cur;
@@ -539,6 +613,11 @@ export class JournalDetector {
     s.summary.scores = cur.scores;
     this.noteInPlay(s, cur);
     return events;
+  }
+
+  /** A16.2: the high-score list as the shadow reads now (only called with a map and a shadow). */
+  private highScoresChanged(s: Session, t: number): HighScoreEvent {
+    return { kind: 'high_scores_changed', t, entries: s.map && s.shadow ? decodeHighScores(s.map, s.shadow) : [] };
   }
 
   /** Remember the ball in play while the game is open, so a game over that arrives after the ball byte was cleared still ends it. */
@@ -650,6 +729,8 @@ export class JournalDetector {
       case 'game_end':
         s.summary.scores = ev.scores;
         s.summary.inGame = false;
+        // A16.2: what this sitting's finished games put on the machine's high-score list (`highScoreCheck`).
+        for (const x of ev.scores) if (x !== null && x > 0) s.finished.push(x);
         break;
       case 'game_abandoned':
         s.summary.inGame = false;

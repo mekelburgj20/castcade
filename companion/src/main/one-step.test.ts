@@ -135,7 +135,8 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
   };
 }
 
-const HOST = { ballsPerGame: 3 as const, displayName: 'Owner' };
+// `startTable: true` is the one-press Host of 0.2.40 (the setting "Start the table as soon as I host"); A14.7's tests turn it off.
+const HOST = { ballsPerGame: 3 as const, displayName: 'Owner', startTable: true };
 const LINK = 'castcade://join/JHDFEF';
 
 describe('one step to a match: Host (A14 step 1)', () => {
@@ -259,6 +260,85 @@ describe('one step to a match: Host (A14 step 1)', () => {
     await w.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(w.launched).toHaveLength(1);
     expect(w.clips).toHaveLength(2);
+  });
+});
+
+describe('the invite before the table (A14.7)', () => {
+  const LATER = { ...HOST, startTable: false };
+
+  it('Host gives the invite and starts nothing; Start the table then starts the picked table, once', async () => {
+    const w = world({ relay: true, arcaid: 'https://arcaid.app' });
+    const st = await w.one.host({ ...LATER, tablePath: MB.vpxPath });
+    expect(st).toMatchObject({ role: 'host', code: 'HOSTED' });
+    // The link is on the clipboard and on the card; VPX was not asked for anything.
+    expect(w.clips).toEqual(['https://arcaid.app/castcade/join/HOSTED']);
+    expect(w.launched).toEqual([]);
+    expect(w.one.status()).toMatchObject({
+      link: 'https://arcaid.app/castcade/join/HOSTED',
+      copied: true,
+      message: `Castcade match on ${MB.tableId}: https://arcaid.app/castcade/join/HOSTED`,
+      tableToStart: MB.tableId,
+      launch: { state: 'idle' },
+    });
+    // Lobby statuses while the host is in Discord (a friend joins, the roster moves) start nothing.
+    await w.hostTable(fingerprint(NO_TABLE_NAME));
+    await w.phase('lobby');
+    expect(w.launched).toEqual([]);
+    expect(w.one.status().tableToStart).toBe(MB.tableId);
+    // Start the table.
+    const s = await w.one.startTable();
+    expect(w.launched).toEqual([MB.vpxPath]);
+    expect(s).toMatchObject({ tableToStart: null, launch: { state: 'starting', table: MB.tableId } });
+    // A second press has nothing left to start.
+    await w.one.startTable();
+    expect(w.launched).toHaveLength(1);
+    await w.table('Monster Bash');
+    expect(w.one.status().launch).toEqual({ state: 'running', table: 'Monster Bash', detail: null });
+    expect(w.clips).toHaveLength(1);
+  });
+
+  it('a table the host opens by hand meanwhile is the one that is used: the button goes and nothing is started', async () => {
+    const w = world();
+    await w.one.host({ ...LATER, tablePath: MB.vpxPath });
+    await w.table('Medieval Madness');
+    expect(w.one.status().tableToStart).toBeNull();
+    await w.one.startTable();
+    expect(w.launched).toEqual([]);
+    // Closing it does not bring the held table back.
+    await w.table(null);
+    expect(w.one.status().tableToStart).toBeNull();
+  });
+
+  it('no pick, or a table already open at Host: nothing is held', async () => {
+    const none = world();
+    await none.one.host({ ...LATER, tablePath: null });
+    expect(none.one.status().tableToStart).toBeNull();
+    const open = world();
+    await open.table('Medieval Madness');
+    await open.one.host({ ...LATER, tablePath: MB.vpxPath });
+    expect(open.one.status().tableToStart).toBeNull();
+    expect(open.launched).toEqual([]);
+  });
+
+  it('the match ending drops the held table; the next Host holds its own pick', async () => {
+    const w = world();
+    await w.one.host({ ...LATER, tablePath: MB.vpxPath });
+    await w.leave();
+    expect(w.one.status().tableToStart).toBeNull();
+    await w.one.startTable();
+    expect(w.launched).toEqual([]);
+    await w.one.host({ ...LATER, tablePath: AFM.vpxPath });
+    expect(w.one.status().tableToStart).toBe(AFM.tableId);
+    await w.one.startTable();
+    expect(w.launched).toEqual([AFM.vpxPath]);
+  });
+
+  it('VPX that does not start from Start the table is said on the tab and the match stays hosted', async () => {
+    const w = world({ launch: { ok: false, reason: 'the VPX program Castcade remembers is no longer there' } });
+    await w.one.host({ ...LATER, tablePath: MB.vpxPath });
+    const s = await w.one.startTable();
+    expect(s.launch).toMatchObject({ state: 'failed', detail: expect.stringContaining('Open it in VPX yourself; the match waits.') });
+    expect(w.one.status().link).not.toBeNull();
   });
 });
 

@@ -7,8 +7,30 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Changed
+
+- **The invite before the table (A14.7).** Host no longer starts VPX at once. It hosts the match and copies the
+  invite link ("Invite link copied"), and the picked table waits for a new **Start the table** button on the Match
+  tab, so a VR host can paste the invite in Discord before the headset takes over (owner, 2026-11-15: "when you click
+  host, you are put in to VR view. You have to exit out of VR to copy the code"). **Start the table as soon as I
+  host** on the Host card (`match.json` `startTableOnHost`, off by default) keeps the one-press Host of 0.2.40. A
+  table opened by hand meanwhile is used; a friend who joins first waits for the host's table as before. Unit tests
+  only; not run on a rig. `main/one-step.ts`, `renderer/src/views/OneStep.tsx`, `Match.tsx`.
+
 ### Fixed
 
+- **High-score initials after your last ball, on machines that end the game first (A16.2).** On Congo (`congo_21`,
+  WPC; match NQYJGN, 2026-11-15) the machine's game end comes with the last ball's end, before the initials entry, so
+  the A16 window closed at once: the table locked, the headset went to the other player's picture, and the owner's
+  Grand Champion score was stored with blank initials. Now, when your last ball of a game is reported and the score
+  has a place on the machine's high-score list (the ROM's map over the journal's NVRAM, this sitting's earlier games
+  counted in), the table stays unlocked, the headset stays on your own table and the panel reads "Your score is on
+  this table's high-score list: enter your initials on the table". The match goes on for everyone else. The hold ends
+  5 s after the machine has written its list, at a new game on the table, when the table closes or the match ends,
+  and after 90 s at the latest. Recipe A 0.3.2: the watch list also holds the map's high-score bytes, so every ROM
+  table's patch is re-made at the next look (reopen a table that was open); until both rigs are on this build the
+  roster may say "different table file" (advisory). Not yet verified on a rig. `match/controller.ts`,
+  `witness/journal-detector.ts`, `witness/maps.ts`, `patcher/render.ts`.
 - **A turn that never passed after 44 minutes at one table (C15).** In the third game of the owner's match QBPKHR
   (2026-11-15, Congo, three games without closing the table) his last ball never ended for the match: Krobs was never
   up, and a new game the owner started on the table was not seen either. The table's script stopped writing its

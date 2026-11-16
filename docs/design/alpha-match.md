@@ -625,6 +625,14 @@ tab were not run** (unit tests and typecheck only: the machine was busy with an 
   web form would put the host's address in a request to ArcAid and needs an encoded `/` and `#` through its proxy,
   untried). The Join box reads the web form like the `castcade://` one; the command line still takes only
   `castcade://`. Not tried in a Discord client or a browser with Castcade installed.
+- **The invite before the table (A14.7, 2026-11-15).** Owner: "when you click host, you are put in to VR view. You
+  have to exit out of VR to copy the code and paste it in to Discord." Host no longer starts VPX by default: it hosts,
+  copies the link and holds the picked table (`OneStepStatus.tableToStart`); the card's **Start the table** button
+  (`OneStep.startTable`, IPC `launch:startTable`) turns the held table into the same wish Host used to make, so the
+  launch, its two-minute wait and its failures are unchanged. The held table is dropped when the match ends or when
+  the host opens a table by hand. `match.json` `startTableOnHost` (default false; the Host card's "Start the table as
+  soon as I host") keeps the one-press Host. A friend who joins meanwhile is in the state §9.3 already covers (the
+  host's table opens after the join). Unit tests only; not run in the app.
 
 ### 9.2 The link joins and starts the table (step 2)
 
