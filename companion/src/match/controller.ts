@@ -68,10 +68,19 @@
  *   table whose patch journals those bytes; an entry with this score and no initials yet keeps it on), at a new
  *   `game_start` on the table (handled as ever), when the table closes or the match ends, and at the latest after
  *   `INITIALS_HOLD_CAP_MS`. A16's window runs beside it unchanged on a machine whose game ends after the initials.
+ * - B26 step 1 (2026-11-16, the owner: "a midnight madness happened for Krobs which is a really unfair advantage"): a WPC
+ *   machine starts a bonus multiball when its clock, which VPinMAME takes from the PC, passes midnight with a ball in
+ *   play: each player's own LOCAL midnight. When this player's ball (the grant's arrival to the report of its end)
+ *   contains a local midnight on a WPC machine (`opts.midnight`, `witness/midnight.ts`), the ball is flagged: logged,
+ *   told to every player (`localAdvisory` / `reportAdvisory`: a PARTICIPANT_UPDATE the host passes on, never logged,
+ *   sent before the BALL_END so it is in before a RESULT), shown as a line on the panel for `MIDNIGHT_LINE_MS` and on
+ *   the Match tab for the rest of the game (`status().advisories`), and as a flag on the player's row and result row.
+ *   Always "may have run". A flag only: no score, turn, lock or result reads it.
  */
-import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
+import type { GrantBody, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
 import type { GameEvent, HighScoreEvent } from '../witness/journal-detector.js';
+import { spansLocalMidnight, type UtcOffset } from '../witness/midnight.js';
 import type { ClientMatch } from './client.js';
 import type { HostMatch } from './host.js';
 import type { MatchState } from './state.js';
@@ -79,10 +88,10 @@ import type { MatchState } from './state.js';
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<
   HostMatch,
-  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker'
+  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory'
 >;
 /** What a client-side role must offer (structurally a ClientMatch). */
-export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume'>;
+export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory'>;
 export type MatchRole = HostRole | ClientRole;
 
 /** A HostMatch plays through `local*`; a ClientMatch through `report*` (host.ts / client.ts). */
@@ -142,6 +151,12 @@ export interface ControllerStatus {
    * unlocked, and the headset stays on this player's own table (`vrViewMode`'s `initialsHold`).
    */
   initialsHold: boolean;
+  /**
+   * B26: one line per ball of the current game flagged for Midnight Madness (`midnightLine`), oldest first, this
+   * player's own and the others'. The Match tab shows them for the rest of the game; the panel shows the newest for
+   * `MIDNIGHT_LINE_MS` and keeps the flag on the player's row.
+   */
+  advisories: string[];
   panel: PanelState;
 }
 
@@ -180,6 +195,13 @@ export interface MatchControllerOptions {
    * Absent, or false: no initials hold.
    */
   highScoreQualifies?: (score: number) => boolean;
+  /**
+   * B26: the Midnight Madness flag. `inScope`: the machine on this player's table is one whose ROM may start the mode
+   * (the witness: the ROM's map is on a WPC platform), asked when one of this player's balls ends across a local
+   * midnight; `utcOffsetMinutes`: this PC's offset from UTC, minutes east, fixed or at an instant (VPinMAME's clock is
+   * the PC's local time). Absent: nothing is ever flagged from this rig (flags from the others are still shown).
+   */
+  midnight?: { inScope: () => boolean; utcOffsetMinutes: UtcOffset };
 }
 
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
@@ -211,6 +233,24 @@ export const INITIALS_HOLD_CAP_MS = 90_000;
 export const INITIALS_QUIET_MS = 5_000;
 /** A16.2: the panel / Match tab line during an initials hold. */
 export const INITIALS_HOLD_MESSAGE = "Your score is on this table's high-score list: enter your initials on the table";
+/** B26: how long the panel's line shows a new Midnight Madness flag (the row's flag and the Match tab's line stay). */
+export const MIDNIGHT_LINE_MS = 20_000;
+/** B26: at most this many flagged balls are kept (a match is 2–4 players, a few balls each, a few games). */
+const MIDNIGHT_KEEP = 64;
+
+/**
+ * B26: the panel / Match tab line for a ball flagged for Midnight Madness. `name` null: this player's own ball.
+ * Always "may have run": the clock passing midnight is all that is known.
+ */
+export function midnightLine(name: string | null, ball: number): string {
+  if (name === null) return `Midnight Madness may have run on your ball ${ball} (your table's clock passed midnight)`;
+  return `Midnight Madness may have run on ${possessive(name)} ball ${ball} (that table's clock passed midnight)`;
+}
+
+/** `Krobs'`, `Hosty's`. */
+function possessive(name: string): string {
+  return `${name}${/s$/i.test(name) ? "'" : "'s"}`;
+}
 const DEFAULT_SETTLE_MS = 2000;
 const DEFAULT_START_COUNTDOWN_MS = 5000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
@@ -353,6 +393,13 @@ export class MatchController {
   /** A13: this player's own table, from the witness (null: unknown, no table open), and the witness's reason when it cannot. */
   private localBallEnds: boolean | null = null;
   private localBallEndsReason: string | null = null;
+  /** B26: when the grant this player is playing arrived (`opts.now()`); null when none is held. */
+  private holdingSince: number | null = null;
+  /** B26: the balls flagged for Midnight Madness, by this player's own detection and the others' advisories. */
+  private midnight: Array<{ player: PlayerId; game: number; ball: number }> = [];
+  /** B26: the newest flag's line on the panel until `until` (`MIDNIGHT_LINE_MS`), and the timer that takes it off. */
+  private midnightShown: { line: string; until: number } | null = null;
+  private midnightTimer: unknown = null;
 
   constructor(opts: MatchControllerOptions) {
     this.opts = opts;
@@ -434,6 +481,7 @@ export class MatchController {
       startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
       pass: this.passInfo(),
       initialsHold: this.initialsHold,
+      advisories: this.advisoryLines(),
       panel: this.panel(),
     };
   }
@@ -569,6 +617,8 @@ export class MatchController {
     if (p.player === this.localId) {
       this.clearPending();
       this.clearStateTimer();
+      // B26: the ball was played until now all the same.
+      this.noteMidnight(this.holding);
       this.holding = null;
       this.myBallsDone = Math.max(this.myBallsDone, p.ballNumber);
       this.opts.media?.setSending(false);
@@ -707,6 +757,8 @@ export class MatchController {
     this.spentTimer = null;
     this.spentUnlock = false;
     this.clearInitialsHold();
+    if (this.midnightTimer !== null) this.opts.clearTimeout(this.midnightTimer);
+    this.midnightTimer = null;
     for (const off of this.offs) off();
     this.offs = [];
     this.setLocked(false);
@@ -940,6 +992,7 @@ export class MatchController {
     offs.push(h.on('nextGame', (p) => this.onNextGame(p)));
     offs.push(h.on('matchEnded', (p) => this.onSeriesOver(`Match over after ${p.games} game${p.games === 1 ? '' : 's'}`)));
     offs.push(h.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
+    offs.push(h.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
     // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
     offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(h.on('ready', (p) => this.onReady(p)));
@@ -995,6 +1048,7 @@ export class MatchController {
       }),
     );
     offs.push(c.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
+    offs.push(c.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
     // HELLO_ACK's `hostGame` differs from this player's own: the host accepted it anyway (§3, advisory).
     offs.push(c.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
     offs.push(c.on('ready', (p) => this.onReady(p)));
@@ -1154,6 +1208,8 @@ export class MatchController {
     if (mine) {
       const was = this.holding;
       this.holding = g;
+      // B26: the ball's play time starts here; a grant re-issued for the same ball (after a pause) keeps its start.
+      if (!was || was.ballNumber !== g.ballNumber || this.holdingSince === null) this.holdingSince = this.opts.now();
       this.setLocked(false);
       if (!was) {
         this.opts.cue.play('your_turn');
@@ -1164,6 +1220,7 @@ export class MatchController {
       if (this.holding) {
         // A grant for someone else while this player still held one (a re-issue after a transfer): stop playing.
         this.holding = null;
+        this.holdingSince = null;
         this.clearPending();
         this.opts.media?.setSending(false);
       }
@@ -1256,6 +1313,7 @@ export class MatchController {
     this.clearPending();
     this.clearStateTimer();
     this.holding = null;
+    this.holdingSince = null;
     this.upPlayer = null;
     this.upBall = null;
     this.opts.media?.setSending(false);
@@ -1302,6 +1360,8 @@ export class MatchController {
     this.noteInitialsHold(finalScore);
     this.setLocked(true);
     this.opts.log(`match: BALL_END ball ${p.grant.ballNumber} score ${finalScore}${p.shootAgain ? ' (shoot again)' : ''}`);
+    // B26: before the BALL_END, so the flag is with every player before a RESULT can be.
+    this.noteMidnight(p.grant);
     this.call(() => {
       const r = this.role;
       if (isHostRole(r)) r.localBallEnd(finalScore, 'nvram', p.shootAgain);
@@ -1313,6 +1373,7 @@ export class MatchController {
   private reportGameOver(): void {
     const finalScore = this.myScore ?? 0;
     const balls = Math.max(this.myBallsDone, this.holding?.ballNumber ?? 0);
+    const held = this.holding;
     this.myGameOver = true;
     this.holding = null;
     this.clearStateTimer();
@@ -1320,6 +1381,8 @@ export class MatchController {
     this.noteInitialsHold(finalScore);
     this.setLocked(true);
     this.opts.log(`match: GAME_OVER score ${finalScore} after ${balls} ball(s)`);
+    // B26: the table's game ended in the middle of a held ball: that ball's play time ends here.
+    this.noteMidnight(held);
     this.call(() => {
       const r = this.role;
       if (isHostRole(r)) r.localGameOver(finalScore, balls);
@@ -1331,6 +1394,7 @@ export class MatchController {
   private forfeit(reason: string): void {
     this.myGameOver = true;
     this.holding = null;
+    this.holdingSince = null;
     this.clearPending();
     this.clearStateTimer();
     this.opts.media?.setSending(false);
@@ -1486,6 +1550,81 @@ export class MatchController {
     this.push();
   }
 
+  // ------------------------------------------------------------------------------------------
+  // B26: the Midnight Madness flag
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * One of this player's balls has just ended (reported, passed by the host, or cut short by the table's game over):
+   * `grant` is the one it was played under. If this PC's local clock passed midnight since the grant arrived and the
+   * machine is in scope, the ball is flagged here and for every other player. Called before the BALL_END / GAME_OVER
+   * goes out. Never throws; never touches a score, the lock or the turn.
+   */
+  private noteMidnight(grant: GrantBody | null): void {
+    const since = this.holdingSince;
+    this.holdingSince = null;
+    const m = this.opts.midnight;
+    if (!grant || since === null || !m) return;
+    let hit = false;
+    try {
+      hit = spansLocalMidnight(since, this.opts.now(), m.utcOffsetMinutes) && m.inScope();
+    } catch (e) {
+      this.opts.log(`match: could not check the ball for Midnight Madness: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!hit) return;
+    const advisory: PlayerAdvisory = { kind: 'midnight', game: this.gameNumber(), ballNumber: grant.ballNumber };
+    if (!this.addMidnight(this.localId, advisory)) return;
+    try {
+      const r = this.role;
+      const sent = isHostRole(r) ? r.localAdvisory(advisory) : r.reportAdvisory(advisory);
+      if (!sent) this.opts.log('match: the Midnight Madness flag was not sent to the other players (no match running)');
+    } catch (e) {
+      this.opts.log(`match: the Midnight Madness flag could not be sent to the other players: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** A flag from the engine: another player's (passed on by the host), or this player's own coming back (a duplicate). */
+  private onAdvisory(player: PlayerId, advisory: PlayerAdvisory): void {
+    if (this.closed || advisory.kind !== 'midnight') return;
+    if (!this.role.state.participants.some((p) => p.playerId === player)) return;
+    if (this.addMidnight(player, advisory)) this.push();
+  }
+
+  /** Records a flagged ball, logs it and puts its line on the panel for a while. False when it was known already. */
+  private addMidnight(player: PlayerId, a: PlayerAdvisory): boolean {
+    if (this.midnight.some((x) => x.player === player && x.game === a.game && x.ball === a.ballNumber)) return false;
+    this.midnight.push({ player, game: a.game, ball: a.ballNumber });
+    if (this.midnight.length > MIDNIGHT_KEEP) this.midnight.splice(0, this.midnight.length - MIDNIGHT_KEEP);
+    const mine = player === this.localId;
+    this.opts.log(
+      mine
+        ? `match: Midnight Madness may have run on my ball ${a.ballNumber} of game ${a.game}: this PC's clock passed local midnight during the ball, on a WPC machine; flagged for every player (a flag only: no score or result changes)`
+        : `match: Midnight Madness may have run on ${possessive(this.nameOf(player))} ball ${a.ballNumber} of game ${a.game}: that table's clock passed local midnight during the ball (flagged by that player's Castcade; a flag only: no score or result changes)`,
+    );
+    if (a.game === this.gameNumber()) {
+      this.midnightShown = { line: midnightLine(mine ? null : this.nameOf(player), a.ballNumber), until: this.opts.now() + MIDNIGHT_LINE_MS };
+      if (this.midnightTimer !== null) this.opts.clearTimeout(this.midnightTimer);
+      this.midnightTimer = this.opts.setTimeout(() => {
+        this.midnightTimer = null;
+        this.midnightShown = null;
+        this.push();
+      }, MIDNIGHT_LINE_MS);
+    }
+    return true;
+  }
+
+  /** The flagged balls of the game being played (or just played), per player. */
+  private midnightBalls(player: PlayerId): number[] {
+    const game = this.gameNumber();
+    return this.midnight.filter((x) => x.game === game && x.player === player).map((x) => x.ball);
+  }
+
+  private advisoryLines(): string[] {
+    if (this.phase === 'lobby') return [];
+    const game = this.gameNumber();
+    return this.midnight.filter((x) => x.game === game).map((x) => midnightLine(x.player === this.localId ? null : this.nameOf(x.player), x.ball));
+  }
+
   private setLocked(want: boolean): void {
     this.wantLocked = want;
     const on = want && !this.spentUnlock && !this.initialsHold;
@@ -1540,6 +1679,8 @@ export class MatchController {
       if (words.build) flags.push('build_mismatch');
       if (this.left.has(p.playerId) || prog?.connected === false) flags.push('disconnected');
       if (this.phase === 'lobby' && this.loadingIds.includes(p.playerId)) flags.push('loading');
+      // B26: one of this player's balls of this game may have had Midnight Madness.
+      if (this.phase !== 'lobby' && this.midnightBalls(p.playerId).length > 0) flags.push('midnight');
       return {
         id: p.playerId,
         name: p.displayName,
@@ -1568,7 +1709,8 @@ export class MatchController {
       ballsPerGame: st.ballsPerGame || (this.opts.ballsPerGame ?? 0),
       players,
       phase,
-      result: this.result,
+      // B26: the result row of a player with a flagged ball is marked (the key is absent otherwise).
+      result: this.result ? this.result.map((r) => (this.midnightBalls(r.id).length > 0 ? { ...r, flags: ['midnight' as const] } : r)) : null,
       message: this.panelMessage(),
       mic: this.opts.media?.status().mic ?? 'unavailable',
     };
@@ -1578,6 +1720,8 @@ export class MatchController {
     if (this.message) return this.message;
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
+    // B26: a ball just flagged for Midnight Madness, for a while (over the table note, which stays all match).
+    if (this.midnightShown && this.opts.now() < this.midnightShown.until && this.phase !== 'lobby') return this.midnightShown.line;
     // The table line, grouped by what differs. A VPX build difference alone is a muted flag on the player's row, not
     // this line: it would hold the line for the whole match and hide the turn prompts (D2.5, 2026-10-31).
     const byWhat = new Map<string, string[]>();
@@ -1634,7 +1778,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines()]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

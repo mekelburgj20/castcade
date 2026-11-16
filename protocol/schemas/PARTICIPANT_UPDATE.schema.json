@@ -120,8 +120,39 @@
     "ballEndReady": {
       "description": "A13: whether the sender's table can report ball ends now (see `HELLO.ballEndReady`), when that changed since HELLO. Lobby only.",
       "type": "boolean"
+    },
+    "advisory": {
+      "description": "B26: after MATCH_READY only: a flag about one of the sender's own balls (see `PlayerAdvisory`). The host passes the update on to every other participant like a rig change (`from` preserved) and sends its own the same way. A peer from before B26 ignores it.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "midnight"
+          ],
+          "description": "`midnight`: the sender's PC clock passed local midnight while it played this ball on a WPC machine, whose ROM starts a bonus multiball then (Midnight Madness): it may have run."
+        },
+        "game": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999,
+          "description": "The game of the series the ball belongs to."
+        },
+        "ballNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99,
+          "description": "The sender's ball the flag is about."
+        }
+      },
+      "required": [
+        "kind",
+        "game",
+        "ballNumber"
+      ],
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
-  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
+  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` and (B26) `advisory` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
 }

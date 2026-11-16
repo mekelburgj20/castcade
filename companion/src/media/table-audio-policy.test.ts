@@ -45,6 +45,22 @@ describe('tableAudioPlan (D2.8)', () => {
     expect(tableAudioPlan(null, ON)).toEqual(NO_TABLE_AUDIO);
   });
 
+  it("A16.2.2: an initials hold keeps my own table audible: not muted, not sent, and the up player's table still plays", () => {
+    const hold = { initialsHold: true };
+    expect(tableAudioPlan(p('playing', false, 'krobs'), ON, hold)).toEqual({ muteMine: false, tapMine: false, playTableOf: 'krobs', levelMine: null });
+    expect(tableAudioPlan(p('paused', false, 'krobs'), ON, hold)).toEqual({ muteMine: false, tapMine: false, playTableOf: 'krobs', levelMine: null });
+    // The gap between grants: mine is heard, nobody's is played.
+    expect(tableAudioPlan(p('playing', false, null), ON, hold)).toEqual({ muteMine: false, tapMine: false, playTableOf: null, levelMine: null });
+    // Never levelled (that is for my own ball), and "Hear the other table" off stays off.
+    expect(tableAudioPlan(p('playing', false, 'krobs'), { ...ON, myTableWhileUp: 40, tableHearOthers: false }, hold)).toEqual(NO_TABLE_AUDIO);
+    // The hold over: the turn rules again. No hold flag at all reads as no hold.
+    expect(tableAudioPlan(p('playing', false, 'krobs'), ON, { initialsHold: false }).muteMine).toBe(true);
+    expect(tableAudioPlan(p('playing', false, 'krobs'), ON, {}).muteMine).toBe(true);
+    // My own ball and the result are what they were.
+    expect(tableAudioPlan(p('playing', true, 'me'), ON, hold)).toEqual({ muteMine: false, tapMine: true, playTableOf: null, levelMine: null });
+    expect(tableAudioPlan(p('over', false, null), ON, hold)).toEqual(NO_TABLE_AUDIO);
+  });
+
   it('each setting turns its own part off', () => {
     expect(tableAudioPlan(p('playing', false, 'krobs'), { ...ON, tableMuteMine: false })).toEqual({ muteMine: false, tapMine: false, playTableOf: 'krobs', levelMine: null });
     expect(tableAudioPlan(p('playing', false, 'krobs'), { ...ON, tableHearOthers: false })).toEqual({ muteMine: true, tapMine: false, playTableOf: null, levelMine: null });

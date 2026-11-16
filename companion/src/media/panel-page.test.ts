@@ -65,6 +65,21 @@ describe('panel text (D2)', () => {
       ['Owner', '#1', '3,000,000'],
       ['Krobs', '#2', '2,000,000'],
     ]);
+    // B26 (2026-11-16): Midnight Madness may have run on one of that player's balls: a red flag on the row, while
+    // playing and on the result; the place is the score's.
+    const midnight = state({ players: [{ id: 'krobs', name: 'Krobs', score: 5, ballsDone: 1, isUp: false, flags: ['midnight'] }] });
+    expect(stripRows(midnight)[0]).toMatchObject({ flags: ['MIDNIGHT MADNESS?'], notes: [] });
+    const marked = state({
+      phase: 'over',
+      result: [
+        { id: 'krobs', name: 'Krobs', score: 4_000_000, place: 1, flags: ['midnight'] },
+        { id: 'owner', name: 'Owner', score: 3_000_000, place: 2 },
+      ],
+    });
+    expect(stripRows(marked).map((r) => [r.name, r.detail, r.flags])).toEqual([
+      ['Krobs', '#1', ['MIDNIGHT MADNESS?']],
+      ['Owner', '#2', []],
+    ]);
   });
 
   it('stage: my own preview when I am up, the up player otherwise, nothing before the start or after the result', () => {

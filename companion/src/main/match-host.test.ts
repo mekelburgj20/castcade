@@ -204,6 +204,101 @@ describe('match host (A6)', () => {
     expect(ca.last()).toEqual({ mutePid: null, tapPid: null });
   }, 15_000);
 
+  it('A16.2.2 (2026-11-16): during an initials hold my own table is not muted although the other player is up; a table with no hold is', async () => {
+    type Feed = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
+    const playing = (pid: number, qualifies: boolean) => {
+      const cbs: ((ev: Feed) => void)[] = [];
+      const w = { ...witness('ab'.repeat(32)), vpxPid: () => pid, onEvent: (cb: (ev: Feed) => void) => (cbs.push(cb), () => undefined), highScoreQualifies: () => qualifies } as unknown as WitnessHost;
+      return { w, feed: (ev: Feed) => cbs.forEach((cb) => cb(ev)) };
+    };
+    const lines: string[] = [];
+    const hostLog = { info: (l: string) => void lines.push(l), warn: () => undefined, error: () => undefined, file: '' } as unknown as Logger;
+    const hw = playing(111, true);
+    const cw = playing(222, false);
+    const ha = fakeAudio();
+    const ca = fakeAudio();
+    const H = make('hold-host', 'ab'.repeat(32), { witness: hw.w, tableAudio: ha.ta, log: hostLog });
+    const C = make('hold-client', 'ab'.repeat(32), { witness: cw.w, tableAudio: ca.ta });
+    const port = 41000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await H.mh.start();
+    const play =async (mh: MatchHost, seat: { feed: (ev: Feed) => void }, ball: number, score: number): Promise<void> => {
+      await until(() => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball);
+      seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
+      seat.feed({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 } as Feed);
+      seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
+      await until(() => mh.status().panel?.myTurn !== true);
+    };
+    // Balls 1 and 2: nobody's game is done, so the table of whoever is not up is muted.
+    for (const ball of [1, 2]) {
+      await play(H.mh, hw, ball, 1000 * ball);
+      await until(() => ha.last()?.mutePid === 111);
+      await play(C.mh, cw, ball, 900 * ball);
+    }
+    // The host's last ball makes its machine's list: the client is up, and the host's table stays audible, unsent.
+    await play(H.mh, hw, 3, 5000);
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().panel?.ball === 3);
+    await until(() => ha.last()?.mutePid === null);
+    expect(ha.last()).toEqual({ mutePid: null, tapPid: null });
+    expect(H.mh.status().panel).toMatchObject({ phase: 'playing', myTurn: false });
+    expect(lines.some((l) => l.startsWith('match: table sound: mute off (initials hold), send off, play '))).toBe(true);
+    // The client is up and sends its own; it was never held.
+    expect(ca.last()).toEqual({ mutePid: null, tapPid: 222 });
+  }, 15_000);
+
+  it("B26 (2026-11-16): a client's ball across its local midnight on a WPC machine (the witness's answer) is flagged on both Match tabs over the real socket; the host, out of scope, is not", async () => {
+    type Feed = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
+    const playing = (inScope: boolean) => {
+      const cbs: ((ev: Feed) => void)[] = [];
+      const w = { ...witness('ab'.repeat(32)), onEvent: (cb: (ev: Feed) => void) => (cbs.push(cb), () => undefined), midnightInScope: () => inScope } as unknown as WitnessHost;
+      return { w, feed: (ev: Feed) => cbs.forEach((cb) => cb(ev)) };
+    };
+    // The test's stand-in for a time zone: this rig's local day changes at `turn` (never, until the test sets it).
+    let turn = Number.POSITIVE_INFINITY;
+    const offset = (ms: number): number => (ms >= turn ? 24 * 60 : 0);
+    const hw = playing(false);
+    const cw = playing(true);
+    const H = make('mid-host', 'ab'.repeat(32), { witness: hw.w, utcOffsetMinutes: offset });
+    const C = make('mid-client', 'ab'.repeat(32), { witness: cw.w, utcOffsetMinutes: offset });
+    const port = 41000 + Math.floor(Math.random() * 2000);
+    const hs = await H.mh.host({ port, ballsPerGame: 3, displayName: 'Hosty' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await H.mh.start();
+    const play = async (mh: MatchHost, seat: { feed: (ev: Feed) => void }, ball: number, score: number, midnight = false): Promise<void> => {
+      await until(() => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball);
+      seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
+      if (midnight) {
+        await new Promise((r) => setTimeout(r, 5));
+        turn = Date.now();
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      seat.feed({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 } as Feed);
+      seat.feed({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
+      await until(() => mh.status().panel?.myTurn !== true);
+    };
+    await play(H.mh, hw, 1, 1000);
+    await play(C.mh, cw, 1, 900);
+    expect(H.mh.status().advisories).toEqual([]);
+    // "Midnight" falls inside the host's ball 2 (its machine is not WPC: no flag), then is long past for Krobs' ball 2.
+    await play(H.mh, hw, 2, 2000, true);
+    await play(C.mh, cw, 2, 1800);
+    expect(H.mh.status().advisories).toEqual([]);
+    expect(C.mh.status().advisories).toEqual([]);
+    // And inside Krobs' ball 3, on a WPC machine.
+    await play(H.mh, hw, 3, 3000);
+    turn = Number.POSITIVE_INFINITY;
+    await play(C.mh, cw, 3, 2700, true);
+    await until(() => H.mh.status().advisories.length === 1 && H.mh.status().phase === 'over');
+    expect(H.mh.status().advisories).toEqual(["Midnight Madness may have run on Krobs' ball 3 (that table's clock passed midnight)"]);
+    expect(C.mh.status().advisories).toEqual(["Midnight Madness may have run on your ball 3 (your table's clock passed midnight)"]);
+    // The result is the scores': the host won; Krobs' row carries the flag.
+    expect(H.mh.status().panel?.result).toEqual([
+      { id: H.mh.status().localId, name: 'Hosty', score: 3000, place: 1 },
+      { id: C.mh.status().localId, name: 'Krobs', score: 2700, place: 2, flags: ['midnight'] },
+    ]);
+  }, 20_000);
+
   it('D10.3 (2026-11-07): native video: one helper peer per rig over the real signalling (channel video), the lower id offers, send follows the turn, the rings reach the media layer; the setting is saved', async () => {
     const lines: string[] = [];
     const hostLog = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;

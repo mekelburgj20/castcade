@@ -176,6 +176,63 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(r.updated).toEqual([]);
   });
 
+  it("B26: an advisory after MATCH_READY reaches every participant with its sender's id, the host's own too; nothing is logged, nothing in the lobby", async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: MB }, { id: 'third', game: MB }] });
+    const krobs = r.clients['krobs']!;
+    const flag = { kind: 'midnight', game: 1, ballNumber: 2 } as const;
+    const seen: Record<string, string[]> = { h: [], krobs: [], third: [] };
+    const note = (id: string) => (a: { playerId: string; advisory: { kind: string; game: number; ballNumber: number } }) => void seen[id]!.push(`${a.playerId}:${a.advisory.kind}:${a.advisory.game}:${a.advisory.ballNumber}`);
+    r.host.on('advisory', note('h'));
+    for (const id of ['krobs', 'third']) r.clients[id]!.on('advisory', note(id));
+    // The lobby has no balls to flag.
+    expect(krobs.reportAdvisory(flag)).toBe(false);
+    expect(r.host.localAdvisory(flag)).toBe(false);
+    r.host.start();
+    await flush();
+    const log = { h: r.host.log.head(), krobs: krobs.log.head() };
+
+    expect(krobs.reportAdvisory(flag)).toBe(true);
+    await flush();
+    expect(seen).toEqual({ h: ['krobs:midnight:1:2'], krobs: ['krobs:midnight:1:2'], third: ['krobs:midnight:1:2'] });
+    expect(r.host.localAdvisory({ ...flag, ballNumber: 3 })).toBe(true);
+    await flush();
+    expect(seen['krobs']).toEqual(['krobs:midnight:1:2', 'h:midnight:1:3']);
+    expect(seen['third']).toEqual(['krobs:midnight:1:2', 'h:midnight:1:3']);
+    expect(seen['h']).toEqual(['krobs:midnight:1:2', 'h:midnight:1:3']);
+    // Never logged, on either side; no reject; the rig relay is as it was (an advisory is not a rig change).
+    expect(r.host.log.head()).toEqual(log.h);
+    expect(krobs.log.head()).toEqual(log.krobs);
+    expect(r.rejects).toEqual([]);
+    expect(r.updated).toEqual([]);
+  });
+
+  it('B26: what a peer from before the advisory does with one (zod strips the key it does not know): an older host relays nothing, an older client drops the frame; nothing else changes', async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: MB }, { id: 'third', game: MB }] });
+    const krobs = r.clients['krobs']!;
+    const third = r.clients['third']!;
+    const advisories: string[] = [];
+    const dropped: string[] = [];
+    third.on('advisory', (a) => advisories.push(a.playerId));
+    third.on('dropped', (d) => dropped.push(`${d.type}:${d.reason}`));
+    r.host.on('advisory', (a) => advisories.push(a.playerId));
+    r.host.start();
+    await flush();
+    const log = r.host.log.head();
+    // The frame as an older host parses it: the update with no `advisory` and no rig. It passes nothing on.
+    krobs.session.transport.send('h', krobs.session.build('PARTICIPANT_UPDATE', {}, 'M'));
+    await flush();
+    expect(advisories).toEqual([]);
+    expect(dropped).toEqual([]);
+    // The frame as an older client parses it (from this host): dropped as unexpected, as an empty update always was.
+    r.host.session.transport.send('third', r.host.session.build('PARTICIPANT_UPDATE', {}, 'M'));
+    await flush();
+    expect(dropped).toEqual(['PARTICIPANT_UPDATE:unexpected']);
+    expect(advisories).toEqual([]);
+    expect(r.rejects).toEqual([]);
+    expect(r.host.log.head()).toEqual(log);
+    expect(third.state.phase).toBe('running');
+  });
+
   it('a refusing host rejects an update whose fingerprint differs and keeps the old one; a rig-only update goes through', async () => {
     const r = await lobby({ policy: 'refuse', clients: [{ id: 'krobs', game: MB }] });
     const krobs = r.clients['krobs']!;

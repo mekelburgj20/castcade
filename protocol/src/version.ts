@@ -19,6 +19,9 @@
  * 5 (2026-11-12, A13): TURN_PASS (logged): the host ends the grant holder's ball by hand. A new logged message type,
  *   like NEXT_GAME in 3: a peer on 4 would drop the frame, miss the entry and fold a different state. The same item's
  *   `ballEndReady` (HELLO, PARTICIPANT_UPDATE, HELLO_ACK) is optional / defaulted and never logged, and alone would
- *   have stayed 4 (as A8's `tableMismatches` stayed 2): absent reads as unknown.
+ *   have stayed 4 (as A8's `tableMismatches` stayed 2): absent reads as unknown. PARTICIPANT_UPDATE `advisory` (B26,
+ *   2026-11-16, the Midnight Madness flag): optional, never logged, after MATCH_READY only, so still 5. A 0.2.41–0.2.43
+ *   peer strips the key: as the host it relays nothing (an update with no new rig is not passed on), as a client it
+ *   drops the frame (`unexpected`); either way the flag is lost for that peer and nothing else changes.
  */
 export const PROTOCOL_VERSION = 5 as const;

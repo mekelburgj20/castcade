@@ -583,6 +583,42 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.paths('/report')).toHaveLength(4);
   });
 
+  it('B26: a game on a WPC machine whose play time contains a local midnight is flagged in the log and the capture detail; the score posts as ever, with nothing new on the wire', async () => {
+    const DAY = 86_400_000;
+    const session = async (midnightInMs: number) => {
+      const clock = new ManualClock(1_760_000_000_000);
+      const logs: string[] = [];
+      // local = UTC + offset: local midnight falls `midnightInMs` after the clock's start (the launch is 2 s in).
+      const offset = (DAY - ((clock.now() + midnightInMs) % DAY)) / 60_000;
+      const h = harness({}, { clock, log: (l) => logs.push(l), utcOffsetMinutes: offset });
+      await h.fs.mkdir('/nv');
+      h.fs.put('/nv/mm_109c.nv', mmBefore);
+      await h.witness.start();
+      await h.launch();
+      // No live table (basic mode): nothing for a match to ask about.
+      expect(h.witness.midnightInScope()).toBe(false);
+      await h.playFor(100_000);
+      h.fs.put('/nv/mm_109c.nv', mmAfter);
+      await h.exit();
+      return { h, logs };
+    };
+    const LINE = `witness: ${MM_TABLE}: Midnight Madness may have run (local midnight passed during the game)`;
+    // Midnight one minute after the start: inside the 100 s game on Medieval Madness (mm_109c, williams-wpc-12K).
+    const across = await session(60_000);
+    expect(across.h.captures[0]).toMatchObject({ outcome: 'ingested', rom: 'mm_109c', score: 1089510 });
+    expect(across.logs.filter((l) => l === LINE)).toHaveLength(1);
+    expect(across.h.captures[0]?.detail).toContain('Midnight Madness may have run (local midnight passed during the game)');
+    // Midnight twelve hours away: the same game, no flag; and the wire is the same either way.
+    const noon = await session(DAY / 2);
+    expect(noon.h.captures[0]).toMatchObject({ outcome: 'ingested', score: 1089510 });
+    expect(noon.logs.some((l) => l.includes('Midnight Madness'))).toBe(false);
+    expect(noon.h.captures[0]?.detail).not.toContain('Midnight Madness');
+    const keys = (x: typeof across) => Object.keys(x.h.paths('/score')[0]?.params ?? {}).sort();
+    expect(across.h.paths('/score')).toHaveLength(1);
+    expect(keys(across)).toEqual(keys(noon));
+    expect(keys(across).some((k) => /midnight|advis/i.test(k))).toBe(false);
+  });
+
   it('skips when no .nv changed (original table) and when the ROM has no map', async () => {
     const h = harness({}, { nvSettleMs: 0 });
     await h.fs.mkdir('/nv');

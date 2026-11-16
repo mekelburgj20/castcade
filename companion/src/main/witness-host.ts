@@ -45,6 +45,8 @@ export interface WitnessHost {
   onEvent(listener: (event: GameEvent | { kind: 'table_exit' }, meta?: WitnessEventMeta) => void): () => void;
   /** A16.2: a finished game's score has a place on the open table's high-score list (`Witness.highScoreQualifies`). */
   highScoreQualifies?(score: number): boolean;
+  /** B26: the open table's machine is one that may start Midnight Madness at the PC's midnight (`Witness.midnightInScope`). */
+  midnightInScope?(): boolean;
   /** A16.2: the open table's machine wrote its high-score list (the witness's `highScores` event). */
   onHighScores?(listener: (event: HighScoreEvent) => void): () => void;
   /** A15: how far into the open table's journal the game events were delivered (`Witness.journalMark`). */
@@ -240,6 +242,7 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
       };
     },
     highScoreQualifies: (score) => witness.highScoreQualifies(score),
+    midnightInScope: () => witness.midnightInScope(),
     onHighScores(listener) {
       highScoreListeners.add(listener);
       return () => {
