@@ -1538,6 +1538,14 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       return;
     }
     if (!live.accepted) return;
+    if (ev.kind === 'high_scores_changed') {
+      // A16.2: for the match's initials hold. Not a game event: no mark, no backlog; a line the replaced witness
+      // already read (A15) is not news.
+      if (live.quietUntil !== null && live.lineEnd <= live.quietUntil) return;
+      log(`witness: ${live.tableId}: the machine wrote its high-score list (${ev.entries.map((h) => `${h.initials ?? '---'} ${h.score ?? '?'}`).join(', ')})`);
+      emitter.emit('highScores', ev);
+      return;
+    }
     const at = (live.loadedAtMs ?? clock.now()) + ev.t * 1000;
     if (live.skipGame) {
       // B17: a game an earlier run posted, replayed after a restart. Follow it to its end and post nothing;
@@ -1986,6 +1994,21 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
     liveGame() {
       return liveGame;
+    },
+
+    // A16.2: asked by the match controller when this player's last ball of a game is reported.
+    highScoreQualifies(score) {
+      const live = activeSession()?.live;
+      if (!live || !live.accepted) return false;
+      const check = live.detector.highScoreCheck(score);
+      if (!check) {
+        log(`witness: ${live.tableId}: no high-score list to compare ${score} with (no map for the ROM, or none in it)`);
+        return false;
+      }
+      log(
+        `witness: ${live.tableId}: score ${score} ${check.qualifies ? 'makes' : 'does not make'} the machine's high-score list (${check.listed ? 'already on it' : `lowest entry ${check.lowest ?? '?'}`})`,
+      );
+      return check.qualifies;
     },
 
     // A6 (2026-10-31): the match host's fresh rig decision at host / join. Read-only: the attestation keeps its own samples.

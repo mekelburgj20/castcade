@@ -9,7 +9,7 @@ import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../me
 import { headerText } from '../media/panel-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { DEFAULT_VR_VIEW, isHostRole, MatchController, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
+import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -101,15 +101,15 @@ function seat(role: HostMatch | ClientMatch, clock: ManualClock, ballsPerGame?: 
   return { ctl, locks, cues, media, logs };
 }
 
-async function rig(balls = 3, clientGame: GameFingerprint = game, fingerprintPolicy?: 'refuse' | 'advise') {
+async function rig(balls = 3, clientGame: GameFingerprint = game, fingerprintPolicy?: 'refuse' | 'advise', extra: Partial<MatchControllerOptions> = {}) {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
   const ck = generateKeys();
   const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy, clock });
   const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'ABCDEF', hostId: 'h', clock });
-  const H = seat(host, clock, balls);
-  const C = seat(client, clock);
+  const H = seat(host, clock, balls, extra);
+  const C = seat(client, clock, undefined, extra);
   await H.ctl.open();
   await C.ctl.open();
   client.join();
@@ -542,6 +542,17 @@ describe('vrViewMode (D7.4, 2026-10-31)', () => {
     expect(vrViewMode(at('playing', false, 'krobs'), { theaterDuringMyTurn: 'hidden', spectate: 'panel' })).toBe('panel');
     expect(vrViewMode(at('idle', false, null), { theaterDuringMyTurn: 'hidden', spectate: 'theater' })).toBe('panel');
   });
+
+  it('A16.2: during an initials hold the headset shows what it shows on my own ball, whoever is up and after the result; the menu still wins', () => {
+    const hold = { initialsHold: true };
+    expect(vrViewMode(at('playing', false, 'krobs'), DEFAULT_VR_VIEW, hold)).toBe('hidden');
+    expect(vrViewMode(at('playing', false, null), DEFAULT_VR_VIEW, hold)).toBe('hidden');
+    expect(vrViewMode(at('over', false, null), DEFAULT_VR_VIEW, hold)).toBe('hidden');
+    expect(vrViewMode(at('paused', false, 'krobs'), DEFAULT_VR_VIEW, hold)).toBe('hidden');
+    expect(vrViewMode(at('playing', false, 'krobs'), { theaterDuringMyTurn: 'panel', spectate: 'theater' }, hold)).toBe('panel');
+    expect(vrViewMode(at('playing', false, 'krobs'), DEFAULT_VR_VIEW, { initialsHold: true, menuOpen: true })).toBe('panel');
+    expect(vrViewMode(at('playing', false, 'krobs'), DEFAULT_VR_VIEW, { initialsHold: false })).toBe('theater');
+  });
 });
 
 describe('A10 + A11 (2026-11-02): the series and the start from the host table', () => {
@@ -741,6 +752,175 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     expect(C.ctl.status().locked).toBe(false);
     C.ctl.feed(gameStart);
     expect(C.ctl.status().locked).toBe(true);
+  });
+
+  // ---- A16.2 (2026-11-15, match NQYJGN on Congo / congo_21): the high-score initials hold ----
+  const GC = 1_701_234_940;
+  const highScores = (...entries: [string | null, number][]): ControllerFeed => ({
+    kind: 'high_scores_changed',
+    t: 0,
+    entries: entries.map(([initials, score]) => ({ label: null, shortLabel: null, initials, score })),
+  });
+  /** The host's only ball on a WPC machine: the game end comes with the ball's end, before the initials. */
+  async function hostFinishesAt(score: number, qualifies: (score: number) => boolean) {
+    const asked: number[] = [];
+    const s = await rig(1, game, undefined, { highScoreQualifies: (x) => (asked.push(x), qualifies(x)) });
+    s.host.start();
+    await flush();
+    s.H.ctl.feed(gameStart);
+    s.H.ctl.feed(scores(score));
+    s.H.ctl.feed(ballEnd(1));
+    s.H.ctl.feed(gameEnd(score));
+    s.H.ctl.feed(scores(score));
+    await flush();
+    return { ...s, asked };
+  }
+
+  it('A16.2: a score that makes the high-score list holds the table for the initials although the game end came with the last ball; the match goes on', async () => {
+    const { host, clock, H, C, asked } = await hostFinishesAt(GC, () => true);
+    expect(asked).toEqual([GC]);
+    expect(host.state.players['h']).toMatchObject({ score: GC, ballsPlayed: 1 });
+    // The next grant was not delayed: the client is up. The host's table is unlocked all the same.
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false });
+    expect(H.ctl.status()).toMatchObject({ myTurn: false, locked: false, initialsHold: true });
+    // Locked at MATCH_READY, unlocked by the grant, and never locked since.
+    expect(H.locks).toEqual(['lock', 'unlock']);
+    expect(H.media.panel.message).toBe(INITIALS_HOLD_MESSAGE);
+    expect(H.media.panel).toMatchObject({ phase: 'playing', myTurn: false, playerUp: 'c' });
+    // The headset: the other player's picture by the turn, the host's own table by the hold.
+    expect(vrViewMode(H.media.panel, DEFAULT_VR_VIEW)).toBe('theater');
+    expect(vrViewMode(H.media.panel, DEFAULT_VR_VIEW, { initialsHold: H.ctl.status().initialsHold })).toBe('hidden');
+    expect(H.logs.some((l) => l.startsWith(`match: initials hold on: my score ${GC} is on the table's high-score list`))).toBe(true);
+    // Nothing the table says during the hold is reported into the match.
+    const states: number[] = [];
+    host.on('state', (m) => m.from === 'h' && states.push(m.payload.score));
+    H.ctl.feed(scores(GC + 10));
+    H.ctl.feed(ballEnd(1));
+    await flush();
+    expect(states).toEqual([]);
+    expect(host.state.players['h']).toMatchObject({ score: GC, ballsPlayed: 1 });
+    // The machine writes the entry; five quiet seconds later the turn lock rules again.
+    H.ctl.feed(highScores(['JTM', GC], ['AAA', 900]));
+    clock.advance(INITIALS_QUIET_MS - 1);
+    expect(H.ctl.status()).toMatchObject({ locked: false, initialsHold: true });
+    clock.advance(1);
+    expect(H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+    expect(H.media.panel.message).not.toBe(INITIALS_HOLD_MESSAGE);
+    expect(H.logs.some((l) => l.startsWith('match: initials hold over: the table wrote its high-score list (JTM '))).toBe(true);
+    // The cap timer went with the hold: nothing more happens when it would have fired.
+    clock.advance(INITIALS_HOLD_CAP_MS);
+    expect(H.logs.filter((l) => l.startsWith('match: initials hold over')).length).toBe(1);
+  });
+
+  it('A16.2: a list that shows my score with no initials yet keeps the hold on; each write starts the quiet time again', async () => {
+    const { clock, H } = await hostFinishesAt(GC, () => true);
+    // The machine puts the score on the list first.
+    H.ctl.feed(highScores([null, GC], ['AAA', 900]));
+    clock.advance(INITIALS_QUIET_MS);
+    expect(H.ctl.status()).toMatchObject({ locked: false, initialsHold: true });
+    expect(H.logs.some((l) => l.includes(`has my score ${GC} with no initials yet`))).toBe(true);
+    // Then the initials, in two writes less than the quiet time apart.
+    H.ctl.feed(highScores(['J  ', GC], ['AAA', 900]));
+    clock.advance(INITIALS_QUIET_MS - 1);
+    H.ctl.feed(highScores(['JTM', GC], ['AAA', 900]));
+    clock.advance(INITIALS_QUIET_MS - 1);
+    expect(H.ctl.status().initialsHold).toBe(true);
+    clock.advance(1);
+    expect(H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+  });
+
+  it('A16.2: with no high-score write seen (an older patch) the hold ends at the cap', async () => {
+    const { clock, H } = await hostFinishesAt(GC, () => true);
+    clock.advance(INITIALS_HOLD_CAP_MS - 1);
+    expect(H.ctl.status()).toMatchObject({ locked: false, initialsHold: true });
+    clock.advance(1);
+    expect(H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+    expect(H.logs).toContain(`match: initials hold over: no high-score entry seen after ${INITIALS_HOLD_CAP_MS / 1000} s`);
+    // A write after the hold is nobody's business.
+    H.ctl.feed(highScores(['JTM', GC]));
+    clock.advance(INITIALS_QUIET_MS);
+    expect(H.logs.filter((l) => l.startsWith('match: initials hold over')).length).toBe(1);
+  });
+
+  it('A16.2: a new game started on the table ends the hold at once and is handled as ever; so does the table closing', async () => {
+    const a = await hostFinishesAt(GC, () => true);
+    a.H.ctl.feed(gameStart);
+    expect(a.H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+    expect(a.H.logs).toContain('match: initials hold over: a new game started on the table');
+    // Game 1 is still on (the client is up): the host's game_start starts nothing.
+    expect(a.host.state.gameNumber).toBe(1);
+    const b = await hostFinishesAt(GC, () => true);
+    b.H.ctl.feed({ kind: 'table_exit' });
+    expect(b.H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+    expect(b.H.logs).toContain('match: initials hold over: the table closed');
+  });
+
+  it('A16.2: a score that does not make the list locks the table at once, as before; so does a table with nothing to ask', async () => {
+    const no = await hostFinishesAt(500, () => false);
+    expect(no.asked).toEqual([500]);
+    expect(no.H.ctl.status()).toMatchObject({ myTurn: false, locked: true, initialsHold: false });
+    expect(no.H.media.panel.message).not.toBe(INITIALS_HOLD_MESSAGE);
+    expect(no.H.logs.some((l) => l.includes('initials hold'))).toBe(false);
+    // No `highScoreQualifies` at all (an original table, a test witness): the plain rig.
+    const s = await rig(1);
+    s.host.start();
+    await flush();
+    s.H.ctl.feed(gameStart);
+    s.H.ctl.feed(scores(GC));
+    s.H.ctl.feed(ballEnd(1));
+    s.H.ctl.feed(gameEnd(GC));
+    await flush();
+    expect(s.H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+  });
+
+  it('A16.2: the last player of the game: the hold runs across the RESULT (a client stays unlocked, the line asks for the initials) and ends with the match', async () => {
+    const s = await rig(1, game, undefined, { highScoreQualifies: (x) => x === GC });
+    const { host, H, C } = s;
+    host.start();
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(500));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(gameEnd(500));
+    await flush();
+    expect(H.ctl.status().initialsHold).toBe(false);
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(GC));
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(gameEnd(GC));
+    await flush();
+    expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
+    // Between games a client's table is locked; not while it enters its initials.
+    expect(C.ctl.status()).toMatchObject({ phase: 'over', locked: false, initialsHold: true });
+    expect(C.media.panel.message).toBe(INITIALS_HOLD_MESSAGE);
+    expect(vrViewMode(C.media.panel, DEFAULT_VR_VIEW, { initialsHold: true })).toBe('hidden');
+    // The A16 window is not open (the table's game ended with the ball): the hold alone keeps the table.
+    expect(C.logs.some((l) => l.includes("the table's own game is still on"))).toBe(false);
+    H.ctl.endMatch();
+    await flush();
+    expect(C.ctl.status()).toMatchObject({ locked: false, initialsHold: false });
+    expect(C.logs).toContain('match: initials hold over: the match ended');
+  });
+
+  it("A16.2 beside A16: a machine whose game ends after the initials: both hold the table; the game's end closes A16's window, the high-score write the hold", async () => {
+    const s = await rig(1, game, undefined, { highScoreQualifies: () => true });
+    const { host, clock, H } = s;
+    host.start();
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(GC));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(scores(GC));
+    await flush();
+    expect(H.ctl.status()).toMatchObject({ myTurn: false, locked: false, initialsHold: true });
+    expect(H.logs.some((l) => l.includes("the table's own game is still on"))).toBe(true);
+    // The initials go in, then the machine ends its game: nothing of it is reported, and the hold ends on the quiet time.
+    H.ctl.feed(highScores(['JTM', GC]));
+    H.ctl.feed(gameEnd(GC));
+    expect(H.ctl.status()).toMatchObject({ locked: false, initialsHold: true });
+    clock.advance(INITIALS_QUIET_MS);
+    expect(H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
+    expect(host.state.players['h']).toMatchObject({ score: GC, ballsPlayed: 1 });
   });
 
   it('the host leaving between games ends the series for the client (hostGone): unlocked, said on the panel', async () => {

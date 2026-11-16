@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { createMapCorpus, gameStateOffsets, highScoreOffsets, watchOffsets } from '../witness/maps.js';
 import { classifyScript } from './classify.js';
 import { libraryVersionOf } from './import.js';
 import { LIB_VERSION, RECIPE_VERSION, STUB, formatLocalStamp, isOurSidecar, parseSidecarMarker, renderRecipeA, unpatchRecipeA, type RenderOptions } from './render.js';
@@ -35,7 +37,8 @@ describe('versions', () => {
     expect(libraryVersionOf(lib)).toBe(LIB_VERSION);
     expect(lib).toContain('Sub Castcade_Guard(originalPath, originalSize, originalMtime, sidecarPath)');
     expect(STUB).toContain('Sub Castcade_Guard(a,b,c,d):End Sub');
-    expect(RECIPE_VERSION).toBe('0.3.1');
+    // A16.2: 0.3.2 = the watch list also holds the map's high-score bytes; the bump re-makes every recipe-A sidecar.
+    expect(RECIPE_VERSION).toBe('0.3.2');
   });
 });
 
@@ -170,6 +173,21 @@ describe('watch list (lib 0.3.0)', () => {
     expect(renderLines(crlf(VPM_SCRIPT), { ...OPTS, watchOffsets: [] }).out.lines).toContain('Castcade_WatchBytes Array()');
     expect(renderLines(crlf(VPM_SCRIPT)).out.lines.some((l) => l.startsWith('Castcade_WatchBytes'))).toBe(false);
     expect(STUB).toContain('Castcade_WatchBytes');
+  });
+
+  it("A16.2: a ROM whose map has high_scores: their initials and score bytes are in the rendered watch list beside the game state's", async () => {
+    const corpus = createMapCorpus(fileURLToPath(new URL('../../../fixtures/maps', import.meta.url)));
+    const map = await corpus.mapFor('mb_106b');
+    if (!map) throw new Error('no map');
+    expect(map.highScores.length).toBeGreaterThan(0);
+    const { out } = renderLines(crlf(VPM_SCRIPT), { ...OPTS, watchOffsets: watchOffsets(map) });
+    const line = out.lines.find((l) => l.startsWith('Castcade_WatchBytes Array('));
+    const rendered = new Set((line ?? '').replace(/^Castcade_WatchBytes Array\(|\)$/g, '').split(', ').map(Number));
+    // Monster Bash's Grand Champion: initials 7349..7351, score 7352..7356; first place: 7315..7317, 7318..7322.
+    for (const b of [7349, 7350, 7351, 7352, 7356, 7315, 7317, 7318, 7322]) expect(rendered.has(b)).toBe(true);
+    for (const b of highScoreOffsets(map)) expect(rendered.has(b)).toBe(true);
+    for (const b of gameStateOffsets(map)) expect(rendered.has(b)).toBe(true);
+    expect(rendered.size).toBe(new Set([...gameStateOffsets(map), ...highScoreOffsets(map)]).size);
   });
 });
 

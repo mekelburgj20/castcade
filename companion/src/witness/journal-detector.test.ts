@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { readJournalLines } from './journal-replay.js';
 import { ballyTransition, detectTransition, JournalDetector, plausible, replayDetector, samTransition, type GameEvent, type JournalEvent } from './journal-detector.js';
-import { ballyLiveInputs, createMapCorpus, decodeFinalScores, decodeGameState, descriptorOffsets, gameStateOffsets, type CompiledMap, type GameState, type JsonObject } from './maps.js';
+import { ballyLiveInputs, compileMap, createMapCorpus, decodeFinalScores, decodeGameState, descriptorOffsets, gameStateOffsets, highScoreOffsets, watchOffsets, type CompiledMap, type GameState, type JsonObject } from './maps.js';
 import { engineSlope } from './attestation-types.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
@@ -641,4 +641,166 @@ describe('Gottlieb System 3: the ball byte carries flags in its high nibble (mas
       expect(kinds(events)).toEqual([]);
     });
   }
+});
+
+describe('A16.2: the high-score list (the initials hold of a match)', () => {
+  /**
+   * A small machine: player 1's score in bytes 0..2 (BCD), ball in 3, player in 4, game over in 5; two high-score
+   * entries, initials then score: bytes 8..10 + 11..13 and 16..18 + 19..21. Byte 30 is watched by nobody.
+   */
+  const MAP = compileMap(
+    {
+      _fileformat: 0.8,
+      _metadata: { version: 1, roms: ['hs'], ramsize: 32 },
+      game_state: {
+        scores: [{ encoding: 'bcd', start: 0, length: 3 }],
+        current_ball: { encoding: 'int', start: 3 },
+        current_player: { encoding: 'int', start: 4 },
+        game_over: { encoding: 'bool', start: 5 },
+      },
+      high_scores: [
+        { label: 'Grand Champion', short_label: 'GC', initials: { encoding: 'ch', start: 8, length: 3 }, score: { encoding: 'bcd', start: 11, length: 3 } },
+        { label: 'First Place', short_label: '1st', initials: { encoding: 'ch', start: 16, length: 3 }, score: { encoding: 'bcd', start: 19, length: 3 } },
+      ],
+    },
+    () => null,
+  );
+  const bcd3 = (buf: Uint8Array, at: number, value: number): void => {
+    const s = String(value).padStart(6, '0');
+    for (let i = 0; i < 3; i++) buf[at + i] = Number.parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  };
+  const text = (buf: Uint8Array, at: number, s: string): void => {
+    for (let i = 0; i < s.length; i++) buf[at + i] = s.charCodeAt(i);
+  };
+  /** At table load: game over, GC "AAA" 500,000 and first place "BBB" 100,000. */
+  const boot = (): Uint8Array => {
+    const buf = new Uint8Array(32);
+    buf[5] = 1;
+    text(buf, 8, 'AAA');
+    bcd3(buf, 11, 500_000);
+    text(buf, 16, 'BBB');
+    bcd3(buf, 19, 100_000);
+    return buf;
+  };
+  /** The journal of a patch that watches `watch` only (the hook journals nothing else). */
+  class Table {
+    readonly detector = new JournalDetector({ mapFor: (rom) => (rom === 'hs' ? MAP : null) });
+    readonly events: JournalEvent[] = [];
+    readonly buf = boot();
+    private last: Uint8Array;
+    private t = 1;
+    constructor(private readonly watch: Set<number>) {
+      this.feed({ event: 'table_loaded', t: 0, table: 'hs', recipe: 'A', rom: 'hs', lib: '0.5.1', session: 's', locked: false });
+      this.feed({ event: 'nvram_full', t: 0.5, bytes: [...this.buf] });
+      this.last = Uint8Array.from(this.buf);
+    }
+    private feed(line: object): JournalEvent[] {
+      const out = this.detector.feed(JSON.stringify(line));
+      this.events.push(...out);
+      return out;
+    }
+    step(): JournalEvent[] {
+      const d: [number, number, number][] = [];
+      for (let i = 0; i < this.buf.length; i++) if (this.buf[i] !== this.last[i] && this.watch.has(i)) d.push([i, this.buf[i]!, this.last[i]!]);
+      this.last = Uint8Array.from(this.buf);
+      return d.length ? this.feed({ event: 'nvram_delta', t: this.t++, n: d.length, d }) : [];
+    }
+    /** One one-ball game to `score`: the game end comes with the ball's end, as on WPC. */
+    play(score: number): JournalEvent[] {
+      this.buf[5] = 0;
+      this.buf[3] = 1;
+      this.buf[4] = 1;
+      bcd3(this.buf, 0, 0);
+      this.step();
+      bcd3(this.buf, 0, score);
+      this.step();
+      this.buf[5] = 1;
+      return this.step();
+    }
+  }
+  const NEW_PATCH = new Set(watchOffsets(MAP));
+  const OLD_PATCH = new Set(gameStateOffsets(MAP));
+
+  it('the watch list of a map with high_scores holds their initials and score bytes; without them it is the game state alone', () => {
+    expect(highScoreOffsets(MAP)).toEqual([8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21]);
+    expect(watchOffsets(MAP)).toEqual([0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20, 21]);
+    const bare: CompiledMap = { ...MAP, highScores: [] };
+    expect(highScoreOffsets(bare)).toEqual([]);
+    expect(watchOffsets(bare)).toEqual(gameStateOffsets(bare));
+  });
+
+  it('a delta in the high-score bytes yields high_scores_changed with the list as it reads now, after the game events of its line', () => {
+    const tb = new Table(NEW_PATCH);
+    const end = tb.play(300_000);
+    expect(end.map((e) => e.kind)).toEqual(['ball_end', 'game_end']);
+    expect(tb.events.some((e) => e.kind === 'high_scores_changed')).toBe(false);
+    // The machine moves the old first place out and writes the new entry, score first.
+    bcd3(tb.buf, 19, 300_000);
+    text(tb.buf, 16, '   ');
+    expect(tb.step()).toEqual([
+      { kind: 'high_scores_changed', t: 4, entries: [{ label: 'Grand Champion', shortLabel: 'GC', initials: 'AAA', score: 500_000 }, { label: 'First Place', shortLabel: '1st', initials: null, score: 300_000 }] },
+    ]);
+    text(tb.buf, 16, 'JTM');
+    const [ev] = tb.step();
+    expect(ev).toMatchObject({ kind: 'high_scores_changed', entries: [{ initials: 'AAA' }, { initials: 'JTM', score: 300_000 }] });
+    // Not a game event: nothing is counted, no game is open.
+    expect(tb.detector.summary()).toMatchObject({ inGame: false, counts: { game_start: 1, ball_end: 1, game_end: 1 } });
+    // A delta that rewrites the same bytes, and one elsewhere, say nothing.
+    expect(tb.detector.feed(JSON.stringify({ event: 'nvram_delta', t: 9, n: 1, d: [[16, 'J'.charCodeAt(0), 0]] }))).toEqual([]);
+    expect(tb.detector.feed(JSON.stringify({ event: 'nvram_delta', t: 10, n: 1, d: [[30, 7, 0]] }))).toEqual([]);
+  });
+
+  it('a later snapshot that differs in the high-score bytes says so too; the first snapshot is the baseline', () => {
+    const tb = new Table(OLD_PATCH);
+    expect(tb.events.map((e) => e.kind)).toEqual(['table_loaded']);
+    const next = boot();
+    text(next, 8, 'JTM');
+    const out = tb.detector.feed(JSON.stringify({ event: 'nvram_full', t: 20, bytes: [...next] }));
+    expect(out).toMatchObject([{ kind: 'high_scores_changed', entries: [{ initials: 'JTM', score: 500_000 }, { initials: 'BBB' }] }]);
+  });
+
+  it('highScoreCheck: a score above the lowest entry qualifies, a tie or less does not, the asked game itself is not counted', () => {
+    const tb = new Table(NEW_PATCH);
+    expect(tb.detector.highScoreCheck(100_001)).toEqual({ qualifies: true, listed: false, lowest: 100_000 });
+    expect(tb.detector.highScoreCheck(99_999)).toEqual({ qualifies: false, listed: false, lowest: 100_000 });
+    expect(tb.detector.highScoreCheck(0)).toMatchObject({ qualifies: false });
+    // A score the list already shows is on it (the machine wrote the entry before the question).
+    expect(tb.detector.highScoreCheck(100_000)).toEqual({ qualifies: true, listed: true, lowest: 100_000 });
+    // The game end came with the last ball (WPC): the game asked about is already among the finished ones.
+    tb.play(300_000);
+    expect(tb.detector.highScoreCheck(300_000)).toEqual({ qualifies: true, listed: false, lowest: 100_000 });
+  });
+
+  it("highScoreCheck with an older patch (the list frozen at table load): this sitting's earlier games are put in", () => {
+    const tb = new Table(OLD_PATCH);
+    tb.play(300_000);
+    // The machine now has AAA 500,000 and the 300,000 game; the journal still shows BBB 100,000.
+    bcd3(tb.buf, 19, 300_000);
+    expect(tb.step()).toEqual([]);
+    expect(tb.detector.highScoreCheck(200_000)).toEqual({ qualifies: false, listed: false, lowest: 300_000 });
+    expect(tb.detector.highScoreCheck(300_001)).toEqual({ qualifies: true, listed: false, lowest: 300_000 });
+    // With the current patch the journal shows the write, and the earlier game is not counted twice.
+    const cur = new Table(NEW_PATCH);
+    cur.play(300_000);
+    bcd3(cur.buf, 19, 300_000);
+    cur.step();
+    expect(cur.detector.highScoreCheck(200_000)).toEqual({ qualifies: false, listed: false, lowest: 300_000 });
+    expect(cur.detector.highScoreCheck(400_000)).toEqual({ qualifies: true, listed: false, lowest: 300_000 });
+  });
+
+  it('highScoreCheck has no answer without a map, without high_scores, or on an original table', () => {
+    expect(new JournalDetector().highScoreCheck(1)).toBeNull();
+    const noMap = new JournalDetector();
+    noMap.feed(JSON.stringify({ event: 'table_loaded', t: 0, table: 'x', recipe: 'A', rom: 'unknown', lib: '0.5.1', session: 's', locked: false }));
+    noMap.feed(JSON.stringify({ event: 'nvram_full', t: 0.5, bytes: [...boot()] }));
+    expect(noMap.highScoreCheck(999_999)).toBeNull();
+    const bare = new JournalDetector({ mapFor: () => ({ ...MAP, highScores: [] }) });
+    bare.feed(JSON.stringify({ event: 'table_loaded', t: 0, table: 'x', recipe: 'A', rom: 'hs', lib: '0.5.1', session: 's', locked: false }));
+    bare.feed(JSON.stringify({ event: 'nvram_full', t: 0.5, bytes: [...boot()] }));
+    expect(bare.highScoreCheck(999_999)).toBeNull();
+    const original = new JournalDetector({ mapFor: () => MAP });
+    original.feed(JSON.stringify({ event: 'table_loaded', t: 0, table: 'x', recipe: 'B', rom: null, lib: '0.5.1', session: 's', locked: false }));
+    original.feed(JSON.stringify({ event: 'game_end', t: 5, scores: [900_000], players: 1 }));
+    expect(original.highScoreCheck(999_999)).toBeNull();
+  });
 });

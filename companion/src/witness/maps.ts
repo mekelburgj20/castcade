@@ -560,6 +560,40 @@ export function gameStateOffsets(map: CompiledMap): number[] {
 }
 
 /**
+ * A16.2: every NVRAM offset the map's `high_scores` entries read (score and initials bytes), counted from the start
+ * of the platform's NVRAM region like `gameStateOffsets`, sorted, unique; none for a map without `high_scores`.
+ * The hook journals them (recipe A 0.3.2), so the companion sees the machine write a high-score entry: the end of
+ * the initials entry after a game.
+ */
+export function highScoreOffsets(map: CompiledMap): number[] {
+  const region = map.platform.layout.find((r) => r.type === 'nvram');
+  const base = region?.address ?? 0;
+  const size = region && region.size > 0 ? region.size : Number.POSITIVE_INFINITY;
+  const out = new Set<number>();
+  for (const h of map.highScores) {
+    for (const entry of [h.score, h.initials]) {
+      if (!entry) continue;
+      let addrs: number[];
+      try {
+        addrs = descriptorOffsets(entry);
+      } catch {
+        continue;
+      }
+      for (const addr of addrs) {
+        const off = addr - base;
+        if (Number.isInteger(off) && off >= 0 && off < size) out.add(off);
+      }
+    }
+  }
+  return [...out].sort((a, b) => a - b);
+}
+
+/** What the hook is told to journal for a ROM (`Castcade_WatchBytes`): the game-state bytes and the high-score bytes. */
+export function watchOffsets(map: CompiledMap): number[] {
+  return [...new Set([...gameStateOffsets(map), ...highScoreOffsets(map)])].sort((a, b) => a - b);
+}
+
+/**
  * Stern SAM's end-of-game counter, as an NVRAM offset (`ChangedNVRAM` / journal index), or null for
  * any other platform or a map without scores.
  *

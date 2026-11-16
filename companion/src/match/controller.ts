@@ -56,10 +56,22 @@
  *   `spent`: the table stays unlocked until it ends (at most `SPENT_UNLOCK_MS`), whoever is up and across the RESULT
  *   and a NEXT_GAME, and until it ends (its `game_end`, or the next `game_start`) nothing it says is reported:
  *   scores, ball ends and its end belong to the game already finished.
+ * - A16.2 (2026-11-15, match NQYJGN on Congo, ROM congo_21, WPC): on that machine the detector's `game_end` comes with
+ *   the last ball's end, BEFORE the initials entry, so the A16 window closed at once: the table locked, the headset went
+ *   to the other player's picture, and the owner's Grand Champion score was stored with blank initials. So, whenever the
+ *   game end arrives: when this player's last ball of a game is reported and the final score has a place on the
+ *   machine's high-score list (`highScoreQualifies`, the witness's answer from the ROM's map; no map, no list, not a
+ *   ROM table: never), an **initials hold** begins. While it is on the table is unlocked whatever the turn lock says,
+ *   `status().initialsHold` keeps the headset on this player's own table (`vrViewMode`), the panel's line asks for the
+ *   initials, and the match goes on for everyone else (the next grant is not delayed). It ends when the machine has
+ *   written its high-score list and the list has been quiet for `INITIALS_QUIET_MS` (`high_scores_changed`, from a
+ *   table whose patch journals those bytes; an entry with this score and no initials yet keeps it on), at a new
+ *   `game_start` on the table (handled as ever), when the table closes or the match ends, and at the latest after
+ *   `INITIALS_HOLD_CAP_MS`. A16's window runs beside it unchanged on a machine whose game ends after the initials.
  */
 import type { GrantBody, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
-import type { GameEvent } from '../witness/journal-detector.js';
+import type { GameEvent, HighScoreEvent } from '../witness/journal-detector.js';
 import type { ClientMatch } from './client.js';
 import type { HostMatch } from './host.js';
 import type { MatchState } from './state.js';
@@ -80,8 +92,11 @@ export function isHostRole(role: MatchRole): role is HostRole {
 
 export type CueKind = 'your_turn' | 'opponent_turn' | 'match_over';
 
-/** What the witness feeds in: every detector game event, plus `table_exit` when VPX closes. */
-export type ControllerFeed = GameEvent | { kind: 'table_exit' };
+/**
+ * What the witness feeds in: every detector game event, plus `table_exit` when VPX closes, plus (A16.2) the machine
+ * writing its high-score list.
+ */
+export type ControllerFeed = GameEvent | { kind: 'table_exit' } | HighScoreEvent;
 
 export type ControllerPhase = 'lobby' | 'playing' | 'paused' | 'over';
 
@@ -122,6 +137,11 @@ export interface ControllerStatus {
   startWarnings: string[];
   /** A13: for the host while a grant is outstanding: the turn Pass the turn would end, and the score it would end at. Else null. */
   pass: { player: PlayerId; name: string; ball: number; score: number } | null;
+  /**
+   * A16.2: this player's finished game made the machine's high-score list and the table is held for the initials:
+   * unlocked, and the headset stays on this player's own table (`vrViewMode`'s `initialsHold`).
+   */
+  initialsHold: boolean;
   panel: PanelState;
 }
 
@@ -154,6 +174,12 @@ export interface MatchControllerOptions {
    * the phase, the roster, the scores and who is up from the role's state instead of waiting for MATCH_READY.
    */
   resumed?: boolean;
+  /**
+   * A16.2: does this final score have a place on the high-score list of the machine on this player's table (the
+   * witness: the ROM's map over the journal's NVRAM)? Asked once, when this player's last ball of a game is reported.
+   * Absent, or false: no initials hold.
+   */
+  highScoreQualifies?: (score: number) => boolean;
 }
 
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
@@ -179,6 +205,12 @@ export function mismatchWords(fields: readonly string[]): { table: string | null
 
 /** A16: how long a table whose game outlives this player's last ball stays unlocked for the machine's own ending. */
 export const SPENT_UNLOCK_MS = 180_000;
+/** A16.2: the longest an initials hold lasts (a table whose patch does not journal the high-score bytes has only this). */
+export const INITIALS_HOLD_CAP_MS = 90_000;
+/** A16.2: how long the machine's high-score list must stay unchanged after a write before the hold ends. */
+export const INITIALS_QUIET_MS = 5_000;
+/** A16.2: the panel / Match tab line during an initials hold. */
+export const INITIALS_HOLD_MESSAGE = "Your score is on this table's high-score list: enter your initials on the table";
 const DEFAULT_SETTLE_MS = 2000;
 const DEFAULT_START_COUNTDOWN_MS = 5000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
@@ -202,15 +234,18 @@ export const DEFAULT_VR_VIEW: VrViewSettings = { theaterDuringMyTurn: 'hidden', 
  * the lobby, a pause (someone dropped: the panel says why), the gap between grants and the result → the panel.
  * D8.9 / D8.10 (2026-11-14): `now.menuOpen` → the panel (the menu is drawn on it); `now.lobbyQuiet` (the match host:
  * this table is free to play and the lobby has said nothing new for a few seconds) → nothing over the table.
+ * A16.2 (2026-11-15): `now.initialsHold` (this player is entering high-score initials on their own table) → what they
+ * see on their own ball, whoever is up and in any phase (the result included): never the other player's picture.
  */
 export function vrViewMode(
   p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'>,
   settings: VrViewSettings = DEFAULT_VR_VIEW,
-  now: { menuOpen?: boolean; lobbyQuiet?: boolean } = {},
+  now: { menuOpen?: boolean; lobbyQuiet?: boolean; initialsHold?: boolean } = {},
 ): VrViewMode {
   // D8.10: the in-game menu is on the panel, whatever the turn. D8.9: a lobby with nothing new to say stays out of
   // the way of a player whose table is free to play.
   if (now.menuOpen) return 'panel';
+  if (now.initialsHold) return settings.theaterDuringMyTurn;
   if (p.phase === 'idle' && now.lobbyQuiet) return 'hidden';
   if (p.phase !== 'playing') return 'panel';
   if (p.myTurn) return settings.theaterDuringMyTurn;
@@ -248,8 +283,16 @@ export class MatchController {
 
   private phase: ControllerPhase = 'lobby';
   private locked = false;
-  /** What the lock rules ask for; `locked` is that, minus the A16 window (`spentUnlock`). */
+  /** What the lock rules ask for; `locked` is that, minus the A16 window (`spentUnlock`) and the A16.2 initials hold. */
   private wantLocked = false;
+  /** A16.2: the table is held for this player's high-score initials (unlocked, the headset on their own table). */
+  private initialsHold = false;
+  /** A16.2: the score the hold is for, its cap timer, and the quiet timer after the machine's last high-score write. */
+  private holdScore = 0;
+  private holdCapTimer: unknown = null;
+  private holdQuietTimer: unknown = null;
+  private holdEntries: HighScoreEvent['entries'] = [];
+  private holdWaitLogged = false;
   /** A16: the table's running game is the one this player already finished; nothing it says is reported. */
   private spentTableGame = false;
   /** A16: the table is held unlocked for that game's ending (initials); ends with the game or the timer. */
@@ -390,6 +433,7 @@ export class MatchController {
       ballEnds: this.ballEnds(),
       startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
       pass: this.passInfo(),
+      initialsHold: this.initialsHold,
       panel: this.panel(),
     };
   }
@@ -571,9 +615,20 @@ export class MatchController {
 
   feed(ev: ControllerFeed): void {
     if (this.closed) return;
+    // A16.2: the machine wrote its high-score list; it only matters to an initials hold.
+    if (ev.kind === 'high_scores_changed') {
+      this.onHighScoresChanged(ev);
+      return;
+    }
     // A12: this player's own table game, any phase (the lobby rules read it).
     if (ev.kind === 'game_start') this.tableGameRunning = true;
     else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.tableGameRunning = false;
+    // A16.2: an initials hold ends with a new game on the table and with the table; the event itself is then handled
+    // as ever. Not with a `game_end`: where that falls (before or after the initials) differs by machine.
+    if (this.initialsHold) {
+      if (ev.kind === 'game_start') this.endInitialsHold('a new game started on the table');
+      else if (ev.kind === 'table_exit') this.endInitialsHold('the table closed');
+    }
     // A16: the table game this player already finished: its scores, ball ends and end are not this turn's.
     if (this.spentTableGame) {
       if (ev.kind === 'current_scores' || ev.kind === 'ball_end') return;
@@ -651,6 +706,7 @@ export class MatchController {
     if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
     this.spentTimer = null;
     this.spentUnlock = false;
+    this.clearInitialsHold();
     for (const off of this.offs) off();
     this.offs = [];
     this.setLocked(false);
@@ -1057,6 +1113,7 @@ export class MatchController {
     if (this.seriesOver) return;
     this.seriesOver = true;
     this.seriesOverLine = line;
+    this.endInitialsHold('the match ended');
     this.setLocked(false);
     this.opts.log(`match: ${line}`);
     this.push();
@@ -1242,6 +1299,7 @@ export class MatchController {
     this.holding = null;
     this.opts.media?.setSending(false);
     this.noteMyGameDone();
+    this.noteInitialsHold(finalScore);
     this.setLocked(true);
     this.opts.log(`match: BALL_END ball ${p.grant.ballNumber} score ${finalScore}${p.shootAgain ? ' (shoot again)' : ''}`);
     this.call(() => {
@@ -1259,6 +1317,7 @@ export class MatchController {
     this.holding = null;
     this.clearStateTimer();
     this.opts.media?.setSending(false);
+    this.noteInitialsHold(finalScore);
     this.setLocked(true);
     this.opts.log(`match: GAME_OVER score ${finalScore} after ${balls} ball(s)`);
     this.call(() => {
@@ -1359,9 +1418,77 @@ export class MatchController {
     this.setLocked(this.wantLocked);
   }
 
+  // ------------------------------------------------------------------------------------------
+  // A16.2: the high-score initials hold
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * This player's game has just finished at `score` (the last ball reported, or the table's game over). If the score
+   * has a place on the machine's high-score list the hold begins: called before the lock, so the table never locks.
+   */
+  private noteInitialsHold(score: number): void {
+    if (this.initialsHold || !this.myGameDone() || !(score > 0) || !this.opts.highScoreQualifies) return;
+    let qualifies = false;
+    try {
+      qualifies = this.opts.highScoreQualifies(score);
+    } catch (e) {
+      this.opts.log(`match: could not compare the score with the table's high-score list: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!qualifies) return;
+    this.initialsHold = true;
+    this.holdScore = score;
+    this.holdEntries = [];
+    this.holdWaitLogged = false;
+    this.holdCapTimer = this.opts.setTimeout(() => {
+      this.holdCapTimer = null;
+      this.endInitialsHold(`no high-score entry seen after ${Math.round(INITIALS_HOLD_CAP_MS / 1000)} s`);
+    }, INITIALS_HOLD_CAP_MS);
+    this.opts.log(
+      `match: initials hold on: my score ${score} is on the table's high-score list; the table stays unlocked and the headset stays on it (at most ${Math.round(INITIALS_HOLD_CAP_MS / 1000)} s)`,
+    );
+  }
+
+  /** The machine wrote its high-score list during a hold: the hold ends once the list has been quiet for a while. */
+  private onHighScoresChanged(ev: HighScoreEvent): void {
+    if (!this.initialsHold) return;
+    this.holdEntries = ev.entries;
+    if (this.holdQuietTimer !== null) this.opts.clearTimeout(this.holdQuietTimer);
+    this.holdQuietTimer = this.opts.setTimeout(() => {
+      this.holdQuietTimer = null;
+      if (!this.initialsHold) return;
+      // The machine may put the score on the list first and the initials after the entry: an entry with this score
+      // and no initials is still being entered (or was left blank: the cap ends the hold then).
+      const mine = this.holdEntries.find((h) => h.score === this.holdScore);
+      if (mine && (mine.initials ?? '').trim() === '') {
+        if (!this.holdWaitLogged) this.opts.log(`match: initials hold: the table's high-score list has my score ${this.holdScore} with no initials yet; waiting for them`);
+        this.holdWaitLogged = true;
+        return;
+      }
+      this.endInitialsHold(`the table wrote its high-score list${mine ? ` (${(mine.initials ?? '').trim()} ${this.holdScore})` : ''} and it has been quiet for ${Math.round(INITIALS_QUIET_MS / 1000)} s`);
+    }, INITIALS_QUIET_MS);
+  }
+
+  private clearInitialsHold(): void {
+    this.initialsHold = false;
+    if (this.holdCapTimer !== null) this.opts.clearTimeout(this.holdCapTimer);
+    this.holdCapTimer = null;
+    if (this.holdQuietTimer !== null) this.opts.clearTimeout(this.holdQuietTimer);
+    this.holdQuietTimer = null;
+    this.holdEntries = [];
+  }
+
+  /** The hold is over: the turn lock rules again and the headset follows the turn. */
+  private endInitialsHold(why: string): void {
+    if (!this.initialsHold) return;
+    this.clearInitialsHold();
+    this.opts.log(`match: initials hold over: ${why}`);
+    this.setLocked(this.wantLocked);
+    this.push();
+  }
+
   private setLocked(want: boolean): void {
     this.wantLocked = want;
-    const on = want && !this.spentUnlock;
+    const on = want && !this.spentUnlock && !this.initialsHold;
     if (this.locked === on) return;
     this.locked = on;
     try {
@@ -1449,6 +1576,8 @@ export class MatchController {
 
   private panelMessage(): string | null {
     if (this.message) return this.message;
+    // A16.2: the one thing to do right now, over the turn and result lines.
+    if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
     // The table line, grouped by what differs. A VPX build difference alone is a muted flag on the player's row, not
     // this line: it would hold the line for the whole match and hide the turn prompts (D2.5, 2026-10-31).
     const byWhat = new Map<string, string[]>();
@@ -1505,7 +1634,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo()]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);
