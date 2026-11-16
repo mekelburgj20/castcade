@@ -84,6 +84,20 @@ constexpr float kPanelLowOffset[3] = {0.0f, -0.42f, -0.9f};
 constexpr float kPanelCentreWidthM = 0.55f;
 constexpr float kPanelCentreOffset[3] = {0.0f, -0.28f, -0.9f};
 
+// D8.12 (2026-11-15, layer 0.7.0): the scoreboard, a small head-locked quad in a top corner of the view (the owner: "a
+// permanent scoreboard panel showing in the top right of the VR pov display - not in the way of the table feed"). 0.32 m
+// wide, its centre 1 m ahead, 0.46 m to the side and 0.40 m up, turned to face the eye: about 15 degrees wide (17 to
+// 32 degrees to the side), its height by the frame's aspect as the panel's is (0.24 m for the companion's 4:3 frame:
+// 14 to 25 degrees up; the card hugs the frame's bottom edge, so a two-player card ends about 20 degrees up). That is
+// far above the playfield a player looks down at, and above a 16:9 theater screen (the 2.4 m screen at 2.6 m ends
+// 13.5 degrees up at this azimuth, seen from where theater began). A square picture (a VR sender's whole eye, 2.4 m
+// tall: 23 degrees up and to the side) passes under the card's inner end by a few degrees at its top corner: further
+// out is past where the eye turns comfortably, and the quad is head-locked, so the head cannot bring it closer. The
+// numbers are a first placement, not yet seen in a headset: the control's "offset" and "widthM" (panel_pipe.h) move
+// it without a new layer. Left: the mirror image.
+constexpr float kScoreboardWidthM = 0.32f;
+constexpr float kScoreboardOffset[3] = {0.46f, 0.40f, 1.0f};  // right, up, ahead (metres from the head)
+
 // Theater (D7.4): "I want to see his playfield where my playfield was". A 2.4 m screen 2.6 m ahead (~50° wide, about
 // what a playfield fills in the headset), fixed in LOCAL space so it stays put when the head turns, placed in front of
 // wherever the player faces when theater begins. D7.4.3 (2026-11-01): 2.4 m is the screen's LONGER side. VPX's "both
@@ -213,8 +227,8 @@ enum class Api { None, D3D11, OpenGL };
 // (canvas getImageData, so the companion converts nothing; D7.4).
 enum class Order { BGRA, RGBA };
 
-// One swapchain of ours and what we know about it. Each session has three: the panel, the video, the shade (8x8 black,
-// alpha = the fade; also the backdrop, drawn without its alpha).
+// One swapchain of ours and what we know about it. Each session has the panel, the video, the shade (8x8 black,
+// alpha = the fade; also the backdrop, drawn without its alpha), the calibration pattern and (D8.12) the scoreboard.
 struct Surface {
   const char* name = "";
   Order order = Order::BGRA;
@@ -253,6 +267,8 @@ struct Session {
   XrSpace view = XR_NULL_HANDLE;   // head-locked: the panel, the backdrop, the shade
   XrSpace local = XR_NULL_HANDLE;  // fixed in the room: the theater screen (D7.4)
   Surface panel, video, shade;
+  Surface scoreboard;  // D8.12 (0.7.0): the small corner scoreboard's frames (CVB1)
+  int scoreboardShown = -1;  // what the last frame drew, for one log line per change: -1 none, 0 top right, 1 top left
   std::vector<uint8_t> pixels, staging;
   uint32_t pixelsW = 0, pixelsH = 0;
   // D7.4: the mode on screen, the fade (0 clear .. 1 black), the shade's uploaded level, the screen's place.
@@ -287,7 +303,7 @@ struct Session {
   std::array<XrExtent2Df, 2> windowSize{};
   std::string windowLog;
   int windowLogs = 0;
-  std::array<XrCompositionLayerQuad, 5> quads{};
+  std::array<XrCompositionLayerQuad, 6> quads{};  // at most: the backdrop, two eye windows, the scoreboard, the shade
   std::vector<const XrCompositionLayerBaseHeader*> layers;
   // D7.5: the camera (made on first need); `cameraSeen` = the control asked for it at the last tick, so one more tick
   // runs after it is turned off (to stop it).
@@ -1871,6 +1887,7 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   }
   cameraTick(s, info, c, scope);
   uploadStream(s, s.panel, Stream::Panel, scope);
+  uploadStream(s, s.scoreboard, Stream::Scoreboard, scope);  // D8.12: a frame only when its picture changed (and every 2 s)
   // D7.6.1: the calibration pattern takes the video's place while asked (the companion's frames are taken, not shown).
   const bool pattern = c.test == TestPattern::Pattern;
   if (pattern != s.patternOn) {
@@ -1888,7 +1905,18 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   const int level = static_cast<int>(s.fade * kShadeLevels + 0.5);
   if (s.shown == ViewMode::Theater || level > 0) uploadShade(s, level, scope);
   if (s.off) return false;
-  if (s.shown == ViewMode::Hidden && level == 0) return false;
+  // D8.12: the scoreboard, while the control asks for it and its frames are live (a companion that went takes it away
+  // within 5 s, as it does the panel), over the player's own table (hidden) and beside the theater screen; never with
+  // the panel (which shows the scores itself) or the calibration pattern.
+  const bool scoreUp = c.scoreboard && !pattern && s.shown != ViewMode::Panel && s.scoreboard.released && s.scoreboard.width > 0 && panelPipeLive(Stream::Scoreboard);
+  const int scoreNow = scoreUp ? (c.scoreboardLeft ? 1 : 0) : -1;
+  if (scoreNow != s.scoreboardShown) {
+    s.scoreboardShown = scoreNow;
+    logLine(scoreUp ? std::string("scoreboard: shown ") + (c.scoreboardLeft ? "top left" : "top right") + ", " + std::to_string(s.scoreboard.width) + "x" +
+                          std::to_string(s.scoreboard.height) + " frame"
+                    : std::string("scoreboard: not shown"));
+  }
+  if (s.shown == ViewMode::Hidden && level == 0 && !scoreUp) return false;
 
   s.layers.clear();
   size_t used = 0;
@@ -1945,6 +1973,14 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
       }
     }
   }
+  // D8.12: over VPX's world or the theater, under the fade (a dip to black takes it along).
+  if (scoreUp) {
+    const float* at = c.scoreboardPlaced ? c.scoreboardOffset : kScoreboardOffset;
+    const float offset[3] = {c.scoreboardLeft ? -at[0] : at[0], at[1], -at[2]};
+    const float width = c.scoreboardWidthM > 0.0f ? c.scoreboardWidthM : kScoreboardWidthM;
+    add(quadAt(s, used++, s.view, s.scoreboard, XR_EYE_VISIBILITY_BOTH, 0, w(s.scoreboard), facingEye(offset),
+               {width, width * static_cast<float>(s.scoreboard.height) / static_cast<float>(s.scoreboard.width)}, true));
+  }
   if (level > 0 && s.shade.released) add(quadAt(s, used++, s.view, s.shade, XR_EYE_VISIBILITY_BOTH, 0, w(s.shade), shadePose, {kShadeSizeM, kShadeSizeM}, true));
   if (s.layers.size() > s.maxLayers) {
     logOnce("layer_limit", "xrEndFrame: the app's " + std::to_string(info.layerCount) + " layer(s) and ours exceed the runtime's " + std::to_string(s.maxLayers) +
@@ -1978,6 +2014,8 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
   s->video.name = "video";
   s->video.order = Order::RGBA;
   s->shade.name = "shade";
+  s->scoreboard.name = "scoreboard";  // D8.12
+  s->scoreboard.order = Order::BGRA;
   s->pattern.name = "pattern";  // D7.6.1
   s->pattern.order = Order::RGBA;
   s->screenPose = ahead(kScreenDistanceM);  // until the first recentre (a quad's pose must be a unit quaternion)

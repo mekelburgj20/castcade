@@ -94,7 +94,7 @@ export function Match({ state }: { state: CastcadeState }) {
     );
   };
   const setView = (
-    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay'>>,
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'scoreboard' | 'scoreboardCorner'>>,
   ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -561,6 +561,21 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="0.6">60 %</option>
             </select>
             <small>How big the screen is. Life size is the default; smaller puts the same picture over less of your view, so it looks sharper. Takes effect at once.</small>
+          </label>
+          <label className="field">
+            <span>Scoreboard in the headset</span>
+            <select
+              value={st.settings.scoreboard ? st.settings.scoreboardCorner : 'off'}
+              onChange={(e) => setView(e.target.value === 'off' ? { scoreboard: false } : { scoreboard: true, scoreboardCorner: e.target.value === 'top-left' ? 'top-left' : 'top-right' })}
+            >
+              <option value="top-right">Top right</option>
+              <option value="top-left">Top left</option>
+              <option value="off">Off</option>
+            </select>
+            <small>
+              A small scoreboard in a top corner while you play and while you watch: scores, ball, game, and the games played and wins this session. Needs the
+              Castcade OpenXR layer (not SteamVR); after an update, restart VPX once. Takes effect at once.
+            </small>
           </label>
           <label className="field">
             <span>Your preview</span>

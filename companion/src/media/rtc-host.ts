@@ -59,6 +59,7 @@ import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, Laye
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, PANEL_VIDEO, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { SCOREBOARD_CHANNEL, SCOREBOARD_READY_CHANNEL, SCOREBOARD_SIZE, scoreboardPageHtml } from './scoreboard-page.js';
 import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, playbackIndex, receivedFrameFrom, savedLine, type FrameSaver, type Playback, type SaveFramesResult } from './frame-clip.js';
 import { benchReadout, benchReportFrom, benchWords, type BenchPageReport, type BenchPath, type BenchSource } from './bench.js';
 import { UNCOVER_MS } from './stream-engine.js';
@@ -241,6 +242,9 @@ export const BENCH_LOG_MS = 10_000;
 
 const PARTITION = 'castcade-panel';
 const PAGE_FILE = 'match-panel.html';
+/** D8.12: the corner scoreboard's page, and its paint rate (scores move at most this often in the headset's corner). */
+const SCOREBOARD_PAGE_FILE = 'match-scoreboard.html';
+export const SCOREBOARD_FPS = 5;
 const MIC_PAGE_FILE = 'match-mics.html';
 /** The hidden microphone page answers in well under a second; a stuck one is closed after this. */
 const MIC_LIST_TIMEOUT_MS = 10_000;
@@ -592,6 +596,23 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
   const statusListeners = new Set<(s: MediaStatus) => void>();
   const micListeners = new Set<(m: MicDevice[]) => void>();
   const hub = createFrameHub();
+  // D8.12: the corner scoreboard: the match host's wish, its page (only while wanted, attached and in the headset).
+  const scoreHub = createFrameHub();
+  let scoreWanted = false;
+  let scoreWin: BrowserWindow | null = null;
+  let scoreReady = false;
+  /**
+   * The page's last paint: it paints only when its picture changes, so a listener that subscribes after a paint (the
+   * layer's overlay starts after the attach) is handed this one at once.
+   */
+  let scoreLast: PanelFrame | null = null;
+  const scoreSource: PanelFrameSource = {
+    onFrame(cb) {
+      const off = scoreHub.source.onFrame(cb);
+      if (scoreLast) cb(scoreLast);
+      return off;
+    },
+  };
   // D7.4: the wish follows the page across re-attaches (`attach` replays it); a latest-wins channel.
   const videoHub = createVideoHub((on) => {
     log.info(`media: theater video ${on ? 'wanted from the panel page' : 'no longer wanted'}`);
@@ -770,6 +791,12 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (readyTimer) clearTimeout(readyTimer);
     readyTimer = null;
     flush();
+  });
+  // D8.12: the scoreboard page listens: it gets the panel state as it is now, then every change (`setPanelState`).
+  ipcMain.on(SCOREBOARD_READY_CHANNEL, (e) => {
+    if (!scoreWin || scoreWin.isDestroyed() || e.sender !== scoreWin.webContents) return;
+    scoreReady = true;
+    scoreWin.webContents.send(SCOREBOARD_CHANNEL, lastState);
   });
   ipcMain.on(PANEL_CHANNELS.send, (e, m: unknown) => {
     if (!fromPanel(e) || !signalling || !isSignal(m)) return;
@@ -1036,6 +1063,59 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       placeDesktopPanel(w);
     }
     return w;
+  };
+
+  /**
+   * D8.12 (2026-11-15): the corner scoreboard's page (scoreboard-page.ts): a small transparent offscreen window whose
+   * paint goes to the OpenXR layer as CVB1 frames. It exists only while the match host wants it, a match is attached
+   * and the panel is the headset's; it holds no connection, so it is simply closed and opened again.
+   */
+  const closeScoreboard = (): void => {
+    const w = scoreWin;
+    scoreWin = null;
+    scoreReady = false;
+    scoreLast = null;
+    if (w && !w.isDestroyed()) w.destroy();
+  };
+  const syncScoreboard = (): void => {
+    if (!(scoreWanted && attached && headset)) return closeScoreboard();
+    if (scoreWin && !scoreWin.isDestroyed()) return;
+    try {
+      const file = join(opts.userData, SCOREBOARD_PAGE_FILE);
+      mkdirSync(opts.userData, { recursive: true });
+      writeFileSync(file, scoreboardPageHtml());
+      const w = new BrowserWindow({
+        show: false,
+        frame: false,
+        transparent: true,
+        useContentSize: true,
+        ...SCOREBOARD_SIZE,
+        // Local content only (a page written here); node for ipcRenderer, as the panel page.
+        webPreferences: { partition: PARTITION, nodeIntegration: true, contextIsolation: false, backgroundThrottling: false, offscreen: true },
+      });
+      scoreWin = w;
+      scoreReady = false;
+      w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      w.webContents.on('will-navigate', (e) => e.preventDefault());
+      w.webContents.on('render-process-gone', (_e, d) => {
+        if (scoreWin === w) log.warn(`media: the scoreboard page stopped (${d.reason}); no scoreboard in the headset for the rest of this match`);
+      });
+      w.webContents.setFrameRate(SCOREBOARD_FPS);
+      w.webContents.on('paint', (_e, _dirty, image: NativeImage) => {
+        if (scoreWin !== w) return;
+        const f = frameFromBitmap(image.toBitmap(), image.getSize());
+        if (!f) return;
+        scoreLast = f;
+        scoreHub.push(f);
+      });
+      void w.loadFile(file).catch((e: unknown) => {
+        if (scoreWin === w) log.warn(`media: the scoreboard page did not load (${errText(e)})`);
+      });
+      log.info(`media: scoreboard page open (${SCOREBOARD_SIZE.width}x${SCOREBOARD_SIZE.height}, offscreen, for the headset's corner)`);
+    } catch (e) {
+      log.warn(`media: the scoreboard page could not open (${errText(e)})`);
+      closeScoreboard();
+    }
   };
 
   /**
@@ -1520,6 +1600,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     attached = false;
     attachMsg = null;
     attachSent = false;
+    closeScoreboard(); // D8.12
     queue = [];
     capture = null;
     capturePidNow = null;
@@ -1575,6 +1656,7 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
       void win.loadFile(file).catch((e: unknown) => {
         if (gen === generation) setPanelError(`the match panel did not load (${errText(e)})`);
       });
+      syncScoreboard(); // D8.12: beside a headset panel, when the match host wants it
       readyTimer = setTimeout(() => {
         if (gen === generation && !ready) setPanelError('the match panel did not start; video and voice are off');
       }, READY_TIMEOUT_MS);
@@ -1628,6 +1710,8 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     if (!attached) return;
     lastState = state;
     toPage(PANEL_CHANNELS.state, state);
+    // D8.12: the scoreboard page draws from the same state.
+    if (scoreWin && scoreReady && !scoreWin.isDestroyed()) scoreWin.webContents.send(SCOREBOARD_CHANNEL, state);
   };
 
   return {
@@ -1657,6 +1741,13 @@ export function createRtcHost(opts: RtcHostOptions): RtcHost {
     },
     frames: () => ((attached || benchRun) && headset ? hub.source : null),
     videoFrames: () => ((attached || benchRun) && headset ? videoHub.source : null),
+    // D8.12: the corner scoreboard (a match only: the bench has no scores).
+    setScoreboard(on) {
+      if (on === scoreWanted) return;
+      scoreWanted = on;
+      syncScoreboard();
+    },
+    scoreboardFrames: () => (attached && headset && scoreWanted ? scoreSource : null),
     showPanel() {
       if (headset || !win || win.isDestroyed()) return;
       // D2.6: placed again each time, beside the main window as it is now (it may have moved since).

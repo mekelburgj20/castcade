@@ -40,7 +40,13 @@
  *     `setSoftEdge` puts `feather` on the control, each only when not the layer's default. The owner's 0.2.34
  *     finding: the window fused but its frame doubled at the edges (the frames sat at infinity while the eyes
  *     converged on the table); the whole view puts the frame at the lens edges, the feather hides what is left, and
- *     the tuning gives live sliders for the geometry reports.
+ *     the tuning gives live sliders for the geometry reports;
+ *   - D8.12 (2026-11-15), pipe protocol 4, the corner scoreboard (vr-layer/README.md "The scoreboard"): `setScoreboard`
+ *     takes the scoreboard page's frames and the corner. To a protocol-4 layer (0.7.0) the frames go as `CVB1` (the
+ *     panel frame's header, BGRA) and the control carries `scoreboard: {corner}` while a corner is set; the layer draws
+ *     it in hidden and theater, never over the panel. A protocol-3 layer (0.6.0) would lose its place in the stream on
+ *     a `CVB1`, so it gets neither, and its controls are byte for byte what they were: no scoreboard until VPX
+ *     restarts with the new layer (said once in the log).
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -49,6 +55,7 @@ import { join, resolve } from 'node:path';
 import {
   VR_LAYER_CAMERA_FRAME_MAGIC,
   VR_LAYER_CAMERA_STATUS_MAGIC,
+  VR_LAYER_SCOREBOARD_MAGIC,
   VR_LAYER_VIDEO_MAGIC,
   type LayerCameraEye,
   type LayerCameraEyeGeometry,
@@ -57,6 +64,8 @@ import {
   type LayerCameraStatus,
   type LayerSessionReport,
   type PanelFrameSource,
+  type ScoreboardCorner,
+  type ScoreboardPlace,
   type VideoFrameSource,
   type VrLayerBench,
   type VrOverlay,
@@ -78,11 +87,14 @@ export const CONNECT_RETRY_MS = 2000;
 export const RESTART_VPX_AFTER_MS = 20_000;
 /**
  * The pipe protocol this side speaks (vr-layer/src/panel_pipe.h kPipeProtocol); a layer without a hello is 1. D7.4: 2
- * (modes, theater). D7.5: 3 (the camera: the control's `camera`, the layer's CVF1 / CVS1).
+ * (modes, theater). D7.5: 3 (the camera: the control's `camera`, the layer's CVF1 / CVS1). D8.12: 4 (the corner
+ * scoreboard: CVB1 frames, the control's `scoreboard`).
  */
-export const VR_LAYER_PROTOCOL = 3;
+export const VR_LAYER_PROTOCOL = 4;
 /** D7.5: the first protocol with the camera. */
 export const VR_LAYER_CAMERA_PROTOCOL = 3;
+/** D8.12: the first protocol with the corner scoreboard (layer 0.7.0). */
+export const VR_LAYER_SCOREBOARD_PROTOCOL = 4;
 export const VR_LAYER_HELLO_MAGIC = 'CVH1';
 /** D7.4: the panel's place in panel mode: below the playfield's line of sight (the layer's "center" is the D7.3 one). */
 export const VR_LAYER_PANEL_POS = 'low';
@@ -435,6 +447,16 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
   const videoWriter = createPanelFrameWriter({ log: opts.log, tag: 'vr-layer video', magic: VR_LAYER_VIDEO_MAGIC });
   let video: VideoFrameSource | null = null;
   let unsubscribeVideo: (() => void) | null = null;
+  // D8.12: the corner scoreboard: its page's frames (kept while a source is given), the corner asked (null: none now).
+  const scoreWriter = createPanelFrameWriter({ log: opts.log, tag: 'vr-layer scoreboard', magic: VR_LAYER_SCOREBOARD_MAGIC });
+  let scoreSource: PanelFrameSource | null = null;
+  let unsubscribeScore: (() => void) | null = null;
+  let scoreCorner: ScoreboardCorner | null = null;
+  /** The quad's place when not the layer's own (`match.json` `scoreboardPlace`); on the control only while set. */
+  let scorePlace: ScoreboardPlace | null = null;
+  /** The pipe connection the scoreboard writer is attached to now (null: none). */
+  let scoreSocket: PipeSocket | null = null;
+  let oldScoreLogged = false;
   /** D7.4: what the match host asked for; the layer's own default (before any control) is the panel too. */
   let mode: VrViewMode = 'panel';
   let stereo: VrStereo = 'mono';
@@ -585,6 +607,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && feather > 0 ? { feather } : {}),
       // D10.3: the decoded picture's ring only while the match host set one, to a protocol-3 layer only (§6.5).
       ...(protocol >= VR_LAYER_CAMERA_PROTOCOL && videoRing ? { video: { ring: videoRing } } : {}),
+      // D8.12: the scoreboard's corner only while one is asked, to a protocol-4 layer only.
+      ...(protocol >= VR_LAYER_SCOREBOARD_PROTOCOL && scoreCorner ? { scoreboard: { corner: scoreCorner, ...(scorePlace ? { offset: scorePlace.offset, widthM: scorePlace.widthM } : {}) } } : {}),
     };
     const text = JSON.stringify(body);
     if (text === lastControl && !report) return false;
@@ -602,7 +626,8 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     const ring = protocol >= VR_LAYER_CAMERA_PROTOCOL && videoRing ? ', theater from the frame ring' : '';
     const eye = protocol >= VR_LAYER_CAMERA_PROTOCOL && eyes ? `, the sender's eyes (crop ${eyes[0]!.rect[2]}x${eyes[0]!.rect[3]} at ${eyes[0]!.rect[0]},${eyes[0]!.rect[1]} / ${eyes[1]!.rect[0]},${eyes[1]!.rect[1]} of ${eyes[0]!.render[0]}x${eyes[0]!.render[1]})` : '';
     const tuned = protocol >= VR_LAYER_CAMERA_PROTOCOL ? tuneWords(tune, feather) : '';
-    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${ring}${eye}${tuned})`);
+    const score = protocol >= VR_LAYER_SCOREBOARD_PROTOCOL && scoreCorner ? `, scoreboard ${scoreCorner}${scorePlace ? ` at ${scorePlace.offset.join(', ')} m, ${scorePlace.widthM} m wide` : ''}` : '';
+    opts.log(`vr-layer: mode ${mode} (${stereo}${mode === 'panel' ? `, panel ${VR_LAYER_PANEL_POS}` : ''}${cam}${pat}${ring}${eye}${tuned}${score})`);
     if (protocol >= VR_LAYER_CAMERA_PROTOCOL && cameraReq && camera.state !== 'on') setCameraStatus({ state: 'asked', why: null });
     return true;
   };
@@ -613,13 +638,14 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       case 'hello': {
         if (protocol >= 2) return; // a second hello on one connection: not a thing
         protocol = m.protocol;
-        opts.log(`vr-layer: the layer speaks pipe protocol ${m.protocol}${m.protocol >= VR_LAYER_CAMERA_PROTOCOL ? ' (modes, theater, camera)' : m.protocol >= 2 ? ' (modes, theater)' : ''}`);
+        opts.log(`vr-layer: the layer speaks pipe protocol ${m.protocol}${m.protocol >= VR_LAYER_SCOREBOARD_PROTOCOL ? ' (modes, theater, camera, scoreboard)' : m.protocol >= VR_LAYER_CAMERA_PROTOCOL ? ' (modes, theater, camera)' : m.protocol >= 2 ? ' (modes, theater)' : ''}`);
         if (cameraReq && m.protocol < VR_LAYER_CAMERA_PROTOCOL && !oldCameraLogged) {
           oldCameraLogged = true;
           opts.log(`vr-layer: the camera is asked, but the layer in VPX speaks pipe protocol ${m.protocol} (before the layer camera): the screen capture stays until VPX restarts with the new layer`);
         }
         sendControl();
         updateVideo();
+        updateScoreboard();
         notifyBench();
         return;
       }
@@ -688,6 +714,25 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     else videoWriter.clear();
   };
 
+  /**
+   * D8.12: scoreboard frames flow only while a corner is asked and a protocol-4 layer is on the pipe (an older layer
+   * would take a CVB1 for a message and lose its place in the stream). Meanwhile the writer keeps the newest frame, so
+   * the layer gets the picture the moment it may.
+   */
+  const updateScoreboard = () => {
+    const on = scoreCorner !== null && protocol >= VR_LAYER_SCOREBOARD_PROTOCOL && socket !== null && current.state === 'showing';
+    const to = on ? socket : null;
+    // Only on a change: attaching sends the newest frame again.
+    if (to !== scoreSocket) {
+      scoreSocket = to;
+      scoreWriter.attach(to);
+    }
+    if (scoreCorner !== null && socket !== null && spoke && protocol < VR_LAYER_SCOREBOARD_PROTOCOL && !oldScoreLogged) {
+      oldScoreLogged = true;
+      opts.log(`vr-layer: the scoreboard is asked, but the layer in VPX speaks pipe protocol ${protocol} (before the corner scoreboard): no scoreboard in the headset until VPX restarts with the new layer`);
+    }
+  };
+
   const tryConnect = () => {
     retryTimer = null;
     if (stopping) return;
@@ -745,6 +790,7 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       sessionAt = null;
       lastControl = null;
       updateVideo();
+      updateScoreboard();
       // D7.5: frames end with the pipe; a camera still asked is asked again of the next connection.
       if (camera.state === 'on' || camera.state === 'refused') setCameraStatus({ state: cameraReq ? 'asked' : 'off', why: 'pipe closed', api: null, source: null, size: null });
       if (stopping) return;
@@ -769,6 +815,14 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
     unsubscribeVideo = null;
     video = null;
     videoWriter.clear();
+    // D8.12: the scoreboard goes with the overlay (the match host gives it again for the next match).
+    unsubscribeScore?.();
+    unsubscribeScore = null;
+    scoreSource = null;
+    scoreCorner = null;
+    scorePlace = null;
+    scoreSocket = null;
+    scoreWriter.clear();
     const s = socket;
     socket = null;
     s?.destroy();
@@ -929,6 +983,27 @@ export function createVrLayerOverlay(opts: VrLayerOverlayOptions): VrOverlay {
       videoRing = next;
       opts.log(`vr-layer: theater video from ${next ? 'the helper\'s frame ring' : 'the pipe (CVO2)'}${next && !(isConnected() && protocol >= VR_LAYER_CAMERA_PROTOCOL) ? ' (sent once a protocol-3 layer is connected)' : ''}`);
       sendControl();
+    },
+
+    // D8.12: the corner scoreboard: the page's frames while there is a page, the corner while a match shows it.
+    setScoreboard(o) {
+      if (o.frames !== scoreSource) {
+        unsubscribeScore?.();
+        scoreWriter.clear();
+        scoreSocket = null;
+        scoreSource = o.frames;
+        unsubscribeScore = scoreSource?.onFrame((f) => scoreWriter.push(f)) ?? null;
+      }
+      const corner = scoreSource ? o.corner : null;
+      const place = o.place ?? null;
+      const placed = JSON.stringify(place) !== JSON.stringify(scorePlace);
+      scorePlace = place;
+      if (corner !== scoreCorner) {
+        scoreCorner = corner;
+        opts.log(`vr-layer: scoreboard ${corner ?? 'off'}${corner && !(isConnected() && protocol >= VR_LAYER_SCOREBOARD_PROTOCOL) ? ' (sent once a protocol-4 layer is connected)' : ''}`);
+        sendControl();
+      } else if (placed) sendControl();
+      updateScoreboard();
     },
 
     onBench(cb) {

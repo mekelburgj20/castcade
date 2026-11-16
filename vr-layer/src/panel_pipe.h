@@ -25,6 +25,13 @@
 //       (the eye goes into the send ring Local\castcade-video-send-<token> as BGRA instead of CVF1 JPEG; absent = JPEG)
 //       and "video": {"ring": "<token>"} (theater takes its picture from the recv ring Local\castcade-video-recv-<token>
 //       instead of CVO2; absent or null = CVO2): the control;
+//     "CVB1" (protocol 4, layer 0.7.0, D8.12), the header of CVO1, then BGRA top-down: a scoreboard frame (the small
+//       always-on scoreboard's paint); drawn only while the control carries "scoreboard": {"corner": "top-right" |
+//       "top-left"} (absent or null = no scoreboard) and the mode on screen is hidden or theater, never over the panel.
+//       Optional in that object, for tuning the placement without a new layer: "offset": [right, up, ahead] (metres from
+//       the head; `right` is mirrored for the left corner) and "widthM"; absent = the layer's own (layer.cpp);
+//       A protocol-3 layer would take CVB1 for a message of `width` bytes and lose its place in the stream, so the
+//       companion sends it only after a hello of 4 or more;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -41,7 +48,9 @@ constexpr const wchar_t* kPanelPipeName = L"\\\\.\\pipe\\castcade-panel";
 // The version this layer announces in its hello (companion: VR_LAYER_PROTOCOL). A protocol-1 layer (0.2.26) sends no
 // hello and drops the client on any magic but CVO1, so the companion sends CVC1 / CVO2 only after a hello of 2 or more;
 // a protocol-3 layer (D7.5) also sends CVF1 / CVS1, which a protocol-2 companion never reads (they sit in its socket).
-constexpr uint32_t kPipeProtocol = 3;
+// Protocol 4 (D8.12, layer 0.7.0): the layer takes CVB1 scoreboard frames and the control's "scoreboard"; a protocol-3
+// companion sends neither, and gets exactly what a protocol-3 layer gave it.
+constexpr uint32_t kPipeProtocol = 4;
 
 // No frame of a stream for this long → that stream is not live (the companion re-sends its last frame every 2 s while
 // the picture is still, so a gap this long means it stopped feeding; the SteamVR helper hides on the same rule). With
@@ -49,7 +58,8 @@ constexpr uint32_t kPipeProtocol = 3;
 // leaves a player blind (D7.4).
 constexpr int kPanelHideAfterMs = 5000;
 
-enum class Stream { Panel = 0, Video = 1 };
+enum class Stream { Panel = 0, Video = 1, Scoreboard = 2 };
+constexpr int kStreamCount = 3;
 
 // What the companion asks for (CVC1). The defaults hold until the first control and again after a disconnect, so a
 // protocol-1 companion gets the panel as before (placed low since D7.4).
@@ -125,7 +135,22 @@ struct Control {
   // D10.2 (layer 0.6.0), the control's "video": {"ring": "<token>"}: theater takes its picture from the recv ring of that
   // token (frame_ring.h RingConsumer, filled by the video helper) instead of CVO2 frames. Empty (absent or null) = CVO2.
   std::string videoRing;
+  // D8.12 (layer 0.7.0, protocol 4), the control's "scoreboard": {"corner": "top-right" | "top-left"}: the small
+  // head-locked scoreboard (CVB1 frames) is drawn in that corner of the view while the mode on screen is hidden or
+  // theater. Absent, null or not an object = no scoreboard (the default); any corner but "top-left" is top-right.
+  bool scoreboard = false;
+  bool scoreboardLeft = false;
+  // Optional "offset": [right, up, ahead] in metres from the head (clamped to kScoreboardOffsetMin / Max; `right` is
+  // mirrored for the left corner) and "widthM" (clamped to [kScoreboardWidthMinM, kScoreboardWidthMaxM]): where the
+  // quad's centre is and how wide it is. Absent (scoreboardPlaced false, width 0) = the layer's defaults (layer.cpp).
+  bool scoreboardPlaced = false;
+  float scoreboardOffset[3] = {0.0f, 0.0f, 0.0f};
+  float scoreboardWidthM = 0.0f;
 };
+constexpr float kScoreboardOffsetMin[3] = {0.0f, -1.0f, 0.3f};
+constexpr float kScoreboardOffsetMax[3] = {2.0f, 2.0f, 5.0f};
+constexpr float kScoreboardWidthMinM = 0.05f;
+constexpr float kScoreboardWidthMaxM = 2.0f;
 constexpr float kTheaterScaleMin = 0.25f;
 constexpr float kTheaterScaleMax = 4.0f;
 constexpr float kTuneDepthMinM = 0.3f;
@@ -137,7 +162,7 @@ constexpr float kFeatherMax = 0.25f;
 // never outlive the code it runs when the loader unloads the layer at xrDestroyInstance.
 void panelPipeStart();
 
-// The newest frame of `stream` not yet taken: swapped into `pixels` (top-down, BGRA for Panel, RGBA for Video) with
+// The newest frame of `stream` not yet taken: swapped into `pixels` (top-down, BGRA for Panel and Scoreboard, RGBA for Video) with
 // its size; false when none arrived since the last call. Older unread frames are dropped (newest wins).
 bool panelPipeTake(Stream stream, std::vector<uint8_t>& pixels, uint32_t& width, uint32_t& height);
 
