@@ -6,7 +6,7 @@
  */
 import { applyImport, planImport, removeAllSidecars, type ImportPlan, type PlanItem } from '../patcher/index.js';
 import { nodeFs, type WitnessFs } from '../witness/fs.js';
-import { createMapCorpus, gameStateOffsets, liveSupport } from '../witness/maps.js';
+import { createMapCorpus, liveSupport, watchOffsets } from '../witness/maps.js';
 import type { WitnessStatus } from '../witness/types.js';
 import type { TablesApplyResult, TablesDefaults, TablesPlan, TablesRemoveResult } from './ipc-types.js';
 import type { Logger } from './log.js';
@@ -44,7 +44,7 @@ export interface TablesHost {
   /** The folder a null `dir` means right now, or null when nothing is known yet. */
   resolveTablesDir(dir: string | null): string | null;
   scriptsDir(): string | null;
-  /** The NVRAM offsets the hook journals for a ROM: its map's `game_state` bytes, `[]` without a map. */
+  /** The NVRAM offsets the hook journals for a ROM: its map's `game_state` and `high_scores` bytes (A16.2), `[]` without a map. */
   watchOffsetsFor(rom: string): Promise<number[]>;
   /**
    * The one lock over the tables folder: plan / apply / remove-all run under it, and so does every
@@ -87,7 +87,7 @@ export function createTablesHost(opts: TablesHostOptions): TablesHost {
   const corpus = createMapCorpus(store.get().mapsDir, fs);
   const watchOffsetsFor = async (rom: string): Promise<number[]> => {
     const map = await corpus.mapFor(rom).catch(() => null);
-    return map ? gameStateOffsets(map) : [];
+    return map ? watchOffsets(map) : [];
   };
   // B12: the import patches only machines whose live score the hook can see.
   const liveSupportFor = async (rom: string) => liveSupport(await corpus.mapFor(rom).catch(() => null));

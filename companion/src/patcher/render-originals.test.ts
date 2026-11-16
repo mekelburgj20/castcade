@@ -56,9 +56,9 @@ const subLines = (L: string[], name: string): string[] => {
 };
 
 describe('recipe versions', () => {
-  it('each recipe carries its own version; recipe A keeps 0.3.1 so the lib bump alone re-makes A sidecars', () => {
+  it('each recipe carries its own version; recipe A is 0.3.2 (A16.2: the high-score bytes in the watch list)', () => {
     expect(RECIPE_VERSIONS).toEqual({ A: RECIPE_VERSION, B: '0.3.2', C: '0.2.0', D: '0.1.0' });
-    expect(RECIPE_VERSION).toBe('0.3.1');
+    expect(RECIPE_VERSION).toBe('0.3.2');
     expect(recipeVersionFor('B')).toBe('0.3.2');
     expect(recipeVersionFor('E')).toBeNull();
     expect(isRecipe('D')).toBe(true);
@@ -642,7 +642,7 @@ describe('recipe A is unchanged by C1.1', () => {
     const text = crlf(VPM_SCRIPT);
     const r = renderRecipeA(text, classifyScript(text), { ...OPTS, rom: 'mb_106b' });
     const L = splitScript(decodeScript(r.bytes)).lines;
-    expect(L[1]).toBe(`' --- Castcade (recipe A v0.3.1, lib ${LIB_VERSION}) --- do not edit; delete this .vbs to revert to the embedded script`);
+    expect(L[1]).toBe(`' --- Castcade (recipe A v${RECIPE_VERSION}, lib ${LIB_VERSION}) --- do not edit; delete this .vbs to revert to the embedded script`);
     expect(L.some((l) => l.includes('Castcade recipe') || /Castcade_[BCD]_/.test(l))).toBe(false);
     expect(unpatchSidecar(decodeScript(r.bytes))).toBe(text);
   });

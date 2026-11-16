@@ -841,7 +841,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (!to) return;
     syncWindowTune(to);
     const p = a.controller.panel();
-    const mode = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p) });
+    // A16.2: while this player enters high-score initials the headset stays on their own table.
+    const mode = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold });
     if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
     a.vrMode = { mode, to };
     log.info(`match: headset mode ${mode}`);
@@ -944,6 +945,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (a.backlog.tableReopened()) a.controller.feed({ kind: 'table_exit' });
     a.controller.feed(ev);
   });
+  // A16.2: the machine wrote its high-score list: the end of an initials hold. Not a game event (no backlog).
+  witness.onHighScores?.((ev) => active?.controller.feed(ev));
 
   // ---- A15: the saved match while one is on ----
   const dropRecord = (a: Active): void => {
@@ -1126,6 +1129,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       preMatchPlay: settings.preMatchPlay,
       tableGameRunning: liveGameRunning(),
       resumed,
+      // A16.2: the witness knows the machine's high-score list (a test witness may not).
+      highScoreQualifies: (score) => witness.highScoreQualifies?.(score) ?? false,
     });
     controller.onChange(() => emit());
     noteBallEnds(controller, witness.status());

@@ -14,9 +14,11 @@ import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } 
 export const LIB_VERSION = '0.5.1';
 /**
  * Recipe A's version. 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes
- * every recipe-A sidecar at the next look. The originals' recipes carry their own (`RECIPE_VERSIONS`, C1.1).
+ * every recipe-A sidecar at the next look. 0.3.2 (A16.2): the watch list also holds the map's high-score bytes (initials
+ * and scores), so the journal shows the machine writing a high-score entry. The originals' recipes carry their own
+ * (`RECIPE_VERSIONS`, C1.1).
  */
-export const RECIPE_VERSION = '0.3.1';
+export const RECIPE_VERSION = '0.3.2';
 
 /**
  * Each recipe's version, written into its sidecar's marker and `Castcade_Init`; a bump re-makes only that recipe's sidecars.
@@ -55,7 +57,7 @@ export interface RenderOptions {
   /** Extra key constant names to lock (e.g. staged flippers): `Castcade_AddPlayKeys Array(...)`. */
   extraKeys?: string[];
   /**
-   * NVRAM offsets the hook should journal (the map's `game_state` bytes, lib 0.3.0). `undefined` =
+   * NVRAM offsets the hook should journal (the map's `game_state` and `high_scores` bytes, lib 0.3.0). `undefined` =
    * no watch list (the hook journals every changed byte, the 0.1.0 behaviour); `[]` = a ROM with no
    * map, so the hook journals no deltas at all (nothing could decode them).
    */
