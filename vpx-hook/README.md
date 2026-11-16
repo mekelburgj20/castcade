@@ -106,6 +106,16 @@ sidecar over such a table (importer `patchSource`, witness notice → `TablesHos
 runs until the next launch. No recipe change; the lib bump makes the folder watch re-make every sidecar on its first look.
 Checked with a `cscript` harness: an existing original and a missing sidecar journal `embedded_patch` and no `MsgBox`.
 
+### 0.5.1 — a sitting longer than 44 minutes keeps reporting (C15)
+
+`Castcade_NVRAM` stopped journaling after 300000 callbacks (the 0.1.0 runaway guard, from when every changed byte was
+written). core.vbs calls it about 114 times a second whether a game runs or not, so the journal went silent 44 minutes
+after the table opened: in the owner's match QBPKHR (2026-11-15, Congo, three games in one sitting) the journal ends
+at t = 2618 s, 28 seconds into his last ball, and the match waited for a ball end that was never written. The guard
+now applies only without a watch list; with one, the volume is a few lines per score change. No recipe change; the lib
+bump makes the folder watch re-make every sidecar on its first look. Checked with a `cscript` harness
+(`sidecar-cscript.test.ts`): a watched change after 300010 callbacks is journaled.
+
 ### 0.5.0 — originals: `Castcade_PlayerScores` and the ScoreServer shim (C1.1)
 
 Recipes B, C and D (`companion/src/patcher/render-originals.ts`, design §5 "As built") journal original tables from

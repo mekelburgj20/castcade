@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.0
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.1
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
@@ -9,6 +9,12 @@
 '      Castcade_WatchBytes Array(<nvram offsets the map's game_state reads>)
 '  (Castcade_Guard is new in 0.2.0, Castcade_WatchBytes in 0.3.0; older sidecars do not call them and
 '   keep working — without a watch list every changed byte is journaled, the 0.1.0 behaviour.)
+'
+'  0.5.1 (WORK C15): the runaway guard of Castcade_NVRAM (no journaling after 300000 callbacks) applies
+'  only without a watch list.  core.vbs calls the hook about 114 times a second, so the guard ended the
+'  journal 44 minutes into a sitting: the third game of the owner's match QBPKHR (2026-11-15) never
+'  reported his last ball.  With a watch list the journal is a few lines per score change, whatever the
+'  count.
 '
 '  0.5.0 originals (recipes B, C, D; WORK C1.1): the sidecar's own Castcade_<recipe>_* subs call
 '  Castcade_GameStart / Castcade_Scores / Castcade_BallEnd / Castcade_GameEnd with the table's own
@@ -56,7 +62,7 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.0"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.1"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -321,7 +327,9 @@ Sub Castcade_NVRAM(chg)
     On Error Resume Next
     Dim i, n, parts, t, k, key
     Castcade_NVn = Castcade_NVn + 1
-    If Castcade_NVn <= 300000 Then                      ' runaway guard
+    ' The runaway guard is for the unfiltered path only (0.5.1): with a watch list the volume is bounded,
+    ' and a sitting longer than 44 minutes must keep reporting.
+    If Castcade_WatchOn Or Castcade_NVn <= 300000 Then
         t = Castcade_T()
         If Castcade_NVn = 1 Then Castcade_NVRAMFull t
         n = UBound(chg, 1)

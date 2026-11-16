@@ -9,6 +9,14 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ### Fixed
 
+- **A turn that never passed after 44 minutes at one table (C15).** In the third game of the owner's match QBPKHR
+  (2026-11-15, Congo, three games without closing the table) his last ball never ended for the match: Krobs was never
+  up, and a new game the owner started on the table was not seen either. The table's script stopped writing its
+  journal after 300,000 NVRAM callbacks, an old safety guard; VPinMAME makes about 114 a second, so the journal went
+  silent 44 minutes after the table opened (at 2618 s, 28 seconds into that ball). The guard now applies only to
+  tables without a watch list. Hook library 0.5.1: every patched table's script is re-made on the first look after
+  the update; a table that is open at that moment needs to be reopened. `vpx-hook/castcade.vbs`, `patcher/render.ts`.
+
 - **No voice in a match, "No path to Krobs" (D2.12).** In the owner's second match of 2026-11-15 (GNBKHT) neither
   player heard the other, while the picture ran on a direct connection: the routers were not the cause. Both panel
   pages open the voice connection at the match's start and both offered; when the two offers crossed within a few

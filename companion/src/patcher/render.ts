@@ -11,7 +11,7 @@ import type { ClassifyResult } from './classify.js';
 import { encodeScript, escapeRegExp, splitScript, joinScript, vbStringLiteral } from './script-text.js';
 
 /** Must equal `Castcade_LibVersion` in `vpx-hook/castcade.vbs` (a test checks the file). */
-export const LIB_VERSION = '0.5.0';
+export const LIB_VERSION = '0.5.1';
 /**
  * Recipe A's version. 0.3.1: watch-list offsets count from the platform's NVRAM start (B10); bumping it re-makes
  * every recipe-A sidecar at the next look. The originals' recipes carry their own (`RECIPE_VERSIONS`, C1.1).
