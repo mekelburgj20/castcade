@@ -7,6 +7,16 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Changed
+
+- **The invite before the table (A14.7).** Host no longer starts VPX at once. It hosts the match and copies the
+  invite link ("Invite link copied"), and the picked table waits for a new **Start the table** button on the Match
+  tab, so a VR host can paste the invite in Discord before the headset takes over (owner, 2026-11-15: "when you click
+  host, you are put in to VR view. You have to exit out of VR to copy the code"). **Start the table as soon as I
+  host** on the Host card (`match.json` `startTableOnHost`, off by default) keeps the one-press Host of 0.2.40. A
+  table opened by hand meanwhile is used; a friend who joins first waits for the host's table as before. Unit tests
+  only; not run on a rig. `main/one-step.ts`, `renderer/src/views/OneStep.tsx`, `Match.tsx`.
+
 ### Fixed
 
 - **A turn that never passed after 44 minutes at one table (C15).** In the third game of the owner's match QBPKHR
