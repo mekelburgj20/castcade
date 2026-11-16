@@ -9,6 +9,15 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ### Added
 
+- **3D watch (test) on the Match tab (I11.4.1, ADR 0011).** Watch another player's table in your own VPX, from your own
+  view (in VR, with your own head), with no port forward and no firewall prompt. One player hosts a 3D watch session and
+  reads out the six-letter code, the others join (up to four PCs); anyone presses Play a table and the others are offered
+  Watch; when that table closes, someone else can play. Both PCs need the Castcade VPX build
+  (`VPinballX_GL64_castcade.exe`, beside `VPinballX_GL64.exe`) and the same table file. Each VPX talks only to Castcade
+  on its own PC; the Castcades carry the table's state over a direct connection of their own, set up through ArcAid
+  like a match's. No voice in this session yet, and it is separate from a match: inside a match the other player is
+  still shown as video. A watcher's VPX is not counted as a game, and the VPX build is never remembered as the VPX
+  that tables are started with.
 - **Corner scoreboard in the headset (D8.12).** A small scoreboard stays in the top right of the view while you play
   your ball and while you watch another player: the game and the ball, each player's name and score in turn order
   with the player up marked, and the session tally (`18 GAMES PLAYED · MekelburgJ 10 · Krobs 8`). It is a second

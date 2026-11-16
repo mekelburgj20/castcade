@@ -75,6 +75,15 @@ one null test). An unknown command-line flag makes VPX show a modal box and exit
 One side needs a reachable TCP port (47800). Carrying the stream over the companion's existing peer connection is
 I11.4.
 
+**Amended 2026-11-16 (owner: "the final product will not require port forwarding ... why can we not implement that
+now"; I11.4.1, companion PR #51):** the companion carries the stream. Each VPX is given a loopback address
+(`listen:127.0.0.1:<port>` for the player, `connect:127.0.0.1:<port>` for a watcher) and talks only to the companion
+on its own PC; the companions splice those sockets over a data-only WebRTC connection of their own (the ICE settings
+voice uses), signalled through the ArcAid relay room of an invite code. The fork is unchanged, and the stream stays
+opaque to the companion. It is offered as a **3D watch session** on the Match tab, apart from a match, because a VPX
+is still a player or a watcher for as long as the table is open (I11.3). The directly reachable port remains as the
+`.bat` launchers' fallback. A router pair with no direct path needs a TURN relay (WORK F23), as voice does.
+
 ## What was measured (2026-11-16, the owner's rig, two instances on one PC, desktop, loopback)
 
 | Table | Parts | Stream | Replayed calls failed | Picture, player vs watcher |
