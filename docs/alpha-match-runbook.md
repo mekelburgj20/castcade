@@ -71,7 +71,13 @@ Run these a day or more before the match. If one fails, stop and send what is li
 2. **Host:** press **Host**. Castcade shows the invite (`castcade:ws://<public ip>:27401#<code>`) and a
    reminder to forward TCP 27401. Windows may ask to allow Castcade through the firewall: allow it.
    **Copy invite** and send it to Krobs (Discord or text).
-3. **Client:** paste the invite under **Join**, press **Join**.
+   - **The invite comes before the table (A14.7, not yet run on a rig).** Pick a table, press **Host**: the match is
+     hosted and the invite link is already on your clipboard ("Invite link copied"; paired with ArcAid it is an
+     `https://arcaid.app/castcade/join/<code>` link, and **Copy code** copies the six letters alone). Paste it in
+     Discord while you are still at the desktop, then press **Start the table**: VPX opens the table, and that is when
+     you put the headset on. To have Host start the table at once, tick **Start the table as soon as I host**.
+3. **Client:** paste the invite under **Join**, press **Join** (or open the link). Joining before the host's table
+   is up is fine: Castcade waits for it, then starts the same table.
 4. Both: you should each see both names in the roster, with the rig (VR headset) next to each. If the table files
    differ, a line says so on both screens: stop and fix that first.
 5. Both: load the table in VR (patched, preview window up). Leave it at the attract screen. **Do not press Start.**

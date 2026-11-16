@@ -424,14 +424,17 @@ function registerIpc(
   ipcMain.handle(IPC.launchTables, () => os().tables());
   ipcMain.handle(IPC.launchBrowse, () => os().browse());
   ipcMain.handle(IPC.launchHost, (_e, o: unknown) => {
-    const w = (o ?? {}) as { tablePath?: unknown; port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
+    const w = (o ?? {}) as { tablePath?: unknown; startTable?: unknown; port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
     return os().host({
       tablePath: typeof w.tablePath === 'string' && w.tablePath !== '' ? w.tablePath : null,
+      // A14.7: the table starts with Host only when asked; otherwise it waits for Start the table.
+      startTable: w.startTable === true,
       port: w.port === undefined || w.port === null ? undefined : Number(w.port),
       ballsPerGame: w.ballsPerGame === 5 ? 5 : 3,
       displayName: typeof w.displayName === 'string' ? w.displayName : '',
     });
   });
+  ipcMain.handle(IPC.launchStartTable, () => os().startTable());
   ipcMain.handle(IPC.launchConfirm, () => os().confirm());
   ipcMain.handle(IPC.launchDismiss, () => os().dismiss());
   ipcMain.handle(IPC.launchCopy, (_e, what: unknown) => os().copy(what === 'message' ? 'message' : 'link'));

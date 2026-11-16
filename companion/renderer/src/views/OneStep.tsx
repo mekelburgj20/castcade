@@ -28,7 +28,20 @@ export function useOneStep(bridge: CastcadeBridge | null): OneStepStatus | null 
 /** How many tables the list shows at once; the search narrows it. */
 const SHOWN = 8;
 
-export function TablePicker({ bridge, value, onChange, tableOpen }: { bridge: CastcadeBridge; value: string | null; onChange: (path: string | null) => void; tableOpen: string | null }) {
+export function TablePicker({
+  bridge,
+  value,
+  onChange,
+  tableOpen,
+  startOnHost,
+}: {
+  bridge: CastcadeBridge;
+  value: string | null;
+  onChange: (path: string | null) => void;
+  tableOpen: string | null;
+  /** A14.7: Host starts the picked table too (the setting); false: Start the table does, after the invite. */
+  startOnHost: boolean;
+}) {
   const [tables, setTables] = useState<TableChoice[] | null>(null);
   const [search, setSearch] = useState('');
   // Browse: the other .vpx files of the tables folder, loaded when asked for.
@@ -89,8 +102,8 @@ export function TablePicker({ bridge, value, onChange, tableOpen }: { bridge: Ca
       </select>
       <small>
         {picked
-          ? `Host starts VPX on ${picked.name} and copies the join link.${picked.imported ? '' : ' Castcade has not patched this table: if it cannot report ball ends, the lobby says so and Start asks you to confirm.'}`
-          : 'Pick a table and Host starts it in VPX for you.'}
+          ? `${startOnHost ? `Host starts VPX on ${picked.name} and copies the invite link.` : `Host copies the invite link. Send it, then press Start the table to open ${picked.name} in VPX.`}${picked.imported ? '' : ' Castcade has not patched this table: if it cannot report ball ends, the lobby says so and Start asks you to confirm.'}`
+          : 'Pick a table and Castcade starts it in VPX for you.'}
       </small>
       {others === null ? (
         <button type="button" className="small" disabled={browsing} onClick={browse}>
@@ -116,7 +129,9 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
   const { pending, launch } = one;
   const showLink = role === 'host' && phase === 'lobby' && one.link !== null;
   const showLaunch = launch.state !== 'idle' && launch.detail !== null;
-  if (!pending && !one.notice && !showLink && !showLaunch && !error) return null;
+  // A14.7: the picked table waits here until the invite is sent.
+  const toStart = role === 'host' ? one.tableToStart : null;
+  if (!pending && !one.notice && !showLink && !showLaunch && !toStart && !error) return null;
   return (
     <div className="card">
       {pending && (
@@ -145,7 +160,7 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
               {copied === 'link' ? 'Copied' : 'Copy'}
             </button>
           </div>
-          <p className="muted">{one.copied ? 'The link is on your clipboard. ' : ''}A player with Castcade opens it and lands in this match with the table started.</p>
+          <p className="muted">{one.copied ? 'Invite link copied. ' : ''}A player with Castcade opens it and lands in this match with the table started.</p>
           <div className="row">
             <code className="mono invite">{one.message}</code>
             <button type="button" className="small" onClick={() => copy('message')}>
@@ -157,6 +172,16 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
               ? 'Discord makes this link clickable: it opens a page with an Open in Castcade button and the code.'
               : 'Discord shows a castcade:// link as plain text, so this line says what to do with it.'}
           </p>
+        </>
+      )}
+      {toStart && (
+        <>
+          <p>
+            <strong>Next: start the table.</strong> Send the invite first, then start {toStart}. If you play in VR, this is when you put the headset on.
+          </p>
+          <button type="button" className="primary" onClick={() => call(bridge.launch.startTable())}>
+            Start the table
+          </button>
         </>
       )}
       {showLaunch && <p className={launch.state === 'failed' || launch.state === 'needed' ? 'warn' : 'muted'}>{launch.detail}</p>}
