@@ -116,8 +116,19 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K', scoreboard: true, scoreboardCorner: 'top-right', scoreboardPlace: null });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
+    // D8.12 (2026-11-15): the corner scoreboard: on in the top right by default; off and the top left on request, anything else ignored.
+    expect(patchMatchSettings(s, { scoreboard: false, scoreboardCorner: 'top-left' })).toEqual({ ...s, scoreboard: false, scoreboardCorner: 'top-left' });
+    expect(patchMatchSettings(s, { scoreboard: 'yes', scoreboardCorner: 'bottom-right' })).toEqual(s);
+    expect(readMatchSettings(writeMatchSettings({ ...s, scoreboard: false, scoreboardCorner: 'top-left' }))).toMatchObject({ scoreboard: false, scoreboardCorner: 'top-left' });
+    // The placement knob (match.json only): clamped to the layer's ranges and rounded; anything that is not a place is null (the layer's own).
+    const placed = patchMatchSettings(s, { scoreboardPlace: { offset: [0.501, 9, 0.1], widthM: 0.256 } });
+    expect(placed.scoreboardPlace).toEqual({ offset: [0.5, 2, 0.3], widthM: 0.26 });
+    expect(readMatchSettings(writeMatchSettings(placed)).scoreboardPlace).toEqual({ offset: [0.5, 2, 0.3], widthM: 0.26 });
+    for (const bad of [{ offset: [0.5, 0.4], widthM: 0.3 }, { offset: [0.5, 0.4, 'x'], widthM: 0.3 }, { offset: [0.5, 0.4, 1], widthM: 0 }, 'top', null]) {
+      expect(patchMatchSettings(placed, { scoreboardPlace: bad }).scoreboardPlace).toBeNull();
+    }
     // A12 (2026-11-05): the host's table before the match: free by default, locked on request, anything else ignored.
     expect(patchMatchSettings(s, { preMatchPlay: 'locked' }).preMatchPlay).toBe('locked');
     expect(patchMatchSettings(s, { preMatchPlay: 'open' }).preMatchPlay).toBe('free');

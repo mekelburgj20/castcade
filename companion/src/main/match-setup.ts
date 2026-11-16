@@ -12,7 +12,7 @@ import type { ClientMatch } from '../match/client.js';
 import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
 import { cleanShortcut } from '../match/match-menu.js';
-import type { MediaSignal, MediaSignalling } from '../media/match-media-types.js';
+import type { MediaSignal, MediaSignalling, ScoreboardPlace } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import { describeVrEvidence, vrRuntimeOf, type VrObservation, type VrRuntime } from '../witness/vr-detect.js';
 
@@ -105,6 +105,19 @@ export interface MatchSettings {
    */
   menuKey: string;
   menuChooseKey: string | null;
+  /**
+   * D8.12 (2026-11-15): the corner scoreboard in the headset (OpenXR layer rigs, layer 0.7.0): the scores, the ball,
+   * the game and the session tally in a top corner of the view while this player plays and while they watch; never
+   * with the full panel. On by default; `scoreboardCorner` is the corner.
+   */
+  scoreboard: boolean;
+  scoreboardCorner: 'top-right' | 'top-left';
+  /**
+   * D8.12: where the scoreboard's quad sits when not where the layer puts it (`ScoreboardPlace`: its centre as
+   * [right, up, ahead] in metres from the head, and its width), or null for the layer's own placement. No UI: a knob
+   * in `match.json` for tuning the placement on a rig without a new layer build.
+   */
+  scoreboardPlace: ScoreboardPlace | null;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -137,6 +150,10 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   // D8.10 (2026-11-14)
   menuKey: 'Control+Alt+M',
   menuChooseKey: 'Control+Alt+K',
+  // D8.12 (2026-11-15)
+  scoreboard: true,
+  scoreboardCorner: 'top-right',
+  scoreboardPlace: null,
 };
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
@@ -185,6 +202,24 @@ export function cleanSoftEdge(v: unknown): number | null {
   return Math.round(Math.min(0.25, Math.max(0, v)) * 1000) / 1000;
 }
 
+/**
+ * D8.12: a scoreboard place: three finite numbers clamped to the layer's ranges (0–2 m to the side, −1–2 m up,
+ * 0.3–5 m ahead) and a width clamped to 0.05–2 m, each rounded to a centimetre; anything else is null (the layer's own).
+ */
+export function cleanScoreboardPlace(v: unknown): ScoreboardPlace | null {
+  if (typeof v !== 'object' || v === null) return null;
+  const { offset, widthM } = v as { offset?: unknown; widthM?: unknown };
+  if (!Array.isArray(offset) || offset.length !== 3 || typeof widthM !== 'number' || !Number.isFinite(widthM) || widthM <= 0) return null;
+  const range = [[0, 2], [-1, 2], [0.3, 5]] as const;
+  const out: number[] = [];
+  for (let k = 0; k < 3; k++) {
+    const n: unknown = offset[k];
+    if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+    out.push(Math.round(Math.min(range[k]![1], Math.max(range[k]![0], n)) * 100) / 100 + 0);
+  }
+  return { offset: [out[0]!, out[1]!, out[2]!], widthM: Math.round(Math.min(2, Math.max(0.05, widthM)) * 100) / 100 };
+}
+
 /** ParticipantInfo.displayName: 1–64 characters. */
 export function cleanName(v: unknown): string | null {
   if (typeof v !== 'string') return null;
@@ -226,6 +261,11 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if ('menuKey' in p) next.menuKey = cleanShortcut(p.menuKey) ?? current.menuKey;
   if ('menuChooseKey' in p) next.menuChooseKey = p.menuChooseKey === null || p.menuChooseKey === '' ? null : (cleanShortcut(p.menuChooseKey) ?? current.menuChooseKey);
   if (next.menuChooseKey === next.menuKey) next.menuChooseKey = null;
+  // D8.12: the corner scoreboard: a boolean and one of two corners; anything else keeps the current value.
+  if (typeof p.scoreboard === 'boolean') next.scoreboard = p.scoreboard;
+  if (p.scoreboardCorner === 'top-right' || p.scoreboardCorner === 'top-left') next.scoreboardCorner = p.scoreboardCorner;
+  // A place that is not one (or null) is the layer's own placement.
+  if ('scoreboardPlace' in p) next.scoreboardPlace = cleanScoreboardPlace(p.scoreboardPlace);
   return next;
 }
 

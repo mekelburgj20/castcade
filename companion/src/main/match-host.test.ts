@@ -805,6 +805,63 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     expect(lines).toContain('match: in VR but no OpenXR layer; showing the desktop panel');
   });
 
+  it('D8.12 (2026-11-15): the corner scoreboard: its page on a layer rig while the setting is on, no corner in the lobby, the setting applied live; never asked of the SteamVR helper', async () => {
+    const withBoard = (m: ReturnType<typeof fakeMedia>) => {
+      const pages: boolean[] = [];
+      let on = false;
+      const board = { onFrame: () => () => undefined };
+      const base = m.media as unknown as Record<string, unknown> & { frames: () => unknown };
+      const media = {
+        ...base,
+        setScoreboard: (want: boolean) => {
+          if (want !== on) pages.push(want);
+          on = want;
+        },
+        scoreboardFrames: () => (on && base.frames() ? board : null),
+      } as unknown as MediaOpt;
+      return { media, pages, board };
+    };
+    const asked = (o: ReturnType<typeof fakeOverlay>) => {
+      const said: Array<{ frames: unknown; corner: string | null; place: unknown }> = [];
+      (o.overlay as unknown as Record<string, unknown>).setScoreboard = (x: { frames: unknown; corner: string | null; place: unknown }) => {
+        const last = said.at(-1);
+        if (!last || last.frames !== x.frames || last.corner !== x.corner || last.place !== x.place) said.push(x);
+      };
+      return said;
+    };
+    // Virtual Desktop: the OpenXR layer. The lobby: the page is up (its first paint is kept), no corner yet.
+    const m = fakeMedia();
+    const b = withBoard(m);
+    const layer = fakeOverlay();
+    const said = asked(layer);
+    const H = make('board', 'ab'.repeat(32), { witness: liveWitness(VR_VD, VR_OFF).w, media: b.media, vrLayer: layer.overlay });
+    await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(H.mh.status().settings).toMatchObject({ scoreboard: true, scoreboardCorner: 'top-right' });
+    expect(b.pages).toEqual([true]);
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null });
+    // Off on the Match tab: the page goes and the layer is told there are no frames; on again: back.
+    H.mh.setSettings({ scoreboard: false });
+    expect(b.pages).toEqual([true, false]);
+    expect(said.at(-1)).toEqual({ frames: null, corner: null, place: null });
+    H.mh.setSettings({ scoreboard: true, scoreboardCorner: 'top-left' });
+    expect(b.pages).toEqual([true, false, true]);
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null });
+    // The placement knob (match.json; no UI) rides along.
+    H.mh.setSettings({ scoreboardPlace: { offset: [0.5, 0.45, 1.2], widthM: 0.4 } } as never);
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: { offset: [0.5, 0.45, 1.2], widthM: 0.4 } });
+    await H.mh.leave();
+
+    // SteamVR: the helper draws the panel only; no scoreboard page is opened for it.
+    const m2 = fakeMedia();
+    const b2 = withBoard(m2);
+    const helper = fakeOverlay();
+    const H2 = make('board-steam', 'ab'.repeat(32), { witness: liveWitness(VR_ON, VR_OFF).w, media: b2.media, vrOverlay: helper.overlay });
+    await H2.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    expect(helper.started).toHaveLength(1);
+    expect(b2.pages).toEqual([]);
+    await H2.mh.leave();
+  });
+
   it('B22: the Match tab opening lists the microphones when no match runs, never during one', async () => {
     const m = fakeMedia();
     const H = make('mics', 'ab'.repeat(32), { witness: liveWitness(null, null).w, media: m.media });

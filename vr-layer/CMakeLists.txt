@@ -24,7 +24,10 @@ cmake_minimum_required(VERSION 3.20)
 #        "camera": {"ring": <token>} publishes the eye as BGRA into the send ring instead of CVF1 JPEG (the "on" status says
 #        "ring", "ringState"); "video": {"ring": <token>} draws theater from the recv ring instead of CVO2. Pipe protocol
 #        stays 3. tools/ring_feed.exe (not shipped) plays either side of a ring for tests without VPX.
-project(castcade_vr_layer VERSION 0.6.0 LANGUAGES CXX)
+# 0.7.0: D8.12, pipe protocol 4: the corner scoreboard. CVB1 frames (BGRA, the header of CVO1) and the control's
+#        "scoreboard": {"corner": "top-right" | "top-left"} draw a small head-locked quad in a top corner of the view while
+#        the mode on screen is hidden or theater. A protocol-3 companion sends neither and sees no difference.
+project(castcade_vr_layer VERSION 0.7.0 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".

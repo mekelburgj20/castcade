@@ -545,6 +545,11 @@ interface MatchSettings {
   /** D8.10: the in-game menu's keys (Electron accelerators): open / next line, and choose (null: none). */
   menuKey: string;
   menuChooseKey: string | null;
+  /** D8.12: the corner scoreboard in the headset (scores, ball, game, session tally), and its corner. */
+  scoreboard: boolean;
+  scoreboardCorner: 'top-right' | 'top-left';
+  /** D8.12: the scoreboard quad's centre ([right, up, ahead], metres from the head) and width; null: the layer's own. No UI. */
+  scoreboardPlace: { offset: [number, number, number]; widthM: number } | null;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */

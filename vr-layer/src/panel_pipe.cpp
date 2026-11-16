@@ -53,7 +53,7 @@ struct Conn {
 
 struct State {
   std::mutex m;
-  Inbox inbox[2];  // by Stream
+  Inbox inbox[kStreamCount];  // by Stream
   Control control;
   std::shared_ptr<Conn> conn;  // the connected companion, or null
 };
@@ -64,7 +64,7 @@ State& state() {
 }
 
 // GetTickCount64 at the last complete frame of each stream; 0 = none (static storage: zero before the thread starts).
-std::atomic<uint64_t> g_lastFrameAt[2];
+std::atomic<uint64_t> g_lastFrameAt[kStreamCount];
 // D7.6.2: connections plus report requests so far (panelPipeReportSerial).
 std::atomic<uint32_t> g_reportSerial{0};
 
@@ -284,6 +284,33 @@ float jsonFeather(const std::string& body) {
   return static_cast<float>(f > kFeatherMax ? kFeatherMax : f);
 }
 
+// D8.12: "scoreboard" in the control: {"corner": "top-right" | "top-left"} → on, in that corner (anything but
+// "top-left", or no corner: top-right); absent, null or not an object → off. Optional "offset": [right, up, ahead]
+// (three finite numbers, each clamped to its range; anything else = the layer's own placement) and "widthM" (a
+// finite number above 0, clamped; anything else = the layer's own width).
+void jsonScoreboard(const std::string& body, Control& c) {
+  c.scoreboard = c.scoreboardLeft = c.scoreboardPlaced = false;
+  c.scoreboardOffset[0] = c.scoreboardOffset[1] = c.scoreboardOffset[2] = 0.0f;
+  c.scoreboardWidthM = 0.0f;
+  const size_t i = valueAt(body, "scoreboard");
+  if (i == std::string::npos || i >= body.size() || body[i] != '{') return;
+  const size_t end = body.find('}', i);
+  if (end == std::string::npos) return;
+  const std::string obj = body.substr(i, end - i + 1);
+  c.scoreboard = true;
+  c.scoreboardLeft = jsonString(obj, "corner") == "top-left";
+  double at[3] = {0.0, 0.0, 0.0};
+  const size_t o = valueAt(obj, "offset");
+  if (o != std::string::npos && jsonNumbers(obj, o, at, 3) == 3 && std::isfinite(at[0]) && std::isfinite(at[1]) && std::isfinite(at[2])) {
+    c.scoreboardPlaced = true;
+    for (int k = 0; k < 3; k++)
+      c.scoreboardOffset[k] = static_cast<float>(at[k] < kScoreboardOffsetMin[k] ? kScoreboardOffsetMin[k] : at[k] > kScoreboardOffsetMax[k] ? kScoreboardOffsetMax[k] : at[k]);
+  }
+  double w = 0.0;
+  if (jsonNumber(obj, "widthM", w) && std::isfinite(w) && w > 0.0)
+    c.scoreboardWidthM = static_cast<float>(w < kScoreboardWidthMinM ? kScoreboardWidthMinM : w > kScoreboardWidthMaxM ? kScoreboardWidthMaxM : w);
+}
+
 // `v` with `places` decimals for a log line, locale-free (std::to_string and printf's %f follow the process's locale,
 // and VPX's may carry a decimal comma; layer.cpp's `fixed` is the same rule for its JSON).
 std::string fixed(double v, int places) {
@@ -376,6 +403,9 @@ void applyControl(const std::string& body) {
   c.feather = jsonFeather(body);
   // D10.2: likewise, a control without "video" means theater takes CVO2 frames.
   c.videoRing = jsonVideoRing(body);
+  // D8.12: likewise, a control without "scoreboard" means none.
+  jsonScoreboard(body, c);
+  bool scoreboardChanged = false;
   bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false, tuneChanged = false, featherChanged = false, videoRingChanged = false;
   {
     std::lock_guard<std::mutex> lk(st.m);
@@ -387,7 +417,18 @@ void applyControl(const std::string& body) {
     tuneChanged = st.control.tuneDepthM != c.tuneDepthM || st.control.tuneDyDeg[0] != c.tuneDyDeg[0] || st.control.tuneDyDeg[1] != c.tuneDyDeg[1];
     featherChanged = st.control.feather != c.feather;
     videoRingChanged = st.control.videoRing != c.videoRing;
+    scoreboardChanged = st.control.scoreboard != c.scoreboard || st.control.scoreboardLeft != c.scoreboardLeft || st.control.scoreboardPlaced != c.scoreboardPlaced ||
+                        st.control.scoreboardWidthM != c.scoreboardWidthM || st.control.scoreboardOffset[0] != c.scoreboardOffset[0] ||
+                        st.control.scoreboardOffset[1] != c.scoreboardOffset[1] || st.control.scoreboardOffset[2] != c.scoreboardOffset[2];
     st.control = c;
+  }
+  if (scoreboardChanged) {
+    logLine(c.scoreboard ? std::string("pipe: scoreboard asked, ") + (c.scoreboardLeft ? "top left" : "top right") + " (drawn in hidden and theater)" +
+                               (c.scoreboardPlaced ? ", centre " + fixed(c.scoreboardOffset[0], 2) + " m to the side, " + fixed(c.scoreboardOffset[1], 2) + " m up, " +
+                                                         fixed(c.scoreboardOffset[2], 2) + " m ahead"
+                                                   : std::string()) +
+                               (c.scoreboardWidthM > 0.0f ? ", " + fixed(c.scoreboardWidthM, 2) + " m wide" : std::string())
+                         : std::string("pipe: scoreboard off"));
   }
   if (videoRingChanged) {
     logLine(c.videoRing.empty() ? std::string("pipe: theater video from the pipe (CVO2)") : "pipe: theater video from the recv ring '" + c.videoRing + "'");
@@ -442,12 +483,13 @@ void sendHello() {
 // Reads messages from a connected client until it disconnects or sends something unreadable. Returns why it stopped.
 std::string readMessages(HANDLE pipe) {
   std::vector<uint8_t> buf;
-  bool first[2] = {true, true};
+  bool first[kStreamCount] = {true, true, true};
   for (;;) {
     uint8_t magic[4];
     if (!readExact(pipe, magic, sizeof magic)) return "closed";
     const bool panel = std::memcmp(magic, "CVO1", 4) == 0, video = std::memcmp(magic, "CVO2", 4) == 0;
-    if (panel || video) {
+    const bool scoreboard = std::memcmp(magic, "CVB1", 4) == 0;  // D8.12
+    if (panel || video || scoreboard) {
       uint8_t hdr[12];
       if (!readExact(pipe, hdr, sizeof hdr)) return "closed";
       const uint32_t w = le32(hdr), h = le32(hdr + 4), n = le32(hdr + 8);
@@ -455,9 +497,9 @@ std::string readMessages(HANDLE pipe) {
       if (static_cast<uint64_t>(n) != static_cast<uint64_t>(w) * h * 4) return "bad_length:" + std::to_string(n);
       buf.resize(n);
       if (!readExact(pipe, buf.data(), n)) return "closed mid-frame";  // the partial frame is dropped
-      const int k = video ? 1 : 0;
+      const int k = video ? 1 : scoreboard ? 2 : 0;
       if (first[k]) {
-        logLine(std::string("pipe: first ") + (video ? "video" : "panel") + " frame " + std::to_string(w) + "x" + std::to_string(h));
+        logLine(std::string("pipe: first ") + (video ? "video" : scoreboard ? "scoreboard" : "panel") + " frame " + std::to_string(w) + "x" + std::to_string(h));
         first[k] = false;
       }
       State& st = state();
@@ -530,6 +572,7 @@ void serve() {
         // camera (the camera's worker sees the request go and stops).
         resetControl();
         g_lastFrameAt[1].store(0);
+        g_lastFrameAt[2].store(0);  // D8.12: the scoreboard goes with its companion at once (the control's reset drops it too)
         {
           std::lock_guard<std::mutex> lk(state().m);
           if (state().conn == conn) state().conn.reset();
@@ -578,7 +621,7 @@ void panelPipeStart() {
 bool panelPipeTake(Stream stream, std::vector<uint8_t>& pixels, uint32_t& width, uint32_t& height) {
   State& st = state();
   std::lock_guard<std::mutex> lk(st.m);
-  Inbox& box = st.inbox[stream == Stream::Video ? 1 : 0];
+  Inbox& box = st.inbox[static_cast<int>(stream)];
   if (!box.hasFrame) return false;
   pixels.swap(box.pixels);
   width = box.width;
@@ -588,7 +631,7 @@ bool panelPipeTake(Stream stream, std::vector<uint8_t>& pixels, uint32_t& width,
 }
 
 bool panelPipeLive(Stream stream) {
-  const uint64_t at = g_lastFrameAt[stream == Stream::Video ? 1 : 0].load();
+  const uint64_t at = g_lastFrameAt[static_cast<int>(stream)].load();
   return at != 0 && GetTickCount64() - at < static_cast<uint64_t>(kPanelHideAfterMs);
 }
 

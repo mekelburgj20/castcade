@@ -13,6 +13,7 @@
 import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
 import type { PanelVolume } from './match-media-types.js';
+import { tallyText } from './scoreboard-page.js';
 import { IN_JPEG_QUALITY } from './frame-clip.js';
 import { negotiationSource } from './rtc-signaling.js';
 
@@ -809,7 +810,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -837,6 +838,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   .row .score { font-variant-numeric: tabular-nums; }
   .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
   .row .note { color: var(--dim); font-size: 3vmin; font-weight: 400; margin-left: 1.5vmin; }
+  .tally { padding: 0.2vmin 1.5vmin; color: var(--dim); font-size: 3.4vmin; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; }
   #mic { color: var(--dim); white-space: nowrap; }
   #mic.muted, #mic.none { color: var(--bad); }
@@ -1061,6 +1063,13 @@ function render() {
     score.textContent = row.score;
     el.append(name, detail, score);
     strip.appendChild(el);
+  }
+  // D8.12: the session tally under the scores once a game has been played (games played, each player's wins).
+  if (panel && panel.series && panel.series.length > 0) {
+    const tally = document.createElement('div');
+    tally.className = 'tally';
+    tally.textContent = tallyText(panel);
+    strip.appendChild(tally);
   }
   const mic = panel ? panel.mic : micState;
   $('mic').textContent = micText(mic);

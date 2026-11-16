@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LayerCameraFrame, LayerCameraRequest, LayerCameraStatus, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, VrOverlay } from './match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, patchMediaSettings, type MediaSettings, type MediaSettingsStore } from './media-settings.js';
 import { MIC_LIST_CHANNEL, PANEL_CHANNELS, cameraCapture, type PanelPageStatus } from './panel-page.js';
+import { SCOREBOARD_CHANNEL, SCOREBOARD_READY_CHANNEL } from './scoreboard-page.js';
 import type { VpxWindow, WindowProbe } from './window-geometry.js';
 
 // ---- Electron, faked: windows record what they were built with and what they were sent ----
@@ -1577,6 +1578,87 @@ describe('the layer camera in rtc-host (D7.5.1, 2026-11-02)', () => {
     await settle();
     expect(logs).toContain('media: camera: back to the screen capture: the Match tab says screen capture');
     expect((sentOn(w, PANEL_CHANNELS.capture).at(-1) as { sourceId: string }).sourceId).toBe('screen:0:0');
+    await host.detach();
+  });
+});
+
+describe('createRtcHost: the corner scoreboard page (D8.12, 2026-11-15)', () => {
+  let dir: string;
+  const logs: string[] = [];
+  const log = { info: (m: string) => logs.push(m), warn: (m: string) => logs.push(`WARN ${m}`) };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'castcade-rtc-board-'));
+    fake.FakeWindow.all = [];
+    fake.ipc.clear();
+    logs.length = 0;
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const fromPage = (w: InstanceType<typeof fake.FakeWindow>, ch: string, arg?: unknown): void => fake.ipc.get(ch)?.({ sender: w.webContents }, arg);
+  const playing = { phase: 'playing', players: [] } as unknown as Parameters<ReturnType<typeof createRtcHost>['setPanelState']>[0];
+
+  it('headset panel + wanted: a small transparent offscreen window at 5 fps; the state as it is at ready, then each change; its paint is the scoreboard frame; gone at detach', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    // Not wanted: an attach opens the panel only, and there are no scoreboard frames.
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    expect(fake.FakeWindow.all).toHaveLength(1);
+    expect(host.scoreboardFrames?.()).toBeNull();
+    host.setPanelState(playing);
+    // Wanted mid-match: the page opens now.
+    host.setScoreboard?.(true);
+    host.setScoreboard?.(true);
+    expect(fake.FakeWindow.all).toHaveLength(2);
+    const w = fake.FakeWindow.all[1]!;
+    expect(w.opts).toMatchObject({ show: false, frame: false, transparent: true, width: 512, height: 384, webPreferences: { offscreen: true } });
+    expect(w.webContents.frameRate).toBe(5);
+    expect(w.loaded).toBe(join(dir, 'match-scoreboard.html'));
+    expect(readFileSync(join(dir, 'match-scoreboard.html'), 'utf8')).toContain('function scoreboardView');
+    // Nothing is sent before the page listens; at ready it gets the state as it is, then every change.
+    expect(w.webContents.sent).toEqual([]);
+    fromPage(w, SCOREBOARD_READY_CHANNEL);
+    expect(w.webContents.sent).toEqual([[SCOREBOARD_CHANNEL, playing]]);
+    const next = { ...playing, ball: 2 };
+    host.setPanelState(next);
+    expect(w.webContents.sent.at(-1)).toEqual([SCOREBOARD_CHANNEL, next]);
+    // The ready of another window is not the scoreboard's.
+    fromPage(fake.FakeWindow.all[0]!, SCOREBOARD_READY_CHANNEL);
+    expect(w.webContents.sent).toHaveLength(2);
+    // Frames: the page's paint, only to the scoreboard's source (never the panel's).
+    const frames: PanelFrame[] = [];
+    const panelFrames: PanelFrame[] = [];
+    host.scoreboardFrames?.()?.onFrame((f) => frames.push(f));
+    host.frames()?.onFrame((f) => panelFrames.push(f));
+    const bgra = Buffer.alloc(512 * 384 * 4, 3);
+    w.webContents.handlers.get('paint')?.({}, {}, { toBitmap: () => bgra, getSize: () => ({ width: 512, height: 384 }) });
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ width: 512, height: 384 });
+    expect(panelFrames).toHaveLength(0);
+    // The page paints only on a change: a listener that comes after the paint (the overlay starts later) gets it at once.
+    const late: PanelFrame[] = [];
+    host.scoreboardFrames?.()?.onFrame((f) => late.push(f));
+    expect(late).toEqual(frames);
+    // Off on the Match tab: the page closes; on again: a new one.
+    host.setScoreboard?.(false);
+    expect(w.destroyed).toBe(true);
+    expect(host.scoreboardFrames?.()).toBeNull();
+    host.setScoreboard?.(true);
+    expect(fake.FakeWindow.all).toHaveLength(3);
+    await host.detach();
+    expect(fake.FakeWindow.all[2]!.destroyed).toBe(true);
+    expect(host.scoreboardFrames?.()).toBeNull();
+    // The wish is kept: the next attach in the headset opens the page with the panel.
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    expect(fake.FakeWindow.all).toHaveLength(5);
+    expect(fake.FakeWindow.all[4]!.opts).toMatchObject({ transparent: true, width: 512 });
+    await host.detach();
+  });
+
+  it('a desktop panel never gets a scoreboard page', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    host.setScoreboard?.(true);
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    expect(fake.FakeWindow.all).toHaveLength(1);
+    expect(host.scoreboardFrames?.()).toBeNull();
     await host.detach();
   });
 });

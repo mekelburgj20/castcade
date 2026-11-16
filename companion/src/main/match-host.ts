@@ -65,6 +65,7 @@ import { WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
+import { scoreboardWanted } from '../media/scoreboard-page.js';
 import { previewAdvice } from '../media/preview-stereo.js';
 import type { NativeVideoHook, RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
@@ -868,6 +869,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.info(`match: table sound: ${words}`);
     }
   };
+  /**
+   * D8.12 (2026-11-15): the corner scoreboard follows the match and the Match tab's setting: its page beside a
+   * headset panel on a layer rig, and the corner on the layer's control while a match is on (`scoreboardWanted`: not
+   * in the lobby; the layer leaves it out while the full panel is up). Every call is idempotent.
+   */
+  const syncScoreboard = (a: Active): void => {
+    const to = a.overlay?.setScoreboard ? a.overlay : null;
+    opts.media?.setScoreboard?.(settings.scoreboard && to !== null);
+    to?.setScoreboard?.({ frames: opts.media?.scoreboardFrames?.() ?? null, corner: scoreboardWanted(a.controller.panel(), settings.scoreboard) ? settings.scoreboardCorner : null, place: settings.scoreboardPlace });
+  };
   /** A10: a client whose series is over closes the match after the linger (the host's End match tears down at once). */
   const scheduleSeriesEnd = (a: Active): void => {
     if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !a.controller.status().series.over) return;
@@ -890,6 +901,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
       syncNativeVideo(active);
+      syncScoreboard(active); // D8.12
       scheduleSeriesEnd(active);
     }
     // D8.10: the menu's lines follow the match (Start match goes at the start, the volumes as they move).

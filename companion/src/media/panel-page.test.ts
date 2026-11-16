@@ -383,6 +383,27 @@ describe('panel page script (D2)', () => {
     expect(p.el('mic').textContent).toBe('MIC MUTED');
   });
 
+  it('D8.12 (2026-11-15): the session tally sits under the scores once a game has been played, between games and while playing', () => {
+    const p = loadPage({ mic: true, capture: true });
+    const players = [
+      { id: 'owner', name: 'Owner', score: 10, ballsDone: 3, isUp: false, flags: [] },
+      { id: 'krobs', name: 'Krobs', score: 20, ballsDone: 3, isUp: false, flags: [] },
+    ];
+    // No result yet: the strip is the two rows and nothing else.
+    p.emit(PANEL_CHANNELS.state, state({ players }));
+    expect(p.el('strip').children.map((c) => c.className)).toEqual(['row', 'row']);
+    const series = [
+      { id: 'krobs', name: 'Krobs', wins: 2, games: 3, total: 60, place: 1 },
+      { id: 'owner', name: 'Owner', wins: 1, games: 3, total: 40, place: 2 },
+    ];
+    const result = [{ id: 'krobs', name: 'Krobs', score: 20, place: 1 }, { id: 'owner', name: 'Owner', score: 10, place: 2 }];
+    p.emit(PANEL_CHANNELS.state, state({ phase: 'over', playerUp: null, ball: null, players, result, game: 3, series, seriesOver: false }));
+    expect(p.el('strip').children.map((c) => c.className)).toEqual(['row', 'row', 'tally']);
+    expect(p.el('strip').children.at(-1)?.textContent).toBe('3 GAMES PLAYED · Owner 1 · Krobs 2');
+    p.emit(PANEL_CHANNELS.state, state({ players, game: 4, series }));
+    expect(p.el('strip').children.at(-1)?.textContent).toBe('3 GAMES PLAYED · Owner 1 · Krobs 2');
+  });
+
   it('D8.10 (2026-11-14): draws the in-game menu over the panel while main sends one, and takes it away on null', () => {
     const p = loadPage({ mic: true, capture: true });
     expect(p.el('menu').className).toBe('');

@@ -292,6 +292,14 @@ export interface MatchMedia {
    * new page starts without one. Absent in fakes before D8.10.
    */
   setMenu?(menu: PanelMenu | null): void;
+  /**
+   * D8.12 (2026-11-15): the corner scoreboard's page (media/scoreboard-page.ts), a second small offscreen page beside
+   * a headset panel that draws the scores and the session tally from the same `PanelState`. `on` is kept for the next
+   * attach; the page exists only while on, attached and the panel is the headset's. Absent in fakes before D8.12.
+   */
+  setScoreboard?(on: boolean): void;
+  /** D8.12: frames of the scoreboard page for the OpenXR layer (available with `frames()`; the page paints on change). */
+  scoreboardFrames?(): PanelFrameSource | null;
   detach(): Promise<void>;
 }
 
@@ -510,6 +518,28 @@ export interface VrOverlay {
    * byte what it was). Idempotent.
    */
   setVideoRing?(token: string | null): void;
+  /**
+   * D8.12 (2026-11-15), the OpenXR layer only: the corner scoreboard. `frames`: the scoreboard page's paint (null: no
+   * page), sent as `CVB1` frames; `corner`: where the layer draws it while its mode on screen is hidden or theater, on
+   * the control as `scoreboard: {corner}`, or null for no scoreboard now (the lobby). Both go only to a protocol-4
+   * layer (0.7.0) and only while set, so every control to an older layer, and every control without a scoreboard, is
+   * byte for byte what it was. `place` (optional): the quad's centre and width when not the layer's own, on the
+   * control as `scoreboard: {corner, offset, widthM}`. Cleared by `stop`. Idempotent.
+   */
+  setScoreboard?(o: { frames: PanelFrameSource | null; corner: ScoreboardCorner | null; place?: ScoreboardPlace | null }): void;
+}
+
+/** D8.12: the corner of the headset view the scoreboard sits in (the Match tab's setting; the layer's control). */
+export type ScoreboardCorner = 'top-right' | 'top-left';
+
+/**
+ * D8.12: the scoreboard quad's place, for tuning it without a new layer (`match.json` `scoreboardPlace`, no UI): its
+ * centre in metres from the head as [right, up, ahead] (`right` is mirrored for the top-left corner; the layer clamps
+ * 0–2, −1–2, 0.3–5) and its width in metres (0.05–2). The layer's own placement is [0.46, 0.40, 1.0], 0.32 m wide.
+ */
+export interface ScoreboardPlace {
+  offset: [number, number, number];
+  widthM: number;
 }
 
 /** D7.6.1: what the layer shows in theater instead of the companion's picture (vr-layer/README.md "The calibration pattern"). */
@@ -549,6 +579,8 @@ export const VR_OVERLAY_DEFAULTS = { widthM: 0.55, anchor: 'hmd' as const, offse
 export const VR_OVERLAY_FRAME_MAGIC = 'CVO1';
 /** D7.4: the same header for a video frame (RGBA) on the OpenXR layer's pipe. */
 export const VR_LAYER_VIDEO_MAGIC = 'CVO2';
+/** D8.12: the same header for a scoreboard frame (BGRA) on the OpenXR layer's pipe, protocol 4. */
+export const VR_LAYER_SCOREBOARD_MAGIC = 'CVB1';
 /** D7.5: the layer's camera frame and camera status messages (layer → companion; magic, u32 byteLength, payload). */
 export const VR_LAYER_CAMERA_FRAME_MAGIC = 'CVF1';
 export const VR_LAYER_CAMERA_STATUS_MAGIC = 'CVS1';
