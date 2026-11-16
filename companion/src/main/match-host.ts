@@ -58,7 +58,6 @@ import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
-import { localUtcOffsetMinutes, type UtcOffset } from '../witness/midnight.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
 import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
@@ -169,8 +168,10 @@ export interface MatchStatus {
    */
   startWarnings: string[];
   /**
-   * B26 (2026-11-16): one line per ball of the current game on which Midnight Madness may have run (this player's own
-   * and the others'), oldest first. A flag only; the same players are marked in `panel.players[].flags` and `panel.result`.
+   * B26 (2026-11-16): the Midnight Madness lines. First, from the lobby on, the setting when it is ON on a table
+   * that could be read ("Midnight Madness is ON on Krobs' table (adjustment A.2 14 Special Mode)", B26.4); then one
+   * line per ball of the current game the mode ran on (this player's own and the others'), oldest first: a fact, the
+   * ROM's own audit went up. A flag only; the same players are marked in `panel.players[].flags` and `panel.result`.
    */
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
@@ -392,8 +393,6 @@ export interface MatchHostOptions {
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
   hostWaitMs?: number;
   rejoinTimeoutMs?: number;
-  /** B26 test seam: this PC's offset from UTC (minutes east) for the Midnight Madness flag. Default: the machine's time zone. */
-  utcOffsetMinutes?: UtcOffset;
   /** A15 test seam: how a relay client asks again for a room that is gone. Default `HOST_WAIT_REJOIN`. */
   relayRejoin?: Partial<RejoinPolicy>;
 }
@@ -973,6 +972,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   });
   // A16.2: the machine wrote its high-score list: the end of an initials hold. Not a game event (no backlog).
   witness.onHighScores?.((ev) => active?.controller.feed(ev));
+  // B26.4: the ROM on this player's table counted a Midnight Madness: the ball being played is flagged. Not a game event.
+  witness.onMidnightMadness?.((ev) => active?.controller.feed(ev));
 
   // ---- A15: the saved match while one is on ----
   const dropRecord = (a: Active): void => {
@@ -1116,6 +1117,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (!a) return;
     // A13: this rig's own line about its table's ball ends follows the witness in every phase.
     noteBallEnds(a.controller, s);
+    // B26.4: and how the Midnight Madness setting reads on it (the witness sends a status update when that changes).
+    noteMidnightMode(a.controller);
     checkLobby(a, s);
     const d = rigFromStatus(s);
     const now = d.rig;
@@ -1133,6 +1136,17 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const noteBallEnds = (controller: MatchController, s: WitnessStatus): void => {
     const be = ballEndsFrom(s);
     controller.setLocalBallEnds(be.ready, be.reason);
+  };
+
+  /** B26.4: this rig's own table: whether Midnight Madness is enabled on it, when the witness can read that. */
+  const noteMidnightMode = (controller: MatchController): void => {
+    let mode: ReturnType<NonNullable<WitnessHost['midnightSetting']>> = null;
+    try {
+      mode = witness.midnightSetting?.() ?? null;
+    } catch (e) {
+      log.warn(`match: the Midnight Madness setting could not be read: ${describeError(e)}`);
+    }
+    controller.setLocalMidnightMode(mode);
   };
 
   const makeController = (engine: HostMatch | ClientMatch, ballsPerGame?: number, resumed = false): MatchController => {
@@ -1157,11 +1171,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       resumed,
       // A16.2: the witness knows the machine's high-score list (a test witness may not).
       highScoreQualifies: (score) => witness.highScoreQualifies?.(score) ?? false,
-      // B26: the Midnight Madness flag: the witness knows the machine, the PC's time zone says where midnight is.
-      midnight: { inScope: () => witness.midnightInScope?.() ?? false, utcOffsetMinutes: opts.utcOffsetMinutes ?? localUtcOffsetMinutes },
     });
     controller.onChange(() => emit());
     noteBallEnds(controller, witness.status());
+    noteMidnightMode(controller);
     if (split) videoSides.set(controller, split.video);
     return controller;
   };

@@ -233,6 +233,89 @@ describe('PARTICIPANT_UPDATE (A6, 2026-10-31)', () => {
     expect(third.state.phase).toBe('running');
   });
 
+  it("B26.4: the Midnight Madness setting of each table: in the lobby through HELLO_ACK to every client, after MATCH_READY passed on like a rig; the host's own too; never logged", async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: MB }, { id: 'third', game: MB }] });
+    const krobs = r.clients['krobs']!;
+    const third = r.clients['third']!;
+    const ON = { enabled: true, adjustment: 'A.2 14 Special Mode' };
+    const OFF = { enabled: false, adjustment: 'A.2 14 Special Mode' };
+    const seen: Record<string, string[]> = { h: [], krobs: [], third: [] };
+    const note = (id: string) => (m: { playerId: string; mode: { enabled: boolean } }) => void seen[id]!.push(`${m.playerId}:${m.mode.enabled ? 'on' : 'off'}`);
+    r.host.on('midnightMode', note('h'));
+    for (const id of ['krobs', 'third']) r.clients[id]!.on('midnightMode', note(id));
+    const acked = (id: string) => r.seen[id]!.rosters[r.seen[id]!.rosters.length - 1]?.midnightModes;
+
+    // The lobby: Krobs says ON; every client's next HELLO_ACK lists it, the host hears it.
+    expect(krobs.reportMidnightMode(ON)).toBe(true);
+    await flush();
+    expect(r.host.midnightModes()).toEqual({ krobs: ON });
+    expect(acked('krobs')).toEqual([{ playerId: 'krobs', ...ON }]);
+    expect(acked('third')).toEqual([{ playerId: 'krobs', ...ON }]);
+    expect(seen['h']).toEqual(['krobs:on']);
+    // The same again changes nothing and re-sends nothing.
+    const acks = r.seen['third']!.rosters.length;
+    krobs.reportMidnightMode(ON);
+    await flush();
+    expect(r.seen['third']!.rosters.length).toBe(acks);
+    // The host's own table reads OFF.
+    expect(r.host.localMidnightMode(OFF)).toBe(true);
+    expect(r.host.localMidnightMode(OFF)).toBe(false);
+    await flush();
+    expect(acked('third')).toEqual([{ playerId: 'krobs', ...ON }, { playerId: 'h', ...OFF }]);
+    expect(r.rejects).toEqual([]);
+
+    // After MATCH_READY: passed on to the others with the sender's id; the host's own goes to every client.
+    r.host.start();
+    await flush();
+    const log = { h: r.host.log.head(), krobs: krobs.log.head() };
+    expect(third.reportMidnightMode(ON)).toBe(true);
+    await flush();
+    expect(seen['krobs']).toEqual(['third:on']);
+    expect(seen['third']).toEqual([]);
+    expect(seen['h']).toEqual(['krobs:on', 'h:off', 'third:on']);
+    expect(r.host.localMidnightMode(ON)).toBe(true);
+    await flush();
+    expect(seen['krobs']).toEqual(['third:on', 'h:on']);
+    expect(seen['third']).toEqual(['h:on']);
+    expect(r.host.midnightModes()).toEqual({ krobs: ON, h: ON, third: ON });
+    expect(r.host.log.head()).toEqual(log.h);
+    expect(krobs.log.head()).toEqual(log.krobs);
+    expect(r.rejects).toEqual([]);
+  });
+
+  it('B26.4: a peer from before it (0.2.41 to 0.2.43) strips the key: an older host lists and relays nothing, an older client drops the frame or reads no list; the match goes on', async () => {
+    const r = await lobby({ clients: [{ id: 'krobs', game: MB }, { id: 'third', game: MB }] });
+    const krobs = r.clients['krobs']!;
+    const third = r.clients['third']!;
+    const modes: string[] = [];
+    const dropped: string[] = [];
+    third.on('midnightMode', (m) => modes.push(m.playerId));
+    third.on('dropped', (d) => dropped.push(`${d.type}:${d.reason}`));
+    r.host.on('midnightMode', (m) => modes.push(m.playerId));
+    // The lobby update as an older host parses it: nothing in it. No new HELLO_ACK, no reject.
+    const acks = r.seen['third']!.rosters.length;
+    krobs.session.transport.send('h', krobs.session.build('PARTICIPANT_UPDATE', {}, 'M'));
+    await flush();
+    expect(r.seen['third']!.rosters.length).toBe(acks);
+    expect(r.host.midnightModes()).toEqual({});
+    // A HELLO_ACK from an older host has no list: it reads as nobody having said anything.
+    expect(r.seen['krobs']!.rosters.every((a) => a.midnightModes.length === 0)).toBe(true);
+    r.host.start();
+    await flush();
+    const log = r.host.log.head();
+    // After MATCH_READY: the same empty update is not passed on by an older host, and is dropped by an older client.
+    krobs.session.transport.send('h', krobs.session.build('PARTICIPANT_UPDATE', {}, 'M'));
+    await flush();
+    expect(dropped).toEqual([]);
+    r.host.session.transport.send('third', r.host.session.build('PARTICIPANT_UPDATE', {}, 'M'));
+    await flush();
+    expect(dropped).toEqual(['PARTICIPANT_UPDATE:unexpected']);
+    expect(modes).toEqual([]);
+    expect(r.rejects).toEqual([]);
+    expect(r.host.log.head()).toEqual(log);
+    expect(third.state.phase).toBe('running');
+  });
+
   it('a refusing host rejects an update whose fingerprint differs and keeps the old one; a rig-only update goes through', async () => {
     const r = await lobby({ policy: 'refuse', clients: [{ id: 'krobs', game: MB }] });
     const krobs = r.clients['krobs']!;

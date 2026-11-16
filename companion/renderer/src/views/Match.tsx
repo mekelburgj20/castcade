@@ -320,10 +320,10 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
             {/* D10.8: which path the match control takes. */}
             {st.path && <p className="muted">{st.path}</p>}
-            {panel?.message && !st.advisories.includes(panel.message) && (
+            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && (
               <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>
             )}
-            {/* B26: balls of this game on which Midnight Madness may have run (a flag only). */}
+            {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
             {st.advisories.map((line) => (
               <p key={line} className="warn">
                 {line}
@@ -351,7 +351,7 @@ export function Match({ state }: { state: CastcadeState }) {
                         {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
                         {p.ballEnds === false && <span className="warn"> · cannot report ball ends</span>}
                         {row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
-                        {row?.flags.includes('midnight') && <span className="warn"> · Midnight Madness may have run</span>}
+                        {row?.flags.includes('midnight') && <span className="warn"> · Midnight Madness ran</span>}
                       </td>
                       <td>{RIG_LABEL[p.rig]}</td>
                       <td>
@@ -466,7 +466,7 @@ export function Match({ state }: { state: CastcadeState }) {
                       <td>{r.place}.</td>
                       <td>
                         {r.name}
-                        {r.flags?.includes('midnight') && <span className="warn"> · Midnight Madness may have run</span>}
+                        {r.flags?.includes('midnight') && <span className="warn"> · Midnight Madness ran</span>}
                       </td>
                       <td className="num">{r.score.toLocaleString()}</td>
                     </tr>

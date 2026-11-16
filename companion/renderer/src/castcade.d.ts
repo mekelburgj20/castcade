@@ -395,7 +395,7 @@ interface PanelState {
   ballsPerGame: number;
   players: Array<{ id: string; name: string; score: number | null; ballsDone: number; isUp: boolean; flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading' | 'midnight'> }>;
   phase: 'idle' | 'playing' | 'paused' | 'over';
-  /** B26: `flags` `midnight`: Midnight Madness may have run on one of that player's balls of the game. */
+  /** B26: `flags` `midnight`: Midnight Madness ran on one of that player's balls of the game. */
   result: Array<{ id: string; name: string; score: number; place: number; flags?: Array<'midnight'> }> | null;
   /** A10: the game of the series, the series standings after the last result, and whether the series is over. */
   game?: number;
@@ -583,7 +583,7 @@ interface MatchStatus {
   }>;
   /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
   startWarnings: string[];
-  /** B26: one line per ball of the current game on which Midnight Madness may have run; a flag only. */
+  /** B26: the Midnight Madness setting when it is ON on a table (from the lobby on), then one line per ball of the current game it ran on; a flag only. */
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
   pass: { name: string; ball: number; score: number } | null;

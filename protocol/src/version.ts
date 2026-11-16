@@ -22,6 +22,9 @@
  *   have stayed 4 (as A8's `tableMismatches` stayed 2): absent reads as unknown. PARTICIPANT_UPDATE `advisory` (B26,
  *   2026-11-16, the Midnight Madness flag): optional, never logged, after MATCH_READY only, so still 5. A 0.2.41–0.2.43
  *   peer strips the key: as the host it relays nothing (an update with no new rig is not passed on), as a client it
- *   drops the frame (`unexpected`); either way the flag is lost for that peer and nothing else changes.
+ *   drops the frame (`unexpected`); either way the flag is lost for that peer and nothing else changes. B26.4 (same
+ *   day, same unreleased build): the flag is raised by the ROM's own audit, not the clock, and the setting that
+ *   enables the mode travels as PARTICIPANT_UPDATE `midnightMode` / HELLO_ACK `midnightModes` (optional / defaulted,
+ *   never logged): an older peer strips both and sees and reports nothing.
  */
 export const PROTOCOL_VERSION = 5 as const;

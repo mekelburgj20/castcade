@@ -30,6 +30,7 @@
  * that arrive before the map still patch the shadow buffer, decoding starts when the map lands.
  */
 import { ballyLiveInputs, decodeFinalScores, decodeGameState, decodeHighScores, highScoreOffsets, samEndCounter, type CompiledMap, type GameState, type HighScore } from './maps.js';
+import { midnightCount, midnightEnabled, midnightEvidence, type MidnightEvidence, type MidnightSettingReport } from './midnight.js';
 
 /** Events every consumer understands, whichever recipe produced them. */
 export type GameEvent =
@@ -111,7 +112,36 @@ export interface HighScoreCheck {
   lowest: number | null;
 }
 
-export type JournalEvent = GameEvent | HookEvent | HighScoreEvent;
+/**
+ * B26.4 (recipe A): the ROM's own count of Midnight Madness (a feature audit, `midnightEvidence`) went UP while a game
+ * was in play: the mode started. `player` / `ball`: where the table's game stood. Companion-internal, like
+ * `high_scores_changed`: only a sidecar whose watch list holds the audit's bytes journals them. Never raised for the
+ * first sighting of the counter (the baseline), a decrease (an audit reset, a boot's RAM test), or a change with no
+ * game in play. Not a game event: it starts, ends and counts nothing.
+ */
+export interface MidnightEvent {
+  kind: 'midnight_madness';
+  t: number;
+  /** `B.4 31 SPECIAL MODES`. */
+  audit: string;
+  from: number;
+  to: number;
+  player: number | null;
+  ball: number | null;
+}
+
+/**
+ * B26.4 (recipe A): the adjustment that enables Midnight Madness reads differently now: at the first NVRAM of the
+ * session, and whenever its bytes change after (a boot's RAM test, the operator's menu). `setting` null: it cannot be
+ * read right now. Companion-internal.
+ */
+export interface MidnightSettingEvent {
+  kind: 'midnight_setting';
+  t: number;
+  setting: MidnightSettingReport | null;
+}
+
+export type JournalEvent = GameEvent | HookEvent | HighScoreEvent | MidnightEvent | MidnightSettingEvent;
 
 export type GameEventKind = GameEvent['kind'];
 
@@ -370,6 +400,12 @@ interface Session {
    * wrote since (`highScoreCheck`).
    */
   finished: number[];
+  /** B26.4: what this ROM offers about Midnight Madness (`midnightEvidence`); null without a map. */
+  midnight: MidnightEvidence | null;
+  /** B26.4: the counter's last value; null until its first sighting (the baseline, never an event). */
+  midnightCount: number | null;
+  /** B26.4: the setting as last announced (`midnight_setting`): on, off, or null (unreadable / not announced yet). */
+  midnightOn: boolean | null;
 }
 
 export interface JournalDetectorOptions {
@@ -405,6 +441,9 @@ export class JournalDetector {
     s.samCounter = map ? samEndCounter(map) : null;
     s.bally = map ? ballyLiveInputs(map) !== null : false;
     s.highScoreBytes = new Set(map ? highScoreOffsets(map) : []);
+    s.midnight = map ? midnightEvidence(map, s.summary.rom) : null;
+    s.midnightCount = map && s.shadow && s.midnight ? midnightCount(map, s.midnight, s.shadow) : null;
+    s.midnightOn = null;
     if (map && s.shadow) {
       s.samCount = this.counterValue(s);
       s.finals = this.finalsValue(s);
@@ -438,6 +477,22 @@ export class JournalDetector {
     const merged = [...listed, ...earlier.filter((x) => !listed.includes(x))].sort((a, b) => b - a).slice(0, listed.length);
     const lowest = merged[merged.length - 1] ?? null;
     return { qualifies: lowest !== null && score > lowest, listed: false, lowest };
+  }
+
+  /**
+   * B26.4: the Midnight Madness setting on this table as the journal's NVRAM reads right now; null when it cannot be
+   * told (not a ROM table, no map, a ROM with no known setting, no NVRAM yet, or bytes that are neither YES nor NO).
+   */
+  get midnightSetting(): MidnightSettingReport | null {
+    const s = this.session;
+    if (!s || !s.recipeA || !s.map || !s.shadow || !s.midnight?.setting) return null;
+    const enabled = midnightEnabled(s.map, s.midnight, s.shadow);
+    return enabled === null ? null : { enabled, adjustment: s.midnight.setting.name };
+  }
+
+  /** B26.4: the audit that counts Midnight Madness on this session's ROM (`B.4 31 SPECIAL MODES`); null = not monitored. */
+  get midnightCounter(): string | null {
+    return this.session?.midnight?.counter?.name ?? null;
   }
 
   summary(): SessionSummary | null {
@@ -535,7 +590,7 @@ export class JournalDetector {
     this.tornBeforeSession = 0;
     const recipeA = recipe === 'A';
     const map = recipeA && summary.rom && this.opts.mapFor ? this.opts.mapFor(summary.rom) : null;
-    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null, lastInPlay: null, highScoreBytes: new Set(map ? highScoreOffsets(map) : []), finished: [] };
+    this.session = { summary, recipeA, shadow: null, map, state: null, lastPlayer: null, lastBall: null, balls: new Set(), started: false, samCounter: map ? samEndCounter(map) : null, samCount: null, bally: map ? ballyLiveInputs(map) !== null : false, finals: [], finalsAtStart: null, lastInPlay: null, highScoreBytes: new Set(map ? highScoreOffsets(map) : []), finished: [], midnight: map ? midnightEvidence(map, summary.rom) : null, midnightCount: null, midnightOn: null };
     return [
       {
         kind: 'table_loaded',
@@ -561,6 +616,7 @@ export class JournalDetector {
     // attached has no observed start, and the boot pattern is simply ignored. A later periodic
     // snapshot is ground truth and goes through the same transition as a delta would, so a change
     // that a dropped delta hid is still seen.
+    const wasInGame = s.summary.inGame;
     const game = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
     for (const ev of game) this.record(s, ev);
     const events: JournalEvent[] = [...game];
@@ -571,6 +627,7 @@ export class JournalDetector {
       for (const off of s.highScoreBytes) if (before[off] !== shadow[off]) changed = true;
       if (changed) events.push(this.highScoresChanged(s, t));
     }
+    events.push(...this.midnightEvents(s, t, wasInGame));
     if (plausible(cur)) {
       s.state = cur;
       s.samCount = this.counterValue(s);
@@ -600,11 +657,13 @@ export class JournalDetector {
     }
     if (!s.map) return [];
     const cur = decodeGameState(s.map, s.shadow);
+    const wasInGame = s.summary.inGame;
     const game = this.observed(s, s.state ? this.transition(s, s.state, cur, t) : []);
     for (const ev of game) this.record(s, ev);
     const events: JournalEvent[] = [...game];
     // A16.2: after the game events of the same line, so a game end that comes with the write is heard first.
     if (highScores) events.push(this.highScoresChanged(s, t));
+    events.push(...this.midnightEvents(s, t, wasInGame));
     if (!plausible(cur)) return events;
     if (cur.currentBall !== null && cur.currentBall > s.summary.maxBall) s.summary.maxBall = cur.currentBall;
     s.state = cur;
@@ -618,6 +677,38 @@ export class JournalDetector {
   /** A16.2: the high-score list as the shadow reads now (only called with a map and a shadow). */
   private highScoresChanged(s: Session, t: number): HighScoreEvent {
     return { kind: 'high_scores_changed', t, entries: s.map && s.shadow ? decodeHighScores(s.map, s.shadow) : [] };
+  }
+
+  /**
+   * B26.4: what the NVRAM as it stands after this line says about Midnight Madness (only called with a map and a
+   * shadow). The counter: its first sighting is the baseline; after that a higher value while a game is in play
+   * (open before this line or after it) is the mode starting; a lower one (an audit reset, the 0x55 / 0xAA fill of a
+   * boot's RAM test, which happens with no game open) and any change between games only move the baseline. The
+   * setting: announced when its reading changes.
+   */
+  private midnightEvents(s: Session, t: number, wasInGame: boolean): JournalEvent[] {
+    const m = s.midnight;
+    if (!m || !s.map || !s.shadow) return [];
+    const out: JournalEvent[] = [];
+    if (m.counter) {
+      const now = midnightCount(s.map, m, s.shadow);
+      const was = s.midnightCount;
+      if (now !== null) {
+        if (was !== null && now > was && (wasInGame || s.summary.inGame)) {
+          const at = s.lastInPlay ?? { player: s.state?.currentPlayer ?? null, ball: s.state?.currentBall ?? null };
+          out.push({ kind: 'midnight_madness', t, audit: m.counter.name, from: was, to: now, player: at.player, ball: at.ball });
+        }
+        s.midnightCount = now;
+      }
+    }
+    if (m.setting) {
+      const on = midnightEnabled(s.map, m, s.shadow);
+      if (on !== s.midnightOn) {
+        s.midnightOn = on;
+        out.push({ kind: 'midnight_setting', t, setting: on === null ? null : { enabled: on, adjustment: m.setting.name } });
+      }
+    }
+    return out;
   }
 
   /** Remember the ball in play while the game is open, so a game over that arrives after the ball byte was cleared still ends it. */

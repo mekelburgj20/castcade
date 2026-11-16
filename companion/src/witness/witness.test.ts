@@ -591,40 +591,23 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.paths('/report')).toHaveLength(4);
   });
 
-  it('B26: a game on a WPC machine whose play time contains a local midnight is flagged in the log and the capture detail; the score posts as ever, with nothing new on the wire', async () => {
+  it('B26.4: nothing is guessed from the clock: a game played across local midnight on a WPC machine with no count from the ROM is not flagged, and no setting is reported without a live table', async () => {
     const DAY = 86_400_000;
-    const session = async (midnightInMs: number) => {
-      const clock = new ManualClock(1_760_000_000_000);
-      const logs: string[] = [];
-      // local = UTC + offset: local midnight falls `midnightInMs` after the clock's start (the launch is 2 s in).
-      const offset = (DAY - ((clock.now() + midnightInMs) % DAY)) / 60_000;
-      const h = harness({}, { clock, log: (l) => logs.push(l), utcOffsetMinutes: offset });
-      await h.fs.mkdir('/nv');
-      h.fs.put('/nv/mm_109c.nv', mmBefore);
-      await h.witness.start();
-      await h.launch();
-      // No live table (basic mode): nothing for a match to ask about.
-      expect(h.witness.midnightInScope()).toBe(false);
-      await h.playFor(100_000);
-      h.fs.put('/nv/mm_109c.nv', mmAfter);
-      await h.exit();
-      return { h, logs };
-    };
-    const LINE = `witness: ${MM_TABLE}: Midnight Madness may have run (local midnight passed during the game)`;
-    // Midnight one minute after the start: inside the 100 s game on Medieval Madness (mm_109c, williams-wpc-12K).
-    const across = await session(60_000);
-    expect(across.h.captures[0]).toMatchObject({ outcome: 'ingested', rom: 'mm_109c', score: 1089510 });
-    expect(across.logs.filter((l) => l === LINE)).toHaveLength(1);
-    expect(across.h.captures[0]?.detail).toContain('Midnight Madness may have run (local midnight passed during the game)');
-    // Midnight twelve hours away: the same game, no flag; and the wire is the same either way.
-    const noon = await session(DAY / 2);
-    expect(noon.h.captures[0]).toMatchObject({ outcome: 'ingested', score: 1089510 });
-    expect(noon.logs.some((l) => l.includes('Midnight Madness'))).toBe(false);
-    expect(noon.h.captures[0]?.detail).not.toContain('Midnight Madness');
-    const keys = (x: typeof across) => Object.keys(x.h.paths('/score')[0]?.params ?? {}).sort();
-    expect(across.h.paths('/score')).toHaveLength(1);
-    expect(keys(across)).toEqual(keys(noon));
-    expect(keys(across).some((k) => /midnight|advis/i.test(k))).toBe(false);
+    // Whatever this machine's time zone, a clock that runs a whole day during the game passes a local midnight.
+    const clock = new ManualClock(1_760_000_000_000);
+    const logs: string[] = [];
+    const h = harness({}, { clock, log: (l) => logs.push(l) });
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/mm_109c.nv', mmBefore);
+    await h.witness.start();
+    await h.launch();
+    expect(h.witness.midnightSetting()).toBeNull();
+    await h.playFor(DAY + 100_000);
+    h.fs.put('/nv/mm_109c.nv', mmAfter);
+    await h.exit();
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested', rom: 'mm_109c', score: 1089510 });
+    expect(logs.some((l) => l.includes('Midnight Madness'))).toBe(false);
+    expect(h.captures[0]?.detail).not.toContain('Midnight Madness');
   });
 
   it('skips when no .nv changed (original table) and when the ROM has no map', async () => {
@@ -1812,6 +1795,106 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(writes[0]!.entries[0]).toMatchObject({ initials: 'JTM' });
     expect(games).toHaveLength(before);
     expect(logs.some((l) => l.includes('the machine wrote its high-score list (JTM '))).toBe(true);
+    await h.witness.stop();
+  });
+
+  /** A Congo journal (congo_21: game over at 135, player 946, ball 947, player 1's score at 5792; audit B.4 31 at 6857, A.2 14 at 7265). */
+  const congo = (stampMs: number, opts: { count: number; setting: number }) => {
+    const buf = new Uint8Array(0x3000);
+    buf[135] = 1;
+    buf[6859] = opts.count;
+    buf[7266] = opts.setting;
+    const line = (o: object): string => JSON.stringify(o) + '\n';
+    const delta = (t: number, ...d: [number, number][]): string => line({ event: 'nvram_delta', t, n: d.length, d: d.map(([i, v]) => [i, v, 0]) });
+    const bcd = (score: number): [number, number][] => {
+      const s = String(score).padStart(12, '0');
+      return [0, 1, 2, 3, 4, 5].map((i): [number, number] => [5792 + i, Number.parseInt(s.slice(i * 2, i * 2 + 2), 16)]);
+    };
+    return {
+      head: line({ event: 'table_loaded', t: 0, table: 'Congo', recipe: 'A', recipe_version: RECIPE_VERSION, rom: 'congo_21', lib: '0.5.1', session: hookStamp(stampMs), locked: false }) + line({ event: 'nvram_full', t: 0.5, n: buf.length, bytes: [...buf] }),
+      /** One one-ball game from `t` to `score`; `count`: the audit's new value, written in the middle of it. */
+      game: (t: number, score: number, count: number | null): string =>
+        delta(t, [135, 0], [946, 1], [947, 1], ...bcd(0)) + delta(t + 1, ...bcd(score / 2)) + (count !== null ? delta(t + 2, [6859, count]) : '') + delta(t + 3, ...bcd(score)) + delta(t + 4, [135, 1]),
+    };
+  };
+
+  it("B26.4: live mode on a ROM with the audit: the setting is read from the journal's NVRAM, a game in which the count goes up is flagged as a fact (log, capture detail, the midnightMadness event), a game without is not; nothing new on the wire", async () => {
+    const logs: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (l) => logs.push(l) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    const ran: { kind: string; audit: string; from: number; to: number; ball: number | null }[] = [];
+    const games: GameEvent[] = [];
+    h.witness.on('midnightMadness', (ev) => ran.push(ev));
+    h.witness.on('event', (ev) => games.push(ev));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    expect(h.witness.midnightSetting()).toBeNull(); // the table has not loaded yet
+    const j = congo(h.clock.now(), { count: 3, setting: 1 });
+    const settle = async (): Promise<void> => {
+      await h.poll();
+      for (let i = 0; i < 6; i++) await h.flush();
+    };
+    let text = j.head;
+    h.fs.put(TFTC_JOURNAL, text);
+    const statuses = h.statuses.length;
+    await settle();
+    expect(h.witness.midnightSetting()).toEqual({ enabled: true, adjustment: 'A.2 14 Special Mode' });
+    expect(h.statuses.length).toBeGreaterThan(statuses);
+    expect(logs).toContain(`witness: ${TFTC_TABLE}: Midnight Madness is monitored on this machine (ROM congo_21, audit B.4 31 SPECIAL MODES); it is flagged when that count goes up during a game`);
+    expect(logs).toContain(`witness: ${TFTC_TABLE}: Midnight Madness is ON on this table (adjustment A.2 14 Special Mode, read from the table's NVRAM)`);
+    // Game 1: the count stays at 3.
+    text += j.game(10, 1_000_000, null);
+    h.fs.put(TFTC_JOURNAL, text);
+    await settle();
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]).toMatchObject({ rom: 'congo_21', score: 1_000_000 });
+    expect(h.captures[0]?.detail).not.toContain('Midnight Madness');
+    expect(ran).toEqual([]);
+    // Game 2: the ROM counts one during the ball.
+    const before = games.length;
+    text += j.game(30, 2_000_000, 4);
+    h.fs.put(TFTC_JOURNAL, text);
+    await settle();
+    expect(ran).toEqual([{ kind: 'midnight_madness', t: 32, audit: 'B.4 31 SPECIAL MODES', from: 3, to: 4, player: 1, ball: 1 }]);
+    expect(h.captures).toHaveLength(2);
+    expect(h.captures[1]).toMatchObject({ rom: 'congo_21', score: 2_000_000 });
+    expect(h.captures[1]?.detail).toContain('Midnight Madness ran during the game (counted by the ROM)');
+    expect(logs).toContain(`witness: ${TFTC_TABLE}: Midnight Madness ran (the ROM's audit B.4 31 SPECIAL MODES went from 3 to 4 during the game, ball 1)`);
+    expect(logs.filter((l) => l.endsWith(': Midnight Madness ran during the game (counted by the ROM)'))).toHaveLength(1);
+    // Not a game event; and the wire is the same for both games.
+    expect(games.slice(before).map((e) => e.kind).filter((k) => k !== 'current_scores')).toEqual(['game_start', 'ball_end', 'game_end']);
+    const keys = (i: number) => Object.keys(h.paths('/score')[i]?.params ?? {}).sort();
+    expect(h.paths('/score')).toHaveLength(2);
+    expect(keys(1)).toEqual(keys(0));
+    expect(keys(1).some((k) => /midnight|advis/i.test(k))).toBe(false);
+    // Game 3 starts clean; the operator turns the mode off between games and the reading follows.
+    text += JSON.stringify({ event: 'nvram_delta', t: 50, n: 1, d: [[7266, 0, 1]] }) + '\n' + j.game(60, 3_000_000, null);
+    h.fs.put(TFTC_JOURNAL, text);
+    await settle();
+    expect(h.witness.midnightSetting()).toEqual({ enabled: false, adjustment: 'A.2 14 Special Mode' });
+    expect(h.captures[2]?.detail).not.toContain('Midnight Madness');
+    expect(ran).toHaveLength(1);
+    expect(h.errors).toEqual([]);
+    await h.witness.stop();
+  });
+
+  it("B26.4: a count read from the journal's backlog (Castcade started while the game was on) still marks that game's capture, but is not announced to a match: its ball is not known any more", async () => {
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+    const startedAt = h.clock.now() - 60_000;
+    const j = congo(h.clock.now() - 30_000, { count: 3, setting: 1 });
+    h.fs.put(TFTC_JOURNAL, j.head + j.game(5, 2_000_000, 4));
+    const ran: unknown[] = [];
+    h.witness.on('midnightMadness', (ev) => ran.push(ev));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 32, { startedAt });
+    await h.poll();
+    for (let i = 0; i < 6; i++) await h.flush();
+    expect(h.captures).toHaveLength(1);
+    expect(h.captures[0]?.detail).toContain('Midnight Madness ran during the game (counted by the ROM)');
+    expect(ran).toEqual([]);
     await h.witness.stop();
   });
 

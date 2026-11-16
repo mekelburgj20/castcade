@@ -22,6 +22,8 @@ nothing outside this repository: only the maps and platform files the recorded j
 | the 13 Stern M100 ROMs (`stars`, `stingray`, `trident`, …) | `maps/stern/m100/generic.map.json` (B10.2, synthetic bytes) | `platforms/stern-m100.json` |
 | `freddy`, `freddy4` · `cueball`, `cueball1`–`3` · `teedoff`, `teedoff1`, `teedoff3` | `maps/gottlieb/system3/{freddy,cueball,teedoff}.map.json` (the System 3 ball-nibble mask, synthetic bytes) | `platforms/gottlieb-system3.json` |
 | `dvlrider` · the 30 System 80 ROMs of `generic` (`spirit`, …) · the 9 M200 ROMs of `m200-7digit-A` (`cheetah`, …) | `maps/zaccaria/gen2/dvlrider.map.json` · `maps/gottlieb/system80a/generic.map.json` · `maps/stern/m200/m200-7digit-A.map.json` (`liveSupport` negatives, B10.3) | `platforms/zaccaria-gen2.json` · `platforms/gottlieb-system80-1prom.json` · `platforms/stern-m200.json` |
+| the 5 Congo ROMs (`congo_21`, …) · the 3 Johnny Mnemonic ROMs (`jm_12r`, …) · the 9 Who Dunnit ROMs (`wd_12`, …) | `maps/williams/wpc/{congo_21,jm_12r,wd_12}.map.json` (B26.4: the audit that counts Midnight Madness, and Johnny Mnemonic's adjustment that enables it; `midnight.test.ts`, synthetic bytes) | `platforms/williams-wpc-12K.json` |
+| the 13 Theatre of Magic ROMs (`tom_13`, …) · `fh_l9`, `fh_l9b`, `fh_d9`, `fh_d9b` | `maps/williams/wpc/tom_13.map.json` · `maps/williams/wpc/fh_l9.map.json` (B26.4 negatives: Theatre of Magic's "Midnight" and FunHouse's "MIDNIGHT GAMES" audits count the machine's own in-game clock and must not be taken for Midnight Madness) | `platforms/williams-wpc-12K.json` · `platforms/williams-wpc-8K.json` |
 
 ## Licence and attribution
 

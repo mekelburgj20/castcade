@@ -28,8 +28,8 @@ export interface PanelState {
     /**
      * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
      * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same. `midnight`
-     * (B26, 2026-11-16): Midnight Madness may have run on one of their balls of this game (their PC's clock passed
-     * local midnight during it, on a WPC machine); a flag only.
+     * (B26, 2026-11-16): Midnight Madness ran on one of their balls of this game (B26.4: the ROM's own audit of the
+     * mode went up on their table); a flag only.
      */
     flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading' | 'midnight'>;
     /**
@@ -45,7 +45,7 @@ export interface PanelState {
   phase: 'idle' | 'playing' | 'paused' | 'over';
   /**
    * Standings of the game just played once `phase` is `over`, best first. B26: `flags` `midnight` marks a player with
-   * a ball of that game on which Midnight Madness may have run (absent when there is none; the place is unchanged).
+   * a ball of that game on which Midnight Madness ran (absent when there is none; the place is unchanged).
    */
   result: Array<{ id: MatchPlayerId; name: string; score: number; place: number; flags?: Array<'midnight'> }> | null;
   /** A10: the game of the series being played (or just played), 1-based. Absent in states made before A10. */
