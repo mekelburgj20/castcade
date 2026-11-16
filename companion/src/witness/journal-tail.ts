@@ -1,8 +1,9 @@
 /**
  * Follow a Castcade journal file as the in-VPX hook appends to it, delivering complete lines.
- * The hook writes `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl` with buffered appends
- * (events flush at once, `nvram_delta` every 50 lines), so a read can land mid-line: the partial
- * tail is kept until its newline arrives. The file may not exist yet when the tail starts (the
+ * The hook appends to `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl` through one handle it holds
+ * from table load to table exit (hook 0.5.2; until 0.5.1 it closed and reopened the file after every
+ * event): each line is readable here as soon as it is written, without a close. A read can still
+ * land mid-line: the partial tail is kept until its newline arrives. The file may not exist yet when the tail starts (the
  * sidecar creates it at table load), may be appended to by a later session, or may be replaced
  * by a shorter file (the player cleared the folder): a size below the consumed position restarts
  * from byte 0.
