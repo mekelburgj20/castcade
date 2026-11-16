@@ -649,6 +649,21 @@ interface TableChoice {
   imported: boolean;
 }
 
+/** I11.4.1: the 3D watch session (`main/watch-host.ts` WatchStatus). */
+interface WatchStatus {
+  state: 'off' | 'connecting' | 'on' | 'ended';
+  role: 'host' | 'client' | null;
+  code: string | null;
+  members: Array<{ id: string; name: string; me: boolean; host: boolean; path: 'self' | 'away' | 'connecting' | 'direct' | 'relay' | 'no_path'; line: string }>;
+  player: { id: string; name: string; me: boolean; table: string; size: number } | null;
+  local: { vpx: 'none' | 'playing' | 'watching'; table: string | null; pid: number | null };
+  watchTable: { path: string | null; line: string; warn: boolean } | null;
+  fork: { present: boolean; path: string | null; line: string | null };
+  relayLine: string | null;
+  error: string | null;
+  ended: string | null;
+}
+
 interface CastcadeBridge {
   readonly appVersion: string;
   readonly protocolVersion: number;
@@ -738,6 +753,17 @@ interface CastcadeBridge {
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;
     viewing(matchTab: boolean): Promise<void>;
     onStatus(cb: (s: OneStepStatus) => void): () => void;
+  };
+  /** I11.4.1: the 3D watch session, apart from any match. */
+  readonly watch: {
+    status(): Promise<WatchStatus>;
+    host(): Promise<WatchStatus>;
+    join(code: string): Promise<WatchStatus>;
+    leave(): Promise<WatchStatus>;
+    play(tablePath: string): Promise<WatchStatus>;
+    watch(tablePath: string | null): Promise<WatchStatus>;
+    pickTable(): Promise<string | null>;
+    onStatus(cb: (s: WatchStatus) => void): () => void;
   };
   readonly tables: {
     defaults(): Promise<TablesDefaults>;

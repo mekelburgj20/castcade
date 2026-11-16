@@ -2,6 +2,7 @@ import { useEffect, useState, type KeyboardEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
 import { OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
+import { WatchCard, useWatch, watchHoldsRoom } from './Watch3D.js';
 
 /**
  * A6 + C3 (docs/design/alpha-match.md §1, §3, 2026-10-30): the Match page. Host a match (the invite string to send the
@@ -39,6 +40,8 @@ export function Match({ state }: { state: CastcadeState }) {
   // A14: the table Host starts in VPX (a path from Castcade's own list; null: the player opens one).
   const [tablePath, setTablePath] = useState<string | null>(null);
   const one = useOneStep(bridge);
+  // I11.4.1: the 3D watch session holds this PC's ArcAid room while it is on: Host and Join a match wait for it.
+  const watch3d = useWatch(bridge);
   const [copied, setCopied] = useState(false);
   // A13: the two host actions that ask first: a start with a table that cannot report ball ends, and Pass the turn.
   // `pass` remembers whose ball was asked about: if the turn moves on meanwhile, the question is withdrawn.
@@ -187,6 +190,9 @@ export function Match({ state }: { state: CastcadeState }) {
             </label>
           </div>
 
+          {watchHoldsRoom(watch3d) && <p className="muted">Leave the 3D watch session below to host or join a match.</p>}
+          {!watchHoldsRoom(watch3d) && (
+          <>
           <div className="card">
             <strong>Host a match</strong>
             <fieldset disabled={busy}>
@@ -258,6 +264,11 @@ export function Match({ state }: { state: CastcadeState }) {
               </button>
             </fieldset>
           </div>
+          </>
+          )}
+
+          {/* I11.4.1: the 3D watch session, apart from any match. */}
+          <WatchCard bridge={bridge} st={watch3d} />
         </>
       )}
 

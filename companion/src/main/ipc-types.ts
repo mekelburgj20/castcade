@@ -13,8 +13,9 @@ import type { MatchSettings } from './match-setup.js';
 import type { ClipSummary, SaveFramesResult } from '../media/frame-clip.js';
 import type { BenchStatus } from '../media/bench.js';
 import type { OneStepStatus, TableChoice } from './one-step.js';
+import type { WatchStatus } from './watch-host.js';
 
-export type { OneStepStatus, TableChoice };
+export type { OneStepStatus, TableChoice, WatchStatus };
 export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
@@ -93,11 +94,20 @@ export const IPC = {
   matchVrReport: 'match:vrReport',
   /** D7.6.1: the OpenXR layer's calibration pattern on / off. */
   matchSetVrTest: 'match:setVrTest',
+  /** I11.4.1: the standalone 3D watch session (main/watch-host.ts). */
+  watchStatus: 'watch:status',
+  watchHost: 'watch:host',
+  watchJoin: 'watch:join',
+  watchLeave: 'watch:leave',
+  watchPlay: 'watch:play',
+  watchWatch: 'watch:watch',
+  watchPickTable: 'watch:pickTable',
   /** main → renderer push (webContents.send). */
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
   matchStatusEvent: 'match:statusEvent',
+  watchStatusEvent: 'watch:statusEvent',
 } as const;
 
 // ------------------------------------------------------------------------- table import (C7) --
@@ -311,6 +321,23 @@ export interface CastcadeApi {
     /** The Match tab is showing (or not any more). */
     viewing(matchTab: boolean): Promise<void>;
     onStatus(cb: (s: OneStepStatus) => void): () => void;
+  };
+  /**
+   * I11.4.1 (2026-11-16): the 3D watch session, apart from any match. Host (a code) or join (the code) through ArcAid;
+   * then any PC plays a table in the Castcade VPX build and the others watch it in theirs. Refused during a match.
+   */
+  watch: {
+    status(): Promise<WatchStatus>;
+    host(): Promise<WatchStatus>;
+    join(code: string): Promise<WatchStatus>;
+    leave(): Promise<WatchStatus>;
+    /** Play this `.vpx` (a path from `pickTable`). */
+    play(tablePath: string): Promise<WatchStatus>;
+    /** Watch the player's table: null uses the copy Castcade found (`status.watchTable.path`). */
+    watch(tablePath: string | null): Promise<WatchStatus>;
+    /** A file dialog for one `.vpx`, opened on the tables folder; null when cancelled. */
+    pickTable(): Promise<string | null>;
+    onStatus(cb: (s: WatchStatus) => void): () => void;
   };
   tables: {
     defaults(): Promise<TablesDefaults>;

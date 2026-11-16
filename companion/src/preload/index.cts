@@ -2,12 +2,12 @@
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
  * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`,
- * `stream:previewEvent`, `match:statusEvent` and `launch:statusEvent`.
+ * `stream:previewEvent`, `match:statusEvent`, `launch:statusEvent` and `watch:statusEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, EngineStatus, MatchStatus, OneStepStatus, PreviewStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, MatchStatus, OneStepStatus, PreviewStatus, WatchStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -78,10 +78,18 @@ const CH = {
   matchHidePanel: 'match:hidePanel',
   matchVrReport: 'match:vrReport',
   matchSetVrTest: 'match:setVrTest',
+  watchStatus: 'watch:status',
+  watchHost: 'watch:host',
+  watchJoin: 'watch:join',
+  watchLeave: 'watch:leave',
+  watchPlay: 'watch:play',
+  watchWatch: 'watch:watch',
+  watchPickTable: 'watch:pickTable',
   witnessStatusEvent: 'witness:status',
   streamStatusEvent: 'stream:statusEvent',
   streamPreviewEvent: 'stream:previewEvent',
   matchStatusEvent: 'match:statusEvent',
+  watchStatusEvent: 'watch:statusEvent',
 } as const;
 
 function argValue(flag: string): string {
@@ -203,6 +211,22 @@ const castcade: CastcadeApi = {
       ipcRenderer.on(CH.launchStatusEvent, listener);
       return () => {
         ipcRenderer.removeListener(CH.launchStatusEvent, listener);
+      };
+    },
+  },
+  watch: {
+    status: () => ipcRenderer.invoke(CH.watchStatus),
+    host: () => ipcRenderer.invoke(CH.watchHost),
+    join: (code) => ipcRenderer.invoke(CH.watchJoin, code),
+    leave: () => ipcRenderer.invoke(CH.watchLeave),
+    play: (tablePath) => ipcRenderer.invoke(CH.watchPlay, tablePath),
+    watch: (tablePath) => ipcRenderer.invoke(CH.watchWatch, tablePath),
+    pickTable: () => ipcRenderer.invoke(CH.watchPickTable),
+    onStatus(cb) {
+      const listener = (_e: Electron.IpcRendererEvent, s: WatchStatus): void => cb(s);
+      ipcRenderer.on(CH.watchStatusEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(CH.watchStatusEvent, listener);
       };
     },
   },
