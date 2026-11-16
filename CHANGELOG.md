@@ -7,6 +7,19 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **Corner scoreboard in the headset (D8.12).** A small scoreboard stays in the top right of the view while you play
+  your ball and while you watch another player: the game and the ball, each player's name and score in turn order
+  with the player up marked, and the session tally (`18 GAMES PLAYED · MekelburgJ 10 · Krobs 8`). It is a second
+  picture on the layer's pipe (`CVB1` frames, `scoreboard: {corner}` on the control; pipe protocol 4, layer 0.7.0),
+  drawn as a head-locked quad in hidden and theater and never with the full panel. Match tab: "Scoreboard in the
+  headset" (top right, top left, off). The match panel, in the headset and on the desktop, shows the same tally under
+  the scores once a game has been played. A 0.6.0 layer gets exactly the controls it always got and shows no
+  scoreboard until the new layer is installed and VPX restarted; `match.json` `scoreboardPlace` moves the quad
+  without a layer build. Not yet run in a headset. `media/scoreboard-page.ts`, `media/rtc-host.ts`,
+  `media/vr-layer.ts`, `vr-layer/src/`.
+
 ### Changed
 
 - **The invite before the table (A14.7).** Host no longer starts VPX at once. It hosts the match and copies the
