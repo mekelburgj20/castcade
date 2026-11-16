@@ -60,7 +60,9 @@ import {
   createPowershellLister,
   ProcessWatch,
   DEFAULT_POLL_INTERVAL_MS,
+  isForkExe,
   parseWindowTitle,
+  type ProcessInfo,
   type ProcessLister,
   type TableSource,
   type VpxExit,
@@ -88,6 +90,11 @@ import type { AttemptStatus, CaptureOutcome, JournalMark, LastCapture, LiveGame,
 export interface WitnessDeps {
   clock?: Clock;
   lister?: ProcessLister;
+  /**
+   * I11.4.1: a VPX process the witness must not see at all (a 3D watch watcher Castcade started: `hidden-vpx.ts`),
+   * asked by the process watch the first time a pid appears. Omitted: every VPX process is witnessed.
+   */
+  hideProcess?: (p: ProcessInfo) => boolean;
   /** Headset-or-monitor probe (0.2.10). Omitted = the PowerShell probe; `null` = never sample (tests). */
   vrProbe?: VrProbe | null;
   registry?: RegistryReader;
@@ -1768,7 +1775,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   // ----------------------------------------------------------------------------- sessions --
 
   const onLaunch = async (launch: VpxLaunch): Promise<void> => {
-    status.vpxExe = launch.exe;
+    // I11.4.1: the VPX fork is witnessed like any VPX, but never becomes "the VPX exe" tables are started with.
+    if (!isForkExe(launch.exe)) status.vpxExe = launch.exe;
     if (status.nvramDir === null) status.nvramDir = await resolveDir(launch.exe);
     const session: OpenSession = {
       launch,
@@ -1873,7 +1881,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (sessions.size === 0) await checkin();
   };
 
-  const watch = new ProcessWatch({ lister, clock, intervalMs: deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS });
+  const watch = new ProcessWatch({ lister, clock, intervalMs: deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, hide: deps.hideProcess });
   watch.on('launch', (l) => serial(() => onLaunch(l)));
   watch.on('title', (t) => serial(() => onTitle(t)));
   watch.on('exit', (e) => serial(() => onExit(e)));

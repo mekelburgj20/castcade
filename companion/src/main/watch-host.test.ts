@@ -60,6 +60,8 @@ interface Pc {
   launches: Array<{ path: string; opts: LaunchOptions }>;
   logs: string[];
   files: Map<string, number>;
+  /** I11.4.1: what the witness was told and when the fork was spawned, in order. */
+  order: string[];
   last(): WatchStatus;
 }
 
@@ -79,9 +81,11 @@ function pc(r: FakeRelay, id: 'a' | 'b', o: { paired?: boolean; match?: string |
   if (o.fork !== false) files.set(FORK, 9_705_472);
   let port = 50_100;
   let last: WatchStatus | null = null;
+  const order: string[] = [];
   const launcher: VpxLauncher = {
     async launch(path: string, opts: LaunchOptions = {}): Promise<LaunchResult> {
       launches.push({ path, opts });
+      order.push(`spawn ${opts.env?.CASTCADE_STREAM ?? '?'}`);
       return { ok: true, pid: 4000 + launches.length };
     },
   };
@@ -95,6 +99,10 @@ function pc(r: FakeRelay, id: 'a' | 'b', o: { paired?: boolean; match?: string |
     exists: async (p) => files.has(p),
     size: async (p) => files.get(p) ?? null,
     launcher,
+    expectVpx: (e) => {
+      order.push(`expect ${e.exe} ${e.tablePath}`);
+      return { bind: (pid) => void order.push(`bind ${pid}`), done: () => void order.push('done') };
+    },
     tables: async () => o.tables ?? [{ tableId: 'Nudge Test and Calibration', vpxPath: NUDGE, infoName: null, rom: null, sha256: null, imported: false, lastPlayedAt: null, patchedAt: null }],
     iceServers: () => [],
     tunnel: (t) => {
@@ -109,7 +117,7 @@ function pc(r: FakeRelay, id: 'a' | 'b', o: { paired?: boolean; match?: string |
     emitGapMs: 0,
   });
   host.onStatus((s) => (last = s));
-  const p: Pc = { host, tunnels, launches, logs, files, last: () => last ?? host.status() };
+  const p: Pc = { host, tunnels, launches, logs, files, order, last: () => last ?? host.status() };
   pcs.push(p);
   return p;
 }
@@ -188,6 +196,9 @@ describe('the 3D watch session in the shell', () => {
       CASTCADE_STREAM_LOG: String.raw`C:\logs\vpx-stream-watch.log`,
     });
     expect(b.last().local.vpx).toBe('watching');
+    // The witness was told of the watcher before the spawn (and given its pid after); of the player, never.
+    expect(b.order).toEqual([`expect ${FORK} ${NUDGE}`, 'spawn watch', 'bind 4001']);
+    expect(a.order).toEqual(['spawn play']);
 
     // The owner's table closes: the role is free; Krobs closes his watcher and plays; the owner watches.
     play.opts.onExit!(0);
@@ -195,6 +206,7 @@ describe('the 3D watch session in the shell', () => {
     expect(a.tunnels[0]!.playerPort).toBeNull();
     await expect(b.host.play(NUDGE)).rejects.toThrow('Close the table you are watching first');
     b.launches.at(-1)!.opts.onExit!(0);
+    expect(b.order.at(-1)).toBe('done');
     expect(b.tunnels[0]!.watchPeer).toBeNull();
     await b.host.play(NUDGE);
     await until(() => a.last().player?.id === 'b' && a.last().watchTable?.path === NUDGE);

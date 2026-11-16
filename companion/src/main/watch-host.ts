@@ -16,6 +16,10 @@
  * beside the VPX exe Castcade knows (`forkExeFor`); absent, the card says where. Castcade does not own the VPX it
  * starts: leaving the session leaves the table open, as a match does.
  *
+ * The witness: a watcher this host starts is announced to it before the spawn (`expectVpx`, `witness/hidden-vpx.ts`),
+ * so it never takes the watcher for a game (no launch report, no patch notice, no capture, no remembered exe). A player
+ * is an ordinary game, scored as any; only its exe, the fork's, is never remembered (`isForkExe`).
+ *
  * Nothing here imports Electron: the tunnel factory, the launcher and the file checks are handed in, so a test drives
  * it with fakes and the real session over the relay double.
  */
@@ -23,6 +27,7 @@ import { basename, join } from 'node:path';
 import type { KnownTable } from '../launch/known-tables.js';
 import { forkExeFor, forkStreamEnv, type VpxLauncher } from '../launch/vpx-launch.js';
 import type { IceServer } from '../media/media-settings.js';
+import type { ExpectedVpx, VpxExpectation } from '../witness/hidden-vpx.js';
 import type { TunnelEnd, TunnelEndOptions } from '../watch/tunnel-end.js';
 import type { WatchPath } from '../watch/watch-page.js';
 import { WatchSession, type WatchSessionOptions, type WatchSessionState, type WatchTableInfo } from '../watch/watch-session.js';
@@ -71,6 +76,12 @@ export interface WatchHostOptions {
   /** A file's size in bytes, or null when it is not there. */
   size(path: string): Promise<number | null>;
   launcher: VpxLauncher;
+  /**
+   * The witness's registry of the watchers Castcade starts (`witness/hidden-vpx.ts`): told BEFORE the spawn, bound to
+   * the pid after it, ended at the exit, so the witness never takes a watcher for a game. A player is not told: it is
+   * an ordinary game. Absent (tests that do not look at it): nothing is told.
+   */
+  expectVpx?(e: ExpectedVpx): VpxExpectation;
   /** The tables Castcade knows on this PC: imported ones, then the tables folder's files. */
   tables(): Promise<KnownTable[]>;
   iceServers(): IceServer[];
@@ -315,11 +326,14 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
     if (!f.present || !f.path) throw new Error(f.line ?? 'The Castcade VPX build is missing.');
     const mine = ++run;
     const logFile = join(o.logsDir, role === 'playing' ? PLAY_LOG : WATCH_LOG);
+    // A watcher is not a game: the witness is told before the spawn, so no poll of its can see the process first.
+    const expected = role === 'watching' ? (o.expectVpx?.({ exe: f.path, tablePath }) ?? null) : null;
     const r = await o.launcher.launch(tablePath, {
       exe: f.path,
       env: forkStreamEnv(role === 'playing' ? 'play' : 'watch', port, logFile),
       what: role === 'playing' ? 'as the 3D watch player' : 'as a 3D watch watcher',
       onExit: (code) => {
+        expected?.done();
         if (run !== mine) return;
         o.log.info(`watch: the ${role === 'playing' ? 'playing' : 'watching'} VPX closed (exit ${code ?? 'unknown'})`);
         local = { vpx: 'none', table: null, pid: null };
@@ -330,7 +344,11 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
         emit();
       },
     });
-    if (!r.ok) throw new Error(`VPX did not start: ${r.reason}`);
+    if (!r.ok) {
+      expected?.done();
+      throw new Error(`VPX did not start: ${r.reason}`);
+    }
+    expected?.bind(r.pid);
     local = { vpx: role, table: basename(tablePath.replace(/\\/g, '/')), pid: r.pid };
   };
 

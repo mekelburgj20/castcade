@@ -13,7 +13,7 @@
  * process's without any `CASTCADE_STREAM*` / `CASTCADE_TEST_*` it may carry, plus the stream's. Its exit is heard.
  */
 import { win32 } from 'node:path';
-import { isVpxExe } from '../witness/process-watch.js';
+import { FORK_EXE_NAME, isVpxExe } from '../witness/process-watch.js';
 
 export interface SpawnedProcess {
   pid?: number | undefined;
@@ -55,8 +55,8 @@ export function planLaunch(exe: string | null, vpxPath: string, env?: Readonly<R
 
 // ----------------------------------------------------------------------------- I11.4.1: the fork --
 
-/** The VPX fork's exe (ADR 0011, `github.com/mekelburgj20/castcade-vpx`): it goes beside VPinballX_GL64.exe. */
-export const FORK_EXE_NAME = 'VPinballX_GL64_castcade.exe';
+/** The VPX fork's exe (ADR 0011): it goes beside VPinballX_GL64.exe. Defined beside `isVpxExe`, where the witness reads it. */
+export { FORK_EXE_NAME };
 /** How far behind the newest frame a watcher renders, as the fork's own Watch launcher sets it (ms). */
 export const FORK_WATCH_DELAY_MS = 100;
 

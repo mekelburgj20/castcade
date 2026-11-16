@@ -6,6 +6,7 @@
  * new instance the old one's journal mark (A15), so a match is not fed the game in progress twice.
  */
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
+import { isForkExe } from '../witness/process-watch.js';
 import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent, HighScoreEvent } from '../witness/journal-detector.js';
 import type { VrObservation } from '../witness/vr-detect.js';
@@ -103,8 +104,9 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
         log.info(`witness: launch ${i.table} (${i.exe}, pid ${i.pid})`);
         launchPid = i.pid;
         launchStartedAt = i.startedAt;
-        // Remember where VPX lives so the import can find scripts\ on the next run without a launch.
-        if (i.exe && store.get().vpxExe !== i.exe) void store.set({ vpxExe: i.exe }).catch((err: unknown) => log.warn(`settings: could not remember the VPX exe: ${err instanceof Error ? err.message : String(err)}`));
+        // Remember where VPX lives so the import can find scripts\ on the next run without a launch. I11.4.1: never the
+        // VPX fork (a 3D watch session's, or one started from its own launchers): A14 starts tables with this exe.
+        if (i.exe && !isForkExe(i.exe) && store.get().vpxExe !== i.exe) void store.set({ vpxExe: i.exe }).catch((err: unknown) => log.warn(`settings: could not remember the VPX exe: ${err instanceof Error ? err.message : String(err)}`));
       }),
       w.on('notice', (n) => {
         log.info(`witness: notice ${n.kind}: ${n.message}`);

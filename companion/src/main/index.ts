@@ -47,6 +47,7 @@ import { createRecentTables, listKnownTables, listTableFiles } from '../launch/k
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
 import { createTunnelEnd, freeLoopbackPort } from '../watch/tunnel-end.js';
+import { HiddenVpx } from '../witness/hidden-vpx.js';
 import type { VrOverlay } from '../media/match-media-types.js';
 import { createMediaSettingsStore, iceServers, type MediaSettingsStore } from '../media/media-settings.js';
 import { usableBounds } from '../media/panel-placement.js';
@@ -561,7 +562,10 @@ async function main(): Promise<void> {
 
   // E8: ArcAid's log pull (W99): the bundle is this rig's logs, newest VR report and newest journals; never settings.
   const localAppData = process.env.LOCALAPPDATA ?? null;
+  // I11.4.1: the 3D watch watchers Castcade starts are announced here before their spawn; the witness never sees them.
+  const hiddenVpx = new HiddenVpx();
   const host = createWitnessHost(store, logger, {
+    hideProcess: (p) => hiddenVpx.hides(p),
     logBundle: () =>
       collectLogBundle({
         companionLog: logger.file,
@@ -827,6 +831,7 @@ async function main(): Promise<void> {
         exe: () => host.status().vpxExe ?? store.get().vpxExe ?? null,
         log: (line) => logger.info(line),
       }),
+      expectVpx: (e) => hiddenVpx.expect(e),
       tables: async () => {
         const known = await listKnownTables({ fs: nodeFs, manifestDir, dataDir: store.get().dataDir });
         return [...known, ...(await listTableFiles(nodeFs, tables.resolveTablesDir(null), known))];
