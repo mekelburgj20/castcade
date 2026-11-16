@@ -7,6 +7,18 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **No voice in a match, "No path to Krobs" (D2.12).** In the owner's second match of 2026-11-15 (GNBKHT) neither
+  player heard the other, while the picture ran on a direct connection: the routers were not the cause. Both panel
+  pages open the voice connection at the match's start and both offered; when the two offers crossed within a few
+  milliseconds, the polite side rolled its offer back, Chromium asked for a new one at once, that one was rolled
+  back too, and the connection then never gathered a candidate, whatever the ICE restarts did. Reproduced in
+  Electron with the page's own classes: 19 of 144 starts failed, none of 144 with the fix. The polite peer no longer
+  makes the first offer (it waits three seconds for the other side's), and no side offers while it is answering. A
+  voice connection that never started now says so instead of blaming the routers. `media/rtc-signaling.ts`,
+  `media/panel-page.ts`.
+
 ## [0.2.43] — 2026-11-15
 
 Companion only: the OpenXR layer and the native helpers are the v0.2.40 zips, protocol 5 is unchanged, so 0.2.41 to

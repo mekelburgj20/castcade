@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaSignal, MediaSignalling } from './match-media-types.js';
 import { isPolite, leadsIceRestart, negotiationSource, PeerNegotiator, SignalingMesh, splitSignalling, type CandidateInit, type NegotiablePc, type SdpInit } from './rtc-signaling.js';
 
@@ -160,6 +160,79 @@ function network(ids: string[]) {
 
 const paired = (a: FakePc, b: FakePc): boolean =>
   a.signalingState === 'stable' && b.signalingState === 'stable' && a.remoteDescription?.sdp === b.localDescription?.sdp && b.remoteDescription?.sdp === a.localDescription?.sdp;
+
+// D2.12: the polite peer's wait for the first offer is off in the older tests (they have the polite side offer first,
+// which it still does once a connection is negotiated); the D2.12 tests below turn it on.
+const FIRST_OFFER_WAIT_MS = PeerNegotiator.FIRST_OFFER_WAIT_MS;
+beforeEach(() => {
+  PeerNegotiator.FIRST_OFFER_WAIT_MS = 0;
+});
+afterEach(() => {
+  PeerNegotiator.FIRST_OFFER_WAIT_MS = FIRST_OFFER_WAIT_MS;
+  vi.useRealTimers();
+});
+
+describe('D2.12 (2026-11-15, match GNBKHT): the polite peer does not make the first offer', () => {
+  beforeEach(() => {
+    PeerNegotiator.FIRST_OFFER_WAIT_MS = FIRST_OFFER_WAIT_MS;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+
+  it('both are asked to negotiate at once: only the impolite one offers, the polite one answers, and no offer follows', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    pa.onnegotiationneeded?.();
+    pb.onnegotiationneeded?.();
+    await settle();
+    expect(net.queue.map((w) => `${w.from}:${w.signal.kind}`)).toEqual(['b:offer']);
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('answer');
+    vi.advanceTimersByTime(FIRST_OFFER_WAIT_MS * 2);
+    await settle();
+    expect(net.queue).toEqual([]);
+    expect(pa.localDescription?.type).toBe('answer');
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+  });
+
+  it('no offer from the impolite peer within the wait: the polite one offers, once; after that it offers at once', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    pa.onnegotiationneeded?.();
+    pa.onnegotiationneeded?.();
+    await settle();
+    expect(net.queue).toEqual([]);
+    vi.advanceTimersByTime(FIRST_OFFER_WAIT_MS - 1);
+    await settle();
+    expect(net.queue).toEqual([]);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(net.queue.map((w) => `${w.from}:${w.signal.kind}`)).toEqual(['a:offer']);
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    // A renegotiation (an ICE restart, a new track) is not the first offer: no wait.
+    pa.onnegotiationneeded?.();
+    await settle();
+    expect(net.queue.map((w) => `${w.from}:${w.signal.kind}`)).toEqual(['a:offer']);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+  });
+
+  it('a closed connection drops its wait', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.pc('a', 'b').onnegotiationneeded?.();
+    net.meshes['a']?.remove('b');
+    vi.advanceTimersByTime(FIRST_OFFER_WAIT_MS * 2);
+    await settle();
+    expect(net.queue).toEqual([]);
+  });
+});
 
 describe('perfect negotiation (D2)', () => {
   it('polite is the lexically smaller id, the same answer on both sides', () => {

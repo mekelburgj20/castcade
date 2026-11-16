@@ -22,6 +22,16 @@
  * the peer's connection takes it like any other offer. The impolite peer leads the restart (`leadsIceRestart`): its
  * offer is the one that wins a collision anyway; the polite one restarts only when the lead has not (the page's
  * watchdog gives it a lag), and if both do at once the usual glare rule settles it.
+ *
+ * D2.12 (2026-11-15, the owner's match GNBKHT: no voice, "No path to Krobs", ICE `new` with no candidate on either
+ * side while the native video ran direct). Both pages add the peer at the match's start and both offer. When the
+ * impolite offer lands while the polite one is being made, the polite side rolls back, Chromium asks for negotiation
+ * again at once, a second offer goes out ahead of the remote one and is rolled back too (implicitly, by
+ * `setRemoteDescription`), and after that the answerer's transport never gathers a candidate: no ICE restart brings
+ * it back. Reproduced in Electron with this file's classes (19 of 144 starts at 1 to 5 ms of signalling delay). Two
+ * rules keep the polite side out of it: it does not make the first offer (it waits `FIRST_OFFER_WAIT_MS` for the
+ * impolite one, whose offer carries m-lines for the same tracks), and no side offers while it is answering (the
+ * browser asks again once the answer is set, if anything is still to negotiate).
  */
 import type { MatchPlayerId, MediaSignal, MediaSignalling } from './match-media-types.js';
 
@@ -64,6 +74,13 @@ export function leadsIceRestart(localId: MatchPlayerId, remoteId: MatchPlayerId)
 export class PeerNegotiator {
   /** Candidates held for a peer whose remote description is not set yet; more than this is a broken peer. */
   static MAX_QUEUED_ICE = 200;
+  /** D2.12: how long the polite peer waits for the impolite one's first offer before it offers itself. */
+  static FIRST_OFFER_WAIT_MS = 3000;
+  /** D2.12: an offer is being answered (rollback, remote description, answer): no offer of ours in between. */
+  answering = false;
+  /** D2.12: the polite peer's wait for the first offer; `waited` once it ran out. */
+  holdTimer: unknown = null;
+  waited = false;
   makingOffer = false;
   ignoreOffer = false;
   closed = false;
@@ -97,7 +114,17 @@ export class PeerNegotiator {
 
   /** `negotiationneeded`: make an offer (the browser builds it from the transceivers) and send it. */
   async negotiationNeeded(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.answering) return;
+    if (this.polite && !this.waited && !this.pc.remoteDescription && PeerNegotiator.FIRST_OFFER_WAIT_MS > 0) {
+      if (this.holdTimer === null) {
+        this.holdTimer = setTimeout(() => {
+          this.holdTimer = null;
+          this.waited = true;
+          if (!this.pc.remoteDescription) void this.negotiationNeeded();
+        }, PeerNegotiator.FIRST_OFFER_WAIT_MS);
+      }
+      return;
+    }
     try {
       this.makingOffer = true;
       await this.pc.setLocalDescription();
@@ -148,6 +175,8 @@ export class PeerNegotiator {
 
   close(): void {
     this.closed = true;
+    if (this.holdTimer !== null) clearTimeout(this.holdTimer as never);
+    this.holdTimer = null;
     this.queuedIce = [];
     this.pc.onnegotiationneeded = null;
     this.pc.onicecandidate = null;
@@ -180,6 +209,7 @@ export class PeerNegotiator {
     if (signal.kind === 'answer' && this.pc.signalingState !== 'have-local-offer') return;
     // D2.7: an offer onto a connection that was already negotiated, which it refuses, comes from a new remote connection.
     const negotiated = this.pc.remoteDescription !== null;
+    this.answering = signal.kind === 'offer';
     try {
       if (offerCollision) await this.pc.setLocalDescription({ type: 'rollback' });
       await this.pc.setRemoteDescription({ type: signal.kind, sdp: signal.sdp });
@@ -196,6 +226,8 @@ export class PeerNegotiator {
         return;
       }
       this.onError(e, signal.kind);
+    } finally {
+      this.answering = false;
     }
   }
 
