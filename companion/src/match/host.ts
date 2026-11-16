@@ -52,6 +52,7 @@ import {
   type ParticipantInfo,
   type PayloadInput,
   type PayloadOf,
+  type PlayerAdvisory,
   type PlayerId,
 } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
@@ -149,6 +150,11 @@ export interface HostEvents extends Record<string, unknown> {
    * roster in the log keeps what MATCH_READY said; this is the rig now.
    */
   rigUpdated: { playerId: PlayerId; rig: ParticipantInfo['rig'] };
+  /**
+   * B26 (2026-11-16): a player flagged one of its own balls after MATCH_READY (a client's PARTICIPANT_UPDATE, passed on
+   * to the others, or this host's own `localAdvisory`). Never logged; a flag only.
+   */
+  advisory: { playerId: PlayerId; advisory: PlayerAdvisory };
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   ballEnd: Message<'BALL_END'>;
@@ -375,6 +381,19 @@ export class HostMatch {
     }
     this.events.emit('participantUpdated', { ...this.lobby[0]! });
     this.resendAck();
+    return true;
+  }
+
+  /**
+   * B26 (2026-11-16): this host flags one of its own balls (the Midnight Madness flag): to every client as this
+   * host's PARTICIPANT_UPDATE, and `advisory` here. Never logged. False (nothing sent) in the lobby.
+   */
+  localAdvisory(advisory: PlayerAdvisory): boolean {
+    this.assertActive();
+    if (this.s.state.phase === 'lobby') return false;
+    const msg = this.s.build('PARTICIPANT_UPDATE', { advisory }, this.matchId);
+    for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
+    this.events.emit('advisory', { playerId: this.localId, advisory: msg.payload.advisory! });
     return true;
   }
 
@@ -943,11 +962,15 @@ export class HostMatch {
    * A6 (2026-10-31): a lobby client's rig or table changed after its HELLO (it joined before its table loaded).
    * After MATCH_READY the roster and fingerprint in the log are final; A6.1 (2026-11-01): a new rig is still noted and
    * passed on to the other participants (`from` preserved), so their Match tab and panel know it. A refusing host keeps
-   * the old fingerprint and rejects one that differs, as it would have refused that HELLO.
+   * the old fingerprint and rejects one that differs, as it would have refused that HELLO. B26 (2026-11-16): an
+   * `advisory` (a flag about one of the sender's own balls) is raised here and passed on the same way.
    */
   private onParticipantUpdate(msg: Message<'PARTICIPANT_UPDATE'>): void {
     if (this.s.state.phase !== 'lobby') {
-      if (msg.payload.rig !== undefined && this.noteLiveRig(msg.from, msg.payload.rig)) this.mirror(msg);
+      const rigChanged = msg.payload.rig !== undefined && this.noteLiveRig(msg.from, msg.payload.rig);
+      const advisory = msg.payload.advisory;
+      if (advisory !== undefined) this.events.emit('advisory', { playerId: msg.from, advisory });
+      if (rigChanged || advisory !== undefined) this.mirror(msg);
       return;
     }
     const i = this.lobby.findIndex((p) => p.playerId === msg.from);

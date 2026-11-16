@@ -156,6 +156,19 @@ export const HelloAck = z
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 
+// B26 (2026-11-16): a flag a player's own companion raises about one of its balls. Never logged, never a verdict:
+// nothing in the fold, a score, a turn or a RESULT reads it.
+export const PlayerAdvisory = z
+  .object({
+    kind: z
+      .enum(['midnight'])
+      .describe("`midnight`: the sender's PC clock passed local midnight while it played this ball on a WPC machine, whose ROM starts a bonus multiball then (Midnight Madness): it may have run."),
+    game: GameNumber.describe('The game of the series the ball belongs to.'),
+    ballNumber: BallNumber.describe("The sender's ball the flag is about."),
+  })
+  .describe("An advisory flag about one ball of the sender's own game, shown to every player. A flag only.");
+export type PlayerAdvisory = z.infer<typeof PlayerAdvisory>;
+
 // A6 (2026-10-31, the first two-player match): a client that joined before its table loaded said `pc` and a blank
 // table hash in HELLO, and nothing corrected them, so its roster row read "PC · different table file" for the match.
 export const ParticipantUpdate = z
@@ -166,9 +179,14 @@ export const ParticipantUpdate = z
       .boolean()
       .optional()
       .describe("A13: whether the sender's table can report ball ends now (see `HELLO.ballEndReady`), when that changed since HELLO. Lobby only."),
+    // B26 (2026-11-16): optional and never logged, so still protocol 5. A peer that does not know it strips the key
+    // (zod): an older host then passes nothing on (it only relays a rig change), an older client drops the frame.
+    advisory: PlayerAdvisory.optional().describe(
+      "B26: after MATCH_READY only: a flag about one of the sender's own balls (see `PlayerAdvisory`). The host passes the update on to every other participant like a rig change (`from` preserved) and sends its own the same way. A peer from before B26 ignores it.",
+    ),
   })
   .describe(
-    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` counts: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig` and (B26) `advisory` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
   );
 
 export const Refuse = z

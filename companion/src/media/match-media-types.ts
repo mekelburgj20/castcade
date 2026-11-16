@@ -27,9 +27,11 @@ export interface PanelState {
     isUp: boolean;
     /**
      * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
-     * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same.
+     * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same. `midnight`
+     * (B26, 2026-11-16): Midnight Madness may have run on one of their balls of this game (their PC's clock passed
+     * local midnight during it, on a WPC machine); a flag only.
      */
-    flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading'>;
+    flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading' | 'midnight'>;
     /**
      * D7.4 (2026-10-31): that player's declared rig (HELLO / lobby update). The headset panel reads it to tell a VR
      * sender's side-by-side preview ("both eyes") from a wide monitor picture. Absent in states made before D7.4.
@@ -41,8 +43,11 @@ export interface PanelState {
    * match is a series, so `over` is the gap between games until `seriesOver`.
    */
   phase: 'idle' | 'playing' | 'paused' | 'over';
-  /** Standings of the game just played once `phase` is `over`, best first. */
-  result: Array<{ id: MatchPlayerId; name: string; score: number; place: number }> | null;
+  /**
+   * Standings of the game just played once `phase` is `over`, best first. B26: `flags` `midnight` marks a player with
+   * a ball of that game on which Midnight Madness may have run (absent when there is none; the place is unchanged).
+   */
+  result: Array<{ id: MatchPlayerId; name: string; score: number; place: number; flags?: Array<'midnight'> }> | null;
   /** A10: the game of the series being played (or just played), 1-based. Absent in states made before A10. */
   game?: number;
   /** A10: the series standings after the last RESULT (wins, then total score), best first; null before the first one. */

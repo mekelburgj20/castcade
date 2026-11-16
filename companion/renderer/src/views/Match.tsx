@@ -309,7 +309,15 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
             {/* D10.8: which path the match control takes. */}
             {st.path && <p className="muted">{st.path}</p>}
-            {panel?.message && <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>}
+            {panel?.message && !st.advisories.includes(panel.message) && (
+              <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>
+            )}
+            {/* B26: balls of this game on which Midnight Madness may have run (a flag only). */}
+            {st.advisories.map((line) => (
+              <p key={line} className="warn">
+                {line}
+              </p>
+            ))}
             <table className="match-table">
               <thead>
                 <tr>
@@ -332,6 +340,7 @@ export function Match({ state }: { state: CastcadeState }) {
                         {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
                         {p.ballEnds === false && <span className="warn"> · cannot report ball ends</span>}
                         {row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
+                        {row?.flags.includes('midnight') && <span className="warn"> · Midnight Madness may have run</span>}
                       </td>
                       <td>{RIG_LABEL[p.rig]}</td>
                       <td>
@@ -444,7 +453,10 @@ export function Match({ state }: { state: CastcadeState }) {
                   {panel.result.map((r) => (
                     <tr key={r.id}>
                       <td>{r.place}.</td>
-                      <td>{r.name}</td>
+                      <td>
+                        {r.name}
+                        {r.flags?.includes('midnight') && <span className="warn"> · Midnight Madness may have run</span>}
+                      </td>
                       <td className="num">{r.score.toLocaleString()}</td>
                     </tr>
                   ))}

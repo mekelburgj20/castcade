@@ -276,6 +276,11 @@ export interface Witness {
    */
   highScoreQualifies(score: number): boolean;
   /**
+   * B26: is the machine on the open table one whose ROM may start Midnight Madness when the PC's clock passes
+   * midnight (its map is on a WPC platform, `midnightInScope`)? False with no live table, no ROM or no map.
+   */
+  midnightInScope(): boolean;
+  /**
    * A6 (2026-10-31): probe the running VPX process for VR now (the match host decides the rig at host / join with
    * it). Null when no VPX process is open or the probe did not answer. Does not change the attestation.
    */

@@ -6,10 +6,10 @@
 import { describe, expect, it } from 'vitest';
 import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../media/match-media-types.js';
-import { headerText } from '../media/panel-page.js';
+import { headerText, stripRows } from '../media/panel-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
+import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, MIDNIGHT_LINE_MS, midnightLine, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -921,6 +921,176 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     clock.advance(INITIALS_QUIET_MS);
     expect(H.ctl.status()).toMatchObject({ locked: true, initialsHold: false });
     expect(host.state.players['h']).toMatchObject({ score: GC, ballsPlayed: 1 });
+  });
+
+  // ---- B26 step 1 (2026-11-16, "a midnight madness happened for Krobs"): the Midnight Madness flag ----
+  const DAY_MS = 86_400_000;
+  const MINUTE = 60_000;
+  const KROBS_LINE = "Midnight Madness may have run on Krobs' ball 1 (that table's clock passed midnight)";
+  const MY_LINE = "Midnight Madness may have run on your ball 1 (your table's clock passed midnight)";
+  /** A rig (both seats) whose local midnight falls `ms` after the clock's start, on a machine that is in scope or not. */
+  async function midnightRig(balls: number, ms: number, inScope = true) {
+    let offset = 0;
+    const s = await rig(balls, game, undefined, { midnight: { inScope: () => inScope, utcOffsetMinutes: () => offset } });
+    // local = UTC + offset: the next local midnight is `ms` from now, whatever the fake clock's own time of day.
+    offset = (DAY_MS - ((s.clock.now() + ms) % DAY_MS)) / MINUTE;
+    return s;
+  }
+  /** One ball of `seat`, `ms` long, ending at `score`; `last`: the table's game ends with it. */
+  const playBall = async (seat: Seat, clock: ManualClock, ball: number, score: number, ms: number, last: boolean): Promise<void> => {
+    if (ball === 1) seat.ctl.feed(gameStart);
+    seat.ctl.feed(scores(score));
+    clock.advance(ms);
+    seat.ctl.feed(ballEnd(ball));
+    seat.ctl.feed(scores(score));
+    if (last) seat.ctl.feed(gameEnd(score));
+    await flush();
+  };
+  const midnightFlagged = (p: PanelState): string[] => p.players.filter((x) => x.flags.includes('midnight')).map((x) => x.id);
+
+  it('B26: the line always says "may have run", names the ball, and reads right for a name that ends in s', () => {
+    expect(midnightLine('Krobs', 2)).toBe("Midnight Madness may have run on Krobs' ball 2 (that table's clock passed midnight)");
+    expect(midnightLine('ChuckRibbits', 1)).toBe("Midnight Madness may have run on ChuckRibbits' ball 1 (that table's clock passed midnight)");
+    expect(midnightLine('Hosty', 3)).toBe("Midnight Madness may have run on Hosty's ball 3 (that table's clock passed midnight)");
+    expect(midnightLine(null, 3)).toBe("Midnight Madness may have run on your ball 3 (your table's clock passed midnight)");
+    expect(KROBS_LINE).toBe(midnightLine('Krobs', 1));
+    expect(MY_LINE).toBe(midnightLine(null, 1));
+  });
+
+  it("B26: a ball that passes the player's local midnight on a WPC machine is flagged for every player: the log, the line, the row, the result; no score, turn or log entry changes", async () => {
+    const { host, client, clock, H, C } = await midnightRig(1, 10 * MINUTE);
+    host.start();
+    await flush();
+    // The host's ball: five minutes, over well before midnight. Nothing is flagged.
+    await playBall(H, clock, 1, 500, 5 * MINUTE, true);
+    expect(H.ctl.status().advisories).toEqual([]);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, advisories: [] });
+    // Krobs' ball: six minutes, across midnight.
+    const logged = host.log.length;
+    await playBall(C, clock, 1, 900, 6 * MINUTE, true);
+    expect(C.logs.some((l) => l.startsWith("match: Midnight Madness may have run on my ball 1 of game 1: this PC's clock passed local midnight during the ball, on a WPC machine; flagged for every player"))).toBe(true);
+    expect(H.logs.some((l) => l.startsWith("match: Midnight Madness may have run on Krobs' ball 1 of game 1: that table's clock passed local midnight during the ball"))).toBe(true);
+    expect(H.ctl.status().advisories).toEqual([KROBS_LINE]);
+    expect(C.ctl.status().advisories).toEqual([MY_LINE]);
+    // The game is over (one ball each): the line is on both panels for a while, over the next-game line.
+    expect(headerText(H.media.panel)).toBe('GAME 1 OVER');
+    expect(H.media.panel.message).toBe(KROBS_LINE);
+    expect(C.media.panel.message).toBe(MY_LINE);
+    // The result marks Krobs and nobody else; the places and scores are what the scores say.
+    expect(H.media.panel.result).toEqual([
+      { id: 'c', name: 'Krobs', score: 900, place: 1, flags: ['midnight'] },
+      { id: 'h', name: 'Hosty', score: 500, place: 2 },
+    ]);
+    expect(C.media.panel.result).toEqual(H.media.panel.result);
+    expect(stripRows(H.media.panel).map((r) => [r.name, r.detail, r.flags])).toEqual([
+      ['Krobs', '#1', ['MIDNIGHT MADNESS?']],
+      ['Hosty', '#2', []],
+    ]);
+    expect(midnightFlagged(H.media.panel)).toEqual(['c']);
+    expect(midnightFlagged(C.media.panel)).toEqual(['c']);
+    expect(host.state.players['c']).toMatchObject({ score: 900, ballsPlayed: 1, status: 'finished' });
+    // The flag is not in the log: Krobs' BALL_END and GAME_OVER only (GAME_OVER folded into the last ball: one entry).
+    const added = host.log.entries().slice(logged).map((e) => e.message?.['type']);
+    expect(added).not.toContain('PARTICIPANT_UPDATE');
+    expect(client.log.head()).toEqual(host.log.head());
+    // After a while the panel's line is the usual one again; the row flag and the Match tab's line stay for the game.
+    clock.advance(MIDNIGHT_LINE_MS);
+    expect(H.media.panel.message).toBe('Next game: start a game on your table (or press Next game)');
+    expect(C.media.panel.message).toBe('Next game: Hosty starts a game on the table');
+    expect(midnightFlagged(H.media.panel)).toEqual(['c']);
+    expect(H.ctl.status().advisories).toEqual([KROBS_LINE]);
+    // The same flag twice (a re-send) is one flag.
+    client.reportAdvisory({ kind: 'midnight', game: 1, ballNumber: 1 });
+    await flush();
+    expect(H.ctl.status().advisories).toEqual([KROBS_LINE]);
+    expect(H.logs.filter((l) => l.includes('Midnight Madness')).length).toBe(1);
+    // The next game starts clean.
+    expect(H.ctl.nextGame()).toBe(true);
+    await flush();
+    expect(H.ctl.status().advisories).toEqual([]);
+    expect(C.ctl.status().advisories).toEqual([]);
+    expect(midnightFlagged(H.media.panel)).toEqual([]);
+    expect(H.media.panel.result).toBeNull();
+  });
+
+  it("B26: the host's ball: the client is told while the match goes on (the turn is not delayed); a ball that starts after midnight is not flagged", async () => {
+    const { host, clock, H, C } = await midnightRig(2, 2 * MINUTE);
+    host.start();
+    await flush();
+    // Midnight falls two minutes into the host's five-minute ball 1.
+    await playBall(H, clock, 1, 500, 5 * MINUTE, false);
+    expect(host.state.players['h']).toMatchObject({ score: 500, ballsPlayed: 1 });
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false, advisories: ["Midnight Madness may have run on Hosty's ball 1 (that table's clock passed midnight)"] });
+    expect(C.media.panel.message).toBe("Midnight Madness may have run on Hosty's ball 1 (that table's clock passed midnight)");
+    expect(H.media.panel.message).toBe(MY_LINE);
+    expect(midnightFlagged(C.media.panel)).toEqual(['h']);
+    expect(stripRows(C.media.panel).find((r) => r.id === 'h')?.flags).toEqual(['MIDNIGHT MADNESS?']);
+    // Krobs' ball 1 starts three minutes after midnight: his grant arrived after it, so nothing is flagged for him.
+    await playBall(C, clock, 1, 900, MINUTE, false);
+    expect(H.ctl.status()).toMatchObject({ myTurn: true });
+    expect(H.ctl.status().advisories).toEqual([MY_LINE]);
+    expect(midnightFlagged(H.media.panel)).toEqual(['h']);
+    expect(C.logs.some((l) => l.includes('Midnight Madness may have run on my ball'))).toBe(false);
+    // The host's ball 2 is after midnight too: still one flag.
+    await playBall(H, clock, 2, 700, MINUTE, true);
+    expect(H.ctl.status().advisories).toEqual([MY_LINE]);
+  });
+
+  it('B26: not flagged: a machine out of scope, a rig with no midnight wiring, a ball that ends before midnight', async () => {
+    // A ball across midnight on a machine that is not WPC.
+    const out = await midnightRig(1, 2 * MINUTE, false);
+    out.host.start();
+    await flush();
+    await playBall(out.H, out.clock, 1, 500, 5 * MINUTE, true);
+    expect(out.H.ctl.status().advisories).toEqual([]);
+    expect(out.C.ctl.status().advisories).toEqual([]);
+    expect(out.H.logs.some((l) => l.includes('Midnight Madness'))).toBe(false);
+    // No `midnight` option at all (a test witness): the plain rig, whatever the clock does.
+    const plain = await rig(1);
+    plain.host.start();
+    await flush();
+    await playBall(plain.H, plain.clock, 1, 500, DAY_MS / 2 + MINUTE, true);
+    expect(plain.H.ctl.status().advisories).toEqual([]);
+    expect(midnightFlagged(plain.C.media.panel)).toEqual([]);
+    // In scope, but the ball is over a minute before midnight.
+    const early = await midnightRig(1, 6 * MINUTE);
+    early.host.start();
+    await flush();
+    await playBall(early.H, early.clock, 1, 500, 5 * MINUTE, true);
+    expect(early.H.ctl.status().advisories).toEqual([]);
+    expect(early.H.media.panel.result).toBeNull();
+    expect(midnightFlagged(early.C.media.panel)).toEqual([]);
+  });
+
+  it("B26: a ball the host passes by hand (Pass the turn) across midnight is flagged all the same; a failing scope check flags nothing and breaks nothing", async () => {
+    const { host, clock, H, C } = await midnightRig(1, 2 * MINUTE);
+    host.start();
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(400));
+    clock.advance(5 * MINUTE);
+    expect(H.ctl.passTurn()).toBe(true);
+    await flush();
+    expect(host.state.players['h']).toMatchObject({ score: 400, ballsPlayed: 1 });
+    expect(H.ctl.status().advisories).toEqual([MY_LINE]);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, advisories: ["Midnight Madness may have run on Hosty's ball 1 (that table's clock passed midnight)"] });
+    // A witness that throws when asked: the ball end is reported as ever.
+    const bad = await rig(1, game, undefined, {
+      midnight: {
+        inScope: () => {
+          throw new Error('no table');
+        },
+        utcOffsetMinutes: () => {
+          throw new Error('no clock');
+        },
+      },
+    });
+    bad.host.start();
+    await flush();
+    await playBall(bad.H, bad.clock, 1, 500, 5 * MINUTE, true);
+    expect(bad.host.state.players['h']).toMatchObject({ score: 500, ballsPlayed: 1 });
+    expect(bad.H.ctl.status().advisories).toEqual([]);
+    expect(bad.H.logs).toContain('match: could not check the ball for Midnight Madness: no clock');
   });
 
   it('the host leaving between games ends the series for the client (hostGone): unlocked, said on the panel', async () => {

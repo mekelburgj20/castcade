@@ -53,6 +53,7 @@ import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffRe
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
+import { localUtcOffsetMinutes, MIDNIGHT_GAME_NOTE, midnightInScope, spansLocalMidnight, type UtcOffset } from './midnight.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
 import {
@@ -137,6 +138,11 @@ export interface WitnessDeps {
   queueBaseDelayMs?: number;
   /** Diagnostic log line sink (default: none). */
   log?: (line: string) => void;
+  /**
+   * B26: this PC's offset from UTC, minutes east, fixed or at an instant: where local midnight falls for the Midnight
+   * Madness flag. Omitted = the machine's own time zone (`localUtcOffsetMinutes`); tests pass a fixed one.
+   */
+  utcOffsetMinutes?: UtcOffset;
   /**
    * A15: where the witness this one replaces had got to (`Witness.journalMark()`), when a setting rebuilt it while a
    * table was open. The journal is read again from the top, but the game events up to the mark were already delivered
@@ -448,6 +454,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   const lister = deps.lister ?? createPowershellLister();
   const vrProbe: VrProbe = deps.vrProbe === undefined ? createPowershellVrProbe() : (deps.vrProbe ?? NO_VR_PROBE);
   const log = deps.log ?? (() => {});
+  const utcOffset: UtcOffset = deps.utcOffsetMinutes ?? localUtcOffsetMinutes;
   const corpus = deps.corpus ?? createMapCorpus(store.get().mapsDir, fs);
   const emitter = new Emitter<EventPayloads>();
   const settleMs = deps.nvSettleMs ?? DEFAULT_NV_SETTLE_MS;
@@ -1003,6 +1010,13 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const wireSlug = romName && catalogueTableName(romName) !== wireTable ? catalogueTableName(romName) : null;
     if (resolved) details.push(SOURCE_TEXT[resolved.source]);
     if (wireTable !== table) details.push(`sent to ArcAid as "${wireTable}"${wireSlug ? ` (or "${wireSlug}")` : ''}`);
+    // B26 step 1: a WPC machine starts a bonus multiball when its clock (the PC's, through VPinMAME) passes midnight
+    // with a ball in play. A flag in the log and the capture detail only: nothing on the wire yet (ArcAid has no
+    // param for it), and the score posts as ever.
+    if (decision.kind === 'score' && midnightInScope(map) && spansLocalMidnight(started, ended, utcOffset)) {
+      details.push(MIDNIGHT_GAME_NOTE);
+      log(`witness: ${table}: ${MIDNIGHT_GAME_NOTE}`);
+    }
 
     const durationSec = Math.max(0, Math.round((ended - started) / 1000));
     const result: LastCapture = {
@@ -2009,6 +2023,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
         `witness: ${live.tableId}: score ${score} ${check.qualifies ? 'makes' : 'does not make'} the machine's high-score list (${check.listed ? 'already on it' : `lowest entry ${check.lowest ?? '?'}`})`,
       );
       return check.qualifies;
+    },
+
+    // B26: asked by the match controller when one of this player's balls ends across a local midnight.
+    midnightInScope() {
+      const live = activeSession()?.live;
+      return !!live && live.accepted && midnightInScope(live.map);
     },
 
     // A6 (2026-10-31): the match host's fresh rig decision at host / join. Read-only: the attestation keeps its own samples.

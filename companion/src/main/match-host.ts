@@ -58,6 +58,7 @@ import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
+import { localUtcOffsetMinutes, type UtcOffset } from '../witness/midnight.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
 import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
@@ -167,6 +168,11 @@ export interface MatchStatus {
    * Start match needs `start({ anyway: true })` (the tab's Start anyway).
    */
   startWarnings: string[];
+  /**
+   * B26 (2026-11-16): one line per ball of the current game on which Midnight Madness may have run (this player's own
+   * and the others'), oldest first. A flag only; the same players are marked in `panel.players[].flags` and `panel.result`.
+   */
+  advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
   pass: { name: string; ball: number; score: number } | null;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
@@ -386,6 +392,8 @@ export interface MatchHostOptions {
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
   hostWaitMs?: number;
   rejoinTimeoutMs?: number;
+  /** B26 test seam: this PC's offset from UTC (minutes east) for the Midnight Madness flag. Default: the machine's time zone. */
+  utcOffsetMinutes?: UtcOffset;
   /** A15 test seam: how a relay client asks again for a room that is gone. Default `HOST_WAIT_REJOIN`. */
   relayRejoin?: Partial<RejoinPolicy>;
 }
@@ -755,6 +763,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         };
       }),
       startWarnings: c?.startWarnings ?? [],
+      advisories: c?.advisories ?? [],
       pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
       transfer: c?.transfer
         ? {
@@ -1148,6 +1157,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       resumed,
       // A16.2: the witness knows the machine's high-score list (a test witness may not).
       highScoreQualifies: (score) => witness.highScoreQualifies?.(score) ?? false,
+      // B26: the Midnight Madness flag: the witness knows the machine, the PC's time zone says where midnight is.
+      midnight: { inScope: () => witness.midnightInScope?.() ?? false, utcOffsetMinutes: opts.utcOffsetMinutes ?? localUtcOffsetMinutes },
     });
     controller.onChange(() => emit());
     noteBallEnds(controller, witness.status());

@@ -27,7 +27,7 @@
  * game's end, not the head. MATCH_END ends the series (`matchEnded`); after it a dropped host is not reconnected to.
  * The host dropping between games and not coming back is `hostGone` (no transfer: no game is running).
  */
-import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerId } from '@castcade/protocol';
+import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
@@ -146,6 +146,11 @@ export interface ClientEvents extends Record<string, unknown> {
    * sent its own), or this player's own (`updateParticipant`). The roster in the log keeps what MATCH_READY said.
    */
   rigUpdated: { playerId: PlayerId; rig: ParticipantInfo['rig'] };
+  /**
+   * B26 (2026-11-16): a player flagged one of its own balls after MATCH_READY (the host passed on its
+   * PARTICIPANT_UPDATE, or sent its own), or this player did (`reportAdvisory`). Never logged; a flag only.
+   */
+  advisory: { playerId: PlayerId; advisory: PlayerAdvisory };
   /** A10: the host started the next game of the series (logged); its grant 1 follows. */
   nextGame: PayloadOf<'NEXT_GAME'>;
   /** A10: the host ended the series (MATCH_END). */
@@ -390,6 +395,20 @@ export class ClientMatch {
     if (payload.game !== undefined) this.game = { ...payload.game };
     if (payload.ballEndReady !== undefined) this.ballEndReady = payload.ballEndReady;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', payload, this.matchIdForWire()));
+    return true;
+  }
+
+  /**
+   * B26 (2026-11-16): flag one of this player's own balls (the Midnight Madness flag): to the host as a
+   * PARTICIPANT_UPDATE, which it passes on to the others (a host from before B26 passes nothing on), and `advisory`
+   * here. Never logged. False (nothing sent) before MATCH_READY.
+   */
+  reportAdvisory(advisory: PlayerAdvisory): boolean {
+    this.assertActive();
+    if (!this.joined || this.s.state.phase === 'lobby') return false;
+    const msg = this.s.build('PARTICIPANT_UPDATE', { advisory }, this.matchIdForWire());
+    this.sendToHost(msg);
+    this.events.emit('advisory', { playerId: this.localId, advisory: msg.payload.advisory! });
     return true;
   }
 
@@ -719,8 +738,10 @@ export class ClientMatch {
         return;
       case 'PARTICIPANT_UPDATE':
         // A6.1 (2026-11-01): another player's rig (or the host's own) after MATCH_READY; in the lobby HELLO_ACK says it.
-        if (this.s.state.phase === 'lobby' || msg.payload.rig === undefined || msg.from === this.localId) return this.drop(msg, 'unexpected');
-        this.events.emit('rigUpdated', { playerId: msg.from, rig: msg.payload.rig });
+        // B26: or a flag about one of that player's own balls (`advisory`).
+        if (this.s.state.phase === 'lobby' || (msg.payload.rig === undefined && msg.payload.advisory === undefined) || msg.from === this.localId) return this.drop(msg, 'unexpected');
+        if (msg.payload.rig !== undefined) this.events.emit('rigUpdated', { playerId: msg.from, rig: msg.payload.rig });
+        if (msg.payload.advisory !== undefined) this.events.emit('advisory', { playerId: msg.from, advisory: msg.payload.advisory });
         return;
       case 'RESULT':
         this.onResult(msg);
