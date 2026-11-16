@@ -15,9 +15,11 @@ never deleted: a superseded ADR gets a `**Superseded by:**` line and stays in th
 | 0006 | [One live work tracker per repo: `WORK.md`, lanes, claims, a board](0006-one-live-work-tracker.md) | Accepted | 2026-10-21 |
 | 0007 | [Functionality before ease of setup](0007-functionality-before-ease-of-setup.md) | Accepted | 2026-10-27 |
 | 0008 | [A sanctioned VPX build for Sanctioned play; Castcade stays for everything else](0008-sanctioned-vpx-build.md) | Accepted (mechanism open) | 2026-10-30 |
-| 0009 | [Spectating is 2D: flat video on a screen, never a stereo or head-tracked view](0009-spectating-is-2d.md) | Accepted | 2026-11-04 |
+| 0009 | [Spectating is 2D: flat video on a screen, never a stereo or head-tracked view](0009-spectating-is-2d.md) | Accepted (§7 amended by 0011) | 2026-11-04 |
+| 0010 | [The stack under `castcade-video.exe`, chosen by the D10.0.1 spike](0010-spectator-video-stack.md) | Accepted | 2026-11-07 |
+| 0011 | [A watcher may render the player's table in their own VPX, from their own viewpoint (state streaming, in the fork)](0011-state-streamed-spectating-in-the-fork.md) | Accepted as a direction; design revert-if-wrong | 2026-11-15 |
 
-**Next free number: 0010.**
+**Next free number: 0012.**
 
 ## Convention
 
