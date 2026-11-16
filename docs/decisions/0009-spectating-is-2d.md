@@ -1,6 +1,7 @@
 # ADR 0009 — Spectating is 2D: the other player's table is flat video on a screen, never a stereo or head-tracked view
 
 **Status:** Accepted (2026-11-04)
+**Amended by:** ADR 0011 (2026-11-15): §7's shelving of state streaming is lifted by the owner; the video a watcher is sent stays 2D.
 **Owner rulings:** 2026-11-04, after the 0.2.35 bench and a two-rig match on the one-eye theater screen: "I agree with
 Krobs on the 2D ruling"; "That worked really well. I think this is the path I want to take. Let's forget 3D
 spectating altogether and go with this." Krobs' reason, relayed by the owner: he gets sick as a passenger in a VR

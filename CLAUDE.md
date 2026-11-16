@@ -30,6 +30,7 @@ here**: this section holds standing facts only (ADR 0006).
   in the ArcAid repo's own `WORK.md`, section W, and mirrored here as section F.
 - The owner's rig runs Panasony VR builds and a VPinMAME nightly, both allowed in Sanctioned play
   (ruling 2026-10-19). Its device row predates ArcAid #363; one re-pair from Settings fixes its type.
+- The VPX fork exists since 2026-11-15: `github.com/mekelburgj20/castcade-vpx` (from `Panasony1008/vpinball` `10.8.0`), branch `castcade/state-stream`, state streaming per ADR 0011 (`CASTCADE_STREAM=play|watch`; untested in a headset and between two PCs: WORK I11.1, I11.2). It builds locally in about a minute with `C:\code\repos\castcade-vpx-deps\build.ps1` (ATL and the June 2010 DirectX SDK are unpacked there, not installed); `tools/castcade/pair.ps1` in the fork runs two instances with paired screenshots and sends no keyboard input; `tools/castcade/package.ps1` makes the tester zips.
 - Test room for testers' scores: Flippin Fear Fest (`arcaid_flippin_fear_fest_26`); tester kit `docs/tester-kit.md`.
 
 ## Commands
@@ -68,7 +69,7 @@ detector (the three fixtures must still yield balls 1,2,3 + game_end and nothing
 
 0. `WORK.md` (`/work`): what is open, claimed, blocked, and what the owner wants next. Then, for the design behind an item:
 1. `docs/design/arcaid-integration-gap-analysis.md` — what ArcAid already has, the owner's rulings, the revised architecture and phases. **Source of truth.**
-2. `docs/decisions/` — ADRs 0001–0010 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker · functionality before ease of setup · sanctioned VPX build for Sanctioned play · spectating is 2D · the spectator-video stack is libwebrtc, chosen by the D10.0.1 spike).
+2. `docs/decisions/` — ADRs 0001–0011 (script hook not plugin · match = Throwdown · one app, Castcade uses Arcaid Witness · per-table import primary, core.vbs patch opt-in · Open / Sanctioned play · one live work tracker · functionality before ease of setup · sanctioned VPX build for Sanctioned play · spectating is 2D · the spectator-video stack is libwebrtc, chosen by the D10.0.1 spike · a watcher may render the player's table in their own VPX: state streaming in the fork).
 3. `docs/design/fairness-and-table-identity.md` — table identity, playfield fingerprint, script inspection, the honest ceiling, build order F1–F6.
 4. `docs/design/table-import-and-patching.md` — the Import-a-table pipeline (also the handoff doc for the ArcAid desktop-Witness agent).
 5. `docs/arcaid-side-changes.md` — the work that lands in the ArcAid repo, by phase.
@@ -91,7 +92,8 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | **Functionality before ease of setup.** VPX users accept complex setup; never drop a capability (multiplayer streaming, voice, fairness) to save a setup step. Within that, make install and setup as easy as possible: automate it, or walk the user through it. | 2026-10-27 | 0007 |
 | A **sanctioned VPX build** (our fork, Sanctioned mode enforced in-process) is a per-tournament requirement for Sanctioned play; ArcAid trusts its signature and Legends Unchained's (Mox's), no other build. Castcade on stock VPX stays the app for Open play and everything else. | 2026-10-30 | 0008 |
 | Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
-| **Spectating is 2D.** The player who is up is shown to everyone else as flat video (one eye, or the desktop window) on a screen in the headset, the desktop panel, or a cabinet's playfield display; never a stereo or head-tracked view. The stereo window of 0.2.27–0.2.35 stays in the code untouched; no further work on it. State streaming in VPX is shelved; the VPinMAME shared machine is separate research (I10). | 2026-11-04 | 0009 |
+| **Spectating is 2D.** The player who is up is shown to everyone else as flat video (one eye, or the desktop window) on a screen in the headset, the desktop panel, or a cabinet's playfield display; never a stereo or head-tracked view. The stereo window of 0.2.27–0.2.35 stays in the code untouched; no further work on it. The VPinMAME shared machine is separate research (I10). | 2026-11-04 | 0009 |
+| **State streaming is reopened** (it was shelved by 0009 §7): a watcher's own VPX may render the player's table from the watcher's own viewpoint and head, in our VPX fork, built on **Panasony's 10.8.0 branch**. Additive: the 2D video path is untouched and stays the default; both players need the fork and the identical table file. The DMD through VPinMAME is the owner's stated next iteration. | 2026-11-15 | 0011 |
 
 ## Repo layout
 
@@ -111,7 +113,8 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | `docs/` | design docs, ADRs, ArcAid work list | — |
 | `tmp/` | scratch, gitignored | — |
 
-Not present on purpose: `plugin-vpx/` (deferred), `rommaps/` (use the `pinmame-nvram-maps` corpus).
+Not present on purpose: `plugin-vpx/` (deferred), `rommaps/` (use the `pinmame-nvram-maps` corpus), the VPX fork
+(its own repository, `github.com/mekelburgj20/castcade-vpx`, cloned at `C:\code\repos\castcade-vpx`; ADR 0008, ADR 0011).
 
 ## Working agreement
 
