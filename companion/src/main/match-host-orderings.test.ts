@@ -302,7 +302,7 @@ describe('one step to a match over real match hosts (A14 steps 1 and 2)', () => 
     const co = oneStepOn(C.mh, cr, friendTables);
 
     // Host: one press. The match is hosted, the link is on the clipboard, VPX is asked for the picked table.
-    const hs = await ho.one.host({ tablePath: hostTables[0]!.vpxPath, port: port(), ballsPerGame: 3, displayName: 'Owner' });
+    const hs = await ho.one.host({ tablePath: hostTables[0]!.vpxPath, startTable: true, port: port(), ballsPerGame: 3, displayName: 'Owner' });
     expect(hs).toMatchObject({ role: 'host', phase: 'lobby' });
     const link = ho.one.status().link!;
     expect(link).toMatch(/^castcade:\/\/join\/castcade%3Aws%3A%2F%2F127\.0\.0\.1%3A\d+%23[A-Z]{6}$/);

@@ -6,6 +6,9 @@
  *
  * - **Host**: `host({ tablePath })` hosts the match, copies the join link (`castcade://join/<invite>`) to the
  *   clipboard and starts VPX on the picked table. A table that is already open is used as it is and nothing is started.
+ *   A14.7 (2026-11-15): the table start is its own step unless `startTable` is set. The owner: "when you click host,
+ *   you are put in to VR view. You have to exit out of VR to copy the code and paste it in to Discord." So Host gives
+ *   the invite and holds the picked table (`tableToStart`); `startTable()` starts it once the invite is sent.
  * - **A link** (`openLink`, from the command line of a first or second instance; `joinLink`, pasted on the Match tab):
  *   joins that match with the saved name and starts the host's table on this PC. The table is looked up here
  *   (`launch/find-table.ts`) from what the host announced (`HELLO_ACK.hostGame`); none here → the Match tab says which
@@ -49,6 +52,8 @@ export interface OneStepStatus {
   /** A link from outside that waits for the player's click. */
   pending: { code: string; address: string | null } | null;
   launch: { state: LaunchState; table: string | null; detail: string | null };
+  /** A14.7: hosting, and the picked table waits for "Start the table" (`startTable()`): its name. Null otherwise. */
+  tableToStart: string | null;
   /** One line about the last link (gone, not a link, already in a match). */
   notice: string | null;
   /** Counts links that asked for the Match tab; the renderer switches to it when this moves. */
@@ -68,6 +73,11 @@ export interface TableChoice {
 export interface OneStepHostOptions {
   /** A path from `tables()` or `browse()`, or null: host only (a table already open, or the player opens one). */
   tablePath: string | null;
+  /**
+   * A14.7: true starts the picked table as part of Host (one press, as 0.2.40 did); false holds it until
+   * `startTable()`, so the invite can be sent before VPX takes the headset.
+   */
+  startTable: boolean;
   port?: number;
   ballsPerGame: 3 | 5;
   displayName: string;
@@ -81,6 +91,8 @@ export interface OneStep {
    */
   browse(): Promise<TableChoice[]>;
   host(o: OneStepHostOptions): Promise<MatchStatus>;
+  /** A14.7: start the table Host held back (`status.tableToStart`). Nothing held: nothing happens. */
+  startTable(): Promise<OneStepStatus>;
   /** A link from outside the app. Never throws: what went wrong is the status's `notice`. */
   openLink(text: string, ctx: { trusted: boolean }): Promise<OneStepStatus>;
   /** A link pasted into the Match tab's Join box: joined at once; throws the sentence the tab shows. */
@@ -156,6 +168,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
   let hostTable: string | null = null;
   /** A table still to be started for the match with this code: the host's pick (`path`), or the host's game (a client). */
   let want: { code: string; path: string | null } | null = null;
+  /** A14.7: the host's pick, held until "Start the table" (it becomes the wish then). */
+  let held: { code: string; path: string; name: string } | null = null;
   let launchTimer: unknown = null;
   let settling = false;
   let settleAgain = false;
@@ -183,6 +197,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       copied: link !== null && copiedFor !== null && copiedFor === m.code,
       pending: pending ? { code: pending.code, address: pending.address } : null,
       launch: { ...launch },
+      tableToStart: held !== null && m.role === 'host' && held.code === m.code && tableOpen() === null ? held.name : null,
       notice,
       attention,
     };
@@ -240,6 +255,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (m.role === 'none' && m.phase !== 'connecting') {
       if (want) log.info('launch: the match ended before the table was started; nothing to start');
       want = null;
+      held = null;
       copiedFor = null;
       hostTable = null;
       if (launch.state !== 'idle' && launch.state !== 'starting') setLaunch(IDLE);
@@ -248,6 +264,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
     // The link goes on the clipboard once per hosted match, when the invite exists (it comes after the listener is up).
     const link = linkOf(m);
     if (link && m.code && copiedFor === null) copyNow(link, m.code, 'the join link');
+    // A14.7: a held table is for this match only, and a table the player opened meanwhile is the one that is used.
+    if (held && (m.code !== held.code || open !== null)) held = null;
     const w = want;
     if (!w) return;
     if (m.code !== w.code) {
@@ -372,11 +390,28 @@ export function createOneStep(o: OneStepOptions): OneStep {
       pending = null;
       setLaunch(IDLE);
       copiedFor = null;
+      held = null;
       hostTable = pick?.tableId ?? null;
       const st = await match.host({ port: h.port, ballsPerGame: h.ballsPerGame, displayName: h.displayName });
-      if (st.code) want = pick ? { code: st.code, path: pick.vpxPath } : null;
+      if (st.code && pick) {
+        if (h.startTable) want = { code: st.code, path: pick.vpxPath };
+        else {
+          want = null;
+          held = { code: st.code, path: pick.vpxPath, name: pick.tableId };
+          log.info(`launch: ${pick.tableId} waits for Start the table (the invite comes first)`);
+        }
+      } else if (st.code) want = null;
       await reconcile();
       return match.status();
+    },
+
+    async startTable() {
+      const h = held;
+      if (!h || match.status().code !== h.code) return status();
+      held = null;
+      want = { code: h.code, path: h.path };
+      await reconcile();
+      return status();
     },
 
     async openLink(text, ctx) {

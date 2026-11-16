@@ -116,11 +116,15 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K' });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     // A12 (2026-11-05): the host's table before the match: free by default, locked on request, anything else ignored.
     expect(patchMatchSettings(s, { preMatchPlay: 'locked' }).preMatchPlay).toBe('locked');
     expect(patchMatchSettings(s, { preMatchPlay: 'open' }).preMatchPlay).toBe('free');
+    // A14.7 (2026-11-15): Host starts the table too only on request; anything but a boolean is ignored.
+    expect(patchMatchSettings(s, { startTableOnHost: true }).startTableOnHost).toBe(true);
+    expect(patchMatchSettings(s, { startTableOnHost: 'yes' }).startTableOnHost).toBe(false);
+    expect(readMatchSettings(JSON.stringify({ ...s, startTableOnHost: true })).startTableOnHost).toBe(true);
     // D7.5: the camera source: the layer by default (D8.1; the screen before), the screen on request, anything else ignored.
     expect(patchMatchSettings(s, { cameraSource: 'screen' }).cameraSource).toBe('screen');
     expect(patchMatchSettings(s, { cameraSource: 'webcam' }).cameraSource).toBe('layer');
