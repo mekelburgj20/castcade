@@ -481,18 +481,18 @@ describe('panel page script (D2)', () => {
 
     // The mover's side: a re-attach with `reset` says so to each peer before its connections offer; its stereo follows.
     const m = loadPage({ mic: true, capture: true });
-    m.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'third'], ice: [], capture: { ...CAP, stereo: 'sbs' }, micDeviceId: null, muted: false, sending: false, reset: true });
+    m.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs', 'chuck'], ice: [], capture: { ...CAP, stereo: 'sbs' }, micDeviceId: null, muted: false, sending: false, reset: true });
     await settle();
     for (const pc of FakePeerConnection.all) pc.onnegotiationneeded?.();
     await settle();
     const kinds = m.sent.filter((s) => s.channel === PANEL_CHANNELS.send).map((s) => s.arg as { to: string; signal: { kind: string; stereo?: string } });
     expect(kinds.slice(0, 2)).toEqual([
       { to: 'krobs', signal: { kind: 'reset' } },
-      { to: 'third', signal: { kind: 'reset' } },
+      { to: 'chuck', signal: { kind: 'reset' } },
     ]);
     expect(kinds.filter((k) => k.signal.kind === 'stereo')).toEqual([
       { to: 'krobs', signal: { kind: 'stereo', stereo: 'sbs' } },
-      { to: 'third', signal: { kind: 'stereo', stereo: 'sbs' } },
+      { to: 'chuck', signal: { kind: 'stereo', stereo: 'sbs' } },
     ]);
     expect(kinds.filter((k) => k.signal.kind === 'offer')).toHaveLength(2);
     // a later capture that says one eye goes to every peer once
@@ -1117,6 +1117,8 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
   it('noPathText: names the player and the state; says what is missing', () => {
     expect(noPathText('Krobs', 'checking', 3, false)).toBe('No path to Krobs (ICE checking after 3 restarts): both routers blocked the direct connection; a TURN relay is needed.');
     expect(noPathText('Krobs', 'failed', 3, true)).toBe('No path to Krobs (ICE failed after 3 restarts): the TURN relay did not get through either.');
+    // D2.12: nothing was tried, so no router is blamed.
+    expect(noPathText('Krobs', 'new', 3, false)).toBe('Voice with Krobs did not start (ICE new after 3 restarts): leave the match and join again.');
   });
 
   it('the page: a connection stuck in checking restarts ICE on the backoff, then says there is no path; connected clears it', async () => {

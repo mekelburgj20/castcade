@@ -725,6 +725,8 @@ export function iceWatchStep(ice: string, elapsedMs: number, restarts: number, l
 
 /** D2.9: what the panel and the Match tab say once the watchdog gave up on a peer. */
 export function noPathText(name: string, ice: string, restarts: number, relay: boolean): string {
+  // D2.12: ICE still `new` never tried a path at all (GNBKHT 2026-11-15): that is the connection, not a router.
+  if (ice === 'new') return 'Voice with ' + name + ' did not start (ICE new after ' + restarts + ' restarts): leave the match and join again.';
   const why = relay ? 'the TURN relay did not get through either' : 'both routers blocked the direct connection; a TURN relay is needed';
   return 'No path to ' + name + ' (ICE ' + ice + ' after ' + restarts + ' restarts): ' + why + '.';
 }
