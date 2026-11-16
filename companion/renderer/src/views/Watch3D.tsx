@@ -64,35 +64,46 @@ export function WatchCard({ bridge, st }: { bridge: CastcadeBridge; st: WatchSta
   }
 
   if (st.state !== 'on') {
+    const paste = () =>
+      void bridge.app.clipboardText().then((t) => {
+        const v = t.trim();
+        if (/^[A-Za-z]{6}$/.test(v)) {
+          setError(null);
+          setCode(v.toUpperCase());
+        } else setError('The clipboard does not hold a session code (six letters).');
+      }, (e: unknown) => setError(describe(e)));
     return (
       <div className="card">
         <strong>3D watch (test)</strong>
         <p className="muted">
-          Watch another player&apos;s table in your own VPX, from your own view (in VR, with your own head). Both PCs need the Castcade VPX build and the same table file. No voice here: use Discord.
+          Watch the other player&apos;s table in your own VPX, from your own view (in VR, with your own head). Both PCs need the Castcade VPX build (VPinballX_GL64_castcade.exe, beside your
+          VPinballX_GL64.exe) and the same table file. No voice here: use Discord.
         </p>
         {st.ended && <p className="warn">The 3D watch session ended: {st.ended}.</p>}
         {st.fork.line && <p className="warn">{st.fork.line}</p>}
         <fieldset disabled={busy}>
-          <div className="row">
-            <button type="button" className="primary" onClick={() => void run(() => bridge.watch.host())}>
-              Host a 3D watch session
-            </button>
-          </div>
-          <label className="field">
-            <span>Or join one with its code</span>
+          <button type="button" className="primary" onClick={() => void run(() => bridge.watch.host())}>
+            Host a session
+          </button>
+          <label className="field watch-join">
+            <span>Or join one: the code from the host</span>
             <input type="text" maxLength={16} value={code} placeholder="The six letters, like JHDFEF" onChange={(e) => setCode(e.target.value.toUpperCase())} />
           </label>
-          <button type="button" disabled={!code.trim()} onClick={() => void run(() => bridge.watch.join(code))}>
+          <button type="button" onClick={paste}>
+            Paste
+          </button>{' '}
+          <button type="button" className="primary" disabled={!code.trim()} onClick={() => void run(() => bridge.watch.join(code))}>
             Join
           </button>
         </fieldset>
-        {shownError && <p className="warn">{shownError}</p>}
+        {shownError && shownError !== st.fork.line && <p className="warn">{shownError}</p>}
       </div>
     );
   }
 
   const p = st.player;
   const others = st.members.filter((m) => !m.me);
+  const tableName = (file: string) => file.replace(/\.vpx$/i, '');
   const copyCode = () => {
     if (!st.code) return;
     void navigator.clipboard.writeText(st.code).then(
@@ -103,27 +114,31 @@ export function WatchCard({ bridge, st }: { bridge: CastcadeBridge; st: WatchSta
       (e: unknown) => setError(describe(e)),
     );
   };
+  const found = st.watchTable?.path ?? null;
   return (
     <div className="card">
       <strong>3D watch session</strong>
       <div className="row">
-        <code className="mono invite">{st.code}</code>
+        <code className="mono invite watch-code">{st.code}</code>
         <button type="button" className="small" onClick={copyCode}>
           {copied ? 'Copied' : 'Copy code'}
         </button>
       </div>
-      {st.role === 'host' && others.length === 0 && <p>Send the code to the other player: they join it here, under 3D watch.</p>}
-      {st.members.map((m) => (
-        <p key={m.id} className={m.path === 'no_path' ? 'warn' : m.me ? 'muted' : undefined}>
+      {others.length === 0 && <p className="muted">Nobody has joined yet. Send the code to the other player: they join it on their Match tab, under 3D watch.</p>}
+      {others.map((m) => (
+        <p key={m.id} className={m.path === 'no_path' ? 'warn' : undefined}>
           {m.name}
           {m.host ? ' (host)' : ''}: {m.line}
         </p>
       ))}
+      {others.some((m) => m.path === 'no_path') && <p className="muted">Your two routers block a direct connection, so the table cannot stream between you. Castcade cannot get around that yet.</p>}
       {st.relayLine && <p className="muted">{st.relayLine}</p>}
-      {others.some((m) => m.path === 'no_path') && <p className="muted">Without a direct path there is no stream: a relay for that case is not built yet.</p>}
 
-      <p className="turn-line">{!p ? 'Nobody is playing a table yet.' : p.me ? `You are playing ${p.table}.` : `${p.name} is playing ${p.table}.`}</p>
-      {st.local.vpx === 'watching' && <p className="muted">You are watching in VPX ({st.local.table}). Close that table to stop watching.</p>}
+      <p>
+        <strong>{!p ? 'Nobody is playing a table yet.' : p.me ? `You are playing ${tableName(p.table)}.` : `${p.name} is playing ${tableName(p.table)}.`}</strong>
+      </p>
+      {!p && st.local.vpx === 'none' && <p className="muted">Either of you can play: the others then watch. Close the table to let someone else play.</p>}
+      {st.local.vpx === 'watching' && <p className="muted">You are watching in VPX. Close that table to stop watching.</p>}
       {st.local.vpx === 'playing' && <p className="muted">Close the table in VPX when you are done: then someone else can play.</p>}
       {st.fork.line && <p className="warn">{st.fork.line}</p>}
       {p && !p.me && st.local.vpx === 'none' && st.watchTable && <p className={st.watchTable.warn ? 'warn' : 'muted'}>{st.watchTable.line}</p>}
@@ -135,22 +150,23 @@ export function WatchCard({ bridge, st }: { bridge: CastcadeBridge; st: WatchSta
               Play a table…
             </button>
           )}
-          {p && !p.me && st.local.vpx === 'none' && (
-            <>
-              <button type="button" className="primary" disabled={!st.watchTable?.path} onClick={() => void run(() => bridge.watch.watch(null))}>
-                Watch
-              </button>
-              <button type="button" onClick={() => pickAnd((path) => bridge.watch.watch(path))}>
-                {st.watchTable?.path ? 'Watch another copy…' : 'Pick your copy and watch…'}
-              </button>
-            </>
+          {p && !p.me && st.local.vpx === 'none' && found && (
+            <button type="button" className="primary" onClick={() => void run(() => bridge.watch.watch(null))}>
+              Watch
+            </button>
+          )}
+          {/* Not found, or not the same size: the player picks the copy to open. */}
+          {p && !p.me && st.local.vpx === 'none' && (!found || st.watchTable?.warn) && (
+            <button type="button" className={found ? undefined : 'primary'} onClick={() => pickAnd((path) => bridge.watch.watch(path))}>
+              {found ? 'Pick another copy…' : 'Pick your copy and watch…'}
+            </button>
           )}
           <button type="button" className="small" onClick={() => void run(() => bridge.watch.leave())}>
             Leave
           </button>
         </div>
       </fieldset>
-      {shownError && <p className="warn">{shownError}</p>}
+      {shownError && shownError !== st.fork.line && <p className="warn">{shownError}</p>}
       <p className="muted">No voice in this session: use Discord.</p>
     </div>
   );

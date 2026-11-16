@@ -152,7 +152,7 @@ export function watchTableLine(want: WatchTableInfo, found: { path: string; size
   if (!found) return { line: `${want.name} is not in your tables: pick your copy of the file to watch.`, warn: true };
   if (found.size !== want.size)
     return {
-      line: `Your ${want.name} is not the same size as the player's (${found.size.toLocaleString('en-US')} bytes here, ${want.size.toLocaleString('en-US')} there): it may be another version, and then the watcher shows a "not the same table" message.`,
+      line: `Your ${want.name} is not the same size as the player's (${found.size.toLocaleString('en-US')} bytes here, ${want.size.toLocaleString('en-US')} there). If it is another version, VPX says "not the same table" when you watch.`,
       warn: true,
     };
   return { line: `Your copy of ${want.name} matches the player's in size.`, warn: false };
