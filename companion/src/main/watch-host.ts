@@ -23,7 +23,8 @@
  * Nothing here imports Electron: the tunnel factory, the launcher and the file checks are handed in, so a test drives
  * it with fakes and the real session over the relay double.
  */
-import { basename, join } from 'node:path';
+// win32 by name, as vpx-launch.ts does: every path here is a Windows path, and the tests also run on Linux.
+import { win32 } from 'node:path';
 import type { KnownTable } from '../launch/known-tables.js';
 import { forkExeFor, forkStreamEnv, type VpxLauncher } from '../launch/vpx-launch.js';
 import type { IceServer } from '../media/media-settings.js';
@@ -137,7 +138,7 @@ export async function findWatchTable(want: WatchTableInfo, tables: readonly Know
   let fallback: { path: string; size: number } | null = null;
   for (const t of tables) {
     const key = t.vpxPath.toLowerCase();
-    if (seen.has(key) || basename(t.vpxPath.replace(/\\/g, '/')).toLowerCase() !== name) continue;
+    if (seen.has(key) || win32.basename(t.vpxPath).toLowerCase() !== name) continue;
     seen.add(key);
     const s = await size(t.vpxPath);
     if (s === null) continue;
@@ -226,7 +227,7 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
     const path = forkExeFor(exe);
     if (!path) fork = { present: false, path: null, line: 'Castcade does not know where VPX is yet: open any table in VPX once, then come back.' };
     else if (await o.exists(path)) fork = { present: true, path, line: null };
-    else fork = { present: false, path, line: `The Castcade VPX build (VPinballX_GL64_castcade.exe) is not beside your VPX: copy it into ${join(path, '..')}, next to VPinballX_GL64.exe.` };
+    else fork = { present: false, path, line: `The Castcade VPX build (VPinballX_GL64_castcade.exe) is not beside your VPX: copy it into ${win32.dirname(path)}, next to VPinballX_GL64.exe.` };
     return fork;
   };
 
@@ -325,7 +326,7 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
     const f = await checkFork();
     if (!f.present || !f.path) throw new Error(f.line ?? 'The Castcade VPX build is missing.');
     const mine = ++run;
-    const logFile = join(o.logsDir, role === 'playing' ? PLAY_LOG : WATCH_LOG);
+    const logFile = win32.join(o.logsDir, role === 'playing' ? PLAY_LOG : WATCH_LOG);
     // A watcher is not a game: the witness is told before the spawn, so no poll of its can see the process first.
     const expected = role === 'watching' ? (o.expectVpx?.({ exe: f.path, tablePath }) ?? null) : null;
     const r = await o.launcher.launch(tablePath, {
@@ -349,7 +350,7 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
       throw new Error(`VPX did not start: ${r.reason}`);
     }
     expected?.bind(r.pid);
-    local = { vpx: role, table: basename(tablePath.replace(/\\/g, '/')), pid: r.pid };
+    local = { vpx: role, table: win32.basename(tablePath), pid: r.pid };
   };
 
   return {
@@ -379,7 +380,7 @@ export function createWatchHost(o: WatchHostOptions): WatchHost {
       error = null;
       const size = await o.size(tablePath);
       if (size === null || !/\.vpx$/i.test(tablePath)) throw new Error('That table file is not there.');
-      const table = { name: basename(tablePath.replace(/\\/g, '/')), size };
+      const table = { name: win32.basename(tablePath), size };
       try {
         await s.play(table);
         const port = await o.freePort();
