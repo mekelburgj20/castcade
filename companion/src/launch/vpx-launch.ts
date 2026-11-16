@@ -6,14 +6,21 @@
  *
  * The process is started directly (no shell, the arguments as an array) and let go: Castcade does not own VPX, and the
  * witness finds it like any other launch. The spawner and the file check are injected, so tests start nothing.
+ *
+ * I11.4.1 (2026-11-16, ADR 0011): the 3D watch session starts the VPX fork instead (`FORK_EXE_NAME`, installed beside
+ * the player's own VPinballX_GL64.exe: `forkExeFor`), with the stream's environment (`forkStreamEnv`): additive
+ * options of `launch`, so a launch without them is the A14 one, byte for byte. The child's environment is this
+ * process's without any `CASTCADE_STREAM*` / `CASTCADE_TEST_*` it may carry, plus the stream's. Its exit is heard.
  */
 import { win32 } from 'node:path';
-import { isVpxExe } from '../witness/process-watch.js';
+import { FORK_EXE_NAME, isVpxExe } from '../witness/process-watch.js';
 
 export interface SpawnedProcess {
   pid?: number | undefined;
   unref(): void;
   on(event: 'error', cb: (err: Error) => void): unknown;
+  /** I11.4.1: heard only by a launch that asks (`onExit`). */
+  on(event: 'exit', cb: (code: number | null) => void): unknown;
 }
 
 export interface SpawnOptions {
@@ -22,6 +29,8 @@ export interface SpawnOptions {
   stdio: 'ignore';
   shell: false;
   windowsHide: false;
+  /** I11.4.1: the whole environment of the child; absent: this process's, as before. */
+  env?: Record<string, string | undefined>;
 }
 
 export type SpawnLike = (command: string, args: readonly string[], options: SpawnOptions) => SpawnedProcess;
@@ -30,20 +39,69 @@ export interface LaunchPlan {
   command: string;
   args: readonly ['-Play', string];
   cwd: string;
+  /** I11.4.1: variables added to the child's environment (the fork's stream). */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** The command for a table, or the sentence that says why there is none. Pure. */
-export function planLaunch(exe: string | null, vpxPath: string): { ok: true; plan: LaunchPlan } | { ok: false; reason: string } {
+export function planLaunch(exe: string | null, vpxPath: string, env?: Readonly<Record<string, string>>): { ok: true; plan: LaunchPlan } | { ok: false; reason: string } {
   if (!exe) return { ok: false, reason: 'Castcade does not know where VPX is yet: open any table in VPX once, then try again' };
   if (!win32.isAbsolute(exe) || !isVpxExe(exe)) return { ok: false, reason: 'the VPX program Castcade remembers is not a VPinballX exe: open any table in VPX once, then try again' };
   if (!win32.isAbsolute(vpxPath) || !/\.vpx$/i.test(vpxPath) || /["\r\n\0]/.test(vpxPath)) return { ok: false, reason: 'that is not a table file' };
-  return { ok: true, plan: { command: exe, args: ['-Play', vpxPath], cwd: win32.dirname(exe) } };
+  const plan: LaunchPlan = { command: exe, args: ['-Play', vpxPath], cwd: win32.dirname(exe) };
+  if (env) plan.env = { ...env };
+  return { ok: true, plan };
+}
+
+// ----------------------------------------------------------------------------- I11.4.1: the fork --
+
+/** The VPX fork's exe (ADR 0011): it goes beside VPinballX_GL64.exe. Defined beside `isVpxExe`, where the witness reads it. */
+export { FORK_EXE_NAME };
+/** How far behind the newest frame a watcher renders, as the fork's own Watch launcher sets it (ms). */
+export const FORK_WATCH_DELAY_MS = 100;
+
+/** Where the fork goes for this VPX exe (the same folder), or null without one. Pure. */
+export function forkExeFor(vpxExe: string | null): string | null {
+  if (!vpxExe || !win32.isAbsolute(vpxExe)) return null;
+  return win32.join(win32.dirname(vpxExe), FORK_EXE_NAME);
+}
+
+/** The fork's stream variables: a player listens on loopback, a watcher connects to the companion on loopback. Pure. */
+export function forkStreamEnv(role: 'play' | 'watch', port: number, logFile: string): Record<string, string> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`not a port: ${port}`);
+  if (role === 'play') return { CASTCADE_STREAM: 'play', CASTCADE_STREAM_ADDR: `listen:127.0.0.1:${port}`, CASTCADE_STREAM_LOG: logFile };
+  return {
+    CASTCADE_STREAM: 'watch',
+    CASTCADE_STREAM_ADDR: `connect:127.0.0.1:${port}`,
+    CASTCADE_STREAM_DELAY_MS: String(FORK_WATCH_DELAY_MS),
+    CASTCADE_STREAM_SOUND: '1',
+    CASTCADE_STREAM_LOG: logFile,
+  };
+}
+
+/** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */
+export function launchEnv(base: Readonly<Record<string, string | undefined>>, add: Readonly<Record<string, string>>): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(base)) if (!/^CASTCADE_(STREAM|TEST_)/i.test(k)) out[k] = v;
+  return { ...out, ...add };
 }
 
 export type LaunchResult = { ok: true; pid: number | null } | { ok: false; reason: string };
 
+/** I11.4.1: what a 3D watch launch adds; none of it: the A14 launch. */
+export interface LaunchOptions {
+  /** Another VPinballX exe than the remembered one (the fork). */
+  exe?: string;
+  /** Added to the child's environment. */
+  env?: Readonly<Record<string, string>>;
+  /** The process ended (its exit code; null when a signal ended it). */
+  onExit?(code: number | null): void;
+  /** For the log line: `as the 3D watch player`. */
+  what?: string;
+}
+
 export interface VpxLauncher {
-  launch(vpxPath: string): Promise<LaunchResult>;
+  launch(vpxPath: string, opts?: LaunchOptions): Promise<LaunchResult>;
 }
 
 export interface VpxLauncherOptions {
@@ -53,22 +111,40 @@ export interface VpxLauncherOptions {
   /** The VPX exe: the one seen this run, else the one remembered. */
   exe(): string | null;
   log(line: string): void;
+  /** I11.4.1: the environment a launch with `env` starts from. Default: this process's. */
+  baseEnv?(): Readonly<Record<string, string | undefined>>;
 }
 
 export function createVpxLauncher(o: VpxLauncherOptions): VpxLauncher {
   return {
-    async launch(vpxPath) {
-      const p = planLaunch(o.exe(), vpxPath);
+    async launch(vpxPath, opts = {}) {
+      const p = planLaunch(opts.exe ?? o.exe(), vpxPath, opts.env);
       if (!p.ok) return p;
       const { plan } = p;
-      if (!(await o.exists(plan.command))) return { ok: false, reason: 'the VPX program Castcade remembers is no longer there: open any table in VPX once, then try again' };
+      if (!(await o.exists(plan.command))) {
+        if (opts.exe) return { ok: false, reason: `${win32.basename(plan.command)} is not in ${win32.dirname(plan.command)}` };
+        return { ok: false, reason: 'the VPX program Castcade remembers is no longer there: open any table in VPX once, then try again' };
+      }
       if (!(await o.exists(vpxPath))) return { ok: false, reason: 'the table file is no longer there' };
       try {
-        const child = o.spawn(plan.command, plan.args, { cwd: plan.cwd, detached: true, stdio: 'ignore', shell: false, windowsHide: false });
+        const options: SpawnOptions = { cwd: plan.cwd, detached: true, stdio: 'ignore', shell: false, windowsHide: false };
+        if (plan.env) options.env = launchEnv(o.baseEnv?.() ?? process.env, plan.env);
+        const child = o.spawn(plan.command, plan.args, options);
         // A spawn error arrives as an event after the call returns: it must have a listener, or it ends the app.
-        child.on('error', (err) => o.log(`launch: VPX did not start: ${err.message}`));
+        // I11.4.1: `onExit` once, whether the process ended or never started (an error may come without an exit).
+        let exited = false;
+        const ended = (code: number | null): void => {
+          if (exited || !opts.onExit) return;
+          exited = true;
+          opts.onExit(code);
+        };
+        child.on('error', (err) => {
+          o.log(`launch: VPX did not start: ${err.message}`);
+          ended(null);
+        });
+        if (opts.onExit) child.on('exit', (code) => ended(code));
         child.unref();
-        o.log(`launch: started VPX on ${win32.basename(vpxPath)} (${win32.basename(plan.command)} -Play, pid ${child.pid ?? 'unknown'})`);
+        o.log(`launch: started VPX on ${win32.basename(vpxPath)} (${win32.basename(plan.command)} -Play, pid ${child.pid ?? 'unknown'})${opts.what ? ` ${opts.what}` : ''}`);
         return { ok: true, pid: child.pid ?? null };
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);

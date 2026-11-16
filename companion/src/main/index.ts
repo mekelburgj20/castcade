@@ -11,6 +11,7 @@ import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, s
 import { spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,8 +45,11 @@ import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol 
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
+import { createWatchHost, type WatchHost } from './watch-host.js';
+import { createTunnelEnd, freeLoopbackPort } from '../watch/tunnel-end.js';
+import { HiddenVpx } from '../witness/hidden-vpx.js';
 import type { VrOverlay } from '../media/match-media-types.js';
-import { createMediaSettingsStore, type MediaSettingsStore } from '../media/media-settings.js';
+import { createMediaSettingsStore, iceServers, type MediaSettingsStore } from '../media/media-settings.js';
 import { usableBounds } from '../media/panel-placement.js';
 import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
@@ -87,6 +91,10 @@ let tableAudio: TableAudioHelper | null = null;
 let videoHelper: VideoHelper | null = null;
 /** A14: one step to a match (Host with a table, the join link); null when matches are off this run. */
 let oneStep: OneStep | null = null;
+/** I11.4.1: the standalone 3D watch session (the VPX fork's state stream through the companion); null when it could not be set up. */
+let watch3d: WatchHost | null = null;
+/** I11.4.1: a PC is in one ArcAid room at a time: a match is refused while a 3D watch session is on. */
+const WATCH_BLOCKS_MATCH = 'Leave the 3D watch session first: a PC is in one ArcAid room at a time.';
 /** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
 let matchTabShowing = false;
 /** A14: a `castcade://` link that arrived before the app was ready (a cold start, or a second instance during startup). */
@@ -251,6 +259,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await overlay?.stop();
   await stream?.stop().catch(() => undefined);
   oneStep?.stop();
+  await watch3d?.stop().catch(() => undefined); // I11.4.1: leaves the 3D watch session; a VPX it started stays open
   // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
   // match is kept and rejoined at the next start.
   await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
@@ -301,6 +310,14 @@ function registerIpc(
   const mh = (): MatchHost => {
     if (!maybeMatch) throw new Error('matches are unavailable this run (see the log)');
     return maybeMatch;
+  };
+  /** I11.4.1: the calls that put this PC into a match room are refused while a 3D watch session is on. */
+  const noWatch = (): void => {
+    if (watch3d?.active()) throw new Error(WATCH_BLOCKS_MATCH);
+  };
+  const wh = (): WatchHost => {
+    if (!watch3d) throw new Error('3D watch is unavailable this run (see the log)');
+    return watch3d;
   };
   const os = (): OneStep => {
     if (!maybeOneStep) throw new Error('matches are unavailable this run (see the log)');
@@ -407,6 +424,7 @@ function registerIpc(
     return mh().status();
   });
   ipcMain.handle(IPC.matchHost, (_e, o: unknown) => {
+    noWatch();
     const w = (o ?? {}) as { port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
     return mh().host({
       port: w.port === undefined || w.port === null ? undefined : Number(w.port),
@@ -415,6 +433,7 @@ function registerIpc(
     });
   });
   ipcMain.handle(IPC.matchJoin, (_e, invite: unknown, displayName: unknown) => {
+    noWatch();
     const text = str(invite, 'invite');
     const name = typeof displayName === 'string' ? displayName : '';
     // A14: a join link pasted into the Join box joins and starts the host's table here (the player pressed Join).
@@ -424,6 +443,7 @@ function registerIpc(
   ipcMain.handle(IPC.launchTables, () => os().tables());
   ipcMain.handle(IPC.launchBrowse, () => os().browse());
   ipcMain.handle(IPC.launchHost, (_e, o: unknown) => {
+    noWatch();
     const w = (o ?? {}) as { tablePath?: unknown; startTable?: unknown; port?: unknown; ballsPerGame?: unknown; displayName?: unknown };
     return os().host({
       tablePath: typeof w.tablePath === 'string' && w.tablePath !== '' ? w.tablePath : null,
@@ -435,7 +455,10 @@ function registerIpc(
     });
   });
   ipcMain.handle(IPC.launchStartTable, () => os().startTable());
-  ipcMain.handle(IPC.launchConfirm, () => os().confirm());
+  ipcMain.handle(IPC.launchConfirm, () => {
+    noWatch();
+    return os().confirm();
+  });
   ipcMain.handle(IPC.launchDismiss, () => os().dismiss());
   ipcMain.handle(IPC.launchCopy, (_e, what: unknown) => os().copy(what === 'message' ? 'message' : 'link'));
   ipcMain.handle(IPC.launchViewing, (e, on: unknown) => {
@@ -450,7 +473,10 @@ function registerIpc(
   ipcMain.handle(IPC.matchBenchView, (_e, view: unknown) => mh().setBenchView(view === 'direct' ? 'direct' : 'theater'));
   ipcMain.handle(IPC.matchBenchClips, () => mh().benchClips());
   ipcMain.handle(IPC.matchLeave, () => mh().leave());
-  ipcMain.handle(IPC.matchRejoin, () => mh().rejoin());
+  ipcMain.handle(IPC.matchRejoin, () => {
+    noWatch();
+    return mh().rejoin();
+  });
   ipcMain.handle(IPC.matchForgetResume, () => mh().forgetResume());
   ipcMain.handle(IPC.matchSettingsSet, (_e, patch: unknown) => mh().setSettings((patch ?? {}) as Record<string, never>));
   ipcMain.handle(IPC.matchSetMicrophone, (_e, deviceId: unknown) => mh().setMicrophone(typeof deviceId === 'string' ? deviceId : null));
@@ -486,6 +512,20 @@ function registerIpc(
       log: (line) => logger.info(line),
     }),
   );
+  // I11.4.1: the 3D watch session.
+  ipcMain.handle(IPC.watchStatus, () => wh().status());
+  ipcMain.handle(IPC.watchHost, () => wh().host());
+  ipcMain.handle(IPC.watchJoin, (_e, code: unknown) => wh().join(str(code, 'code')));
+  ipcMain.handle(IPC.watchLeave, () => wh().leave());
+  ipcMain.handle(IPC.watchPlay, (_e, tablePath: unknown) => wh().play(str(tablePath, 'table file')));
+  ipcMain.handle(IPC.watchWatch, (_e, tablePath: unknown) => wh().watch(tablePath === null || tablePath === undefined ? null : str(tablePath, 'table file')));
+  ipcMain.handle(IPC.watchPickTable, async () => {
+    const opts: Electron.OpenDialogOptions = { properties: ['openFile'], title: 'Pick a table', filters: [{ name: 'VPX table', extensions: ['vpx'] }] };
+    const dir = tables.resolveTablesDir(null);
+    if (dir) opts.defaultPath = dir;
+    const r = win && !win.isDestroyed() ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]!;
+  });
   ipcMain.handle(IPC.appClipboardText, () => clipboard.readText());
   ipcMain.handle(IPC.appPickFolder, async (_e, defaultPath: unknown) => {
     const opts: Electron.OpenDialogOptions = { properties: ['openDirectory'], title: 'Choose a folder' };
@@ -522,7 +562,10 @@ async function main(): Promise<void> {
 
   // E8: ArcAid's log pull (W99): the bundle is this rig's logs, newest VR report and newest journals; never settings.
   const localAppData = process.env.LOCALAPPDATA ?? null;
+  // I11.4.1: the 3D watch watchers Castcade starts are announced here before their spawn; the witness never sees them.
+  const hiddenVpx = new HiddenVpx();
   const host = createWitnessHost(store, logger, {
+    hideProcess: (p) => hiddenVpx.hides(p),
     logBundle: () =>
       collectLogBundle({
         companionLog: logger.file,
@@ -752,6 +795,63 @@ async function main(): Promise<void> {
     } catch (e) {
       logger.error(`launch: could not set up (${describeError(e)}); Host and Join work as before, without the table start and the link`);
     }
+  }
+
+  // I11.4.1: the 3D watch session (ADR 0011's fork, its stream carried between PCs over a WebRTC data channel, every
+  // socket on loopback). Through ArcAid like a match: paired only, and never while a match is on. A failure here only
+  // turns 3D watch off for this run.
+  try {
+    const mhost = matchHost;
+    watch3d = createWatchHost({
+      relay: () => {
+        const cur = store.get();
+        return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
+      },
+      me: () => {
+        const cur = store.get();
+        const st = mhost?.status();
+        return { id: cur.deviceId, name: st?.settings.displayName ?? st?.defaultName ?? cur.deviceLabel };
+      },
+      appVersion,
+      log: logger,
+      logsDir: dirname(logger.file),
+      vpxExe: () => host.status().vpxExe ?? store.get().vpxExe ?? null,
+      exists: async (p) => existsSync(p),
+      size: async (p) => {
+        try {
+          const st = await stat(p);
+          return st.isFile() ? st.size : null;
+        } catch {
+          return null;
+        }
+      },
+      launcher: createVpxLauncher({
+        spawn: (command, args, options) => spawn(command, [...args], options),
+        exists: async (p) => existsSync(p),
+        exe: () => host.status().vpxExe ?? store.get().vpxExe ?? null,
+        log: (line) => logger.info(line),
+      }),
+      expectVpx: (e) => hiddenVpx.expect(e),
+      tables: async () => {
+        const known = await listKnownTables({ fs: nodeFs, manifestDir, dataDir: store.get().dataDir });
+        return [...known, ...(await listTableFiles(nodeFs, tables.resolveTablesDir(null), known))];
+      },
+      iceServers: () => iceServers(mediaSettings.get()),
+      tunnel: (o) => createTunnelEnd(o),
+      freePort: freeLoopbackPort,
+      matchBusy: () => {
+        const st = mhost?.status();
+        if (!st) return null;
+        if (st.phase === 'connecting') return 'This PC is joining a match';
+        return st.role === 'none' ? null : 'This PC is in a match';
+      },
+      pageDir: userData,
+    });
+    watch3d.onStatus((st) => {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.watchStatusEvent, st);
+    });
+  } catch (e) {
+    logger.error(`watch: could not set up (${describeError(e)}); 3D watch is off this run`);
   }
 
   registerIpc(store, host, tables, watch, logger, streamHost, matchHost, oneStep);

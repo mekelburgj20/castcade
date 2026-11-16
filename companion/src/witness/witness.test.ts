@@ -18,6 +18,7 @@ import { attemptStartText, attemptStatusFor, createWitness, embeddedPatchNote, m
 import { RECIPE_VERSION, classifyScript, manifestPathFor, renderRecipeA } from '../patcher/index.js';
 import { JournalDetector, type GameEvent } from './journal-detector.js';
 import type { CompiledMap } from './maps.js';
+import { HiddenVpx } from './hidden-vpx.js';
 
 const repo = (p: string) => fileURLToPath(new URL(`../../../${p}`, import.meta.url));
 const corpus = createMapCorpus(repo('fixtures/maps'));
@@ -200,6 +201,13 @@ function harness(settingsPatch: Partial<WitnessSettings> = {}, depsPatch: Partia
     },
     setTitle(title: string | null) {
       for (const p of procs) p.windowTitle = title;
+    },
+    /** I11.4.1: these processes, and only these, are running; the next poll (2 s) sees them. */
+    async processes(list: ProcessInfo[]) {
+      await flush();
+      procs = list.map((p) => ({ ...p }));
+      clock.advance(2000);
+      await flush();
     },
     /** One poll interval. */
     async poll() {
@@ -2274,5 +2282,105 @@ describe('C11: every close-time read names its rung (capture detail, Status, log
     expect(h.captures[0]?.detail).toMatch(/^exit_sample: no map for ROM zz_999/);
     expect(h.witness.status().lastClose).toMatchObject({ rung: 'b', kind: 'no_map', vpxPath: null });
     expect(h.witness.status().lastClose?.text).toMatch(/Nothing to do yet/);
+  });
+});
+
+describe('I11.4.1: the VPX instances of a 3D watch session', () => {
+  const FORK = String.raw`C:\VPX\VPinballX_GL64_castcade.exe`;
+  /** A watcher on a table with no Castcade patch: seen as a game, it would raise the "import would fix it" notice. */
+  const WATCHER_CMD = `"${FORK}" -Play "${MM_PATH}"`;
+  const PATCHED_HEAD = SIDECAR_HEAD + 'Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n';
+
+  function watchHarness(hidden: boolean) {
+    const clock = new ManualClock(1_760_000_000_000);
+    const registry = new HiddenVpx(() => clock.now());
+    const h = harness({}, { clock, journalDir: '/journal', journalPollMs: 250, ...(hidden ? { hideProcess: (p: ProcessInfo) => registry.hides(p) } : {}) });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, PATCHED_HEAD);
+    h.fs.put(MM_PATH, MM_VPX);
+    return { h, clock, registry };
+  }
+
+  it('a watcher Castcade started is invisible to the witness, and a real game beside it is witnessed and scored as ever', async () => {
+    const { h, clock, registry } = watchHarness(true);
+    await h.witness.start();
+    await h.flush();
+    const before = h.calls.length;
+    // Told before the spawn; the process watch sees the process before the pid is bound (it polls on its own).
+    const expected = registry.expect({ exe: FORK, tablePath: MM_PATH });
+    const watcher: ProcessInfo = { pid: 20, exe: FORK, commandLine: WATCHER_CMD, startedAt: clock.now(), windowTitle: 'Visual Pinball Player' };
+    await h.processes([watcher]);
+    expected.bind(20);
+    await h.poll();
+    await h.settle(8000);
+    expect(h.launches).toEqual([]);
+    expect(h.calls.slice(before).filter((c) => !c.path.endsWith('/heartbeat'))).toEqual([]);
+    expect(h.notices).toEqual([]);
+    expect(h.witness.status()).toMatchObject({ currentTable: null, currentIdentity: null, vpxExe: null, captureMode: null });
+
+    // The player also plays a patched table here meanwhile: witnessed, live, posted.
+    const game: ProcessInfo = { pid: 31, exe: EXE, commandLine: TFTC_CMD, startedAt: null, windowTitle: null };
+    await h.processes([watcher, game]);
+    expect(h.launches).toEqual([{ table: TFTC_TABLE, pid: 31 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live', vpxExe: EXE });
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(clock.now() + 4000).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({ table: 'Tales from the Crypt (Data East 1993)', score: '2318430' });
+
+    // The watcher closes in the middle of it: no exit, no capture, and the game's session is untouched.
+    expected.done();
+    await h.processes([game]);
+    await h.settle(8000);
+    expect(h.exits).toEqual([]);
+    expect(h.captures).toHaveLength(1);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live' });
+
+    // The game ends: its close is reported, and nothing in the whole run named the watcher's table.
+    await h.exit();
+    await h.settle(8000);
+    expect(h.exits).toEqual([{ table: TFTC_TABLE, durationSec: expect.any(Number) }]);
+    expect(h.paths('/report')).toHaveLength(2);
+    expect(h.calls.every((c) => c.params.table === undefined || c.params.table === 'Tales from the Crypt (Data East 1993)')).toBe(true);
+    // The game's own notices (its patch is older than this build) are its own; none is about the watcher's table.
+    expect(h.notices.filter((n) => n.table === MM_TABLE)).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('the same watcher not announced (the control) is a launch with a report and a notice', async () => {
+    const { h, clock } = watchHarness(false);
+    await h.witness.start();
+    await h.processes([{ pid: 20, exe: FORK, commandLine: WATCHER_CMD, startedAt: clock.now(), windowTitle: null }]);
+    await h.flush();
+    expect(h.launches).toEqual([{ table: MM_TABLE, pid: 20 }]);
+    expect(h.paths('/report')).toHaveLength(1);
+    expect(h.notices.map((n) => n.kind)).toEqual(['unpatched']);
+    // Even then, the fork's exe is not remembered.
+    expect(h.witness.status().vpxExe).toBeNull();
+  });
+
+  it("a 3D watch player in the fork is an ordinary game, followed live and scored, and the fork's exe is never the remembered one", async () => {
+    const { h, clock } = watchHarness(true);
+    h.fs.put(FORK, EXE_BYTES);
+    await h.witness.start();
+    await h.launch(`"${FORK}" -Play "${TFTC_PATH}"`, 31, { exe: FORK });
+    expect(h.launches).toEqual([{ table: TFTC_TABLE, pid: 31 }]);
+    expect(h.witness.status()).toMatchObject({ currentTable: TFTC_TABLE, captureMode: 'live', vpxExe: null });
+    h.fs.put(TFTC_JOURNAL, tftcJournalAt(clock.now() + 4000).text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.captures[0]).toMatchObject({ table: TFTC_TABLE, score: 2318430, outcome: 'ingested', mode: 'live' });
+    // The build that played is attested as what it is (the fork's own file).
+    expect(h.captures[0]?.attestation?.build?.vpx?.path).toBe(FORK);
+    await h.exit();
+    await h.settle(8000);
+    expect(h.paths('/report')).toHaveLength(2);
+    // The stock VPX afterwards is remembered as before.
+    await h.launch(TFTC_CMD, 32);
+    expect(h.witness.status().vpxExe).toBe(EXE);
   });
 });

@@ -6,6 +6,9 @@
  * from the editor's window title `Visual Pinball - [<table>]` once it shows one (null until then).
  * The real lister runs one PowerShell query joining `Get-CimInstance Win32_Process` with
  * `Get-Process` for the title; tests drive a fake lister and a `ManualClock`.
+ *
+ * I11.4.1 (2026-11-16): a process `hide` claims the first time its pid shows (a 3D watch watcher Castcade started,
+ * `hidden-vpx.ts`) is never a launch: everything the witness does starts from these events, so it sees nothing of it.
  */
 import { execFile } from 'node:child_process';
 import { basename, parse as parsePath } from 'node:path';
@@ -33,6 +36,17 @@ export const VPX_EXE = /^VPinballX.*\.exe$/i;
 
 export function isVpxExe(exe: string): boolean {
   return VPX_EXE.test(basename(exe.replace(/\\/g, '/')));
+}
+
+/**
+ * I11.4.1 (2026-11-16): the VPX fork's exe (ADR 0011, `github.com/mekelburgj20/castcade-vpx`), installed beside the
+ * player's VPinballX_GL64.exe. It counts as VPX everywhere, but it is never remembered as "the VPX exe" (the one A14
+ * starts tables with), whoever started it: a 3D watch session, or the fork's own `.bat` launchers.
+ */
+export const FORK_EXE_NAME = 'VPinballX_GL64_castcade.exe';
+
+export function isForkExe(exe: string | null | undefined): boolean {
+  return !!exe && basename(exe.replace(/\\/g, '/')).toLowerCase() === FORK_EXE_NAME.toLowerCase();
 }
 
 // ------------------------------------------------------------------------------ command line --
@@ -302,6 +316,11 @@ export interface ProcessWatchOptions {
   lister: ProcessLister;
   clock?: Clock;
   intervalMs?: number;
+  /**
+   * I11.4.1: a VPX process this watch must not see at all (a 3D watch watcher Castcade started: `hidden-vpx.ts`).
+   * Asked once, the first time a pid appears; a hidden pid gets no launch, title or exit, ever.
+   */
+  hide?: (p: ProcessInfo) => boolean;
 }
 
 export const DEFAULT_POLL_INTERVAL_MS = 2_000;
@@ -312,6 +331,9 @@ export class ProcessWatch {
   private readonly clock: Clock;
   private readonly intervalMs: number;
   private readonly known = new Map<number, VpxLaunch>();
+  /** I11.4.1: pids `hide` claimed, kept until they are gone so they are never looked at again. */
+  private readonly hidden = new Set<number>();
+  private readonly hide: ((p: ProcessInfo) => boolean) | null;
   private timer: TimerHandle | null = null;
   private running = false;
   private polling: Promise<void> | null = null;
@@ -320,6 +342,7 @@ export class ProcessWatch {
     this.lister = opts.lister;
     this.clock = opts.clock ?? realClock;
     this.intervalMs = opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.hide = opts.hide ?? null;
   }
 
   on<K extends keyof ProcessWatchEvents>(event: K, cb: (payload: ProcessWatchEvents[K]) => void): () => void {
@@ -374,10 +397,15 @@ export class ProcessWatch {
     for (const p of procs) {
       if (!isVpxExe(p.exe)) continue;
       seen.add(p.pid);
+      if (this.hidden.has(p.pid)) continue;
       const title = p.windowTitle && p.windowTitle.trim() ? p.windowTitle : null;
       const existing = this.known.get(p.pid);
       if (existing) {
         if (existing.title !== title) this.applyTitle(existing, title, now);
+        continue;
+      }
+      if (this.hideOf(p)) {
+        this.hidden.add(p.pid);
         continue;
       }
       const arg = parseTableArg(p.commandLine);
@@ -401,6 +429,18 @@ export class ProcessWatch {
       if (seen.has(pid)) continue;
       this.known.delete(pid);
       this.emitter.emit('exit', { launch, exitedAt: now });
+    }
+    // A hidden process that ended leaves nothing behind (its pid may come back as an ordinary one).
+    for (const pid of [...this.hidden]) if (!seen.has(pid)) this.hidden.delete(pid);
+  }
+
+  /** `hide`'s answer; a hide that throws hides nothing (the process is watched as before). */
+  private hideOf(p: ProcessInfo): boolean {
+    if (!this.hide) return false;
+    try {
+      return this.hide({ ...p });
+    } catch {
+      return false;
     }
   }
 

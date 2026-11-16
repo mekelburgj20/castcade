@@ -286,7 +286,8 @@ export function relayEndpoint(baseUrl: string): { origin: string; path: string }
   return { origin: u.origin, path: `${prefix}/socket.io` };
 }
 
-abstract class RelayBase {
+/** The socket, the ack'd requests and the error reports the relay transports share; I11.4.1's watch session extends it too. */
+export abstract class RelayBase {
   readonly localId: PlayerId;
   readonly topology = 'star' as const;
   protected socket: Socket | null = null;

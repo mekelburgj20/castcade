@@ -358,6 +358,15 @@ code.invite {
   flex: 1;
   min-width: 0;
 }
+/* I11.4.1: a 3D watch session's code is six letters read out over voice chat: large enough to read. */
+code.watch-code {
+  font-size: 1.3rem;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+.field.watch-join {
+  margin-top: 0.75rem;
+}
 input.port {
   width: 7rem;
 }
