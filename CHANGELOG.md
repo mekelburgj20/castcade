@@ -20,6 +20,20 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   without a layer build. Not yet run in a headset. `media/scoreboard-page.ts`, `media/rtc-host.ts`,
   `media/vr-layer.ts`, `vr-layer/src/`.
 
+- **Midnight Madness is flagged (B26).** Williams / Bally WPC machines start a bonus multiball when the machine's
+  clock passes midnight with a ball in play, and VPinMAME takes that clock from the PC, so it happens at each
+  player's own local midnight (the owner, 2026-11-16: "a midnight madness happened for Krobs which is a really unfair
+  advantage"). Stock VPX cannot hold the clock, so this step flags it. In a match, a ball whose play time (the
+  grant's arrival to the ball end's report) contains the player's local midnight on a WPC machine is flagged for
+  every player: "Midnight Madness may have run on Krobs' ball 2 (that table's clock passed midnight)" on the panel
+  for 20 seconds and on the Match tab for the rest of the game, and `MIDNIGHT MADNESS?` on that player's row and
+  result row. A solo game across midnight gets a `witness:` log line and the same words in the capture detail. In
+  scope is any ROM whose map is on a WPC platform (`williams-wpc-*`); the wording is always "may have run". A flag
+  only: no score, turn or result changes, and nothing new is sent to ArcAid yet. It travels as
+  `PARTICIPANT_UPDATE.advisory`, optional and never logged, so the protocol stays 5: a 0.2.41 to 0.2.43 rig plays on
+  as before and does not see the flag (nor pass it on as the host). Not run against a real table.
+  `witness/midnight.ts`, `match/controller.ts`, `protocol/src`.
+
 ### Changed
 
 - **The invite before the table (A14.7).** Host no longer starts VPX at once. It hosts the match and copies the
@@ -44,6 +58,10 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   table's patch is re-made at the next look (reopen a table that was open); until both rigs are on this build the
   roster may say "different table file" (advisory). Not yet verified on a rig. `match/controller.ts`,
   `witness/journal-detector.ts`, `witness/maps.ts`, `patcher/render.ts`.
+- **Your own table is audible while you enter your initials (A16.2.2).** During an initials hold the table's sound
+  still followed the turn and went silent the moment the next player was up. Now your own VPX is not muted during the
+  hold; it is not sent to the others, and the other player's table keeps playing beside yours.
+  `media/table-audio-policy.ts`.
 - **A turn that never passed after 44 minutes at one table (C15).** In the third game of the owner's match QBPKHR
   (2026-11-15, Congo, three games without closing the table) his last ball never ended for the match: Krobs was never
   up, and a new game the owner started on the table was not seen either. The table's script stopped writing its
