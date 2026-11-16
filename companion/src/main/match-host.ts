@@ -851,19 +851,24 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /**
    * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
-   * else the witness's launch). The helper and the page each act only on a change.
+   * else the witness's launch). The helper and the page each act only on a change. A16.2.2: an initials hold keeps
+   * this rig's own table audible (the controller's status change reaches here through `emit`).
    */
   let tableLogged = '';
   const syncTableAudio = (): void => {
     const a = active;
-    const plan = tableAudioPlan(a ? a.controller.panel() : null, settings);
+    const panel = a ? a.controller.panel() : null;
+    const hold = a ? a.controller.status().initialsHold : false;
+    const plan = tableAudioPlan(panel, settings, { initialsHold: hold });
+    // For the log: the hold is what keeps this table unmuted right now.
+    const heldOpen = hold && !plan.muteMine && tableAudioPlan(panel, settings).muteMine;
     const pid = a ? tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.()) : null;
     opts.tableAudio?.apply({ mutePid: plan.muteMine ? pid : null, tapPid: plan.tapMine ? pid : null });
     // D2.10: my table under my voice while I am up; back to its own volume the moment I am not.
     if (plan.levelMine !== null && pid !== null) opts.tableAudio?.level(pid, plan.levelMine);
     else opts.tableAudio?.unlevel();
     opts.media?.setTableAudio?.({ send: plan.tapMine && pid !== null, hear: plan.playTableOf !== null });
-    const words = `mute ${plan.muteMine ? 'on' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, mine at ${plan.levelMine ?? 100} %, VPX pid ${pid ?? 'unknown'}`;
+    const words = `mute ${plan.muteMine ? 'on' : heldOpen ? 'off (initials hold)' : 'off'}, send ${plan.tapMine ? 'on' : 'off'}, play ${plan.playTableOf ?? 'nobody'}, mine at ${plan.levelMine ?? 100} %, VPX pid ${pid ?? 'unknown'}`;
     if (opts.tableAudio && a && words !== tableLogged) {
       tableLogged = words;
       log.info(`match: table sound: ${words}`);

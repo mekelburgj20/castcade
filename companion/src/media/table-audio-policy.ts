@@ -12,6 +12,12 @@
  *     and leaving the up state restores it (`unlevel`).
  *
  * The lobby (`idle`), the result (`over`) and no match at all mute nothing, tap nothing and level nothing.
+ *
+ * A16.2.2 (2026-11-16): during an initials hold (`now.initialsHold`: this player's finished game made the machine's
+ * high-score list and their table is held for the initials, controller.ts) my own table is never muted, whoever is up:
+ * the initials entry is heard as well as seen. It is not tapped (the others hear the player up, not my initials), and
+ * the up player's table goes on playing beside mine: the two do not exclude each other (mine is VPX's own output, the
+ * other's is the panel page's), so nothing has to give way. My table is left at its own volume (no `levelMine`).
  */
 import type { MatchPlayerId, PanelState } from './match-media-types.js';
 
@@ -37,10 +43,15 @@ export interface TableAudioPlan {
 
 export const NO_TABLE_AUDIO: TableAudioPlan = { muteMine: false, tapMine: false, playTableOf: null, levelMine: null };
 
-export function tableAudioPlan(panel: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> | null, s: TableAudioSettings): TableAudioPlan {
+export function tableAudioPlan(
+  panel: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> | null,
+  s: TableAudioSettings,
+  now: { initialsHold?: boolean } = {},
+): TableAudioPlan {
   if (!panel || (panel.phase !== 'playing' && panel.phase !== 'paused')) return NO_TABLE_AUDIO;
   if (panel.myTurn) return { muteMine: false, tapMine: s.tableSendMine, playTableOf: null, levelMine: levelFor(s.myTableWhileUp) };
-  return { muteMine: s.tableMuteMine, tapMine: false, playTableOf: s.tableHearOthers ? panel.playerUp : null, levelMine: null };
+  // A16.2.2: an initials hold keeps my own table audible to me; everything else follows the turn.
+  return { muteMine: s.tableMuteMine && !now.initialsHold, tapMine: false, playTableOf: s.tableHearOthers ? panel.playerUp : null, levelMine: null };
 }
 
 /** D2.10: the level to ask for from the setting: a whole percent in 10–99, else null (100 and above, or no setting, is untouched). */
