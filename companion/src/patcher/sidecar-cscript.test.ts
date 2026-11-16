@@ -2,14 +2,16 @@
  * The rendered sidecars under the real VBScript engine (Windows Script Host, the engine VPX runs table scripts with),
  * without VPX: every recipe's sidecar COMPILES (`vpx-hook/spike/vbs-compile.vbs`, which runs none of it), and the
  * synthetic tables of the C1.4 overrides are DRIVEN through a game with the real `castcade.vbs`, their journal read
- * back and judged by `checkGameJournal`. Windows only: skipped where `cscript.exe` does not exist (the Linux CI job).
+ * back and judged by `checkGameJournal`. The journal is also read WHILE the script runs, by the companion's own
+ * `JournalTail` over the real file system (C16). Windows only: skipped where `cscript.exe` does not exist (the Linux CI job).
  */
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { chmodSync, closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
+import { JournalTail } from '../witness/journal-tail.js';
 import { classifyScript } from './classify.js';
 import { renderSidecar } from './render-originals.js';
 import {
@@ -39,7 +41,10 @@ const COMPILE = join(HOOK, 'spike', 'vbs-compile.vbs');
 const LIB = join(HOOK, 'castcade.vbs');
 
 const dir = haveCscript ? mkdtempSync(join(tmpdir(), 'castcade-cscript-')) : '';
-afterAll(() => {
+const children: ChildProcessWithoutNullStreams[] = [];
+afterAll(async () => {
+  // A script a failed test left running still holds its journal open, and an open file cannot be removed.
+  await Promise.all(children.filter((c) => c.exitCode === null && c.signalCode === null).map((c) => new Promise((resolve) => c.once('exit', resolve).kill())));
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -61,6 +66,82 @@ const sidecarFile = (id: string, text: string): string => {
 };
 
 const vbs = (s: string): string => `"${s.replace(/"/g, '""')}"`;
+
+/**
+ * A `cscript` process that stays up: it runs `prelude`, then each statement it is sent, in its global scope, and answers
+ * `done` or `err <number> <description>` once the statement has returned. What it writes can be read between statements
+ * while the process (and any file it holds open) is still alive.
+ */
+const driven = (name: string, prelude: string[], env: NodeJS.ProcessEnv = process.env) => {
+  const harness = join(dir, `${name}-driven.vbs`);
+  writeFileSync(
+    harness,
+    [
+      ...prelude,
+      'Dim Driven_s',
+      'Do',
+      '    Driven_s = WScript.StdIn.ReadLine',
+      '    If Driven_s = "quit" Then Exit Do',
+      '    On Error Resume Next',
+      '    Err.Clear',
+      '    ExecuteGlobal Driven_s',
+      '    If Err.Number <> 0 Then',
+      '        WScript.StdOut.WriteLine "err " & Err.Number & " " & Err.Description',
+      '    Else',
+      '        WScript.StdOut.WriteLine "done"',
+      '    End If',
+      '    On Error GoTo 0',
+      'Loop',
+    ].join('\r\n') + '\r\n',
+  );
+  const child = spawn(CSCRIPT, ['//nologo', harness], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  children.push(child);
+  const waiting: { resolve: (answer: string) => void; reject: (err: Error) => void }[] = [];
+  let out = '';
+  let errText = '';
+  child.stdout.setEncoding('latin1');
+  child.stdout.on('data', (d: string) => {
+    out += d;
+    for (let i = out.indexOf('\n'); i >= 0; i = out.indexOf('\n')) {
+      const answer = out.slice(0, i).replace(/\r$/, '');
+      out = out.slice(i + 1);
+      waiting.shift()?.resolve(answer);
+    }
+  });
+  child.stderr.setEncoding('latin1');
+  child.stderr.on('data', (d: string) => (errText += d));
+  const exited = new Promise<number | null>((resolve) =>
+    child.on('exit', (code) => {
+      for (const w of waiting.splice(0)) w.reject(new Error(`cscript exited (${code}): ${errText}${out}`));
+      resolve(code);
+    }),
+  );
+  return {
+    run: (statement: string): Promise<string> =>
+      new Promise((resolve, reject) => {
+        if (child.exitCode !== null) return reject(new Error(`cscript exited (${child.exitCode}): ${errText}${out}`));
+        waiting.push({ resolve, reject });
+        child.stdin.write(statement + '\r\n');
+      }),
+    running: (): boolean => child.exitCode === null && child.signalCode === null,
+    quit: (): Promise<number | null> => {
+      child.stdin.end('quit\r\n');
+      return exited;
+    },
+  };
+};
+
+/** Whether another process could rename `path` right now: Windows refuses while a handle without delete sharing is open. */
+const renamable = (path: string): boolean => {
+  try {
+    renameSync(path, `${path}.moved`);
+  } catch (err) {
+    if ((err as { code?: string }).code === 'EBUSY') return false;
+    throw err;
+  }
+  renameSync(`${path}.moved`, path);
+  return true;
+};
 
 /**
  * Run the sidecar of `script` as VPX would (the host's `GetTextFile` hands it the real library; `host` declares what
@@ -162,7 +243,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       ],
     );
     expect(out.trim()).toBe('driven');
-    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.2', lib: '0.5.1' });
+    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.2', lib: '0.5.2' });
     expect(game(events)).toEqual([
       { event: 'game_start', players: 1 },
       { event: 'current_scores', scores: [100], player: 1, ball: 1 },
@@ -325,8 +406,84 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       .split(/\r?\n/)
       .filter((l) => l !== '')
       .map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(events[0]).toMatchObject({ event: 'table_loaded', lib: '0.5.1' });
+    expect(events[0]).toMatchObject({ event: 'table_loaded', lib: '0.5.2' });
     expect(events.filter((e) => e['event'] === 'nvram_delta').map((e) => e['d'])).toEqual([[[5794, 42, 7]]]);
     expect(events.at(-1)).toMatchObject({ event: 'table_exit', nvram_callbacks: 300011 });
+  });
+
+  it('C16 premise: the journal tail reads a line on its first poll after a TextStream WriteLine, while the writer holds the file open', async () => {
+    const journal = join(dir, 'premise.jsonl');
+    const writer = driven('premise', ['Dim fso, ts', 'Set fso = CreateObject("Scripting.FileSystemObject")', `Set ts = fso.OpenTextFile(${vbs(journal)}, 8, True)`]);
+    const tail = new JournalTail(journal, { from: 'start' }); // the real file system, as the witness reads a journal
+    const seen: string[] = [];
+    tail.on('line', (l) => seen.push(l));
+    const written: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const line = JSON.stringify({ event: 'premise', t: i, d: [[5794, i, i - 1]] });
+      expect(await writer.run(`ts.WriteLine ${vbs(line)}`)).toBe('done');
+      written.push(line);
+      await tail.poll(); // what each 250 ms tick does
+      expect(seen).toEqual(written);
+      expect(renamable(journal)).toBe(false); // never closed: the writer's handle is still open
+    }
+    expect(await writer.run('ts.Close')).toBe('done');
+    expect(renamable(journal)).toBe(true);
+    expect(await writer.quit()).toBe(0);
+  });
+
+  it('C16 (lib 0.5.2): every line goes through the handle opened at table load, readable at once, and the file closes only at table exit', async () => {
+    const local = join(dir, 'held-open-localappdata');
+    mkdirSync(local, { recursive: true });
+    const journal = join(local, 'Castcade', 'journal', 'held-open.jsonl');
+    const table = driven(
+      'held-open',
+      [
+        'Class Castcade_TestController',
+        '    Public Property Get NVRAM : NVRAM = Array(0, 1, 2, 3) : End Property',
+        'End Class',
+        'Dim Controller : Set Controller = New Castcade_TestController',
+        `ExecuteGlobal CreateObject("Scripting.FileSystemObject").OpenTextFile(${vbs(LIB)}, 1, False, 0).ReadAll`,
+        'Castcade_Init "held-open", "A", "0.3.2", "congo_21"',
+        'Castcade_WatchBytes Array(5794)',
+        'Dim chg(0, 2), ss',
+      ],
+      { ...process.env, LOCALAPPDATA: local },
+    );
+    const tail = new JournalTail(journal, { from: 'start' });
+    const seen: Record<string, unknown>[] = [];
+    tail.on('line', (l) => seen.push(JSON.parse(l) as Record<string, unknown>));
+    /** Run one statement, then one poll of the tail: exactly the lines it wrote must arrive. */
+    const step = async (statement: string, events: string[]): Promise<void> => {
+      expect(await table.run(statement), statement).toBe('done');
+      const before = seen.length;
+      await tail.poll();
+      expect(seen.slice(before).map((e) => e['event']), statement).toEqual(events);
+    };
+    await step('chg(0, 0) = 0', ['table_loaded']);
+    // From here on nothing can open the journal for writing: a library that closed and reopened it would lose every later line.
+    chmodSync(journal, 0o444);
+    try {
+      expect(() => closeSync(openSync(journal, 'a'))).toThrow(/EPERM/);
+      await step('chg(0, 0) = 5794 : chg(0, 1) = 42 : chg(0, 2) = 7 : Castcade_NVRAM chg', ['nvram_full', 'nvram_delta']);
+      await step('Castcade_GameStart 1', ['game_start']);
+      await step('Castcade_Scores Array(1000), 1, 1', ['current_scores']);
+      // 50 ms after the last delta the next one is written; one more change right after it is coalesced and held.
+      await step('WScript.Sleep 100 : chg(0, 1) = 43 : chg(0, 2) = 42 : Castcade_NVRAM chg : chg(0, 1) = 44 : chg(0, 2) = 43 : Castcade_NVRAM chg', ['nvram_delta']);
+      await step('Castcade_BallEnd 1, 1, 0', ['ball_end']);
+      await step('Set ss = Castcade_ScoreServer() : ss.SetGameState 1, 1, 3, 3', ['score_server', 'score_server']);
+      expect(renamable(journal)).toBe(false); // held open between lines
+      // Table exit writes what was held (the shim's game end, the coalesced delta), then table_exit, then closes the file.
+      await step('Castcade_Exit', ['game_end', 'nvram_delta', 'table_exit']);
+      expect(table.running()).toBe(true);
+      expect(renamable(journal)).toBe(true);
+    } finally {
+      chmodSync(journal, 0o666);
+    }
+    expect(await table.quit()).toBe(0);
+    const lines = readFileSync(journal, 'latin1').split(/\r?\n/).filter((l) => l !== '');
+    expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual(seen);
+    expect(seen[0]).toMatchObject({ event: 'table_loaded', lib: '0.5.2' });
+    expect(seen.filter((e) => e['event'] === 'nvram_delta').map((e) => e['d'])).toEqual([[[5794, 42, 7]], [[5794, 43, 42]], [[5794, 44, 43]]]);
+    expect(seen.at(-1)).toMatchObject({ event: 'table_exit', lines: 11, nvram_callbacks: 3 });
   });
 });

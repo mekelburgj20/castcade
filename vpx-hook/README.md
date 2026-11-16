@@ -14,7 +14,7 @@ decoding, detection and networking happen in the companion.
 ## What lives here
 
 - `castcade.vbs` — the shared library every patched table `ExecuteGlobal`s: journal writer
-  (buffered; events flush at once, `nvram_delta` / `current_scores` every 50 lines), the
+  (one handle, opened at table load and closed at table exit; each line is readable the moment it is written), the
   `NVRAMCallback` **chaining guard** (`Castcade_RegisterNVRAM`), the lock check the sidecar's
   `_KeyDown` / `_KeyUp` wrappers call (`Castcade_KeyDownBlocked` / `Castcade_KeyUpBlocked`), helper
   subs for originals (`Castcade_GameStart`, `Castcade_Scores`, `Castcade_BallEnd`, `Castcade_GameEnd`),
@@ -111,6 +111,24 @@ sidecar over such a table (importer `patchSource`, witness notice → `TablesHos
 runs until the next launch. No recipe change; the lib bump makes the folder watch re-make every sidecar on its first look.
 Checked with a `cscript` harness: an existing original and a missing sidecar journal `embedded_patch` and no `MsgBox`.
 
+### 0.5.2 — no close and reopen of the journal while the table runs (C16)
+
+`Castcade_Write` closed the journal and opened it again after every event and every watched `nvram_delta` (and every 50th
+line otherwise) so the companion would see the line at once. It runs on VPX's render thread. On the owner's PC
+(2026-11-16, Windows Defender real-time protection on) four freezes of a 147 s VR game of Congo, 47 to 688 ms long, each
+began within 3 ms of a journal line, and a quiet Windows Script Host loop measured the reopen at 7 ms on average, worst
+74 ms. The close was never what made a line visible: a `TextStream` holds nothing back, and the companion's own
+`JournalTail` reads each line on its first poll after `WriteLine` returns while the file is still open
+(`sidecar-cscript.test.ts`, "C16 premise"). 0.5.2 opens the journal at `Castcade_Init` and closes it at `Castcade_Exit`
+only; `Castcade_Write` lost its `flush` argument. A failed open is still retried at the next write. Through the library's
+own write path (1000 to 2000 lines paced 20 ms apart on a 400 KB journal, timed per call around a ScriptControl call)
+one line took 20 ms on average, worst 0.97 to 1.29 s, every line over 11 ms; it now takes 0.15 ms (median), average
+0.3 to 1.0 ms, with three to six lines in a thousand over 11 ms (worst 140 to 694 ms), the same as a plain append from
+Node with a held handle on that PC. No recipe change, no journal format change; the lib bump makes the folder watch
+re-make every sidecar on its first look. Checked with a `cscript` harness: with the journal made read-only after table
+load (so any reopen would fail), every later line still arrives, the tail reads each one on its next poll, and the file
+can be renamed only after `Castcade_Exit`.
+
 ### 0.5.1 — a sitting longer than 44 minutes keeps reporting (C15)
 
 `Castcade_NVRAM` stopped journaling after 300000 callbacks (the 0.1.0 runaway guard, from when every changed byte was
@@ -169,7 +187,8 @@ synthetic B/C/D scripts: one game each journals start → scores → ball ends �
   writes an `importvbs` copy named `<table> [Castcade].vpx` instead.
 - **Stale-sidecar guard.** A sidecar REPLACES the embedded script, so a table update would run the
   old script on new geometry. On a changed `.vpx` hash the sidecar is disabled and re-import offered.
-- No real work in VBScript, no network calls from the script, buffered I/O only.
+- No real work in VBScript, no network calls from the script, no close and reopen of the journal while the table
+  runs (0.5.2): one handle from `Castcade_Init` to `Castcade_Exit`.
 
 ## What does not live here
 

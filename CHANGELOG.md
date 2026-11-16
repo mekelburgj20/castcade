@@ -7,6 +7,18 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The table froze for a moment when the score changed or a ball ended (C16).** In a 147 s VR game of Congo recorded
+  frame by frame on the owner's PC (2026-11-16), four freezes of 47 to 688 ms each began within 3 ms of a line the
+  table's script wrote to its journal. After every event and every watched NVRAM change the script closed the journal
+  file and opened it again, on VPX's render thread, so that Castcade would see the line at once; Castcade sees it
+  without that, as soon as it is written. The file now stays open from table load to table exit. On that PC one line
+  took 20 ms on average (every one over 11 ms, the worst over a second) and now typically takes 0.15 ms; a few lines
+  in a thousand still take 11 ms or more, as a plain write from another program does there. Hook library 0.5.2: every
+  patched table's script is re-made on the first look after the update; a table that is open at that moment needs to
+  be reopened. `vpx-hook/castcade.vbs`, `patcher/render.ts`.
+
 ## [0.2.44] — 2026-11-16
 
 The 3D watch session (a test feature: every PC in it needs the Castcade VPX build), the corner scoreboard in the

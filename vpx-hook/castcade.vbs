@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.1
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.2
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
@@ -9,6 +9,13 @@
 '      Castcade_WatchBytes Array(<nvram offsets the map's game_state reads>)
 '  (Castcade_Guard is new in 0.2.0, Castcade_WatchBytes in 0.3.0; older sidecars do not call them and
 '   keep working — without a watch list every changed byte is journaled, the 0.1.0 behaviour.)
+'
+'  0.5.2 (WORK C16): no journal write closes and reopens the file while the table runs.  Every event
+'  and every watched nvram_delta used to close the journal and open it again "so the companion sees
+'  the line now"; that reopen took 7 ms on average and up to 74 ms in a quiet test on the owner's PC,
+'  on VPX's render thread, and four freezes of a VR game (47 to 688 ms) each began within 3 ms of a
+'  journal line.  A TextStream holds nothing back: the line is in the file, readable by the companion,
+'  when WriteLine returns.  The file is opened at Castcade_Init and closed at Castcade_Exit.
 '
 '  0.5.1 (WORK C15): the runaway guard of Castcade_NVRAM (no journaling after 300000 callbacks) applies
 '  only without a watch list.  core.vbs calls the hook about 114 times a second, so the guard ended the
@@ -62,7 +69,7 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.1"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.2"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
@@ -321,8 +328,8 @@ Sub Castcade_WatchBytes(offsets)
 End Sub
 
 ' Receives Controller.ChangedNVRAM batches from core.vbs PinMAMETimer_Timer: chg(i,0)=offset, (i,1)=new, (i,2)=old.
-' With a watch list: keep the watched offsets, coalesce them, write at most every 50 ms (flushed at once).
-' Without one (0.1.0 / 0.2.0 sidecars): every byte, buffered, plus a full snapshot every 5000 batches.
+' With a watch list: keep the watched offsets, coalesce them, write at most every 50 ms.
+' Without one (0.1.0 / 0.2.0 sidecars): every byte, plus a full snapshot every 5000 batches.
 Sub Castcade_NVRAM(chg)
     On Error Resume Next
     Dim i, n, parts, t, k, key
@@ -353,7 +360,7 @@ Sub Castcade_NVRAM(chg)
                     parts(i) = "[" & k & "," & Castcade_Pending(k)(0) & "," & Castcade_Pending(k)(1) & "]"
                     i = i + 1
                 Next
-                Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}", True
+                Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}"
                 Castcade_Pending.RemoveAll
                 Castcade_LastDeltaT = t
             End If
@@ -362,7 +369,7 @@ Sub Castcade_NVRAM(chg)
             For i = 0 To n
                 parts(i) = "[" & chg(i, 0) & "," & chg(i, 1) & "," & chg(i, 2) & "]"
             Next
-            Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & (n + 1) & ",""d"":[" & Join(parts, ",") & "]}", False
+            Castcade_Write "{""event"":""nvram_delta"",""t"":" & t & ",""n"":" & (n + 1) & ",""d"":[" & Join(parts, ",") & "]}"
             If (Castcade_NVn Mod 5000) = 0 Then Castcade_NVRAMFull t
         End If
     End If
@@ -380,7 +387,7 @@ Sub Castcade_FlushPending()
         parts(i) = "[" & k & "," & Castcade_Pending(k)(0) & "," & Castcade_Pending(k)(1) & "]"
         i = i + 1
     Next
-    Castcade_Write "{""event"":""nvram_delta"",""t"":" & Castcade_T() & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}", True
+    Castcade_Write "{""event"":""nvram_delta"",""t"":" & Castcade_T() & ",""n"":" & Castcade_Pending.Count & ",""d"":[" & Join(parts, ",") & "]}"
     Castcade_Pending.RemoveAll
     Castcade_LastDeltaT = Castcade_T()
 End Sub
@@ -394,7 +401,7 @@ Sub Castcade_NVRAMFull(t)
     For i = 0 To UBound(arr)
         parts(i) = CStr(arr(i))
     Next
-    Castcade_Write "{""event"":""nvram_full"",""t"":" & t & ",""n"":" & (UBound(arr) + 1) & ",""bytes"":[" & Join(parts, ",") & "]}", True
+    Castcade_Write "{""event"":""nvram_full"",""t"":" & t & ",""n"":" & (UBound(arr) + 1) & ",""bytes"":[" & Join(parts, ",") & "]}"
 End Sub
 
 ' ---------------------------------------------------------------- originals ------------
@@ -413,7 +420,7 @@ Sub Castcade_Scores(scores, player, ball)
     sig = js & "|" & player & "|" & ball
     If sig = Castcade_LastScores Then Exit Sub
     Castcade_LastScores = sig
-    Castcade_Write "{""event"":""current_scores"",""t"":" & Castcade_T() & ",""scores"":" & js & ",""player"":" & Castcade_Num(player) & ",""ball"":" & Castcade_Num(ball) & "}", False
+    Castcade_Write "{""event"":""current_scores"",""t"":" & Castcade_T() & ",""scores"":" & js & ",""player"":" & Castcade_Num(player) & ",""ball"":" & Castcade_Num(ball) & "}"
 End Sub
 
 Sub Castcade_BallEnd(player, ball, extraBalls)
@@ -624,23 +631,20 @@ Sub Castcade_Emit(ev, extraJson)
     line = "{""event"":" & Castcade_Q(ev) & ",""t"":" & Castcade_T()
     If Len(extraJson) > 0 Then line = line & "," & extraJson
     line = line & "}"
-    Castcade_Write line, True
+    Castcade_Write line
 End Sub
 
-' flush=True closes and reopens the file so the companion sees the line now.  nvram_delta and
-' current_scores pass False and are flushed every 50 lines (this runs at frame rate inside
-' PinMAMETimer; a close/reopen per frame would stutter the table).
-Sub Castcade_Write(line, flush)
+' One line through the handle Castcade_Init opened; Castcade_Exit closes it.  WriteLine hands the bytes
+' to Windows before it returns, so the companion's next read sees the line: nothing is held back and
+' there is nothing to flush.  Until 0.5.1 a flush argument closed and reopened the file after every
+' event and watched nvram_delta (and every 50th line otherwise); the reopen cost milliseconds, at
+' worst hundreds, on VPX's render thread (C16).  A failed open is retried at the next write.
+Sub Castcade_Write(line)
     On Error Resume Next
     If Not Castcade_LogOpen Then Castcade_OpenLog
     If Not Castcade_LogOpen Then Exit Sub
     Castcade_Log.WriteLine line
     Castcade_Lines = Castcade_Lines + 1
-    If flush Or (Castcade_Lines Mod 50) = 0 Then
-        Castcade_Log.Close
-        Castcade_LogOpen = False
-        Castcade_OpenLog
-    End If
 End Sub
 
 Sub Castcade_OpenLog()

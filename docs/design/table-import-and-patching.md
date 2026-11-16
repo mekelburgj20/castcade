@@ -101,7 +101,9 @@ Dim Castcade_Journal, Castcade_Locked
 ExecuteGlobal GetTextFile("castcade.vbs")   ' shared library installed in VPX\scripts\
 Castcade_Init "<table-id>", "<recipe>", "<recipe-version>"
 ```
-`castcade.vbs` provides: journal open/append/flush-every-N (the T7 probe's pattern), the lock-file check
+`castcade.vbs` provides: the journal writer (open at table load, append, close at table exit; until hook 0.5.1 it
+also closed and reopened the file after events and every N lines, the T7 probe's pattern, which froze the table: C16),
+the lock-file check
 `Castcade_Locked` (read at each key press, no timer), an idempotent `NVRAMCallback` registration that **chains**
 any existing callback, and (Phase 3) a `VPinball.ScoreServer`-compatible object for class D. Version 0.1.0 exists
 in `vpx-hook/castcade.vbs` (Phase 0 spike); the event list is in its header. It lives in the VPX `scripts\` folder (installed by the
