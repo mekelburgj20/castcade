@@ -104,14 +104,17 @@ const hook = (pipe: string) => {
 const header = (name: string): string => `${JOURNAL_HEADER_PREFIX}${name}\r\n`;
 const fileText = (dir: string, name: string): string => readFileSync(join(dir, name), 'latin1');
 
-/** A writer whose writes wait for `release()`; counts opens and closes. */
-const gatedFiles = () => {
+/** A writer whose writes wait for `release()` (and, with `openGate`, whose opens wait for `releaseOpen()`); counts opens and closes. */
+const gatedFiles = (openGate = false) => {
   let open = (): void => undefined;
   let gate = new Promise<void>((r) => (open = r));
+  let openOpen = (): void => undefined;
+  const opening = openGate ? new Promise<void>((r) => (openOpen = r)) : Promise.resolve();
   const log: string[] = [];
   const files: JournalFiles = {
     async open(path) {
       log.push('open');
+      await opening;
       const f = await nodeJournalFiles.open(path);
       return {
         async write(bytes) {
@@ -129,6 +132,7 @@ const gatedFiles = () => {
     files,
     log,
     release: () => open(),
+    releaseOpen: () => openOpen(),
     hold: () => (gate = new Promise<void>((r) => (open = r))),
   };
 };
@@ -176,29 +180,75 @@ describe('journal pipe: file names and the header', () => {
 });
 
 describe('journal pipe: the server', () => {
-  it('two connections at once (two tables, and two on one table): whole lines, each connection in its order, the header never written', async () => {
+  it('two tables at once: each file gets its own connection, whole lines in order, the header never written', async () => {
     const p = await serve('two');
     const a = hook(p.pipe);
-    const b = hook(p.pipe);
     const c = hook(p.pipe);
-    await Promise.all([a.send(header('same.jsonl')), b.send(header('same.jsonl')), c.send(header('other.jsonl'))]);
-    await p.until(() => p.events.filter((e) => e.type === 'opened').length === 3);
-    // Lines split anywhere across writes, the three connections interleaved.
-    await Promise.all([
-      a.send('{"a":1}\r\n{"a', '":2}\r', '\n{"a":3}\r\n'),
-      b.send('{"b":1}', '\r\n{"b":2}\r\n'),
-      c.send('{"c":1}\r\n{"c":2', '}\r\n'),
-    ]);
-    expect(p.closed()).toEqual([]); // all three were open at once
-    await Promise.all([a.end(), b.end(), c.end()]);
-    await p.until(() => p.closed().length === 3);
-    const same = fileText(p.dir, 'same.jsonl').split('\r\n');
-    expect(same.at(-1)).toBe('');
-    expect(same.filter((l) => l.startsWith('{"a"'))).toEqual(['{"a":1}', '{"a":2}', '{"a":3}']);
-    expect(same.filter((l) => l.startsWith('{"b"'))).toEqual(['{"b":1}', '{"b":2}']);
-    expect(same).toHaveLength(6);
+    await Promise.all([a.send(header('one.jsonl')), c.send(header('other.jsonl'))]);
+    await p.until(() => p.events.filter((e) => e.type === 'opened').length === 2);
+    // Lines split anywhere across writes, the two connections interleaved.
+    await Promise.all([a.send('{"a":1}\r\n{"a', '":2}\r', '\n{"a":3}\r\n'), c.send('{"c":1}\r\n{"c":2', '}\r\n')]);
+    expect(p.closed()).toEqual([]); // both were open at once
+    await Promise.all([a.end(), c.end()]);
+    await p.until(() => p.closed().length === 2);
+    expect(fileText(p.dir, 'one.jsonl')).toBe('{"a":1}\r\n{"a":2}\r\n{"a":3}\r\n');
     expect(fileText(p.dir, 'other.jsonl')).toBe('{"c":1}\r\n{"c":2}\r\n');
-    expect(p.closed().map((e) => [e.name, e.lines]).sort()).toEqual([['other.jsonl', 2], ['same.jsonl', 2], ['same.jsonl', 3]]);
+    expect(p.closed().map((e) => [e.name, e.lines]).sort()).toEqual([['one.jsonl', 3], ['other.jsonl', 2]]);
+  });
+
+  it('one writer per file: a second connection naming an open file, in any case, is refused once the first one holds the file, and writes nothing', async () => {
+    const g = gatedFiles(true);
+    g.release();
+    const p = await serve('one-writer', { files: g.files });
+    const a = hook(p.pipe);
+    await a.send(header('Same_Table.jsonl'));
+    await p.until(() => p.events.some((e) => e.type === 'opened'));
+    // The first writer's file is not open yet: the second writer is not refused yet either, so its hook (which fails over
+    // to the file when refused) cannot take the file before the worker does.
+    const b = hook(p.pipe);
+    await b.send(header('SAME_TABLE.jsonl'), '{"b":1}\r\n');
+    expect(await b.closedByServer(300)).toBe(false);
+    expect(g.log).toEqual(['open']);
+    g.releaseOpen();
+    expect(await b.closedByServer()).toBe(true);
+    expect(p.events.filter((e) => e.type === 'refused')).toEqual([
+      { type: 'refused', id: 2, reason: 'SAME_TABLE.jsonl: another VPX is already writing Same_Table.jsonl; this one\'s lines are not kept, as before 0.6.0 when it could not open the file' },
+    ]);
+    await a.send('{"a":1}\r\n{"a":2}\r\n');
+    await a.end();
+    await p.until(() => p.closed().length === 1);
+    expect(readdirSync(p.dir)).toEqual(['Same_Table.jsonl']); // the first header's spelling
+    expect(fileText(p.dir, 'Same_Table.jsonl')).toBe('{"a":1}\r\n{"a":2}\r\n');
+  });
+
+  it('play, stop, play: once the first writer closed, the next connection on that file is accepted and appends after it', async () => {
+    const p = await serve('replay');
+    const a = hook(p.pipe);
+    await a.send(header('t.jsonl'), '{"session":1}\r\n');
+    await a.end();
+    await p.until(() => p.closed().length === 1);
+    const b = hook(p.pipe);
+    await b.send(header('T.jsonl'), '{"session":2}\r\n');
+    await b.end();
+    await p.until(() => p.closed().length === 2);
+    expect(p.events.filter((e) => e.type === 'refused')).toEqual([]);
+    expect(fileText(p.dir, 't.jsonl')).toBe('{"session":1}\r\n{"session":2}\r\n');
+  });
+
+  it('drain finds the file whatever the case of the name (VPX given "c:\\tables\\medieval madness.vpx" for "Medieval Madness.vpx")', async () => {
+    const g = gatedFiles();
+    const p = await serve('drain-case', { files: g.files });
+    const c = hook(p.pipe);
+    await c.send(header('Medieval_Madness.jsonl'), '{"event":"table_exit"}\r\n');
+    await c.end();
+    let drained = false;
+    const d = p.server.drain('medieval_madness.jsonl').then((r) => ((drained = true), r));
+    await sleep(200);
+    expect(drained).toBe(false); // it waits for the stuck write, not "no such file"
+    g.release();
+    expect(await d).toMatchObject({ name: 'medieval_madness.jsonl', open: 0 });
+    expect(readdirSync(p.dir)).toEqual(['Medieval_Madness.jsonl']);
+    expect(fileText(p.dir, 'Medieval_Madness.jsonl')).toBe('{"event":"table_exit"}\r\n');
   });
 
   it('an unfinished last line is dropped and counted, never glued to the next session', async () => {
@@ -262,29 +312,27 @@ describe('journal pipe: the server', () => {
     ]);
   });
 
-  it('the file is let go when its last connection ends (a table loaded without the companion can open it), and opened again for the next', async () => {
+  it('the file is opened at the header and let go when its connection ends (a table loaded without the companion can open it), and opened again for the next', async () => {
     const g = gatedFiles();
     g.release();
     const p = await serve('release', { files: g.files });
     const a = hook(p.pipe);
-    const b = hook(p.pipe);
-    await a.send(header('r.jsonl'), '{"a":1}\r\n');
-    await b.send(header('r.jsonl'), '{"b":1}\r\n');
+    await a.send(header('r.jsonl'));
+    await p.until(() => p.events.some((e) => e.type === 'opened'));
+    await sleep(50);
+    expect(g.log).toEqual(['open']); // before any line
+    await a.send('{"a":1}\r\n');
     await a.end();
     await p.until(() => p.closed().length === 1);
-    await sleep(50);
-    expect(g.log).toEqual(['open']);
-    await b.end();
-    await p.until(() => p.closed().length === 2);
     await sleep(50);
     expect(g.log).toEqual(['open', 'close']);
     const c = hook(p.pipe);
     await c.send(header('r.jsonl'), '{"c":1}\r\n');
     await c.end();
-    await p.until(() => p.closed().length === 3);
+    await p.until(() => p.closed().length === 2);
     await sleep(50);
     expect(g.log).toEqual(['open', 'close', 'open', 'close']);
-    expect(fileText(p.dir, 'r.jsonl')).toBe('{"a":1}\r\n{"b":1}\r\n{"c":1}\r\n');
+    expect(fileText(p.dir, 'r.jsonl')).toBe('{"a":1}\r\n{"c":1}\r\n');
   });
 
   it('a pipe name already taken is reported, and the first server keeps it', async () => {
@@ -370,14 +418,15 @@ describe('journal pipe: the host and its worker thread (the real worker, from so
     const h = host('bound', { entry: './journal-pipe-test-worker.test-support.ts', workerData: { stallMs: 1_500, stallWrites: 1 } });
     expect(await h.pipe.ready(15_000)).toBe(true);
     const c = hook(h.pipe.pipeName);
-    await c.send(header('b.jsonl'), '{"event":"table_exit"}\r\n');
+    await c.send(header('Bound_Table.jsonl'), '{"event":"table_exit"}\r\n');
     await c.end();
-    const path = join(h.dir, 'b.jsonl');
+    // The witness's path for the journal, spelled as VPX was given the table (another case than the hook's header).
+    const path = join(h.dir, 'bound_table.jsonl');
     expect(await h.pipe.drain(path, 200)).toBe(false);
-    expect(h.logs).toContain('warn journal pipe: b.jsonl: its last lines were still on their way to the file after 200 ms; the file is read as it is');
+    expect(h.logs).toContain('warn journal pipe: bound_table.jsonl: its last lines were still on their way to the file after 200 ms; the file is read as it is');
     expect(await h.pipe.drain(path)).toBe(true);
-    expect(readFileSync(path, 'latin1')).toBe('{"event":"table_exit"}\r\n');
-    expect(h.logs.some((l) => /info journal pipe: b\.jsonl: waited \d+ ms for its last lines to reach the file/.test(l))).toBe(true);
+    expect(readFileSync(join(h.dir, 'Bound_Table.jsonl'), 'latin1')).toBe('{"event":"table_exit"}\r\n');
+    expect(h.logs.some((l) => /info journal pipe: bound_table\.jsonl: waited \d+ ms for its last lines to reach the file/.test(l))).toBe(true);
   });
 
   it('the smoke check (--smoke) passes with the real worker', async () => {

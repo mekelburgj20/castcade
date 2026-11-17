@@ -105,8 +105,8 @@ Castcade_Init "<table-id>", "<recipe>", "<recipe-version>"
 also closed and reopened the file after events and every N lines, the T7 probe's pattern, which froze the table: C16;
 since hook 0.6.0, while the companion runs, the lines go through the companion's named pipe `\\.\pipe\castcade-journal`
 after a one-line transport header naming the file, and a companion worker thread appends them to the same journal file
-byte for byte, so nothing touches the disk on VPX's render thread; without the companion, or after it went away
-mid-session, the script writes the file itself: C16.2, `vpx-hook/README.md` 0.6.0),
+byte for byte (one writer per file), so writing the journal touches no file on VPX's render thread; without the
+companion, or after it went away mid-session, the script writes the file itself: C16.2, `vpx-hook/README.md` 0.6.0),
 the lock-file check
 `Castcade_Locked` (read at each key press, no timer), an idempotent `NVRAMCallback` registration that **chains**
 any existing callback, and (Phase 3) a `VPinball.ScoreServer`-compatible object for class D. Version 0.1.0 exists

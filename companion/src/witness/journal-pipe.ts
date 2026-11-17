@@ -123,7 +123,7 @@ export function startJournalPipe(opts: JournalPipeOptions): JournalPipe {
         break;
       }
       case 'refused':
-        log.warn(`journal pipe: connection ${m.id} refused (the hook then writes the file itself): ${m.reason}`);
+        log.warn(`journal pipe: connection ${m.id} refused: ${m.reason}`);
         break;
       case 'failure':
         log.error(`journal pipe: ${m.detail}`);
@@ -257,21 +257,24 @@ export function startJournalPipe(opts: JournalPipeOptions): JournalPipe {
  * writes one line it is sent into a journal file in a temporary folder; never the hooks' pipe or the player's journals.
  */
 export async function smokeJournalPipe(opts: Pick<JournalPipeOptions, 'workerUrl' | 'execArgv'> = {}): Promise<{ ok: boolean; detail: string }> {
-  const dir = mkdtempSync(join(tmpdir(), 'castcade-pipe-smoke-'));
-  const pipeName = process.platform === 'win32' ? `\\\\.\\pipe\\castcade-journal-smoke-${process.pid}` : join(dir, 'smoke.sock');
-  const logs: string[] = [];
-  let onClosed: ((lines: number) => void) | null = null;
-  const pipe = startJournalPipe({
-    ...opts,
-    journalDir: dir,
-    pipeName,
-    maxRestarts: 0,
-    log: { info: (l) => logs.push(l), warn: (l) => logs.push(l), error: (l) => logs.push(l) },
-    onMessage: (m) => {
-      if (m.type === 'closed') onClosed?.(m.lines);
-    },
-  });
+  // Everything inside the try: any throw is a failed smoke, never an unanswered one.
+  let dir: string | null = null;
+  let pipe: JournalPipe | null = null;
   try {
+    dir = mkdtempSync(join(tmpdir(), 'castcade-pipe-smoke-'));
+    const pipeName = process.platform === 'win32' ? `\\\\.\\pipe\\castcade-journal-smoke-${process.pid}` : join(dir, 'smoke.sock');
+    const logs: string[] = [];
+    let onClosed: ((lines: number) => void) | null = null;
+    pipe = startJournalPipe({
+      ...opts,
+      journalDir: dir,
+      pipeName,
+      maxRestarts: 0,
+      log: { info: (l) => logs.push(l), warn: (l) => logs.push(l), error: (l) => logs.push(l) },
+      onMessage: (m) => {
+        if (m.type === 'closed') onClosed?.(m.lines);
+      },
+    });
     if (!(await pipe.ready(10_000))) return { ok: false, detail: logs.at(-1) ?? 'the worker did not listen within 10 s' };
     const line = '{"event":"smoke","t":0}';
     const closed = new Promise<number>((done, fail) => {
@@ -293,7 +296,11 @@ export async function smokeJournalPipe(opts: Pick<JournalPipeOptions, 'workerUrl
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   } finally {
-    await pipe.stop(2_000);
-    rmSync(dir, { recursive: true, force: true });
+    await pipe?.stop(2_000).catch(() => undefined);
+    try {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // A temporary folder left behind does not fail the smoke.
+    }
   }
 }

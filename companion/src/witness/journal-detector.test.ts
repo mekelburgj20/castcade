@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { readJournalLines } from './journal-replay.js';
+import { readJournalLines, replayJournal } from './journal-replay.js';
 import { ballyTransition, detectTransition, JournalDetector, plausible, replayDetector, samTransition, type GameEvent, type JournalEvent } from './journal-detector.js';
 import { ballyLiveInputs, compileMap, createMapCorpus, decodeFinalScores, decodeGameState, descriptorOffsets, gameStateOffsets, highScoreOffsets, watchOffsets, type CompiledMap, type GameState, type JsonObject } from './maps.js';
 import { engineSlope } from './attestation-types.js';
@@ -244,6 +244,48 @@ describe('map attached late (the corpus answers asynchronously)', () => {
     expect(detector.wantsMapFor).toBeNull();
     expect(ofKind(events, 'game_end')[0].scores[0]).toBe(2318430);
     expect(detector.summary()?.ballsSeen).toEqual([1, 2, 3]);
+  });
+});
+
+describe('C16.2 (hook 0.6.0): lines lost in a pipe failover, then the fresh nvram_full the hook writes', () => {
+  it('the snapshot is ground truth: the lost ball end and the final score come back; without it they are wrong', async () => {
+    const mapFor = await mapLookup();
+    const map = mapFor('tftc_400');
+    if (!map) throw new Error('no map');
+    const watch = new Set(watchOffsets(map));
+    // What a 0.6.0 sidecar journals: watched bytes only, one nvram_full (at hook time).
+    const { lines } = loadFixture(FIXTURES[1]);
+    let baseline = false;
+    const journal = lines.flatMap((l) => {
+      if (l.trim() === '') return [];
+      if (l.includes('"nvram_full"')) {
+        if (baseline) return [];
+        baseline = true;
+        return [l];
+      }
+      if (!l.includes('"nvram_delta"')) return [l];
+      const e = JSON.parse(l) as { t: number; d: [number, number, number][] };
+      const d = e.d.filter(([o]) => watch.has(o));
+      return d.length ? [JSON.stringify({ event: 'nvram_delta', t: e.t, n: d.length, d })] : [];
+    });
+    const summary = (ls: string[]) => {
+      const evs = replayDetector(ls, { mapFor }).events;
+      return { balls: ofKind(evs, 'ball_end').map((e) => e.ball), end: ofKind(evs, 'game_end').map((e) => e.scores[0]) };
+    };
+    expect(summary(journal)).toEqual({ balls: [1, 2, 3], end: [2318430] });
+    // Five deltas in transit when the worker died (late in ball 2): lost.
+    const deltas = journal.flatMap((l, i) => (l.includes('"nvram_delta"') ? [i] : []));
+    const from = deltas[Math.floor(deltas.length * 0.8)]!;
+    const to = deltas[Math.floor(deltas.length * 0.8) + 5]!;
+    const lossy = [...journal.slice(0, from), ...journal.slice(to)];
+    expect(summary(lossy)).not.toEqual(summary(journal));
+    expect(summary(lossy).end).not.toEqual([2318430]);
+    // The hook's next NVRAM callback writes the whole NVRAM as it is then (the state after the lost lines).
+    const now = replayJournal(journal.slice(0, to)).buffer;
+    if (!now) throw new Error('no buffer');
+    const t = (JSON.parse(journal[to]!) as { t: number }).t;
+    const snapshot = JSON.stringify({ event: 'nvram_full', t, n: now.length, bytes: [...now] });
+    expect(summary([...journal.slice(0, from), snapshot, ...journal.slice(to)])).toEqual({ balls: [1, 2, 3], end: [2318430] });
   });
 });
 

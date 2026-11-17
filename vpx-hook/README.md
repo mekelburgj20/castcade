@@ -130,8 +130,16 @@ journal on that thread while the companion runs (spike and data: `castcade-vpx-d
   session, as in 0.5.2. The pipe is tried once per table load and never again during that session.
 - The companion gone mid-game (quit, crash): the next `WriteLine` raises within about a millisecond; that line goes to
   the file and so does every later one until the table exits. What can be lost is only what the script had already
-  handed to the pipe and the worker had not appended: one run of lines right before the failing one (none in the
-  tests at a game's pace, a line every 25 ms; 6 to 16 short lines when the script wrote thousands a second).
+  handed to the pipe and the worker had not appended: one run of lines right before the failing one (none in about 26
+  kills at a game's pace, a line every 25 ms; 6 to 16 short lines when the script wrote thousands a second). Because a
+  lost `nvram_delta` (or the first `nvram_full`) would leave the companion's shadow NVRAM wrong until those bytes change
+  again, a table with the NVRAM hook writes one fresh `nvram_full` at its next NVRAM callback after the failover
+  (`Castcade_Resync`; there and not in `Castcade_Write`, which may run in a key handler or at table exit, where
+  `Controller` may be stopping). The detector takes a later snapshot as ground truth.
+- One writer per journal file. A second VPX on a table whose journal is being written (names compared without case,
+  as Windows does) is refused once the worker holds the file: its script fails over, its open of the held file fails
+  (error 70), and its lines are not kept, which is what happened to the second opener before 0.6.0. Two sessions'
+  lines interleaved in one file make the detector invent games.
 - `Castcade_PipeName`, a global a harness sets before the library loads, names another pipe (`""`: the file only).
   No test uses the production name.
 
@@ -139,10 +147,12 @@ The one danger the spike found is the reader's to avoid: a reader that stops rea
 once about 124 KB are unread. The worker only drains the pipe, never pauses a connection, and a slow disk grows its
 queue in memory (capped at 64 MB, then lines are dropped with one warning), never the pipe's unread bytes. When VPX
 exits, the witness asks the worker for that journal's last lines before it reads the end of the game, posts it, or tells
-a match the table closed (bounded at 10 s). Checked with cscript harnesses against the real worker
+a match the table closed (once per exit, bounded at 10 s; names compared without case, since the witness spells the
+journal as VPX was given the table). Checked with cscript harnesses against the real worker
 (`companion/src/witness/journal-pipe-cscript.test.ts`): the same bytes in both modes; the main thread blocked 6 s
 while the script writes 300 KB, no `WriteLine` over 250 ms (a drain on the main thread: 5.97 s); a disk write stalled
-3 s, the same; the worker killed mid-game. Through the library's own write path on the owner's PC
+3 s, the same; the worker killed mid-game (and the fresh `nvram_full` after the failing line); a second VPX on the same
+table refused, the first one's journal as if alone; the same table again after its session ended. Through the library's own write path on the owner's PC
 (`vpx-hook/spike/journal-pipe-bench.ps1` driven by `companion/scripts/journal-pipe-bench.ts`, 9,000 lines 20 ms apart
 beside a held-file append, two runs on 2026-11-16): the pipe line took 0.09 ms (median), 0.5 ms (p99), 2.8 and 2.9 ms
 at worst, never 5 ms; the file line beside it took 50 ms or more 2 and 1 times, at worst 417 ms and 1.58 s; every

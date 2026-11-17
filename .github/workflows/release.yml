@@ -79,6 +79,21 @@ jobs:
       - name: Package (publish to the release on tag pushes only)
         working-directory: companion
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      # C16.2: the packaged app's own smoke, the only proof that the journal pipe's worker loads from inside app.asar (CI's
+      # smoke runs the unpacked dev layout). Castcade.exe is a GUI-subsystem program: Start-Process -Wait is what makes the
+      # step wait for it and get its exit code and output. Fails on a non-zero exit or without `journal-pipe ok`.
+      - name: Smoke the packaged app (Castcade.exe --smoke, the journal pipe's worker inside the asar)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'castcade-smoke.out'
+          $err = Join-Path $env:RUNNER_TEMP 'castcade-smoke.err'
+          $p = Start-Process -FilePath companion\release\win-unpacked\Castcade.exe -ArgumentList '--smoke' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+          $text = (Get-Content -Raw $out) ?? ''
+          Write-Output $text
+          Get-Content -Raw $err
+          if ($p.ExitCode -ne 0) { throw "Castcade.exe --smoke exited with $($p.ExitCode)" }
+          if ($text -notmatch 'journal-pipe ok') { throw 'Castcade.exe --smoke did not print journal-pipe ok' }
       # GPLv3 section 6(d) (E5): the Corresponding Source of the bundled ffmpeg rides on the same release. continue-on-error
       # because a source-upload failure must not block a release; the written offer in docs/ffmpeg-source.md still
       # stands, and the owner re-runs this step.

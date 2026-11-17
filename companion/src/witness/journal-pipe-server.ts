@@ -1,7 +1,7 @@
 /**
  * C16.2 (hook 0.6.0): the companion's end of the journal pipe. While the companion runs, the in-VPX hook writes its
- * journal lines into `\\.\pipe\castcade-journal` instead of the journal file, so nothing on VPX's render thread touches
- * the file system (a plain append to a held file sometimes took seconds on the owner's PC, and the table froze for that
+ * journal lines into `\\.\pipe\castcade-journal` instead of the journal file, so the journal touches no file on VPX's
+ * render thread (a plain append to a held file sometimes took seconds on the owner's PC, and the table froze for that
  * long). This server, alone on a worker thread (`journal-pipe-worker.ts`, hosted by `journal-pipe.ts`), appends what
  * arrives to the same journal file the hook writes when the companion is not there, so the tail, the detector, the
  * fixtures and the evidence read the file as before.
@@ -10,6 +10,12 @@
  * (`#castcade-journal 1 <file name>`, consumed here, never written), every later byte goes to that file unchanged and in
  * order, whole lines only (an unfinished line at the end of a connection is dropped and counted). A header that is not
  * valid closes the connection; the hook then writes the file itself.
+ *
+ * One writer per journal file: interleaved, two VPX processes on the same table make the detector invent games. A header
+ * naming a file another connection is writing (Windows file names are case-insensitive, so are the names here) is
+ * refused, as the second VPX's open of the held file failed before 0.6.0. The file is opened as soon as the first
+ * connection's header is accepted, and a refusal waits for that open, so the refused hook, which then fails over to the
+ * file, finds it held (its open fails with error 70) instead of taking it.
  *
  * It never stops reading a connection: a hook's `WriteLine` blocks without limit once about 124 KB are unread, and that
  * would freeze the table. A slow disk grows a queue in memory (capped: past the cap lines are dropped, one warning per
@@ -91,7 +97,7 @@ export interface JournalPipeServerOptions {
 
 export interface DrainResult {
   name: string;
-  /** Connections for this file still open when everything received so far was written (another VPX on the same table). */
+  /** Connections for this file still open when everything received so far was written (0, or 1 when a VPX on this table still runs). */
   open: number;
   waitedMs: number;
 }
@@ -100,8 +106,8 @@ export interface JournalPipeServer {
   /** Resolves when listening (true) or when the pipe could not be had (false). */
   readonly listening: Promise<boolean>;
   /**
-   * Resolves once every byte received so far for this journal file is written. Pending I/O is let through first, so the
-   * end of a connection whose process just exited is seen before the answer.
+   * Resolves once every byte received so far for this journal file (the name in any case) is written. Pending I/O is let
+   * through first, so the end of a connection whose process just exited is seen before the answer.
    */
   drain(name: string): Promise<DrainResult>;
   /** No new connections; resolves when every queue is written (or after `timeoutMs`) and the files are closed. Open connections stay open. */
@@ -146,9 +152,14 @@ class Sink {
   overflowing = false;
   retryMs: number;
   readonly waiters: { seq: number; done: () => void }[] = [];
+  /** Called after the next attempt to open the file (whatever its outcome): refusals of a second writer wait here. */
+  readonly openWaiters: (() => void)[] = [];
 
   constructor(
+    /** The hook's spelling in the first header: the file created has this name. */
     readonly name: string,
+    /** Lower case: the map key, so names that differ only in case are one file, as on Windows. */
+    readonly key: string,
     readonly path: string,
     readonly baseRetryMs: number,
   ) {
@@ -156,7 +167,17 @@ class Sink {
   }
 
   idle(): boolean {
-    return this.conns === 0 && this.queue.length === 0 && !this.writing && this.file === null && this.waiters.length === 0;
+    return this.conns === 0 && this.queue.length === 0 && !this.writing && this.file === null && this.waiters.length === 0 && this.openWaiters.length === 0;
+  }
+
+  /** Calls `done` once the file is open, or once an attempt to open it has failed. */
+  afterOpen(done: () => void): void {
+    if (this.file) done();
+    else this.openWaiters.push(done);
+  }
+
+  opened(): void {
+    for (const w of this.openWaiters.splice(0)) w();
   }
 
   /** Resolve every waiter whose bytes are written. */
@@ -190,32 +211,41 @@ export function startJournalPipeServer(opts: JournalPipeServerOptions): JournalP
   let nextId = 0;
   let stopping = false;
 
+  const keyOf = (name: string): string => name.toLowerCase();
+
   const sinkFor = (name: string): Sink => {
-    let s = sinks.get(name);
+    const key = keyOf(name);
+    let s = sinks.get(key);
     if (!s) {
-      s = new Sink(name, resolve(journalDir, name), baseRetry);
-      sinks.set(name, s);
+      s = new Sink(name, key, resolve(journalDir, name), baseRetry);
+      sinks.set(key, s);
     }
     return s;
   };
 
   const forget = (s: Sink): void => {
-    if (s.idle() && sinks.get(s.name) === s) sinks.delete(s.name);
+    if (s.idle() && sinks.get(s.key) === s) sinks.delete(s.key);
   };
 
-  /** Write the queue in order, one batch at a time; keep the file open while connections are; never drop on a failure. */
+  /**
+   * Hold the file while a connection is open (opened at once, before any line: see the refusal of a second writer), and
+   * write the queue in order, one batch at a time. Never drops on a failure: the open or the write is tried again.
+   */
   const pump = async (s: Sink): Promise<void> => {
     if (s.writing) return;
     s.writing = true;
     try {
-      while (s.queue.length > 0) {
+      while (s.queue.length > 0 || (s.conns > 0 && !s.file)) {
         if (!s.file) {
           try {
             s.file = await files.open(s.path);
           } catch (err) {
+            s.opened(); // an attempt was made: a second writer waiting on it is refused now
             await failed(s, `could not open ${s.name}`, err);
             continue;
           }
+          s.opened();
+          if (s.queue.length === 0) continue;
         }
         const n = s.queue.length;
         const batch = s.queue.slice(0, n);
@@ -252,8 +282,12 @@ export function startJournalPipeServer(opts: JournalPipeServerOptions): JournalP
       s.writing = false;
     }
     s.settle();
-    if (s.queue.length > 0) void pump(s);
-    else forget(s);
+    // Lines that came in, or a connection that came, while the file was being closed.
+    if (s.queue.length > 0 || (s.conns > 0 && !s.file)) void pump(s);
+    else {
+      if (!s.file) s.opened();
+      forget(s);
+    }
   };
 
   const failed = async (s: Sink, what: string, err: unknown): Promise<void> => {
@@ -346,11 +380,22 @@ export function startJournalPipeServer(opts: JournalPipeServerOptions): JournalP
         refuse(parsed.problem);
         return;
       }
+      const writing = sinks.get(keyOf(parsed.name));
+      if (writing && writing.conns > 0) {
+        // One writer per journal file. Ignore this connection's lines now, and close it once the first writer's file is
+        // open: the refused hook fails over to the file and must find it held (as the second VPX's open did before 0.6.0).
+        conn.done = true;
+        conn.head = Buffer.alloc(0);
+        writing.afterOpen(() => refuse(`${parsed.name}: another VPX is already writing ${writing.name}; this one's lines are not kept, as before 0.6.0 when it could not open the file`));
+        return;
+      }
       conn.name = parsed.name;
       conn.sink = sinkFor(parsed.name);
       conn.sink.conns++;
       conn.head = Buffer.alloc(0);
       emit({ type: 'opened', id, name: parsed.name });
+      // The file now, before any line: a second writer must not find it free.
+      void pump(conn.sink);
       if (nl + 1 < head.length) body(Buffer.from(head.subarray(nl + 1)));
     });
     // However a connection ends (its end, or an error when the writer went away), 'close' follows: that is the end.
@@ -404,9 +449,10 @@ export function startJournalPipeServer(opts: JournalPipeServerOptions): JournalP
       const started = Date.now();
       // Let pending I/O through first: the end (and the last bytes) of a connection whose VPX just exited.
       await new Promise<void>((r) => setImmediate(r));
-      const s = sinks.get(name);
+      // By key: the witness builds the name from the table's file name as VPX was given it, which may differ in case.
+      const s = sinks.get(keyOf(name));
       if (s) await new Promise<void>((r) => s.afterAccepted(r));
-      return { name, open: sinks.get(name)?.conns ?? 0, waitedMs: Date.now() - started };
+      return { name, open: sinks.get(keyOf(name))?.conns ?? 0, waitedMs: Date.now() - started };
     },
     async stop(timeoutMs) {
       if (stopping) return;

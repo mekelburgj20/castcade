@@ -42,21 +42,29 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   game on the owner's PC (2026-11-16) the two longest freezes after the table's start, 136 and 406 ms, were the table's
   script waiting for Windows to append one line to its journal; on that PC such an append sometimes takes seconds. While
   Castcade runs, a table now hands its journal lines to Castcade through a named pipe, and a thread of Castcade's own
-  writes them to the same journal file: nothing touches the disk on VPX's render thread. A table opened while Castcade
-  is not running writes its journal itself for that whole session, as before; when Castcade quits or fails during a
-  game, the table writes its own file from the next line on (only a line in transit at that moment can be lost). When
-  VPX closes, Castcade first waits for that table's last lines to be in the file (up to 10 s, logged when it gives up),
+  writes them to the same journal file: writing the journal no longer touches the disk on VPX's render thread (the
+  turn-lock check at a key press still looks for its file there). A table opened while Castcade is not running writes
+  its journal itself for that whole session, as before. When Castcade quits or fails during a game, the table writes its
+  own file from the line that failed on; the lines that were on their way to Castcade at that moment are lost (none at a
+  game's pace in about 26 kills in the tests, 6 to 16 short lines when a script wrote thousands a second), and a table
+  with a ROM then writes its whole NVRAM once more, so Castcade's reading of the score is whole again. A second VPX on a
+  table whose journal is being written is refused and its lines are not kept, as before 0.6.0 (its own write of the
+  journal then fails, as it did): two tables' lines in one journal would read as games nobody played. When VPX closes,
+  Castcade first waits for that table's last lines to be in the file (once, at most 10 s, logged when it gives up),
   then reads the end of the game, posts the score and tells a match the table closed, in that order. The log says when
   the pipe listens and has a line per table connection with its line count; `--smoke` also starts the pipe's worker (on a
-  pipe and in a folder of its own) and prints `journal-pipe ok`. Hook library 0.6.0: every patched table's script is
-  re-made at the first look after the update; reopen a table that was open. `vpx-hook/castcade.vbs`,
-  `witness/journal-pipe.ts`, `witness/journal-pipe-server.ts`, `witness/journal-pipe-worker.ts`, `witness/witness.ts`,
-  `main/index.ts`, `patcher/render.ts`.
+  pipe and in a folder of its own) and prints `journal-pipe ok`, and a release build runs the packaged app's `--smoke`.
+  Hook library 0.6.0: every patched table's script is re-made at the first look after the update; reopen a table that
+  was open. `vpx-hook/castcade.vbs`, `witness/journal-pipe.ts`, `witness/journal-pipe-server.ts`,
+  `witness/journal-pipe-worker.ts`, `witness/witness.ts`, `main/index.ts`, `patcher/render.ts`,
+  `.github/workflows/release.yml`.
 
 **Wire / journal:** the journal file format is unchanged: the same lines, bytes and line endings in the same file, only
-`lib` in `table_loaded` reads 0.6.0. The transport is new: while Castcade runs, the hook writes through
+`lib` in `table_loaded` reads 0.6.0; after a failover an NVRAM table writes one more `nvram_full`, a line the journal
+always had (the detector takes it as ground truth). The transport is new: while Castcade runs, the hook writes through
 `\\.\pipe\castcade-journal`, and the first line of each connection is a transport header, `#castcade-journal 1 <file
-name>`, that Castcade consumes and never writes to the file. Protocol 5 is unchanged.
+name>`, that Castcade consumes and never writes to the file; one connection per journal file at a time. Protocol 5 is
+unchanged.
 
 ## [0.2.45] — 2026-11-16
 

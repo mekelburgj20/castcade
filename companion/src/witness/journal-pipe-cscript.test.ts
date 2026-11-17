@@ -195,9 +195,10 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
 
   /**
    * One kill: the real worker on a bare thread, terminated (what a crash, or Castcade killed, does to the pipe) once
-   * `killAt` lines are in the file and `phaseMs` later, while the hook writes `n` lines `paceMs` apart.
+   * `killAt` lines are in the file and `phaseMs` later, while the hook writes `n` numbered lines `paceMs` apart (with
+   * `nvram`: a table with the NVRAM hook, one watched change before each numbered line).
    */
-  const killedRun = async (tag: string, n: number, paceMs: number, killAt: number, phaseMs: number): Promise<{ failover: number; lost: number[] }> => {
+  const killedRun = async (tag: string, o: { n: number; paceMs: number; killAt: number; phaseMs: number; nvram: boolean }) => {
     const { local, journals } = localAppData(tag);
     const name = testPipeName('killed');
     const { workerUrl, execArgv } = tsWorker();
@@ -205,55 +206,67 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
     workers.push(worker);
     await new Promise<void>((done) => worker.on('message', (m: JournalPipeWorkerMessage) => m.type === 'listening' && done()));
     const script = harness(tag, name, [
-      'Castcade_Init "killed", "A", "0.3.2", ""',
-      'Dim i, was',
-      `For i = 1 To ${n}`,
+      'Dim NVRAMCallback',
+      'Castcade_Init "killed", "A", "0.3.2", "congo_21"',
+      ...(o.nvram ? ['Castcade_WatchBytes Array(5794)', 'Castcade_RegisterNVRAM'] : []),
+      'Dim i, was, chg(0, 2) : chg(0, 0) = 5794',
+      `For i = 1 To ${o.n}`,
       '    was = Castcade_OnPipe',
+      ...(o.nvram ? ['    chg(0, 1) = i Mod 256 : chg(0, 2) = (i + 255) Mod 256 : Castcade_NVRAM chg'] : []),
       '    Castcade_Event "n", """i"":" & i',
       '    If was And Not Castcade_OnPipe Then WScript.Echo "failover " & i',
-      ...(paceMs > 0 ? [`    WScript.Sleep ${paceMs}`] : []),
+      ...(o.paceMs > 0 ? [`    WScript.Sleep ${o.paceMs}`] : []),
       'Next',
       'Castcade_Exit',
     ]);
     const done = run(script, local);
     const file = join(journals, 'killed.jsonl');
+    const numbered = (): number[] => lines(file).flatMap((l) => ((JSON.parse(l) as { event: string; i?: number }).event === 'n' ? [(JSON.parse(l) as { i: number }).i] : []));
     const deadline = Date.now() + 20_000;
-    while (!(existsSync(file) && lines(file).length >= killAt)) {
-      if (Date.now() > deadline) throw new Error(`the worker wrote no ${killAt} lines`);
+    while (!(existsSync(file) && lines(file).length >= o.killAt)) {
+      if (Date.now() > deadline) throw new Error(`the worker wrote no ${o.killAt} lines`);
       await sleep(3);
     }
-    await sleep(phaseMs);
+    await sleep(o.phaseMs);
+    // The last numbered line in the file just before the kill: every line the hook wrote after it was in transit.
+    const lastSeen = Math.max(0, ...numbered());
     await worker.terminate();
     const { code, out } = await done;
     expect(code).toBe(0);
-    const failover = Number(/failover (\d+)/.exec(out)?.[1]);
+    const failover = Number(/failover (\d+)/.exec(out)?.[1]); // the iteration whose write raised
     const events = lines(file).map((l) => JSON.parse(l) as { event: string; i?: number });
-    const got = events.filter((e) => e.event === 'n').map((e) => e.i!);
-    const lost = Array.from({ length: n }, (_, k) => k + 1).filter((i) => !got.includes(i));
-    // In order and nothing twice; table_loaded first; table_exit last, counting every line the hook wrote (lost ones too).
+    const got = numbered();
+    const lost = Array.from({ length: o.n }, (_, k) => k + 1).filter((i) => !got.includes(i));
+    // In order and nothing twice; table_loaded first; table_exit last.
     expect(got).toEqual([...new Set(got)].sort((a, b) => a - b));
     expect(events[0]?.event).toBe('table_loaded');
-    expect(events.at(-1)).toMatchObject({ event: 'table_exit', lines: n + 1 });
+    expect(events.at(-1)?.event).toBe('table_exit');
     // The failing line and every later one went to the file.
-    expect(failover).toBeGreaterThan(1);
-    expect(got.filter((i) => i >= failover)).toEqual(Array.from({ length: n - failover + 1 }, (_, k) => failover + k));
-    // What can be lost: the lines the hook had handed to the pipe that the worker had not appended when it died, which
-    // are one run right before the failing line.
+    expect(failover).toBeGreaterThan(lastSeen);
+    expect(got.filter((i) => i >= failover)).toEqual(Array.from({ length: o.n - failover + 1 }, (_, k) => failover + k));
+    // What can be lost: lines the hook had handed to the pipe that the worker had not appended when it died. They are
+    // the lines written after the last one the file showed before the kill, one run right before the failing one.
+    expect(lost.every((i) => i > lastSeen && i < failover)).toBe(true);
     expect(lost).toEqual(Array.from({ length: lost.length }, (_, k) => failover - lost.length + k));
-    return { failover, lost };
+    return { failover, lost, events, inTransit: failover - lastSeen - 1 };
   };
 
-  it('the companion killed mid-game: the failing line and every later one are in the file; only the lines in transit at the kill are lost', async () => {
+  it('the companion killed mid-game: the failing line and every later one are in the file; only the lines in transit at the kill are lost; an NVRAM table then writes a fresh nvram_full', async () => {
     // At a game's pace (a line every 25 ms; a table writes a few per score change), killed at three points between two
-    // lines: at most the one line in transit.
+    // lines; the table has the NVRAM hook.
     for (const phase of [0, 9, 18]) {
-      const { lost } = await killedRun(`killed-paced-${phase}`, 60, 25, 25, phase);
-      expect(lost.length).toBeLessThanOrEqual(1);
+      const { failover, events } = await killedRun(`killed-paced-${phase}`, { n: 60, paceMs: 25, killAt: 25, phaseMs: phase, nvram: true });
+      // After the failover the next NVRAM callback writes a fresh baseline before anything else (the detector's ground
+      // truth for whatever the lost lines carried): right after the failing iteration's numbered line.
+      const at = events.findIndex((e) => e.event === 'n' && e.i === failover);
+      expect(events[at + 1]?.event).toBe('nvram_full');
+      expect(events.filter((e) => e.event === 'nvram_full')).toHaveLength(2); // the one at hook time, and that one
     }
-    // A burst (the hook writing as fast as it can, thousands of lines a second): at most what the pipe's buffer (64 KB)
-    // and the worker's last read (64 KB) held.
-    const { lost } = await killedRun('killed-burst', 8000, 0, 3000, 0);
-    expect(lost.reduce((bytes, i) => bytes + `{"event":"n","t":0.000,"i":${i}}\r\n`.length, 0)).toBeLessThan(128 * 1024);
+    // A burst (the hook writing as fast as it can, thousands of lines a second), no NVRAM hook: table_exit counts every
+    // line the hook wrote, the lost ones too; no snapshot is written for a table without the NVRAM hook.
+    const burst = await killedRun('killed-burst', { n: 8000, paceMs: 0, killAt: 3000, phaseMs: 0, nvram: false });
+    expect(burst.events.at(-1)).toMatchObject({ event: 'table_exit', lines: 8001 });
+    expect(burst.events.filter((e) => e.event === 'nvram_full')).toEqual([]);
   }, 120_000);
 
   /** A hook that writes `n` lines of about 1 KB as fast as it can, timing each, then says how long the slowest took and when it was done. */
@@ -322,18 +335,92 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
     expect(indices(join(journals, 'slow_disk.jsonl'))).toEqual(upTo(300));
   }, 60_000);
 
+  /** A harness line that waits (at most 30 s) until the test creates `marker`: holds a hook connected for as long as a test needs. */
+  const waitFor = (marker: string): string =>
+    `Dim Wait_fso, Wait_n : Set Wait_fso = CreateObject("Scripting.FileSystemObject") : Wait_n = 0 : Do Until Wait_fso.FileExists(${vbs(marker)}) Or Wait_n > 1500 : WScript.Sleep 20 : Wait_n = Wait_n + 1 : Loop`;
+  const eventsOf = (path: string): { event: string; i?: number }[] => lines(path).map((l) => JSON.parse(l) as { event: string; i?: number });
+
   it('two tables at once: two hooks on the pipe together, each journal with its own lines in order', async () => {
     const { local, journals } = localAppData('two-tables');
     const w = pipeFor(journals, 'two');
     expect(await w.pipe.ready(15_000)).toBe(true);
-    const paced = (table: string): string =>
-      harness(`two-${table}`, w.pipe.pipeName, [`Castcade_Init ${vbs(table)}, "A", "0.3.2", ""`, 'Dim i', 'For i = 1 To 40', '    Castcade_Event "n", """i"":" & i', '    WScript.Sleep 10', 'Next', 'Castcade_Exit']);
-    const [a, b] = await Promise.all([run(paced('table a'), local), run(paced('table b'), local)]);
+    const marker = join(dir, 'two-tables.go');
+    const held = (table: string): string =>
+      harness(`two-${table}`, w.pipe.pipeName, [
+        `Castcade_Init ${vbs(table)}, "A", "0.3.2", ""`,
+        'Dim i',
+        'For i = 1 To 20 : Castcade_Event "n", """i"":" & i : Next',
+        waitFor(marker),
+        'For i = 21 To 40 : Castcade_Event "n", """i"":" & i : Next',
+        'Castcade_Exit',
+      ]);
+    const both = Promise.all([run(held('table a'), local), run(held('table b'), local)]);
+    // Both hooks connected before either goes on, however slow the runner: two connections open at once by construction.
+    await w.until(() => w.messages.filter((m) => m.type === 'opened').length === 2);
+    writeFileSync(marker, '');
+    const [a, b] = await both;
     expect([a.code, b.code]).toEqual([0, 0]);
     await w.until(() => w.closed().length === 2);
     const kinds = w.messages.filter((m) => m.type === 'opened' || m.type === 'closed').map((m) => m.type);
     expect(kinds).toEqual(['opened', 'opened', 'closed', 'closed']);
     for (const f of ['table_a.jsonl', 'table_b.jsonl']) expect(indices(join(journals, f))).toEqual(upTo(40));
+  }, 60_000);
+
+  it('one writer per journal file: a second VPX on the same table while the first runs is refused and keeps nothing; the first journal is as if it ran alone', async () => {
+    const { local, journals } = localAppData('one-writer');
+    const w = pipeFor(journals, 'one-writer');
+    expect(await w.pipe.ready(15_000)).toBe(true);
+    const marker = join(dir, 'one-writer.go');
+    const first = (pipe: string): string =>
+      harness(`one-writer-first-${pipe === w.pipe.pipeName ? 'pipe' : 'alone'}`, pipe, [
+        'Castcade_Init "Same Table", "A", "0.3.2", ""',
+        'Castcade_GameStart 1',
+        'Castcade_Scores Array(1000), 1, 1',
+        waitFor(marker),
+        'Castcade_BallEnd 1, 1, 0',
+        'Castcade_GameEnd Array(1000), 1',
+        'Castcade_Exit',
+      ]);
+    const a = run(first(w.pipe.pipeName), local);
+    await w.until(() => w.messages.some((m) => m.type === 'opened'));
+    // The second VPX: the same table (its id spelled in lower case: the same file on Windows).
+    const b = await run(
+      harness('one-writer-second', w.pipe.pipeName, [
+        'Castcade_Init "same table", "A", "0.3.2", ""',
+        'Dim i : For i = 1 To 20 : Castcade_Event "second", """i"":" & i : WScript.Sleep 20 : Next',
+        'WScript.Echo "pipe " & Castcade_OnPipe & " open " & Castcade_LogOpen',
+        'Castcade_Exit',
+      ]),
+      local,
+    );
+    // Refused, it failed over to the file, and could not open it: the worker holds it (error 70, as before 0.6.0).
+    expect(b).toEqual({ code: 0, out: 'pipe False open False\r\n' });
+    writeFileSync(marker, '');
+    expect((await a).code).toBe(0);
+    await w.until(() => w.closed().length === 1);
+    expect(w.messages.filter((m) => m.type === 'refused')).toEqual([
+      expect.objectContaining({ reason: "same_table.jsonl: another VPX is already writing Same_Table.jsonl; this one's lines are not kept, as before 0.6.0 when it could not open the file" }),
+    ]);
+    expect(w.logs.filter((l) => l.includes('refused'))).toHaveLength(1);
+    const piped = join(journals, 'Same_Table.jsonl');
+    expect(eventsOf(piped).map((e) => e.event)).toEqual(['table_loaded', 'game_start', 'current_scores', 'ball_end', 'game_end', 'table_exit']);
+    // The same script alone (file mode, the marker already there): the same bytes.
+    const alone = localAppData('one-writer-alone');
+    expect((await run(first(testPipeName('absent')), alone.local)).code).toBe(0);
+    expect(masked(readFileSync(piped))).toBe(masked(readFileSync(join(alone.journals, 'Same_Table.jsonl'))));
+  }, 60_000);
+
+  it('play, stop, play: the same table again once its first session ended is accepted, both sessions in the file in order', async () => {
+    const { local, journals } = localAppData('replay');
+    const w = pipeFor(journals, 'replay');
+    expect(await w.pipe.ready(15_000)).toBe(true);
+    const session = (tag: string, ev: string): string => harness(tag, w.pipe.pipeName, ['Castcade_Init "replay table", "A", "0.3.2", ""', `Castcade_Event ${vbs(ev)}, ""`, 'Castcade_Exit']);
+    expect((await run(session('replay-1', 'first'), local)).code).toBe(0);
+    await w.until(() => w.closed().length === 1);
+    expect((await run(session('replay-2', 'second'), local)).code).toBe(0);
+    await w.until(() => w.closed().length === 2);
+    expect(w.messages.filter((m) => m.type === 'refused')).toEqual([]);
+    expect(eventsOf(join(journals, 'replay_table.jsonl')).map((e) => e.event)).toEqual(['table_loaded', 'first', 'table_exit', 'table_loaded', 'second', 'table_exit']);
   }, 60_000);
 
   it('the exit drain with the real hook: its process is gone while its last lines wait for the disk; drain() resolves once they are in the file', async () => {

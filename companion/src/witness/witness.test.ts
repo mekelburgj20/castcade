@@ -1338,7 +1338,8 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.exit();
     await h.settle(8000);
 
-    expect(drained[0]).toBe(TFTC_JOURNAL);
+    // One wait per exit (its bound is the whole wait), asked before anything else.
+    expect(drained).toEqual([TFTC_JOURNAL]);
     // The held lines' game events, then the exit (the match hears `table_exit` after the game's end, not before it).
     const exitAt = order.indexOf('exit');
     expect(order.slice(order.indexOf('drain'), exitAt + 1)).toEqual(['drain', 'current_scores', 'game_abandoned', 'exit']);
@@ -1537,7 +1538,8 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     // 2026-10-26 on the owner's rig: AC/DC played and posted, then Walking Dead opened from the editor. The
     // AC/DC session kept its live state, Walking Dead's hash was checked against AC/DC's manifest, and its
     // good sidecar was renamed .stale; its game was then dropped as "AC/DC: .nv rewritten, not re-posting".
-    const h = harness({}, { journalDir: '/journal', journalPollMs: 250 });
+    const drained: string[] = [];
+    const h = harness({}, { journalDir: '/journal', journalPollMs: 250, journalDrain: async (p) => drained.push(p) });
     const tftcPath = `C:\\VPX\\tables\\${TFTC_TABLE}.vpx`;
     const mbPath = `C:\\VPX\\tables\\${MB_TABLE}.vpx`;
     h.fs.put(tftcPath, MM_VPX);
@@ -1569,6 +1571,8 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     await h.flush();
     await h.flush();
     expect(h.witness.status()).toMatchObject({ currentTable: MB_TABLE, captureMode: 'live' });
+    // C16.2: the first table's journal was drained once, at the switch, before it was read to its end.
+    expect(drained).toEqual([TFTC_JOURNAL]);
     expect(h.fs.has(mbPath.replace(/\.vpx$/, '.vbs'))).toBe(true);
     expect(h.fs.has(mbPath.replace(/\.vpx$/, '.vbs.stale'))).toBe(false);
     expect(h.errors).toEqual([]);

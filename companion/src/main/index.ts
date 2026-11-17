@@ -135,11 +135,21 @@ if (argv.includes('--smoke')) {
   const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'}\n`);
   // C16.2: the journal pipe's worker starts from this build (inside the asar when packaged) and writes a line it is sent;
-  // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure fails the smoke.
-  void smokeJournalPipe().then((r) => {
-    process.stdout.write(`journal-pipe ${r.ok ? 'ok' : 'FAILED'} ${r.detail}\n`);
-    app.exit(r.ok ? 0 : 1);
-  });
+  // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure, a throw or no
+  // answer within 30 s fails the smoke (exit 1); it never keeps running.
+  let smokeEnded = false;
+  const smokeDone = (ok: boolean, detail: string): void => {
+    if (smokeEnded) return;
+    smokeEnded = true;
+    clearTimeout(smokeGiveUp);
+    process.stdout.write(`journal-pipe ${ok ? 'ok' : 'FAILED'} ${detail}\n`);
+    app.exit(ok ? 0 : 1);
+  };
+  const smokeGiveUp = setTimeout(() => smokeDone(false, '(no answer within 30 s)'), 30_000);
+  void smokeJournalPipe().then(
+    (r) => smokeDone(r.ok, r.detail),
+    (err: unknown) => smokeDone(false, `(${err instanceof Error ? err.message : String(err)})`),
+  );
 } else if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
@@ -786,8 +796,8 @@ async function main(): Promise<void> {
   // E8: ArcAid's log pull (W99): the bundle is this rig's logs, newest VR report and newest journals; never settings.
   const localAppData = process.env.LOCALAPPDATA ?? null;
   // C16.2 (hook 0.6.0): the journal pipe, listening before the witness can see a table. A table loaded from now on sends
-  // its journal through it (nothing touches the disk on VPX's render thread); one loaded before, or while the pipe is
-  // off, writes its journal file itself. The witness reads the file either way.
+  // its journal through it (writing the journal touches no file on VPX's render thread; the hook's turn-lock check still
+  // does); one loaded before, or while the pipe is off, writes its journal file itself. The witness reads the file either way.
   if (localAppData) {
     const pipe = startJournalPipe({ journalDir: journalDir(localAppData), log: logger });
     journalPipe = pipe;
