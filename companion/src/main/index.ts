@@ -3,7 +3,8 @@
  *
  * Order matters: `--smoke` prints the bundle identity and exits before anything else (no window,
  * no tray, no settings file; CI runs it on a headless Windows runner). Then the single-instance
- * lock, then on `ready`: logger → settings store → witness host → window → tray → IPC → updater.
+ * lock, then on `ready`: logger → a waiting update (E9: installed now, before anything else) → settings store →
+ * witness host → window → tray → IPC → the update offer and its checks.
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
@@ -13,7 +14,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
@@ -30,7 +31,22 @@ import {
   type TokenCodec,
 } from './settings.js';
 import { createTray, type TrayHandle } from './tray.js';
-import { startUpdater, type UpdaterHandle } from './updater.js';
+import {
+  cacheDirName,
+  createInstallerProbe,
+  createMarkerStore,
+  createUpdateController,
+  INSTALL_MARKER_FILE,
+  installWaitReason,
+  loadUpdater,
+  readPendingInstaller,
+  type UpdateController,
+  type UpdateNotice,
+  type UpdateStatus,
+} from './updater.js';
+import { APP_USER_MODEL_ID, ensureStartMenuShortcut } from './start-menu.js';
+import { createResumeStore, RESUME_FILE, resumeFreshness } from './match-resume.js';
+import { createPowershellLister, isVpxExe } from '../witness/process-watch.js';
 import { collectLogBundle } from '../witness/log-bundle.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
 import { createTablesHost, type TablePatchResult, type TablesHost } from './tables-host.js';
@@ -72,7 +88,13 @@ let win: BrowserWindow | null = null;
 let log: Logger | null = null;
 let tray: TrayHandle | null = null;
 let sidecarWatch: SidecarWatch | null = null;
-let updater: UpdaterHandle | null = null;
+/** E9: the update offer and its install (packaged builds only); null in a development run. */
+let updater: UpdateController | null = null;
+/** E9: the witness host, for "a table is open" (the update waits for it); set once `main` made it. */
+let witnessHost: WitnessHost | null = null;
+const NO_UPDATE: UpdateStatus = { ready: null, waiting: null, installing: false, failedBefore: false };
+/** E9: the update's part of the start is running (a waiting update may be installed before anything else). */
+let updateAtStart = false;
 /** D1.1: the OBS overlay page on 127.0.0.1; null until started (or when its port was taken). */
 let overlay: OverlayServer | null = null;
 /** D1.2 / D1.3: recording and streaming. */
@@ -110,10 +132,15 @@ if (argv.includes('--smoke')) {
 } else if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
-  app.setAppUserModelId('app.arcaid.castcade');
+  app.setAppUserModelId(APP_USER_MODEL_ID);
   // A14: a second instance is how Windows hands over a clicked `castcade://` link while Castcade runs.
   app.on('second-instance', (_e, secondArgv) => {
     const link = linkFromArgv(secondArgv);
+    // E9: while a waiting update is checked at start, a second start opens nothing (Castcade may be about to install).
+    if (updateAtStart) {
+      if (link) earlyLink = link;
+      return;
+    }
     if (link) openLink(link);
     else showWindow();
   });
@@ -269,13 +296,147 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await tableAudio?.stop().catch(() => undefined); // ends the helper's stdin: it unmutes everything it muted and exits
   await videoHelper?.stop().catch(() => undefined); // D10.3: `quit` and the end of its stdin; the match closed its peers already
   await host.stop();
-  if (install && updater?.pendingVersion()) {
-    log?.info('quit: restarting to install the update');
-    updater.quitAndInstall(); // quits the app itself; no app.quit() on this path
-    return;
-  }
-  log?.info(install ? 'quit: restart to update requested but no update is pending; quitting' : 'quit');
+  // E9: the installer runs visibly and starts Castcade again at its end; install() quits the app once it is started.
+  if (install && updater?.install('offer')) return;
+  const downloaded = updater?.pendingVersion() ?? null;
+  if (install) log?.info('quit: Restart and update could not start the installer; quitting (the next start installs it)');
+  else log?.info(downloaded ? `quit (${downloaded} is downloaded and not installed: quitting does not install it, the next start does)` : 'quit');
   app.quit();
+}
+
+/**
+ * E9: Restart and update (the window's banner, the tray menu, a balloon). Never while a table is open, in a match, a
+ * 3D watch session or a recording: then it waits and says why (the window shows it; from the tray, a balloon).
+ */
+function restartToUpdate(host: WitnessHost, from: 'window' | 'tray'): UpdateStatus {
+  if (!updater) return NO_UPDATE;
+  const r = updater.requestInstall();
+  if (r.go) void quit(host, true);
+  else if (r.why && from === 'tray') tray?.notify('Castcade update waits', `Castcade ${updater.pendingVersion() ?? ''} installs ${r.why}. Castcade never restarts during a game, a match or a 3D watch session.`);
+  return updater.status();
+}
+
+/** E9: why an update has to wait right now (`installWaitReason`), from the hosts' own state. */
+function updateWaitReason(): string | null {
+  const ms = match?.status();
+  return installWaitReason({
+    match: ms ? { role: ms.role, phase: ms.phase } : null,
+    watch: watch3d?.active() ?? false,
+    table: witnessHost?.status().currentTable ?? null,
+    vpx: (witnessHost?.vpxPid?.() ?? null) !== null,
+    recording: stream ? stream.status().state !== 'idle' : false,
+  });
+}
+
+/** E9: the update's balloons. */
+function updateBalloon(n: UpdateNotice, host: WitnessHost): void {
+  const install = () => void restartToUpdate(host, 'tray');
+  switch (n.kind) {
+    case 'ready':
+      if (n.waiting) tray?.notify('Castcade update ready', `Castcade ${n.version} is downloaded. It waits ${n.waiting}; then Restart and update (window or tray menu). Quitting does not install it; the next start does.`);
+      else tray?.notify('Castcade update ready', `Castcade ${n.version} is downloaded. Click here to restart and install it: the installer shows its progress for about a minute, then Castcade starts again.`, install);
+      return;
+    case 'free':
+      tray?.notify('Castcade update ready', `Castcade ${n.version} can be installed now. Click here to restart and update.`, install);
+      return;
+    case 'updated':
+      tray?.notify('Castcade updated', `Castcade is now ${n.version}.`);
+      return;
+  }
+}
+
+/** E9: a small window for the moments before the main one exists (an update at start, a start during an install). */
+function showNotice(text: string): { close(): void } {
+  const esc = (s: string): string => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] ?? c);
+  const html =
+    '<!doctype html><meta charset="utf-8"><title>Castcade</title>' +
+    '<body style="margin:0;padding:18px 20px;background:#14161a;color:#e6e6e6;font:14px system-ui,sans-serif;border:1px solid #262a31;height:100vh;box-sizing:border-box">' +
+    `<div style="font-weight:700;letter-spacing:.04em;margin-bottom:8px">Castcade</div><div>${esc(text)}</div></body>`;
+  const w = new BrowserWindow({
+    width: 440,
+    height: 140,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    center: true,
+    show: false,
+    title: 'Castcade',
+    backgroundColor: '#14161a',
+    icon: join(app.getAppPath(), 'build', 'icon.png'),
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  w.removeMenu();
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  w.once('ready-to-show', () => w.show());
+  void w.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  return {
+    close: () => {
+      if (!w.isDestroyed()) w.destroy();
+    },
+  };
+}
+
+const readTextOrNull = (path: string): string | null => {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * E9: the update's part of a start, before anything else runs. Null: this start ends here (the installer of a waiting
+ * update is starting, or an install Castcade began is still running); else whether to stay in the tray.
+ */
+async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidden: boolean } | null> {
+  const localAppData = process.env.LOCALAPPDATA ?? join(app.getPath('home'), 'AppData', 'Local');
+  const pendingDir = join(localAppData, cacheDirName(readTextOrNull(join(process.resourcesPath, 'app-update.yml'))), 'pending');
+  const resume = createResumeStore(join(userData, RESUME_FILE), (line) => logger.warn(line));
+  const lister = createPowershellLister();
+  let notice: { close(): void } | null = null;
+  const controller = createUpdateController({
+    log: logger,
+    appVersion,
+    updater: await loadUpdater(logger),
+    busy: updateWaitReason,
+    busyAtStart: async () => {
+      const rec = resume.read();
+      if (rec && resumeFreshness(rec, Date.now()) !== 'stale') return `Castcade was in match ${rec.code} when it closed`;
+      const vpx = (await lister.list()).find((p) => isVpxExe(p.exe));
+      return vpx ? `VPX is open (${basename(vpx.exe)}, pid ${vpx.pid})` : null;
+    },
+    pending: () => readPendingInstaller({ dir: pendingDir, appVersion, readText: readTextOrNull, exists: existsSync }),
+    marker: createMarkerStore(join(userData, INSTALL_MARKER_FILE), (line) => logger.warn(line)),
+    installerRunning: createInstallerProbe(),
+    hiddenStart: argv.includes('--hidden'),
+    startedByInstaller: argv.includes('--updated'),
+    checking: (version) => {
+      notice = showNotice(`Castcade ${version} was downloaded before Castcade last closed. Checking it is still the latest, then installing it: the installer shows its progress, then Castcade starts again.`);
+    },
+    quit: () => app.quit(),
+  });
+  updater = controller;
+  updateAtStart = true;
+  const r = await controller.atStart().catch((e: unknown): { outcome: 'continue'; hidden: boolean } => {
+    logger.warn(`updater: at start: ${describeError(e)}`);
+    return { outcome: 'continue', hidden: false };
+  });
+  if (r.outcome === 'installing') return null; // the notice stays up until the app has quit; the installer follows
+  (notice as { close(): void } | null)?.close();
+  if (r.outcome === 'continue') updateAtStart = false; // else this start is leaving: a second one still opens nothing
+  if (r.outcome === 'install_running') {
+    // The installer's own start of the new Castcade at its end must not find this instance holding the lock.
+    app.releaseSingleInstanceLock();
+    const n = showNotice(`Castcade is being updated to ${r.version}. The installer is still running and starts Castcade again when it is done.`);
+    setTimeout(() => {
+      n.close();
+      app.quit();
+    }, 3000);
+    return null;
+  }
+  return { hidden: r.hidden };
 }
 
 /** C11: the player's sentence for a Patch now answer (Status and the follow-up balloon say the same). */
@@ -401,6 +562,9 @@ function registerIpc(
   ipcMain.handle(IPC.appLoginItemSet, (_e, on: unknown) => setLoginItem(on === true));
   ipcMain.handle(IPC.appLogPath, () => logger.file);
   ipcMain.handle(IPC.appOverlayUrl, () => overlay?.url() ?? null);
+  // E9: the update offer in the window (its banner's Restart and update).
+  ipcMain.handle(IPC.appUpdateStatus, () => updater?.status() ?? NO_UPDATE);
+  ipcMain.handle(IPC.appUpdateInstall, () => restartToUpdate(host, 'window'));
   ipcMain.handle(IPC.streamStatus, () => sh().status());
   ipcMain.handle(IPC.streamStart, async (_e, want: unknown) => {
     const w = (want ?? {}) as { record?: unknown; live?: unknown };
@@ -544,6 +708,30 @@ async function main(): Promise<void> {
   log = logger;
   logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged}`);
 
+  // E9: before anything else starts. An update downloaded before Castcade last closed is installed now (the installer
+  // shows its progress and starts Castcade again), unless a table or a match is on; a start while an install Castcade
+  // began is still running says so and leaves instead of being killed by that installer. Then a missing Start menu
+  // entry is put back.
+  let hiddenAfterUpdate = false;
+  if (app.isPackaged) {
+    const startup = await updaterAtStart(logger, userData);
+    if (startup === null) return;
+    hiddenAfterUpdate = startup.hidden;
+    const sm = ensureStartMenuShortcut({
+      platform: process.platform,
+      packaged: app.isPackaged,
+      execPath: process.execPath,
+      appData: app.getPath('appData'),
+      programData: process.env.ProgramData ?? process.env.ALLUSERSPROFILE ?? null,
+      exists: existsSync,
+      writeShortcut: (path, spec) => shell.writeShortcutLink(path, 'create', spec),
+    });
+    if (sm.result === 'created' || sm.result === 'failed') logger.info(sm.line);
+    else logger.debug(sm.line);
+  } else {
+    logger.info('updater: skipped (not packaged)');
+  }
+
   const store = openSettingsStore({
     file: join(userData, 'settings.json'),
     defaults: {
@@ -574,6 +762,7 @@ async function main(): Promise<void> {
         about: [`castcade ${appVersion} protocol ${PROTOCOL_VERSION}`, `device ${store.get().deviceLabel} (${store.get().deviceId})`],
       }),
   });
+  witnessHost = host;
   store.onChange((next, prev) => {
     if (needsWitnessRestart(prev, next)) void host.restart('settings changed');
   });
@@ -612,6 +801,7 @@ async function main(): Promise<void> {
     sh.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.streamStatusEvent, st);
       tray?.refresh(host.status());
+      updater?.refresh(); // E9: an update waits for a recording
     });
     // D1.5: the preview closes on its own when the streamer presses Q or closes its window.
     sh.onPreview((p) => {
@@ -745,6 +935,7 @@ async function main(): Promise<void> {
     match = matchHost;
     matchHost.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.matchStatusEvent, st);
+      updater?.refresh(); // E9: an update waits for the match
     });
     // A15: Castcade was in a match under a minute ago (a crash, a restart for an update): back into it without a click.
     // An older one waits on the Match tab for the player's word.
@@ -849,6 +1040,7 @@ async function main(): Promise<void> {
     });
     watch3d.onStatus((st) => {
       if (win && !win.isDestroyed()) win.webContents.send(IPC.watchStatusEvent, st);
+      updater?.refresh(); // E9: an update waits for the 3D watch session
     });
   } catch (e) {
     logger.error(`watch: could not set up (${describeError(e)}); 3D watch is off this run`);
@@ -878,8 +1070,9 @@ async function main(): Promise<void> {
     }
   });
 
-  // A14: a link on the command line brings the window up even with `--hidden`.
-  if (!argv.includes('--hidden') || earlyLink) win = createWindow();
+  // A14: a link on the command line brings the window up even with `--hidden`. E9: the start after an update that a
+  // `--hidden` start installed stays in the tray too (the installer starts Castcade with `--updated` only).
+  if ((!argv.includes('--hidden') && !hiddenAfterUpdate) || earlyLink) win = createWindow();
   if (win) win.once('ready-to-show', () => win?.show());
 
   tray = createTray(join(app.getAppPath(), 'build', 'tray.ico'), {
@@ -893,7 +1086,8 @@ async function main(): Promise<void> {
       tray?.refresh(host.status());
     },
     pendingUpdate: () => updater?.pendingVersion() ?? null,
-    restartToUpdate: () => void quit(host, true),
+    updateWaiting: () => updater?.status().waiting ?? null,
+    restartToUpdate: () => void restartToUpdate(host, 'tray'),
     quit: () => void quit(host),
     streamState: () => {
       if (!stream) return null;
@@ -908,6 +1102,7 @@ async function main(): Promise<void> {
 
   host.onStatus((status) => {
     streamHost?.noteTable(status.currentTable);
+    updater?.refresh(); // E9: an update waits while a table is open
     tray?.refresh(status);
     if (win && !win.isDestroyed()) win.webContents.send(IPC.witnessStatusEvent, status);
     overlay?.publish();
@@ -939,14 +1134,14 @@ async function main(): Promise<void> {
     (err: unknown) => logger.warn(`overlay: could not start (${describeError(err)}); the OBS overlay is off this run`),
   );
 
-  if (app.isPackaged) {
-    updater = await startUpdater(logger, {
-      onDownloaded: (version) => {
-        tray?.refresh(host.status());
-        tray?.notify('Castcade update', `Update available: v${version}. Quit and reopen (or use the tray menu) to install.`);
-      },
+  // E9: the update offer (window banner, tray menu, balloons) and the periodic check.
+  if (updater) {
+    const u = updater;
+    u.onStatus((s) => {
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.appUpdateStatusEvent, s);
+      tray?.refresh(host.status());
     });
-  } else {
-    logger.info('updater: skipped (not packaged)');
+    u.onNotice((n) => updateBalloon(n, host));
+    u.startChecks();
   }
 }

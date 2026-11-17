@@ -14,8 +14,9 @@ import type { ClipSummary, SaveFramesResult } from '../media/frame-clip.js';
 import type { BenchStatus } from '../media/bench.js';
 import type { OneStepStatus, TableChoice } from './one-step.js';
 import type { WatchStatus } from './watch-host.js';
+import type { UpdateStatus } from './updater.js';
 
-export type { OneStepStatus, TableChoice, WatchStatus };
+export type { OneStepStatus, TableChoice, UpdateStatus, WatchStatus };
 export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
@@ -35,6 +36,10 @@ export const IPC = {
   appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
   appClipboardText: 'app:clipboardText',
+  /** E9: the downloaded update (main/updater.ts) and the window's Restart and update. */
+  appUpdateStatus: 'app:update:status',
+  appUpdateInstall: 'app:update:install',
+  appUpdateStatusEvent: 'app:update:statusEvent',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -223,6 +228,16 @@ export interface CastcadeApi {
     pickFolder(defaultPath: string | null): Promise<string | null>;
     /** A6: the clipboard's text, for the Paste buttons (no right-click menu is needed then). */
     clipboardText(): Promise<string>;
+    /**
+     * E9 (2026-11-16): a downloaded update. `install` is Restart and update: Castcade closes in order, the installer
+     * shows its progress and starts Castcade again; refused (`waiting` says why) during a game, a match, 3D watch or a
+     * recording.
+     */
+    update: {
+      status(): Promise<UpdateStatus>;
+      install(): Promise<UpdateStatus>;
+      onStatus(cb: (s: UpdateStatus) => void): () => void;
+    };
   };
   /** D1.2 / D1.3: record and / or go live. The key goes in, never comes back out. */
   stream: {

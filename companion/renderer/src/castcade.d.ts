@@ -340,6 +340,14 @@ interface LoginItemState {
   openAtLogin: boolean;
 }
 
+/** E9 (mirrors main/updater.ts UpdateStatus): a downloaded update and why Restart and update waits. */
+interface UpdateStatus {
+  ready: string | null;
+  waiting: string | null;
+  installing: boolean;
+  failedBefore: boolean;
+}
+
 /** D1.2 / D1.3 (mirrors media/stream-engine.ts EngineStatus). */
 interface StreamStatus {
   state: 'idle' | 'waiting' | 'capturing' | 'slate';
@@ -785,6 +793,12 @@ interface CastcadeBridge {
     overlayUrl(): Promise<string | null>;
     pickFolder(defaultPath: string | null): Promise<string | null>;
     clipboardText(): Promise<string>;
+    /** E9: the downloaded update; `install` is Restart and update (refused with `waiting` during a game, a match, 3D watch or a recording). */
+    readonly update: {
+      status(): Promise<UpdateStatus>;
+      install(): Promise<UpdateStatus>;
+      onStatus(cb: (s: UpdateStatus) => void): () => void;
+    };
   };
 }
 

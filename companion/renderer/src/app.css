@@ -318,6 +318,9 @@ a {
 .banner.ok { color: var(--ok, #2f9e44); }
 p.error.banner { color: var(--error, #d9480f); }
 button.primary { font-weight: 600; }
+/* E9: a downloaded update, above every tab. */
+.update-banner { margin: 0.75rem 1rem 0; color: var(--accent); }
+.update-banner p { margin: 0.4rem 0 0; }
 
 /* A6: the Match page. The turn line is the one thing a player glances at between balls. */
 .turn-line {

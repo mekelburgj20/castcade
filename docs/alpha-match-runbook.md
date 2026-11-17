@@ -9,8 +9,9 @@ Table: ________ (ROM ______)
 ## 1. Before the night (each player, about 15 minutes)
 
 - [ ] **Castcade 0.2.22 or newer**, from the GitHub releases page
-  (<https://github.com/mekelburgj20/castcade/releases>). An installed copy updates itself; check
-  the version on the Status tab. After an update, restart VPX: a VPX left running keeps the older headset layer (the
+  (<https://github.com/mekelburgj20/castcade/releases>). An installed copy updates itself: when the window or the tray
+  offers **Restart and update**, press it before the match (during one it waits); check the version on the Status
+  tab. After an update, restart VPX: a VPX left running keeps the older headset layer (the
   Match tab says "VPX started before this layer was registered"). From 0.2.36 the camera is the VR layer sending one
   eye (ADR 0009): no preview window is captured on a VR rig, so PuP and DMD windows may sit anywhere; the first start
   after the update migrates your match settings once (`match: match.json from before 0.2.36` in the log).

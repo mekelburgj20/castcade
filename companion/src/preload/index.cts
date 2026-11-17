@@ -2,12 +2,12 @@
  * Sandboxed preload (CommonJS: Electron's sandboxed preloads cannot be ESM, hence `.cts`).
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
  * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`,
- * `stream:previewEvent`, `match:statusEvent`, `launch:statusEvent` and `watch:statusEvent`.
+ * `stream:previewEvent`, `match:statusEvent`, `launch:statusEvent`, `watch:statusEvent` and `app:update:statusEvent`.
  * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
-import type { CastcadeApi, EngineStatus, MatchStatus, OneStepStatus, PreviewStatus, WatchStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
+import type { CastcadeApi, EngineStatus, MatchStatus, OneStepStatus, PreviewStatus, UpdateStatus, WatchStatus, WitnessStatus, TablesProgress } from '../main/ipc-types.js';
 
 // Channel names are duplicated here on purpose: a sandboxed preload cannot load `../main/ipc-types.js`
 // at runtime, and `import type` is erased. Keep in step with `IPC` in that file.
@@ -28,6 +28,9 @@ const CH = {
   appOverlayUrl: 'app:overlayUrl',
   appPickFolder: 'app:pickFolder',
   appClipboardText: 'app:clipboardText',
+  appUpdateStatus: 'app:update:status',
+  appUpdateInstall: 'app:update:install',
+  appUpdateStatusEvent: 'app:update:statusEvent',
   tablesDefaults: 'tables:defaults',
   tablesPlan: 'tables:plan',
   tablesApply: 'tables:apply',
@@ -134,6 +137,17 @@ const castcade: CastcadeApi = {
     overlayUrl: () => ipcRenderer.invoke(CH.appOverlayUrl),
     pickFolder: (defaultPath) => ipcRenderer.invoke(CH.appPickFolder, defaultPath),
     clipboardText: () => ipcRenderer.invoke(CH.appClipboardText),
+    update: {
+      status: () => ipcRenderer.invoke(CH.appUpdateStatus),
+      install: () => ipcRenderer.invoke(CH.appUpdateInstall),
+      onStatus(cb) {
+        const listener = (_e: Electron.IpcRendererEvent, s: UpdateStatus): void => cb(s);
+        ipcRenderer.on(CH.appUpdateStatusEvent, listener);
+        return () => {
+          ipcRenderer.removeListener(CH.appUpdateStatusEvent, listener);
+        };
+      },
+    },
   },
   stream: {
     status: () => ipcRenderer.invoke(CH.streamStatus),

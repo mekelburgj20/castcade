@@ -7,6 +7,33 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An update no longer installs out of sight when Castcade quits, and Castcade comes back after every update (E9).**
+  On the owner's PC (2026-11-16) a quit with 0.2.44 downloaded ran the installer silently; Castcade, started again five
+  seconds later, was killed by that installer, and nothing started it after the install. Now quitting just quits. A
+  downloaded update is offered by a balloon, a banner above every tab of the window and the tray menu: **Restart and
+  update** closes Castcade in order and runs the installer where it can be seen (its progress bar, about a minute, no
+  questions), and the installer starts Castcade again at its end. An update downloaded before Castcade last closed is
+  installed at the next start, before anything else, once the release feed confirms it is still the latest: a
+  download overtaken by a newer release is replaced, not installed, and offline Castcade starts and offers it later.
+  Nothing installs while a table is open, during a match (the lobby too), a 3D watch session or a recording: the offer
+  says what it waits for, and says again when it can go. Castcade notes each install it starts (`update-install.json`
+  beside `settings.json`): the next start logs whether it worked and offers it again when it did not, and a start while
+  that installer still runs says so and leaves instead of being killed. A start from Start with Windows that installed
+  comes back in the tray. The log tells each step (`updater: at start: …`, `… waits until you leave the match`,
+  `updater: updated to …`). `main/updater.ts`, `main/index.ts`, `main/tray.ts`, `renderer/src/views/UpdateBanner.tsx`.
+- **The installer of an update asks nothing and ends with Castcade running (E9).** An update skips "who should this
+  application be installed for" (Castcade installs per user; the other choice was disabled), and an update shown with
+  `--force-run` starts Castcade and closes instead of stopping on its Finish page. An update that an older Castcade
+  installs silently when it quits (0.2.45 and before, so the update to this build) starts Castcade at its end too.
+  `build/installer.nsh`.
+- **A missing Start menu entry is put back (E9).** The owner's Start menu had no Castcade entry (only the Desktop
+  shortcut), and an update never recreates a missing one (the installer keeps shortcuts as they are). Every start of
+  an installed Castcade writes `Castcade.lnk` in the Start menu when neither the user's nor the all-users one exists,
+  as the installer writes it (the running exe, the AppUserModelID `app.arcaid.castcade` that Windows notifications
+  need); an existing one and the Desktop shortcut are never touched. `main/start-menu.ts`.
+
 ## [0.2.45] — 2026-11-16
 
 One fix: a patched table no longer freezes for a moment when its script writes a journal line. Companion and hook
