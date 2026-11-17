@@ -196,9 +196,11 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
   /**
    * One kill: the real worker on a bare thread, terminated (what a crash, or Castcade killed, does to the pipe) once
    * `killAt` lines are in the file and `phaseMs` later, while the hook writes `n` numbered lines `paceMs` apart (with
-   * `nvram`: a table with the NVRAM hook, one watched change before each numbered line).
+   * `nvram`: a table with the NVRAM hook, one watched change before each numbered line). With `tail` the hook writes
+   * until `tail` lines after its failover (`n` is then only the most it will write), so the kill lands while it is
+   * writing however fast the machine is: a fixed burst of 8,000 lines was over before the kill on a CI runner.
    */
-  const killedRun = async (tag: string, o: { n: number; paceMs: number; killAt: number; phaseMs: number; nvram: boolean }) => {
+  const killedRun = async (tag: string, o: { n: number; paceMs: number; killAt: number; phaseMs: number; nvram: boolean; tail?: number }) => {
     const { local, journals } = localAppData(tag);
     const name = testPipeName('killed');
     const { workerUrl, execArgv } = tsWorker();
@@ -209,14 +211,16 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
       'Dim NVRAMCallback',
       'Castcade_Init "killed", "A", "0.3.2", "congo_21"',
       ...(o.nvram ? ['Castcade_WatchBytes Array(5794)', 'Castcade_RegisterNVRAM'] : []),
-      'Dim i, was, chg(0, 2) : chg(0, 0) = 5794',
-      `For i = 1 To ${o.n}`,
+      'Dim i, was, failAt, chg(0, 2) : chg(0, 0) = 5794 : i = 0 : failAt = 0',
+      'Do',
+      '    i = i + 1',
       '    was = Castcade_OnPipe',
       ...(o.nvram ? ['    chg(0, 1) = i Mod 256 : chg(0, 2) = (i + 255) Mod 256 : Castcade_NVRAM chg'] : []),
       '    Castcade_Event "n", """i"":" & i',
-      '    If was And Not Castcade_OnPipe Then WScript.Echo "failover " & i',
+      '    If was And Not Castcade_OnPipe Then failAt = i : WScript.Echo "failover " & i',
       ...(o.paceMs > 0 ? [`    WScript.Sleep ${o.paceMs}`] : []),
-      'Next',
+      `Loop Until i >= ${o.n}${o.tail ? ` Or (failAt > 0 And i >= failAt + ${o.tail})` : ''}`,
+      'WScript.Echo "total " & i',
       'Castcade_Exit',
     ]);
     const done = run(script, local);
@@ -229,26 +233,30 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
     }
     await sleep(o.phaseMs);
     // The last numbered line in the file just before the kill: every line the hook wrote after it was in transit.
-    const lastSeen = Math.max(0, ...numbered());
+    const lastSeen = numbered().reduce((m, i) => Math.max(m, i), 0);
     await worker.terminate();
     const { code, out } = await done;
     expect(code).toBe(0);
     const failover = Number(/failover (\d+)/.exec(out)?.[1]); // the iteration whose write raised
+    const total = Number(/total (\d+)/.exec(out)?.[1]); // the numbered lines the hook wrote (`n`, or fewer with `tail`)
+    // The kill landed while the hook was writing: without that there is no failover to look at.
+    expect(failover, `no failover: the hook wrote ${total} lines, ${lastSeen} of them in the file before the kill`).toBeGreaterThan(0);
     const events = lines(file).map((l) => JSON.parse(l) as { event: string; i?: number });
     const got = numbered();
-    const lost = Array.from({ length: o.n }, (_, k) => k + 1).filter((i) => !got.includes(i));
+    const have = new Set(got);
+    const lost = Array.from({ length: total }, (_, k) => k + 1).filter((i) => !have.has(i));
     // In order and nothing twice; table_loaded first; table_exit last.
     expect(got).toEqual([...new Set(got)].sort((a, b) => a - b));
     expect(events[0]?.event).toBe('table_loaded');
     expect(events.at(-1)?.event).toBe('table_exit');
     // The failing line and every later one went to the file.
     expect(failover).toBeGreaterThan(lastSeen);
-    expect(got.filter((i) => i >= failover)).toEqual(Array.from({ length: o.n - failover + 1 }, (_, k) => failover + k));
+    expect(got.filter((i) => i >= failover)).toEqual(Array.from({ length: total - failover + 1 }, (_, k) => failover + k));
     // What can be lost: lines the hook had handed to the pipe that the worker had not appended when it died. They are
     // the lines written after the last one the file showed before the kill, one run right before the failing one.
     expect(lost.every((i) => i > lastSeen && i < failover)).toBe(true);
     expect(lost).toEqual(Array.from({ length: lost.length }, (_, k) => failover - lost.length + k));
-    return { failover, lost, events, inTransit: failover - lastSeen - 1 };
+    return { failover, lost, events, total, inTransit: failover - lastSeen - 1 };
   };
 
   it('the companion killed mid-game: the failing line and every later one are in the file; only the lines in transit at the kill are lost; an NVRAM table then writes a fresh nvram_full', async () => {
@@ -263,9 +271,11 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
       expect(events.filter((e) => e.event === 'nvram_full')).toHaveLength(2); // the one at hook time, and that one
     }
     // A burst (the hook writing as fast as it can, thousands of lines a second), no NVRAM hook: table_exit counts every
-    // line the hook wrote, the lost ones too; no snapshot is written for a table without the NVRAM hook.
-    const burst = await killedRun('killed-burst', { n: 8000, paceMs: 0, killAt: 3000, phaseMs: 0, nvram: false });
-    expect(burst.events.at(-1)).toMatchObject({ event: 'table_exit', lines: 8001 });
+    // line the hook wrote, the lost ones too; no snapshot is written for a table without the NVRAM hook. The hook writes
+    // on until 500 lines after its failover, so the kill is always mid-burst.
+    const burst = await killedRun('killed-burst', { n: 400_000, paceMs: 0, killAt: 3000, phaseMs: 0, nvram: false, tail: 500 });
+    expect(burst.total).toBe(burst.failover + 500);
+    expect(burst.events.at(-1)).toMatchObject({ event: 'table_exit', lines: burst.total + 1 });
     expect(burst.events.filter((e) => e.event === 'nvram_full')).toEqual([]);
   }, 120_000);
 
