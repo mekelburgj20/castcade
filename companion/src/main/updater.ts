@@ -27,8 +27,16 @@ import { realClock, type Clock } from '../match/clock.js';
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 /** Retry delay after a failed check (offline at boot, GitHub hiccup, release still being uploaded). */
 export const RETRY_AFTER_FAILURE_MS = 30 * 60 * 1000;
-/** At start, how long the release feed may take to confirm a waiting download before Castcade starts without it. */
+/**
+ * At start, how long the release feed may take to confirm a waiting download (the check and the re-hash of the cached
+ * file together: one deadline) before Castcade starts without it.
+ */
 export const START_CHECK_TIMEOUT_MS = 10_000;
+/** After the installer is launched, how long its process may take to show in `tasklist` before the launch counts as failed. */
+export const LAUNCH_CONFIRM_MS = 4_000;
+export const LAUNCH_POLL_MS = 500;
+/** An installer open longer than this (with Castcade's note) is probably waiting for an answer in its window. */
+export const LONG_INSTALL_MS = 2 * 60_000;
 /** The note of an install Castcade started (`<userData>/update-install.json`). */
 export const INSTALL_MARKER_FILE = 'update-install.json';
 /** electron-updater's cache folder under %LOCALAPPDATA% when app-update.yml cannot be read (electron-builder derives it from the package name). */
@@ -138,6 +146,11 @@ export interface InstallMarker {
   from: 'offer' | 'start';
   /** The start that installed was `--hidden` (Start with Windows): the start after the install stays in the tray. */
   hidden: boolean;
+  /**
+   * False: the installer could not be started (refused, threw, or its process never showed), and Castcade started itself
+   * again; that start offers the update instead of installing it.
+   */
+  started: boolean;
 }
 
 export function parseMarker(text: string | null): InstallMarker | null {
@@ -153,7 +166,7 @@ export function parseMarker(text: string | null): InstallMarker | null {
   if (typeof r.version !== 'string' || Number.isNaN(compareVersions(r.version, '0.0.0'))) return null;
   if (typeof r.fileName !== 'string' || installerVersion(r.fileName) === null) return null;
   if (typeof r.at !== 'number' || !Number.isFinite(r.at)) return null;
-  return { version: r.version, fileName: r.fileName, at: r.at, from: r.from === 'start' ? 'start' : 'offer', hidden: r.hidden === true };
+  return { version: r.version, fileName: r.fileName, at: r.at, from: r.from === 'start' ? 'start' : 'offer', hidden: r.hidden === true, started: r.started !== false };
 }
 
 export interface MarkerStore {
@@ -248,8 +261,16 @@ export interface UpdaterLike {
   logger: unknown;
   on(event: string, listener: (...args: never[]) => void): unknown;
   checkForUpdates(): Promise<{ isUpdateAvailable: boolean; updateInfo: { version: string }; downloadPromise?: Promise<unknown> | null } | null>;
-  /** BaseUpdater.install: starts the installer (true) without quitting; Castcade quits itself after it. */
+  /**
+   * BaseUpdater.install: launches the installer without quitting; Castcade confirms the launch and quits itself. True
+   * means only that the spawn was asked for (NsisUpdater.doInstall returns before the spawn's result is known).
+   */
   install(isSilent: boolean, isForceRunAfter: boolean): boolean;
+  /**
+   * BaseUpdater's guard (protected there): set before every install and left set when the install throws, after which
+   * every later install() in the run returns false without trying. Castcade clears it after a launch that failed.
+   */
+  quitAndInstallCalled?: boolean;
 }
 
 /**
@@ -299,19 +320,36 @@ export interface UpdateStatus {
   waiting: string | null;
   /** Restart and update was pressed: Castcade is closing for the installer. */
   installing: boolean;
-  /** The install of `ready` started before did not finish (the installer was closed or failed). */
-  failedBefore: boolean;
+  /**
+   * The last try at installing `ready`: its installer could not be started (`not_started`), or it ran and did not finish
+   * (`not_finished`: closed or failed). Null when there was none.
+   */
+  lastAttempt: AttemptFailure | null;
 }
 
-export type UpdateNotice = { kind: 'ready'; version: string; waiting: string | null } | { kind: 'free'; version: string } | { kind: 'updated'; version: string };
+export type AttemptFailure = 'not_started' | 'not_finished';
+
+export type UpdateNotice =
+  | { kind: 'ready'; version: string; waiting: string | null }
+  | { kind: 'free'; version: string }
+  | { kind: 'updated'; version: string }
+  | { kind: 'failed'; version: string; why: AttemptFailure };
 
 export type StartOutcome =
   /** Start Castcade as usual. `hidden`: the start before the install was `--hidden`, keep this one in the tray. */
   | { outcome: 'continue'; hidden: boolean }
   /** The installer has been started and Castcade is quitting: start nothing. */
   | { outcome: 'installing'; version: string }
-  /** An install Castcade started is still running: say so and leave (the installer starts Castcade at its end). */
-  | { outcome: 'install_running'; version: string };
+  /** An install Castcade started is still running: say so (`installRunningNotice`) and leave; the installer starts Castcade at its end. */
+  | { outcome: 'install_running'; version: string; ageMs: number };
+
+/** What the start that leaves while Castcade's installer runs shows for 3 s. */
+export function installRunningNotice(version: string, ageMs: number): string {
+  if (ageMs > LONG_INSTALL_MS) {
+    return `Castcade is being updated to ${version}, but its installer has been open for ${Math.floor(ageMs / 60_000)} minutes: its window may be waiting for an answer. Castcade starts once the installer is finished or closed.`;
+  }
+  return `Castcade is being updated to ${version}. The installer is still running and starts Castcade again when it is done.`;
+}
 
 export interface UpdateControllerDeps {
   log: Logger;
@@ -321,8 +359,18 @@ export interface UpdateControllerDeps {
   clock?: Clock;
   /** Why an install has to wait right now (`installWaitReason`), else null. */
   busy(): string | null;
-  /** At start, before anything runs: a VPX already open, a match to go back to; null when nothing. */
+  /**
+   * At start, before anything runs: a VPX already open, a match to go back to; null when nothing. No answer within the
+   * start deadline, or an error, counts as busy: the update is then offered, not installed.
+   */
   busyAtStart(): Promise<string | null>;
+  /**
+   * At start, read again at the moment of deciding to install: a reason that appeared while the feed was asked (a
+   * `castcade://` invite handed over by a second start), else null.
+   */
+  heldAtStart?(): string | null;
+  /** Whether a file exists (the downloaded installer, before anything is shut down for it). */
+  exists?(path: string): boolean;
   /** What electron-updater's cache holds (`readPendingInstaller`). */
   pending(): PendingRead;
   marker: MarkerStore;
@@ -350,8 +398,12 @@ export interface UpdateController {
    * it waits ("until you leave the match"), or null when it is already under way.
    */
   requestInstall(): { go: true } | { go: false; why: string | null };
-  /** Starts the installer visibly and quits; false when there is nothing to install or the installer did not start. */
-  install(from: 'offer' | 'start'): boolean;
+  /**
+   * Launches the installer visibly, confirms its process runs, then quits (true). False when there is nothing to
+   * install or the launch was refused, threw or never showed: Castcade does not quit then. `offer` leaves a note that
+   * the launch failed (the shell starts Castcade again after its shutdown, and that start offers instead of installing).
+   */
+  install(from: 'offer' | 'start'): Promise<boolean>;
   /** A busy state may have changed (witness, match, watch, stream status). */
   refresh(): void;
   onStatus(cb: (s: UpdateStatus) => void): () => void;
@@ -386,7 +438,8 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
   let ready: string | null = null;
   let readyFile: string | null = null;
   let installing = false;
-  let failedBefore: string | null = null;
+  /** The version whose last install try failed, and how. */
+  let failedBefore: { version: string; why: AttemptFailure } | null = null;
   let lastWaiting: string | null = null;
   const freed = new Set<string>();
   let timer: unknown = null;
@@ -402,16 +455,21 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     ready,
     waiting: ready && !installing ? deps.busy() : null,
     installing,
-    failedBefore: ready !== null && failedBefore === ready,
+    lastAttempt: ready !== null && failedBefore?.version === ready ? failedBefore.why : null,
   });
   const emit = (): void => {
     const s = status();
     for (const cb of statusCbs) cb(s);
   };
   const notice = (n: UpdateNotice): void => {
-    if (noticeCbs.size === 0) held.push(n);
+    if (noticeCbs.size === 0) {
+      // At start: "could not be started, offered again" says all a held "downloaded" of the same version would.
+      if (n.kind === 'failed') for (let i = held.length - 1; i >= 0; i--) if (held[i]?.kind === 'ready' && held[i]?.version === n.version) held.splice(i, 1);
+      held.push(n);
+    }
     for (const cb of noticeCbs) cb(n);
   };
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => void clock.setTimeout(resolve, ms));
 
   if (updater) {
     configureUpdater(updater, log, (version, file) => {
@@ -444,6 +502,8 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
 
   const schedule = (outcome: CheckOutcome): void => {
     if (stopped) return;
+    if (timer !== null) clock.clearTimeout(timer);
+    timer = null;
     const delay = nextCheckDelayMs(outcome);
     if (delay === null) return;
     timer = clock.setTimeout(() => {
@@ -454,11 +514,27 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     (timer as { unref?: () => void } | null)?.unref?.();
   };
 
+  /** The downloaded installer is gone from electron-updater's cache: forget it and download it again. */
+  const readyFileGone = (): boolean => {
+    if (!readyFile || !deps.exists || deps.exists(readyFile)) return false;
+    log.warn(`updater: the downloaded installer of ${ready} is gone (${readyFile}); Castcade downloads it again`);
+    ready = null;
+    readyFile = null;
+    installing = false;
+    emit();
+    if (!stopped) void check().then(schedule);
+    return true;
+  };
+
   /** Whether the release feed's latest is `version` and electron-updater has it verified in its cache now. */
-  const confirm = async (version: string): Promise<{ kind: 'confirmed' } | { kind: 'stale' | 'none'; latest: string | null } | { kind: 'timeout' } | { kind: 'unreachable'; why: string }> => {
+  const confirm = async (
+    version: string,
+    deadline: number,
+  ): Promise<{ kind: 'confirmed' } | { kind: 'stale' | 'none'; latest: string | null } | { kind: 'timeout' } | { kind: 'unreachable'; why: string }> => {
     if (!updater) return { kind: 'unreachable', why: 'electron-updater is unavailable' };
+    const left = (): number => Math.max(0, deadline - clock.now());
     try {
-      const r = await withTimeout(updater.checkForUpdates(), startTimeout, clock);
+      const r = await withTimeout(updater.checkForUpdates(), left(), clock);
       if (r === TIMEOUT) return { kind: 'timeout' };
       if (!r || !r.isUpdateAvailable) {
         startCheck = 'ok';
@@ -467,8 +543,8 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       startCheck = 'ok';
       if (r.updateInfo.version !== version) return { kind: 'stale', latest: r.updateInfo.version };
       // The same version: electron-updater re-hashes the cached file against the feed's sha512 and reports it
-      // downloaded (no download), or downloads it again when the file does not match.
-      const d = await withTimeout(r.downloadPromise ?? Promise.resolve(), startTimeout, clock);
+      // downloaded (no download), or downloads it again when the file does not match. Same deadline as the check.
+      const d = await withTimeout(r.downloadPromise ?? Promise.resolve(), left(), clock);
       if (d === TIMEOUT) return { kind: 'timeout' };
       if (ready !== version) return { kind: 'unreachable', why: `electron-updater did not report ${version} downloaded` };
       startCheck = 'downloaded';
@@ -479,7 +555,17 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     }
   };
 
-  const install = (from: 'offer' | 'start'): boolean => {
+  /** The installer's process shows in `tasklist` within LAUNCH_CONFIRM_MS. */
+  const launched = async (fileName: string): Promise<boolean> => {
+    const until = clock.now() + LAUNCH_CONFIRM_MS;
+    for (;;) {
+      if (await deps.installerRunning(fileName)) return true;
+      if (clock.now() >= until) return false;
+      await sleep(LAUNCH_POLL_MS);
+    }
+  };
+
+  const install = async (from: 'offer' | 'start'): Promise<boolean> => {
     const version = ready;
     if (!updater || !version) {
       log.warn(`updater: install asked (${from}) but no downloaded update is ready`);
@@ -488,26 +574,40 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       return false;
     }
     const fileName = readyFile ? win32.basename(readyFile) : `Castcade-Setup-${version}.exe`;
-    deps.marker.write({ version, fileName, at: clock.now(), from, hidden: from === 'start' && deps.hiddenStart });
+    const failed = (why: string): false => {
+      // BaseUpdater leaves its guard set after a launch that threw: clear it, or every later try is refused unseen.
+      if (updater.quitAndInstallCalled === true) updater.quitAndInstallCalled = false;
+      failedBefore = { version, why: 'not_started' };
+      if (from === 'offer') {
+        deps.marker.write({ version, fileName, at: clock.now(), from, hidden: false, started: false });
+        log.warn(`updater: the installer of ${version} could not be started (${why}); Castcade starts again and offers it, it does not install it at that start`);
+      } else {
+        deps.marker.remove();
+        log.warn(`updater: the installer of ${version} could not be started (${why}); Castcade starts without it and offers it`);
+      }
+      installing = false;
+      emit();
+      // From the offer the shell starts Castcade again, and that start says it (from the note); at start, say it here.
+      if (from === 'start') notice({ kind: 'failed', version, why: 'not_started' });
+      return false;
+    };
+    if (readyFile && deps.exists && !deps.exists(readyFile)) return failed(`${readyFile} is gone`);
+    deps.marker.write({ version, fileName, at: clock.now(), from, hidden: from === 'start' && deps.hiddenStart, started: true });
     log.info(
       `updater: installing ${version} ${from === 'start' ? 'at start, before anything else' : 'from Restart and update'}: ` +
         'Castcade closes, the installer shows its progress and starts Castcade again when it is done',
     );
-    let started = false;
-    try {
-      started = updater.install(false, true);
-    } catch (e) {
-      log.warn(`updater: ${describeError(e)}`);
-    }
-    if (!started) {
-      deps.marker.remove();
-      installing = false;
-      log.warn(`updater: the installer of ${version} did not start (see the updater lines above)`);
-      emit();
-      return false;
-    }
     installing = true;
     emit();
+    let asked: boolean;
+    try {
+      asked = updater.install(false, true);
+    } catch (e) {
+      return failed(describeError(e));
+    }
+    if (!asked) return failed('electron-updater refused, see the updater lines above');
+    if (!(await launched(fileName))) return failed(`its process ${fileName} did not show within ${LAUNCH_CONFIRM_MS / 1000} s`);
+    log.info(`updater: the installer of ${version} is running; Castcade quits for it`);
     deps.quit();
     return true;
   };
@@ -518,22 +618,29 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       let hidden = false;
       const m = deps.marker.read();
       if (m) {
-        const age = Math.max(0, Math.round((now - m.at) / 1000));
+        const ageMs = Math.max(0, now - m.at);
+        const age = Math.round(ageMs / 1000);
         if (compareVersions(appVersion, m.version) >= 0) {
           log.info(`updater: updated to ${appVersion}: the install of ${m.version} ${m.from === 'start' ? 'at a start' : 'from Restart and update'} began ${age} s before this start`);
           deps.marker.remove();
           hidden = m.hidden;
           notice({ kind: 'updated', version: appVersion });
         } else if (await deps.installerRunning(m.fileName)) {
-          log.warn(`updater: the installer of ${m.version} (${m.fileName}), started ${age} s ago, is still running; this start leaves at once (the installer starts Castcade when it is done)`);
-          return { outcome: 'install_running', version: m.version };
-        } else {
           log.warn(
-            `updater: the install of ${m.version} begun ${age} s ago did not finish (its installer is not running and this is still ${appVersion}: ` +
-              'it was closed or failed); not installing it again at this start, it is offered instead',
+            `updater: the installer of ${m.version} (${m.fileName}), started ${age} s ago, is still running; this start leaves at once (the installer starts Castcade when it is done)` +
+              (ageMs > LONG_INSTALL_MS ? '; it has been open long enough to be waiting for an answer in its window' : ''),
+          );
+          return { outcome: 'install_running', version: m.version, ageMs };
+        } else {
+          const why: AttemptFailure = m.started ? 'not_finished' : 'not_started';
+          log.warn(
+            (m.started
+              ? `updater: the install of ${m.version} begun ${age} s ago did not finish (its installer is not running and this is still ${appVersion}: it was closed or failed)`
+              : `updater: the installer of ${m.version} could not be started ${age} s ago`) + '; not installing it at this start, it is offered instead',
           );
           deps.marker.remove();
-          failedBefore = m.version;
+          failedBefore = { version: m.version, why };
+          notice({ kind: 'failed', version: m.version, why });
         }
       } else if (deps.startedByInstaller) {
         log.info(`updater: started by the installer after an update to ${appVersion}`);
@@ -544,27 +651,29 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       log.info(`updater: at start: ${describePending(p, appVersion)}`);
       if (p.kind !== 'pending') return { outcome: 'continue', hidden };
       if (!updater) return { outcome: 'continue', hidden };
-      if (failedBefore === p.version) return { outcome: 'continue', hidden };
+      if (failedBefore?.version === p.version) return { outcome: 'continue', hidden };
 
       log.info(`updater: asking the release feed whether ${p.version} is still the latest before installing it (up to ${Math.round(startTimeout / 1000)} s)`);
       deps.checking?.(p.version);
+      const deadline = clock.now() + startTimeout;
       const [busy, verdict] = await Promise.all([
-        withTimeout(deps.busyAtStart(), startTimeout, clock).catch((e: unknown) => {
-          log.warn(`updater: could not tell whether a table or a match is on (${describeError(e)}); taken as none`);
-          return null;
-        }),
-        confirm(p.version),
+        withTimeout(deps.busyAtStart(), startTimeout, clock).then(
+          (b) => (b === TIMEOUT ? `Castcade could not tell within ${Math.round(startTimeout / 1000)} s whether VPX or a match is on` : b),
+          (e: unknown) => `Castcade could not tell whether VPX or a match is on (${e instanceof Error ? e.message : String(e)})`,
+        ),
+        confirm(p.version, deadline),
       ]);
-      const why = busy === TIMEOUT ? null : busy;
       switch (verdict.kind) {
-        case 'confirmed':
+        case 'confirmed': {
+          const why = busy ?? deps.heldAtStart?.() ?? null;
           if (why) {
-            log.info(`updater: not installing ${p.version} at start: ${why}; it is offered once that is over`);
+            log.info(`updater: not installing ${p.version} at start: ${why}; it is offered instead`);
             return { outcome: 'continue', hidden };
           }
           log.info(`updater: ${p.version} is the latest release and its download checks out`);
-          if (install('start')) return { outcome: 'installing', version: p.version };
+          if (await install('start')) return { outcome: 'installing', version: p.version };
           return { outcome: 'continue', hidden };
+        }
         case 'stale':
           log.info(`updater: the downloaded ${p.version} is out of date (${verdict.latest} is the latest): not installing it; ${verdict.latest} downloads now and is offered when it is ready`);
           return { outcome: 'continue', hidden };
@@ -589,6 +698,8 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
     requestInstall() {
       if (!ready) return { go: false, why: 'no update is downloaded' };
       if (installing) return { go: false, why: null };
+      // Before anything is shut down for it: the downloaded installer must still be there.
+      if (readyFileGone()) return { go: false, why: 'its download is gone: Castcade downloads it again' };
       const waiting = deps.busy();
       if (waiting) {
         log.info(`updater: Restart and update to ${ready} refused: it waits ${waiting}`);
@@ -633,4 +744,18 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       timer = null;
     },
   };
+}
+
+/**
+ * The end of Restart and update, after the shell's orderly shutdown (witness, match, helpers stopped): the installer,
+ * or, when it could not be started, Castcade again (`relaunch` + `quit`; the services are already down). That start
+ * reads the note `install` left (`started: false`) and offers the update instead of installing it, so it cannot walk
+ * straight into another try.
+ */
+export async function installAfterShutdown(o: { updates: UpdateController; relaunch(): void; quit(): void; warn(line: string): void }): Promise<'installing' | 'relaunched'> {
+  if (await o.updates.install('offer')) return 'installing';
+  o.warn('quit: the installer could not be started; Castcade starts again and says so');
+  o.relaunch();
+  o.quit();
+  return 'relaunched';
 }

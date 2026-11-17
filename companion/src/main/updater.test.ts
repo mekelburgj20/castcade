@@ -6,9 +6,14 @@ import { ManualClock } from '../match/clock.js';
 import type { Logger } from './log.js';
 import {
   CHECK_INTERVAL_MS,
+  LAUNCH_CONFIRM_MS,
+  LAUNCH_POLL_MS,
+  LONG_INSTALL_MS,
   RETRY_AFTER_FAILURE_MS,
   START_CHECK_TIMEOUT_MS,
   DEFAULT_CACHE_DIR_NAME,
+  installAfterShutdown,
+  installRunningNotice,
   cacheDirName,
   compareVersions,
   configureUpdater,
@@ -49,7 +54,11 @@ describe('nextCheckDelayMs', () => {
 
 type CheckResult = Awaited<ReturnType<UpdaterLike['checkForUpdates']>>;
 
-/** electron-updater as Castcade drives it; `install` only records (no test runs an installer). */
+/**
+ * electron-updater as Castcade drives it; `install` only records (no test runs an installer). Its guard behaves as
+ * BaseUpdater's: `error` (doInstall threw, caught inside install) leaves `quitAndInstallCalled` set, and while it is set
+ * every install() returns false without trying; `refused` (no installer path) returns false before setting it.
+ */
 class FakeUpdater implements UpdaterLike {
   autoDownload = false;
   autoInstallOnAppQuit = true;
@@ -57,7 +66,11 @@ class FakeUpdater implements UpdaterLike {
   allowPrerelease = false;
   logger: unknown = null;
   installs: Array<[boolean, boolean]> = [];
-  installResult = true;
+  /** What the next install() does. */
+  installMode: 'ok' | 'refused' | 'error' = 'ok';
+  quitAndInstallCalled = false;
+  /** An installer process was launched (it shows in tasklist when the rig says so). */
+  launched = false;
   checks = 0;
   private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   /** What the next checkForUpdates does: by default the release feed has nothing newer. */
@@ -79,9 +92,17 @@ class FakeUpdater implements UpdaterLike {
     return this.next();
   }
   install(isSilent: boolean, isForceRunAfter: boolean): boolean {
+    if (this.quitAndInstallCalled) {
+      this.order.push('install ignored');
+      return false;
+    }
     this.order.push('install');
     this.installs.push([isSilent, isForceRunAfter]);
-    return this.installResult;
+    if (this.installMode === 'refused') return false;
+    this.quitAndInstallCalled = true;
+    if (this.installMode === 'error') return false;
+    this.launched = true;
+    return true;
   }
   /**
    * The feed's latest is `version` and its download checks out: electron-updater emits update-downloaded (from its
@@ -106,7 +127,19 @@ const memLog = (lines: string[]): Logger => ({
 
 const pendingOf = (version: string): PendingRead => ({ kind: 'pending', version, fileName: `Castcade-Setup-${version}.exe`, file: `C:\\cache\\pending\\Castcade-Setup-${version}.exe` });
 
-function rig(o: { appVersion?: string; pending?: PendingRead; marker?: InstallMarker | null; installerRunning?: boolean; busy?: string | null; busyAtStart?: string | null; hiddenStart?: boolean; startedByInstaller?: boolean } = {}) {
+function rig(
+  o: {
+    appVersion?: string;
+    pending?: PendingRead;
+    marker?: InstallMarker | null;
+    installerRunning?: boolean;
+    busy?: string | null;
+    busyAtStart?: (() => Promise<string | null>) | string | null;
+    heldAtStart?: string | null;
+    hiddenStart?: boolean;
+    startedByInstaller?: boolean;
+  } = {},
+) {
   const order: string[] = [];
   const clock = new ManualClock();
   const u = new FakeUpdater(order);
@@ -114,22 +147,30 @@ function rig(o: { appVersion?: string; pending?: PendingRead; marker?: InstallMa
   const notices: UpdateNotice[] = [];
   const state = {
     busy: o.busy ?? null,
-    busyAtStart: o.busyAtStart ?? null,
+    heldAtStart: o.heldAtStart ?? null,
     pending: o.pending ?? ({ kind: 'none' } as PendingRead),
+    /** An installer of this name is running (a note's, at start). */
     installerRunning: o.installerRunning ?? false,
+    /** A launched installer's process shows in tasklist. */
+    launchShows: true,
+    /** Files that are gone (the downloaded installer). */
+    gone: new Set<string>(),
     marker: o.marker ?? null,
     quits: 0,
   };
+  const busyAtStart = o.busyAtStart;
   const c = createUpdateController({
     log: memLog(logs),
     appVersion: o.appVersion ?? '0.2.45',
     updater: u,
     clock,
     busy: () => state.busy,
-    busyAtStart: async () => {
+    busyAtStart: () => {
       order.push('busyAtStart');
-      return state.busyAtStart;
+      return typeof busyAtStart === 'function' ? busyAtStart() : Promise.resolve(busyAtStart ?? null);
     },
+    heldAtStart: () => state.heldAtStart,
+    exists: (p) => !state.gone.has(p),
     pending: () => {
       order.push('pending');
       return state.pending;
@@ -145,7 +186,7 @@ function rig(o: { appVersion?: string; pending?: PendingRead; marker?: InstallMa
     },
     installerRunning: async (name) => {
       order.push(`installerRunning ${name}`);
-      return state.installerRunning;
+      return state.installerRunning || (u.launched && state.launchShows);
     },
     hiddenStart: o.hiddenStart ?? false,
     startedByInstaller: o.startedByInstaller ?? false,
@@ -174,7 +215,7 @@ describe('a quit with a downloaded update (E9)', () => {
     r.u.offers('0.2.46');
     r.c.startChecks();
     await flush();
-    expect(r.c.status()).toEqual({ ready: '0.2.46', waiting: null, installing: false, failedBefore: false });
+    expect(r.c.status()).toEqual({ ready: '0.2.46', waiting: null, installing: false, lastAttempt: null });
     // The tray's Quit: the shell stops the checks and quits; nothing installs.
     r.c.stop();
     expect(r.u.installs).toEqual([]);
@@ -223,33 +264,154 @@ describe('the offer (E9)', () => {
     expect(r.c.status().installing).toBe(true);
     expect(r.u.installs).toEqual([]); // the shell's orderly shutdown runs before the installer
     expect(r.c.requestInstall()).toEqual({ go: false, why: null }); // a second press does nothing
-    expect(r.c.install('offer')).toBe(true);
-    // Not silent (the installer shows its progress); force-run: the installer starts Castcade at its end.
+    const relaunches: string[] = [];
+    const shell = { updates: r.c, relaunch: () => void relaunches.push('relaunch'), quit: () => void relaunches.push('app.quit'), warn: () => undefined };
+    await expect(installAfterShutdown(shell)).resolves.toBe('installing');
+    // Not silent (the installer shows its progress); force-run: the installer starts Castcade at its end. Castcade quits
+    // only once the installer's process is seen running.
     expect(r.u.installs).toEqual([[false, true]]);
     expect(r.state.quits).toBe(1);
-    expect(r.order.slice(-2)).toEqual(['install', 'quit']);
-    expect(r.state.marker).toMatchObject({ version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', from: 'offer', hidden: false });
+    expect(r.order.slice(-3)).toEqual(['install', 'installerRunning Castcade-Setup-0.2.46.exe', 'quit']);
+    expect(relaunches).toEqual([]);
+    expect(r.state.marker).toMatchObject({ version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', from: 'offer', hidden: false, started: true });
   });
 
-  it('an installer that does not start leaves Castcade running and no note behind', async () => {
+  it('with nothing downloaded there is nothing to install', async () => {
+    const r = rig();
+    expect(r.c.requestInstall()).toEqual({ go: false, why: 'no update is downloaded' });
+    await expect(r.c.install('offer')).resolves.toBe(false);
+    expect(r.u.installs).toEqual([]);
+    expect(r.state.quits).toBe(0);
+  });
+
+  it('a downloaded installer that is gone is caught before anything is shut down, and downloaded again', async () => {
     const r = rig();
     r.u.offers('0.2.46');
     r.c.startChecks();
     await flush();
-    r.u.installResult = false;
-    expect(r.c.requestInstall()).toEqual({ go: true });
-    expect(r.c.install('offer')).toBe(false);
-    expect(r.state.quits).toBe(0);
-    expect(r.state.marker).toBeNull();
-    expect(r.c.status().installing).toBe(false);
-  });
-
-  it('with nothing downloaded there is nothing to install', () => {
-    const r = rig();
-    expect(r.c.requestInstall()).toEqual({ go: false, why: 'no update is downloaded' });
-    expect(r.c.install('offer')).toBe(false);
+    const checks = r.u.checks;
+    r.state.gone.add('C:\\Users\\p\\AppData\\Local\\@castcadecompanion-updater\\pending\\Castcade-Setup-0.2.46.exe');
+    expect(r.c.requestInstall()).toEqual({ go: false, why: 'its download is gone: Castcade downloads it again' });
+    expect(r.c.status()).toMatchObject({ ready: null, installing: false });
+    expect(r.u.checks).toBe(checks + 1);
     expect(r.u.installs).toEqual([]);
     expect(r.state.quits).toBe(0);
+  });
+});
+
+describe('an installer that cannot be started (E9)', () => {
+  /** The shell after its orderly shutdown (`installAfterShutdown`, as quit(host, true) runs it), with this failure. */
+  async function failedRestart(failure: 'refused' | 'error' | 'not_shown') {
+    const r = rig();
+    r.u.offers('0.2.46');
+    r.c.startChecks();
+    await flush();
+    if (failure === 'not_shown') r.state.launchShows = false;
+    else r.u.installMode = failure;
+    expect(r.c.requestInstall()).toEqual({ go: true });
+    const calls: string[] = [];
+    const done = installAfterShutdown({ updates: r.c, relaunch: () => void calls.push('relaunch'), quit: () => void calls.push('app.quit'), warn: (l) => void r.logs.push(l) });
+    // The launch is looked for in tasklist for LAUNCH_CONFIRM_MS at most.
+    for (let t = 0; t <= LAUNCH_CONFIRM_MS; t += LAUNCH_POLL_MS) {
+      await flush();
+      r.clock.advance(LAUNCH_POLL_MS);
+    }
+    await expect(done).resolves.toBe('relaunched');
+    return { r, calls };
+  }
+
+  for (const failure of ['refused', 'error', 'not_shown'] as const) {
+    it(`(${failure}) Castcade starts again (services were stopped), and that start offers the update instead of installing it`, async () => {
+      const { r, calls } = await failedRestart(failure);
+      expect(calls).toEqual(['relaunch', 'app.quit']);
+      expect(r.state.quits).toBe(0); // the controller's own quit is for a running installer only
+      expect(r.c.status()).toMatchObject({ installing: false, lastAttempt: 'not_started' });
+      expect(r.u.quitAndInstallCalled).toBe(false); // BaseUpdater's guard is not left set
+      expect(r.state.marker).toMatchObject({ version: '0.2.46', from: 'offer', started: false });
+      expect(r.logs.some((l) => l.includes('the installer of 0.2.46 could not be started'))).toBe(true);
+
+      // The relaunched start: the note says the launch failed; the cache still holds 0.2.46.
+      const next = rig({ appVersion: '0.2.45', marker: r.state.marker, installerRunning: false, pending: pendingOf('0.2.46') });
+      next.listen();
+      next.u.offers('0.2.46');
+      await expect(next.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
+      expect(next.u.installs).toEqual([]);
+      expect(next.state.quits).toBe(0);
+      expect(next.state.marker).toBeNull();
+      expect(next.notices).toEqual([{ kind: 'failed', version: '0.2.46', why: 'not_started' }]);
+      next.c.startChecks();
+      await flush();
+      expect(next.c.status()).toEqual({ ready: '0.2.46', waiting: null, installing: false, lastAttempt: 'not_started' });
+    });
+  }
+
+  it('at start: Castcade goes on starting, says so, and a later Restart and update really tries again', async () => {
+    const r = rig({ pending: pendingOf('0.2.46') });
+    r.u.offers('0.2.46');
+    r.u.installMode = 'error';
+    await expect(r.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
+    r.listen(); // the tray exists only after the start
+    expect(r.state.quits).toBe(0);
+    expect(r.state.marker).toBeNull();
+    expect(r.notices).toEqual([{ kind: 'failed', version: '0.2.46', why: 'not_started' }]);
+    expect(r.c.status()).toMatchObject({ ready: '0.2.46', lastAttempt: 'not_started' });
+    // BaseUpdater would refuse every later install() unseen ("install call ignored") had the guard stayed set.
+    r.u.installMode = 'ok';
+    expect(r.c.requestInstall()).toEqual({ go: true });
+    await expect(r.c.install('offer')).resolves.toBe(true);
+    expect(r.order).not.toContain('install ignored');
+    expect(r.u.installs).toHaveLength(2);
+    expect(r.state.quits).toBe(1);
+  });
+
+  it('with the real BaseUpdater: a launch that threw does not turn the next try into a refusal', async () => {
+    const { NsisUpdater } = await import('electron-updater');
+    const u = new NsisUpdater(null, {
+      version: '0.2.45',
+      name: 'Castcade',
+      isPackaged: true,
+      appUpdateConfigPath: '',
+      userDataPath: '',
+      baseCachePath: '',
+      whenReady: () => Promise.resolve(),
+      relaunch: () => undefined,
+      quit: () => undefined,
+      onQuit: () => undefined,
+    });
+    const file = 'C:\\cache\\pending\\Castcade-Setup-0.2.46.exe';
+    // A download as electron-updater keeps it; doInstall stubbed (nothing is spawned): it throws once, then succeeds.
+    const inner = u as unknown as { downloadedUpdateHelper: unknown; doInstall: (o: unknown) => boolean; emit(e: string, ...a: unknown[]): boolean };
+    inner.downloadedUpdateHelper = { file, packageFile: null, downloadedFileInfo: { fileName: 'Castcade-Setup-0.2.46.exe', sha512: 'x', isAdminRightsRequired: false } };
+    const launches: unknown[] = [];
+    inner.doInstall = (o) => {
+      launches.push(o);
+      if (launches.length === 1) throw new Error('spawn EACCES');
+      return true;
+    };
+    const logs: string[] = [];
+    let quits = 0;
+    const c = createUpdateController({
+      log: memLog(logs),
+      appVersion: '0.2.45',
+      updater: u as unknown as UpdaterLike,
+      clock: new ManualClock(),
+      busy: () => null,
+      busyAtStart: async () => null,
+      pending: () => ({ kind: 'none' }),
+      marker: { read: () => null, write: () => undefined, remove: () => undefined },
+      installerRunning: async () => launches.length === 2,
+      hiddenStart: false,
+      startedByInstaller: false,
+      quit: () => void (quits += 1),
+    });
+    inner.emit('update-downloaded', { version: '0.2.46', downloadedFile: file });
+    await expect(c.install('start')).resolves.toBe(false);
+    expect(launches).toHaveLength(1);
+    await expect(c.install('offer')).resolves.toBe(true);
+    expect(launches).toHaveLength(2);
+    expect(launches[1]).toEqual({ isSilent: false, isForceRunAfter: true, isAdminRightsRequired: false });
+    expect(quits).toBe(1);
+    expect(logs.some((l) => l.includes('install call ignored'))).toBe(false);
   });
 });
 
@@ -294,6 +456,44 @@ describe('nothing installs or restarts during a game, a match or a 3D watch sess
     });
   }
 
+  it('no answer about VPX or a match at start counts as busy: the update is offered, not installed', async () => {
+    // A slow PowerShell under a running VR game: the process listing does not answer within the start deadline.
+    const slow = rig({ pending: pendingOf('0.2.46'), busyAtStart: () => new Promise<string | null>(() => undefined) });
+    slow.u.offers('0.2.46');
+    const start = slow.c.atStart();
+    await flush();
+    slow.clock.advance(START_CHECK_TIMEOUT_MS);
+    await expect(start).resolves.toEqual({ outcome: 'continue', hidden: false });
+    expect(slow.u.installs).toEqual([]);
+    expect(slow.c.status().ready).toBe('0.2.46');
+    expect(slow.logs.some((l) => l.includes('not installing 0.2.46 at start: Castcade could not tell within 10 s whether VPX or a match is on'))).toBe(true);
+
+    const broken = rig({ pending: pendingOf('0.2.46'), busyAtStart: () => Promise.reject(new Error('powershell.exe exited with code 1')) });
+    broken.u.offers('0.2.46');
+    await expect(broken.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
+    expect(broken.u.installs).toEqual([]);
+    expect(broken.logs.some((l) => l.includes('could not tell whether VPX or a match is on (powershell.exe exited with code 1)'))).toBe(true);
+  });
+
+  it('a start that carries a castcade:// invite does not install: the invite is opened, the update offered', async () => {
+    const link = 'a castcade:// invite is waiting to be opened';
+    // On the command line of this start.
+    const cold = rig({ pending: pendingOf('0.2.46'), heldAtStart: link });
+    cold.u.offers('0.2.46');
+    await expect(cold.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
+    expect(cold.u.installs).toEqual([]);
+    expect(cold.logs.some((l) => l.includes(`not installing 0.2.46 at start: ${link}`))).toBe(true);
+    // Handed over by a second start while the feed was being asked (after the VPX / match look).
+    const late = rig({ pending: pendingOf('0.2.46') });
+    late.u.next = async () => {
+      late.state.heldAtStart = link;
+      return { isUpdateAvailable: true, updateInfo: { version: '0.2.46' }, downloadPromise: Promise.resolve().then(() => late.u.emit('update-downloaded', { version: '0.2.46' })) };
+    };
+    await expect(late.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
+    expect(late.u.installs).toEqual([]);
+    expect(late.state.quits).toBe(0);
+  });
+
   it('a waiting update found at start is not installed while VPX is open or a match is to be rejoined', async () => {
     for (const why of ['VPX is open (VPinballX_GL64.exe, pid 4242)', 'Castcade was in match ABCDEF when it closed']) {
       const r = rig({ appVersion: '0.2.45', pending: pendingOf('0.2.46'), busyAtStart: why });
@@ -312,9 +512,9 @@ describe('at start (E9)', () => {
     const r = rig({ appVersion: '0.2.45', pending: pendingOf('0.2.46') });
     r.u.offers('0.2.46');
     await expect(r.c.atStart()).resolves.toEqual({ outcome: 'installing', version: '0.2.46' });
-    expect(r.order).toEqual(['pending', 'checking 0.2.46', 'busyAtStart', 'check', 'install', 'quit']);
+    expect(r.order).toEqual(['pending', 'checking 0.2.46', 'busyAtStart', 'check', 'install', 'installerRunning Castcade-Setup-0.2.46.exe', 'quit']);
     expect(r.u.installs).toEqual([[false, true]]);
-    expect(r.state.marker).toMatchObject({ version: '0.2.46', from: 'start', hidden: false });
+    expect(r.state.marker).toMatchObject({ version: '0.2.46', from: 'start', hidden: false, started: true });
     expect(r.logs).toContain('updater: at start: 0.2.46 was downloaded (Castcade-Setup-0.2.46.exe) and is not installed');
     expect(r.logs.some((l) => l.includes('installing 0.2.46 at start, before anything else'))).toBe(true);
   });
@@ -368,6 +568,29 @@ describe('at start (E9)', () => {
     expect(r.logs.some((l) => l.includes('did not confirm 0.2.46 within 10 s'))).toBe(true);
   });
 
+  it('10 s at most for the check and the re-hash together: one deadline, not one each', async () => {
+    const r = rig({ pending: pendingOf('0.2.46') });
+    // The feed answers after 6 s; the cached file's verification never ends.
+    r.u.next = () =>
+      new Promise((resolve) => {
+        r.clock.setTimeout(() => resolve({ isUpdateAvailable: true, updateInfo: { version: '0.2.46' }, downloadPromise: new Promise(() => undefined) }), 6_000);
+      });
+    let settled = false;
+    const start = r.c.atStart().then((v) => {
+      settled = true;
+      return v;
+    });
+    await flush();
+    r.clock.advance(6_000);
+    await flush();
+    expect(settled).toBe(false);
+    r.clock.advance(START_CHECK_TIMEOUT_MS - 6_000);
+    await flush();
+    expect(settled).toBe(true);
+    await expect(start).resolves.toEqual({ outcome: 'continue', hidden: false });
+    expect(r.u.installs).toEqual([]);
+  });
+
   it('nothing waiting: no check at start, the schedule checks once the app is up', async () => {
     const r = rig();
     await expect(r.c.atStart()).resolves.toEqual({ outcome: 'continue', hidden: false });
@@ -387,7 +610,7 @@ describe('at start (E9)', () => {
 });
 
 describe('the install Castcade started, at the next start (E9)', () => {
-  const marker = (o: Partial<InstallMarker> = {}): InstallMarker => ({ version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', at: new ManualClock().now() - 75_000, from: 'offer', hidden: false, ...o });
+  const marker = (o: Partial<InstallMarker> = {}): InstallMarker => ({ version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', at: new ManualClock().now() - 75_000, from: 'offer', hidden: false, started: true, ...o });
 
   it('on the new version: logged as done, the note removed, a balloon; a hidden start stays hidden', async () => {
     const r = rig({ appVersion: '0.2.46', marker: marker({ from: 'start', hidden: true }), pending: { kind: 'leftover', version: '0.2.46' } });
@@ -400,12 +623,22 @@ describe('the install Castcade started, at the next start (E9)', () => {
 
   it('a start while that installer still runs leaves at once, without touching the update', async () => {
     const r = rig({ appVersion: '0.2.45', marker: marker(), installerRunning: true, pending: pendingOf('0.2.46') });
-    await expect(r.c.atStart()).resolves.toEqual({ outcome: 'install_running', version: '0.2.46' });
+    await expect(r.c.atStart()).resolves.toEqual({ outcome: 'install_running', version: '0.2.46', ageMs: 75_000 });
     expect(r.order).toEqual(['installerRunning Castcade-Setup-0.2.46.exe']);
     expect(r.u.checks).toBe(0);
     expect(r.u.installs).toEqual([]);
     expect(r.state.marker).not.toBeNull(); // the start after the install reads it
     expect(r.logs.some((l) => l.includes('is still running; this start leaves at once'))).toBe(true);
+  });
+
+  it('what that start says: the installer at work, or, after two minutes, a window that may be waiting for an answer', async () => {
+    expect(installRunningNotice('0.2.46', 75_000)).toBe('Castcade is being updated to 0.2.46. The installer is still running and starts Castcade again when it is done.');
+    expect(installRunningNotice('0.2.46', LONG_INSTALL_MS + 1)).toBe(
+      'Castcade is being updated to 0.2.46, but its installer has been open for 2 minutes: its window may be waiting for an answer. Castcade starts once the installer is finished or closed.',
+    );
+    const r = rig({ appVersion: '0.2.45', marker: marker({ at: new ManualClock().now() - 10 * 60_000 }), installerRunning: true });
+    await expect(r.c.atStart()).resolves.toEqual({ outcome: 'install_running', version: '0.2.46', ageMs: 600_000 });
+    expect(r.logs.some((l) => l.includes('waiting for an answer in its window'))).toBe(true);
   });
 
   it('an install that did not finish is offered, not run again at that start', async () => {
@@ -418,7 +651,7 @@ describe('the install Castcade started, at the next start (E9)', () => {
     expect(r.logs.some((l) => l.includes('did not finish'))).toBe(true);
     r.c.startChecks();
     await flush();
-    expect(r.c.status()).toEqual({ ready: '0.2.46', waiting: null, installing: false, failedBefore: true });
+    expect(r.c.status()).toEqual({ ready: '0.2.46', waiting: null, installing: false, lastAttempt: 'not_finished' });
   });
 
   it('started by the installer with no note (an older Castcade installed it when it quit): a balloon says so', async () => {
@@ -514,9 +747,11 @@ describe('the install note and the installer probe', () => {
     const warns: string[] = [];
     const store = createMarkerStore(join(d, 'update-install.json'), (l) => void warns.push(l));
     expect(store.read()).toBeNull();
-    const m: InstallMarker = { version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', at: 1_700_000_000_000, from: 'start', hidden: true };
+    const m: InstallMarker = { version: '0.2.46', fileName: 'Castcade-Setup-0.2.46.exe', at: 1_700_000_000_000, from: 'start', hidden: true, started: true };
     store.write(m);
     expect(store.read()).toEqual(m);
+    store.write({ ...m, from: 'offer', hidden: false, started: false });
+    expect(store.read()).toMatchObject({ from: 'offer', started: false });
     store.remove();
     expect(store.read()).toBeNull();
     expect(warns).toEqual([]);

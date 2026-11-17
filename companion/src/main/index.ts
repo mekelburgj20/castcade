@@ -37,6 +37,8 @@ import {
   createMarkerStore,
   createUpdateController,
   INSTALL_MARKER_FILE,
+  installAfterShutdown,
+  installRunningNotice,
   installWaitReason,
   loadUpdater,
   readPendingInstaller,
@@ -92,7 +94,7 @@ let sidecarWatch: SidecarWatch | null = null;
 let updater: UpdateController | null = null;
 /** E9: the witness host, for "a table is open" (the update waits for it); set once `main` made it. */
 let witnessHost: WitnessHost | null = null;
-const NO_UPDATE: UpdateStatus = { ready: null, waiting: null, installing: false, failedBefore: false };
+const NO_UPDATE: UpdateStatus = { ready: null, waiting: null, installing: false, lastAttempt: null };
 /** E9: the update's part of the start is running (a waiting update may be installed before anything else). */
 let updateAtStart = false;
 /** D1.1: the OBS overlay page on 127.0.0.1; null until started (or when its port was taken). */
@@ -296,11 +298,19 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await tableAudio?.stop().catch(() => undefined); // ends the helper's stdin: it unmutes everything it muted and exits
   await videoHelper?.stop().catch(() => undefined); // D10.3: `quit` and the end of its stdin; the match closed its peers already
   await host.stop();
-  // E9: the installer runs visibly and starts Castcade again at its end; install() quits the app once it is started.
-  if (install && updater?.install('offer')) return;
+  // E9: the installer runs visibly and starts Castcade again at its end; install() quits once its process runs. When it
+  // cannot be started, Castcade starts again (everything is stopped by now) and that start offers the update.
+  if (install && updater) {
+    await installAfterShutdown({
+      updates: updater,
+      relaunch: () => app.relaunch({ args: argv.filter((a) => a !== '--hidden' && a !== '--updated' && !a.toLowerCase().startsWith('castcade:')) }),
+      quit: () => app.quit(),
+      warn: (line) => log?.warn(line),
+    });
+    return;
+  }
   const downloaded = updater?.pendingVersion() ?? null;
-  if (install) log?.info('quit: Restart and update could not start the installer; quitting (the next start installs it)');
-  else log?.info(downloaded ? `quit (${downloaded} is downloaded and not installed: quitting does not install it, the next start does)` : 'quit');
+  log?.info(downloaded ? `quit (${downloaded} is downloaded and not installed: quitting does not install it, the next start does)` : 'quit');
   app.quit();
 }
 
@@ -341,6 +351,14 @@ function updateBalloon(n: UpdateNotice, host: WitnessHost): void {
       return;
     case 'updated':
       tray?.notify('Castcade updated', `Castcade is now ${n.version}.`);
+      return;
+    case 'failed':
+      tray?.notify(
+        'Castcade update not installed',
+        n.why === 'not_started'
+          ? `Castcade could not start the installer of ${n.version}. It is offered again in the window and the tray menu.`
+          : `The install of ${n.version} did not finish (the installer was closed or failed). It is offered again in the window and the tray menu.`,
+      );
       return;
   }
 }
@@ -407,6 +425,10 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
       const vpx = (await lister.list()).find((p) => isVpxExe(p.exe));
       return vpx ? `VPX is open (${basename(vpx.exe)}, pid ${vpx.pid})` : null;
     },
+    // A `castcade://` invite (on this start's command line, or handed over by a second start during the check) is
+    // opened, not lost to an install: the installer would start Castcade again with `--updated` only.
+    heldAtStart: () => (earlyLink ? 'a castcade:// invite is waiting to be opened' : null),
+    exists: existsSync,
     pending: () => readPendingInstaller({ dir: pendingDir, appVersion, readText: readTextOrNull, exists: existsSync }),
     marker: createMarkerStore(join(userData, INSTALL_MARKER_FILE), (line) => logger.warn(line)),
     installerRunning: createInstallerProbe(),
@@ -429,7 +451,7 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
   if (r.outcome === 'install_running') {
     // The installer's own start of the new Castcade at its end must not find this instance holding the lock.
     app.releaseSingleInstanceLock();
-    const n = showNotice(`Castcade is being updated to ${r.version}. The installer is still running and starts Castcade again when it is done.`);
+    const n = showNotice(installRunningNotice(r.version, r.ageMs));
     setTimeout(() => {
       n.close();
       app.quit();

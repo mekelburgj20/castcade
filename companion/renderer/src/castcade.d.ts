@@ -345,7 +345,8 @@ interface UpdateStatus {
   ready: string | null;
   waiting: string | null;
   installing: boolean;
-  failedBefore: boolean;
+  /** The last try at installing `ready`: its installer could not be started, or it did not finish. */
+  lastAttempt: 'not_started' | 'not_finished' | null;
 }
 
 /** D1.2 / D1.3 (mirrors media/stream-engine.ts EngineStatus). */
