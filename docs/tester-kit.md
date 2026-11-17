@@ -73,7 +73,7 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
   and the tray menu offer **Restart and update**: the installer shows its progress for about a minute, then Castcade
   starts again by itself. It never restarts during a game, a match or a 3D watch session (it says what it waits for).
   Quitting does not install it; the next start does, the same way. Coming from 0.2.45 or earlier, the first update
-  still installs out of sight when you quit: wait a minute, and Castcade starts by itself when it is done.
+  still installs out of sight when you quit: wait a minute, and Castcade comes back in the tray when it is done.
 - Uninstall: Castcade → Pairing → **Unpair**, then Windows Settings → Apps → Castcade → Uninstall.
   Delete `%APPDATA%\Castcade` by hand if you want the settings and log gone.
 

@@ -320,9 +320,11 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
  */
 function restartToUpdate(host: WitnessHost, from: 'window' | 'tray'): UpdateStatus {
   if (!updater) return NO_UPDATE;
+  const version = updater.pendingVersion();
   const r = updater.requestInstall();
   if (r.go) void quit(host, true);
-  else if (r.why && from === 'tray') tray?.notify('Castcade update waits', `Castcade ${updater.pendingVersion() ?? ''} installs ${r.why}. Castcade never restarts during a game, a match or a 3D watch session.`);
+  else if (r.why && version && updater.pendingVersion() === null) tray?.notify('Castcade update', `The download of Castcade ${version} is gone. Castcade downloads it again and offers it when it is ready.`);
+  else if (r.why && from === 'tray') tray?.notify('Castcade update waits', `The update to Castcade ${version ?? ''} waits ${r.why}. Castcade never restarts during a game, a match or a 3D watch session.`);
   return updater.status();
 }
 
