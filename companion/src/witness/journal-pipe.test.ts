@@ -228,7 +228,7 @@ describe('journal pipe: the server', () => {
     await a.end();
     await p.until(() => p.closed().length === 1);
     const b = hook(p.pipe);
-    await b.send(header('T.jsonl'), '{"session":2}\r\n');
+    await b.send(header('t.jsonl'), '{"session":2}\r\n');
     await b.end();
     await p.until(() => p.closed().length === 2);
     expect(p.events.filter((e) => e.type === 'refused')).toEqual([]);
