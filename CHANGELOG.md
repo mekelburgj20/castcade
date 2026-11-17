@@ -53,7 +53,8 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   Castcade first waits for that table's last lines to be in the file (once, at most 10 s, logged when it gives up),
   then reads the end of the game, posts the score and tells a match the table closed, in that order. The log says when
   the pipe listens and has a line per table connection with its line count; `--smoke` also starts the pipe's worker (on a
-  pipe and in a folder of its own) and prints `journal-pipe ok`, and a release build runs the packaged app's `--smoke`.
+  pipe and in a folder of its own) and prints `journal-pipe ok`, and a release build runs the packaged app's `--smoke` before the release exists or anything
+  is published.
   Hook library 0.6.0: every patched table's script is re-made at the first look after the update; reopen a table that
   was open. `vpx-hook/castcade.vbs`, `witness/journal-pipe.ts`, `witness/journal-pipe-server.ts`,
   `witness/journal-pipe-worker.ts`, `witness/witness.ts`, `main/index.ts`, `patcher/render.ts`,
