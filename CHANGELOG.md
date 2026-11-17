@@ -7,6 +7,14 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.45] — 2026-11-16
+
+One fix: a patched table no longer freezes for a moment when its script writes a journal line. Companion and hook
+library only: the OpenXR layer (0.7.0) and the native helpers are as in 0.2.44, and protocol 5 is unchanged, so 0.2.41
+to 0.2.45 play a match together. Hook library 0.5.2: every patched table's script is re-made at the first look after
+the update; reopen a table that was open. The journal's line format is unchanged (the three Phase 0 fixtures replay to
+the same events).
+
 ### Fixed
 
 - **The table froze for a moment when the score changed or a ball ended (C16).** In a 147 s VR game of Congo recorded
