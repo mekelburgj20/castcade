@@ -1,10 +1,10 @@
 /**
  * Electron main process entry (Phase 2: tray app + Arcaid Witness producer).
  *
- * Order matters: `--smoke` prints the bundle identity and exits before anything else (no window,
- * no tray, no settings file; CI runs it on a headless Windows runner). Then the single-instance
+ * Order matters: `--smoke` prints the bundle identity, checks the journal pipe's worker (C16.2) and exits before
+ * anything else (no window, no tray, no settings file; CI runs it on a headless Windows runner). Then the single-instance
  * lock, then on `ready`: logger → a waiting update (E9: installed now, before anything else) → settings store →
- * witness host → window → tray → IPC → the update offer and its checks.
+ * journal pipe → witness host → window → tray → IPC → the update offer and its checks.
  * Closing the window hides it to the tray; only the tray's Quit (or the app's own update restart)
  * ends the process.
  */
@@ -51,6 +51,8 @@ import { createResumeStore, RESUME_FILE, resumeFreshness } from './match-resume.
 import { createPowershellLister, isVpxExe } from '../witness/process-watch.js';
 import { collectLogBundle } from '../witness/log-bundle.js';
 import { createWitnessHost, needsWitnessRestart, type WitnessHost } from './witness-host.js';
+import { smokeJournalPipe, startJournalPipe, type JournalPipe } from '../witness/journal-pipe.js';
+import { journalDir } from '../witness/journal-tail.js';
 import { createTablesHost, type TablePatchResult, type TablesHost } from './tables-host.js';
 import { SidecarWatch } from './sidecar-watch.js';
 import { manifestDirFor } from '../witness/witness.js';
@@ -94,6 +96,8 @@ let sidecarWatch: SidecarWatch | null = null;
 let updater: UpdateController | null = null;
 /** E9: the witness host, for "a table is open" (the update waits for it); set once `main` made it. */
 let witnessHost: WitnessHost | null = null;
+/** C16.2 (hook 0.6.0): the worker that drains the hooks' journal pipe into the journal files; null without %LOCALAPPDATA%. */
+let journalPipe: JournalPipe | null = null;
 const NO_UPDATE: UpdateStatus = { ready: null, waiting: null, installing: false, lastAttempt: null };
 /** E9: the update's part of the start is running (a waiting update may be installed before anything else). */
 let updateAtStart = false;
@@ -130,7 +134,22 @@ if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
   const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'}\n`);
-  app.exit(0);
+  // C16.2: the journal pipe's worker starts from this build (inside the asar when packaged) and writes a line it is sent;
+  // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure, a throw or no
+  // answer within 30 s fails the smoke (exit 1); it never keeps running.
+  let smokeEnded = false;
+  const smokeDone = (ok: boolean, detail: string): void => {
+    if (smokeEnded) return;
+    smokeEnded = true;
+    clearTimeout(smokeGiveUp);
+    process.stdout.write(`journal-pipe ${ok ? 'ok' : 'FAILED'} ${detail}\n`);
+    app.exit(ok ? 0 : 1);
+  };
+  const smokeGiveUp = setTimeout(() => smokeDone(false, '(no answer within 30 s)'), 30_000);
+  void smokeJournalPipe().then(
+    (r) => smokeDone(r.ok, r.detail),
+    (err: unknown) => smokeDone(false, `(${err instanceof Error ? err.message : String(err)})`),
+  );
 } else if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
@@ -298,6 +317,8 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await tableAudio?.stop().catch(() => undefined); // ends the helper's stdin: it unmutes everything it muted and exits
   await videoHelper?.stop().catch(() => undefined); // D10.3: `quit` and the end of its stdin; the match closed its peers already
   await host.stop();
+  // C16.2: what the pipe still holds goes to the journal files; a table still open then writes its file itself.
+  await journalPipe?.stop().catch(() => undefined);
   // E9: the installer runs visibly and starts Castcade again at its end; install() quits once its process runs. When it
   // cannot be started, Castcade starts again (everything is stopped by now) and that start offers the update.
   if (install && updater) {
@@ -774,10 +795,22 @@ async function main(): Promise<void> {
 
   // E8: ArcAid's log pull (W99): the bundle is this rig's logs, newest VR report and newest journals; never settings.
   const localAppData = process.env.LOCALAPPDATA ?? null;
+  // C16.2 (hook 0.6.0): the journal pipe, listening before the witness can see a table. A table loaded from now on sends
+  // its journal through it (writing the journal touches no file on VPX's render thread; the hook's turn-lock check still
+  // does); one loaded before, or while the pipe is off, writes its journal file itself. The witness reads the file either way.
+  if (localAppData) {
+    const pipe = startJournalPipe({ journalDir: journalDir(localAppData), log: logger });
+    journalPipe = pipe;
+    if (!(await pipe.ready(5_000)) && pipe.state() === 'starting') logger.warn('journal pipe: not listening 5 s after its start; tables write their journal file themselves until it is');
+  } else {
+    logger.warn('journal pipe: no %LOCALAPPDATA%; tables write their journal file themselves');
+  }
   // I11.4.1: the 3D watch watchers Castcade starts are announced here before their spawn; the witness never sees them.
   const hiddenVpx = new HiddenVpx();
   const host = createWitnessHost(store, logger, {
     hideProcess: (p) => hiddenVpx.hides(p),
+    // C16.2: before the witness acts on a VPX exit, the lines that table sent through the pipe are in its journal file.
+    journalDrain: (path) => journalPipe?.drain(path) ?? Promise.resolve(true),
     logBundle: () =>
       collectLogBundle({
         companionLog: logger.file,

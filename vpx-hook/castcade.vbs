@@ -1,5 +1,5 @@
 ' =====================================================================================
-'  castcade.vbs  --  Castcade shared VBScript library        version 0.5.2
+'  castcade.vbs  --  Castcade shared VBScript library        version 0.6.0
 ' -------------------------------------------------------------------------------------
 '  Installed by Castcade as a NEW file in <VPX>\scripts\ (next to core.vbs; nothing existing
 '  is modified).  A per-table sidecar loads it with
@@ -9,6 +9,22 @@
 '      Castcade_WatchBytes Array(<nvram offsets the map's game_state reads>)
 '  (Castcade_Guard is new in 0.2.0, Castcade_WatchBytes in 0.3.0; older sidecars do not call them and
 '   keep working — without a watch list every changed byte is journaled, the 0.1.0 behaviour.)
+'
+'  0.6.0 (WORK C16.2): while the companion runs, the journal goes through its named pipe, so writing the
+'  journal touches no file on VPX's render thread (Castcade_Locked's FileExists at a key press still does).
+'  A plain append to a held file sometimes took 0.1 to 2.8 s on the owner's PC, and two freezes of an 18.5
+'  minute VR game (136 and 406 ms) had the render thread inside that WriteLine; a WriteLine into a pipe the
+'  companion holds never took 5 ms there in 9,000 tries.  Castcade_Init opens \\.\pipe\castcade-journal
+'  once and sends one transport header, "#castcade-journal 1 <file name>", which the companion consumes;
+'  every journal line after it goes to the same file, unchanged (the companion drains the pipe on a thread
+'  of its own and appends the lines).  One writer per file: a second VPX on the same table is refused and
+'  its lines are not kept, as when its open of the held file failed before.  No companion: the pipe does
+'  not open (error 53, under 10 ms) and the file is written here, as before, for the whole session.  The
+'  companion gone mid-game: the failing WriteLine raises, that line goes to the file and so does every later
+'  line until the table exits (the pipe is not tried again during that session); the lines that were in
+'  transit are lost, so a table with the NVRAM hook writes a fresh nvram_full at its next NVRAM callback.
+'  The file's bytes are the same either way.  A harness sets Castcade_PipeName before Castcade_Init to use
+'  another pipe ("" = the file only).
 '
 '  0.5.2 (WORK C16): no journal write closes and reopens the file while the table runs.  Every event
 '  and every watched nvram_delta used to close the journal and open it again "so the companion sees
@@ -44,6 +60,7 @@
 '     NVRAMCallback is Castcade_RegisterNVRAM, which chains any callback already installed.
 '
 '  Journal  : %LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl   (one JSON object per line)
+'             through \\.\pipe\castcade-journal while the companion runs (0.6.0), else written here
 '  Lock flag: %LOCALAPPDATA%\Castcade\lock\turn.lock              (file exists = NOT your turn)
 '
 '  Journal events (key "event"; every line also carries "t" = seconds since table load):
@@ -69,9 +86,13 @@
 '  nvram_full / nvram_delta use the same shape as ArcAid's T7 probe so its decoder also works.
 ' =====================================================================================
 
-Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.2"
+Dim Castcade_LibVersion : Castcade_LibVersion = "0.6.0"
 Dim Castcade_fso, Castcade_shell, Castcade_Root, Castcade_JournalPath, Castcade_LockPath
 Dim Castcade_Log, Castcade_LogOpen, Castcade_T0, Castcade_Lines, Castcade_Session
+Dim Castcade_JournalName, Castcade_OnPipe, Castcade_PipeTried, Castcade_Resync
+' The companion's journal pipe (0.6.0).  Kept when a harness set it before this library loaded.
+Dim Castcade_PipeName
+If IsEmpty(Castcade_PipeName) Then Castcade_PipeName = "\\.\pipe\castcade-journal"
 Dim Castcade_TableId, Castcade_Recipe, Castcade_RecipeVer, Castcade_Rom
 Dim Castcade_PrevNVRAM, Castcade_NVRAMRegistered, Castcade_NVn
 Dim Castcade_Watch, Castcade_WatchOn, Castcade_Pending, Castcade_LastDeltaT, Castcade_Filtered
@@ -83,6 +104,9 @@ Dim Castcade_SS
 Castcade_EngineLast = ""
 Castcade_Dec = "."
 Castcade_LogOpen = False
+Castcade_OnPipe = False
+Castcade_PipeTried = False
+Castcade_Resync = False
 Castcade_NVRAMRegistered = False
 Castcade_PlayKeysReady = False
 Castcade_ExtraKeyNames = Array()
@@ -116,7 +140,8 @@ Sub Castcade_Init(tableId, recipe, recipeVer, rom)
     Castcade_EnsureDir Castcade_Root
     Castcade_EnsureDir Castcade_Root & "\journal"
     Castcade_EnsureDir Castcade_Root & "\lock"
-    Castcade_JournalPath = Castcade_Root & "\journal\" & Castcade_SafeName(tableId) & ".jsonl"
+    Castcade_JournalName = Castcade_SafeName(tableId) & ".jsonl"
+    Castcade_JournalPath = Castcade_Root & "\journal\" & Castcade_JournalName
     Castcade_LockPath = Castcade_Root & "\lock\turn.lock"
     Castcade_Session = Castcade_Stamp()
 
@@ -338,7 +363,14 @@ Sub Castcade_NVRAM(chg)
     ' and a sitting longer than 44 minutes must keep reporting.
     If Castcade_WatchOn Or Castcade_NVn <= 300000 Then
         t = Castcade_T()
-        If Castcade_NVn = 1 Then Castcade_NVRAMFull t
+        If Castcade_NVn = 1 Then
+            Castcade_NVRAMFull t
+        ElseIf Castcade_Resync Then
+            ' 0.6.0: the pipe failed over to the file (Castcade_Write), and lines in transit were lost: a fresh baseline
+            ' here, where Controller is read anyway, so the companion's shadow NVRAM is whole again.
+            Castcade_Resync = False
+            Castcade_NVRAMFull t
+        End If
         n = UBound(chg, 1)
         If Castcade_WatchOn Then
             For i = 0 To n
@@ -638,19 +670,55 @@ End Sub
 ' to Windows before it returns, so the companion's next read sees the line: nothing is held back and
 ' there is nothing to flush.  Until 0.5.1 a flush argument closed and reopened the file after every
 ' event and watched nvram_delta (and every 50th line otherwise); the reopen cost milliseconds, at
-' worst hundreds, on VPX's render thread (C16).  A failed open is retried at the next write.
+' worst hundreds, on VPX's render thread (C16).  A failed open of the file is retried at the next write.
+' 0.6.0 (C16.2): on the companion's pipe, a WriteLine that raises means the companion is gone (it raises
+' within about a millisecond): this line and every later one go to the file instead.  Lines that were in
+' transit are lost, so a table with the NVRAM hook writes a fresh nvram_full at its next NVRAM callback
+' (Castcade_Resync; not here: this may run in a key handler or at table exit, where Controller may be stopping).
 Sub Castcade_Write(line)
     On Error Resume Next
     If Not Castcade_LogOpen Then Castcade_OpenLog
     If Not Castcade_LogOpen Then Exit Sub
+    Err.Clear
     Castcade_Log.WriteLine line
+    If Err.Number <> 0 And Castcade_OnPipe Then
+        Err.Clear
+        Castcade_Log.Close
+        Castcade_OnPipe = False
+        If Castcade_NVRAMRegistered Then Castcade_Resync = True
+        Castcade_OpenLog
+        If Not Castcade_LogOpen Then Exit Sub
+        Castcade_Log.WriteLine line
+    End If
+    Err.Clear
     Castcade_Lines = Castcade_Lines + 1
 End Sub
 
+' The companion's pipe first, once per table load (0.6.0, C16.2): it opens only while the companion holds
+' it, and its first line names the journal file the lines belong to.  Format 0 (ASCII) is what the file
+' gets too; the Unicode formats hang on a pipe or send a byte-order mark.  Otherwise, and after the pipe
+' failed, the journal file itself.
 Sub Castcade_OpenLog()
     On Error Resume Next
     Castcade_LogOpen = False
     If Not IsObject(Castcade_fso) Then Exit Sub
+    If Not Castcade_PipeTried Then
+        Castcade_PipeTried = True
+        If Castcade_PipeName <> "" Then
+            Err.Clear
+            Set Castcade_Log = Castcade_fso.OpenTextFile(Castcade_PipeName, 8, True, 0)
+            If Err.Number = 0 Then
+                Castcade_Log.WriteLine "#castcade-journal 1 " & Castcade_JournalName
+                If Err.Number = 0 Then
+                    Castcade_OnPipe = True
+                    Castcade_LogOpen = True
+                    Exit Sub
+                End If
+                Err.Clear
+                Castcade_Log.Close
+            End If
+        End If
+    End If
     Err.Clear
     Set Castcade_Log = Castcade_fso.OpenTextFile(Castcade_JournalPath, 8, True)
     If Err.Number = 0 Then Castcade_LogOpen = True

@@ -89,7 +89,7 @@ describe('recipe versions', () => {
       expect(lib).toContain(decl);
     }
     expect(lib).toContain(`Castcade_LibVersion = "${LIB_VERSION}"`);
-    expect(LIB_VERSION).toBe('0.5.2');
+    expect(LIB_VERSION).toBe('0.6.0');
     // Without the library the anchor subs fail inside their own On Error Resume Next; the stubs keep the four entry points.
     for (const s of ['Sub Castcade_GameStart(p)', 'Sub Castcade_Scores(s,p,b)', 'Sub Castcade_BallEnd(p,b,e)', 'Sub Castcade_GameEnd(s,p)']) expect(STUB).toContain(s);
   });

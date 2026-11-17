@@ -116,6 +116,12 @@ export interface WitnessDeps {
   journalDir?: string | null;
   /** Poll step of the journal tail while a table with a sidecar is open. */
   journalPollMs?: number;
+  /**
+   * C16.2 (hook 0.6.0): resolves once every line the companion's journal pipe received for this journal file is in it
+   * (bounded by the pipe; `journal-pipe.ts`). Asked before the witness acts on a VPX exit or stops following a table:
+   * through the pipe, VPX can be gone while its last lines are still on their way to the disk. Omitted: nothing to wait for.
+   */
+  journalDrain?: (journalPath: string) => Promise<unknown>;
   /** How long a changed `.nv` must stay unchanged before it is read (VPinMAME's write is done). */
   nvSettleMs?: number;
   /** Poll step while waiting for the rewrite after a process exit. */
@@ -1748,11 +1754,24 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitStatus();
   };
 
-  /** Drain what the hook wrote last (`table_exit`), then stop following. */
-  const stopLive = async (session: OpenSession): Promise<void> => {
+  /**
+   * Read the journal to its end now: C16.2, what the companion's pipe still holds for it reaches the file first (bounded
+   * by the pipe; `drain` false: the caller already waited for it), then one read, then its lines through the detector.
+   */
+  const readToEnd = async (session: OpenSession, live: LiveSession, drain = true): Promise<void> => {
+    if (drain && deps.journalDrain) await deps.journalDrain(live.path).catch(() => undefined);
+    await live.tail.poll().catch(() => {});
+    await pumpLive(session, live);
+  };
+
+  /**
+   * Drain what the hook wrote last (`table_exit`), then stop following. `drained`: the VPX exit already waited for the
+   * pipe (one wait per exit, so its bound is the whole wait); the table-switch path waits here.
+   */
+  const stopLive = async (session: OpenSession, drained = false): Promise<void> => {
     const live = session.live;
     if (!live) return;
-    await live.tail.poll().catch(() => {});
+    await readToEnd(session, live, !drained);
     live.tail.stop();
     await pumpLive(session, live);
     if (liveGame?.table === live.tableId) setGame(null);
@@ -1870,10 +1889,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const { launch, exitedAt } = exit;
     const session = sessions.get(launch.pid);
     sessions.delete(launch.pid);
+    // C16.2: through the companion's pipe, the journal's last lines (the last ball end, the game end, `table_exit`) can
+    // still be on their way to the file when VPX is gone. They are read first, so neither the capture below nor a
+    // listener of `exit` (the match forfeits a turn on it) acts on a journal without its end.
+    const drained = !!session?.live;
+    if (session?.live) await readToEnd(session, session.live);
     const durationSec = Math.max(0, Math.round((exitedAt - launch.seenAt) / 1000));
     emitter.emit('exit', { table: launch.table, at: iso(exitedAt), durationSec });
 
-    if (session) await stopLive(session);
+    if (session) await stopLive(session, drained);
     if (session?.live && session.live.captures === 0) {
       // C11: live mode was armed and posted nothing: say why in one line, so a tester's companion.log alone answers it.
       const rung = exitRungOf(session);
