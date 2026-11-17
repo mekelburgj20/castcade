@@ -107,7 +107,9 @@ heartbeat so ArcAid shows the device as online.
   Witness score the cabinet way (*AtGames Cabinet* on the *VPXS* platform); that is a label, not a lost score.
 - Scores are **added**, never changed or filtered: ArcAid's doctrine is *badge, never gate*.
 - The app is unsigned (SmartScreen warning) and updates itself from GitHub Releases: when a new
-  version has downloaded, the tray shows a notice and installs it the next time you quit.
+  version has downloaded, a notice and a banner offer **Restart and update** (it waits while a table or a
+  match is open); quitting installs nothing, and an update still waiting is installed at the next start
+  (from the build after 0.2.45: before that it installed silently when you quit).
 
 ## 6. What to send back
 
