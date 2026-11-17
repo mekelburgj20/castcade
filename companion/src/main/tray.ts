@@ -13,6 +13,8 @@ export interface TrayActions {
   getOpenAtLogin(): boolean;
   setOpenAtLogin(on: boolean): void;
   pendingUpdate(): string | null;
+  /** E9: why Restart and update waits ("until you leave the match"); null when it can go now. */
+  updateWaiting?(): string | null;
   /** D1.2 / D1.3: what the stream engine is doing; null hides the items (no stream host). */
   streamState?(): { running: boolean; live: boolean; recording: boolean; hasKey: boolean } | null;
   streamStart?(want: { record: boolean; live: boolean }): void;
@@ -85,7 +87,14 @@ export function createTray(iconPath: string, actions: TrayActions, initial: Witn
       }
     }
     if (pending) {
-      template.push({ type: 'separator' }, { label: `Restart to update to v${pending}`, click: () => actions.restartToUpdate() });
+      // E9: greyed out with the reason while a table, a match, 3D watch or a recording is on.
+      const waiting = actions.updateWaiting?.() ?? null;
+      template.push(
+        { type: 'separator' },
+        waiting
+          ? { label: `Update to v${pending} waits ${waiting}`, enabled: false }
+          : { label: `Restart and update to v${pending}`, click: () => actions.restartToUpdate() },
+      );
     }
     template.push({ type: 'separator' }, { label: 'Quit Castcade', click: () => actions.quit() });
     tray.setContextMenu(Menu.buildFromTemplate(template));

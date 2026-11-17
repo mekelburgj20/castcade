@@ -5,6 +5,7 @@ import { Pairing } from './views/Pairing.js';
 import { Settings } from './views/Settings.js';
 import { Status } from './views/Status.js';
 import { Stream } from './views/Stream.js';
+import { UpdateBanner } from './views/UpdateBanner.js';
 
 type View = 'pairing' | 'status' | 'stream' | 'match' | 'settings';
 
@@ -66,6 +67,7 @@ export function App() {
           ))}
         </nav>
       </header>
+      <UpdateBanner bridge={bridge} />
       {current === 'pairing' && <Pairing state={state} />}
       {current === 'status' && <Status state={state} />}
       {current === 'stream' && <Stream state={state} />}
