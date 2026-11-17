@@ -257,6 +257,19 @@ describe('SidecarWatch', () => {
     expect(out.map((o) => o.result)).toEqual(['repatched']);
   });
 
+  it('C16.2: a build whose only change is the hook library (0.5.2 → 0.6.0) re-makes every patch, recipe unchanged', async () => {
+    const h = await harness();
+    const m = await readManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(MB)));
+    if (!m) throw new Error('no manifest');
+    await writeManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(MB)), { ...m, libVersion: '0.5.2' });
+    h.fs.put(`${SCRIPTS}/castcade.vbs`, 'Dim Castcade_LibVersion : Castcade_LibVersion = "0.5.2"\r\n');
+    const out = await h.watch.tick();
+    expect(out.map((o) => o.result)).toEqual(['repatched']);
+    expect(out[0]?.detail).toContain('re-made for hook 0.6.0');
+    expect((await readManifest(h.fs, manifestPathFor(MANIFESTS, tableIdFor(MB))))?.libVersion).toBe('0.6.0');
+    expect(await h.fs.readFile(`${SCRIPTS}/castcade.vbs`)).toEqual(new Uint8Array(LIB));
+  });
+
   it('a new companion build (older lib in every manifest) re-makes all patches as one batch with one notice', async () => {
     const h = await harness();
     const TZ = `${TABLES}/Tales from the Crypt (Data East 1993).vpx`;

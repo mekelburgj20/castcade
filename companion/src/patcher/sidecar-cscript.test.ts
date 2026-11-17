@@ -68,6 +68,12 @@ const sidecarFile = (id: string, text: string): string => {
 const vbs = (s: string): string => `"${s.replace(/"/g, '""')}"`;
 
 /**
+ * C16.2 (lib 0.6.0): every harness here names a pipe nobody listens on before the library loads, so the hook writes
+ * its journal file itself (file mode) and no test ever reaches a running Castcade's `\\.\pipe\castcade-journal`.
+ */
+const NO_PIPE = `Dim Castcade_PipeName : Castcade_PipeName = ${vbs(`\\\\.\\pipe\\castcade-test-absent-${process.pid}`)}`;
+
+/**
  * A `cscript` process that stays up: it runs `prelude`, then each statement it is sent, in its global scope, and answers
  * `done` or `err <number> <description>` once the statement has returned. What it writes can be read between statements
  * while the process (and any file it holds open) is still alive.
@@ -77,6 +83,7 @@ const driven = (name: string, prelude: string[], env: NodeJS.ProcessEnv = proces
   writeFileSync(
     harness,
     [
+      NO_PIPE,
       ...prelude,
       'Dim Driven_s',
       'Do',
@@ -155,6 +162,7 @@ const play = (id: string, script: readonly string[], host: string[], drive: stri
   writeFileSync(
     harness,
     [
+      NO_PIPE,
       'Class HostThing',
       '    Public enabled',
       '    Private m_text',
@@ -243,7 +251,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       ],
     );
     expect(out.trim()).toBe('driven');
-    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.2', lib: '0.5.2' });
+    expect(events[0]).toMatchObject({ event: 'table_loaded', table: 'glf-game', recipe: 'B', recipe_version: '0.3.2', lib: '0.6.0' });
     expect(game(events)).toEqual([
       { event: 'game_start', players: 1 },
       { event: 'current_scores', scores: [100], player: 1, ball: 1 },
@@ -388,6 +396,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
     writeFileSync(
       harness,
       [
+        NO_PIPE,
         `ExecuteGlobal CreateObject("Scripting.FileSystemObject").OpenTextFile(${vbs(LIB)}, 1, False, 0).ReadAll`,
         'Castcade_Init "long-sitting", "A", "0.3.1", "congo_21"',
         'Castcade_WatchBytes Array(5794)',
@@ -406,7 +415,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
       .split(/\r?\n/)
       .filter((l) => l !== '')
       .map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(events[0]).toMatchObject({ event: 'table_loaded', lib: '0.5.2' });
+    expect(events[0]).toMatchObject({ event: 'table_loaded', lib: '0.6.0' });
     expect(events.filter((e) => e['event'] === 'nvram_delta').map((e) => e['d'])).toEqual([[[5794, 42, 7]]]);
     expect(events.at(-1)).toMatchObject({ event: 'table_exit', nvram_callbacks: 300011 });
   });
@@ -482,7 +491,7 @@ describe.skipIf(!haveCscript)('rendered sidecars under the Windows VBScript engi
     expect(await table.quit()).toBe(0);
     const lines = readFileSync(journal, 'latin1').split(/\r?\n/).filter((l) => l !== '');
     expect(lines.map((l) => JSON.parse(l) as unknown)).toEqual(seen);
-    expect(seen[0]).toMatchObject({ event: 'table_loaded', lib: '0.5.2' });
+    expect(seen[0]).toMatchObject({ event: 'table_loaded', lib: '0.6.0' });
     expect(seen.filter((e) => e['event'] === 'nvram_delta').map((e) => e['d'])).toEqual([[[5794, 42, 7]], [[5794, 43, 42]], [[5794, 44, 43]]]);
     expect(seen.at(-1)).toMatchObject({ event: 'table_exit', lines: 11, nvram_callbacks: 3 });
   });

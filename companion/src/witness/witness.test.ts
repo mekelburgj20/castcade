@@ -1306,6 +1306,46 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.captures[0]?.detail).toMatch(/abandoned on ball 2/);
   });
 
+  it("C16.2: at a VPX exit the journal pipe is drained first, and the last lines it still held are read before anything acts on the exit", async () => {
+    let land = (): void => undefined;
+    const drained: string[] = [];
+    const order: string[] = [];
+    const h = harness({}, {
+      journalDir: '/journal',
+      journalPollMs: 250,
+      journalDrain: async (path) => {
+        drained.push(path);
+        order.push('drain');
+        land();
+      },
+    });
+    h.fs.put(TFTC_PATH, MM_VPX);
+    h.fs.put(TFTC_SIDECAR, SIDECAR_HEAD + 'Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n');
+    h.witness.on('event', (ev) => order.push(ev.kind));
+    h.witness.on('exit', () => order.push('exit'));
+    await h.witness.start();
+    await h.launch(TFTC_CMD, 31);
+    const journal = tftcQuitJournalAt(h.clock.now() + 4000);
+    const all = journal.text.trimEnd().split('\n');
+    // The player quits on ball 2: the last score change and `table_exit` are still in the pipe worker's queue (a slow
+    // disk) when VPX is gone; they reach the file when the witness asks for the drain.
+    h.fs.put(TFTC_JOURNAL, all.slice(0, -2).join('\n') + '\n');
+    land = () => h.fs.put(TFTC_JOURNAL, journal.text);
+    await h.poll();
+    await h.flush();
+    await h.flush();
+    expect(order).not.toContain('game_abandoned');
+    await h.exit();
+    await h.settle(8000);
+
+    expect(drained[0]).toBe(TFTC_JOURNAL);
+    // The held lines' game events, then the exit (the match hears `table_exit` after the game's end, not before it).
+    const exitAt = order.indexOf('exit');
+    expect(order.slice(order.indexOf('drain'), exitAt + 1)).toEqual(['drain', 'current_scores', 'game_abandoned', 'exit']);
+    expect(h.paths('/score')).toHaveLength(1);
+    expect(h.paths('/score')[0]?.params).toMatchObject({ reason: 'shutdown', quit: '1', quit_ball: String(journal.quitBall) });
+  });
+
   it('on a limited-attempts board the game start is reported at once with a key the score repeats, and the capture carries the attempt', async () => {
     const h = liveHarness();
     await h.fs.mkdir('/nv');

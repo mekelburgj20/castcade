@@ -14,7 +14,8 @@ decoding, detection and networking happen in the companion.
 ## What lives here
 
 - `castcade.vbs` — the shared library every patched table `ExecuteGlobal`s: journal writer
-  (one handle, opened at table load and closed at table exit; each line is readable the moment it is written), the
+  (one handle, opened at table load and closed at table exit; each line is readable the moment it is written; since
+  **0.6.0** that handle is the companion's journal pipe while the companion runs, the file otherwise), the
   `NVRAMCallback` **chaining guard** (`Castcade_RegisterNVRAM`), the lock check the sidecar's
   `_KeyDown` / `_KeyUp` wrappers call (`Castcade_KeyDownBlocked` / `Castcade_KeyUpBlocked`), helper
   subs for originals (`Castcade_GameStart`, `Castcade_Scores`, `Castcade_BallEnd`, `Castcade_GameEnd`),
@@ -111,6 +112,44 @@ sidecar over such a table (importer `patchSource`, witness notice → `TablesHos
 runs until the next launch. No recipe change; the lib bump makes the folder watch re-make every sidecar on its first look.
 Checked with a `cscript` harness: an existing original and a missing sidecar journal `embedded_patch` and no `MsgBox`.
 
+### 0.6.0 — the journal through the companion's pipe (C16.2)
+
+0.5.2 left the `WriteLine` itself on VPX's render thread, and on the owner's PC a plain append to a held file sometimes
+takes 0.1 to 2.8 s: in an 18.5 minute VR game (2026-11-16, lib 0.5.1) the two longest frames after the table's start,
+136 and 406 ms, had the render thread inside `WriteFile` under `scrrun`. 0.6.0 makes no file-system call for the
+journal on that thread while the companion runs (spike and data: `castcade-vpx-deps\run\journal-pipe-spike`):
+
+- `Castcade_Init` opens `\\.\pipe\castcade-journal` once, with `OpenTextFile(pipe, 8, True, 0)` (append, ASCII as the
+  file is; the Unicode formats hang on a pipe or send a byte-order mark), and writes one transport header,
+  `#castcade-journal 1 <file name>` (the `Castcade_SafeName` name, `.jsonl`). The companion's worker
+  (`companion/src/witness/journal-pipe-server.ts`, on a thread of its own) consumes the header and appends every later
+  byte to `%LOCALAPPDATA%\Castcade\journal\<file name>`: whole lines, in order, so the file is byte for byte what the
+  script writes in file mode, and the tail, the detector, the fixtures and the evidence are unchanged. No journal line
+  changed except `lib` in `table_loaded`.
+- No companion: the open fails with error 53 in under 10 ms and the script writes the file itself for the whole
+  session, as in 0.5.2. The pipe is tried once per table load and never again during that session.
+- The companion gone mid-game (quit, crash): the next `WriteLine` raises within about a millisecond; that line goes to
+  the file and so does every later one until the table exits. What can be lost is only what the script had already
+  handed to the pipe and the worker had not appended: one run of lines right before the failing one (none in the
+  tests at a game's pace, a line every 25 ms; 6 to 16 short lines when the script wrote thousands a second).
+- `Castcade_PipeName`, a global a harness sets before the library loads, names another pipe (`""`: the file only).
+  No test uses the production name.
+
+The one danger the spike found is the reader's to avoid: a reader that stops reading blocks `WriteLine` without limit
+once about 124 KB are unread. The worker only drains the pipe, never pauses a connection, and a slow disk grows its
+queue in memory (capped at 64 MB, then lines are dropped with one warning), never the pipe's unread bytes. When VPX
+exits, the witness asks the worker for that journal's last lines before it reads the end of the game, posts it, or tells
+a match the table closed (bounded at 10 s). Checked with cscript harnesses against the real worker
+(`companion/src/witness/journal-pipe-cscript.test.ts`): the same bytes in both modes; the main thread blocked 6 s
+while the script writes 300 KB, no `WriteLine` over 250 ms (a drain on the main thread: 5.97 s); a disk write stalled
+3 s, the same; the worker killed mid-game. Through the library's own write path on the owner's PC
+(`vpx-hook/spike/journal-pipe-bench.ps1` driven by `companion/scripts/journal-pipe-bench.ts`, 9,000 lines 20 ms apart
+beside a held-file append, two runs on 2026-11-16): the pipe line took 0.09 ms (median), 0.5 ms (p99), 2.8 and 2.9 ms
+at worst, never 5 ms; the file line beside it took 50 ms or more 2 and 1 times, at worst 417 ms and 1.58 s; every
+piped line was in the journal, in order. `Castcade_Locked`'s `FileExists`, timed in the same runs: 0.24 ms (median)
+on an existing file, 0.1 ms on a missing one, at worst 3.2 and 14.7 ms. No recipe change; the lib bump makes the folder
+watch re-make every sidecar on its first look.
+
 ### 0.5.2 — no close and reopen of the journal while the table runs (C16)
 
 `Castcade_Write` closed the journal and opened it again after every event and every watched `nvram_delta` (and every 50th
@@ -188,7 +227,9 @@ synthetic B/C/D scripts: one game each journals start → scores → ball ends �
 - **Stale-sidecar guard.** A sidecar REPLACES the embedded script, so a table update would run the
   old script on new geometry. On a changed `.vpx` hash the sidecar is disabled and re-import offered.
 - No real work in VBScript, no network calls from the script, no close and reopen of the journal while the table
-  runs (0.5.2): one handle from `Castcade_Init` to `Castcade_Exit`.
+  runs (0.5.2): one handle from `Castcade_Init` to `Castcade_Exit`. While the companion runs, no file-system call for
+  the journal on VPX's render thread at all (0.6.0): the handle is the companion's pipe, and the companion's reader
+  must never stop reading it (an unread pipe blocks `WriteLine` without limit once about 124 KB wait).
 
 ## What does not live here
 

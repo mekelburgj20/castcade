@@ -15,7 +15,9 @@ mode, `src/witness/`, see below).** No patcher, media or launch code yet (Phase 
   `witness-host.ts` (owns the witness instance, restarts it when the ArcAid URL or nvram dir changes),
   `log.ts` (rotating `%APPDATA%\Castcade\logs\companion.log`), `updater.ts` (electron-updater, packaged
   builds only: check at launch, then every 4 h, retry 30 min after a failure; log + one tray balloon), `allowlist.ts` (`openExternal` limited to the ArcAid origin and
-  the project page). `--smoke` prints `castcade <version> protocol <n>` and exits before any of this.
+  the project page). `--smoke` prints `castcade <version> protocol <n>` and exits before any of this (C16.2: after
+  starting the journal pipe's worker on a pipe and in a folder of its own and printing `journal-pipe ok`; a worker
+  that does not start fails the smoke).
 - `src/preload/index.cts` — sandboxed CommonJS preload exposing the typed `window.castcade` bridge
   (`ipc-types.ts` is the single description; `renderer/src/castcade.d.ts` mirrors it by hand).
 - `renderer/` — Vite + React, one 420×640 window with three views: Pairing, Status, Settings/About

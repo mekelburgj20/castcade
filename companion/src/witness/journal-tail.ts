@@ -2,7 +2,10 @@
  * Follow a Castcade journal file as the in-VPX hook appends to it, delivering complete lines.
  * The hook appends to `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl` through one handle it holds
  * from table load to table exit (hook 0.5.2; until 0.5.1 it closed and reopened the file after every
- * event): each line is readable here as soon as it is written, without a close. A read can still
+ * event): each line is readable here as soon as it is written, without a close. Since hook 0.6.0 (C16.2), a table
+ * loaded while the companion runs sends its lines through the companion's journal pipe instead, and the pipe's
+ * worker (`journal-pipe.ts`) appends them to the same file, byte for byte what the hook would have written; this
+ * tail reads the file either way. A read can still
  * land mid-line: the partial tail is kept until its newline arrives. The file may not exist yet when the tail starts (the
  * sidecar creates it at table load), may be appended to by a later session, or may be replaced
  * by a shorter file (the player cleared the folder): a size below the consumed position restarts
