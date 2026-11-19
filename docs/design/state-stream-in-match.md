@@ -77,6 +77,20 @@ ending in `\n`.
 An older fork build ignores `CASTCADE_STREAM=match` (no session: plain VPX), so no control connection ever
 arrives; the companion then treats that PC as having no 3D (§4.2).
 
+Rules both sides rely on (fixed 2026-11-19, when the companion half was written):
+
+1. The fork sends `hello`, then `state playing`, without waiting; the companion sends nothing before that.
+2. Every `watch`, a re-aim included, is answered within 5 s by `state watching` or `state failed <reason>`.
+   Unanswered, the companion sends `play` and shows the 2D video for that turn.
+3. After `state failed` the fork comes back by itself and sends `state playing`; the companion sends no `play`.
+4. A `play` while already playing is answered with `state playing` again.
+5. After `play` the companion sends no `watch` until `state playing` arrives or 2 s pass; then one may follow
+   at once.
+6. A fork that leaves a watch by itself says `state failed <reason>`, then `state playing`.
+7. The table identity is compared between PCs as exact text (`<editables> <table-hash>`); the build is not
+   compared. Each `hello` field is one token of printable ASCII, 128 characters at most.
+8. A line of more than 2048 bytes closes the connection.
+
 ## 4. The companion (I11.4.2)
 
 ### 4.1 Transport
@@ -107,6 +121,21 @@ The same decision that today puts the headset in theater while another player is
 The 2D video keeps flowing underneath in this iteration, so the fallback is instant and the sender does not
 change; not encoding for watchers who are all in 3D is a later saving. The turn lock is lifted at the grant only
 once the fork says `state playing` (2 s at most, then lifted anyway and logged).
+
+As built (PR #76), where it is narrower or wider than the table:
+
+- The fork is sent to watch only while this PC's table is **locked**. A finished game that is still ending on
+  the machine (A16: bonus, the ROM's game end, initials) keeps its table, with the 2D theater as today; the
+  pause would otherwise freeze a ROM before the game end the witness scores.
+- The tunnel keeps this PC's stream port set for as long as its fork is on the control connection, so a watcher
+  that connects a moment before this PC handles its own grant is not refused.
+- Theater is off from the moment `watch` is decided, not from `state watching`: on a failure the player sees
+  their own paused table for up to 5 s, then the 2D picture. A failed watch stays 2D until the next player is up.
+- Only theater is suppressed: a headset set to show the panel on the other player's ball keeps the panel.
+- The control server lives for the app run and its ports are kept in `<userData>/stream3d.json`, so a table
+  left open serves the next match and a restarted Castcade gets its fork back.
+- `watch3d` turned off during a match calls this PC's fork back; the others can still watch this PC.
+- Open: on a desktop (non-VR) PC the native helper's 2D window still opens while the table shows 3D (I11.4.6).
 
 ### 4.4 Launch and sound
 
