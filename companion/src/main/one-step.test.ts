@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GameFingerprint } from '@castcade/protocol';
 import type { KnownTable } from '../launch/known-tables.js';
-import type { LaunchResult } from '../launch/vpx-launch.js';
+import type { LaunchOptions, LaunchResult } from '../launch/vpx-launch.js';
 import { formatJoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
 import { NO_TABLE_NAME, ZERO_SHA256 } from './match-setup.js';
@@ -42,13 +42,28 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
-function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: LaunchResult; joinError?: string; relay?: boolean; arcaid?: string } = {}) {
+function world(
+  o: {
+    tables?: KnownTable[];
+    files?: KnownTable[];
+    launch?: LaunchResult;
+    joinError?: string;
+    relay?: boolean;
+    arcaid?: string;
+    /** I11.4.2: what the match host says about starting a match table (the fork's options, or null); absent: it has no say. */
+    tableLaunch?: () => Promise<LaunchOptions | null>;
+    /** I11.4.2: the result of a launch that names another exe (the fork). */
+    forkLaunch?: LaunchResult;
+  } = {},
+) {
   const matchCbs = new Set<(s: MatchStatus) => void>();
   const witnessCbs = new Set<(s: { currentTable: string | null }) => void>();
   const m = { role: 'none' as MatchStatus['role'], phase: 'none' as MatchStatus['phase'], code: null as string | null, invite: null as string | null };
   let hostGame: GameFingerprint | null = null;
   let open: string | null = null;
   const launched: string[] = [];
+  /** I11.4.2: every launch with the options it was given (null: the plain A14 launch). */
+  const launches: Array<{ path: string; opts: LaunchOptions | null }> = [];
   const clips: string[] = [];
   const logs: string[] = [];
   const joins: Array<[string, string]> = [];
@@ -75,14 +90,17 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
       status,
       onStatus: (cb) => (matchCbs.add(cb), () => void matchCbs.delete(cb)),
       hostGame: () => hostGame,
+      ...(o.tableLaunch ? { tableLaunch: o.tableLaunch } : {}),
     },
     witness: {
       status: () => ({ currentTable: open }),
       onStatus: (cb) => (witnessCbs.add(cb), () => void witnessCbs.delete(cb)),
     },
     launcher: {
-      async launch(path) {
+      async launch(path, opts) {
         launched.push(path);
+        launches.push({ path, opts: opts ?? null });
+        if (opts?.exe && o.forkLaunch) return o.forkLaunch;
         return o.launch ?? { ok: true, pid: 1 };
       },
     },
@@ -101,6 +119,7 @@ function world(o: { tables?: KnownTable[]; files?: KnownTable[]; launch?: Launch
   return {
     one,
     launched,
+    launches,
     clips,
     logs,
     joins,
@@ -260,6 +279,55 @@ describe('one step to a match: Host (A14 step 1)', () => {
     await w.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(w.launched).toHaveLength(1);
     expect(w.clips).toHaveLength(2);
+  });
+});
+
+describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
+  const FORK = 'C:\\vpx\\VPinballX_GL64_castcade.exe';
+  const forkOpts = (): LaunchOptions => ({ exe: FORK, env: { CASTCADE_STREAM: 'match', CASTCADE_STREAM_ADDR: 'listen:127.0.0.1:51000', CASTCADE_STREAM_CONTROL: 'connect:127.0.0.1:51002', CASTCADE_STREAM_SOUND: '0' }, what: 'for the match, in the Castcade VPX build' });
+
+  it("the host's table and a joiner's table start with the options the match host gives (the fork, the stream's variables)", async () => {
+    const h = world({ tableLaunch: async () => forkOpts() });
+    await h.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(h.launches).toEqual([{ path: MB.vpxPath, opts: forkOpts() }]);
+    expect(h.one.status().launch).toMatchObject({ state: 'starting', table: MB.tableId });
+    const j = world({ tableLaunch: async () => forkOpts() });
+    await j.one.openLink(LINK, { trusted: true });
+    await j.hostTable(fingerprint('Monster Bash (Williams 1998)', MB.sha256!));
+    expect(j.launches).toEqual([{ path: MB.vpxPath, opts: forkOpts() }]);
+  });
+
+  it('nothing to say (the setting off, no fork beside VPX), or no say at all: the plain launch, exactly as before', async () => {
+    const none = world({ tableLaunch: async () => null });
+    await none.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(none.launches).toEqual([{ path: MB.vpxPath, opts: null }]);
+    const old = world();
+    await old.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(old.launches).toEqual([{ path: MB.vpxPath, opts: null }]);
+    // The match host failing to answer is no reason not to start the table.
+    const broken = world({ tableLaunch: () => Promise.reject(new Error('no port')) });
+    await broken.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(broken.launches).toEqual([{ path: MB.vpxPath, opts: null }]);
+  });
+
+  it('a fork that does not start is said in the log and the table starts in the player\'s own VPX', async () => {
+    const w = world({ tableLaunch: async () => forkOpts(), forkLaunch: { ok: false, reason: 'VPinballX_GL64_castcade.exe is not in C:\\vpx' } });
+    await w.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(w.launches).toEqual([
+      { path: MB.vpxPath, opts: forkOpts() },
+      { path: MB.vpxPath, opts: null },
+    ]);
+    expect(w.one.status().launch).toMatchObject({ state: 'starting', table: MB.tableId });
+    expect(w.logs).toContain('launch: the Castcade VPX build did not start (VPinballX_GL64_castcade.exe is not in C:\\vpx); starting the table in your own VPX');
+  });
+
+  it('a table that is already open is used as it is: the match host is not even asked', async () => {
+    let asked = 0;
+    const w = world({ tableLaunch: async () => (asked++, forkOpts()) });
+    await w.table('Monster Bash');
+    await w.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(w.launches).toEqual([]);
+    expect(asked).toBe(0);
   });
 });
 

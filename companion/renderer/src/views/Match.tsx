@@ -97,7 +97,7 @@ export function Match({ state }: { state: CastcadeState }) {
     );
   };
   const setView = (
-    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner'>>,
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner' | 'watch3d'>>,
   ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -509,6 +509,12 @@ export function Match({ state }: { state: CastcadeState }) {
             <p className="muted">{mediaLine(st.media)}</p>
             {st.media?.nativeVideo && <p className="muted">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
             {st.media?.nativeVideo?.helper === 'ready' && !st.media.nativeVideo.fallback && <VideoQualityRow st={st} video={st.media.nativeVideo} apply={(r) => bridge.match.setVideoRungs(r).then(setSt, (e: unknown) => setError(describe(e)))} />}
+            {/* I11.4.2: what this PC shows of each other player while they are up: 3D on its own table, or the 2D video and why. */}
+            {st.stream3d?.players.map((p) => (
+              <p className="muted" key={p.id}>
+                {p.line}
+              </p>
+            ))}
             {panelWin && (
               <div className="row">
                 <p className="muted">{panelLine(panelWin)}</p>
@@ -587,6 +593,19 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="panel">The match panel, low in view</option>
             </select>
             <small>Theater: their table as a flat screen in front of you, where yours was; the view around it goes dark. Needs the Castcade OpenXR layer (not SteamVR).</small>
+          </label>
+          {/* I11.4.2 (ADR 0011): the player up on this PC's own table, in 3D, when both PCs can; the 2D video otherwise. */}
+          <label className="field">
+            <span>3D watch in a match</span>
+            <select value={st.settings.watch3d} onChange={(e) => setView({ watch3d: e.target.value === 'off' ? 'off' : 'auto' })}>
+              <option value="auto">Auto: their game on your own table when both PCs can</option>
+              <option value="off">Off: always the 2D video</option>
+            </select>
+            <small>
+              Auto: while another player is up you see their game on your own table, from your own seat, when both PCs run the Castcade VPX build
+              (VPinballX_GL64_castcade.exe beside your VPX) on the identical table file; Castcade then starts match tables in that build. Anything else, and
+              any trouble, shows the 2D video as before. Applies to tables started from now on.
+            </small>
           </label>
           <label className="field">
             <span>Theater size</span>
