@@ -21,7 +21,7 @@ other way round).
   through the match as `MEDIA_SIGNAL` channel `stream`), and the turn switches it. A PC without the fork, with
   another release of the table, or with a watch that fails gets the 2D video for that turn as before; the 2D video
   keeps flowing to everyone throughout. The Match tab's view settings have **3D watch in a match**: Auto (default) or Off. The fork build
-  needs its role `match` (castcade-vpx `castcade/handoff`, build 6a0b32b or later): build 621694f of the 3D watch
+  needs its role `match` (castcade-vpx `castcade/state-stream`, build 9e78aef or later): build 621694f of the 3D watch
   session starts as plain VPX in a match and that PC gets 2D. Proven on one PC against real fork instances (70 of
   70 checks: 20 turn changes in four orders, three PCs, every fail-safe); two PCs and the headset are I11.4.8.
   `companion/src/match/stream3d.ts`, `main/stream3d-host.ts`, `docs/design/state-stream-in-match.md`.

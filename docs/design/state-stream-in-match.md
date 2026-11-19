@@ -55,7 +55,7 @@ the way back exact without knowing what the file-loaded value was.
 (table mismatch), a watcher connection that never opens, a lost control connection. A player is never left
 looking at someone else's table at their own turn. An unknown or empty control line is ignored (rule 13).
 
-**As built** (castcade-vpx branch `castcade/handoff`, 2026-11-19), where it differs from the steps above:
+**As built** (castcade-vpx, 2026-11-19: branch `castcade/handoff`, merged into `castcade/state-stream` at 9e78aef3), where it differs from the steps above:
 
 - VPX 10.8.0 fires no `Paused` event when its window loses the focus; what pauses the music and VPinMAME there
   is `Player::PauseMusic` (reference counted), so the match role calls that and its counterpart.
@@ -73,6 +73,9 @@ looking at someone else's table at their own turn. An unknown or empty control l
   own pause, `Session::HoldsPause()`), so nothing moves and no event is due in those frames (rule 14); the
   own music is set aside at the `watch` command and given back on every way out, before the script hears
   of the return.
+- Keys are read in every frame of that pause too and kept from the script, as while watching: a press made
+  before the other table appears never reaches the own game, whatever ends the watch. A key still held at the
+  return gets its key-down then (the net difference).
 - Option events (the tweak menu) raised while watching are kept and fired at the return, once per kind.
 - The list of properties to put back is capped at the table's put-able properties plus 256; past it the
   watch ends with `state failed overflow`.
