@@ -716,9 +716,11 @@ Section '9. Tables' {
                 if ($set.ContainsKey($vbsName.ToLower())) {
                     $state = 'other'
                     try {
-                        $head = Read-Head (Join-Path $c.Path $vbsName) 2048
+                        # The whole script (8 MB at most): Castcade's marker line follows the table's own header
+                        # comment and Option Explicit, 7 to 19 KB in on real tables, so the first 2 KB cannot tell.
+                        $head = Read-Head (Join-Path $c.Path $vbsName) 8388608
                         if ($marker.IsMatch($head)) { $state = 'castcade' }
-                    } catch { $state = 'other' }
+                    } catch { $state = 'unreadable' }
                 } elseif ($set.ContainsKey(($vbsName + '.stale').ToLower())) { $state = 'stale' }
                 if ($state -eq 'other') { [void]$foreign.Add($base) }
                 L ('  ' + $base + ' | ' + [Math]::Round($f.Length / 1MB, 1) + ' MB | backglass ' + $b2s + ' | script ' + $state)
