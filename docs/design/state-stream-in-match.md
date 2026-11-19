@@ -52,8 +52,8 @@ the way back exact without knowing what the file-loaded value was.
 5. `state playing` goes out on the control connection.
 
 **Fail-safe.** Anything that goes wrong ends in "playing", with the player's own table back: a refused stream
-(table mismatch), a watcher connection that never opens, a lost control connection, an unknown command. A
-player is never left looking at someone else's table at their own turn.
+(table mismatch), a watcher connection that never opens, a lost control connection. A player is never left
+looking at someone else's table at their own turn. An unknown or empty control line is ignored (rule 13).
 
 **As built** (castcade-vpx branch `castcade/handoff`, 2026-11-19), where it differs from the steps above:
 
@@ -135,6 +135,21 @@ Added after the independent review of PR #76 (2026-11-19):
     leaving one player and showing the next.
 12. A watch whose stream delivers no frame for 3 s is left by the fork itself (`state failed stalled`, then
     `state playing`), so a stream that stalls without closing ends in the 2D picture, not a frozen table.
+
+Added after the independent review of the fork branch (2026-11-19):
+
+13. An unknown or empty control line is ignored by the fork (logged, no `state` line, the watch goes on), so a
+    newer companion can add a command. Loopback means a numeric address in 127.0.0.0/8 or `localhost`, for the
+    control address and for the host of a `watch`.
+14. A watch that ends before its keyframe leaves the own game as a pause of that length would: no event lost,
+    no animation advanced.
+
+That review found three defects in getting the own game back that the swap test could not see (a lamp's
+second stored state left at the file's value, so the first light sequence after a watched turn switched the
+player's lamps off; the own table's music destroyed at every watch; a watch that failed before its keyframe
+dropping the events of parts that were still moving), and that when a table's script has no handler for the
+pause event nothing pauses VPinMAME while its owner watches. The first three are a fix round on the branch;
+the last is a known limit, logged by the fork at the first watch of such a table.
 
 Known and accepted in this iteration: the lines carry no sequence numbers, so a `state playing` that crosses a
 new `watch` can cost that turn its 3D (it falls back to 2D and heals at the next turn); the 2 s limit on the
