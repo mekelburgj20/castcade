@@ -59,6 +59,11 @@ export interface TunnelEndOptions {
   onPeerInfo?(peer: string, info: string | null): void;
   /** I11.4.2: the word every log line of this end starts with. Default `watch` (the 3D watch session); a match's is `stream3d`. */
   logTag?: string;
+  /**
+   * I11.4.2: the port of the loopback listener a watcher VPX connects to. Default: one the OS picks. A harness that
+   * must stay inside a port range names it (companion/scripts/match-stream-harness.mjs); the app never does.
+   */
+  watchPort?: number;
 }
 
 export interface TunnelPeerView {
@@ -348,7 +353,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
       });
       await new Promise<void>((resolve, reject) => {
         s.once('error', reject);
-        s.listen({ host: LOOPBACK, port: 0 }, () => {
+        s.listen({ host: LOOPBACK, port: o.watchPort ?? 0 }, () => {
           s.off('error', reject);
           resolve();
         });
