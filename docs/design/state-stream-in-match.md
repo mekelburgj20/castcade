@@ -67,7 +67,7 @@ ending in `\n`.
 
 | Direction | Line | Meaning |
 |---|---|---|
-| fork → companion | `hello 1 <build> <editables> <table-hash>` | once per connection; `1` is this protocol's version; the table identity is the one the stream's own HELLO check uses |
+| fork → companion | `hello 1 <build> <editables> <table-hash> <stream-port>` | once per connection; `1` is this protocol's version; the table identity is the one the stream's own HELLO check uses; the port is rule 9 below |
 | fork → companion | `state playing` | own table shown and live (also the first line after `hello`) |
 | fork → companion | `state watching` | the first frame of the other player's table is on screen |
 | fork → companion | `state failed <reason>` | a `watch` did not work (refused, no answer in 10 s); followed by `state playing` |
@@ -90,6 +90,25 @@ Rules both sides rely on (fixed 2026-11-19, when the companion half was written)
 7. The table identity is compared between PCs as exact text (`<editables> <table-hash>`); the build is not
    compared. Each `hello` field is one token of printable ASCII, 128 characters at most.
 8. A line of more than 2048 bytes closes the connection.
+
+Added after the independent review of PR #76 (2026-11-19):
+
+9. `hello` carries a fifth field, the port the fork's stream listener is bound to on 127.0.0.1:
+   `hello 1 <build> <editables> <table-hash> <stream-port>`. The companion offers that port to the other
+   players, not the one it asked for, so a stale or reused port can never be offered.
+10. **The hand-over.** At a grant the previous player's fork is sent to watch at the same moment the new
+    player's fork is called back, so a watcher can reach a fork that is still watching or still restoring its
+    own table. A `match` fork that is not playing accepts the connection and holds it (no HELLO, no keyframe)
+    until it is playing, then serves it as any watcher; held 10 s at most, then closed.
+11. A re-aim arrives as `watch` with the same address as before (the tunnel has one listener for every
+    player): the fork drops its watcher connection and connects again, and sends no `state playing` between
+    leaving one player and showing the next.
+12. A watch whose stream delivers no frame for 3 s is left by the fork itself (`state failed stalled`, then
+    `state playing`), so a stream that stalls without closing ends in the 2D picture, not a frozen table.
+
+Known and accepted in this iteration: the lines carry no sequence numbers, so a `state playing` that crosses a
+new `watch` can cost that turn its 3D (it falls back to 2D and heals at the next turn); the 2 s limit on the
+turn lock lifts it without knowing where a slow fork is.
 
 ## 4. The companion (I11.4.2)
 
