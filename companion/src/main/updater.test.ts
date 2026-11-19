@@ -795,7 +795,17 @@ describe('the Witness edition and the update guard (E10)', () => {
       [join(dir, 'update-info.json')]: JSON.stringify({ fileName: 'Castcade-Witness-Setup-0.2.46.exe', sha512: 'x' }),
       [join(dir, 'Castcade-Witness-Setup-0.2.46.exe')]: 'MZ',
     };
-    expect(readPendingInstaller({ dir, appVersion: '0.2.45', readText: (p) => files[p] ?? null, exists: (p) => p in files })).toMatchObject({ kind: 'pending', version: '0.2.46' });
+    const fs = { readText: (p: string) => files[p] ?? null, exists: (p: string) => p in files };
+    expect(readPendingInstaller({ dir, appVersion: '0.2.45', edition: 'witness', ...fs })).toMatchObject({ kind: 'pending', version: '0.2.46' });
+    // Both editions share the cache folder: a download the other edition left there is never this edition's update.
+    expect(readPendingInstaller({ dir, appVersion: '0.2.45', ...fs })).toEqual({ kind: 'unreadable', why: "Castcade-Witness-Setup-0.2.46.exe is the other edition's installer" });
+    const full: Record<string, string> = {
+      [join(dir, 'update-info.json')]: JSON.stringify({ fileName: 'Castcade-Setup-0.2.47.exe', sha512: 'x' }),
+      [join(dir, 'Castcade-Setup-0.2.47.exe')]: 'MZ',
+    };
+    const fullFs = { readText: (p: string) => full[p] ?? null, exists: (p: string) => p in full };
+    expect(readPendingInstaller({ dir, appVersion: '0.2.46', edition: 'witness', ...fullFs })).toEqual({ kind: 'unreadable', why: "Castcade-Setup-0.2.47.exe is the other edition's installer" });
+    expect(readPendingInstaller({ dir, appVersion: '0.2.46', edition: 'full', ...fullFs })).toMatchObject({ kind: 'pending', version: '0.2.47' });
     expect(parseMarker(JSON.stringify({ version: '0.2.46', fileName: 'Castcade-Witness-Setup-0.2.46.exe', at: 1 }))).toMatchObject({ fileName: 'Castcade-Witness-Setup-0.2.46.exe' });
   });
 

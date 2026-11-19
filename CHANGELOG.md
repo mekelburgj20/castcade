@@ -38,7 +38,7 @@ other way round).
   Witness installer. The edition is baked in at package time (`electron-builder.witness.yml`), and the first log line
   and `--smoke` name it (`edition witness` / `edition full`). The full installer and the full app are unchanged.
   `main/edition.ts`, `main/edition-leftovers.ts`, `electron-builder.witness.yml`, `build/installer-witness.nsh`,
-  `.github/workflows/release.yml` (job `witness`), `npm run dist:win:witness` / `pack:dir:witness`.
+  `.github/workflows/release.yml` (jobs `witness` and `witness-publish`), `npm run dist:win:witness` / `pack:dir:witness`.
 
 ### Fixed
 

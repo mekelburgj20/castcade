@@ -105,7 +105,7 @@ export type PendingRead =
   | { kind: 'leftover'; version: string }
   | { kind: 'pending'; version: string; fileName: string; file: string };
 
-export function readPendingInstaller(o: { dir: string; appVersion: string; readText(path: string): string | null; exists(path: string): boolean }): PendingRead {
+export function readPendingInstaller(o: { dir: string; appVersion: string; readText(path: string): string | null; exists(path: string): boolean; edition?: Edition }): PendingRead {
   const text = o.readText(join(o.dir, 'update-info.json'));
   if (text === null) return { kind: 'none' };
   let info: unknown;
@@ -118,6 +118,9 @@ export function readPendingInstaller(o: { dir: string; appVersion: string; readT
   if (typeof fileName !== 'string' || win32.basename(fileName) !== fileName) return { kind: 'unreadable', why: 'update-info.json names no installer' };
   const version = installerVersion(fileName);
   if (!version) return { kind: 'unreadable', why: `${fileName} is not a Castcade installer name` };
+  // E10: both editions share this folder (same appId). An installer the other edition downloaded before this one was
+  // installed over it is never this edition's update.
+  if (!updateMatchesEdition(o.edition ?? 'full', [fileName])) return { kind: 'unreadable', why: `${fileName} is the other edition's installer` };
   if (!(compareVersions(version, o.appVersion) > 0)) return { kind: 'leftover', version };
   const file = join(o.dir, fileName);
   if (!o.exists(file)) return { kind: 'unreadable', why: `${fileName} is named in update-info.json but not there` };

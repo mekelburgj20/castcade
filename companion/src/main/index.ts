@@ -478,7 +478,7 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
     // opened, not lost to an install: the installer would start Castcade again with `--updated` only.
     heldAtStart: () => (earlyLink ? 'a castcade:// invite is waiting to be opened' : null),
     exists: existsSync,
-    pending: () => readPendingInstaller({ dir: pendingDir, appVersion, readText: readTextOrNull, exists: existsSync }),
+    pending: () => readPendingInstaller({ dir: pendingDir, appVersion, readText: readTextOrNull, exists: existsSync, edition }),
     marker: createMarkerStore(join(userData, INSTALL_MARKER_FILE), (line) => logger.warn(line)),
     installerRunning: createInstallerProbe(),
     hiddenStart: argv.includes('--hidden'),

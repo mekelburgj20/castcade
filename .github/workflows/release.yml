@@ -4,7 +4,7 @@ name: Release (Windows installer)
 # workflow_dispatch → build only; the installer is attached to the run as a workflow artifact.
 # E10: two installers from the same tag: the full app (job `windows`, latest.yml) and the Witness edition (job
 # `witness`, electron-builder.witness.yml: no native helpers, its own update file witness.yml, never a latest.yml).
-# Either job may create the release first; both accept that the other already did.
+# The full job creates the release; job `witness-publish` adds the Witness files once both builds have succeeded.
 on:
   push:
     tags: ['v*']
@@ -99,8 +99,7 @@ jobs:
       - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        # E10: the witness job may create it at the same moment: a create that fails is fine when the release exists.
-        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept."
       - name: Package (publish to the release on tag pushes only)
         working-directory: companion
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
@@ -175,19 +174,6 @@ jobs:
           grep -q 'Castcade-Witness-Setup-' companion/release/witness.yml
           if grep -q 'Castcade-Setup-' companion/release/witness.yml; then echo 'witness.yml names the full installer'; exit 1; fi
           if [ -e companion/release/latest.yml ]; then echo 'the Witness build wrote a latest.yml'; exit 1; fi
-      - name: Create the pre-release first (the full job may create it at the same moment)
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
-      - name: Publish the installer, its blockmap and witness.yml to the release (tag pushes only)
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY" \
-            companion/release/Castcade-Witness-Setup-*.exe \
-            companion/release/Castcade-Witness-Setup-*.exe.blockmap \
-            companion/release/witness.yml
       - name: Upload installer as a workflow artifact
         uses: actions/upload-artifact@v7
         with:
@@ -197,3 +183,27 @@ jobs:
             companion/release/Castcade-Witness-Setup-*.exe
             companion/release/Castcade-Witness-Setup-*.exe.blockmap
             companion/release/witness.yml
+
+  # E10: the Witness files go onto the release only after the full job has put its own there. A release that holds
+  # witness.yml but not yet latest.yml would answer every full install's update check with a 404, and for good if the
+  # full job then failed. The other way round is safe: without witness.yml a Witness install is offered latest.yml,
+  # refuses it (the edition guard in main/updater.ts) and stays as it is.
+  witness-publish:
+    name: Publish the Witness installer to the release (tag pushes only)
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, witness]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: Castcade-Witness-Setup-windows-x64
+          path: witness
+      - name: Upload the installer, its blockmap and witness.yml (never a latest.yml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la witness
+          if [ -e witness/latest.yml ]; then echo 'the Witness artifact holds a latest.yml'; exit 1; fi
+          gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY"             witness/Castcade-Witness-Setup-*.exe             witness/Castcade-Witness-Setup-*.exe.blockmap             witness/witness.yml
