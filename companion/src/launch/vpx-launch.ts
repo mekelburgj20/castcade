@@ -97,6 +97,18 @@ export function forkMatchEnv(streamPort: number, controlPort: number, logFile: s
   };
 }
 
+/**
+ * I11.4.2 (§4.4): a match table's start in the fork: the options for `VpxLauncher.launch`, and whether that start
+ * took. `launch` answers ok as soon as the process is spawned; a start that fails after that (the `error` event:
+ * EACCES, a file that is not a program) or an exe that ends at once is only known later: `didNotStart` resolves true
+ * then, and false once the fork's VPX is up (it said `hello` on the control connection, or it outlived the first
+ * seconds). The caller starts the table in the player's own VPX on true.
+ */
+export interface ForkLaunch {
+  options: LaunchOptions;
+  didNotStart: Promise<boolean>;
+}
+
 /** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */
 export function launchEnv(base: Readonly<Record<string, string | undefined>>, add: Readonly<Record<string, string>>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};

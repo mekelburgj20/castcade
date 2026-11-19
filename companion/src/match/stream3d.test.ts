@@ -5,9 +5,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ManualClock } from './clock.js';
-import { CONTROL_LINE_MAX, PLAY_WAIT_MS, Stream3d, WATCH_TIMEOUT_MS, decide, decodeCaps, encodeCaps, parseControlLine, viewWords, watchCommand, type ForkInfo } from './stream3d.js';
+import { CAPS_CHANGES_MAX, CONTROL_LINE_MAX, FORK_LOG_MAX, PLAY_WAIT_MS, QUIET_LOG_MS, Stream3d, WATCH_TIMEOUT_MS, decide, decodeCaps, encodeCaps, forLog, parseControlLine, viewWords, watchCommand, type ForkInfo } from './stream3d.js';
 
-const HELLO = 'hello 1 10.8.0.2078.castcade 617 9f3a61c2d4e5b701';
+const HELLO = 'hello 1 10.8.0.2078.castcade 617 9f3a61c2d4e5b701 50001';
 const TABLE = '617 9f3a61c2d4e5b701';
 const BUILD = '10.8.0.2078.castcade';
 const SAME: ForkInfo = { build: BUILD, table: TABLE };
@@ -15,7 +15,7 @@ const flush = async (): Promise<void> => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 };
 
-function rig(o: { aim?: (peer: string) => Promise<number> } = {}) {
+function rig(o: { aim?: (peer: string) => Promise<number>; name?: (id: string) => string } = {}) {
   const clock = new ManualClock();
   const sent: string[] = [];
   const logs: string[] = [];
@@ -42,7 +42,8 @@ function rig(o: { aim?: (peer: string) => Promise<number> } = {}) {
     onChange: () => void changes++,
     setTimeout: (fn, ms) => clock.setTimeout(fn, ms),
     clearTimeout: (h) => clock.clearTimeout(h),
-    name: (id) => ({ a: 'Owner', b: 'Krobs', c: 'Chuck' })[id] ?? id,
+    name: o.name ?? ((id) => ({ a: 'Owner', b: 'Krobs', c: 'Chuck' })[id] ?? id),
+    now: () => clock.now(),
   });
   const fork = {
     connect(): void {
@@ -65,10 +66,9 @@ function rig(o: { aim?: (peer: string) => Promise<number> } = {}) {
   return { m, clock, sent, logs, aims, ports, caps, fork, changes: () => changes };
 }
 
-/** A PC with its fork up on stream port 50001, in a match with `peers`, each of whom said the same table. */
+/** A PC with its fork up (its hello names stream port 50001), in a match with `peers`, each of whom said the same table. */
 async function inMatch(peers: string[] = ['b'], o: Parameters<typeof rig>[0] = {}) {
   const r = rig(o);
-  r.m.setStreamPort(50_001);
   r.m.setPeers(peers);
   r.fork.up();
   for (const p of peers) r.m.peerCaps(p, encodeCaps(SAME));
@@ -78,7 +78,8 @@ async function inMatch(peers: string[] = ['b'], o: Parameters<typeof rig>[0] = {
 
 describe('the control connection, as read (§3)', () => {
   it('reads the four lines exactly', () => {
-    expect(parseControlLine(HELLO)).toEqual({ kind: 'hello', version: 1, build: BUILD, editables: '617', tableHash: '9f3a61c2d4e5b701' });
+    expect(parseControlLine(HELLO)).toEqual({ kind: 'hello', version: 1, build: BUILD, editables: '617', tableHash: '9f3a61c2d4e5b701', streamPort: 50_001 });
+    expect(parseControlLine('hello 1 b 1 h 65535')).toMatchObject({ streamPort: 65_535 });
     expect(parseControlLine('state playing')).toEqual({ kind: 'state', state: 'playing' });
     expect(parseControlLine('state watching')).toEqual({ kind: 'state', state: 'watching' });
     expect(parseControlLine('state failed table mismatch: 617 editables here, 615 there')).toEqual({ kind: 'failed', reason: 'table mismatch: 617 editables here, 615 there' });
@@ -102,6 +103,13 @@ describe('the control connection, as read (§3)', () => {
       'hello 1',
       'hello 1 build 617',
       'hello 1 build 617 hash extra',
+      // Rule 9: the fifth field is the stream port, a port.
+      'hello 1 build 617 hash',
+      'hello 1 build 617 hash 0',
+      'hello 1 build 617 hash 65536',
+      'hello 1 build 617 hash 050001',
+      'hello 1 build 617 hash 50001 more',
+      'hello 1 build 617 hash -1',
       'hello 1  617 hash',
       'hello 1 build 617 ha\tsh',
       'play',
@@ -114,8 +122,8 @@ describe('the control connection, as read (§3)', () => {
   });
 
   it('a hello of another version is read for its version only, whatever follows it', () => {
-    expect(parseControlLine('hello 2 build 617 hash and more fields')).toEqual({ kind: 'hello', version: 2, build: '', editables: '', tableHash: '' });
-    expect(parseControlLine('hello 0')).toEqual({ kind: 'hello', version: 0, build: '', editables: '', tableHash: '' });
+    expect(parseControlLine('hello 2 build 617 hash and more fields')).toEqual({ kind: 'hello', version: 2, build: '', editables: '', tableHash: '', streamPort: 0 });
+    expect(parseControlLine('hello 0')).toEqual({ kind: 'hello', version: 0, build: '', editables: '', tableHash: '', streamPort: 0 });
   });
 
   it('writes the two commands exactly', () => {
@@ -131,6 +139,20 @@ describe('what a PC says about itself, and the decision (§4.2)', () => {
     expect(decodeCaps(encodeCaps(null))).toBe('none');
     for (const bad of [null, '', 'x', '{}', '{"v":2,"fork":null}', '{"v":1}', '{"v":1,"fork":{"build":"b"}}', '{"v":1,"fork":{"build":"","table":"t"}}', '{"v":1,"fork":"none"}', `{"v":1,"fork":{"build":"b","table":"${'t'.repeat(400)}"}}`]) {
       expect(decodeCaps(bad), String(bad)).toBeNull();
+    }
+    // A6: a build and a table identity are tokens of printable ASCII, as in hello: nothing else is read (or logged).
+    const caps = (build: string, table: string): string => JSON.stringify({ v: 1, fork: { build, table } });
+    for (const [build, table] of [
+      ['10.8.0\nstream3d: forged line', TABLE],
+      ['two words', TABLE],
+      [BUILD, '617'],
+      [BUILD, '617  9f3a'],
+      [BUILD, '617 9f3a extra'],
+      [BUILD, '617 9f3a\u2028'],
+      [BUILD, `617 ${'h'.repeat(129)}`],
+      ['b\u0085', TABLE],
+    ] as const) {
+      expect(decodeCaps(caps(build, table)), JSON.stringify([build, table])).toBeNull();
     }
   });
 
@@ -272,7 +294,6 @@ describe('the turn (§4.3)', () => {
 
   it("what a PC says arrives late (the data connection took a minute): the watch begins in the middle of the turn; their connection closing ends it", async () => {
     const r = rig();
-    r.m.setStreamPort(50_001);
     r.m.setPeers(['b']);
     r.fork.up();
     r.m.setTarget('b');
@@ -369,7 +390,6 @@ describe('the fail-safes (§4.3 row 3)', () => {
 
   it('the fork never connects (an older build, a table opened by hand, no build at all): 2D, nothing is ever sent, the others are told none', async () => {
     const r = rig();
-    r.m.setStreamPort(50_001);
     r.m.setPeers(['b']);
     r.m.peerCaps('b', encodeCaps(SAME));
     r.m.setTarget('b');
@@ -386,7 +406,6 @@ describe('the fail-safes (§4.3 row 3)', () => {
 
   it('hello with another version: this PC has no 3D, the log says why, nothing is commanded and the others are told none', async () => {
     const r = rig();
-    r.m.setStreamPort(50_001);
     r.m.setPeers(['b']);
     r.m.peerCaps('b', encodeCaps(SAME));
     r.fork.connect();
@@ -421,7 +440,6 @@ describe('the fail-safes (§4.3 row 3)', () => {
 
   it('nothing is commanded before the first state playing after hello, and lines out of place are ignored', async () => {
     const r = rig();
-    r.m.setStreamPort(50_001);
     r.m.setPeers(['b']);
     r.m.peerCaps('b', encodeCaps(SAME));
     r.m.setTarget('b');
@@ -445,6 +463,25 @@ describe('the fail-safes (§4.3 row 3)', () => {
 });
 
 describe('lines that cross', () => {
+  it('a watch that was decided and never sent (the turn moved on while the listener opened): no play, and the lock does not wait', async () => {
+    let open: (port: number) => void = () => undefined;
+    const r = await inMatch(['b'], { aim: () => new Promise<number>((resolve) => (open = resolve)) });
+    r.m.setTarget('b', '1');
+    expect(r.m.showing3d()).toBe(true);
+    // The player up drains at once: this PC's turn, before a line went to the fork.
+    r.m.setTarget(null);
+    expect(r.sent).toEqual([]);
+    expect(r.m.away()).toBe(false);
+    const calls: boolean[] = [];
+    r.m.whenPlaying((late) => void calls.push(late));
+    expect(calls).toEqual([false]);
+    // The listener opens late: its watch is not sent any more.
+    open(50_002);
+    await flush();
+    expect(r.sent).toEqual([]);
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false });
+  });
+
   it('a watch asked while a play is unanswered waits for state playing; a state watching in between is the cancelled watch', async () => {
     const r = await inMatch(['b', 'c']);
     r.m.setTarget('b');
@@ -494,6 +531,275 @@ describe('lines that cross', () => {
     r.fork.say('state playing');
     expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false });
     expect(r.m.away()).toBe(false);
+  });
+});
+
+describe('a failed watch is for one turn, and a turn is a grant (A5)', () => {
+  it('a new grant to the same player (shoot again, the last player with balls left) tries 3D again', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '7');
+    await flush();
+    r.fork.say('state failed refused', 'state playing');
+    expect(r.m.status().peers).toEqual({ b: { mode: '2d', why: 'failed', detail: 'refused' } });
+    // The same grant said again (every status of the match says it): nothing.
+    r.m.setTarget('b', '7');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
+    // b's extra ball: the same player, another grant.
+    r.m.setTarget('b', '8');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'watch 127.0.0.1:50002']);
+    expect(r.m.status()).toMatchObject({ showing3d: true, peers: { b: { mode: '3d' } } });
+    r.fork.say('state watching');
+    // A watch that works is not sent again when the grant changes under it (b shoots again while this PC watches).
+    r.m.setTarget('b', '9');
+    await flush();
+    expect(r.sent).toHaveLength(2);
+    expect(r.m.status()).toMatchObject({ state: 'watching', showing3d: true });
+  });
+
+  it('after a timeout too, and the new try waits for the answer to the play that ended the old one', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '7');
+    await flush();
+    r.clock.advance(WATCH_TIMEOUT_MS);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play']);
+    r.m.setTarget('b', '8');
+    await flush();
+    expect(r.sent).toHaveLength(2);
+    r.fork.say('state playing');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play', 'watch 127.0.0.1:50002']);
+  });
+});
+
+describe('a fork that does not keep to the rules of §3 (C2)', () => {
+  it('silent on a re-aim (rule 2 broken): after 5 s it is called back and the turn is 2D', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    r.m.setTarget('c', '2');
+    await flush();
+    // It re-aimed and shows c, but never says so.
+    r.clock.advance(WATCH_TIMEOUT_MS - 1);
+    expect(r.m.showing3d()).toBe(true);
+    r.clock.advance(1);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'watch 127.0.0.1:50002', 'play']);
+    expect(r.m.status()).toMatchObject({ showing3d: false, peers: { c: { mode: '2d', why: 'failed' } } });
+    r.fork.say('state playing');
+    expect(r.m.away()).toBe(false);
+  });
+
+  it('state playing between two players (rule 11 broken): the turn is 2D, and the fork that then shows the next player is called back', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    r.m.setTarget('c', '2');
+    await flush();
+    r.fork.say('state playing');
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false, peers: { c: { mode: '2d', why: 'failed', detail: 'VPX went back to its own table' } } });
+    // The headset is in theater now; the fork must not stay on c's table under it.
+    r.fork.say('state watching');
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'watch 127.0.0.1:50002', 'play']);
+    expect(r.m.away()).toBe(true);
+    r.fork.say('state playing');
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false });
+    expect(r.m.away()).toBe(false);
+    // The next turn is 3D again.
+    r.m.setTarget('b', '3');
+    await flush();
+    expect(r.sent.at(-1)).toBe('watch 127.0.0.1:50002');
+  });
+
+  it('rule 4: a play the fork had no use for is answered at once: nothing waits the 2 s', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    // The fork failed and came back by itself a moment before this PC's own turn: both lines cross the play.
+    r.m.setTarget(null);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play']);
+    const calls: boolean[] = [];
+    r.m.whenPlaying((late) => void calls.push(late));
+    r.fork.say('state failed no answer from the player', 'state playing');
+    // The first `state playing` is the one that followed the failure; the lock is off with it.
+    expect(calls).toEqual([false]);
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false });
+    // The answer to the redundant play arrives after: it changes nothing, and is not read as the fork leaving a watch.
+    r.m.setTarget('c', '2');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play', 'watch 127.0.0.1:50002']);
+    r.fork.say('state watching');
+    expect(r.m.status()).toMatchObject({ state: 'watching', target: 'c', showing3d: true });
+    expect(r.logs.some((l) => l.includes('taken as back on its own table'))).toBe(false);
+  });
+
+  it('rule 4, the other order: the answer to a redundant play that arrives after a new watch went out costs that turn its 3D and nothing else (accepted)', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    r.m.setTarget(null);
+    r.fork.say('state failed stalled', 'state playing');
+    r.m.setTarget('c', '2');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play', 'watch 127.0.0.1:50002']);
+    // The second `state playing` (the play's own) lands now.
+    r.fork.say('state playing');
+    expect(r.m.status()).toMatchObject({ showing3d: false, peers: { c: { mode: '2d', why: 'failed' } } });
+    // The fork does watch c: it is called back, so the theater is not over someone else's table.
+    r.fork.say('state watching');
+    expect(r.sent.at(-1)).toBe('play');
+    r.fork.say('state playing');
+    expect(r.m.away()).toBe(false);
+    r.m.setTarget('b', '3');
+    await flush();
+    r.fork.say('state watching');
+    expect(r.m.status()).toMatchObject({ state: 'watching', target: 'b', showing3d: true });
+  });
+
+  it('rule 12: state failed stalled in the middle of a watch: the 2D video at once, no play, and the next grant tries again', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    r.clock.advance(40_000);
+    r.fork.say('state failed stalled');
+    expect(r.m.status()).toMatchObject({ state: 'leaving', showing3d: false, peers: { b: { mode: '2d', why: 'failed', detail: 'stalled' } } });
+    expect(r.m.away()).toBe(true);
+    r.fork.say('state playing');
+    expect(r.m.away()).toBe(false);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
+    expect(r.logs).toContain('stream3d: 3D watch of Krobs did not work (stalled); the 2D video serves this turn');
+    r.m.setTarget('b', '2');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'watch 127.0.0.1:50002']);
+  });
+
+  it('a state failed that is never followed by state playing: taken as back after 2 s, and the lock does not wait longer', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching', 'state failed stalled');
+    const calls: boolean[] = [];
+    r.m.whenPlaying((late) => void calls.push(late));
+    r.m.setTarget(null);
+    // No second play: the fork said it is on its way back.
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
+    r.clock.advance(PLAY_WAIT_MS);
+    expect(calls).toHaveLength(1);
+    expect(r.m.away()).toBe(false);
+  });
+});
+
+describe('what reaches the log (A6)', () => {
+  // eslint-disable-next-line no-control-regex -- the test is about control characters
+  const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
+
+  it('forLog takes control characters and line breaks out and bounds the length', () => {
+    expect(forLog('a\r\nb\u0000c\u0085d\u2028e\u001b[31m')).toBe('a b c d e [31m');
+    expect(forLog('x'.repeat(500))).toHaveLength(120);
+    expect(forLog('  padded  ', 4)).toBe('padd');
+  });
+
+  it('a fork that sends lines this Castcade does not know is logged once, then counted', async () => {
+    const r = await inMatch();
+    const before = r.logs.length;
+    for (let i = 0; i < 500; i++) r.fork.say(`debug frame ${i}`);
+    expect(r.logs.slice(before)).toEqual(['stream3d: a control line this Castcade does not know was ignored (13 characters: "debug frame 0")']);
+    r.clock.advance(QUIET_LOG_MS);
+    r.fork.say('debug again');
+    expect(r.logs.slice(before + 1)).toEqual(['stream3d: a control line this Castcade does not know was ignored (11 characters: "debug again") (and 499 more like it since the last line)']);
+  });
+
+  it('nothing a fork sends reaches the log with a control character in it', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('junk\u0085stream3d: forged\u2028line\u009b[2J');
+    // A C0 character makes the whole line unreadable; the others are taken out of a reason.
+    r.fork.say('state failed bad\u0007bell');
+    r.fork.say('state failed refused\u2028stream3d: forged\u0085line');
+    expect(r.m.status().peers).toEqual({ b: { mode: '2d', why: 'failed', detail: 'refused stream3d: forged line' } });
+    for (const l of r.logs) expect(CONTROL.test(l), JSON.stringify(l)).toBe(false);
+    expect(r.logs.filter((l) => l.startsWith('stream3d:')).length).toBe(r.logs.length);
+  });
+
+  it("a peer's capability that does not read is never logged itself, and is logged once however often it comes", async () => {
+    const r = await inMatch();
+    const before = r.logs.length;
+    const forged = JSON.stringify({ v: 1, fork: { build: '10.8.0\nstream3d: Krobs: this PC shows 3D', table: TABLE } });
+    for (let i = 0; i < 300; i++) r.m.peerCaps('b', forged);
+    const lines = r.logs.slice(before);
+    // One line for what came (and one for what this PC shows of b now that nothing is known of its VPX).
+    expect(lines.filter((l) => l.includes('cannot read'))).toEqual([`stream3d: Krobs's PC said something about its VPX this Castcade cannot read (${forged.length} characters); taken as nothing said`]);
+    expect(lines).toHaveLength(2);
+    for (const l of r.logs) expect(CONTROL.test(l) || l.includes('forged') || l.includes('10.8.0\\n'), JSON.stringify(l)).toBe(false);
+    expect(r.m.status().peers).toEqual({ b: { mode: '2d', why: 'not_connected' } });
+  });
+
+  it('a fork that sends valid lines without end (each a state change here) fills no log: said once, and what it says still counts', async () => {
+    const r = await inMatch();
+    const before = r.logs.length;
+    // It says it watches when nothing is to be watched (each time a `play` goes back), then that it plays, for ever.
+    for (let i = 0; i < 2000; i++) r.fork.say('state watching', 'state playing');
+    const lines = r.logs.slice(before);
+    // (The hello of this fork counted against the same 30 s.)
+    expect(lines.length).toBeLessThanOrEqual(FORK_LOG_MAX + 1);
+    expect(lines.length).toBeGreaterThan(FORK_LOG_MAX - 10);
+    expect(lines.at(-1)).toBe(`stream3d: VPX sent enough lines for ${FORK_LOG_MAX} log lines in 30 s; what its lines do is not logged again until that time is up`);
+    // The machine itself is where the lines left it: on its own table, a real turn works as ever.
+    expect(r.m.away()).toBe(false);
+    r.clock.advance(QUIET_LOG_MS);
+    const sent = r.sent.length;
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    expect(r.sent.slice(sent)).toEqual(['watch 127.0.0.1:50002']);
+    expect(r.logs.at(-1)).toBe("stream3d: VPX: state watching: Krobs's table is on screen in 3D");
+  });
+
+  it("a PC that changes what it says about its VPX without end: a few changes are taken, then the last word when the time is up; the log and this PC's fork are left alone meanwhile", async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    const before = { logs: r.logs.length, sent: r.sent.length };
+    const none = encodeCaps(null);
+    const same = encodeCaps(SAME);
+    // b says "none", then "the build", 500 times over (a data channel carries thousands of frames a second).
+    for (let i = 0; i < 500; i++) {
+      r.m.peerCaps('b', none);
+      r.m.peerCaps('b', same);
+    }
+    // Each change taken is at most a `play` or a `watch` for this PC's fork: bounded by the limit, not by the peer.
+    expect(r.sent.length - before.sent).toBeLessThanOrEqual(CAPS_CHANGES_MAX);
+    expect(r.logs.length - before.logs).toBeLessThan(CAPS_CHANGES_MAX * 4 + 2);
+    expect(r.logs.filter((l) => l.includes('changed what it says about its VPX'))).toEqual(["stream3d: Krobs's PC changed what it says about its VPX 8 times in 30 s; what it says from here on is taken when that time is up"]);
+    const quiet = r.logs.length;
+    for (let i = 0; i < 500; i++) {
+      r.m.peerCaps('b', none);
+      r.m.peerCaps('b', same);
+    }
+    expect(r.logs.length).toBe(quiet);
+    // Its last word was "the build": taken when the 30 s are over, and the match goes on in 3D.
+    r.fork.say('state playing');
+    r.clock.advance(QUIET_LOG_MS);
+    await flush();
+    expect(r.m.status().peers).toEqual({ b: { mode: '3d' } });
+    // And a PC that says the same thing again and again costs nothing at all.
+    const settled = r.logs.length;
+    for (let i = 0; i < 500; i++) r.m.peerCaps('b', same);
+    expect(r.logs.length).toBe(settled);
+  });
+
+  it("a player's name (it comes from the other PC's HELLO) is logged without its control characters", async () => {
+    const r = await inMatch(['b'], { name: () => 'Kro\nbs\u0085\u2028the\u0000Great' });
+    r.m.setTarget('b', '1');
+    await flush();
+    r.fork.say('state watching');
+    expect(r.logs).toContain("stream3d: VPX: state watching: Kro bs the Great's table is on screen in 3D");
+    for (const l of r.logs) expect(CONTROL.test(l), JSON.stringify(l)).toBe(false);
   });
 });
 
@@ -567,7 +873,6 @@ describe('what the others are told, and whether they may watch this PC', () => {
     const r = rig();
     r.m.setPeers(['b']);
     expect(r.caps).toEqual([encodeCaps(null)]);
-    r.m.setStreamPort(50_001);
     r.fork.connect();
     r.fork.say(HELLO);
     expect(r.caps).toEqual([encodeCaps(null)]);
@@ -579,22 +884,20 @@ describe('what the others are told, and whether they may watch this PC', () => {
     expect(r.ports.at(-1)).toBeNull();
   });
 
-  it('a fork on the control connection whose stream port Castcade does not know still watches; the others are told none until the port is known', async () => {
+  it('rule 9: the port offered to the others is the one hello names, on every connection anew', async () => {
     const r = rig();
     r.m.setPeers(['b']);
     r.fork.up();
-    r.m.peerCaps('b', encodeCaps(SAME));
-    r.m.setTarget('b');
-    await flush();
-    expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
-    expect(r.ports.at(-1) ?? null).toBeNull();
-    // Nobody is sent to a stream that is not there.
-    expect(r.caps.at(-1)).toBe(encodeCaps(null));
-    expect(r.logs.filter((l) => l.includes('does not know its stream port'))).toHaveLength(1);
-    // The port becomes known (Castcade restarted under the open table and read its saved ports): the others are told.
-    r.m.setStreamPort(50_001);
-    expect(r.caps.at(-1)).toBe(encodeCaps(SAME));
     expect(r.ports.at(-1)).toBe(50_001);
+    expect(r.m.status().streamPort).toBe(50_001);
+    // The table is closed and another started: its listener is bound elsewhere, and says so.
+    r.fork.drop();
+    expect(r.ports.at(-1)).toBeNull();
+    expect(r.m.status().streamPort).toBeNull();
+    r.fork.connect();
+    r.fork.say('hello 1 10.8.0.2078.castcade 617 9f3a61c2d4e5b701 50977', 'state playing');
+    expect(r.ports.at(-1)).toBe(50_977);
+    expect(r.logs).toContain('stream3d: VPX said hello: build 10.8.0.2078.castcade, table 617 9f3a61c2d4e5b701, its stream on 127.0.0.1:50977');
   });
 
   it('a new match starts from nothing: nobody known, this PC said again on the new connections', async () => {

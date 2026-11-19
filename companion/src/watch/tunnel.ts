@@ -87,6 +87,13 @@ const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 /** A reason on REFUSE / CLOSE: short, one line. */
 const reasonBytes = (why: string): Uint8Array => utf8.encode(why.replace(/[\r\n]+/g, ' ').slice(0, 200));
+// eslint-disable-next-line no-control-regex -- C0, DEL, C1 and the two Unicode line separators
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+/**
+ * I11.4.2: a reason as the PEER sent it, for this PC's log: its own `reasonBytes` is not something to rely on (the
+ * other end of a match is another player's PC), so no control characters, no line breaks, and bounded here too.
+ */
+const reasonText = (payload: Uint8Array): string => fromUtf8.decode(payload.subarray(0, 600)).replace(UNPRINTABLE, ' ').trim().slice(0, 200);
 
 /** The part of `net.Socket` the bridge uses (fakes in the tests). */
 export interface TunnelSocket {
@@ -197,6 +204,8 @@ export class TunnelBridge {
   private readonly counters = { opened: 0, refused: 0, framesOut: 0, framesIn: 0, bytesOut: 0, bytesIn: 0, channelStalls: 0, socketStalls: 0 };
   /** Refusals repeat every 2 s while a watcher waits for a table to start: one line, then a count at most every `REFUSAL_LOG_MS`. */
   private refusalLog = { at: -Infinity, quiet: 0 };
+  /** I11.4.2: frames that are not frames come at whatever rate the peer sends them: one line, then a count. */
+  private malformedLog = { at: -Infinity, quiet: 0 };
 
   constructor(private readonly o: TunnelOptions) {
     this.pendingMax = o.pendingMax ?? PENDING_MAX;
@@ -287,7 +296,13 @@ export class TunnelBridge {
     if (!p || this.closed) return;
     const f = unpackFrame(buf);
     if (!f) {
-      this.o.log(`tunnel: dropped a malformed frame from ${peer} (${buf.length} bytes)`);
+      const now = this.now();
+      if (now - this.malformedLog.at < REFUSAL_LOG_MS) this.malformedLog.quiet += 1;
+      else {
+        const quiet = this.malformedLog.quiet;
+        this.malformedLog = { at: now, quiet: 0 };
+        this.o.log(`tunnel: dropped a malformed frame from ${peer} (${buf.length} bytes)${quiet > 0 ? ` (and ${quiet} more since the last line)` : ''}`);
+      }
       return;
     }
     this.counters.framesIn += 1;
@@ -329,9 +344,9 @@ export class TunnelBridge {
         return;
       case FRAME.REFUSE:
         this.counters.refused += 1;
-        return this.finish(s, false, `refused by ${peer}: ${fromUtf8.decode(f.payload) || 'no reason'}`, true);
+        return this.finish(s, false, `refused by ${peer}: ${reasonText(f.payload) || 'no reason'}`, true);
       case FRAME.CLOSE:
-        return this.finish(s, false, `${peer} closed it${f.payload.length ? ` (${fromUtf8.decode(f.payload)})` : ''}`, false);
+        return this.finish(s, false, `${peer} closed it${f.payload.length ? ` (${reasonText(f.payload)})` : ''}`, false);
       case FRAME.PAUSE:
         s.remotePaused = true;
         return this.syncRead(s);

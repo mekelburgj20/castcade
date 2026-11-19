@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GameFingerprint } from '@castcade/protocol';
 import type { KnownTable } from '../launch/known-tables.js';
-import type { LaunchOptions, LaunchResult } from '../launch/vpx-launch.js';
+import type { ForkLaunch, LaunchOptions, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
 import { NO_TABLE_NAME, ZERO_SHA256 } from './match-setup.js';
@@ -51,7 +51,7 @@ function world(
     relay?: boolean;
     arcaid?: string;
     /** I11.4.2: what the match host says about starting a match table (the fork's options, or null); absent: it has no say. */
-    tableLaunch?: () => Promise<LaunchOptions | null>;
+    tableLaunch?: () => Promise<ForkLaunch | null>;
     /** I11.4.2: the result of a launch that names another exe (the fork). */
     forkLaunch?: LaunchResult;
   } = {},
@@ -69,6 +69,14 @@ function world(
   const joins: Array<[string, string]> = [];
   const timers: Array<{ fn: () => void; ms: number; dead: boolean }> = [];
   const status = (): MatchStatus => ({ ...m }) as unknown as MatchStatus;
+  const launcher: VpxLauncher = {
+    async launch(path, opts) {
+      launched.push(path);
+      launches.push({ path, opts: opts ?? null });
+      if (opts?.exe && o.forkLaunch) return o.forkLaunch;
+      return o.launch ?? { ok: true, pid: 1 };
+    },
+  };
   const sayMatch = (): void => matchCbs.forEach((cb) => cb(status()));
   const one = createOneStep({
     match: {
@@ -96,14 +104,7 @@ function world(
       status: () => ({ currentTable: open }),
       onStatus: (cb) => (witnessCbs.add(cb), () => void witnessCbs.delete(cb)),
     },
-    launcher: {
-      async launch(path, opts) {
-        launched.push(path);
-        launches.push({ path, opts: opts ?? null });
-        if (opts?.exe && o.forkLaunch) return o.forkLaunch;
-        return o.launch ?? { ok: true, pid: 1 };
-      },
-    },
+    launcher,
     clipboard: { writeText: (t) => void clips.push(t) },
     tables: async () => o.tables ?? [MB, AFM],
     tableFiles: async () => o.files ?? [],
@@ -118,6 +119,7 @@ function world(
   });
   return {
     one,
+    launcher,
     launched,
     launches,
     clips,
@@ -285,13 +287,20 @@ describe('one step to a match: Host (A14 step 1)', () => {
 describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
   const FORK = 'C:\\vpx\\VPinballX_GL64_castcade.exe';
   const forkOpts = (): LaunchOptions => ({ exe: FORK, env: { CASTCADE_STREAM: 'match', CASTCADE_STREAM_ADDR: 'listen:127.0.0.1:51000', CASTCADE_STREAM_CONTROL: 'connect:127.0.0.1:51002', CASTCADE_STREAM_SOUND: '0' }, what: 'for the match, in the Castcade VPX build' });
+  /** What the match host answers: the options, and (later) whether the start took. `failed` settles `didNotStart`. */
+  const fork = (): { launch: ForkLaunch; failed: (v: boolean) => void } => {
+    let failed: (v: boolean) => void = () => undefined;
+    const didNotStart = new Promise<boolean>((r) => (failed = r));
+    return { launch: { options: forkOpts(), didNotStart }, failed };
+  };
+  const took = async (): Promise<ForkLaunch> => ({ options: forkOpts(), didNotStart: Promise.resolve(false) });
 
   it("the host's table and a joiner's table start with the options the match host gives (the fork, the stream's variables)", async () => {
-    const h = world({ tableLaunch: async () => forkOpts() });
+    const h = world({ tableLaunch: took });
     await h.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(h.launches).toEqual([{ path: MB.vpxPath, opts: forkOpts() }]);
     expect(h.one.status().launch).toMatchObject({ state: 'starting', table: MB.tableId });
-    const j = world({ tableLaunch: async () => forkOpts() });
+    const j = world({ tableLaunch: took });
     await j.one.openLink(LINK, { trusted: true });
     await j.hostTable(fingerprint('Monster Bash (Williams 1998)', MB.sha256!));
     expect(j.launches).toEqual([{ path: MB.vpxPath, opts: forkOpts() }]);
@@ -311,7 +320,7 @@ describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
   });
 
   it('a fork that does not start is said in the log and the table starts in the player\'s own VPX', async () => {
-    const w = world({ tableLaunch: async () => forkOpts(), forkLaunch: { ok: false, reason: 'VPinballX_GL64_castcade.exe is not in C:\\vpx' } });
+    const w = world({ tableLaunch: took, forkLaunch: { ok: false, reason: 'VPinballX_GL64_castcade.exe is not in C:\\vpx' } });
     await w.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(w.launches).toEqual([
       { path: MB.vpxPath, opts: forkOpts() },
@@ -321,9 +330,68 @@ describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
     expect(w.logs).toContain('launch: the Castcade VPX build did not start (VPinballX_GL64_castcade.exe is not in C:\\vpx); starting the table in your own VPX');
   });
 
+  it('A1: a fork whose start fails after the spawn answered ok (an error from the system, an exe that ends at once): the table starts in the player\'s own VPX', async () => {
+    // `launch` says ok as soon as the process is spawned: this is what a real EACCES, or a fork that dies, looks like.
+    const f = fork();
+    const w = world({ tableLaunch: async () => f.launch });
+    await w.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(w.launches).toEqual([{ path: MB.vpxPath, opts: forkOpts() }]);
+    f.failed(true);
+    await flush();
+    expect(w.launches).toEqual([
+      { path: MB.vpxPath, opts: forkOpts() },
+      { path: MB.vpxPath, opts: null },
+    ]);
+    expect(w.logs).toContain('launch: the Castcade VPX build did not start (it ended at once); starting the table in your own VPX');
+    // The Match tab still waits for that table, and its opening ends the wait as ever.
+    expect(w.one.status().launch).toMatchObject({ state: 'starting', table: MB.tableId });
+    await w.table('Monster Bash');
+    expect(w.one.status().launch).toMatchObject({ state: 'running' });
+  });
+
+  it('A1: a start that took is left alone; one that failed after the match ended, or after a table opened, starts nothing', async () => {
+    const ok = fork();
+    const a = world({ tableLaunch: async () => ok.launch });
+    await a.one.host({ ...HOST, tablePath: MB.vpxPath });
+    ok.failed(false);
+    await flush();
+    expect(a.launches).toHaveLength(1);
+
+    const gone = fork();
+    const b = world({ tableLaunch: async () => gone.launch });
+    await b.one.host({ ...HOST, tablePath: MB.vpxPath });
+    await b.leave();
+    gone.failed(true);
+    await flush();
+    expect(b.launches).toHaveLength(1);
+
+    const opened = fork();
+    const c = world({ tableLaunch: async () => opened.launch });
+    await c.one.host({ ...HOST, tablePath: MB.vpxPath });
+    await c.table('Monster Bash');
+    opened.failed(true);
+    await flush();
+    expect(c.launches).toHaveLength(1);
+  });
+
+  it("A1: the player's own VPX not starting either is said on the tab", async () => {
+    const f = fork();
+    let n = 0;
+    const w = world({ tableLaunch: async () => f.launch });
+    // The first launch (the fork) is spawned; the second (the plain one) fails outright.
+    const real = w.launcher.launch;
+    w.launcher.launch = async (path, opts) => (n++ === 0 ? real(path, opts) : (w.launches.push({ path, opts: opts ?? null }), { ok: false, reason: 'the VPX program Castcade remembers is no longer there' }));
+    await w.one.host({ ...HOST, tablePath: MB.vpxPath });
+    f.failed(true);
+    await flush();
+    expect(w.launches).toHaveLength(2);
+    expect(w.one.status().launch).toMatchObject({ state: 'failed', table: MB.tableId });
+    expect(w.one.status().launch.detail).toContain('Open it in VPX yourself; the match waits.');
+  });
+
   it('a table that is already open is used as it is: the match host is not even asked', async () => {
     let asked = 0;
-    const w = world({ tableLaunch: async () => (asked++, forkOpts()) });
+    const w = world({ tableLaunch: async () => (asked++, took()) });
     await w.table('Monster Bash');
     await w.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(w.launches).toEqual([]);

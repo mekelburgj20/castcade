@@ -9,7 +9,7 @@
  *
  * The control connection (§3, a contract with the fork). UTF-8 lines ending in `\n`:
  *
- *   fork → companion   `hello 1 <build> <editables> <table-hash>`   once per connection
+ *   fork → companion   `hello 1 <build> <editables> <table-hash> <stream-port>`   once per connection
  *   fork → companion   `state playing`                              its own table is shown and live (first after hello)
  *   fork → companion   `state watching`                             the other player's first frame is on screen
  *   fork → companion   `state failed <reason>`                      a `watch` did not work; `state playing` follows
@@ -17,22 +17,26 @@
  *   companion → fork   `play`                                       back to the own table
  *
  * How the lines are read here (`parseControlLine`): exactly these words, fields separated by one space, nothing
- * before `hello` counts. The three fields of `hello` are opaque tokens; the table identity is `<editables> <hash>`,
- * compared as text. A `hello` whose version is not 1 makes this PC one without 3D (logged), whatever follows. Nothing
- * is commanded before the first `state playing` after `hello`.
+ * before `hello` counts. `build`, `editables` and `table-hash` are opaque tokens; the table identity is
+ * `<editables> <hash>`, compared as text. `stream-port` (rule 9) is the port the fork's stream listener is bound to:
+ * the only port this PC ever offers to the others (never one Castcade picked at launch, which a table left open or a
+ * second table would make stale). A `hello` whose version is not 1 makes this PC one without 3D (logged), whatever
+ * follows. Nothing is commanded before the first `state playing` after `hello`.
  *
- * What this machine expects of the fork beyond the table of §3 (said here because the other side is built from the
- * same page): EVERY `watch` is answered by `state watching` or `state failed`, a re-aim included, within
- * `WATCH_TIMEOUT_MS`; a `play` sent while the fork is not on its own table is answered by `state playing`.
+ * The rules of §3 this machine relies on, by number: every `watch`, a re-aim included, is answered by
+ * `state watching` or `state failed` within `WATCH_TIMEOUT_MS` (2); after `state failed` the fork comes back by itself
+ * and says `state playing` (3, 6, and 12 for a stream that stalls); a `play` while playing is answered with
+ * `state playing` again (4); a re-aim is a `watch` with the same address and no `state playing` in between (11).
  *
- * The lines carry no numbers, so the machine keeps what is outstanding unambiguous by what it sends when:
+ * The lines carry no numbers (accepted in this iteration), so the machine keeps what is outstanding unambiguous by
+ * what it sends when:
  *   - `play` goes out at once, whatever is outstanding (a player's own turn never waits). From then until
- *     `state playing` (or `PLAY_WAIT_MS`, after which the fork is taken to be on its own table: it may not answer a
- *     `play` it had no use for) no `watch` is sent, and a `state watching` / `state failed` that arrives is the
- *     answer to something that `play` already cancelled: ignored.
- *   - a `watch` while an earlier `watch` stands is the re-aim of §3 and goes out at once; an answer belongs to the
- *     latest one.
- *   - `state playing` with no `play` outstanding while a watch stands: the fork left the watch by itself (2D this turn).
+ *     `state playing` (or `PLAY_WAIT_MS`, after which the fork is taken to be on its own table) no `watch` is sent
+ *     (5), and a `state watching` / `state failed` that arrives is the answer to something that `play` already
+ *     cancelled: ignored.
+ *   - a `watch` while an earlier `watch` stands is the re-aim and goes out at once; an answer belongs to the latest.
+ *   - `state playing` with no `play` outstanding while a watch stands: the fork left the watch by itself without
+ *     saying `state failed` first, or the line crossed a new `watch`: 2D this turn either way.
  *   - `state watching` when nothing is to be watched (a `watch` that crossed a failure): `play` is sent again. A
  *     player is never left on another's table by a line that crossed.
  *
@@ -52,12 +56,17 @@
  * "Possible" (§4.2, `decide`): the setting is `auto`, this PC's VPX is on the control connection, the other PC said
  * (over the tunnel's own channel, `encodeCaps`) that its VPX is too, and both name the same table identity. A watch
  * that fails (`state failed`, no `state watching` in time, the fork back on its own table unasked, the control
- * connection lost) is 2D until the target changes: the next turn tries again.
+ * connection lost) is 2D for that turn. A turn is a grant (`setTarget`'s second argument): the next player up, and
+ * also a new grant to the same player (shoot again; the last player with balls left), tries again.
  *
  * The turn lock (§4.3, `whenPlaying`): at the grant the shell lifts the lock only once the fork says `state playing`,
  * `PLAY_WAIT_MS` at most, then anyway (logged). A PC whose fork is on its own table, or that has none, never waits.
  *
- * Every decision and state change is one log line starting `stream3d:`.
+ * Every decision and state change is one log line starting `stream3d:`. What comes from a socket or from another PC
+ * is never logged raw: a `hello` and a capability are tokens of printable ASCII or they are not read at all, a
+ * `state failed` reason and a player's name lose their control characters, and the lines a peer or a fork can cause
+ * at will (a line that is not one, a capability that does not read) are logged once and then counted
+ * (`QUIET_LOG_MS`): `companion.log` goes to ArcAid with a tester's report.
  */
 
 export const CONTROL_VERSION = 1;
@@ -67,14 +76,35 @@ export const WATCH_TIMEOUT_MS = 5_000;
 export const PLAY_WAIT_MS = 2_000;
 /** A control line is at most this long (characters, the newline apart). */
 export const CONTROL_LINE_MAX = 512;
+/** A line a fork or a peer can repeat at will is logged at most this often; what came meanwhile is counted. */
+export const QUIET_LOG_MS = 30_000;
+/**
+ * Log lines written while a line of the fork is handled, per `QUIET_LOG_MS`: a match writes a handful a turn; a fork
+ * that sends valid lines without end (each of them a state change here) is said once and then not logged.
+ */
+export const FORK_LOG_MAX = 40;
+/**
+ * Changes of what one PC says about its VPX that are taken per `QUIET_LOG_MS` (each is a log line, and may send this
+ * PC's fork to watch or back). A fork that restarts every 2 s stays under it; past it, what the PC said last is taken
+ * when the time is up.
+ */
+export const CAPS_CHANGES_MAX = 8;
 const TOKEN = /^[\x21-\x7e]{1,128}$/;
+const TABLE_IDENTITY = /^[\x21-\x7e]{1,128} [\x21-\x7e]{1,128}$/;
 // eslint-disable-next-line no-control-regex -- control characters are exactly what a line must not hold
 const CONTROL_CHARS = /[\x00-\x1f\x7f]/;
+// eslint-disable-next-line no-control-regex -- C0, DEL, C1 and the two Unicode line separators
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+
+/** Text from a socket or another PC as a log line may carry it: no control characters, no line breaks, bounded. */
+export function forLog(text: string, max = 120): string {
+  return text.replace(UNPRINTABLE, ' ').trim().slice(0, max);
+}
 
 export type Watch3dSetting = 'auto' | 'off';
 
 export type ControlLine =
-  | { kind: 'hello'; version: number; build: string; editables: string; tableHash: string }
+  | { kind: 'hello'; version: number; build: string; editables: string; tableHash: string; streamPort: number }
   | { kind: 'state'; state: 'playing' | 'watching' }
   | { kind: 'failed'; reason: string };
 
@@ -88,15 +118,17 @@ export function parseControlLine(raw: string): ControlLine | null {
   if (line === 'state playing') return { kind: 'state', state: 'playing' };
   if (line === 'state watching') return { kind: 'state', state: 'watching' };
   if (line === 'state failed') return { kind: 'failed', reason: '' };
-  if (line.startsWith('state failed ')) return { kind: 'failed', reason: line.slice('state failed '.length).trim().slice(0, 200) };
+  if (line.startsWith('state failed ')) return { kind: 'failed', reason: forLog(line.slice('state failed '.length), 200) };
   const parts = line.split(' ');
   if (parts[0] !== 'hello' || parts.length < 2 || !/^\d{1,6}$/.test(parts[1] as string)) return null;
   const version = Number(parts[1]);
-  if (version !== CONTROL_VERSION) return { kind: 'hello', version, build: '', editables: '', tableHash: '' };
-  if (parts.length !== 5) return null;
-  const [, , build, editables, tableHash] = parts as [string, string, string, string, string];
-  if (!TOKEN.test(build) || !TOKEN.test(editables) || !TOKEN.test(tableHash)) return null;
-  return { kind: 'hello', version, build, editables, tableHash };
+  if (version !== CONTROL_VERSION) return { kind: 'hello', version, build: '', editables: '', tableHash: '', streamPort: 0 };
+  if (parts.length !== 6) return null;
+  const [, , build, editables, tableHash, port] = parts as [string, string, string, string, string, string];
+  if (!TOKEN.test(build) || !TOKEN.test(editables) || !TOKEN.test(tableHash) || !/^[1-9]\d{0,4}$/.test(port)) return null;
+  const streamPort = Number(port);
+  if (streamPort > 65535) return null;
+  return { kind: 'hello', version, build, editables, tableHash, streamPort };
 }
 
 /** `watch 127.0.0.1:<port>`: the fork connects to the tunnel's listener on this PC. */
@@ -122,7 +154,10 @@ export function encodeCaps(fork: ForkInfo | null): string {
   return JSON.stringify({ v: CAPS_VERSION, fork: fork ? { build: fork.build, table: fork.table } : null });
 }
 
-/** What a peer said: its fork, `none`, or null for anything else (then nothing is known of it). */
+/**
+ * What a peer said: its fork, `none`, or null for anything else (then nothing is known of it). A build and a table
+ * identity are read by the rule of `hello`'s fields (tokens of printable ASCII), so what a peer sends can be logged.
+ */
 export function decodeCaps(text: string | null): ForkInfo | 'none' | null {
   if (text === null || text.length > 1024) return null;
   let v: unknown;
@@ -136,7 +171,7 @@ export function decodeCaps(text: string | null): ForkInfo | 'none' | null {
   if (fork === null) return 'none';
   if (typeof fork !== 'object' || fork === undefined) return null;
   const { build, table } = fork as { build?: unknown; table?: unknown };
-  if (typeof build !== 'string' || typeof table !== 'string' || build.length === 0 || build.length > 128 || table.length === 0 || table.length > 300) return null;
+  if (typeof build !== 'string' || typeof table !== 'string' || !TOKEN.test(build) || !TABLE_IDENTITY.test(table)) return null;
   return { build, table };
 }
 
@@ -220,6 +255,8 @@ export interface Stream3dDeps {
   clearTimeout(handle: unknown): void;
   /** A player's name for the log; default: the id. */
   name?(peer: string): string;
+  /** The clock of the log's rate limit; default `Date.now`. */
+  now?(): number;
   watchTimeoutMs?: number;
   playWaitMs?: number;
 }
@@ -233,6 +270,8 @@ export interface Stream3dStatus {
   fork: 'none' | 'connecting' | 'version' | 'ready';
   build: string | null;
   table: string | null;
+  /** The port the fork's stream listener is bound to, as its `hello` said; null without a ready fork. */
+  streamPort: number | null;
   /** What the fork shows, as far as this PC knows: null without a ready fork. */
   state: 'playing' | 'entering' | 'watching' | 'leaving' | null;
   /** The player this PC should be watching now (the shell's `setTarget`). */
@@ -256,12 +295,20 @@ export class Stream3d {
   private forkState: ForkState = 'playing';
   /** The player the fork was last asked to watch; null after `play` (and before any `watch`). */
   private aimed: string | null = null;
+  /**
+   * A `watch` line has gone out since the fork last said `state playing`: it may be away from its own table. False
+   * while a watch is only decided (the tunnel's listener is still opening): there is nothing to call back then.
+   */
+  private watchOut = false;
   /** A `play` (or a `state failed`) whose `state playing` has not come yet: no `watch` goes out meanwhile. */
   private playOut = false;
   private playTimer: unknown = null;
   private target: string | null = null;
-  /** The watch of the target failed this turn: 2D until the target changes. */
+  /** The turn the target is for (the grant, as the shell names it): a new one tries a failed watch again. */
+  private turn: string | null = null;
+  /** The watch of the target failed this turn: 2D until the turn changes. */
   private failed: { peer: string; detail: string; lostLink: boolean } | null = null;
+  /** The port the fork's stream listener is bound to (its `hello`); null without a hello of this version. */
   private streamPort: number | null = null;
   private readonly caps = new Map<string, ForkInfo | 'none'>();
   private peers: string[] = [];
@@ -270,7 +317,12 @@ export class Stream3d {
   private readonly waiters = new Set<Waiter>();
   private toldCaps: string | null = null;
   private toldPort: number | null | undefined = undefined;
-  private saidBlind = false;
+  private readonly quiet = new Map<string, { at: number; n: number }>();
+  /** A line of the fork is being handled: what is logged meanwhile counts against `FORK_LOG_MAX`. */
+  private fromFork = false;
+  private forkLog = { since: -Infinity, n: 0 };
+  /** Per PC: the changes of its capability taken since `since`, and what it said last past the limit (with its timer). */
+  private readonly capsRate = new Map<string, { since: number; n: number; held: { text: string | null } | null; timer: unknown }>();
   private readonly logged = new Map<string, string>();
   private readonly watchTimeoutMs: number;
   private readonly playWaitMs: number;
@@ -289,13 +341,6 @@ export class Stream3d {
     this.sync();
   }
 
-  /** The port the fork Castcade started on this PC listens on (its `CASTCADE_STREAM_ADDR`), null when it is gone. */
-  setStreamPort(port: number | null): void {
-    if (port === this.streamPort) return;
-    this.streamPort = port;
-    this.publish();
-  }
-
   /** The other players of the match; one who left is forgotten. */
   setPeers(ids: readonly string[]): void {
     const next = [...new Set(ids)];
@@ -303,6 +348,7 @@ export class Stream3d {
     this.peers = next;
     for (const id of [...this.caps.keys()]) if (!next.includes(id)) this.caps.delete(id);
     for (const id of [...this.logged.keys()]) if (!next.includes(id)) this.logged.delete(id);
+    for (const id of [...this.capsRate.keys()]) if (!next.includes(id)) this.forgetCapsRate(id);
     this.sync();
   }
 
@@ -310,22 +356,64 @@ export class Stream3d {
   peerCaps(peer: string, text: string | null): void {
     const c = decodeCaps(text);
     const was = this.caps.get(peer) ?? null;
-    if (c === null) {
-      if (text !== null) this.log(`${this.name(peer)}'s PC said something about its VPX this Castcade cannot read; taken as nothing said`);
-      if (was === null) return;
-      this.caps.delete(peer);
-    } else {
-      if (JSON.stringify(c) === JSON.stringify(was)) return;
+    // Never the text itself in the log: it is whatever the other PC chose to send, at whatever rate.
+    if (c === null && text !== null) this.logQuietly(`caps ${peer}`, `${this.name(peer)}'s PC said something about its VPX this Castcade cannot read (${text.length} characters); taken as nothing said`);
+    if (JSON.stringify(c) === JSON.stringify(was)) {
+      // Back to what is known: nothing held for later is newer than this.
+      const r = this.capsRate.get(peer);
+      if (r?.held) r.held = { text };
+      return;
+    }
+    if (!this.takeCapsChange(peer, text)) return;
+    if (c === null) this.caps.delete(peer);
+    else {
       this.caps.set(peer, c);
       this.log(c === 'none' ? `${this.name(peer)}'s PC: no Castcade VPX build runs the table there` : `${this.name(peer)}'s PC: Castcade VPX build ${c.build}, table ${c.table}`);
     }
     this.sync();
   }
 
-  /** §4.3: the player this PC should be watching (the one up, while this PC waits with its table locked), or null. */
-  setTarget(peer: string | null): void {
-    if (peer === this.target) return;
+  /** `CAPS_CHANGES_MAX`: true when this change is taken now; false when it is kept for the end of the window. */
+  private takeCapsChange(peer: string, text: string | null): boolean {
+    const now = (this.d.now ?? Date.now)();
+    let r = this.capsRate.get(peer);
+    if (!r || now - r.since >= QUIET_LOG_MS) {
+      this.forgetCapsRate(peer);
+      r = { since: now, n: 0, held: null, timer: null };
+      this.capsRate.set(peer, r);
+    }
+    r.n += 1;
+    if (r.n <= CAPS_CHANGES_MAX) return true;
+    if (r.held === null) {
+      this.log(`${this.name(peer)}'s PC changed what it says about its VPX ${CAPS_CHANGES_MAX} times in ${QUIET_LOG_MS / 1000} s; what it says from here on is taken when that time is up`);
+      const rate = r;
+      r.timer = this.d.setTimeout(() => {
+        if (this.capsRate.get(peer) !== rate) return;
+        const held = rate.held;
+        this.capsRate.delete(peer);
+        if (held) this.peerCaps(peer, held.text);
+      }, QUIET_LOG_MS - (now - r.since));
+    }
+    r.held = { text };
+    return false;
+  }
+
+  private forgetCapsRate(peer: string): void {
+    const r = this.capsRate.get(peer);
+    if (!r) return;
+    if (r.timer !== null) this.d.clearTimeout(r.timer);
+    this.capsRate.delete(peer);
+  }
+
+  /**
+   * §4.3: the player this PC should be watching (the one up, while this PC waits with its table locked), or null.
+   * `turn` names the grant they play under: a new one for the same player is a new turn, and a watch that failed in
+   * the last one is tried again.
+   */
+  setTarget(peer: string | null, turn: string | null = null): void {
+    if (peer === this.target && turn === this.turn) return;
     this.target = peer;
+    this.turn = turn;
     this.failed = null;
     this.sync();
   }
@@ -336,14 +424,22 @@ export class Stream3d {
    */
   reset(): void {
     this.target = null;
+    this.turn = null;
     this.failed = null;
     this.peers = [];
     this.caps.clear();
     this.logged.clear();
+    for (const id of [...this.capsRate.keys()]) this.forgetCapsRate(id);
+    this.sync();
+    this.retell();
+    for (const w of [...this.waiters]) this.settle(w, false);
+  }
+
+  /** The tunnel is a new one (a match began, or its tunnel opened late): what this PC's VPX is goes out on it again. */
+  retell(): void {
     this.toldCaps = null;
     this.toldPort = undefined;
-    this.sync();
-    for (const w of [...this.waiters]) this.settle(w, false);
+    this.publish();
   }
 
   /** The fork is, or is being sent, away from its own table: the turn lock waits for it (`whenPlaying`). */
@@ -384,15 +480,24 @@ export class Stream3d {
 
   forkLine(raw: string): void {
     if (this.link === 'none') return;
+    this.fromFork = true;
+    try {
+      this.takeForkLine(raw);
+    } finally {
+      this.fromFork = false;
+    }
+  }
+
+  private takeForkLine(raw: string): void {
     const l = parseControlLine(raw);
     if (!l) {
-      this.log(`a control line this Castcade does not know was ignored (${raw.length} characters: ${JSON.stringify(raw.slice(0, 60))})`);
+      this.logQuietly('line', `a control line this Castcade does not know was ignored (${raw.length} characters: "${forLog(raw, 60)}")`);
       return;
     }
     if (l.kind === 'hello') return this.onHello(l);
     if (this.link === 'version') return;
     if (this.link === 'connecting') {
-      this.log(`VPX said "${raw.slice(0, 40)}" before its hello; ignored`);
+      this.logQuietly('early', `VPX said "${forLog(raw, 40)}" before its hello; ignored`);
       return;
     }
     if (l.kind === 'failed') return this.onFailed(l.reason);
@@ -414,6 +519,7 @@ export class Stream3d {
       fork: this.link === 'helloed' ? 'connecting' : this.link,
       build: this.own?.build ?? null,
       table: this.own?.table ?? null,
+      streamPort: this.link === 'ready' ? this.streamPort : null,
       state: this.link === 'ready' ? this.forkState : null,
       target: this.target,
       showing3d: this.showing3d(),
@@ -428,12 +534,36 @@ export class Stream3d {
 
   // ---- inside ----
 
+  /** A name comes from the other PC's HELLO: it is logged without control characters. */
   private name(peer: string): string {
-    return this.d.name?.(peer) ?? peer;
+    return forLog(this.d.name?.(peer) ?? peer, 64) || 'a player';
   }
 
   private log(line: string): void {
+    if (this.fromFork) {
+      const now = (this.d.now ?? Date.now)();
+      if (now - this.forkLog.since >= QUIET_LOG_MS) this.forkLog = { since: now, n: 0 };
+      this.forkLog.n += 1;
+      if (this.forkLog.n > FORK_LOG_MAX) {
+        if (this.forkLog.n === FORK_LOG_MAX + 1) this.d.log(`stream3d: VPX sent enough lines for ${FORK_LOG_MAX} log lines in ${QUIET_LOG_MS / 1000} s; what its lines do is not logged again until that time is up`);
+        return;
+      }
+    }
     this.d.log(`stream3d: ${line}`);
+  }
+
+  /** A line the other end can cause at will: once, then counted until `QUIET_LOG_MS` has passed. */
+  private logQuietly(key: string, line: string): void {
+    const now = (this.d.now ?? Date.now)();
+    const q = this.quiet.get(key);
+    if (q && now - q.at < QUIET_LOG_MS) {
+      q.n += 1;
+      return;
+    }
+    this.quiet.set(key, { at: now, n: 0 });
+    // The map is bounded by who can be a key: two words for the fork, one per player of a match.
+    if (this.quiet.size > 64) this.quiet.delete(this.quiet.keys().next().value as string);
+    this.log(`${line}${q && q.n > 0 ? ` (and ${q.n} more like it since the last line)` : ''}`);
   }
 
   private changed(): void {
@@ -464,8 +594,9 @@ export class Stream3d {
       return;
     }
     this.own = { build: l.build, table: `${l.editables} ${l.tableHash}` };
+    this.streamPort = l.streamPort;
     this.link = 'helloed';
-    this.log(`VPX said hello: build ${l.build}, table ${this.own.table}`);
+    this.log(`VPX said hello: build ${l.build}, table ${this.own.table}, its stream on 127.0.0.1:${l.streamPort}`);
     this.changed();
   }
 
@@ -475,6 +606,7 @@ export class Stream3d {
       this.link = 'ready';
       this.forkState = 'playing';
       this.aimed = null;
+      this.watchOut = false;
       this.log('VPX: state playing (its own table); it can be watched and can watch');
       this.sync();
       return;
@@ -483,6 +615,7 @@ export class Stream3d {
       // The answer to a `play` (or what follows `state failed`).
       this.clearPlayOut();
       this.forkState = 'playing';
+      this.watchOut = false;
       this.log('VPX: state playing (back on its own table)');
       this.released();
       // A watch that waited for this answer goes out now.
@@ -496,6 +629,7 @@ export class Stream3d {
       this.seq += 1;
       this.aimed = null;
       this.forkState = 'playing';
+      this.watchOut = false;
       this.released();
       this.fail(peer, 'VPX went back to its own table');
       return;
@@ -516,6 +650,7 @@ export class Stream3d {
     }
     if (this.aimed === null) {
       // A `watch` that crossed a failure took hold after all, and nothing is to be watched: back to the own table.
+      this.watchOut = true;
       this.sendPlay('VPX says it watches, and nothing is to be watched');
       this.changed();
       return;
@@ -587,6 +722,7 @@ export class Stream3d {
       if (!this.playOut) return;
       this.playOut = false;
       this.forkState = 'playing';
+      this.watchOut = false;
       this.log(`VPX has not said "state playing" within ${this.playWaitMs / 1000} s; taken as back on its own table`);
       this.released();
       this.sync();
@@ -601,6 +737,8 @@ export class Stream3d {
     this.seq += 1;
     this.link = 'none';
     this.own = null;
+    this.streamPort = null;
+    this.watchOut = false;
     this.forkState = 'playing';
     this.aimed = null;
     if (had && why !== null) this.log(`the control connection to VPX is gone (${why}): no 3D on this PC until it is back${watching ? '; VPX goes back to its own table by itself' : ''}`);
@@ -612,24 +750,21 @@ export class Stream3d {
   }
 
   /**
-   * The others are told what this PC's VPX is; the tunnel is told whether they may watch it. A fork whose stream port
-   * Castcade does not know (it was not started in this run) can watch, but cannot be watched: the others are told
-   * `none`, so nobody's VPX is sent to a stream that is not there.
+   * The others are told what this PC's VPX is, and the tunnel which port its stream is on: the one the fork's `hello`
+   * named, for as long as the fork is on the control connection.
    */
   private publish(): void {
-    const port = this.link === 'ready' ? this.streamPort : null;
-    const caps = encodeCaps(this.link === 'ready' && port !== null ? this.own : null);
+    const ready = this.link === 'ready';
+    const caps = encodeCaps(ready ? this.own : null);
     if (caps !== this.toldCaps) {
       this.toldCaps = caps;
       this.d.setCaps(caps);
     }
+    const port = ready ? this.streamPort : null;
     if (port !== this.toldPort) {
       this.toldPort = port;
       this.d.setPlayerPort(port);
     }
-    const blind = this.link === 'ready' && port === null;
-    if (blind && !this.saidBlind) this.log('VPX is on the control connection, but Castcade does not know its stream port (it did not start that table in this run): this PC can watch in 3D, the others get the 2D video of it');
-    this.saidBlind = blind;
   }
 
   /** Bring the fork and the tunnel to what the target, the setting and the capabilities call for. */
@@ -655,6 +790,13 @@ export class Stream3d {
     this.clearWatchTimer();
     this.seq += 1;
     this.aimed = null;
+    if (!this.watchOut) {
+      // The watch was decided and never sent (the turn moved on while the tunnel's listener opened): the fork never
+      // left its own table, and nothing waits for it.
+      this.forkState = 'playing';
+      this.released();
+      return;
+    }
     if (!this.d.send(PLAY_COMMAND)) {
       // No connection to send on: the fork is on its own table by its own rule (§2 fail-safe).
       this.forkState = 'playing';
@@ -682,6 +824,7 @@ export class Stream3d {
       (port) => {
         if (this.seq !== mine || this.link !== 'ready') return;
         if (!this.d.send(watchCommand(port))) return;
+        this.watchOut = true;
         this.log(`watch 127.0.0.1:${port}: VPX is ${reaim ? 're-aimed at' : 'sent to watch'} ${this.name(peer)}'s table`);
       },
       (e: unknown) => {

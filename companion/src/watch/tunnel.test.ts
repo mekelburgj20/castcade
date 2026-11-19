@@ -583,4 +583,27 @@ describe('TunnelBridge', () => {
     b.bridge.channelUp('x', quiet);
     expect(quiet.kinds).toEqual([FRAME.HELLO]);
   });
+
+  it('I11.4.2: what a peer sends does not reach the log raw: a reason loses its control characters, and frames that are not frames are logged once, then counted', () => {
+    const w = makeEnd('W');
+    const p = makeEnd('P');
+    p.bridge.setPlayerPort(1);
+    const l = link(w, 'w', p, 'p');
+    const watcher = new FakeSocket();
+    w.bridge.attachWatcher(watcher, 'p');
+    l.pump();
+    // The peer closes the stream with a reason of its own making (this PC's own bridge would never send this one).
+    const forged = Buffer.from('bye\r\nstream3d: Krobs: this PC shows 3D\u0085\u2028\u001b[2J' + 'x'.repeat(900));
+    w.bridge.receive('p', Uint8Array.from([FRAME.CLOSE | 0x80, 0, 0, 0, 1, ...forged]));
+    const closed = w.log.find((line) => line.includes('p closed it'));
+    expect(closed).toBeDefined();
+    // eslint-disable-next-line no-control-regex -- the test is about control characters
+    expect(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(closed!)).toBe(false);
+    expect(closed!.length).toBeLessThan(400);
+    expect(closed).toContain('(bye stream3d: Krobs: this PC shows 3D [2J');
+    // Junk at data-channel rate: one line.
+    const before = w.log.length;
+    for (let i = 0; i < 1000; i++) w.bridge.receive('p', Uint8Array.from([0x7f, 1, 2]));
+    expect(w.log.slice(before)).toEqual(['W: tunnel: dropped a malformed frame from p (3 bytes)']);
+  });
 });

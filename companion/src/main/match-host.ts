@@ -64,7 +64,7 @@ import { HostMatch } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
-import type { LaunchOptions } from '../launch/vpx-launch.js';
+import type { ForkLaunch } from '../launch/vpx-launch.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
@@ -319,10 +319,10 @@ export interface MatchHost {
   hostGame(): GameFingerprint | null;
   /**
    * I11.4.2 (§4.4): how a match table is started on this PC now: in the Castcade VPX build with the state stream's
-   * variables (the options for `VpxLauncher.launch`), or null: as it always was (no match, the setting off, no fork
-   * beside the VPX exe).
+   * variables (the options for `VpxLauncher.launch`, and the word on whether that start took), or null: as it always
+   * was (no match, the setting off, no fork beside the VPX exe).
    */
-  tableLaunch(): Promise<LaunchOptions | null>;
+  tableLaunch(): Promise<ForkLaunch | null>;
   /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
@@ -665,7 +665,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (s?.away()) {
         if (unlockWait) return;
         log.info('stream3d: the table is to be unlocked; waiting for VPX to be back on its own table (2 s at most)');
-        unlockWait = s.whenPlaying((late) => {
+        // `whenPlaying` may answer before it returns (the fork came back meanwhile): the handle is kept only while
+        // the answer is still to come.
+        let answered = false;
+        const cancel = s.whenPlaying((late) => {
+          answered = true;
           unlockWait = null;
           try {
             rmSync(lockFile, { force: true });
@@ -676,6 +680,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           }
           if (active) emit();
         });
+        if (!answered) unlockWait = cancel;
         return;
       }
       unlockWait?.();
@@ -936,7 +941,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     s.setPeers(c.participants.filter((x) => x.playerId !== me).map((x) => ({ id: x.playerId, name: x.displayName })));
     const p = c.panel;
     const waiting = p.phase === 'playing' && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
-    s.setTarget(waiting ? p.playerUp : null);
+    // The turn is the grant: a new one to the same player (shoot again, the last player with balls left) is a new
+    // turn, and a watch that failed in the last one is tried again.
+    const grant = (a.controller.currentRole as HostMatch | ClientMatch).state.currentGrant?.grant ?? null;
+    s.setTarget(waiting ? p.playerUp : null, waiting && grant ? String(grant.grantSeq) : null);
   };
   /**
    * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
@@ -1379,7 +1387,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     mesh.setPeers(c.participants.map((p) => p.playerId).filter((id) => id !== a.engine.localId));
     const panel = a.controller.panel();
     mesh.setSending(panel.phase === 'playing' && panel.myTurn);
-    const sink = videoSink(a);
+    // I11.4.2: a rig whose picture is the helper's own window (a desktop PC, a SteamVR rig) gets no window while its
+    // VPX shows the player up in 3D: it would sit over the table. The window is back the moment 3D is not shown.
+    const where = videoSink(a);
+    const sink: VideoSink = where.kind === 'window' && (a.stream?.showing3d() ?? false) ? { kind: 'none' } : where;
     mesh.setSink(sink);
     const theater = theaterOnRing(a);
     const up = theater ? panel.playerUp : null;
@@ -2703,7 +2714,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     async tableLaunch() {
       if (!active || !opts.stream3d) return null;
-      return opts.stream3d.launchOptions(settings.watch3d);
+      return opts.stream3d.launch(settings.watch3d);
     },
     async saveFrames() {
       const media = opts.media;
