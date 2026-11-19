@@ -357,19 +357,22 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
           c.close();
           return;
         }
-        if (displaced.has(l.streamPort)) {
+        // The same VPX again (its hello names the stream port of the one that is connected): it reconnected, and its
+        // new connection was read before the close of its old one. It takes over; nothing is turned away for it.
+        const same = connPort !== null && l.streamPort === connPort;
+        if (!same && l.streamPort > 0 && displaced.has(l.streamPort)) {
           quietly('displaced', `stream3d: the VPX that was replaced on the control port (stream port ${l.streamPort}) tried again; the newer one stays`);
           c.close();
           return;
         }
-        info(`stream3d: another VPX said hello on the control port (stream port ${l.streamPort}); it takes over from the one that was connected${connPort !== null ? ` (stream port ${connPort})` : ''}`);
-        if (connPort !== null) displaced.add(connPort);
+        info(same ? `stream3d: the VPX on the control port connected again (stream port ${l.streamPort}); its new connection takes over` : `stream3d: another VPX said hello on the control port (stream port ${l.streamPort}); it takes over from the one that was connected${connPort !== null ? ` (stream port ${connPort})` : ''}`);
+        if (!same && connPort !== null) displaced.add(connPort);
         const old = conn;
         conn = c;
         old.close();
       }
       conn = c;
-      connPort = l.version === CONTROL_VERSION ? l.streamPort : null;
+      connPort = l.version === CONTROL_VERSION && l.streamPort > 0 ? l.streamPort : null;
       // The VPX of a start that was being watched is up.
       for (const settle of [...starts]) settle(false);
       machine.forkConnected();

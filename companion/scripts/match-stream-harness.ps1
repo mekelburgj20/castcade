@@ -30,7 +30,7 @@
 param(
     [int]$ClosePid = 0,
     [string]$Electron = 'C:\code\repos\castcade\node_modules\electron\dist\electron.exe',
-    [string]$Exe = 'C:\code\repos\castcade-vpx-wt-handoff\build\Release\ccmatch_GL64.exe',
+    [string]$Exe = 'C:\code\repos\castcade-vpx-wt-handoff\build\Release\cchand_GL64.exe',
     [string]$Template = 'C:\code\repos\castcade-vpx-deps\run\smoke.template.ini',
     [string]$Tables = 'C:\code\repos\castcade-vpx-deps\run\tables',
     [string]$RomTable = 'Attack from Mars LE (Midway 1995) v600.vpx',

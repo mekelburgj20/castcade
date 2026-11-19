@@ -45,7 +45,7 @@ const opt = (n, d) => {
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d;
 };
 const out = resolve(opt('out', 'tmp/match-stream-harness'));
-const CCMATCH = resolve(opt('exe', String.raw`C:\code\repos\castcade-vpx-wt-handoff\build\Release\ccmatch_GL64.exe`));
+const CCMATCH = resolve(opt('exe', String.raw`C:\code\repos\castcade-vpx-wt-handoff\build\Release\cchand_GL64.exe`));
 const TEMPLATE = resolve(opt('template', String.raw`C:\code\repos\castcade-vpx-deps\run\smoke.template.ini`));
 const TABLES = resolve(opt('tables', String.raw`C:\code\repos\castcade-vpx-deps\run\tables`));
 const CLOSER = resolve(opt('closer', join(dirname(fileURLToPath(import.meta.url)), 'match-stream-harness.ps1')));
@@ -248,11 +248,16 @@ function makePc(group, name, o = {}) {
             send: (line) => {
               const ok = c.send(line);
               note('>', ok ? line : `${line}   (NOT SENT: the connection is gone)`);
+              // A scenario's next step, taken once this line's sender has returned: still the same turn of the loop,
+              // so what it sends is on the socket within the same millisecond.
+              const then = pc.onSent;
+              if (then) void Promise.resolve().then(() => then(line));
               return ok;
             },
             close: () => c.close(),
           };
           wrap.set(c, w);
+          pc.lastRaw = c;
           note('+', 'connection');
           h.open(w);
         },
@@ -289,6 +294,8 @@ function makePc(group, name, o = {}) {
     ports: { read: () => JSON.stringify({ controlPort: CONTROL_PORT[name] }), write: (text) => (pc.savedPorts = text) },
     listen,
   });
+  /** The companion's side closes the control connection under the fork (what a line of over 2048 bytes does from the fork's side). */
+  pc.cutControl = () => pc.lastRaw?.close();
   pc.mark = () => pc.rec.length;
   pc.waitRec = async (from, pred, ms) => {
     let hit = null;
@@ -519,6 +526,35 @@ const rowWords = (r) => {
   return `turn ${r.turn} (${r.order}): ${r.up} up${r.playingMs !== null ? `, state playing after ${round(r.playingMs)} ms` : ''}, lock lifted after ${round(r.lockMs)} ms; ${ws}${r.ok ? '' : `   PROBLEM: ${r.why.join('; ')}`}`;
 };
 
+/**
+ * Two commands that leave this PC within the same millisecond (a grant right after a turn change): the fork reads them
+ * in one go and acts on, and answers, only the last. `second` is what the match host does the moment the first line
+ * (a `watch`) is out. Returns what was sent and what came back, and waits out the watch's 5 s to see that nothing of
+ * the first command is still waited for.
+ */
+async function backToBack(pc, first, second) {
+  const mark = pc.mark();
+  let done = false;
+  pc.onSent = (line) => {
+    if (done || !line.startsWith('watch ')) return;
+    done = true;
+    pc.onSent = null;
+    second();
+  };
+  const t0 = now();
+  first();
+  await until(() => done, 3000, 1);
+  pc.onSent = null;
+  const sent = () => pc.rec.slice(mark).filter((e) => e.d === '>');
+  const got = () => pc.rec.slice(mark).filter((e) => e.d === '<');
+  await until(() => got().length >= 1, 4000, 2);
+  const firstAnswerMs = got()[0] ? got()[0].t - t0 : null;
+  const gapMs = sent().length >= 2 ? sent()[1].t - sent()[0].t : null;
+  // Longer than the watch's time: a fall-back for a command that was replaced would show here.
+  await sleep(6500);
+  return { mark, sent: sent().map((e) => e.line), got: got().map((e) => e.line), gapMs, firstAnswerMs, lines: pc.since(mark) };
+}
+
 /** Everybody back to their own table (the lobby, the result): nobody is up. */
 async function nobodyUp(g) {
   for (const p of g.pcs) p.stream?.setTarget(null);
@@ -686,6 +722,73 @@ async function groupTwo() {
     }
     g.longWatches = true;
     check(G, 'two turns of 12 s each way', long.every((r) => r.ok && Object.values(r.watchers).every((w) => w.bytes > 0)), long.map(rowWords).join(' | '));
+
+    // ---- the fork's fix round: of the commands of one read only the last is acted on and answered ----
+    {
+      const p = g.up;
+      const w = p === a ? b : a;
+      // The watcher is called back first (as if it held its table), so the watch below starts from its own table.
+      w.stream.setTarget(null);
+      await until(() => !w.stream.away(), 4000);
+      g.turn += 1;
+      const key = String(g.turn);
+      let lock = null;
+      const r = await backToBack(
+        w,
+        () => w.stream.setTarget(p.name, key),
+        () => {
+          // The turn comes to this PC the moment it was sent to watch: the lock, then nobody to watch.
+          lock = lockAtGrant(w);
+          w.stream.setTarget(null);
+        },
+      );
+      const l = await Promise.race([lock ?? Promise.resolve(null), sleep(100).then(() => null)]);
+      const watching = r.got.filter((x) => x === 'state watching').length;
+      const playing = r.got.filter((x) => x === 'state playing').length;
+      check(
+        G,
+        'watch, then play within the same millisecond: the fork ends on its own table, the lock is lifted by its state playing, and nothing waits for the watch (no fall-back in the 6.5 s after)',
+        r.sent.length === 2 && r.sent[0].startsWith('watch ') && r.sent[1] === 'play' && playing === 1 && r.got.at(-1) === 'state playing' && r.got.every((x) => x === 'state watching' || x === 'state playing') && !!l && l.late === false && !w.stream.away() && w.view(p)?.mode === '3d',
+        `the two lines left ${r.gapMs?.toFixed(2)} ms apart; the fork answered ${JSON.stringify(r.got)} (${watching === 0 ? 'the watch was not gone through: read in one go' : 'the watch was answered too: read apart'}), first answer after ${round(r.firstAnswerMs)} ms; lock lifted after ${l ? round(l.ms) : '?'} ms; line still "${w.view(p)?.line}"; control: ${r.lines.join(' | ')}`,
+      );
+      // Back to the turn as it was: the watcher watches the player.
+      g.turn += 1;
+      const mark = w.mark();
+      w.stream.setTarget(p.name, String(g.turn));
+      const again = await w.waitRec(mark, (e) => e.d === '<' && e.line === 'state watching', 6000);
+      check(G, 'and the same watch asked again right after is answered', !!again, w.since(mark).join(' | '));
+    }
+
+    // ---- the control connection cut in the middle of a watch: the same VPX comes back with a new hello ----
+    {
+      const p = g.up;
+      const w = p === a ? b : a;
+      await until(() => w.stream.status().watching === p.name && !w.rec.slice(-1)[0]?.line.startsWith('watch '), 5000);
+      const portBefore = Number(/ (\d+)$/.exec(w.hello ?? '')?.[1]);
+      const mark = w.mark();
+      const t0 = now();
+      w.cutControl();
+      const fell = await until(() => w.stream.status().fork === 'none' && w.stream.status().watching === null, 2000);
+      const tFell = now() - t0;
+      const hello = await w.waitRec(mark, (e) => e.d === '<' && e.line.startsWith('hello 1 '), 8000);
+      const playing = hello ? await w.waitRec(w.rec.indexOf(hello) + 1, (e) => e.d === '<' && e.line === 'state playing', 3000) : null;
+      const ready = await until(() => w.stream.status().fork === 'ready', 3000);
+      const portAfter = Number(/ (\d+)$/.exec(hello?.line ?? '')?.[1]);
+      await sleep(1500);
+      const sentMeanwhile = w.rec.slice(mark).filter((e) => e.d === '>').map((e) => e.line);
+      check(
+        G,
+        'the control connection cut in the middle of a watch: 2D at once, the fork is back on its own table by itself, connects again with a new hello (the same stream port), and this turn stays 2D',
+        fell && !!hello && !!playing && ready && portAfter === portBefore && w.tunnel()?.status().playerPort === portAfter && sentMeanwhile.length === 0 && w.view(p)?.mode === '2d',
+        `2D ${round(tFell)} ms after the cut; ${hello ? `"${hello.line}" ${round(hello.t - t0)} ms after it` : 'NO new hello in 8 s'}; lines sent to the fork meanwhile: ${JSON.stringify(sentMeanwhile)}; line: "${w.view(p)?.line}"; control: ${w.since(mark).join(' | ')}`,
+      );
+      // The next grant to the same player is 3D again.
+      g.turn += 1;
+      const mark2 = w.mark();
+      w.stream.setTarget(p.name, String(g.turn));
+      const again = await w.waitRec(mark2, (e) => e.d === '<' && e.line === 'state watching', 6000);
+      check(G, 'and the next grant is watched in 3D over the new control connection', !!again, w.since(mark2).join(' | '));
+    }
 
     // ---- 5b: the tunnel page restarted, on the watcher's PC and then on the player's ----
     for (const which of ['watcher', 'player']) {
@@ -860,6 +963,32 @@ async function groupThree() {
     for (const p of [a, b, c]) addresses[p.name] = [...new Set(p.rec.filter((e) => e.d === '>' && e.line.startsWith('watch ')).map((e) => e.line))];
     check(G, 'a re-aim when the next player is up: a second watch on the single listener (the same address), with no play between, answered by state watching', reaims.length >= 3 && reaims.every((w) => w.answer === 'state watching' && w.bytes > 0) && Object.values(addresses).every((x) => x.length === 1), `${reaims.length} re-aims: ${reaims.map((w) => `turn ${w.turn} ${w.pc} after ${round(w.watchingMs)} ms, ${w.bytes} B`).join('; ')}; watch addresses per PC ${JSON.stringify(addresses)}`);
     summary.groups[G] = { reaimMs: stats(reaims.map((w) => w.watchingMs)), watchMs: stats(rows.flatMap((r) => Object.values(r.watchers).filter((w) => !w.reaim).map((w) => w.watchingMs))) };
+
+    // ---- the fork's fix round: watch A, then watch B within the same millisecond ----
+    {
+      const p = g.up; // the player up; the two others watch it
+      const [w, other] = g.pcs.filter((x) => x !== p);
+      w.stream.setTarget(null);
+      await until(() => !w.stream.away(), 4000);
+      g.turn += 1;
+      const k1 = String(g.turn);
+      g.turn += 1;
+      const k2 = String(g.turn);
+      const before = w.bytesIn();
+      // Sent to watch one player, and the turn is the next player's before that line has left the socket's buffer.
+      const r = await backToBack(
+        w,
+        () => w.stream.setTarget(other.name, k1),
+        () => w.stream.setTarget(p.name, k2),
+      );
+      const watching = r.got.filter((x) => x === 'state watching').length;
+      check(
+        G,
+        'watch A, then watch B within the same millisecond: the fork ends watching B, and nothing waits for an answer to A (no fall-back in the 6.5 s after)',
+        r.sent.length === 2 && r.sent.every((x) => x.startsWith('watch ')) && watching >= 1 && r.got.every((x) => x === 'state watching') && w.stream.status().watching === p.name && w.view(other)?.mode === '3d' && w.view(p)?.mode === '3d' && w.bytesIn() > before,
+        `the two lines left ${r.gapMs?.toFixed(2)} ms apart; the fork answered ${JSON.stringify(r.got)} (${watching === 1 ? 'one answer for the two: read in one go' : 'each answered: read apart'}), first answer after ${round(r.firstAnswerMs)} ms; watching ${w.stream.status().watching}; ${w.bytesIn() - before} B of ${p.name}'s stream in; control: ${r.lines.join(' | ')}`,
+      );
+    }
   } catch (e) {
     check(G, 'the group ran to its end', false, e?.stack ?? String(e));
   } finally {

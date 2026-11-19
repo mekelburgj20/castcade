@@ -80,6 +80,12 @@ describe('the control connection, as read (§3)', () => {
   it('reads the four lines exactly', () => {
     expect(parseControlLine(HELLO)).toEqual({ kind: 'hello', version: 1, build: BUILD, editables: '617', tableHash: '9f3a61c2d4e5b701', streamPort: 50_001 });
     expect(parseControlLine('hello 1 b 1 h 65535')).toMatchObject({ streamPort: 65_535 });
+    // Port 0: a fork with no stream listener (as the fork is built: "0: it has none").
+    expect(parseControlLine('hello 1 b 1 h 0')).toMatchObject({ kind: 'hello', version: 1, streamPort: 0 });
+    // Any reason is a reason: the ones the fork has today, and one it does not have yet.
+    for (const reason of ['refused', 'timeout', 'stalled', 'lost', 'closed', 'badaddress', 'overflow', 'something-new-in-2027']) {
+      expect(parseControlLine(`state failed ${reason}`)).toEqual({ kind: 'failed', reason });
+    }
     expect(parseControlLine('state playing')).toEqual({ kind: 'state', state: 'playing' });
     expect(parseControlLine('state watching')).toEqual({ kind: 'state', state: 'watching' });
     expect(parseControlLine('state failed table mismatch: 617 editables here, 615 there')).toEqual({ kind: 'failed', reason: 'table mismatch: 617 editables here, 615 there' });
@@ -105,7 +111,6 @@ describe('the control connection, as read (§3)', () => {
       'hello 1 build 617 hash extra',
       // Rule 9: the fifth field is the stream port, a port.
       'hello 1 build 617 hash',
-      'hello 1 build 617 hash 0',
       'hello 1 build 617 hash 65536',
       'hello 1 build 617 hash 050001',
       'hello 1 build 617 hash 50001 more',
@@ -800,6 +805,148 @@ describe('what reaches the log (A6)', () => {
     r.fork.say('state watching');
     expect(r.logs).toContain("stream3d: VPX: state watching: Kro bs the Great's table is on screen in 3D");
     for (const l of r.logs) expect(CONTROL.test(l), JSON.stringify(l)).toBe(false);
+  });
+});
+
+describe('the fork acts on, and answers, only the last command of one read (the fork\'s fix round)', () => {
+  it('watch, then play at once (a grant right after a turn change): one state playing and no state watching, and nothing is left waiting', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    // The lock of this PC's own turn, then the turn: both lines are on the socket within a millisecond.
+    const calls: boolean[] = [];
+    r.m.whenPlaying((late) => void calls.push(late));
+    r.m.setTarget(null);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play']);
+    // The fork read both in one go: the watch is not gone through, and not answered.
+    r.fork.say('state playing');
+    expect(calls).toEqual([false]);
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false, target: null });
+    expect(r.m.away()).toBe(false);
+    // The watch's 5 s were taken away with it: no fall-back for a watch nobody asked for any more, no second play.
+    const logs = r.logs.length;
+    r.clock.advance(WATCH_TIMEOUT_MS * 3);
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play']);
+    expect(r.logs.slice(logs)).toEqual([]);
+    expect(r.logs.some((l) => l.includes('did not work'))).toBe(false);
+    // And the next turn is 3D: that watch never failed.
+    r.m.setTarget('b', '2');
+    await flush();
+    expect(r.m.status().peers).toEqual({ b: { mode: '3d' } });
+    expect(r.sent.at(-1)).toBe('watch 127.0.0.1:50002');
+    r.fork.say('state watching');
+    expect(r.m.status()).toMatchObject({ state: 'watching', showing3d: true });
+  });
+
+  it('watch, then play, read apart after all: the state watching that comes first is ignored, the state playing ends it', async () => {
+    const r = await inMatch();
+    r.m.setTarget('b', '1');
+    await flush();
+    r.m.setTarget(null);
+    r.fork.say('state watching', 'state playing');
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false });
+    r.clock.advance(WATCH_TIMEOUT_MS * 3);
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'play']);
+    expect(r.logs.some((l) => l.includes('did not work'))).toBe(false);
+  });
+
+  it('watch A, then watch B at once (two turn changes on top of each other): one state watching, and it is B\'s; no fall-back for A', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    r.m.setTarget('c', '2');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002', 'watch 127.0.0.1:50002']);
+    // One answer for the two.
+    r.clock.advance(300);
+    r.fork.say('state watching');
+    expect(r.m.status()).toMatchObject({ state: 'watching', target: 'c', showing3d: true, peers: { b: { mode: '3d' }, c: { mode: '3d' } } });
+    // Nothing waits for an answer to the first watch: no timeout, no play, no failed watch of anyone.
+    r.clock.advance(WATCH_TIMEOUT_MS * 3);
+    await flush();
+    expect(r.sent).toHaveLength(2);
+    expect(r.m.showing3d()).toBe(true);
+    expect(r.logs.some((l) => l.includes('did not work'))).toBe(false);
+  });
+
+  it('watch A, then watch B at once, and B fails: the one state failed is B\'s, and A is not marked', async () => {
+    const r = await inMatch(['b', 'c']);
+    r.m.setTarget('b', '1');
+    await flush();
+    r.m.setTarget('c', '2');
+    await flush();
+    r.fork.say('state failed refused', 'state playing');
+    expect(r.m.status()).toMatchObject({ state: 'playing', showing3d: false, peers: { b: { mode: '3d' }, c: { mode: '2d', why: 'failed', detail: 'refused' } } });
+    r.clock.advance(WATCH_TIMEOUT_MS * 3);
+    expect(r.sent).toHaveLength(2);
+  });
+});
+
+describe('what the companion sends, and what it takes for a reason', () => {
+  it('every line it ever sends is `play` or `watch 127.0.0.1:<port>`: never an empty line, never a watch without an address, never a long one', async () => {
+    const r = await inMatch(['b', 'c']);
+    // A busy match: turns, re-aims, failures, a timeout, the setting, a capability that goes and comes back.
+    for (let n = 1; n <= 12; n++) {
+      r.m.setTarget(n % 3 === 0 ? null : n % 3 === 1 ? 'b' : 'c', String(n));
+      await flush();
+      if (n % 4 === 0) r.fork.say('state failed stalled', 'state playing');
+      else if (n % 5 === 0) r.clock.advance(WATCH_TIMEOUT_MS);
+      else r.fork.say(n % 3 === 0 ? 'state playing' : 'state watching');
+      if (n === 6) r.m.setSetting('off');
+      if (n === 7) r.m.setSetting('auto');
+      if (n === 9) r.m.peerCaps('b', null);
+      if (n === 10) r.m.peerCaps('b', encodeCaps(SAME));
+      r.fork.say('state playing');
+      r.clock.advance(PLAY_WAIT_MS);
+      await flush();
+    }
+    expect(r.sent.length).toBeGreaterThan(8);
+    for (const line of r.sent) expect(line, JSON.stringify(line)).toMatch(/^(play|watch 127\.0\.0\.1:[1-9]\d{0,4})$/);
+  });
+
+  it('a tunnel that names no usable port: no watch is sent at all (the fork would ignore a watch without an address and answer nothing), and the turn is 2D', async () => {
+    for (const port of [0, Number.NaN, 70_000, -1, 1.5]) {
+      const r = await inMatch(['b'], { aim: async () => port });
+      r.m.setTarget('b', '1');
+      await flush();
+      expect(r.sent, String(port)).toEqual([]);
+      expect(r.m.status(), String(port)).toMatchObject({ state: 'playing', showing3d: false, peers: { b: { mode: '2d', why: 'failed' } } });
+      expect(r.m.away()).toBe(false);
+    }
+  });
+
+  it('a reason this build has never seen (badaddress, overflow, anything): a failed watch like any other', async () => {
+    for (const reason of ['badaddress', 'overflow', 'something-new-in-2027']) {
+      const r = await inMatch();
+      r.m.setTarget('b', '1');
+      await flush();
+      r.fork.say('state watching');
+      r.fork.say(`state failed ${reason}`);
+      expect(r.m.status(), reason).toMatchObject({ state: 'leaving', showing3d: false, peers: { b: { mode: '2d', why: 'failed', detail: reason } } });
+      r.fork.say('state playing');
+      expect(r.m.away()).toBe(false);
+      // No play was sent for it, and the next grant tries again.
+      expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
+      r.m.setTarget('b', '2');
+      await flush();
+      expect(r.sent).toHaveLength(2);
+    }
+  });
+
+  it('hello with stream port 0 (the fork has no stream listener): this PC watches in 3D, and the others are told it has nothing to watch', async () => {
+    const r = rig();
+    r.m.setPeers(['b']);
+    r.fork.connect();
+    r.fork.say('hello 1 10.8.0.2078.castcade 617 9f3a61c2d4e5b701 0', 'state playing');
+    r.m.peerCaps('b', encodeCaps(SAME));
+    expect(r.m.status()).toMatchObject({ fork: 'ready', streamPort: null, peers: { b: { mode: '3d' } } });
+    expect(r.caps.at(-1)).toBe(encodeCaps(null));
+    expect(r.ports.at(-1) ?? null).toBeNull();
+    r.m.setTarget('b', '1');
+    await flush();
+    expect(r.sent).toEqual(['watch 127.0.0.1:50002']);
+    expect(r.logs.some((l) => l.includes('no stream listener (port 0)'))).toBe(true);
   });
 });
 

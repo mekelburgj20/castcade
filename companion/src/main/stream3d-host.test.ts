@@ -623,6 +623,42 @@ describe('who may take the control connection (A3)', () => {
     expect(back.closed).toBe(false);
   });
 
+  it('the same VPX connecting again before its old connection is seen closed (a line too long made it reconnect): it takes over each time, and is never turned away as "the one that was replaced"', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    const s = a.host.open({ localId: 'a', setting: 'auto', sendSignal: () => undefined });
+    const first = await forkOf(a, undefined, 50_101);
+    await until(() => s.status().fork === 'ready');
+    // Its second connection says hello while the first is still open here (the two closes and opens are not ordered).
+    const second = await forkOf(a, undefined, 50_101);
+    await until(() => first.closed);
+    await until(() => s.status().fork === 'ready');
+    expect(second.closed).toBe(false);
+    // And a third: the second is still the one "on the connection" when it arrives.
+    const third = await forkOf(a, undefined, 50_101);
+    await until(() => second.closed);
+    await sleep(40);
+    expect(third.closed).toBe(false);
+    expect(s.status().fork).toBe('ready');
+    expect(a.tunnel().playerPort).toBe(50_101);
+    expect(a.logs.filter((l) => l.includes('tried again; the newer one stays'))).toEqual([]);
+    expect(a.logs.filter((l) => l.includes('connected again (stream port 50101)'))).toHaveLength(2);
+  });
+
+  it('hello with stream port 0: that PC watches in 3D, serves no port, and the other PC is told there is nothing to watch', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    const b = pc(hub, 'b');
+    const fa = await forkOf(a, undefined, 0);
+    await forkOf(b);
+    const s = match([a, b]);
+    await until(() => lineOf(s.a!, 'b') === 'Krobs: 3D, on your own table' && lineOf(s.b!, 'a') === 'Owner: the 2D video (no Castcade VPX build runs the table on their PC)');
+    expect(fa.closed).toBe(false);
+    expect(a.tunnel().playerPort).toBeNull();
+    s.a!.setTarget('b', '1');
+    await fa.next(/^watch /);
+  });
+
   it('a second VPX this Castcade cannot talk to (another version) does not take the place of one it can', async () => {
     const hub = new TunnelHub();
     const a = pc(hub, 'a');

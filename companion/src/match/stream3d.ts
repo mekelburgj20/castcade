@@ -40,6 +40,24 @@
  *   - `state watching` when nothing is to be watched (a `watch` that crossed a failure): `play` is sent again. A
  *     player is never left on another's table by a line that crossed.
  *
+ * The fork acts on, and answers, only the LAST command of those it reads in one go (TCP may hand it two lines that
+ * left here milliseconds apart: a grant right after a turn change). Nothing here waits for the answer to a command
+ * that a later one replaced: a `play` after a `watch` takes that watch's timeout with it and expects `state playing`
+ * alone (a `state watching` that comes first all the same is ignored); a second `watch` replaces the first one's
+ * timeout and the one `state watching` that follows is the second's. `play` then `watch` never leave together: the
+ * `watch` waits for the `play`'s answer.
+ *
+ * What is sent is `play` or `watch 127.0.0.1:<port>` and nothing else, ever: no empty line, no `watch` without an
+ * address (the fork ignores those without an answer), no line anywhere near the 2048 bytes that would make it close
+ * the connection.
+ *
+ * `state failed <reason>`: the reason is free text for the log and the Match tab (`refused`, `timeout`, `stalled`,
+ * `lost`, `closed`, `badaddress`, `overflow` as the fork is built today); none of them is read for its meaning, and
+ * one this build has never seen is a failed watch like any other.
+ *
+ * A `hello` whose stream port is `0` is a fork with no stream listener (its port was taken): that PC can watch, and
+ * the others are told it has no build to watch (nothing is offered that nothing listens on).
+ *
  * The turn (§4.3). The shell says who this PC should be watching (`setTarget`): the player up while this PC waits with
  * its table locked, else nobody (it is up, or holds its table: the lobby, between games, a pause, the initials hold,
  * the window in which a finished game ends on the machine).
@@ -125,7 +143,8 @@ export function parseControlLine(raw: string): ControlLine | null {
   if (version !== CONTROL_VERSION) return { kind: 'hello', version, build: '', editables: '', tableHash: '', streamPort: 0 };
   if (parts.length !== 6) return null;
   const [, , build, editables, tableHash, port] = parts as [string, string, string, string, string, string];
-  if (!TOKEN.test(build) || !TOKEN.test(editables) || !TOKEN.test(tableHash) || !/^[1-9]\d{0,4}$/.test(port)) return null;
+  // The port: a port, or `0` (the fork has no stream listener).
+  if (!TOKEN.test(build) || !TOKEN.test(editables) || !TOKEN.test(tableHash) || !/^(0|[1-9]\d{0,4})$/.test(port)) return null;
   const streamPort = Number(port);
   if (streamPort > 65535) return null;
   return { kind: 'hello', version, build, editables, tableHash, streamPort };
@@ -594,9 +613,9 @@ export class Stream3d {
       return;
     }
     this.own = { build: l.build, table: `${l.editables} ${l.tableHash}` };
-    this.streamPort = l.streamPort;
+    this.streamPort = l.streamPort > 0 ? l.streamPort : null;
     this.link = 'helloed';
-    this.log(`VPX said hello: build ${l.build}, table ${this.own.table}, its stream on 127.0.0.1:${l.streamPort}`);
+    this.log(`VPX said hello: build ${l.build}, table ${this.own.table}, ${this.streamPort !== null ? `its stream on 127.0.0.1:${this.streamPort}` : 'and no stream listener (port 0): this PC can watch in 3D, the others get the 2D video of it'}`);
     this.changed();
   }
 
@@ -755,7 +774,8 @@ export class Stream3d {
    */
   private publish(): void {
     const ready = this.link === 'ready';
-    const caps = encodeCaps(ready ? this.own : null);
+    // A fork with no stream listener (hello's port 0) can watch and cannot be watched: the others are told `none`.
+    const caps = encodeCaps(ready && this.streamPort !== null ? this.own : null);
     if (caps !== this.toldCaps) {
       this.toldCaps = caps;
       this.d.setCaps(caps);
@@ -820,25 +840,25 @@ export class Stream3d {
       this.sendPlay(`no "state watching" within ${this.watchTimeoutMs / 1000} s`);
       this.fail(peer, `VPX did not show their table within ${this.watchTimeoutMs / 1000} s`);
     }, this.watchTimeoutMs);
-    void this.d.aim(peer).then(
-      (port) => {
-        if (this.seq !== mine || this.link !== 'ready') return;
-        if (!this.d.send(watchCommand(port))) return;
-        this.watchOut = true;
-        this.log(`watch 127.0.0.1:${port}: VPX is ${reaim ? 're-aimed at' : 'sent to watch'} ${this.name(peer)}'s table`);
-      },
-      (e: unknown) => {
-        if (this.seq !== mine || this.link !== 'ready') return;
-        // Nothing was sent for this watch. A fork still on an earlier one is called back.
-        if (reaim) this.sendPlay('the tunnel listener did not open');
-        else {
-          this.clearWatchTimer();
-          this.seq += 1;
-          this.aimed = null;
-          this.forkState = 'playing';
-        }
-        this.fail(peer,`the tunnel's listener did not open (${e instanceof Error ? e.message : String(e)})`);
-      },
-    );
+    const noListener = (e: unknown): void => {
+      if (this.seq !== mine || this.link !== 'ready') return;
+      // Nothing was sent for this watch. A fork still on an earlier one is called back.
+      if (reaim) this.sendPlay('the tunnel listener did not open');
+      else {
+        this.clearWatchTimer();
+        this.seq += 1;
+        this.aimed = null;
+        this.forkState = 'playing';
+      }
+      this.fail(peer, `the tunnel's listener did not open (${e instanceof Error ? e.message : String(e)})`);
+    };
+    void this.d.aim(peer).then((port) => {
+      if (this.seq !== mine || this.link !== 'ready') return;
+      // Never a `watch` without a usable address: the fork ignores such a line and answers nothing.
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return noListener(new Error(`not a port: ${String(port)}`));
+      if (!this.d.send(watchCommand(port))) return;
+      this.watchOut = true;
+      this.log(`watch 127.0.0.1:${port}: VPX is ${reaim ? 're-aimed at' : 'sent to watch'} ${this.name(peer)}'s table`);
+    }, noListener);
   }
 }
