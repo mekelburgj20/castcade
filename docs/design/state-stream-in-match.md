@@ -69,11 +69,17 @@ looking at someone else's table at their own turn. An unknown or empty control l
   property before its own script's first put of it, and at each keyframe puts those values back for whatever
   the keyframe does not carry (a lamp lit in my game and never touched in the other player's).
 - The own table is not touched until the other player's keyframe arrives: a watch that never connects costs
-  only the pause.
+  only the pause. From the `watch` command to that keyframe the own table is paused as a whole (the player's
+  own pause, `Session::HoldsPause()`), so nothing moves and no event is due in those frames (rule 14); the
+  own music is set aside at the `watch` command and given back on every way out, before the script hears
+  of the return.
+- Option events (the tweak menu) raised while watching are kept and fired at the return, once per kind.
+- The list of properties to put back is capped at the table's put-able properties plus 256; past it the
+  watch ends with `state failed overflow`.
 - The static pre-render is not rebuilt at a switch (a 100 ms frame each time); `CASTCADE_STREAM_STATICREFRESH=1`
   turns the rebuild on.
 - The first frame of a watch has 4 s (the companion waits 5); reasons after `state failed`: `refused`,
-  `timeout`, `stalled`, `lost`, `closed`, `badaddress`. While a table watches, the watchers it already serves
+  `timeout`, `stalled`, `lost`, `closed`, `badaddress`, `overflow`. While a table watches, the watchers it already serves
   get its frozen state; new ones are held (rule 10).
 - With the sound replay on, the watch role's stop-all kills the own table's looping sounds and they do not come
   back; a match runs with the replay off (§4.4), where nothing is stopped.
@@ -84,6 +90,20 @@ physics state came back identical and 0 of 3,913 to 49,263 compared properties d
 calls; `play` answered in about 20 ms, `watch` in 40 to 60 ms; the switch itself costs 1.1 ms in and 1.3 ms out.
 One 98.7 ms frame (Flash) and one 95.3 ms frame (Monster Bash) fell near a switch, both inside the NVIDIA
 OpenGL driver. Not run: VR, a patched table (the hook), sound replay on, two PCs.
+
+After the fix round (branch at `6a0b32b9`, the same driver, which now also compares the parts' internal state
+and can sabotage the put-back to prove the comparison sees it): 50 of 50 swaps on Nudge Test, Attack from Mars
+and Flash with 0 of up to 19,916 properties and 0 of up to 434 internal parts differing and the physics
+identical in 51 of 51 phases; `state watching` after 46 to 63 ms (median; 236 worst), `state playing` after 22
+to 31 ms (46 worst). A table with light sequences (JP's IT, 40 swaps, 36 phases begun mid-sequence): nothing
+differs. A watch that dies before its keyframe (340 of them on three tables, most begun with a ball in
+motion): no event fired before the keyframe, nothing differs. Music playing at the watch was playing after the
+return in 31 of 31 phases, and in 13 of 13 with the sound replay on. A patched table (the owner's sidecar and
+the hook, Attack from Mars, 30 swaps, then played out): the journal stood still in every watch phase and both
+journals end in `game_end`. Ten minutes of watching: no growth in memory, handles or threads. Still not run:
+VR, two PCs, a real loss of focus, a real tweak menu, an accelerometer, a table whose own script plays music.
+Every VPX instance on this PC has one 60 to 103 ms frame inside the NVIDIA driver about 155 s after its start,
+watching or not, so "no frame over 100 ms at a switch" holds only when that frame falls elsewhere.
 
 **Not in this iteration.** A local game that keeps running underneath while its owner watches (a hidden
 "shadow" table): every script write would have to be diverted. The pause is what a waiting player's table does
@@ -142,14 +162,23 @@ Added after the independent review of the fork branch (2026-11-19):
     newer companion can add a command. Loopback means a numeric address in 127.0.0.0/8 or `localhost`, for the
     control address and for the host of a `watch`.
 14. A watch that ends before its keyframe leaves the own game as a pause of that length would: no event lost,
-    no animation advanced.
+    no animation advanced. (As built it is a pause: §2.)
+
+Added with the fork's fix round (2026-11-19):
+
+15. Of several commands that arrive in one read, the fork acts on and answers only the last: `watch` then
+    `play` gives one `state playing`, two `watch` lines give one `state watching`. Two lines the companion
+    wrote milliseconds apart can arrive that way, so the companion waits for no answer to a command it has
+    since replaced.
+16. A `watch` with no address is an unknown line (rule 13: no answer). A `watch` whose address is not
+    loopback, has no port or port 0 is answered `state failed badaddress`, then `state playing`.
 
 That review found three defects in getting the own game back that the swap test could not see (a lamp's
 second stored state left at the file's value, so the first light sequence after a watched turn switched the
 player's lamps off; the own table's music destroyed at every watch; a watch that failed before its keyframe
 dropping the events of parts that were still moving), and that when a table's script has no handler for the
-pause event nothing pauses VPinMAME while its owner watches. The first three are a fix round on the branch;
-the last is a known limit, logged by the fork at the first watch of such a table.
+pause event nothing pauses VPinMAME while its owner watches. The first three are closed by the fix round
+(§2, "After the fix round"); the last is a known limit, logged by the fork at the first watch of such a table.
 
 Known and accepted in this iteration: the lines carry no sequence numbers, so a `state playing` that crosses a
 new `watch` can cost that turn its 3D (it falls back to 2D and heals at the next turn); the 2 s limit on the
