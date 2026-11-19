@@ -143,7 +143,8 @@ export function Settings({ state }: { state: CastcadeState }) {
       <dl className="facts">
         <dt>Castcade</dt>
         <dd>
-          {versions?.app ?? bridge?.appVersion ?? '?'} ·{' '}
+          {versions?.app ?? bridge?.appVersion ?? '?'}
+          {bridge?.edition === 'witness' ? ' · Witness edition' : ''} ·{' '}
           <a href={PROJECT_URL} onClick={open(PROJECT_URL)}>
             source
           </a>

@@ -26,6 +26,7 @@ import {
   parseMarker,
   readPendingInstaller,
   tasklistHas,
+  updateFileNames,
   type InstallMarker,
   type PendingRead,
   type UpdateNotice,
@@ -779,5 +780,113 @@ describe('the install note and the installer probe', () => {
     await expect(probe('Castcade-Setup-0.2.46.exe')).resolves.toBe(false);
     await expect(probe('notepad.exe')).resolves.toBe(false);
     expect(calls).toHaveLength(2);
+  });
+});
+
+// ------------------------------------------------------------------------------------ E10 --
+
+describe('the Witness edition and the update guard (E10)', () => {
+  it("reads a Witness installer's version, its waiting download and its install note", () => {
+    expect(installerVersion('Castcade-Witness-Setup-0.2.46.exe')).toBe('0.2.46');
+    expect(installerVersion('Castcade-Witness-Setup-0.2.46-test.1.exe')).toBe('0.2.46-test.1');
+    expect(installerVersion('Castcade-Other-Setup-0.2.46.exe')).toBeNull();
+    const dir = join('cache', 'pending');
+    const files: Record<string, string> = {
+      [join(dir, 'update-info.json')]: JSON.stringify({ fileName: 'Castcade-Witness-Setup-0.2.46.exe', sha512: 'x' }),
+      [join(dir, 'Castcade-Witness-Setup-0.2.46.exe')]: 'MZ',
+    };
+    expect(readPendingInstaller({ dir, appVersion: '0.2.45', readText: (p) => files[p] ?? null, exists: (p) => p in files })).toMatchObject({ kind: 'pending', version: '0.2.46' });
+    expect(parseMarker(JSON.stringify({ version: '0.2.46', fileName: 'Castcade-Witness-Setup-0.2.46.exe', at: 1 }))).toMatchObject({ fileName: 'Castcade-Witness-Setup-0.2.46.exe' });
+  });
+
+  it("an update's file names: files[].url and path", () => {
+    expect(updateFileNames({ version: '0.2.46', files: [{ url: 'Castcade-Setup-0.2.46.exe' }], path: 'Castcade-Setup-0.2.46.exe' })).toEqual(['Castcade-Setup-0.2.46.exe', 'Castcade-Setup-0.2.46.exe']);
+    expect(updateFileNames({ version: '0.2.46' })).toEqual([]);
+  });
+
+  /** A real NsisUpdater whose feed answers `files` for 0.2.46 (getUpdateInfoAndProvider stubbed) and whose download is counted. */
+  const realCheck = async (edition: 'full' | 'witness', files: string[]) => {
+    const { NsisUpdater } = await import('electron-updater');
+    const app = {
+      version: '0.2.45',
+      name: 'Castcade',
+      isPackaged: true,
+      appUpdateConfigPath: '',
+      userDataPath: '',
+      baseCachePath: '',
+      whenReady: () => Promise.resolve(),
+      relaunch: () => undefined,
+      quit: () => undefined,
+      onQuit: () => undefined,
+    };
+    const u = new NsisUpdater(null, app);
+    const logs: string[] = [];
+    configureUpdater(u as unknown as UpdaterLike, memLog(logs), () => undefined, edition);
+    let downloads = 0;
+    Object.assign(u, {
+      getUpdateInfoAndProvider: async () => ({
+        info: { version: '0.2.46', files: files.map((url) => ({ url, sha512: 'x', size: 1 })), path: files[0], sha512: 'x', releaseDate: '2026-11-19T00:00:00.000Z' },
+        provider: {},
+      }),
+      downloadUpdate: () => {
+        downloads += 1;
+        return Promise.resolve([]);
+      },
+    });
+    const events: string[] = [];
+    u.on('update-available', () => void events.push('available'));
+    u.on('update-not-available', () => void events.push('not available'));
+    const r = await (u as unknown as { doCheckForUpdates(): Promise<{ isUpdateAvailable: boolean }> }).doCheckForUpdates();
+    return { available: r.isUpdateAvailable, events, downloads, logs };
+  };
+
+  it('inside the real electron-updater check: a Witness edition refuses the latest.yml fallback (the full installer) before any download, as up to date', async () => {
+    const r = await realCheck('witness', ['Castcade-Setup-0.2.46.exe']);
+    expect(r).toMatchObject({ available: false, events: ['not available'], downloads: 0 });
+    expect(r.logs.filter((l) => l.includes('is not an update for the witness edition'))).toHaveLength(1);
+    expect(r.logs).toContain('updater: up to date');
+  });
+
+  it('a Witness edition takes witness.yml (its own installer) and downloads it', async () => {
+    const r = await realCheck('witness', ['Castcade-Witness-Setup-0.2.46.exe']);
+    expect(r).toMatchObject({ available: true, events: ['available'], downloads: 1 });
+    expect(r.logs.some((l) => l.includes('not an update for'))).toBe(false);
+  });
+
+  it('the full edition takes latest.yml as before and refuses a Witness installer', async () => {
+    expect(await realCheck('full', ['Castcade-Setup-0.2.46.exe'])).toMatchObject({ available: true, downloads: 1 });
+    expect(await realCheck('full', ['Castcade-Witness-Setup-0.2.46.exe'])).toMatchObject({ available: false, events: ['not available'], downloads: 0 });
+  });
+
+  it('names the Witness installer when electron-updater does not say which file it downloaded', async () => {
+    const u = new FakeUpdater([]);
+    const probed: string[] = [];
+    let quits = 0;
+    const c = createUpdateController({
+      log: memLog([]),
+      appVersion: '0.2.45',
+      edition: 'witness',
+      updater: u,
+      clock: new ManualClock(),
+      busy: () => null,
+      busyAtStart: async () => null,
+      pending: () => ({ kind: 'none' }),
+      marker: { read: () => null, write: () => undefined, remove: () => undefined },
+      installerRunning: async (name) => {
+        probed.push(name);
+        return true;
+      },
+      hiddenStart: false,
+      startedByInstaller: false,
+      quit: () => void (quits += 1),
+    });
+    expect(typeof u.isUpdateSupported).toBe('function');
+    u.next = async () => ({ isUpdateAvailable: true, updateInfo: { version: '0.2.46' }, downloadPromise: Promise.resolve().then(() => u.emit('update-downloaded', { version: '0.2.46' })) });
+    c.startChecks();
+    await flush();
+    expect(c.status().ready).toBe('0.2.46');
+    expect(await c.install('offer')).toBe(true);
+    expect(probed).toEqual(['Castcade-Witness-Setup-0.2.46.exe']);
+    expect(quits).toBe(1);
   });
 });

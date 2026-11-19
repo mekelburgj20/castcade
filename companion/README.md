@@ -45,6 +45,21 @@ companion is an npm workspace (hoisted `node_modules`). Publish target: GitHub R
 updater reads the releases feed anonymously and GitHub answers 404 for a private repo (that is how 0.2.2
 installs sat on 0.2.2 until 2026-10-19).
 
+**Witness edition (E10).** `electron-builder.witness.yml` builds a second installer from the same code and tag,
+`Castcade-Witness-Setup-<version>.exe` (`npm run dist:win:witness -w companion`; `npm run pack:dir:witness -w companion`
+for the app folder), for cabinets that need score posting only. It is a standalone copy of `electron-builder.yml`
+(`extends` would concatenate the arrays it must drop; `src/main/edition-config.test.ts` keeps the two in step): same
+appId, productName and NSIS settings, so either installer installs over the other and keeps the pairing;
+`extraMetadata.castcadeEdition: witness`, which `src/main/edition.ts` reads from the packaged `package.json` (a
+development run takes `CASTCADE_EDITION=witness|full` instead; anything else is the full app); `extraResources` = maps,
+vps and the hook library only; no `protocols`; `nsis.include` = `build/installer-witness.nsh` (installer.nsh with
+`CASTCADE_WITNESS_EDITION` defined: E9's update logic, no firewall rule, no `castcade://` keys, and both removed when a
+full install left them); `publish.channel: witness`, so the build writes `witness.yml` (never `latest.yml`) and
+`resources/app-update.yml` carries `channel: witness`. The edition's `featuresFor` turns off the stream host, the match
+host with all its media and helpers, one step and the link, 3D watch and the OBS overlay page; the window shows Pairing,
+Status and Settings. `updateMatchesEdition` (in electron-updater's `isUpdateSupported`, before any download) keeps a
+Witness install on Witness installers when a release has no `witness.yml`. `release.yml` builds it in a job of its own.
+
 **The PoC is unsigned.** SmartScreen shows *"Windows protected your PC"*; testers click *More info →
 Run anyway*. No signing configuration exists in the repo yet; a certificate remains the launch blocker
 below before anything ships outside the test group.

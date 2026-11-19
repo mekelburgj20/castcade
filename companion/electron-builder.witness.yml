@@ -1,0 +1,70 @@
+# electron-builder configuration for the Castcade **Witness edition** (E10): the same code and tag as electron-builder.yml,
+# for cabinets. Run from companion/: `npm run dist:win:witness` (local installer), `npm run pack:dir:witness` (app folder).
+#
+# Standalone on purpose, not `extends: electron-builder.yml`: electron-builder 26 merges configs with deepAssign, which
+# concatenates arrays (builder-util-runtime objects.js), so an extending file could not drop the helpers from
+# `extraResources` or the `protocols` entry. src/main/edition-config.test.ts checks that this file and electron-builder.yml
+# agree on everything an install over the other one depends on (appId, productName, the win and nsis keys, the publish
+# owner and repo).
+#
+# What differs from the full installer:
+#   - extraMetadata.castcadeEdition: witness (baked into the packaged package.json; src/main/edition.ts reads it): the app
+#     runs the Arcaid Witness part only (no stream, matches, 3D watch, OBS overlay; no global keys, no OpenXR layer, no
+#     castcade:// link);
+#   - artifactName Castcade-Witness-Setup-${version}.exe;
+#   - extraResources: maps, vps and the hook library only (no ffmpeg, vr-overlay, vr-layer, audio-helper, video-helper);
+#   - no `protocols`;
+#   - nsis.include build/installer-witness.nsh: installer.nsh's update logic (E9) without the firewall rule and the
+#     castcade:// keys, and removing both when a full install left them;
+#   - publish.channel: witness: electron-builder writes witness.yml (not latest.yml) and bakes `channel: witness` into
+#     resources/app-update.yml, so the installed app asks each release for witness.yml.
+# Same appId, productName, NSIS settings and userData folder: either installer installs over the other and the pairing
+# survives.
+appId: app.arcaid.castcade
+productName: Castcade
+copyright: GPL-3.0-only
+extraMetadata:
+  castcadeEdition: witness
+directories:
+  output: release
+  buildResources: build
+npmRebuild: false
+asar: true
+files:
+  - dist/**
+  - package.json
+  - build/icon.png
+  - build/tray.ico
+  - "!dist/.tsbuildinfo"
+  - "!dist/**/*.map"
+  - "!dist/**/*.d.ts"
+  - "!dist/**/*.d.ts.map"
+extraResources:
+  - from: resources/maps
+    to: maps
+  - from: resources/vps
+    to: vps
+  - from: ../vpx-hook/castcade.vbs
+    to: hook/castcade.vbs
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: Castcade-Witness-Setup-${version}.${ext}
+  signAndEditExecutable: true
+  verifyUpdateCodeSignature: false
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: false
+  deleteAppDataOnUninstall: false
+  shortcutName: Castcade
+  include: build/installer-witness.nsh
+publish:
+  provider: github
+  owner: mekelburgj20
+  repo: castcade
+  releaseType: release
+  channel: witness

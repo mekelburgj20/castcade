@@ -2,6 +2,9 @@ name: Release (Windows installer)
 
 # Tag push `v*` → build, publish to the GitHub Release (electron-updater's latest.yml included).
 # workflow_dispatch → build only; the installer is attached to the run as a workflow artifact.
+# E10: two installers from the same tag: the full app (job `windows`, latest.yml) and the Witness edition (job
+# `witness`, electron-builder.witness.yml: no native helpers, its own update file witness.yml, never a latest.yml).
+# Either job may create the release first; both accept that the other already did.
 on:
   push:
     tags: ['v*']
@@ -96,7 +99,8 @@ jobs:
       - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
-        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept."
+        # E10: the witness job may create it at the same moment: a create that fails is fine when the release exists.
+        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
       - name: Package (publish to the release on tag pushes only)
         working-directory: companion
         run: npx electron-builder --win --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
@@ -119,3 +123,77 @@ jobs:
             companion/release/*.exe
             companion/release/*.exe.blockmap
             companion/release/latest.yml
+
+  # E10: the Witness edition (cabinets): the Arcaid Witness part only, maps + VPS index + hook library, no native helper
+  # (so no cmake here) and no ffmpeg. Its update file is witness.yml (`publish.channel: witness`); installed Witness
+  # editions ask each release for it, and refuse the latest.yml the updater falls back to when a release has none.
+  witness:
+    name: Castcade-Witness-Setup (windows x64, nsis, unsigned)
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fetch the pinmame-nvram-maps corpus into companion/resources/maps
+        run: npm run fetch-maps -w companion
+      - name: Build the compact VPS index into companion/resources/vps
+        run: npm run fetch-vps -w companion
+      - run: npm run build
+      # The same check as the full job's, before anything is published: the packaged app's --smoke (journal pipe worker
+      # inside the asar) and the edition baked into it.
+      - name: Package the app folder only (not published)
+        working-directory: companion
+        run: npx electron-builder --win --dir --config electron-builder.witness.yml --publish never
+      - name: Smoke the packaged app (Castcade.exe --smoke, edition witness)
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'castcade-smoke.out'
+          $err = Join-Path $env:RUNNER_TEMP 'castcade-smoke.err'
+          $p = Start-Process -FilePath companion\release\win-unpacked\Castcade.exe -ArgumentList '--smoke' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError $err
+          $text = (Get-Content -Raw $out) ?? ''
+          Write-Output $text
+          Get-Content -Raw $err
+          if ($p.ExitCode -ne 0) { throw "Castcade.exe --smoke exited with $($p.ExitCode)" }
+          if ($text -notmatch 'journal-pipe ok') { throw 'Castcade.exe --smoke did not print journal-pipe ok' }
+          if ($text -notmatch 'edition witness') { throw 'Castcade.exe --smoke did not print edition witness' }
+      # Built with --publish never and uploaded by name below: the three files go up, and nothing else (never a latest.yml,
+      # which would turn every full install into a Witness edition at its next update check).
+      - name: Package
+        working-directory: companion
+        run: npx electron-builder --win --config electron-builder.witness.yml --publish never
+      - name: Check the update file (witness.yml names the Witness installer; no latest.yml)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f companion/release/witness.yml
+          grep -q 'Castcade-Witness-Setup-' companion/release/witness.yml
+          if grep -q 'Castcade-Setup-' companion/release/witness.yml; then echo 'witness.yml names the full installer'; exit 1; fi
+          if [ -e companion/release/latest.yml ]; then echo 'the Witness build wrote a latest.yml'; exit 1; fi
+      - name: Create the pre-release first (the full job may create it at the same moment)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease --title "Castcade $GITHUB_REF_NAME" --notes "See docs/phase-2-witness.md for the tester guide. Unsigned proof of concept." || gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null
+      - name: Publish the installer, its blockmap and witness.yml to the release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY" \
+            companion/release/Castcade-Witness-Setup-*.exe \
+            companion/release/Castcade-Witness-Setup-*.exe.blockmap \
+            companion/release/witness.yml
+      - name: Upload installer as a workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: Castcade-Witness-Setup-windows-x64
+          if-no-files-found: error
+          path: |
+            companion/release/Castcade-Witness-Setup-*.exe
+            companion/release/Castcade-Witness-Setup-*.exe.blockmap
+            companion/release/witness.yml

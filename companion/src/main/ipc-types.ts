@@ -199,6 +199,8 @@ export interface CastcadeApi {
   readonly appVersion: string;
   readonly protocolVersion: number;
   readonly platform: string;
+  /** E10: `witness` in the Witness edition (Castcade-Witness-Setup): Pairing, Status and Settings only. */
+  readonly edition: 'full' | 'witness';
   witness: {
     status(): Promise<WitnessStatus>;
     pair(code: string): Promise<WitnessStatus>;

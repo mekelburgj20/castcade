@@ -3,7 +3,7 @@
  * Exposes `window.castcade` (see `../main/ipc-types.ts` for the shape; `renderer/src/castcade.d.ts`
  * mirrors it). Every call is `ipcMain.handle`-backed; the pushes are `witness:status`, `tables:progress`, `stream:statusEvent`,
  * `stream:previewEvent`, `match:statusEvent`, `launch:statusEvent`, `watch:statusEvent` and `app:update:statusEvent`.
- * The two versions arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
+ * The two versions and the edition (E10) arrive on argv via `webPreferences.additionalArguments` (see main/index.ts).
  */
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import electron = require('electron');
@@ -107,6 +107,7 @@ const castcade: CastcadeApi = {
   appVersion: argValue('castcade-app-version'),
   protocolVersion: Number(argValue('castcade-protocol-version')),
   platform: process.platform,
+  edition: argValue('castcade-edition') === 'witness' ? 'witness' : 'full',
   witness: {
     status: () => ipcRenderer.invoke(CH.witnessStatus),
     pair: (code) => ipcRenderer.invoke(CH.witnessPair, code),

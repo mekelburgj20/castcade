@@ -20,6 +20,8 @@ import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
 import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
+import { featuresFor, resolveEdition } from './edition.js';
+import { removeFullEditionLeftovers } from './edition-leftovers.js';
 import { writeVrReport } from './vr-report-host.js';
 import {
   DEFAULT_ARCAID_BASE_URL,
@@ -88,6 +90,24 @@ const companionDir = resolve(here, '..', '..');
 const appVersion = app.getVersion();
 const argv = process.argv.slice(1);
 
+/** E10: the app's own package.json (inside app.asar when packaged), where the Witness installer's build bakes its edition. */
+function readAppPackageJson(): string | null {
+  try {
+    return readFileSync(join(app.getAppPath(), 'package.json'), 'utf8');
+  } catch {
+    return null;
+  }
+}
+/**
+ * E10: the edition (`edition.ts`): the full app, or the Witness edition (`Castcade-Witness-Setup`), which runs the
+ * Arcaid Witness part only and constructs none of what `features` turns off.
+ */
+const editionPick = resolveEdition({ packageJson: readAppPackageJson(), env: process.env, packaged: app.isPackaged });
+const edition = editionPick.edition;
+const features = featuresFor(edition);
+/** E10: what an IPC call for a feature the Witness edition leaves out answers (the window never offers one). */
+const NOT_IN_WITNESS = 'not part of the Castcade Witness edition';
+
 let quitting = false;
 let win: BrowserWindow | null = null;
 let log: Logger | null = null;
@@ -129,14 +149,14 @@ const WATCH_BLOCKS_MATCH = 'Leave the 3D watch session first: a PC is in one Arc
 /** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
 let matchTabShowing = false;
 /** A14: a `castcade://` link that arrived before the app was ready (a cold start, or a second instance during startup). */
-let earlyLink: string | null = linkFromArgv(argv);
+let earlyLink: string | null = features.match ? linkFromArgv(argv) : null;
 /** D10.3 (§6.1): a frame-ring token: 16 characters of `[A-Za-z0-9_-]` (12 random bytes, base64url), fresh per companion start. */
 const ringToken = (): string => randomBytes(12).toString('base64url');
 
 if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
   const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
-  process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'}\n`);
+  process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'} edition ${edition}\n`);
   // C16.2: the journal pipe's worker starts from this build (inside the asar when packaged) and writes a line it is sent;
   // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure, a throw or no
   // answer within 30 s fails the smoke (exit 1); it never keeps running.
@@ -159,7 +179,7 @@ if (argv.includes('--smoke')) {
   app.setAppUserModelId(APP_USER_MODEL_ID);
   // A14: a second instance is how Windows hands over a clicked `castcade://` link while Castcade runs.
   app.on('second-instance', (_e, secondArgv) => {
-    const link = linkFromArgv(secondArgv);
+    const link = features.match ? linkFromArgv(secondArgv) : null;
     // E9: while a waiting update is checked at start, a second start opens nothing (Castcade may be about to install).
     if (updateAtStart) {
       if (link) earlyLink = link;
@@ -238,6 +258,7 @@ function createWindow(): BrowserWindow {
       additionalArguments: [
         `--castcade-app-version=${appVersion}`,
         `--castcade-protocol-version=${PROTOCOL_VERSION}`,
+        `--castcade-edition=${edition}`,
       ],
     },
   });
@@ -349,7 +370,7 @@ function restartToUpdate(host: WitnessHost, from: 'window' | 'tray'): UpdateStat
   const r = updater.requestInstall();
   if (r.go) void quit(host, true);
   else if (r.why && version && updater.pendingVersion() === null) tray?.notify('Castcade update', `The download of Castcade ${version} is gone. Castcade downloads it again and offers it when it is ready.`);
-  else if (r.why && from === 'tray') tray?.notify('Castcade update waits', `The update to Castcade ${version ?? ''} waits ${r.why}. Castcade never restarts during a game, a match or a 3D watch session.`);
+  else if (r.why && from === 'tray') tray?.notify('Castcade update waits', `The update to Castcade ${version ?? ''} waits ${r.why}. Castcade never restarts during a game${features.match ? ', a match or a 3D watch session' : ''}.`);
   return updater.status();
 }
 
@@ -444,6 +465,7 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
   const controller = createUpdateController({
     log: logger,
     appVersion,
+    edition,
     updater: await loadUpdater(logger),
     busy: updateWaitReason,
     busyAtStart: async () => {
@@ -514,11 +536,11 @@ function registerIpc(
   maybeOneStep: OneStep | null,
 ): void {
   const sh = (): StreamHost => {
-    if (!maybeStream) throw new Error('streaming is unavailable this run (see the log)');
+    if (!maybeStream) throw new Error(features.stream ? 'streaming is unavailable this run (see the log)' : `streaming is ${NOT_IN_WITNESS}`);
     return maybeStream;
   };
   const mh = (): MatchHost => {
-    if (!maybeMatch) throw new Error('matches are unavailable this run (see the log)');
+    if (!maybeMatch) throw new Error(features.match ? 'matches are unavailable this run (see the log)' : `matches are ${NOT_IN_WITNESS}`);
     return maybeMatch;
   };
   /** I11.4.1: the calls that put this PC into a match room are refused while a 3D watch session is on. */
@@ -526,11 +548,11 @@ function registerIpc(
     if (watch3d?.active()) throw new Error(WATCH_BLOCKS_MATCH);
   };
   const wh = (): WatchHost => {
-    if (!watch3d) throw new Error('3D watch is unavailable this run (see the log)');
+    if (!watch3d) throw new Error(features.watch3d ? '3D watch is unavailable this run (see the log)' : `3D watch is ${NOT_IN_WITNESS}`);
     return watch3d;
   };
   const os = (): OneStep => {
-    if (!maybeOneStep) throw new Error('matches are unavailable this run (see the log)');
+    if (!maybeOneStep) throw new Error(features.match ? 'matches are unavailable this run (see the log)' : `matches are ${NOT_IN_WITNESS}`);
     return maybeOneStep;
   };
   const str = (v: unknown, what: string): string => {
@@ -755,7 +777,8 @@ async function main(): Promise<void> {
     mirrorToStderr: !app.isPackaged,
   });
   log = logger;
-  logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged}`);
+  logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged} edition ${edition}`);
+  if (editionPick.ignored !== null) logger.warn(`edition: '${editionPick.ignored}' (${editionPick.source === 'env' ? 'CASTCADE_EDITION' : 'package.json castcadeEdition'}) is not an edition; running the full app`);
 
   // E9: before anything else starts. An update downloaded before Castcade last closed is installed now (the installer
   // shows its progress and starts Castcade again), unless a table or a match is on; a start while an install Castcade
@@ -820,7 +843,7 @@ async function main(): Promise<void> {
         companionLog: logger.file,
         layerLog: localAppData ? join(localAppData, 'Castcade', 'logs', 'vr-layer.log') : null,
         journalDir: localAppData ? join(localAppData, 'Castcade', 'journal') : null,
-        about: [`castcade ${appVersion} protocol ${PROTOCOL_VERSION}`, `device ${store.get().deviceLabel} (${store.get().deviceId})`],
+        about: [`castcade ${appVersion} protocol ${PROTOCOL_VERSION} edition ${edition}`, `device ${store.get().deviceLabel} (${store.get().deviceId})`],
       }),
   });
   witnessHost = host;
@@ -848,7 +871,7 @@ async function main(): Promise<void> {
   // D1.2 / D1.3: recording and streaming; the key shares the pairing token's codec.
   // A failure here turns streaming off for this run; it never stops the witness.
   let streamHost: StreamHost | null = null;
-  try {
+  if (features.stream) try {
     streamHost = createStreamHost({
       file: join(userData, 'stream.json'),
       codec: tokenCodec(logger),
@@ -878,7 +901,10 @@ async function main(): Promise<void> {
   // set up is logged and left out: the match then runs without it (2026-10-30: media never blocks a match).
   const mediaSettings = createMediaSettingsStore(join(userData, 'media.json'), (e) => logger.warn(`media: could not save media.json: ${describeError(e)}`));
   mediaSettingsStore = mediaSettings;
-  try {
+  // E10: the Witness edition sets up none of the match's media below, and removes what a full install left (the
+  // OpenXR layer's registration, the castcade:// link); in a development run it leaves the PC's registrations alone.
+  if (!features.match && app.isPackaged) void removeFullEditionLeftovers({ protocol: app, log: (line) => logger.info(line) });
+  if (features.match) try {
     matchMedia = createRtcHost({
       userData,
       log: logger,
@@ -895,7 +921,7 @@ async function main(): Promise<void> {
   } catch (e) {
     logger.error(`media: could not set up (${describeError(e)}); matches run without video and voice this run`);
   }
-  try {
+  if (features.match) try {
     const exePath = resolveVrOverlay({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
     if (!exePath) logger.info('vr-overlay: no helper in this build; in VR the match panel shows on the desktop');
     matchOverlay = createVrOverlay({ exePath, log: (line) => logger.info(line) });
@@ -905,7 +931,7 @@ async function main(): Promise<void> {
   // D7.3: off SteamVR (Virtual Desktop, Oculus, other OpenXR runtimes) the panel goes in through the OpenXR layer.
   // D7.3.3 (2026-11-02): packaged, it runs from a per-version copy under %LOCALAPPDATA%\Castcade\vr-layer (an update
   // cannot replace a dll a running VPX maps), registered now at start, and the log says when VPX predates it.
-  try {
+  if (features.match) try {
     const layerLog = (line: string) => logger.info(line);
     const sourceJson = resolveVrLayer({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
     const staged = sourceJson && app.isPackaged ? stageVrLayer({ sourceDir: dirname(sourceJson), root: vrLayerStageRoot(process.env, userData), version: appVersion, log: layerLog }) : null;
@@ -937,7 +963,7 @@ async function main(): Promise<void> {
   }
 
   // D2.8: table sound. A missing helper (or an old Windows) only means each rig hears its own table, as before.
-  try {
+  if (features.match) try {
     const exePath = resolveAudioHelper({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
     const stateFile = join(userData, 'castcade-audio-state.txt');
     tableAudio = createTableAudioHelper({ exePath, stateFile, log: (line) => logger.info(line) });
@@ -955,7 +981,7 @@ async function main(): Promise<void> {
   // media setting `videoPath` is `native`; a missing helper only means the Electron video path, as 0.2.36. The two
   // frame-ring tokens are fresh per companion start (§6.1: a stale layer in a running VPX never meets a new helper's ring).
   const videoRings = { sendRing: ringToken(), recvRing: ringToken() };
-  try {
+  if (features.match) try {
     const exe = resolveVideoHelper({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
     videoHelper = createVideoHelper({ exe, log: (line) => logger.info(line) });
     if (!exe) logger.info('video: no spectator-video helper in this build; matches use the Electron video path');
@@ -966,7 +992,7 @@ async function main(): Promise<void> {
   // I11.4.2 (ADR 0011, docs/design/state-stream-in-match.md §4): the state stream inside a match. Nothing is opened
   // here: the control port comes up with the first match (or the first match table started), the tunnel with each
   // match. A failure only means every match is 2D, as before.
-  try {
+  if (features.match) try {
     const portsFile = join(userData, 'stream3d.json');
     stream3d = createStream3dHost({
       log: logger,
@@ -988,7 +1014,7 @@ async function main(): Promise<void> {
 
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
-  try {
+  if (features.match) try {
     matchHost = createMatchHost({
       file: join(userData, 'match.json'),
       keysFile: join(userData, 'match-keys.json'),
@@ -1077,7 +1103,7 @@ async function main(): Promise<void> {
   // I11.4.1: the 3D watch session (ADR 0011's fork, its stream carried between PCs over a WebRTC data channel, every
   // socket on loopback). Through ArcAid like a match: paired only, and never while a match is on. A failure here only
   // turns 3D watch off for this run.
-  try {
+  if (features.watch3d) try {
     const mhost = matchHost;
     watch3d = createWatchHost({
       relay: () => {
@@ -1212,8 +1238,8 @@ async function main(): Promise<void> {
   }
 
   // D1.1: the overlay page OBS adds as a browser source. A taken port is logged, never fatal.
-  const page = createOverlayServer({ state: () => overlayStateFrom(host.status(), host.liveGame()), log: (line) => logger.info(line) });
-  await page.start().then(
+  const page = features.overlayServer ? createOverlayServer({ state: () => overlayStateFrom(host.status(), host.liveGame()), log: (line) => logger.info(line) }) : null;
+  await page?.start().then(
     () => {
       overlay = page;
     },

@@ -29,6 +29,12 @@
 ; installer ends (`doStartApp` + `quitSuccess` in installSection.nsh). And an update an older Castcade installed
 ; silently when it quit (`--updated /S`, no --force-run: 0.2.45 and before) starts Castcade in the tray at its end,
 ; instead of leaving nothing running.
+;
+; E10 (2026-11-19): the Witness edition's installer (electron-builder.witness.yml) includes this file through
+; installer-witness.nsh, which defines CASTCADE_WITNESS_EDITION first. It gets everything above for updates, but no
+; firewall rule (it ships no video helper) and no castcade:// keys (it has no matches); instead it deletes both when a
+; full install left them (installed over a full install, whose uninstaller normally removes them first). The uninstall
+; step is the same for both editions.
 
 !macro customInstallMode
   ${if} ${isUpdated}
@@ -47,6 +53,12 @@
 !endif
 
 !macro customInstall
+  !ifdef CASTCADE_WITNESS_EDITION
+  ; E10: the Witness edition keeps neither: a full install's castcade:// keys and firewall rule go (best-effort).
+  DeleteRegKey HKCU "Software\Classes\castcade"
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Castcade video helper"'
+  Pop $0
+  !else
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="Castcade video helper"'
   Pop $0
   nsExec::ExecToLog 'netsh advfirewall firewall add rule name="Castcade video helper" dir=in action=allow program="$INSTDIR\resources\video-helper\castcade-video.exe" enable=yes profile=private,domain protocol=UDP'
@@ -56,6 +68,7 @@
   WriteRegStr HKCU "Software\Classes\castcade" "" "URL:castcade"
   WriteRegStr HKCU "Software\Classes\castcade" "URL Protocol" ""
   WriteRegStr HKCU "Software\Classes\castcade\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "%1"'
+  !endif
   ; E9: the end of an update (see the top of this file). $launchLink is the Start menu shortcut, else the exe. After an
   ; older Castcade's silent install at quit the user had closed Castcade (maybe for a game in VR): it comes back in the
   ; tray (`--hidden`, the Start with Windows start), not with its window.
