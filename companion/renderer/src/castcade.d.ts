@@ -560,6 +560,20 @@ interface MatchSettings {
   scoreboardCorner: 'top-right' | 'top-left';
   /** D8.12: the scoreboard quad's centre ([right, up, ahead], metres from the head) and width; null: the layer's own. No UI. */
   scoreboardPlace: { offset: [number, number, number]; widthM: number } | null;
+  /** I11.4.2: the player up on this PC's own table in 3D while this player waits: whenever both PCs can, or never. */
+  watch3d: 'auto' | 'off';
+}
+
+/** I11.4.2 (mirrors main/stream3d-host.ts Stream3dView): the state stream of a match on this PC. */
+interface Stream3dView {
+  setting: 'auto' | 'off';
+  /** This PC's VPX on the control connection: none, connected but not through its hello, another version, ready. */
+  fork: 'none' | 'connecting' | 'version' | 'ready';
+  build: string | null;
+  /** The player shown in 3D now, or null. */
+  watching: string | null;
+  /** One line per other player: what this PC shows of them while they are up, and why when it is the 2D video. */
+  players: Array<{ id: string; name: string; mode: '3d' | '2d'; line: string }>;
 }
 
 /** A6 (mirrors main/match-host.ts MatchStatus). */
@@ -622,6 +636,8 @@ interface MatchStatus {
   videoMaxKbps: number;
   videoPin: number | null;
   locked: boolean;
+  /** I11.4.2: the state stream of this match (who is shown in 3D, one line per other player); null with no match. */
+  stream3d: Stream3dView | null;
   settings: MatchSettings;
   defaultName: string;
   lastError: string | null;

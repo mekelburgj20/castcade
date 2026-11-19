@@ -319,7 +319,7 @@ export class SignalingMesh {
     if (from === this.localId) return Promise.resolve();
     // D10.3: a signal of the native video helper's connection is never this mesh's (the host splits them off before
     // the page; this is the page's own guard, since its copy of this class runs on whatever main forwards).
-    if (signal.channel === 'video') return Promise.resolve();
+    if (signal.channel === 'video' || signal.channel === 'stream') return Promise.resolve();
     if (signal.kind === 'reset') {
       // D2.7: the peer's connections are new. Everything it sent before belongs to its old one: dropped, not forwarded.
       this.early.delete(from);
@@ -360,22 +360,27 @@ export const SPLIT_HOLD_MAX = 256;
  * helper's (`video-mesh.ts`), and what it sends goes out marked `channel: 'video'`. The underlying signalling holds
  * one listener (`matchSignalling`), so it is subscribed once, here, and each side's signals are held until that side
  * listens (at most `SPLIT_HOLD_MAX`, oldest dropped). Each side takes one listener at a time, as the original does.
+ *
+ * I11.4.2 (2026-11-19, protocol 6): a third side, `stream`: the signals of the pair's data-only connection for the VPX
+ * state stream (`main/stream3d-host.ts`), marked `channel: 'stream'` on the way out; neither other side ever sees one.
  */
-export function splitSignalling(sig: MediaSignalling, max = SPLIT_HOLD_MAX): { rtc: MediaSignalling; video: MediaSignalling } {
+export function splitSignalling(sig: MediaSignalling, max = SPLIT_HOLD_MAX): { rtc: MediaSignalling; video: MediaSignalling; stream: MediaSignalling } {
   type Cb = (from: MatchPlayerId, signal: MediaSignal) => void;
-  const sides: Record<'rtc' | 'video', { listener: Cb | null; held: Array<[MatchPlayerId, MediaSignal]> }> = {
+  type Side = 'rtc' | 'video' | 'stream';
+  const sides: Record<Side, { listener: Cb | null; held: Array<[MatchPlayerId, MediaSignal]> }> = {
     rtc: { listener: null, held: [] },
     video: { listener: null, held: [] },
+    stream: { listener: null, held: [] },
   };
   sig.onSignal((from, signal) => {
-    const side = sides[signal.channel === 'video' ? 'video' : 'rtc'];
+    const side = sides[signal.channel === 'video' ? 'video' : signal.channel === 'stream' ? 'stream' : 'rtc'];
     if (side.listener) return side.listener(from, signal);
     side.held.push([from, signal]);
     if (side.held.length > max) side.held.shift();
   });
-  const make = (name: 'rtc' | 'video'): MediaSignalling => ({
+  const make = (name: Side): MediaSignalling => ({
     localId: sig.localId,
-    send: (to, signal) => sig.send(to, name === 'video' ? { ...signal, channel: 'video' } : signal),
+    send: (to, signal) => sig.send(to, name === 'rtc' ? signal : { ...signal, channel: name }),
     onSignal(cb) {
       const side = sides[name];
       side.listener = cb;
@@ -385,7 +390,7 @@ export function splitSignalling(sig: MediaSignalling, max = SPLIT_HOLD_MAX): { r
       };
     },
   });
-  return { rtc: make('rtc'), video: make('video') };
+  return { rtc: make('rtc'), video: make('video'), stream: make('stream') };
 }
 
 /** The classes as plain JS for the panel page's `<script>` (see the header): one source, no second copy to drift. */

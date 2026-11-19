@@ -43,6 +43,14 @@
  * server without it) the host publishes the address invite and asks the router for the port in the background
  * (`port-mapping.ts`, UPnP, 3 s; removed at teardown, renewed at half its lease). `MatchStatus.path` says which path
  * is in use; `portMapping` what the router said.
+ *
+ * I11.4.2 (2026-11-19, ADR 0011, docs/design/state-stream-in-match.md §4): the state stream inside a match. With
+ * `stream3d` (main/stream3d-host.ts) a match opens one more data connection per other player (MEDIA_SIGNAL channel
+ * `stream`), and a player who waits with a locked table sees the player up on their own VPX table when both PCs can
+ * (`syncStream`, from the same panel state that picks theater): the headset then shows no theater picture
+ * (`syncVrMode`), the 2D video keeps flowing underneath and comes back the moment 3D does not work. At the grant the
+ * turn lock is lifted once the fork is back on its own table (`lock.unlock`, 2 s at most). `tableLaunch()` is how a
+ * match table is started (`one-step.ts`): in the fork when it is there and `watch3d` is `auto`.
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -56,6 +64,7 @@ import { HostMatch } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
+import type { ForkLaunch } from '../launch/vpx-launch.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndsOf, type ResumeRecord } from './match-resume.js';
@@ -78,6 +87,7 @@ import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
 import { openPort, portMappingLine, type PortMapping, type PortMapResult } from './port-mapping.js';
+import type { MatchStream3d, Stream3dHost, Stream3dView } from './stream3d-host.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
 import {
@@ -234,6 +244,12 @@ export interface MatchStatus {
   videoMaxKbps: number;
   videoPin: number | null;
   locked: boolean;
+  /**
+   * I11.4.2: the state stream of this match: this PC's VPX on the control connection, who is shown in 3D now, and one
+   * line per other player saying what this PC shows of them (3D, or the 2D video and why). Null with no match, and in
+   * a build without it.
+   */
+  stream3d: Stream3dView | null;
   settings: MatchSettings;
   /** The name the Host / Join cards prefill: the setting, else the pairing label. */
   defaultName: string;
@@ -302,6 +318,12 @@ export interface MatchHost {
    */
   hostGame(): GameFingerprint | null;
   /**
+   * I11.4.2 (§4.4): how a match table is started on this PC now: in the Castcade VPX build with the state stream's
+   * variables (the options for `VpxLauncher.launch`, and the word on whether that start took), or null: as it always
+   * was (no match, the setting off, no fork beside the VPX exe).
+   */
+  tableLaunch(): Promise<ForkLaunch | null>;
+  /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
@@ -355,6 +377,11 @@ export interface MatchHostOptions {
    * the layer's theater), one pair per start. Absent → the Electron video path only.
    */
   nativeVideo?: { helper: VideoHelper; sendRing: string; recvRing: string };
+  /**
+   * I11.4.2: the state stream inside a match (`main/stream3d-host.ts`): the control server the VPX fork connects to,
+   * the tunnel and the 3D-or-2D decision. Absent → every match is 2D, as before.
+   */
+  stream3d?: Stream3dHost;
   appVersion: string;
   log: Logger;
   /**
@@ -502,6 +529,8 @@ interface Active {
   /** D10.3.8: theater's picture source while the sink is the layer's ring (`syncNativeVideo`), and its 1 s clock. */
   theater: TheaterPathState;
   theaterTimer: ReturnType<typeof setInterval> | null;
+  /** I11.4.2: the state stream of this match (`openStream`), null without `stream3d`. */
+  stream: MatchStream3d | null;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -615,13 +644,47 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   // ---- the turn lock (the hook checks it at each key press) ----
   const lockFile = opts.lockFile ?? lockPathFrom(process.env);
   let locked = false;
+  /** I11.4.2: an unlock that waits for the fork to be back on its own table (its cancel), else null. */
+  let unlockWait: (() => void) | null = null;
   const lock = {
     lock(): void {
+      // A lock asked while an unlock still waits: the unlock is off.
+      unlockWait?.();
+      unlockWait = null;
       mkdirSync(dirname(lockFile), { recursive: true });
       writeFileSync(lockFile, '');
       locked = true;
     },
+    /**
+     * I11.4.2 (§4.3): while this PC's VPX shows another player's table (or is on its way there or back), the lock is
+     * lifted only once it says `state playing`, 2 s at most (`MatchStream3d.whenPlaying`): a key pressed before then
+     * would reach a table the player cannot see. Everywhere else: at once, as before.
+     */
     unlock(): void {
+      const s = active?.stream ?? null;
+      if (s?.away()) {
+        if (unlockWait) return;
+        log.info('stream3d: the table is to be unlocked; waiting for VPX to be back on its own table (2 s at most)');
+        // `whenPlaying` may answer before it returns (the fork came back meanwhile): the handle is kept only while
+        // the answer is still to come.
+        let answered = false;
+        const cancel = s.whenPlaying((late) => {
+          answered = true;
+          unlockWait = null;
+          try {
+            rmSync(lockFile, { force: true });
+            locked = false;
+            log.info(`stream3d: the table is unlocked (${late ? 'VPX did not answer within 2 s' : 'VPX is back on its own table'})`);
+          } catch (e) {
+            log.warn(`match: could not unlock the table: ${describeError(e)}`);
+          }
+          if (active) emit();
+        });
+        if (!answered) unlockWait = cancel;
+        return;
+      }
+      unlockWait?.();
+      unlockWait = null;
       rmSync(lockFile, { force: true });
       locked = false;
     },
@@ -788,6 +851,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       videoMaxKbps: videoMaxKbps(),
       videoPin,
       locked,
+      stream3d: a?.stream?.status() ?? null,
       settings: { ...settings },
       defaultName: defaultName(),
       lastError,
@@ -851,11 +915,36 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     syncWindowTune(to);
     const p = a.controller.panel();
     // A16.2: while this player enters high-score initials the headset stays on their own table.
-    const mode = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold });
+    const turn = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold });
+    // I11.4.2 (§4.3): while this PC's VPX shows the player up on its own table there is no theater picture: nothing
+    // over the table (the corner scoreboard stays: `syncScoreboard`). The panel (the setting, the menu) is untouched.
+    const in3d = turn === 'theater' && (a.stream?.showing3d() ?? false);
+    const mode: VrViewMode = in3d ? 'hidden' : turn;
     if (a.vrMode?.mode === mode && a.vrMode.to === to) return;
     a.vrMode = { mode, to };
-    log.info(`match: headset mode ${mode}`);
+    log.info(`match: headset mode ${mode}${in3d ? ' (the player up is on this table in 3D: no theater picture)' : ''}`);
     to.setMode(mode);
+  };
+  /**
+   * I11.4.2 (§4.3): the state stream follows the match: a data connection per other player from the lobby on, the
+   * setting, and who this PC should be watching: the player up while this PC waits with its table locked. Whenever
+   * this PC's table is its own (it is up; the lobby, a pause, between games; the initials hold and the window in which
+   * a finished game ends on the machine, both of which leave the table unlocked) the answer is nobody, and the fork is
+   * on its own table.
+   */
+  const syncStream = (a: Active): void => {
+    const s = a.stream;
+    if (!s) return;
+    const c = a.controller.status();
+    const me = a.engine.localId;
+    s.setSetting(settings.watch3d);
+    s.setPeers(c.participants.filter((x) => x.playerId !== me).map((x) => ({ id: x.playerId, name: x.displayName })));
+    const p = c.panel;
+    const waiting = p.phase === 'playing' && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
+    // The turn is the grant: a new one to the same player (shoot again, the last player with balls left) is a new
+    // turn, and a watch that failed in the last one is tried again.
+    const grant = (a.controller.currentRole as HostMatch | ClientMatch).state.currentGrant?.grant ?? null;
+    s.setTarget(waiting ? p.playerUp : null, waiting && grant ? String(grant.grantSeq) : null);
   };
   /**
    * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
@@ -911,6 +1000,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       tryReconcile(active);
     }
     if (active) {
+      // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
+      syncStream(active);
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
       syncNativeVideo(active);
@@ -1063,7 +1154,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     for (const ev of events) a.controller.feed(ev);
   };
   /** A fresh match's share of `Active`; `rec`: one picked up from the saved record. */
-  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'pendingExit' | 'heartbeat' | 'recordOff'> => ({
+  const tracking = (invite: string | null, rec: ResumeRecord | null): Pick<Active, 'joinInvite' | 'backlog' | 'mark' | 'hold' | 'reconcileDue' | 'savedTurnEnds' | 'pendingExit' | 'heartbeat' | 'recordOff' | 'stream'> => ({
+    stream: null,
     joinInvite: invite,
     backlog: rec ? (pendingBacklog ?? new TableBacklog<GameEvent>(rec.mark, true)) : new TableBacklog<GameEvent>(null, false),
     mark: rec?.mark ?? null,
@@ -1176,7 +1268,26 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     noteBallEnds(controller, witness.status());
     noteMidnightMode(controller);
     if (split) videoSides.set(controller, split.video);
+    if (split) streamSides.set(controller, split.stream);
     return controller;
+  };
+
+  // ---- I11.4.2: the state stream inside a match ----
+  /** The `stream` side of each controller's signalling, for the tunnel `openStream` makes once the match is up. */
+  const streamSides = new WeakMap<MatchController, MediaSignalling>();
+  /** At host / join: this match's data connections for the state stream, signalled on the `stream` channel. */
+  const openStream = (a: Active): void => {
+    const host3d = opts.stream3d;
+    const side = streamSides.get(a.controller);
+    if (!host3d || !side || a.stream) return;
+    try {
+      const s = host3d.open({ localId: a.engine.localId, setting: settings.watch3d, sendSignal: (to, sig) => side.send(to, sig) });
+      a.stream = s;
+      a.offs.push(side.onSignal((from, sig) => s.signal(from, sig)));
+      a.offs.push(s.onChange(() => void (active === a && emit())));
+    } catch (e) {
+      log.warn(`stream3d: could not be set up for this match (${describeError(e)}); the 2D video serves`);
+    }
   };
 
   // ---- D10.3: the native spectator video (spectator-video-native.md §6.4) ----
@@ -1256,7 +1367,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     syncNativeVideo(a);
   };
   /** D10.3.8: this rig is in theater with the layer's ring as the sink: the only place the theater path means anything. */
-  const theaterOnRing = (a: Active): boolean => a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings) === 'theater';
+  const theaterOnRing = (a: Active): boolean =>
+    a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings) === 'theater' && !(a.stream?.showing3d() ?? false); // I11.4.2: not while the player up is shown in 3D
   /**
    * The mesh follows the match: a helper peer per other participant; `send` on exactly when the headset would be
    * hidden for this rig's own ball (the same panel state `syncVrMode` reads: playing and my turn); the sink and the
@@ -1275,7 +1387,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     mesh.setPeers(c.participants.map((p) => p.playerId).filter((id) => id !== a.engine.localId));
     const panel = a.controller.panel();
     mesh.setSending(panel.phase === 'playing' && panel.myTurn);
-    const sink = videoSink(a);
+    // I11.4.2: a rig whose picture is the helper's own window (a desktop PC, a SteamVR rig) gets no window while its
+    // VPX shows the player up in 3D: it would sit over the table. The window is back the moment 3D is not shown.
+    const where = videoSink(a);
+    const sink: VideoSink = where.kind === 'window' && (a.stream?.showing3d() ?? false) ? { kind: 'none' } : where;
     mesh.setSink(sink);
     const theater = theaterOnRing(a);
     const up = theater ? panel.playerUp : null;
@@ -1554,6 +1669,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     opts.tableAudio?.start();
     // D10.3: the native video helper and this match's mesh, before the media attaches (it asks the camera with the ring).
     openVideo(a);
+    // I11.4.2: the state stream's data connections open now, in the lobby (a connect took 10 to 70 s on 2026-11-18).
+    openStream(a);
     // D2.10: the volume keys live as long as the match.
     registerKeys();
     await opts.media?.setVr?.(mediaRig(a));
@@ -2319,6 +2436,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     peekKey = '';
     // D10.3: the helper's peers are closed and the rings let go; the helper itself stays for the next match.
     closeVideo(a);
+    // I11.4.2: the fork is called back to its own table and the stream's data connections close; an unlock that
+    // waited for it happens now.
+    const stream = a.stream;
+    a.stream = null;
+    await stream?.close().catch((e: unknown) => log.warn(`stream3d: close: ${describeError(e)}`));
     // D2.8: this rig's table sounds again at once (the emit that follows would do it too, a moment later).
     opts.tableAudio?.apply({ mutePid: null, tapPid: null });
     opts.tableAudio?.unlevel();
@@ -2437,7 +2559,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const preMatchBefore = settings.preMatchPlay;
       const volumeBefore = `${settings.voiceVolume}/${settings.othersTableVolume}/${settings.myTableWhileUp}`;
       const menuKeysBefore = `${settings.menuKey}/${settings.menuChooseKey}`;
+      const watch3dBefore = settings.watch3d;
       saveSettings(patchMatchSettings(settings, patch));
+      // I11.4.2: the setting reaches a running match in `emit` (syncStream); a table already started stays in the VPX it is in.
+      if (settings.watch3d !== watch3dBefore) {
+        log.info(`stream3d: 3D watch set to ${settings.watch3d === 'auto' ? 'auto (3D whenever both PCs can)' : 'off (the 2D video)'} on the Match tab${active ? '' : '; from the next match table Castcade starts'}`);
+      }
       // D8.10: new menu keys are taken at once when a match holds the old ones.
       if (`${settings.menuKey}/${settings.menuChooseKey}` !== menuKeysBefore) {
         log.info(`match: menu key ${shortcutWords(settings.menuKey)}, choose key ${settings.menuChooseKey !== null ? shortcutWords(settings.menuChooseKey) : 'none'} (Match tab)`);
@@ -2584,6 +2711,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (!a) return null;
       const role = a.controller.currentRole;
       return role instanceof ClientMatch ? role.hostGame() : { ...a.sent.game };
+    },
+    async tableLaunch() {
+      if (!active || !opts.stream3d) return null;
+      return opts.stream3d.launch(settings.watch3d);
     },
     async saveFrames() {
       const media = opts.media;

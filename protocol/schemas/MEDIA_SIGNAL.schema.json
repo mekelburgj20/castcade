@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v5/MEDIA_SIGNAL.schema.json",
+  "$id": "https://castcade.dev/protocol/v6/MEDIA_SIGNAL.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
@@ -177,11 +177,12 @@
     },
     "channel": {
       "default": "rtc",
-      "description": "Which peer connection between the two the signal belongs to: `rtc` (absent = `rtc`), the Electron connection that carries voice (and video until D10.7); `video`, the native video helper's connection for the same pair (castcade-video.exe, D10). A peer that does not run the helper ignores `video` signals.",
+      "description": "Which peer connection between the two the signal belongs to: `rtc` (absent = `rtc`), the Electron connection that carries voice (and video until D10.7); `video`, the native video helper's connection for the same pair (castcade-video.exe, D10); `stream` (protocol 6), the data-only connection that carries the VPX state stream between the two companions (a waiting player watches the player up on their own table, I11.4.2). A peer that does not run the helper ignores `video` signals; every peer opens the `stream` connection, whether or not its VPX can use it.",
       "type": "string",
       "enum": [
         "rtc",
-        "video"
+        "video",
+        "stream"
       ]
     }
   },

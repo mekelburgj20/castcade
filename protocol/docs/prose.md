@@ -230,6 +230,13 @@ the three fields is logged.
   the player up: each rig keeps one video sender per connection and enables it only while it holds the
   grant, so a new grant or a host transfer needs no renegotiation. Who is up comes from `TURN_GRANT`,
   never from the media.
+- `channel` says which connection of the pair a signal sets up: `rtc` (the default: voice, and the Electron
+  video), `video` (protocol 4: the native video helper's connection) or `stream` (protocol 6, I11.4.2: a
+  data-only connection between the two companions that carries the VPX state stream, so a waiting player
+  whose VPX can watches the player up on their own table instead of the flat video). The `stream`
+  connection is opened in the lobby by every pair; what a PC's VPX can do is said over that connection
+  itself, never in a match message. A peer on protocol 5 does not know the value, which is why 6 is a
+  version of its own: mixed builds refuse each other at `HELLO`.
 
 ## Result
 

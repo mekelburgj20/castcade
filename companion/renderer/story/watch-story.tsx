@@ -96,6 +96,7 @@ const settings: MatchSettings = {
   scoreboard: true,
   scoreboardCorner: 'top-right',
   scoreboardPlace: null,
+  watch3d: 'auto',
 };
 
 const match: MatchStatus = {
@@ -135,6 +136,7 @@ const match: MatchStatus = {
   videoMaxKbps: 20_000,
   videoPin: null,
   locked: false,
+  stream3d: null,
   settings,
   defaultName: 'KROBS-PC',
   lastError: null,
@@ -161,7 +163,7 @@ const ok =
 
 const bridge = api({
   appVersion: '0.2.43',
-  protocolVersion: 5,
+  protocolVersion: 6,
   platform: 'win32',
   witness: api({ status: ok({ paired: true, running: true, currentTable: null }) }),
   settings: api({ get: ok({}) }),

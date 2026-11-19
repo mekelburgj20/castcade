@@ -79,6 +79,36 @@ export function forkStreamEnv(role: 'play' | 'watch', port: number, logFile: str
   };
 }
 
+/**
+ * I11.4.2 (2026-11-19, docs/design/state-stream-in-match.md §4.4): the fork's variables for a match table: role `match`
+ * (a play session that can be sent to watch and called back), its stream on a loopback port for the tunnel, the
+ * control connection to this companion, sound replay off (the companion already carries the player's table sound and
+ * mutes this PC's VPX while another player is up), the watcher's delay. Pure.
+ */
+export function forkMatchEnv(streamPort: number, controlPort: number, logFile: string): Record<string, string> {
+  for (const port of [streamPort, controlPort]) if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`not a port: ${port}`);
+  return {
+    CASTCADE_STREAM: 'match',
+    CASTCADE_STREAM_ADDR: `listen:127.0.0.1:${streamPort}`,
+    CASTCADE_STREAM_CONTROL: `connect:127.0.0.1:${controlPort}`,
+    CASTCADE_STREAM_SOUND: '0',
+    CASTCADE_STREAM_DELAY_MS: String(FORK_WATCH_DELAY_MS),
+    CASTCADE_STREAM_LOG: logFile,
+  };
+}
+
+/**
+ * I11.4.2 (§4.4): a match table's start in the fork: the options for `VpxLauncher.launch`, and whether that start
+ * took. `launch` answers ok as soon as the process is spawned; a start that fails after that (the `error` event:
+ * EACCES, a file that is not a program) or an exe that ends at once is only known later: `didNotStart` resolves true
+ * then, and false once the fork's VPX is up (it said `hello` on the control connection, or it outlived the first
+ * seconds). The caller starts the table in the player's own VPX on true.
+ */
+export interface ForkLaunch {
+  options: LaunchOptions;
+  didNotStart: Promise<boolean>;
+}
+
 /** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */
 export function launchEnv(base: Readonly<Record<string, string | undefined>>, add: Readonly<Record<string, string>>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};

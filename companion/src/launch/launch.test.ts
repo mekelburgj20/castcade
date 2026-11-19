@@ -8,7 +8,7 @@ import { MemoryFs } from '../witness/fs.js';
 import { createIdentityStore } from '../witness/identity-store.js';
 import { findLocalTable, titleOf } from './find-table.js';
 import { createRecentTables, listKnownTables, listTableFiles, type KnownTable } from './known-tables.js';
-import { FORK_EXE_NAME, createVpxLauncher, forkExeFor, forkStreamEnv, launchEnv, planLaunch, type SpawnOptions } from './vpx-launch.js';
+import { FORK_EXE_NAME, createVpxLauncher, forkExeFor, forkMatchEnv, forkStreamEnv, launchEnv, planLaunch, type SpawnOptions } from './vpx-launch.js';
 
 const TABLES = 'C:\\vpx\\tables';
 const MANIFESTS = 'C:\\data\\witness\\tables';
@@ -251,6 +251,21 @@ describe('the VPX fork launch (I11.4.1)', () => {
       CASTCADE_STREAM_LOG: 'watch.log',
     });
     expect(() => forkStreamEnv('play', 0, 'x')).toThrow();
+  });
+
+  it('I11.4.2: a match table: role match, the stream on loopback for the tunnel, the control connection to this companion, no sound replay, the delay', () => {
+    expect(forkMatchEnv(51000, 51002, 'match.log')).toEqual({
+      CASTCADE_STREAM: 'match',
+      CASTCADE_STREAM_ADDR: 'listen:127.0.0.1:51000',
+      CASTCADE_STREAM_CONTROL: 'connect:127.0.0.1:51002',
+      CASTCADE_STREAM_SOUND: '0',
+      CASTCADE_STREAM_DELAY_MS: '100',
+      CASTCADE_STREAM_LOG: 'match.log',
+    });
+    expect(() => forkMatchEnv(0, 51002, 'x')).toThrow();
+    expect(() => forkMatchEnv(51000, 65536, 'x')).toThrow();
+    // An inherited control address (a Castcade started from a fork's own launcher) never reaches the child.
+    expect(launchEnv({ PATH: 'Windows', CASTCADE_STREAM_CONTROL: 'connect:127.0.0.1:1' }, forkMatchEnv(51000, 51002, 'm.log')).CASTCADE_STREAM_CONTROL).toBe('connect:127.0.0.1:51002');
   });
 
   it("the child's environment drops inherited stream and test variables, whatever their case", () => {

@@ -514,11 +514,12 @@ export const MediaSignal = z
       .describe('Optional on stereo `sbs`: the geometry of [left, right] as the sender rendered them (the OpenXR layer camera, D7.5). Absent or null: a screen capture; the receiver assumes its own eyes.'),
     // D10.3 (2026-11-07, docs/design/spectator-video-native.md §6.3): additive like `stereo`, defaulted so a frame
     // without it reads as the Electron connection; the version stays 3.
+    // I11.4.2 (2026-11-19, docs/design/state-stream-in-match.md §4.1): `stream`, a new VALUE, so protocol 6 (version.ts).
     channel: z
-      .enum(['rtc', 'video'])
+      .enum(['rtc', 'video', 'stream'])
       .default('rtc')
       .describe(
-        "Which peer connection between the two the signal belongs to: `rtc` (absent = `rtc`), the Electron connection that carries voice (and video until D10.7); `video`, the native video helper's connection for the same pair (castcade-video.exe, D10). A peer that does not run the helper ignores `video` signals.",
+        "Which peer connection between the two the signal belongs to: `rtc` (absent = `rtc`), the Electron connection that carries voice (and video until D10.7); `video`, the native video helper's connection for the same pair (castcade-video.exe, D10); `stream` (protocol 6), the data-only connection that carries the VPX state stream between the two companions (a waiting player watches the player up on their own table, I11.4.2). A peer that does not run the helper ignores `video` signals; every peer opens the `stream` connection, whether or not its VPX can use it.",
       ),
   })
   .refine((s) => (s.kind === 'ice' ? s.candidate !== undefined : s.kind === 'reset' ? true : s.kind === 'stereo' ? s.stereo !== undefined : s.sdp !== undefined), {

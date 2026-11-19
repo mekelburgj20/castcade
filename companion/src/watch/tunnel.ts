@@ -19,13 +19,23 @@
  * chosen by the side that opens a stream; the flag keeps the two sides' ids apart, so both may open streams at once.
  * HELLO (id 0) carries the tunnel version, once per channel; a different one is logged and the streams go on.
  *
+ * Version 2 (I11.4.2, 2026-11-19): INFO (id 0), a frame of the channel itself like HELLO: a short payload this side's
+ * owner wants the peer's owner to have (`setInfo`; the match's 3D capability, main/stream3d-host.ts), opaque here. It is
+ * sent when the peer's HELLO has said 2 or later (a version 1 bridge would log every one as malformed, so it gets
+ * none) and again whenever it changes; what a peer sent last is handed to `onInfo`, and null when its channel closes.
+ * The 3D watch session sets none, so its frames are version 1's, byte for byte, but for the number in HELLO.
+ *
  * Backpressure, both ways: a channel whose send buffer is over its high mark (`channelBusy`, the page's
  * `bufferedAmount`) stops the reads of every local socket that feeds it until `channelWritable`; a local socket whose
  * write buffer is full (`write` false) sends PAUSE so the far end stops reading its socket for that stream, and RESUME
  * at `drain`. What is already on the way when either happens is a few frames, held in memory.
  */
 
-export const TUNNEL_VERSION = 1;
+export const TUNNEL_VERSION = 2;
+/** The first version whose bridge takes INFO. */
+export const INFO_SINCE_VERSION = 2;
+/** An INFO payload is at most this long (bytes). */
+export const INFO_MAX = 1024;
 /** One data-channel message, header included: the size SCTP implementations all accept. */
 export const FRAME_MAX = 16 * 1024;
 export const HEADER_BYTES = 5;
@@ -38,9 +48,9 @@ export const END_GRACE_MS = 2_000;
 /** Refusals and streams that end before they open are logged at most this often (the fork retries every 2 s). */
 export const REFUSAL_LOG_MS = 30_000;
 
-export const FRAME = { HELLO: 0, OPEN: 1, ACCEPT: 2, REFUSE: 3, DATA: 4, CLOSE: 5, PAUSE: 6, RESUME: 7 } as const;
+export const FRAME = { HELLO: 0, OPEN: 1, ACCEPT: 2, REFUSE: 3, DATA: 4, CLOSE: 5, PAUSE: 6, RESUME: 7, INFO: 8 } as const;
 export type FrameKind = (typeof FRAME)[keyof typeof FRAME];
-const KIND_NAMES = ['HELLO', 'OPEN', 'ACCEPT', 'REFUSE', 'DATA', 'CLOSE', 'PAUSE', 'RESUME'] as const;
+const KIND_NAMES = ['HELLO', 'OPEN', 'ACCEPT', 'REFUSE', 'DATA', 'CLOSE', 'PAUSE', 'RESUME', 'INFO'] as const;
 const ACCEPTOR_FLAG = 0x80;
 const MAX_ID = 0xffff_ffff;
 
@@ -66,7 +76,7 @@ export function unpackFrame(buf: Uint8Array): Frame | null {
   if (buf.length < HEADER_BYTES || buf.length > FRAME_MAX) return null;
   const b0 = buf[0] as number;
   const kind = b0 & 0x7f;
-  if (kind > FRAME.RESUME) return null;
+  if (kind > FRAME.INFO) return null;
   const id = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(1, false);
   return { kind: kind as FrameKind, id, fromAcceptor: (b0 & ACCEPTOR_FLAG) !== 0, payload: buf.subarray(HEADER_BYTES) };
 }
@@ -77,6 +87,13 @@ const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 /** A reason on REFUSE / CLOSE: short, one line. */
 const reasonBytes = (why: string): Uint8Array => utf8.encode(why.replace(/[\r\n]+/g, ' ').slice(0, 200));
+// eslint-disable-next-line no-control-regex -- C0, DEL, C1 and the two Unicode line separators
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+/**
+ * I11.4.2: a reason as the PEER sent it, for this PC's log: its own `reasonBytes` is not something to rely on (the
+ * other end of a match is another player's PC), so no control characters, no line breaks, and bounded here too.
+ */
+const reasonText = (payload: Uint8Array): string => fromUtf8.decode(payload.subarray(0, 600)).replace(UNPRINTABLE, ' ').trim().slice(0, 200);
 
 /** The part of `net.Socket` the bridge uses (fakes in the tests). */
 export interface TunnelSocket {
@@ -101,6 +118,8 @@ export interface TunnelOptions {
   /** A connection to this PC's player VPX (127.0.0.1 only: the caller's rule). */
   connect(port: number): TunnelSocket;
   log(line: string): void;
+  /** Version 2: what `peer`'s owner said last with INFO (a copy), or null when the channel to it closed. */
+  onInfo?(peer: string, payload: Uint8Array | null): void;
   /** Test seams. */
   pendingMax?: number;
   endGraceMs?: number;
@@ -164,6 +183,8 @@ interface Peer {
   channel: TunnelChannel;
   busy: boolean;
   helloed: boolean;
+  /** The version its HELLO said (0 before it). */
+  version: number;
 }
 
 const keyOf = (peer: string, opener: boolean, id: number): string => `${peer}\u0000${opener ? 'o' : 'a'}${id}`;
@@ -175,12 +196,16 @@ export class TunnelBridge {
   private playerPort: number | null = null;
   private nextId = 1;
   private closed = false;
+  /** Version 2: what this side says with INFO, or null: nothing is sent. */
+  private info: Uint8Array | null = null;
   private readonly pendingMax: number;
   private readonly endGraceMs: number;
   private readonly now: () => number;
   private readonly counters = { opened: 0, refused: 0, framesOut: 0, framesIn: 0, bytesOut: 0, bytesIn: 0, channelStalls: 0, socketStalls: 0 };
   /** Refusals repeat every 2 s while a watcher waits for a table to start: one line, then a count at most every `REFUSAL_LOG_MS`. */
   private refusalLog = { at: -Infinity, quiet: 0 };
+  /** I11.4.2: frames that are not frames come at whatever rate the peer sends them: one line, then a count. */
+  private malformedLog = { at: -Infinity, quiet: 0 };
 
   constructor(private readonly o: TunnelOptions) {
     this.pendingMax = o.pendingMax ?? PENDING_MAX;
@@ -193,11 +218,25 @@ export class TunnelBridge {
     this.playerPort = port;
   }
 
+  /**
+   * Version 2: what every peer's owner is told with INFO (at most `INFO_MAX` bytes), now and on every channel that
+   * opens later; null stops telling new channels (what a peer already has stays until the next one). Unchanged: nothing
+   * is sent.
+   */
+  setInfo(payload: Uint8Array | null): void {
+    if (payload && payload.length > INFO_MAX) throw new Error(`a tunnel INFO holds at most ${INFO_MAX} bytes, not ${payload.length}`);
+    const same = payload === null ? this.info === null : this.info !== null && payload.length === this.info.length && payload.every((b, i) => b === (this.info as Uint8Array)[i]);
+    if (same) return;
+    this.info = payload ? payload.slice() : null;
+    if (!this.info) return;
+    for (const [peer, p] of this.peers) if (p.version >= INFO_SINCE_VERSION) this.emit(peer, p, packFrame(FRAME.INFO, 0, false, this.info));
+  }
+
   /** The peer's channel is open. */
   channelUp(peer: string, channel: TunnelChannel): void {
     if (this.closed) return;
     if (this.peers.has(peer)) this.channelDown(peer, 'its channel was replaced');
-    const p: Peer = { channel, busy: false, helloed: false };
+    const p: Peer = { channel, busy: false, helloed: false, version: 0 };
     this.peers.set(peer, p);
     this.emit(peer, p, packFrame(FRAME.HELLO, 0, false, new Uint8Array([TUNNEL_VERSION])));
   }
@@ -205,6 +244,7 @@ export class TunnelBridge {
   /** The peer's channel closed (the peer left, its connection failed or was replaced): every stream on it closes. */
   channelDown(peer: string, why: string): void {
     if (!this.peers.delete(peer)) return;
+    this.o.onInfo?.(peer, null);
     const gone = [...this.streams.values()].filter((s) => s.peer === peer);
     if (gone.length > 0) this.o.log(`tunnel: the channel to ${peer} closed (${why}); closing ${gone.length} stream(s)`);
     for (const s of gone) this.finish(s, false, 'the channel closed', true);
@@ -256,14 +296,30 @@ export class TunnelBridge {
     if (!p || this.closed) return;
     const f = unpackFrame(buf);
     if (!f) {
-      this.o.log(`tunnel: dropped a malformed frame from ${peer} (${buf.length} bytes)`);
+      const now = this.now();
+      if (now - this.malformedLog.at < REFUSAL_LOG_MS) this.malformedLog.quiet += 1;
+      else {
+        const quiet = this.malformedLog.quiet;
+        this.malformedLog = { at: now, quiet: 0 };
+        this.o.log(`tunnel: dropped a malformed frame from ${peer} (${buf.length} bytes)${quiet > 0 ? ` (and ${quiet} more since the last line)` : ''}`);
+      }
       return;
     }
     this.counters.framesIn += 1;
     if (f.kind === FRAME.HELLO) {
       const v = f.payload[0];
       if (!p.helloed && v !== TUNNEL_VERSION) this.o.log(`tunnel: ${peer} speaks tunnel version ${v ?? '?'}, this PC ${TUNNEL_VERSION}; carrying on`);
+      const first = !p.helloed;
       p.helloed = true;
+      if (first) {
+        p.version = v ?? 0;
+        if (this.info && p.version >= INFO_SINCE_VERSION) this.emit(peer, p, packFrame(FRAME.INFO, 0, false, this.info));
+      }
+      return;
+    }
+    if (f.kind === FRAME.INFO) {
+      // The payload is a view of the channel's message: handed on as a copy.
+      if (f.payload.length <= INFO_MAX) this.o.onInfo?.(peer, f.payload.slice());
       return;
     }
     // The flag is the sender's view: a frame from the acceptor is about a stream this side opened.
@@ -288,9 +344,9 @@ export class TunnelBridge {
         return;
       case FRAME.REFUSE:
         this.counters.refused += 1;
-        return this.finish(s, false, `refused by ${peer}: ${fromUtf8.decode(f.payload) || 'no reason'}`, true);
+        return this.finish(s, false, `refused by ${peer}: ${reasonText(f.payload) || 'no reason'}`, true);
       case FRAME.CLOSE:
-        return this.finish(s, false, `${peer} closed it${f.payload.length ? ` (${fromUtf8.decode(f.payload)})` : ''}`, false);
+        return this.finish(s, false, `${peer} closed it${f.payload.length ? ` (${reasonText(f.payload)})` : ''}`, false);
       case FRAME.PAUSE:
         s.remotePaused = true;
         return this.syncRead(s);

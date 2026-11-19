@@ -25,7 +25,7 @@
 import type { GameFingerprint } from '@castcade/protocol';
 import { findLocalTable } from '../launch/find-table.js';
 import type { KnownTable } from '../launch/known-tables.js';
-import type { VpxLauncher } from '../launch/vpx-launch.js';
+import type { ForkLaunch, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
 import { isTableOpen } from './match-setup.js';
@@ -114,6 +114,11 @@ export interface OneStepOptions {
     onStatus(cb: (s: MatchStatus) => void): () => void;
     /** The host's game as this rig knows it (a client: from HELLO_ACK), null with no match. */
     hostGame(): GameFingerprint | null;
+    /**
+     * I11.4.2: how a match table is started now: the launch options of the Castcade VPX build with the state stream,
+     * and whether that start took (`MatchHost.tableLaunch`); or null / absent: the plain A14 launch.
+     */
+    tableLaunch?(): Promise<ForkLaunch | null>;
   };
   witness: {
     status(): { currentTable: string | null };
@@ -220,10 +225,45 @@ export function createOneStep(o: OneStepOptions): OneStep {
     launch = next;
   };
 
+  /**
+   * I11.4.2 (§4.4): a match table starts in the Castcade VPX build when the match host says so (the fork is beside the
+   * VPX exe and 3D watch is on `auto`); if that start fails, or there is nothing to say, exactly as A14 did. A start
+   * can fail at once (`launch` says so), or a moment after the process was spawned: an `error` from the system
+   * (EACCES, a file that is not a program), or an exe that ends within seconds without its VPX coming up
+   * (`ForkLaunch.didNotStart`). Then the table is started again in the player's own VPX, unless the match is over or
+   * a table opened meanwhile.
+   */
+  const launchTable = async (table: { vpxPath: string; tableId: string }): Promise<LaunchResult> => {
+    const fork = (await match.tableLaunch?.().catch(() => null)) ?? null;
+    if (fork) {
+      const r = await o.launcher.launch(table.vpxPath, fork.options);
+      if (r.ok) {
+        const code = match.status().code;
+        void fork.didNotStart.then(
+          (failed) => {
+            if (!failed || stopped) return;
+            if (match.status().code !== code || tableOpen() !== null) return;
+            log.warn('launch: the Castcade VPX build did not start (it ended at once); starting the table in your own VPX');
+            void o.launcher.launch(table.vpxPath).then((again) => {
+              if (stopped || again.ok) return;
+              log.warn(`launch: ${table.tableId} not started in your own VPX either: ${again.reason}`);
+              setLaunch({ state: 'failed', table: table.tableId, detail: `Castcade could not start ${table.tableId}: ${again.reason}. Open it in VPX yourself; the match waits.` });
+              emit();
+            });
+          },
+          () => undefined,
+        );
+        return r;
+      }
+      log.warn(`launch: the Castcade VPX build did not start (${r.reason}); starting the table in your own VPX`);
+    }
+    return o.launcher.launch(table.vpxPath);
+  };
+
   const start = async (table: { vpxPath: string; tableId: string }, why: string): Promise<void> => {
     setLaunch({ state: 'starting', table: table.tableId, detail: `Starting VPX on ${table.tableId}` });
     emit();
-    const r = await o.launcher.launch(table.vpxPath);
+    const r = await launchTable(table);
     if (stopped) return;
     if (!r.ok) {
       log.warn(`launch: ${table.tableId} not started (${why}): ${r.reason}`);

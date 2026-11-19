@@ -77,6 +77,18 @@ describe('MEDIA_SIGNAL relay (D2)', () => {
     expect(r.rejects).toEqual([]);
   });
 
+  it('protocol 6 (I11.4.2): a `stream` signal goes the same way, client to client through the host and host to client, with its channel kept', async () => {
+    const r = await rig(['a', 'b']);
+    expect(r.clients['a']?.sendMediaSignal('b', { ...offer, channel: 'stream' })).toBe(true);
+    expect(r.host.sendMediaSignal('a', { ...ice, channel: 'stream' })).toBe(true);
+    expect(r.clients['b']?.sendMediaSignal('h', { kind: 'reset', channel: 'stream' })).toBe(true);
+    await flush();
+    expect(r.got['b']).toEqual([{ from: 'a', signal: { to: 'b', ...offer, channel: 'stream' } }]);
+    expect(r.got['a']).toEqual([{ from: 'h', signal: { to: 'a', ...ice, channel: 'stream' } }]);
+    expect(r.got['h']).toEqual([{ from: 'b', signal: { to: 'h', kind: 'reset', channel: 'stream' } }]);
+    expect(r.rejects).toEqual([]);
+  });
+
   it('the host consumes a signal addressed to it and sends its own straight to the one peer', async () => {
     const r = await rig(['a', 'b']);
     r.clients['a']?.sendMediaSignal('h', offer);

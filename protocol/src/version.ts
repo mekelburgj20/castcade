@@ -26,5 +26,10 @@
  *   day, same unreleased build): the flag is raised by the ROM's own audit, not the clock, and the setting that
  *   enables the mode travels as PARTICIPANT_UPDATE `midnightMode` / HELLO_ACK `midnightModes` (optional / defaulted,
  *   never logged): an older peer strips both and sees and reports nothing.
+ * 6 (2026-11-19, I11.4.2): MEDIA_SIGNAL `channel` gains `stream`: the data-only connection between two companions that
+ *   carries the VPX fork's state stream inside a match (docs/design/state-stream-in-match.md §4.1). The same reasoning
+ *   as 4, from the other side: a peer on 5 refuses the value (its enum is `rtc` | `video`), so the frame does not decode
+ *   there, the pair's stream connection never opens and one PC waits for an answer that never comes. A version bump
+ *   makes mixed builds refuse each other at HELLO instead; every rig updates through the updater. Never logged.
  */
-export const PROTOCOL_VERSION = 5 as const;
+export const PROTOCOL_VERSION = 6 as const;

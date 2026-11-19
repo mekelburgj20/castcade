@@ -66,6 +66,7 @@ import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
+import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
 import { createTunnelEnd, freeLoopbackPort } from '../watch/tunnel-end.js';
 import { HiddenVpx } from '../witness/hidden-vpx.js';
 import type { VrOverlay } from '../media/match-media-types.js';
@@ -121,6 +122,8 @@ let videoHelper: VideoHelper | null = null;
 let oneStep: OneStep | null = null;
 /** I11.4.1: the standalone 3D watch session (the VPX fork's state stream through the companion); null when it could not be set up. */
 let watch3d: WatchHost | null = null;
+/** I11.4.2: the state stream inside a match (the control port the VPX fork connects to, the tunnel, 3D or 2D). */
+let stream3d: Stream3dHost | null = null;
 /** I11.4.1: a PC is in one ArcAid room at a time: a match is refused while a 3D watch session is on. */
 const WATCH_BLOCKS_MATCH = 'Leave the 3D watch session first: a PC is in one ArcAid room at a time.';
 /** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
@@ -311,6 +314,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
   // match is kept and rejoined at the next start.
   await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
+  await stream3d?.stop().catch(() => undefined); // I11.4.2: the control port closes; a fork left open goes on as plain VPX
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
   await matchLayer?.stop().catch(() => undefined); // closes the layer's pipe; the quad leaves the headset 5 s later
@@ -959,6 +963,29 @@ async function main(): Promise<void> {
     logger.error(`video: could not set up (${describeError(e)}); matches use the Electron video path this run`);
   }
 
+  // I11.4.2 (ADR 0011, docs/design/state-stream-in-match.md §4): the state stream inside a match. Nothing is opened
+  // here: the control port comes up with the first match (or the first match table started), the tunnel with each
+  // match. A failure only means every match is 2D, as before.
+  try {
+    const portsFile = join(userData, 'stream3d.json');
+    stream3d = createStream3dHost({
+      log: logger,
+      logsDir: dirname(logger.file),
+      pageDir: userData,
+      vpxExe: () => host.status().vpxExe ?? store.get().vpxExe ?? null,
+      exists: async (p) => existsSync(p),
+      iceServers: () => iceServers(mediaSettings.get()),
+      tunnel: (o) => createTunnelEnd(o),
+      freePort: freeLoopbackPort,
+      ports: {
+        read: () => (existsSync(portsFile) ? readFileSync(portsFile, 'utf8') : null),
+        write: (text) => writeFileSync(portsFile, text),
+      },
+    });
+  } catch (e) {
+    logger.error(`stream3d: could not set up (${describeError(e)}); matches show the 2D video this run`);
+  }
+
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   try {
@@ -977,6 +1004,8 @@ async function main(): Promise<void> {
       tableAudio: tableAudio ?? undefined,
       // D10.3: the native spectator video: the helper and this run's frame-ring tokens.
       nativeVideo: videoHelper ? { helper: videoHelper, ...videoRings } : undefined,
+      // I11.4.2: the player up on a waiting player's own table, when both PCs run the Castcade VPX build.
+      stream3d: stream3d ?? undefined,
       // MEDIA_SIGNAL over the match socket; it buffers what lands before the media layer listens (match-setup.ts).
       signalling: (role, localId) => matchSignalling(role, localId),
       // D2.10: the in-game volume keys (Ctrl+Alt+arrows), held only while a match is on.

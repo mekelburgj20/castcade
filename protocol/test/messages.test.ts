@@ -157,6 +157,23 @@ describe('envelope', () => {
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0', channel: 'audio' as never }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
   });
 
+  it('protocol 6 (I11.4.2): MEDIA_SIGNAL channel `stream` round-trips for every kind the tunnel sends; the version is 6 and a frame stamped 5 does not decode', () => {
+    expect(PROTOCOL_VERSION).toBe(6);
+    const offer = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0\r\n', channel: 'stream' }, { matchId: 'TD-1', seq: 7, from: 'p1', ts: 1 });
+    expect(offer.v).toBe(6);
+    expect(offer.payload.channel).toBe('stream');
+    expect(decodeFrame(encodeFrame(offer))).toEqual(offer);
+    const ice = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'stream' }, { matchId: 'TD-1', seq: 8, from: 'p1', ts: 1 });
+    expect(decodeFrame(encodeFrame(ice))).toEqual(ice);
+    const reset = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'reset', channel: 'stream' }, { matchId: 'TD-1', seq: 9, from: 'p1', ts: 1 });
+    expect(decodeFrame(encodeFrame(reset))).toEqual(reset);
+    // The same frame as a protocol 5 build would have stamped it: it does not decode (the envelope's `v` is a literal).
+    const stamped5 = JSON.stringify({ ...offer, v: 5 });
+    expect(() => decodeFrame(stamped5)).toThrow(ProtocolError);
+    // And a HELLO that says 5 is not a HELLO of this protocol.
+    expect(() => buildMessage('HELLO', { protocolVersion: 5 as never, companionVersion: '0.2.45', throwdownCode: 'TD-1', participant, game: fingerprint }, { matchId: null, seq: 0, from: 'p1' })).toThrow(ProtocolError);
+  });
+
   it('A13: TURN_PASS round-trips; ballEndReady is optional on HELLO / PARTICIPANT_UPDATE and defaulted on HELLO_ACK', () => {
     const pass = buildMessage('TURN_PASS', { grantSeq: 3, player: 'p2', ballNumber: 2, score: 12_500 }, { matchId: 'TD-1', seq: 9, from: 'host', ts: 1 });
     expect(decodeFrame(encodeFrame(pass))).toEqual(pass);
