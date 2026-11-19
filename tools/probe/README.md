@@ -8,7 +8,7 @@ what to expect before you install Castcade. Run it once and send back the one fi
 Only reads, never changes anything: Windows version and graphics cards, your screens, game
 controllers and input boards, the Visual Pinball X, VPinMAME, B2S Server and DOF installs (versions
 and the settings that matter for play), PinUP / PinballX / PinballY if present, your tables folder
-(file names and sizes only, no table is opened), Windows Defender's Controlled Folder Access, and
+(file names and sizes, and any `.vbs` script file beside a table, to see whose it is; no table file is opened), Windows Defender's Controlled Folder Access, and
 Castcade itself if it is installed.
 
 It does not read passwords, tokens or the content of any log, and it does not use the network. Your
