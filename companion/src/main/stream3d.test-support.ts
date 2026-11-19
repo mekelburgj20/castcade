@@ -226,8 +226,14 @@ export class FakeTunnel implements TunnelEnd {
     this.watchPeer = peer;
     this.watched.push(peer);
     this.o.onChange?.();
+    // The real end opens (or re-aims) a listener here: the port comes back a little later, never in the same turn.
+    // A test that reads the fork's lines the moment the decision shows is reading too early, and this makes it fail
+    // on every machine rather than on a slow one.
+    await new Promise((r) => setTimeout(r, FakeTunnel.watchDelayMs));
     return this.watchPort;
   }
+  /** How long `watch` takes to answer (ms). */
+  static watchDelayMs = Number(process.env.CASTCADE_TEST_WATCH_DELAY_MS ?? 20);
 
   stopWatching(): void {
     this.watchPeer = null;
