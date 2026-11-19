@@ -55,6 +55,36 @@ the way back exact without knowing what the file-loaded value was.
 (table mismatch), a watcher connection that never opens, a lost control connection, an unknown command. A
 player is never left looking at someone else's table at their own turn.
 
+**As built** (castcade-vpx branch `castcade/handoff`, 2026-11-19), where it differs from the steps above:
+
+- VPX 10.8.0 fires no `Paused` event when its window loses the focus; what pauses the music and VPinMAME there
+  is `Player::PauseMusic` (reference counted), so the match role calls that and its counterpart.
+- Every script event is held while watching, not only timers and hits, and keys are swallowed; at the return
+  the script gets the net difference (a flipper let go while watching gets its key-up).
+- The own state is not one `CaptureState` snapshot: movers, hit animations, clock, balls, music, materials and
+  the table's runtime fields are saved and restored field by field, because `StateApplier` clears animation
+  flags and carries no velocities. Sticky methods, reels, light sequences and primitive animations come back
+  from that saved state, not by rule.
+- A keyframe assumes a table no script has touched, and a match table has been scripted. So the role reads a
+  property before its own script's first put of it, and at each keyframe puts those values back for whatever
+  the keyframe does not carry (a lamp lit in my game and never touched in the other player's).
+- The own table is not touched until the other player's keyframe arrives: a watch that never connects costs
+  only the pause.
+- The static pre-render is not rebuilt at a switch (a 100 ms frame each time); `CASTCADE_STREAM_STATICREFRESH=1`
+  turns the rebuild on.
+- The first frame of a watch has 4 s (the companion waits 5); reasons after `state failed`: `refused`,
+  `timeout`, `stalled`, `lost`, `closed`, `badaddress`. While a table watches, the watchers it already serves
+  get its frozen state; new ones are held (rule 10).
+- With the sound replay on, the watch role's stop-all kills the own table's looping sounds and they do not come
+  back; a match runs with the replay off (§4.4), where nothing is stopped.
+
+Measured on the desktop, two instances, the hand-over in three orders by turns (`tools/castcade/match-test.ps1`):
+50 of 50 swaps on Nudge Test, Attack from Mars and Flash, 30 of 30 on Monster Bash; in every watch phase the
+physics state came back identical and 0 of 3,913 to 49,263 compared properties differed; 0 failed replayed
+calls; `play` answered in about 20 ms, `watch` in 40 to 60 ms; the switch itself costs 1.1 ms in and 1.3 ms out.
+One 98.7 ms frame (Flash) and one 95.3 ms frame (Monster Bash) fell near a switch, both inside the NVIDIA
+OpenGL driver. Not run: VR, a patched table (the hook), sound replay on, two PCs.
+
 **Not in this iteration.** A local game that keeps running underneath while its owner watches (a hidden
 "shadow" table): every script write would have to be diverted. The pause is what a waiting player's table does
 anyway, and it also stops a waiting machine's ball search.
@@ -149,12 +179,20 @@ As built (PR #76), where it is narrower or wider than the table:
 - The tunnel keeps this PC's stream port set for as long as its fork is on the control connection, so a watcher
   that connects a moment before this PC handles its own grant is not refused.
 - Theater is off from the moment `watch` is decided, not from `state watching`: on a failure the player sees
-  their own paused table for up to 5 s, then the 2D picture. A failed watch stays 2D until the next player is up.
+  their own paused table for up to 5 s, then the 2D picture. A failed watch stays 2D until the next grant
+  (a shoot-again to the same player tries again).
 - Only theater is suppressed: a headset set to show the panel on the other player's ball keeps the panel.
-- The control server lives for the app run and its ports are kept in `<userData>/stream3d.json`, so a table
-  left open serves the next match and a restarted Castcade gets its fork back.
-- `watch3d` turned off during a match calls this PC's fork back; the others can still watch this PC.
-- Open: on a desktop (non-VR) PC the native helper's 2D window still opens while the table shows 3D (I11.4.6).
+- The control server lives for the app run and its port is kept in `<userData>/stream3d.json`, so a table
+  left open serves the next match and a restarted Castcade gets its fork back. The stream port comes from the
+  fork's `hello` (rule 9), never from the file. A connection counts for nothing until its first line is a valid
+  `hello`; a fork that a newer one replaced is turned away while the newer one lives.
+- `watch3d` turned off during a match calls this PC's fork back; the others can still watch this PC. With
+  `watch3d` off and no fork on the control connection, the match opens no tunnel at all.
+- A fork that exits, or fails to start, within 5 s with no `hello` counts as "did not start": the table is
+  started in the player's own exe.
+- A PC whose picture goes to the native helper's own window (a desktop rig, a SteamVR rig) gets no window while
+  its table shows the other player in 3D. Open: the Electron video path still draws in the desktop panel
+  (I11.4.6).
 
 ### 4.4 Launch and sound
 
