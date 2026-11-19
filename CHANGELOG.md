@@ -7,6 +7,25 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+**Protocol 6**: everyone in a match updates together (a 0.2.45 client cannot join a host on this build, nor the
+other way round).
+
+### Added
+
+- **The other player's table in your own VPX during a match (I11.4.2, with the fork's turn hand-off I11.3).** When
+  two PCs of a match both have the castcade-vpx fork beside their VPX exe and the identical table file, the PC that
+  waits no longer looks at a flat video of the player who is up: its own VPX pauses its game, shows that player's
+  table from the watcher's own viewpoint and head, and puts its own game back when the turn comes (ball count,
+  lamps, score and music as they were). Nothing is set up: the match starts its table in the fork when the fork is
+  there, the stream travels on a data connection of its own between the companions (no port forward, signalled
+  through the match as `MEDIA_SIGNAL` channel `stream`), and the turn switches it. A PC without the fork, with
+  another release of the table, or with a watch that fails gets the 2D video for that turn as before; the 2D video
+  keeps flowing to everyone throughout. The Match tab's view settings have **3D watch in a match**: Auto (default) or Off. The fork build
+  needs its role `match` (castcade-vpx `castcade/handoff`, build 6a0b32b or later): build 621694f of the 3D watch
+  session starts as plain VPX in a match and that PC gets 2D. Proven on one PC against real fork instances (70 of
+  70 checks: 20 turn changes in four orders, three PCs, every fail-safe); two PCs and the headset are I11.4.8.
+  `companion/src/match/stream3d.ts`, `main/stream3d-host.ts`, `docs/design/state-stream-in-match.md`.
+
 ### Fixed
 
 - **An update no longer installs out of sight when Castcade quits, and Castcade comes back after every update (E9).**

@@ -169,7 +169,8 @@ Added with the fork's fix round (2026-11-19):
 15. Of several commands that arrive in one read, the fork acts on and answers only the last: `watch` then
     `play` gives one `state playing`, two `watch` lines give one `state watching`. Two lines the companion
     wrote milliseconds apart can arrive that way, so the companion waits for no answer to a command it has
-    since replaced.
+    since replaced. Run against the real fork with the two lines 0.7 to 0.8 ms apart: one answer each time,
+    no stray fall-back.
 16. A `watch` with no address is an unknown line (rule 13: no answer). A `watch` whose address is not
     loopback, has no port or port 0 is answered `state failed badaddress`, then `state playing`.
 
@@ -229,7 +230,13 @@ As built (PR #76), where it is narrower or wider than the table:
 - The control server lives for the app run and its port is kept in `<userData>/stream3d.json`, so a table
   left open serves the next match and a restarted Castcade gets its fork back. The stream port comes from the
   fork's `hello` (rule 9), never from the file. A connection counts for nothing until its first line is a valid
-  `hello`; a fork that a newer one replaced is turned away while the newer one lives.
+  `hello`; a fork that a newer one replaced is turned away while the newer one lives, except when the new
+  `hello` names the connected fork's own stream port: that is the same VPX reconnecting, and it takes over.
+- A `hello` whose stream port is `0` (the fork has no stream listener) is accepted: that PC can watch and
+  cannot be watched. The reason after `state failed` is read as text: an unknown one is a plain failed watch.
+- A control connection lost during a watch costs that turn its 3D: the PC shows the 2D picture at once, the
+  fork returns to its own table by itself and says `hello` again about 2 s later, and the next grant is
+  watched in 3D (run against the real fork: 2,020 ms).
 - `watch3d` turned off during a match calls this PC's fork back; the others can still watch this PC. With
   `watch3d` off and no fork on the control connection, the match opens no tunnel at all.
 - A fork that exits, or fails to start, within 5 s with no `hello` counts as "did not start": the table is
