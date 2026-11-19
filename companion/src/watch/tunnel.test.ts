@@ -6,7 +6,7 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { CHUNK_BYTES, FRAME, FRAME_MAX, HEADER_BYTES, PENDING_MAX, TunnelBridge, packFrame, unpackFrame, type TunnelChannel, type TunnelSocket } from './tunnel.js';
+import { CHUNK_BYTES, FRAME, FRAME_MAX, HEADER_BYTES, INFO_MAX, PENDING_MAX, TUNNEL_VERSION, TunnelBridge, packFrame, unpackFrame, type TunnelChannel, type TunnelSocket } from './tunnel.js';
 
 class FakeSocket extends EventEmitter implements TunnelSocket {
   written: Uint8Array[] = [];
@@ -72,7 +72,7 @@ interface End {
   out: Map<string, FakeChannel>;
 }
 
-function makeEnd(name: string, extra: { pendingMax?: number } = {}): End {
+function makeEnd(name: string, extra: { pendingMax?: number; onInfo?: (peer: string, payload: Uint8Array | null) => void } = {}): End {
   const connects: End['connects'] = [];
   const log: string[] = [];
   const bridge = new TunnelBridge({
@@ -521,5 +521,66 @@ describe('TunnelBridge', () => {
     const late = new FakeSocket();
     w.bridge.attachWatcher(late, 'p');
     expect(late.destroyed).toBe(true);
+  });
+
+  // ---- version 2 (I11.4.2): INFO ----
+  const text = (b: Uint8Array | null): string | null => (b ? Buffer.from(b).toString('utf8') : null);
+  const infoEnd = (name: string): End & { infos: Array<[string, string | null]> } => {
+    const infos: Array<[string, string | null]> = [];
+    return { ...makeEnd(name, { onInfo: (peer, payload) => infos.push([peer, text(payload)]) }), infos };
+  };
+
+  it('version 2: INFO set before the channel opens reaches the peer after its HELLO, a change goes out at once, the same again does not', () => {
+    expect(TUNNEL_VERSION).toBe(2);
+    const a = infoEnd('A');
+    const b = infoEnd('B');
+    a.bridge.setInfo(Buffer.from('{"fork":null}'));
+    const l = link(a, 'a', b, 'b');
+    expect(b.infos).toEqual([['a', '{"fork":null}']]);
+    expect(a.infos).toEqual([]); // B has nothing to say
+    a.bridge.setInfo(Buffer.from('{"fork":{"build":"x","table":"617 0123"}}'));
+    b.bridge.setInfo(Buffer.from('b says'));
+    l.pump();
+    expect(b.infos.at(-1)).toEqual(['a', '{"fork":{"build":"x","table":"617 0123"}}']);
+    expect(a.infos).toEqual([['b', 'b says']]);
+    const sent = l.ab.kinds.filter((k) => k === FRAME.INFO).length;
+    a.bridge.setInfo(Buffer.from('{"fork":{"build":"x","table":"617 0123"}}'));
+    l.pump();
+    expect(l.ab.kinds.filter((k) => k === FRAME.INFO).length).toBe(sent);
+    expect(() => a.bridge.setInfo(new Uint8Array(INFO_MAX + 1))).toThrow();
+  });
+
+  it('version 2: a channel that closes says null for that peer; one that opens again is told the INFO again', () => {
+    const a = infoEnd('A');
+    const b = infoEnd('B');
+    a.bridge.setInfo(Buffer.from('one'));
+    const l = link(a, 'a', b, 'b');
+    l.down();
+    expect(b.infos).toEqual([['a', 'one'], ['a', null]]);
+    link(a, 'a', b, 'b');
+    expect(b.infos.at(-1)).toEqual(['a', 'one']);
+  });
+
+  it('version 2: a version 1 peer (0.2.44, 0.2.45) is sent no INFO and its streams work as before', () => {
+    const a = infoEnd('A');
+    a.bridge.setInfo(Buffer.from('caps'));
+    const out = new FakeChannel();
+    a.bridge.channelUp('old', out);
+    // What a version 1 bridge sends when its channel opens.
+    a.bridge.receive('old', packFrame(FRAME.HELLO, 0, false, new Uint8Array([1])));
+    expect(out.kinds).toEqual([FRAME.HELLO]);
+    expect(a.log.some((l) => l.includes('speaks tunnel version 1'))).toBe(true);
+    a.bridge.setInfo(Buffer.from('caps 2'));
+    expect(out.kinds).toEqual([FRAME.HELLO]);
+    // A watcher of the old peer's table still opens a stream.
+    const watcher = new FakeSocket();
+    a.bridge.attachWatcher(watcher, 'old');
+    expect(out.kinds).toEqual([FRAME.HELLO, FRAME.OPEN]);
+    // Before any HELLO nothing is sent either (the version is not known yet).
+    const b = infoEnd('B');
+    b.bridge.setInfo(Buffer.from('caps'));
+    const quiet = new FakeChannel();
+    b.bridge.channelUp('x', quiet);
+    expect(quiet.kinds).toEqual([FRAME.HELLO]);
   });
 });

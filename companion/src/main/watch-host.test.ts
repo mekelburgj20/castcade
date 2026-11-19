@@ -49,6 +49,7 @@ class FakeTunnel implements TunnelEnd {
     return { peers, watchPort: null, watchPeer: this.watchPeer, playerPort: this.playerPort, stats: { streams: [], opened: 0, refused: 0, framesOut: 0, framesIn: 0, bytesOut: 0, bytesIn: 0, channelStalls: 0, socketStalls: 0 }, pageError: null };
   }
   dropPeer(): void {}
+  setInfo(): void {}
   async close(): Promise<void> {
     this.closed = true;
   }

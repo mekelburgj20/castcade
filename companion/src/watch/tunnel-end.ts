@@ -52,6 +52,13 @@ export interface TunnelEndOptions {
   log(line: string): void;
   /** Something the status shows changed (the page's report, a channel, a stream). */
   onChange?(): void;
+  /**
+   * I11.4.2: what `peer`'s end said last with `setInfo` (tunnel version 2), or null when the channel to it closed. The
+   * 3D watch session passes none.
+   */
+  onPeerInfo?(peer: string, info: string | null): void;
+  /** I11.4.2: the word every log line of this end starts with. Default `watch` (the 3D watch session); a match's is `stream3d`. */
+  logTag?: string;
 }
 
 export interface TunnelPeerView {
@@ -85,6 +92,11 @@ export interface TunnelEnd {
   watch(peer: string): Promise<number>;
   stopWatching(): void;
   status(): TunnelEndStatus;
+  /**
+   * I11.4.2: a short text every other end is told over the tunnel's own channel (INFO, tunnel version 2), now and
+   * whenever a channel opens; it arrives at their `onPeerInfo`. Null: nothing is told on channels that open later.
+   */
+  setInfo(info: string | null): void;
   /** Test seam (the harness): drop the data connection to `peer` as if the network did; the mesh opens it again. */
   dropPeer(peer: string): void;
   close(): Promise<void>;
@@ -129,13 +141,15 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
   /** Signals that arrive before the page listens: kept (at most `HELD_MAX`, oldest dropped) and handed over at `ready`. */
   const held: Array<[string, MediaSignal]> = [];
   const changed = (): void => o.onChange?.();
+  const tag = o.logTag ?? 'watch';
 
   const bridge = new TunnelBridge({
     connect: (port) => {
       const s: Socket = connect({ host: LOOPBACK, port });
       return s;
     },
-    log: (line) => o.log(`watch: ${line}`),
+    log: (line) => o.log(`${tag}: ${line}`),
+    onInfo: (peer, payload) => o.onPeerInfo?.(peer, payload ? Buffer.from(payload).toString('utf8') : null),
   });
 
   const post = (peer: string, frames: Uint8Array[]): void => {
@@ -185,7 +199,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
           const port = new PagePort(peer, post);
           ports.set(peer, port);
           bridge.channelUp(peer, port);
-          o.log(`watch: data channel to ${peer} open`);
+          o.log(`${tag}: data channel to ${peer} open`);
         } else {
           ports.delete(peer);
           bridge.channelDown(peer, typeof v.why === 'string' ? v.why.slice(0, 120) : 'it closed');
@@ -220,7 +234,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
       C.log,
       (e, line) => {
         if (!fromPage(e) || typeof line !== 'string') return;
-        o.log(`watch: ${line.replace(/[\r\n]+/g, ' ').slice(0, 400)}`);
+        o.log(`${tag}: ${line.replace(/[\r\n]+/g, ' ').slice(0, 400)}`);
       },
     ],
   ];
@@ -245,7 +259,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
     w.webContents.on('will-navigate', (e) => e.preventDefault());
     w.webContents.on('render-process-gone', (_e, d) => {
       if (win !== w || closed) return;
-      o.log(`watch: the 3D watch page stopped (${d.reason}); every stream closes`);
+      o.log(`${tag}: the 3D watch page stopped (${d.reason}); every stream closes`);
       dropAll('the page stopped');
       win = null;
       ready = false;
@@ -263,7 +277,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
     void w.loadFile(pageFile).catch((e: unknown) => {
       if (win !== w) return;
       pageError = `the 3D watch connection page did not load (${e instanceof Error ? e.message : String(e)})`;
-      o.log(`watch: ${pageError}`);
+      o.log(`${tag}: ${pageError}`);
       changed();
     });
   };
@@ -339,11 +353,11 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
           resolve();
         });
       });
-      s.on('error', (e) => o.log(`watch: the watcher listener failed (${e.message})`));
+      s.on('error', (e) => o.log(`${tag}: the watcher listener failed (${e.message})`));
       const a = s.address();
       server = s;
       watchPort = typeof a === 'object' && a ? a.port : null;
-      o.log(`watch: a watcher VPX on this PC connects to 127.0.0.1:${watchPort ?? '?'}`);
+      o.log(`${tag}: a watcher VPX on this PC connects to 127.0.0.1:${watchPort ?? '?'}`);
       changed();
       if (watchPort === null) throw new Error('the watcher listener has no port');
       return watchPort;
@@ -359,10 +373,13 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
     status() {
       return { peers: viewPeers(page), watchPort, watchPeer, playerPort, stats: bridge.stats(), pageError };
     },
+    setInfo(info) {
+      bridge.setInfo(info === null ? null : Buffer.from(info, 'utf8'));
+    },
     dropPeer(peer) {
       if (!win || !ready || !wanted.has(peer)) return;
       // As a rebuilt page does (D2.7): the peer is told to open its side again, this side closes and opens its own.
-      o.log(`watch: dropping the data connection to ${peer} on purpose (test)`);
+      o.log(`${tag}: dropping the data connection to ${peer} on purpose (test)`);
       o.sendSignal(peer, { kind: 'reset' });
       win.webContents.send(C.removePeer, peer);
       setTimeout(() => {
