@@ -623,4 +623,44 @@ describe('the native video channel (D10.3, 2026-11-07)', () => {
     tiny.video.onSignal((_f, s) => void got.push(s.sdp!));
     expect(got).toEqual(['v=0 3', 'v=0 4']);
   });
+
+  it('I11.4.2 (protocol 6): the `stream` side gets only `channel: stream` signals, marks what it sends, and neither other side sees one', () => {
+    let listener: ((from: string, s: MediaSignal) => void) | null = null;
+    const sent: Array<[string, MediaSignal]> = [];
+    const sig: MediaSignalling = { localId: 'me', send: (to, s) => void sent.push([to, s]), onSignal: (cb) => ((listener = cb), () => void (listener = null)) };
+    const split = splitSignalling(sig);
+    const rtc: MediaSignal[] = [];
+    const video: MediaSignal[] = [];
+    const stream: MediaSignal[] = [];
+    split.rtc.onSignal((_f, s) => void rtc.push(s));
+    split.video.onSignal((_f, s) => void video.push(s));
+    // Held until the stream side listens (the tunnel end is made after the join).
+    listener!('p2', { kind: 'offer', sdp: 'v=0 data', channel: 'stream' });
+    listener!('p2', { kind: 'reset', channel: 'stream' });
+    expect(rtc).toEqual([]);
+    expect(video).toEqual([]);
+    split.stream.onSignal((_f, s) => void stream.push(s));
+    expect(stream).toEqual([{ kind: 'offer', sdp: 'v=0 data', channel: 'stream' }, { kind: 'reset', channel: 'stream' }]);
+    listener!('p2', { kind: 'offer', sdp: 'v=0 voice' });
+    listener!('p2', { kind: 'offer', sdp: 'v=0 video', channel: 'video' });
+    expect(stream).toHaveLength(2);
+    expect(rtc).toHaveLength(1);
+    expect(video).toHaveLength(1);
+    split.stream.send('p2', { kind: 'answer', sdp: 'v=0 a' });
+    expect(sent).toEqual([['p2', { kind: 'answer', sdp: 'v=0 a', channel: 'stream' }]]);
+  });
+
+  it('I11.4.2: the page mesh ignores a `stream` signal as it ignores a `video` one (its own guard)', async () => {
+    const net = network(['a', 'b']);
+    net.meshes.a!.add('b');
+    // A `reset` on the stream channel must not reopen the voice connection; an offer must not be answered.
+    await net.meshes.a!.receive('b', { kind: 'reset', channel: 'stream' });
+    await net.meshes.a!.receive('b', { kind: 'offer', sdp: 'v=0 data', channel: 'stream' });
+    await settle();
+    expect(net.queue).toEqual([]);
+    expect(net.reopens).toEqual([]);
+    expect(net.pcs.filter((p) => p.remoteDescription !== null)).toHaveLength(0);
+    await net.meshes.b!.receive('a', { kind: 'offer', sdp: 'v=0 data', channel: 'stream' });
+    expect(net.meshes.b!.early.size).toBe(0);
+  });
 });

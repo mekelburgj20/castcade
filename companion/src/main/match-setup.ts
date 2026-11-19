@@ -118,6 +118,12 @@ export interface MatchSettings {
    * in `match.json` for tuning the placement on a rig without a new layer build.
    */
   scoreboardPlace: ScoreboardPlace | null;
+  /**
+   * I11.4.2 (2026-11-19, ADR 0011): the player up on this PC's own table in 3D while this player waits: `auto`
+   * (whenever both PCs run the Castcade VPX build on the identical table file; else the 2D video), or `off` (always
+   * the 2D video, and a match table Castcade starts runs in the player's own VPX).
+   */
+  watch3d: 'auto' | 'off';
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -154,6 +160,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   scoreboard: true,
   scoreboardCorner: 'top-right',
   scoreboardPlace: null,
+  // I11.4.2 (2026-11-19)
+  watch3d: 'auto',
 };
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
@@ -266,6 +274,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (p.scoreboardCorner === 'top-right' || p.scoreboardCorner === 'top-left') next.scoreboardCorner = p.scoreboardCorner;
   // A place that is not one (or null) is the layer's own placement.
   if ('scoreboardPlace' in p) next.scoreboardPlace = cleanScoreboardPlace(p.scoreboardPlace);
+  // I11.4.2: two words; anything else keeps the current one.
+  if (p.watch3d === 'auto' || p.watch3d === 'off') next.watch3d = p.watch3d;
   return next;
 }
 
@@ -553,7 +563,8 @@ export function matchSignalling(role: HostMatch | ClientMatch, localId: string, 
     if (p.candidate !== undefined) signal.candidate = { ...p.candidate };
     if (p.stereo !== undefined) signal.stereo = p.stereo;
     // D10.3: the native helper's signals; the schema defaults it to `rtc`, which is left implicit here (as 0.2.36 read it).
-    if (p.channel === 'video') signal.channel = 'video';
+    // I11.4.2 (protocol 6): and the state stream's data connection.
+    if (p.channel === 'video' || p.channel === 'stream') signal.channel = p.channel;
     if (listener) return listener(from, signal);
     held.push([from, signal]);
     if (held.length > max) held.shift();

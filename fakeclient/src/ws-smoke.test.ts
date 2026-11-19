@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
-import { decodeFrame, encodeFrame } from '@castcade/protocol';
+import { decodeFrame, encodeFrame, PROTOCOL_VERSION } from '@castcade/protocol';
 import { WsClientTransport, WsHostTransport } from '@castcade/companion';
 import { FakePlayer } from './lib.js';
 import { generateScenario } from './scenario.js';
@@ -54,6 +54,35 @@ describe('WebSocket loopback', () => {
       expect(msg.type).toBe('REFUSE');
       if (msg.type === 'REFUSE') expect(msg.payload.code).toBe('protocol_version');
       expect(errors.length).toBe(1);
+    } finally {
+      socket.close();
+      hostTransport.close();
+    }
+  });
+
+  it('protocol 6 (I11.4.2): a HELLO from a protocol 5 build (0.2.40 to 0.2.45) is refused with protocol_version, as 4 refused 3', async () => {
+    expect(PROTOCOL_VERSION).toBe(6);
+    const hostTransport = new WsHostTransport({ localId: 'p1', port: 0 });
+    const port = await hostTransport.listen();
+    hostTransport.onError(() => undefined);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('open', () => resolve());
+        socket.once('error', reject);
+      });
+      const reply = new Promise<string>((resolve) => socket.once('message', (d) => resolve(d.toString())));
+      const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      // What a 0.2.45 client sends: the envelope and the HELLO both say 5.
+      const hello = { v: 5, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'p9', payload: { protocolVersion: 5, companionVersion: '0.2.45', throwdownCode: 'ABCDEF' } };
+      socket.send(JSON.stringify(hello));
+      const msg = decodeFrame(await reply);
+      expect(msg.type).toBe('REFUSE');
+      if (msg.type === 'REFUSE') {
+        expect(msg.payload.code).toBe('protocol_version');
+        expect(msg.payload.message).toBe('host speaks protocol 6, client sent 5');
+      }
+      await closed;
     } finally {
       socket.close();
       hostTransport.close();

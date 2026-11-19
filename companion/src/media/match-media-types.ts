@@ -82,9 +82,11 @@ export interface MediaSignal {
   /**
    * D10.3 (2026-11-07, spectator-video-native.md §6.3): which peer connection the signal belongs to. Absent or `rtc`:
    * the panel page's Electron connection (voice, and video until D10.7). `video`: the native helper's connection for
-   * the same pair (`video-mesh.ts`); the page never sees these (`splitSignalling` in rtc-signaling.ts).
+   * the same pair (`video-mesh.ts`); the page never sees these (`splitSignalling` in rtc-signaling.ts). I11.4.2
+   * (protocol 6): `stream`, the data-only connection of the pair that carries the VPX state stream
+   * (`main/stream3d-host.ts`); the page never sees these either.
    */
-  channel?: 'rtc' | 'video';
+  channel?: 'rtc' | 'video' | 'stream';
 }
 
 /** How the media layer reaches the other players: the controller wraps the match transport (MEDIA_SIGNAL). */
