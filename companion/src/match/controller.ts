@@ -409,6 +409,8 @@ export class MatchController {
    */
   private holdUntil: number | null = null;
   private holdTimer: unknown = null;
+  /** I11.4.9: a held Start match was given up in this lobby (`dropTabHold`): the host has waited once, the next press starts. */
+  private tabHoldSpent = false;
   /** I11.4.9: what the armed start from the table was last said to wait for (one log line per reason). */
   private armedFor: 'tables' | '3d' | null = null;
   /** I11.4.9: Start match was pressed while a 3D connection was being made: the shell starts when it settles. */
@@ -579,8 +581,22 @@ export class MatchController {
     const r = this.role;
     if (this.closed || this.phase !== 'lobby' || this.holdUntil === null || !isHostRole(r)) return;
     const still = this.wait3d.filter((id) => this.participants().some((p) => p.playerId === id)).map((id) => (id === this.localId ? 'this PC' : this.nameOf(id)));
-    this.opts.log(`match: ${Math.round(this.holdMs() / 1000)} s passed since the start was held for the 3D connections${still.length > 0 ? ` (still being made: ${still.join(', ')})` : ''}; the match starts now, and the first turn may be the 2D video`);
-    // The start from the table goes on (its countdown); a held Start match is the shell's, which reads `status().wait3d`.
+    // What happens now, said as it is: a start from the table goes on, unless a table stands in its way; a held Start
+    // match comes due, and the shell starts it or gives it up (it logs which).
+    this.noteLoading(r.loading());
+    const loading = this.loadingIds.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`));
+    const what: string[] = [];
+    if (this.startArmed) {
+      what.push(
+        loading.length > 0
+          ? `the start from the table now waits for ${loading.join(', ')} table${loading.length > 1 ? 's' : ''} to open`
+          : this.unreadableIds().length > 0
+            ? 'the start from the table does not go on: a table cannot report ball ends'
+            : 'the start from the table goes on, and the first turn may be the 2D video',
+      );
+    }
+    if (this.tabArmed) what.push('the held Start match comes due');
+    this.opts.log(`match: ${Math.round(this.holdMs() / 1000)} s passed since the start was held for the 3D connections${still.length > 0 ? ` (still being made: ${still.join(', ')})` : ''}; ${what.join('; ') || 'nothing is held any more'}`);
     if (this.startArmed) this.tryStartFromTable(r, false);
     this.push();
   }
@@ -605,6 +621,7 @@ export class MatchController {
     this.endHold();
     this.wait3d = [];
     this.tabArmed = false;
+    this.tabHoldSpent = false;
     this.armedFor = null;
   }
 
@@ -613,7 +630,8 @@ export class MatchController {
    * made and this is the first press: the start is held until it settles or the limit is reached (the shell then
    * starts; `status().wait3d`), and the lobby line says a second press starts now. False: the caller starts the match
    * now: nothing to wait for, or this is that second press, or a start from the table is already held for the 3D
-   * connections (its lobby line says Start match starts it now).
+   * connections (its lobby line says Start match starts it now), or somebody's table is still loading (a press then
+   * is what it was before this wait existed), or a held press was already given up in this lobby (`dropTabHold`).
    */
   holdTabStart(): boolean {
     const r = this.role;
@@ -623,6 +641,11 @@ export class MatchController {
       return false;
     }
     this.noteLoading(r.loading());
+    // A press while somebody's table is still loading is never held: it goes the way it went before there was a wait
+    // (with three or more players the hold would sit there with nothing on the panel saying so, then end in an error).
+    if (this.loadingIds.length > 0) return false;
+    // A hold that was given up in this lobby is not taken again: the host has waited once.
+    if (this.tabHoldSpent) return false;
     this.noteWait3d(r.stream3dWaiting());
     const w = this.wait3dNow();
     if (w.ids.length === 0 || this.participants().length < 2) return false;
@@ -635,13 +658,15 @@ export class MatchController {
 
   /**
    * I11.4.9: the shell gives up a held Start match (it came due and the start cannot simply go on: a table that cannot
-   * report ball ends, a table still loading, a start that failed): the host presses again, as if nothing had been held.
+   * report ball ends, a table still loading, a start that failed). The host has waited once: the next press in this
+   * lobby is not held again (it starts, or asks for the confirmation a press asks for).
    */
   dropTabHold(why: string): void {
     if (!this.tabArmed) return;
     this.tabArmed = false;
+    this.tabHoldSpent = true;
     if (!this.startArmed) this.endHold();
-    this.opts.log(`match: the held Start match is off: ${why}`);
+    this.opts.log(`match: the held Start match is off: ${why}; the next press of Start match is not held`);
     this.push();
   }
 
@@ -1324,9 +1349,16 @@ export class MatchController {
     this.noteWait3d(h.stream3dWaiting());
     this.noteBallEndReady(h.ballEndReadiness());
     // I11.4.9: a start held from the Match tab is off when the lobby falls below two (the shell starts it otherwise).
-    if (this.tabArmed && h.roster().length < 2) {
+    // The lobby below two: a start that was held for a 3D connection, of either kind, is off, and its limit with it
+    // (a hold that ran out with one player in the lobby would leave the next player who joins not waited for). The
+    // next start is held anew.
+    if (h.roster().length < 2) {
+      const tab = this.tabArmed;
       this.tabArmed = false;
-      if (!this.startArmed) this.endHold();
+      this.tabHoldSpent = false;
+      if (this.startArmed && this.armedFor === '3d') this.disarmStart('the lobby fell below two players while it waited for the 3D connections (start a game on the table again once somebody has joined)');
+      this.endHold();
+      if (tab) this.opts.log('match: the held Start match is off: the lobby fell below two players');
     }
     if (this.startArmed) this.tryStartFromTable(h, false);
     this.syncLobby(h);

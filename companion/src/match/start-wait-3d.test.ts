@@ -279,7 +279,7 @@ describe('the controller: the start waits for the 3D connections (I11.4.9)', () 
     // The limit: nobody is waited for any more, the countdown of the start from the table runs, and the log says why.
     expect(H.ctl.status().wait3d.players).toEqual([]);
     expect(host.countdownRemaining()).toBe(5_000);
-    expect(H.logs).toContain('match: 45 s passed since the start was held for the 3D connections (still being made: Krobs, Chuck); the match starts now, and the first turn may be the 2D video');
+    expect(H.logs).toContain('match: 45 s passed since the start was held for the 3D connections (still being made: Krobs, Chuck); the start from the table goes on, and the first turn may be the 2D video');
     // What a PC says after that changes nothing.
     c.client.updateParticipant({ stream3dWaitMs: 119_000 });
     clock.advance(5_000);
@@ -372,17 +372,114 @@ describe('the controller: the start waits for the 3D connections (I11.4.9)', () 
     expect(host.countdownRemaining()).toBe(5_000);
   });
 
-  it('D3: a held Start match the shell gives up (a warning or a loading table when it came due, a start that failed) is off: nothing is armed, and the next press is a first press again', async () => {
+  it('D3: a held Start match the shell gives up (a warning or a loading table when it came due, a start that failed) is off, and the next press is not held again: the host has waited once', async () => {
     const { H, c } = await rig();
-    c.client.updateParticipant({ stream3dWaitMs: 30_000 });
+    c.client.updateParticipant({ stream3dWaitMs: 120_000 });
     await flush();
     expect(H.ctl.holdTabStart()).toBe(true);
     H.ctl.dropTabHold("Chuck's table cannot report ball ends");
     expect(H.ctl.status().wait3d).toEqual({ players: ['c'], seconds: 0, armed: null });
-    expect(H.logs).toContain("match: the held Start match is off: Chuck's table cannot report ball ends");
+    expect(H.logs).toContain("match: the held Start match is off: Chuck's table cannot report ball ends; the next press of Start match is not held");
     expect(H.line()).toContain('Everyone in? Start a game on your table (or press Start match)');
+    // The PC still asks to be waited for; the press the Match tab's message asked for starts all the same.
+    expect(H.ctl.holdTabStart()).toBe(false);
+    expect(H.ctl.status().wait3d.armed).toBeNull();
+  });
+
+  it('a press of Start match while a table is still loading is not held, whoever else is waited for (three players: it would sit there unseen, then end in an error)', async () => {
+    const r = await rig();
+    const { host, H, c } = r;
+    c.client.updateParticipant({ stream3dWaitMs: 30_000 });
+    await r.add('d', NO_TABLE);
+    await flush();
+    expect(host.loading()).toEqual(['d']);
+    expect(H.ctl.status().wait3d.players).toEqual(['c']);
+    expect(H.line()).toBe("Waiting for Chuck's table to open");
+    // Not held: the caller starts as a press did before this wait existed.
+    expect(H.ctl.holdTabStart()).toBe(false);
+    expect(H.ctl.status().wait3d).toEqual({ players: ['c'], seconds: 0, armed: null });
+    expect(H.logs.filter((l) => l.includes('Start match was pressed'))).toEqual([]);
+    // The table opens: now a press is held for the PC that is waited for.
+    r.cs['d']!.client.updateParticipant({ game });
+    await flush();
     expect(H.ctl.holdTabStart()).toBe(true);
-    expect(H.ctl.status().wait3d).toEqual({ players: ['c'], seconds: 45, armed: 'tab' });
+  });
+
+  it('the lobby falling below two ends a hold of either kind and its limit: nothing "starts now" with one player, and the next start is held anew for whoever joins', async () => {
+    // A start from the table.
+    const r = await rig();
+    const { host, clock, H, c } = r;
+    c.client.updateParticipant({ stream3dWaitMs: 30_000 });
+    await flush();
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(H.ctl.status().wait3d.armed).toBe('table');
+    r.bus.disconnect('c');
+    await flush();
+    expect(H.ctl.status().wait3d).toEqual({ players: [], seconds: 0, armed: null });
+    expect(H.logs).toContain('match: the start from the table is off: the lobby fell below two players while it waited for the 3D connections (start a game on the table again once somebody has joined)');
+    // The old limit passes with one player in the lobby: nothing happens, nothing is said to start.
+    clock.advance(46_000);
+    await flush();
+    expect(host.countdownRemaining()).toBeNull();
+    expect(H.logs.filter((l) => l.includes('s passed since the start was held'))).toEqual([]);
+    // A minute later a player joins and is still connecting: the next start is held for them, with a whole new limit.
+    clock.advance(60_000);
+    await r.add('d');
+    r.cs['d']!.client.updateParticipant({ stream3dWaitMs: 40_000 });
+    await flush();
+    expect(host.countdownRemaining()).toBeNull();
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(host.countdownRemaining()).toBeNull();
+    expect(H.ctl.status().wait3d).toEqual({ players: ['d'], seconds: 45, armed: 'table' });
+
+    // A held Start match.
+    const t = await rig();
+    t.c.client.updateParticipant({ stream3dWaitMs: 30_000 });
+    await flush();
+    expect(t.H.ctl.holdTabStart()).toBe(true);
+    t.bus.disconnect('c');
+    await flush();
+    expect(t.H.logs).toContain('match: the held Start match is off: the lobby fell below two players');
+    t.clock.advance(46_000);
+    await t.add('d');
+    t.cs['d']!.client.updateParticipant({ stream3dWaitMs: 40_000 });
+    await flush();
+    expect(t.H.ctl.status().wait3d).toEqual({ players: ['d'], seconds: 0, armed: null });
+    expect(t.H.ctl.holdTabStart()).toBe(true);
+    expect(t.H.ctl.status().wait3d).toEqual({ players: ['d'], seconds: 45, armed: 'tab' });
+  });
+
+  it("the limit's log line says what happens: a start from the table that then waits for a table says so, and does not say the match starts", async () => {
+    const r = await rig();
+    const { host, clock, H, c } = r;
+    c.client.updateParticipant({ stream3dWaitMs: 120_000 });
+    await flush();
+    H.ctl.feed(gameStart);
+    await flush();
+    // A third player joins during the hold, their table not open yet.
+    clock.advance(20_000);
+    await r.add('d', NO_TABLE);
+    await flush();
+    clock.advance(25_000);
+    await flush();
+    expect(H.logs).toContain("match: 45 s passed since the start was held for the 3D connections (still being made: Krobs); the start from the table now waits for Chuck's table to open");
+    expect(H.logs.filter((l) => l.includes('the match starts now'))).toEqual([]);
+    expect(host.countdownRemaining()).toBeNull();
+    expect(H.line()).toBe("The match starts once Chuck's table is open");
+    // The table opens: the start goes on at once (the hold's limit has passed: nobody is waited for again).
+    r.cs['d']!.client.updateParticipant({ game });
+    await flush();
+    expect(host.countdownRemaining()).toBe(5_000);
+    // A held Start match at its limit: the line says it comes due (the shell starts it or gives it up, and logs which).
+    const t = await rig();
+    t.c.client.updateParticipant({ stream3dWaitMs: 120_000 });
+    await flush();
+    expect(t.H.ctl.holdTabStart()).toBe(true);
+    t.clock.advance(45_000);
+    await flush();
+    expect(t.H.logs).toContain('match: 45 s passed since the start was held for the 3D connections (still being made: Krobs); the held Start match comes due');
   });
 
   it('Start match with nobody waited for is never held; a held start is dropped when the lobby falls below two', async () => {

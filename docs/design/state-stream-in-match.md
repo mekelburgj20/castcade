@@ -298,12 +298,16 @@ moment a start is first held, the match starts within **45 s** (`START_WAIT_MS` 
 after that: a PC that asks again and again, a player who joins during the hold, (a) followed by (b). The
 seconds on the lobby line count toward that one moment and never go up.
 
-**Starting now.** One press of Start match starts the match now when a start from the table is held, and a second
-press does when Start match itself is held (so does Start anyway). The engine's `start()` and `startIn()` do not
-look at the list. A held Start match that comes due is a press of Start match at that moment and nothing more:
-if a player joined during the hold whose table cannot report ball ends, or whose table is not open yet, the hold
-is dropped, the Match tab says why (`lastError`), and the host presses again (and confirms, where a
-confirmation is asked). Nothing is ever logged as confirmed by the host that the host did not confirm.
+**Starting now, and what ends a hold.** One press of Start match starts the match now when a start from the table
+is held, and a second press does when Start match itself is held (so does Start anyway). A press of Start match
+while somebody's table is still loading is never held: it is what it was before this wait existed. The engine's
+`start()` and `startIn()` do not look at the list. A held Start match that comes due is a press of Start match at
+that moment and nothing more: if a player joined during the hold whose table cannot report ball ends, or whose
+table is not open yet, the hold is dropped and the Match tab says why (`lastError`); the next press in that
+lobby is not held again (the host has waited once): it starts, or asks for the confirmation a press asks for.
+Nothing is ever logged as confirmed by the host that the host did not confirm. The lobby falling below two ends
+a hold of either kind, and its limit with it: a start from the table is off (the host starts a game again once
+somebody has joined) and the next start is held anew.
 
 **The lobby line**, on the Match tab and the panel:
 

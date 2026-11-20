@@ -1033,7 +1033,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (st.startWarnings.length > 0 || loading.length > 0) {
         const why = st.startWarnings.length > 0 ? st.startWarnings.join(' · ') : `${loading.join(', ')} ${loading.length > 1 ? 'have' : 'has'} no table open yet`;
         a.controller.dropTabHold(why);
-        lastError = `The match did not start by itself: ${why}. Press Start match to start it.`;
+        // The next press is not held again (the controller's word); with a warning it asks for the usual confirmation.
+        lastError = `The match did not start by itself: ${why}. Press Start match to start it now${st.startWarnings.length > 0 ? ' (it asks you to confirm)' : ''}.`;
         log.warn(`match: the held Start match came due and was not started: ${why}`);
         emit();
         return;

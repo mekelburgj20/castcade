@@ -956,11 +956,11 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
     hub.release();
     await until(() => H.mh.status().wait3d.armed === null, 8000, 'the hold dropped');
     expect(H.mh.status().phase).toBe('lobby');
-    expect(H.mh.status().lastError).toBe('The match did not start by itself: Chuck has no table open yet. Press Start match to start it.');
+    expect(H.mh.status().lastError).toBe('The match did not start by itself: Chuck has no table open yet. Press Start match to start it now.');
     await sleep(300);
     // Once, not again and again; nothing started; nothing claims a confirmation.
     expect(H.lines.filter((l) => l.includes('the held Start match came due and was not started: Chuck has no table open yet'))).toHaveLength(1);
-    expect(H.lines).toContain('match: the held Start match is off: Chuck has no table open yet');
+    expect(H.lines).toContain('match: the held Start match is off: Chuck has no table open yet; the next press of Start match is not held');
     expect([...H.lines, ...K.lines].filter((l) => l.includes('the host confirmed') || l.includes('started with'))).toEqual([]);
     expect(K.mh.status().phase).toBe('lobby');
     // The host presses Start match: nobody is waited for any more, and it starts as a press always did.
