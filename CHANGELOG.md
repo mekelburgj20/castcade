@@ -31,6 +31,20 @@ connections, and a 0.2.46 client is not waited for).
   connected; never an address. For the next two-router night, `CASTCADE_ICE_FIRST_RESTART_MS` (500 to 9000, the 3D
   tunnel only, nothing without it) adds one early restart before the usual three. `media/panel-page.ts`
   (`iceRoundOver`), `watch/watch-page.ts`.
+- **A second installer, `Castcade-Witness-Setup-<version>.exe`: the Witness edition, for cabinets (E10).** Built from
+  the same tag and the same code, it runs only the Arcaid Witness part of the app: pairing, table import and patching,
+  live score capture, posting to ArcAid, updates (all of E9), the log pull, Start with Windows. It starts no stream,
+  match, 3D watch or OBS overlay page, holds no global key, registers no OpenXR layer and no `castcade://` link, adds
+  no firewall rule, and carries none of the helper executables or ffmpeg (about 109 MB against the full installer's
+  198 MB). The window has three tabs, Pairing, Status and Settings, and About says "Witness edition". Either installer
+  installs over the other (same app id, same install and settings folders), so the pairing survives a switch; the
+  Witness edition removes what a full install left (Castcade's OpenXR layer registration, the `castcade://` keys and the
+  firewall rule). It updates from its own file on each release, `witness.yml`, and refuses the full installer even when
+  a release has no `witness.yml` (the updater then falls back to `latest.yml`); the full app likewise never takes a
+  Witness installer. The edition is baked in at package time (`electron-builder.witness.yml`), and the first log line
+  and `--smoke` name it (`edition witness` / `edition full`). The full installer and the full app are unchanged.
+  `main/edition.ts`, `main/edition-leftovers.ts`, `electron-builder.witness.yml`, `build/installer-witness.nsh`,
+  `.github/workflows/release.yml` (jobs `witness` and `witness-publish`), `npm run dist:win:witness` / `pack:dir:witness`.
 
 ### Fixed
 
@@ -69,20 +83,6 @@ owner's checks of the installer and of the pipe inside VPX (E9.1, C16.2.1), on h
   session starts as plain VPX in a match and that PC gets 2D. Proven on one PC against real fork instances (70 of
   70 checks: 20 turn changes in four orders, three PCs, every fail-safe); two PCs and the headset are I11.4.8.
   `companion/src/match/stream3d.ts`, `main/stream3d-host.ts`, `docs/design/state-stream-in-match.md`.
-- **A second installer, `Castcade-Witness-Setup-<version>.exe`: the Witness edition, for cabinets (E10).** Built from
-  the same tag and the same code, it runs only the Arcaid Witness part of the app: pairing, table import and patching,
-  live score capture, posting to ArcAid, updates (all of E9), the log pull, Start with Windows. It starts no stream,
-  match, 3D watch or OBS overlay page, holds no global key, registers no OpenXR layer and no `castcade://` link, adds
-  no firewall rule, and carries none of the helper executables or ffmpeg (about 109 MB against the full installer's
-  198 MB). The window has three tabs, Pairing, Status and Settings, and About says "Witness edition". Either installer
-  installs over the other (same app id, same install and settings folders), so the pairing survives a switch; the
-  Witness edition removes what a full install left (Castcade's OpenXR layer registration, the `castcade://` keys and the
-  firewall rule). It updates from its own file on each release, `witness.yml`, and refuses the full installer even when
-  a release has no `witness.yml` (the updater then falls back to `latest.yml`); the full app likewise never takes a
-  Witness installer. The edition is baked in at package time (`electron-builder.witness.yml`), and the first log line
-  and `--smoke` name it (`edition witness` / `edition full`). The full installer and the full app are unchanged.
-  `main/edition.ts`, `main/edition-leftovers.ts`, `electron-builder.witness.yml`, `build/installer-witness.nsh`,
-  `.github/workflows/release.yml` (jobs `witness` and `witness-publish`), `npm run dist:win:witness` / `pack:dir:witness`.
 
 ### Fixed
 
