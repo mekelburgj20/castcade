@@ -54,7 +54,7 @@ export function UpdateBanner({ bridge }: { bridge: CastcadeBridge | null }) {
       {st.lastAttempt === 'not_finished' && <p className="warn">The install of {st.ready} did not finish last time (the installer was closed or failed).</p>}
       <p className="muted">
         {st.waiting
-          ? `It waits ${st.waiting}: Castcade never restarts during a game, a match or a 3D watch session.`
+          ? `It waits ${st.waiting}: Castcade never restarts during a game${bridge.edition === 'witness' ? '' : ', a match or a 3D watch session'}.`
           : 'Castcade closes, the installer shows its progress for about a minute, then Castcade starts again.'}{' '}
         Quitting does not install it; the next start does.
       </p>

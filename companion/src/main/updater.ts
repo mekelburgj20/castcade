@@ -22,6 +22,7 @@ import { dirname, join, win32 } from 'node:path';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
 import { realClock, type Clock } from '../match/clock.js';
+import { installerPrefix, updateMatchesEdition, type Edition } from './edition.js';
 
 /** Interval between successful checks. A tray app can run for days; one check at launch is not enough. */
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -41,8 +42,11 @@ export const LONG_INSTALL_MS = 2 * 60_000;
 export const INSTALL_MARKER_FILE = 'update-install.json';
 /** electron-updater's cache folder under %LOCALAPPDATA% when app-update.yml cannot be read (electron-builder derives it from the package name). */
 export const DEFAULT_CACHE_DIR_NAME = '@castcadecompanion-updater';
-/** The installer's file name (`artifactName` in electron-builder.yml): the version of a cached download is read from it. */
-const INSTALLER_NAME = /^Castcade-Setup-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.exe$/i;
+/**
+ * The installer's file name (`artifactName` in electron-builder.yml, and in electron-builder.witness.yml for the Witness
+ * edition, E10): the version of a cached download is read from it.
+ */
+const INSTALLER_NAME = /^Castcade-(?:Witness-)?Setup-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.exe$/i;
 
 export type CheckOutcome = 'ok' | 'failed' | 'downloaded';
 
@@ -76,7 +80,7 @@ export function compareVersions(a: string, b: string): number {
   return x[3] < y[3] ? -1 : 1;
 }
 
-/** The version in an installer's file name (`Castcade-Setup-0.2.46.exe`), else null. */
+/** The version in an installer's file name (`Castcade-Setup-0.2.46.exe`, `Castcade-Witness-Setup-0.2.46.exe`), else null. */
 export function installerVersion(fileName: string): string | null {
   return INSTALLER_NAME.exec(fileName)?.[1] ?? null;
 }
@@ -101,7 +105,7 @@ export type PendingRead =
   | { kind: 'leftover'; version: string }
   | { kind: 'pending'; version: string; fileName: string; file: string };
 
-export function readPendingInstaller(o: { dir: string; appVersion: string; readText(path: string): string | null; exists(path: string): boolean }): PendingRead {
+export function readPendingInstaller(o: { dir: string; appVersion: string; readText(path: string): string | null; exists(path: string): boolean; edition?: Edition }): PendingRead {
   const text = o.readText(join(o.dir, 'update-info.json'));
   if (text === null) return { kind: 'none' };
   let info: unknown;
@@ -114,6 +118,9 @@ export function readPendingInstaller(o: { dir: string; appVersion: string; readT
   if (typeof fileName !== 'string' || win32.basename(fileName) !== fileName) return { kind: 'unreadable', why: 'update-info.json names no installer' };
   const version = installerVersion(fileName);
   if (!version) return { kind: 'unreadable', why: `${fileName} is not a Castcade installer name` };
+  // E10: both editions share this folder (same appId). An installer the other edition downloaded before this one was
+  // installed over it is never this edition's update.
+  if (!updateMatchesEdition(o.edition ?? 'full', [fileName])) return { kind: 'unreadable', why: `${fileName} is the other edition's installer` };
   if (!(compareVersions(version, o.appVersion) > 0)) return { kind: 'leftover', version };
   const file = join(o.dir, fileName);
   if (!o.exists(file)) return { kind: 'unreadable', why: `${fileName} is named in update-info.json but not there` };
@@ -271,14 +278,33 @@ export interface UpdaterLike {
    * every later install() in the run returns false without trying. Castcade clears it after a launch that failed.
    */
   quitAndInstallCalled?: boolean;
+  /**
+   * AppUpdater's hook inside its own check (`isUpdateAvailable`, after the version compare, before any download): false
+   * makes the check "update not available". E10 puts the edition guard here (`configureUpdater`).
+   */
+  isUpdateSupported?: (info: UpdateInfoLike) => boolean | Promise<boolean>;
+}
+
+/** The part of electron-updater's UpdateInfo the edition guard reads. */
+export interface UpdateInfoLike {
+  version: string;
+  path?: string;
+  files?: ReadonlyArray<{ url: string }>;
+}
+
+/** The file names an update carries (`files[].url`, and the older `path`). */
+export function updateFileNames(info: UpdateInfoLike): string[] {
+  return [...(info.files ?? []).map((f) => f.url), ...(typeof info.path === 'string' && info.path ? [info.path] : [])];
 }
 
 /**
  * The settings Castcade runs electron-updater with. `autoInstallOnAppQuit` off: a quit never installs (BaseUpdater's
  * quit handler is then never added). `autoRunAppAfterInstall` on: a visible install gets `--force-run` (installer.nsh
- * starts Castcade at its end).
+ * starts Castcade at its end). E10: an update for the other edition is refused inside the check, before any download
+ * (`updateMatchesEdition`), logged once per check, and is otherwise "up to date"; electron-updater's own test (the
+ * minimum OS version) still runs for an update this edition accepts.
  */
-export function configureUpdater(u: UpdaterLike, log: Logger, onDownloaded: (version: string, file: string | null) => void): void {
+export function configureUpdater(u: UpdaterLike, log: Logger, onDownloaded: (version: string, file: string | null) => void, edition: Edition = 'full'): void {
   u.autoDownload = true;
   u.autoInstallOnAppQuit = false;
   u.autoRunAppAfterInstall = true;
@@ -294,6 +320,17 @@ export function configureUpdater(u: UpdaterLike, log: Logger, onDownloaded: (ver
   u.on('update-not-available', () => log.info('updater: up to date'));
   u.on('error', (e: unknown) => log.warn(`updater: ${describeError(e)}`));
   u.on('update-downloaded', (info: { version: string; downloadedFile?: string }) => onDownloaded(info.version, typeof info.downloadedFile === 'string' ? info.downloadedFile : null));
+  // E10: the GitHub provider falls back to latest.yml when the newest release has no witness.yml (allowPrerelease is
+  // on); this keeps that fallback from updating a Witness install into the full app, and the other way round.
+  const supported = u.isUpdateSupported;
+  u.isUpdateSupported = (info) => {
+    const names = updateFileNames(info);
+    if (!updateMatchesEdition(edition, names)) {
+      log.info(`updater: ${info.version} is not an update for the ${edition} edition (its installer: ${names.join(', ') || 'none named'}); up to date as far as this edition goes`);
+      return false;
+    }
+    return supported ? supported.call(u, info) : true;
+  };
 }
 
 /** electron-updater's autoUpdater (dynamic import: CommonJS, and kept out of the --smoke path and development runs). */
@@ -354,6 +391,8 @@ export function installRunningNotice(version: string, ageMs: number): string {
 export interface UpdateControllerDeps {
   log: Logger;
   appVersion: string;
+  /** E10: this build's edition (its update guard, its installer's name); default full. */
+  edition?: Edition;
   /** Null when electron-updater could not be loaded: nothing is offered or installed. */
   updater: UpdaterLike | null;
   clock?: Clock;
@@ -433,6 +472,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, clock: Clock): Promise<T | ty
 
 export function createUpdateController(deps: UpdateControllerDeps): UpdateController {
   const { log, appVersion, updater } = deps;
+  const edition = deps.edition ?? 'full';
   const clock = deps.clock ?? realClock;
   const startTimeout = deps.startCheckTimeoutMs ?? START_CHECK_TIMEOUT_MS;
   let ready: string | null = null;
@@ -483,7 +523,7 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       );
       emit();
       notice({ kind: 'ready', version, waiting });
-    });
+    }, edition);
   }
 
   const check = async (): Promise<CheckOutcome> => {
@@ -573,7 +613,7 @@ export function createUpdateController(deps: UpdateControllerDeps): UpdateContro
       emit();
       return false;
     }
-    const fileName = readyFile ? win32.basename(readyFile) : `Castcade-Setup-${version}.exe`;
+    const fileName = readyFile ? win32.basename(readyFile) : `${installerPrefix(edition)}${version}.exe`;
     const failed = (why: string): false => {
       // BaseUpdater leaves its guard set after a launch that threw: clear it, or every later try is refused unseen.
       if (updater.quitAndInstallCalled === true) updater.quitAndInstallCalled = false;
