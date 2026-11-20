@@ -7,8 +7,14 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.46] — 2026-11-19
+
 **Protocol 6**: everyone in a match updates together (a 0.2.45 client cannot join a host on this build, nor the
-other way round).
+other way round). The OpenXR layer (0.7.0) and the native helpers are as in 0.2.44. Hook library 0.6.0: every patched
+table's script is re-made at the first look after the update; reopen a table that was open. The update from 0.2.45
+to this build is still installed by 0.2.45, silently when it quits (about a minute, then Castcade is back in the
+tray); the update that is offered and installs in sight starts with the build after this one. Released before the
+owner's checks of the installer and of the pipe inside VPX (E9.1, C16.2.1), on his word.
 
 ### Added
 
@@ -83,8 +89,10 @@ other way round).
 `lib` in `table_loaded` reads 0.6.0; after a failover an NVRAM table writes one more `nvram_full`, a line the journal
 always had (the detector takes it as ground truth). The transport is new: while Castcade runs, the hook writes through
 `\\.\pipe\castcade-journal`, and the first line of each connection is a transport header, `#castcade-journal 1 <file
-name>`, that Castcade consumes and never writes to the file; one connection per journal file at a time. Protocol 5 is
-unchanged.
+name>`, that Castcade consumes and never writes to the file; one connection per journal file at a time. The match protocol is
+**6**: `MEDIA_SIGNAL` `channel` gains `stream` (never logged; a version bump for the reason `video` was one in 4: a
+peer that does not know the channel would take the frame for its own), so builds of 5 and 6 refuse each other at
+HELLO; covered by `protocol/test/messages.test.ts` and the generated `protocol/SPEC.md`.
 
 ## [0.2.45] — 2026-11-16
 
