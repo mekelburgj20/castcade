@@ -7,6 +7,44 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+Protocol 6 is unchanged: this build and 0.2.46 play a match together (a 0.2.46 host does not wait for the 3D
+connections, and a 0.2.46 client is not waited for).
+
+### Added
+
+- **The first turn of a match starts in 3D (I11.4.9).** The 3D connection between two PCs opens in the lobby, and
+  between some routers it takes 10 to 70 s; a match started before it was up showed the first turn as the 2D video
+  until it was. Now the first start of a match waits for it, as it already waits for every table to be open: each
+  PC with the Castcade VPX build says how long its 3D connections may still take, and a start from the table, or a
+  press of **Start match**, is held until nobody is waited for. The match starts 45 s at most after the start was
+  asked for, whatever any PC says; the lobby says what it waits for and how long; a press of Start match while a
+  start is held starts now, with the first turn in 2D until the connection is up (it still switches to 3D within the
+  turn). A VPX build that never reports in (build 621694f) is waited for 10 s, not 45. A next game and a rejoin never
+  wait. Known cost: a PC with the VPX build paired with one without it can be waited for until it learns that, inside
+  the same 45 s (I11.4.10). Proven on one PC against real fork instances (84 of 84 checks, two of the groups new);
+  the headset and two PCs are I11.4.8. `match/stream3d.ts`, `match/controller.ts`, `match/host.ts`,
+  `main/match-host.ts`, `docs/design/state-stream-in-match.md` §4.5.
+- **The log says how each connection attempt went (I11.12).** Every connect between the owner's and Krobs' PCs has
+  needed an ICE restart, for the 3D tunnel, voice and video alike. At each restart, connect or giving up, the tunnel
+  and voice pages now write one line per peer: every candidate pair's types, protocol and state, the STUN requests
+  sent, answered, received and answered back, and the time to the remote description, to `checking` and to
+  connected; never an address. For the next two-router night, `CASTCADE_ICE_FIRST_RESTART_MS` (500 to 9000, the 3D
+  tunnel only, nothing without it) adds one early restart before the usual three. `media/panel-page.ts`
+  (`iceRoundOver`), `watch/watch-page.ts`.
+
+### Fixed
+
+- **No network address in the log that goes to ArcAid (E8.2).** The native video helper wrote the selected
+  connection's two public addresses and ports into `companion.log` once per connection, so a tester's log carried the
+  other player's address. Every line from that helper is now masked before it is logged (IPv4 and IPv6 in the forms
+  libwebrtc writes, the port of a candidate line); the candidate types and the rest stay readable, and where a doubt
+  is left the text is masked (a four-part version number reads `<addr>`). The helper itself is unchanged (E8.2.1).
+  `media/log-mask.ts`, `media/video-helper.ts`, `media/video-mesh.ts`.
+
+**Wire / journal:** `PARTICIPANT_UPDATE.stream3dWaitMs` (optional) and `HELLO_ACK.stream3dWait` (a defaulted list) are
+new; neither is logged, so no hash changes and the protocol stays 6 (`protocol/src/version.ts`, the generated
+`protocol/SPEC.md`; `match/start-wait-3d.test.ts`). The journal is untouched.
+
 ## [0.2.46] — 2026-11-19
 
 **Protocol 6**: everyone in a match updates together (a 0.2.45 client cannot join a host on this build, nor the
