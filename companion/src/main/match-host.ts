@@ -58,7 +58,7 @@ import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
-import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MatchController, lobbyLineKey, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch, STREAM3D_WAIT_MAX_MS } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
@@ -281,9 +281,10 @@ export interface MatchHost {
    * A13: in the lobby, while `startWarnings` is not empty, it throws unless `anyway` is true (the host confirmed).
    * I11.4.9: in the lobby, while a PC's 3D connection is still being made (`wait3d.players`), the first call holds the
    * start (the status comes back still in the lobby, `wait3d.armed: 'tab'`) and the match starts by itself once
-   * nobody is waited for; a second call, or `anyway`, starts it now.
+   * nobody is waited for (or 45 s have passed); a second call, or `anyway`, starts it now. `held` is the shell's own
+   * call when a held start comes due: a start like any other, never held again.
    */
-  start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
+  start(opts?: { anyway?: boolean; held?: boolean }): Promise<MatchStatus>;
   /**
    * A13 (2026-11-12): host only, during a game: end the turn holder's ball at its last known score and grant the next
    * turn, as if its BALL_END had arrived (TURN_PASS in the match log). The Match tab confirms first.
@@ -905,16 +906,20 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let peekTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * True while the headset should show nothing in the lobby: this table is not locked (free play before the match, and
-   * every client's table), no start is counting down, and the lobby last changed (someone joined, left, loaded a
+   * every client's table), no start is counting down or held for the 3D connections, and the lobby last changed (someone joined, left, loaded a
    * table; the panel's one line changed) more than `LOBBY_PEEK_MS` ago. Each change shows the panel for that long; the
    * menu key brings it up at any time.
    */
   const lobbyQuiet = (p: PanelState): boolean => {
-    if (p.phase !== 'idle' || locked || typeof p.countdown === 'number') {
+    // I11.4.9: a start held for the 3D connections keeps the panel up, as the countdown that follows it does.
+    const w = active?.controller.status().wait3d;
+    const held = !!w && w.armed !== null && w.players.length > 0;
+    if (p.phase !== 'idle' || locked || typeof p.countdown === 'number' || held) {
       peekKey = '';
       return false;
     }
-    const key = JSON.stringify([p.players.map((x) => [x.id, x.flags]), p.message]);
+    // The line without the seconds of a held start: a number that counts down is not a change of the lobby.
+    const key = JSON.stringify([p.players.map((x) => [x.id, x.flags]), lobbyLineKey(p.message)]);
     const now = clock();
     if (key !== peekKey) {
       peekKey = key;
@@ -999,15 +1004,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       log.warn(`stream3d: the host was not told about this PC's 3D connection: ${describeError(e)}`);
       return;
     }
+    // What was sent, not what the other end does with it (a host on 0.2.46 drops the key and waits for nobody).
+    const to = role instanceof HostMatch ? 'the players' : 'the host';
     log.info(
       next === null
-        ? `stream3d: ${role instanceof HostMatch ? 'the players were' : 'the host was'} told this PC's 3D connection is settled: the start does not wait for it`
-        : `stream3d: ${role instanceof HostMatch ? 'the players were' : 'the host was'} told this PC's 3D connection is still being made: the match's first start waits for it (${Math.ceil(ms / 1000)} s at most)`,
+        ? `stream3d: sent to ${to}: this PC's 3D connection is settled (stream3dWaitMs 0)`
+        : `stream3d: sent to ${to}: this PC's 3D connection is still being made, ${next.until === null ? 'its table not open yet' : `${Math.ceil(ms / 1000)} s at most`} (stream3dWaitMs ${ms})`,
     );
   };
   /**
-   * I11.4.9: a Start match that was held for the 3D connections (`MatchController.holdTabStart`) starts once nobody
-   * is waited for any more. Not from inside `emit`: the start emits.
+   * I11.4.9: a Start match that was held for the 3D connections (`MatchController.holdTabStart`) comes due once nobody
+   * is waited for any more (they settled, or the hold's limit is reached). It then goes the way of a press of Start
+   * match now, and no further: with a table that cannot report ball ends, or one that is still loading (somebody
+   * joined during the hold), the hold is dropped and the host is told what Start match would have told them; a start
+   * that fails drops it too. Never `anyway`: nothing here is the host's confirmation. Not from inside `emit`: the
+   * start emits.
    */
   const startHeld = (a: Active): void => {
     const w = a.controller.status().wait3d;
@@ -1015,10 +1026,24 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.heldStartQueued = true;
     setTimeout(() => {
       a.heldStartQueued = false;
-      const now = active === a ? a.controller.status().wait3d : null;
-      if (!now || now.armed !== 'tab' || now.players.length > 0) return;
-      log.info('match: the 3D connections are settled; the match that Start match asked for starts now');
-      void api.start({ anyway: true }).catch((e: unknown) => log.warn(`match: the held start did not happen: ${describeError(e)}`));
+      if (active !== a) return;
+      const st = a.controller.status();
+      if (st.wait3d.armed !== 'tab' || st.wait3d.players.length > 0) return;
+      const loading = st.panel.players.filter((x) => x.flags.includes('loading')).map((x) => x.name);
+      if (st.startWarnings.length > 0 || loading.length > 0) {
+        const why = st.startWarnings.length > 0 ? st.startWarnings.join(' · ') : `${loading.join(', ')} ${loading.length > 1 ? 'have' : 'has'} no table open yet`;
+        a.controller.dropTabHold(why);
+        lastError = `The match did not start by itself: ${why}. Press Start match to start it.`;
+        log.warn(`match: the held Start match came due and was not started: ${why}`);
+        emit();
+        return;
+      }
+      log.info('match: the held Start match comes due: the match starts now');
+      void api.start({ held: true }).catch((e: unknown) => {
+        a.controller.dropTabHold(`the start failed (${describeError(e)})`);
+        log.warn(`match: the held start did not happen: ${describeError(e)}`);
+        emit();
+      });
     }, 0);
   };
   /**
@@ -2579,7 +2604,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       }
       // I11.4.9: the first turn starts in 3D: while a PC's 3D connection is still being made the first press holds the
       // start until it is settled (each PC stops waiting by itself after its own limit); a second press starts now.
-      if (o?.anyway !== true && a.controller.holdTabStart()) {
+      if (o?.anyway !== true && o?.held !== true && a.controller.holdTabStart()) {
         lastError = null;
         emit();
         return status();

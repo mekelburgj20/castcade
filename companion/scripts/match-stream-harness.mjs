@@ -1152,14 +1152,15 @@ async function groupGate() {
     for (const p of g.pcs) p.stream.setTableOpen(true);
     const wa = a.stream.startWait();
     const wb = b.stream.startWait();
-    // (b) both forks ready, nothing heard from the other PC: both waited for, 45 s at most from each PC's own ready.
+    // (b) both forks ready, nothing heard from the other PC: both waited for, 45 s at most from when each PC began
+    // connecting to the other (the match's data connections opened, a few seconds ago).
     check(
       G,
       'both forks are ready and the data connection is not up: each PC is waited for until it hears from the other, 45 s at most, and shows the other in 2D meanwhile',
       ready && wa.pending && wa.why === 'peers' && wa.waitingFor.join() === 'b' && wb.pending && wb.why === 'peers' && wb.waitingFor.join() === 'a' && wa.until - Date.now() > 30_000 && wa.until - Date.now() <= 45_000 && a.view(b)?.line.includes('not up yet') && b.view(a)?.line.includes('not up yet'),
       `${waitWords(a)}; ${waitWords(b)}; a: "${a.view(b)?.line}"; b: "${b.view(a)?.line}"; forks ready after ${round(fa?.startedAt ? now() - fa.startedAt : null)} / ${round(fb?.startedAt ? now() - fb.startedAt : null)} ms`,
     );
-    check(G, 'the log says what each PC waits for', said(a, /the match's start waits for the 3D connection to B: nothing heard from that PC yet \(4[45] s at most\)/).length === 1 && said(b, /the match's start waits for the 3D connection to A: nothing heard from that PC yet/).length === 1, [...said(a, /the match's start/), ...said(b, /the match's start/)].join(' | '));
+    check(G, 'the log says what each PC waits for', said(a, /the match's start waits for the 3D connection to B: nothing heard from that PC yet \([34]\d s at most\)/).length === 1 && said(b, /the match's start waits for the 3D connection to A: nothing heard from that PC yet/).length === 1, [...said(a, /the match's start/), ...said(b, /the match's start/)].join(' | '));
     await sleep(6000);
     check(G, 'six seconds on, still waited for; nothing was sent to either fork', a.stream.startWait().pending && b.stream.startWait().pending && a.rec.every((e) => e.d !== '>') && b.rec.every((e) => e.d !== '>'), `${waitWords(a)}; ${waitWords(b)}`);
     // The data connection comes up.
@@ -1202,11 +1203,13 @@ async function groupGateCap() {
   try {
     b.held = [];
     openMatch(g.pcs);
+    // The limit runs from here: each PC began connecting to the other when the match's data connections opened.
+    const t0 = now();
     for (const p of g.pcs) p.stream.setStartGate(true);
     await startFork(a, NUDGE, { waitReady: false });
     await startFork(b, NUDGE, { waitReady: false });
     const ready = await until(() => a.stream.status().fork === 'ready' && b.stream.status().fork === 'ready', 150_000, 20);
-    const t0 = now();
+    const readyMs = now() - t0;
     for (const p of g.pcs) p.stream.setTableOpen(true);
     const pending = a.stream.startWait().pending && b.stream.startWait().pending;
     let told = 0;
@@ -1220,8 +1223,8 @@ async function groupGateCap() {
     check(
       G,
       `the limit (${LIMIT / 1000} s here): with no word from the other PC each PC stops being waited for by itself, tells its match host, and says so in the log`,
-      ready && pending && over && ms > LIMIT - 1500 && ms < LIMIT + 1500 && told > 0 && said(a, /start no longer waits for this PC: 8 s passed since this PC's VPX was ready and nothing was heard from B: the first turn may be the 2D video/).length === 1 && said(b, /start no longer waits for this PC: 8 s passed since this PC's VPX was ready and nothing was heard from A/).length === 1,
-      `no longer waited for ${round(ms)} ms after both forks were ready; a: "${said(a, /start no longer waits/).at(-1) ?? ''}"`,
+      ready && readyMs < LIMIT - 2000 && pending && over && ms > LIMIT - 500 && ms < LIMIT + 1500 && told > 0 && said(a, /start no longer waits for this PC: 8 s passed since this PC began connecting to B and nothing was heard from that PC: the first turn may be the 2D video/).length === 1 && said(b, /start no longer waits for this PC: 8 s passed since this PC began connecting to A and nothing was heard from that PC/).length === 1,
+      `no longer waited for ${round(ms)} ms after the data connections opened (both forks were ready after ${round(readyMs)} ms); a: "${said(a, /start no longer waits/).at(-1) ?? ''}"`,
     );
     // The match starts all the same: the first turn is the 2D video on the watcher's PC.
     for (const p of g.pcs) p.stream.setStartGate(false);

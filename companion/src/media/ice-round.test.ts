@@ -6,10 +6,9 @@
  * pair in progress, checks sent, none answered.
  */
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
-import { iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSeen, iceRoundStart, type IceRound, type IceRoundPeer } from './panel-page.js';
-import { firstRestartMs, watchPageHtml } from '../watch/watch-page.js';
-import { ICE_WATCH, iceWatchStep, panelPageHtml } from './panel-page.js';
+import { describe, expect, it, vi } from 'vitest';
+import { ICE_PEER_ROUNDS, ICE_WATCH, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSeen, iceRoundStart, pageLogLine, type IceRound, type IceRoundPeer } from './panel-page.js';
+import { WATCH_CHANNELS, firstRestartMs, watchPageHtml } from '../watch/watch-page.js';
 
 type Entry = Record<string, unknown>;
 const recorded = JSON.parse(readFileSync(new URL('./ice-round.test-data.json', import.meta.url), 'utf8')) as { first: Entry[]; second: Entry[] };
@@ -221,55 +220,203 @@ describe('the end of a round, as both pages call it (I11.12)', () => {
   });
 });
 
-describe('both pages carry it (I11.12)', () => {
-  const scriptOf = (html: string): string => /<script>([\s\S]*)<\/script>/.exec(html)?.[1] ?? '';
-  for (const [name, html] of [
-    ['the 3D watch page (the tunnel)', watchPageHtml()],
-    ['the panel page (voice)', panelPageHtml({ vr: false })],
-  ] as const) {
-    it(`${name}: the shared functions are embedded, the page calls them at a restart, at a restart by the peer, at a connect and at giving up, and the script parses`, () => {
-      const script = scriptOf(html);
-      for (const fn of ['function iceRoundStart', 'function iceRoundSeen', 'function iceCandidateIds', 'function iceRoundLine', 'function iceRoundOver', 'function roundSeen', 'function roundOver']) expect(script, fn).toContain(fn);
-      expect(script).toContain("roundOver(peer, r, 'restart ' + (w.restarts + 1) + ' of ' + ICE_WATCH.backoffMs.length + ' decided here', false, false);");
-      expect(script).toContain("roundOver(peer, r, 'restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer', false, true);");
-      expect(script).toContain("roundOver(peer, r, 'connected', true, false);");
-      expect(script).toContain("roundOver(peer, r, 'gave up after ' + w.restarts + ' restart(s)', false, false);");
-      expect(script).toContain('r.ids = iceCandidateIds(entries);');
-      // Compiled, not run: a syntax error in the embedded source would throw here.
-      expect(() => new Function('require', script)).not.toThrow();
-    });
+/**
+ * The 3D watch page's own script, run as the page runs it (the way panel-page.test.ts runs the panel page): the real
+ * `PeerNegotiator` / `SignalingMesh`, the real watchdog and the real round bookkeeping, on a fake `RTCPeerConnection`.
+ */
+function loadWatchPage(cfg: { firstRestartMs?: number | null } = {}) {
+  const script = /<script>([\s\S]*)<\/script>/.exec(watchPageHtml())?.[1] ?? '';
+  const handlers = new Map<string, (e: unknown, arg: unknown) => void>();
+  const sent: Array<{ channel: string; arg: unknown }> = [];
+  const electron = { ipcRenderer: { on: (ch: string, cb: (e: unknown, arg: unknown) => void) => handlers.set(ch, cb), send: (channel: string, arg?: unknown) => sent.push({ channel, arg }) } };
+  const intervals: Array<{ cb: () => void; ms: number }> = [];
+  class FakeChannel {
+    readyState = 'connecting';
+    bufferedAmount = 0;
+    close(): void {}
+    send(): void {}
   }
+  class FakePc {
+    static all: FakePc[] = [];
+    iceConnectionState = 'new';
+    signalingState = 'stable';
+    localDescription: { type: string; sdp: string } | null = null;
+    remoteDescription: { type: string; sdp: string } | null = null;
+    onnegotiationneeded: (() => void) | null = null;
+    onicecandidate: unknown = null;
+    restarts = 0;
+    stats: Entry[] | null = null;
+    private readonly listeners = new Map<string, Array<() => void>>();
+    constructor() {
+      FakePc.all.push(this);
+    }
+    createDataChannel(): FakeChannel {
+      return new FakeChannel();
+    }
+    addEventListener(name: string, cb: () => void): void {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), cb]);
+    }
+    fire(name: string): void {
+      for (const cb of this.listeners.get(name) ?? []) cb();
+    }
+    restartIce(): void {
+      this.restarts += 1;
+    }
+    async getStats(): Promise<Map<string, Entry>> {
+      if (!this.stats) throw new Error('no stats');
+      return new Map(this.stats.map((e) => [e.id as string, e]));
+    }
+    async setLocalDescription(): Promise<void> {}
+    async setRemoteDescription(): Promise<void> {}
+    async addIceCandidate(): Promise<void> {}
+    close(): void {}
+  }
+  new Function('require', 'RTCPeerConnection', 'setInterval', 'clearInterval', script)(() => electron, FakePc, (cb: () => void, ms: number) => intervals.push({ cb, ms }), () => undefined);
+  const emit = (ch: string, arg?: unknown): void => handlers.get(ch)?.({}, arg);
+  // 'owner' > 'krobs': this page is the impolite side and leads restarts, as Krobs' PC did on 2026-11-18.
+  emit(WATCH_CHANNELS.config, { localId: 'owner', ice: [], reset: false, peers: [], ...cfg });
+  emit(WATCH_CHANNELS.addPeer, 'krobs');
+  const pc = FakePc.all[0]!;
+  const tick = intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+  const logs = (): string[] => sent.filter((s) => s.channel === WATCH_CHANNELS.log).map((s) => s.arg as string);
+  /** The answer is in and ICE is checking: the stuck spell of the watchdog begins. */
+  const checking = (): void => {
+    pc.remoteDescription = { type: 'answer', sdp: 'v=0\r\na=ice-ufrag:uf1\r\n' };
+    pc.signalingState = 'stable';
+    pc.fire('signalingstatechange');
+    pc.iceConnectionState = 'checking';
+    pc.fire('iceconnectionstatechange');
+  };
+  return { pc, tick, logs, checking };
+}
+const settle = async (): Promise<void> => {
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+};
+
+describe('the 3D watch page runs it (I11.12)', () => {
+  it('a round that stalls and is restarted, then connects: one line each, from the stats of that moment, beside the lines the page always wrote', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = loadWatchPage();
+      p.checking();
+      p.pc.stats = stalled();
+      vi.advanceTimersByTime(9_900);
+      p.tick.cb();
+      expect(p.pc.restarts).toBe(0);
+      vi.advanceTimersByTime(100);
+      p.tick.cb();
+      expect(p.pc.restarts).toBe(1);
+      await settle();
+      const round1 = p.logs().filter((l) => l.includes('ICE round'));
+      expect(round1).toEqual([
+        'peer krobs: ICE round 1: restart 1 of 3 decided here after 10.00 s (ice checking); remote description at 0.00 s, checking at 0.00 s, not connected; 4 pairs: ' +
+          'host>host udp in-progress sent 21 answered 0, received 0 answered 0; host>srflx udp in-progress sent 21 answered 0, received 0 answered 0; ' +
+          'srflx>host udp in-progress sent 21 answered 0, received 0 answered 0; srflx>srflx udp in-progress sent 21 answered 0, received 0 answered 0; this side leads restarts',
+      ]);
+      expect(p.logs()).toContain('peer krobs: ICE restart 1 of 3 (checking for 10 s; no pair yet)');
+      // The answer to the restart comes (new credentials), and half a second later the connection is up.
+      vi.advanceTimersByTime(150);
+      p.pc.remoteDescription = { type: 'answer', sdp: 'v=0\r\na=ice-ufrag:uf2\r\n' };
+      p.pc.fire('signalingstatechange');
+      vi.advanceTimersByTime(350);
+      p.pc.stats = stalled().map((e) => (e.id === 'CPL2_R2' ? { ...e, state: 'succeeded', nominated: true, requestsSent: 3, responsesReceived: 3, requestsReceived: 2, responsesSent: 2 } : e));
+      p.pc.iceConnectionState = 'connected';
+      p.pc.fire('iceconnectionstatechange');
+      await settle();
+      const round2 = p.logs().filter((l) => l.includes('ICE round 2'));
+      expect(round2).toHaveLength(1);
+      expect(round2[0]).toMatch(/^peer krobs: ICE round 2: connected after 0\.50 s \(ice connected\); remote description at 0\.15 s, checking at 0\.15 s, connected at 0\.50 s; 4 pairs: srflx>srflx udp succeeded nominated sent 3 answered 3, received 2 answered 2; /);
+      expect(round2[0]!.endsWith('; this side leads restarts')).toBe(true);
+      expect(p.logs()).toContain('peer krobs: ICE connected after 1 restart(s)');
+      // Connected: nothing more is written while it stays so.
+      const n = p.logs().length;
+      p.pc.iceConnectionState = 'completed';
+      p.pc.fire('iceconnectionstatechange');
+      p.tick.cb();
+      await settle();
+      expect(p.logs().length).toBe(n);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the experiment: with `firstRestartMs` in its configuration the page restarts a stuck connection once early, then goes on as always; without it nothing happens before 10 s', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const early = loadWatchPage({ firstRestartMs: 2500 });
+      const usual = loadWatchPage();
+      for (const p of [early, usual]) p.checking();
+      vi.advanceTimersByTime(2_400);
+      for (const p of [early, usual]) p.tick.cb();
+      expect([early.pc.restarts, usual.pc.restarts]).toEqual([0, 0]);
+      vi.advanceTimersByTime(100);
+      for (const p of [early, usual]) p.tick.cb();
+      expect([early.pc.restarts, usual.pc.restarts]).toEqual([1, 0]);
+      // Four restarts in all there, and the usual three here: the lines say which.
+      expect(early.logs()).toContain('peer krobs: ICE restart 1 of 4 (checking for 3 s; no pair yet)');
+      // The restart after the early one comes 10 s after it (not at 10 s), by which time the other page makes its first.
+      vi.advanceTimersByTime(7_500);
+      for (const p of [early, usual]) p.tick.cb();
+      expect([early.pc.restarts, usual.pc.restarts]).toEqual([1, 1]);
+      expect(usual.logs()).toContain('peer krobs: ICE restart 1 of 3 (checking for 10 s; no pair yet)');
+      vi.advanceTimersByTime(2_500);
+      for (const p of [early, usual]) p.tick.cb();
+      expect([early.pc.restarts, usual.pc.restarts]).toEqual([2, 1]);
+      await settle();
+      const rounds = early.logs().filter((l) => l.includes('ICE round'));
+      expect(rounds).toHaveLength(2);
+      expect(rounds[0]).toContain('peer krobs: ICE round 1: restart 1 of 4 decided here after 2.50 s (ice checking)');
+      expect(rounds[1]).toContain('peer krobs: ICE round 2: restart 2 of 4 decided here after 10.00 s (ice checking)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a peer that restarts ICE again and again ends a round here each time: four of those lines a minute, one that says the rest are not written, then silence', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = loadWatchPage();
+      p.checking();
+      p.pc.localDescription = { type: 'answer', sdp: '' };
+      // Every second a new offer of the peer with new ICE credentials, answered here.
+      for (let i = 2; i <= 13; i++) {
+        vi.advanceTimersByTime(1_000);
+        p.pc.remoteDescription = { type: 'offer', sdp: `v=0\r\na=ice-ufrag:uf${i}\r\n` };
+        p.pc.fire('signalingstatechange');
+      }
+      await settle();
+      const rounds = p.logs().filter((l) => l.includes('ICE round'));
+      expect(rounds.filter((l) => / by the peer after /.test(l))).toHaveLength(ICE_PEER_ROUNDS.max);
+      expect(rounds.filter((l) => l.includes('the peer restarted ICE more than 4 times in 60 s'))).toHaveLength(1);
+      expect(rounds).toHaveLength(ICE_PEER_ROUNDS.max + 1);
+      // A minute on they are written again.
+      vi.advanceTimersByTime(ICE_PEER_ROUNDS.perMs);
+      p.pc.remoteDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:later\r\n' };
+      p.pc.fire('signalingstatechange');
+      await settle();
+      expect(p.logs().filter((l) => / by the peer after /.test(l))).toHaveLength(ICE_PEER_ROUNDS.max + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
-describe('the early restart, an experiment that is off unless asked for (I11.12)', () => {
+describe('what main takes from a page for the log (I11.12)', () => {
+  it("one line, 400 characters; 1200 for an ICE round's line and for nothing else", () => {
+    const long = 'x'.repeat(2000);
+    expect(pageLogLine(`peer krobs: data channel send failed (${long})`)).toHaveLength(400);
+    expect(pageLogLine(`peer krobs: ICE round 1: restart 1 of 3 decided here after 10.00 s ${long}`)).toHaveLength(1200);
+    expect(pageLogLine(`ICE round 12: connected ${long}`)).toHaveLength(1200);
+    // The words in the middle of another line do not buy the longer limit.
+    expect(pageLogLine(`peer krobs: negotiation (offer): something about an ICE round 1: ${long}`)).toHaveLength(400);
+    expect(pageLogLine('two\r\nlines\nhere ')).toBe('two lines here');
+  });
+
   it('CASTCADE_ICE_FIRST_RESTART_MS: 500 to 9000 ms, anything else is no experiment', () => {
     expect(firstRestartMs(undefined)).toBeNull();
     for (const bad of ['', '0', '499', '9001', '2.5', '2500ms', '-2500', 'yes', '25000']) expect(firstRestartMs(bad), bad).toBeNull();
     expect(firstRestartMs('500')).toBe(500);
     expect(firstRestartMs(' 2500 ')).toBe(2500);
     expect(firstRestartMs('9000')).toBe(9000);
-  });
-
-  it('with it, the watchdog restarts once early and then goes on as it always did; without it, nothing changes', () => {
-    const usual = { backoffMs: ICE_WATCH.backoffMs, lagMs: ICE_WATCH.lagMs };
-    const early = { backoffMs: [2500, ...ICE_WATCH.backoffMs], lagMs: ICE_WATCH.lagMs };
-    // The side that leads: at 2.5 s instead of 10 s; the restart after that comes 10 s later, and so on.
-    expect(iceWatchStep('checking', 2_400, 0, true, early)).toBe('wait');
-    expect(iceWatchStep('checking', 2_500, 0, true, early)).toBe('restart');
-    expect(iceWatchStep('checking', 2_500, 0, true, usual)).toBe('wait');
-    expect(iceWatchStep('checking', 9_900, 1, true, early)).toBe('wait');
-    expect(iceWatchStep('checking', 10_000, 1, true, early)).toBe('restart');
-    expect(iceWatchStep('checking', 40_000, 3, true, early)).toBe('restart');
-    expect(iceWatchStep('checking', 40_000, 4, true, early)).toBe('give_up');
-    // The other side still gives the lead its 5 s.
-    expect(iceWatchStep('checking', 7_400, 0, false, early)).toBe('wait');
-    expect(iceWatchStep('checking', 7_500, 0, false, early)).toBe('restart');
-  });
-
-  it('only the 3D watch page knows it, and takes it from its configuration', () => {
-    const watch = watchPageHtml();
-    expect(watch).toContain('let ICE_WATCH = ICE_WATCH_BASE;');
-    expect(watch).toContain('backoffMs: [cfg.firstRestartMs].concat(ICE_WATCH_BASE.backoffMs)');
-    expect(panelPageHtml({ vr: false })).not.toContain('firstRestartMs');
   });
 });

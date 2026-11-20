@@ -205,6 +205,32 @@ describe('the launch of a match table (§4.4)', () => {
   });
 });
 
+describe('a launch and the wait of the first start (I11.4.9)', () => {
+  it('a table started in the fork is waited for from the launch; a launch that made no process (`notStarted`), or a process that ended, is not, at once', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    const b = pc(hub, 'b');
+    const s = match([a, b]);
+    s.a!.setStartGate(true);
+    expect(s.a!.startWait().pending).toBe(false);
+    // The launcher answers ok:false (the exe or the table file is gone, the spawn threw): `onExit` never comes.
+    const gone = await a.host.launch('auto');
+    expect(s.a!.startWait()).toEqual({ pending: true, until: null, why: 'fork', waitingFor: [] });
+    gone!.notStarted!();
+    expect(s.a!.startWait().pending).toBe(false);
+    expect(await gone!.didNotStart).toBe(true);
+    expect(a.logs).toContain("stream3d: the match's start no longer waits for this PC: the Castcade VPX build is not coming (it ended, or did not start)");
+    // The table then opens in the player's own VPX: still not waited for (it was 45 s before this fix).
+    s.a!.setTableOpen(true);
+    expect(s.a!.startWait().pending).toBe(false);
+    // A process that was made and ended says so through its exit.
+    const ended = await a.host.launch('auto');
+    expect(s.a!.startWait().pending).toBe(true);
+    ended!.options.onExit!(1);
+    expect(s.a!.startWait().pending).toBe(false);
+  });
+});
+
 describe('A1, the whole chain: the real launcher with a start that fails after spawn() returned', () => {
   const TABLE = String.raw`C:\vpx\tables\Monster Bash.vpx`;
   /** `spawn` as Node's: it returns a child at once; a start failure arrives as an `error` event a moment later. */

@@ -18,6 +18,7 @@ import { connect, createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { IceServer } from '../media/media-settings.js';
+import { pageLogLine } from '../media/panel-page.js';
 import { TunnelBridge, type TunnelChannel, type TunnelStats } from './tunnel.js';
 import { WATCH_CHANNELS as C, firstRestartMs, pathOf, watchPageHtml, type WatchPageConfig, type WatchPagePeer, type WatchPageStatus, type WatchPath } from './watch-page.js';
 import { signalFrom } from './watch-session.js';
@@ -148,7 +149,10 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
   const changed = (): void => o.onChange?.();
   const tag = o.logTag ?? 'watch';
   // I11.12: an experiment for a two-router night (watch-page.ts `firstRestartMs`); nothing changes without the variable.
-  const early = firstRestartMs(process.env.CASTCADE_ICE_FIRST_RESTART_MS);
+  const asked = process.env.CASTCADE_ICE_FIRST_RESTART_MS;
+  const early = firstRestartMs(asked);
+  // eslint-disable-next-line no-control-regex -- what is logged of a value from the environment has no control characters
+  if (asked !== undefined && early === null) o.log(`${tag}: CASTCADE_ICE_FIRST_RESTART_MS is set to "${asked.replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 24)}", which is not a whole number of ms from 500 to 9000: ignored, nothing changes`);
   if (early !== null) o.log(`${tag}: experiment (CASTCADE_ICE_FIRST_RESTART_MS): a data connection that is stuck gets one more ICE restart, after ${early} ms, before the usual 10 / 20 / 40 s`);
 
   const bridge = new TunnelBridge({
@@ -242,8 +246,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
       C.log,
       (e, line) => {
         if (!fromPage(e) || typeof line !== 'string') return;
-        // 1200: an ICE round's line names up to ten kinds of candidate pair (I11.12).
-        o.log(`${tag}: ${line.replace(/[\r\n]+/g, ' ').slice(0, 1200)}`);
+        o.log(`${tag}: ${pageLogLine(line)}`);
       },
     ],
   ];

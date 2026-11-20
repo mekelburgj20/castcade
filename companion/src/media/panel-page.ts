@@ -861,6 +861,24 @@ export interface IceRoundPeer {
   round: IceRound;
   /** The candidates at the page's last look at the stats (`iceCandidateIds`), null before the first. */
   ids: { local: string[]; remote: string[] } | null;
+  /** When the last rounds ended that the peer ended (its restarts), for `ICE_PEER_ROUNDS`. */
+  peerLedAt?: number[];
+}
+
+/**
+ * I11.12: a peer can restart ICE as often as it likes (every offer with new credentials is one), and each restart
+ * ends a round here: at most this many of those rounds are written per peer in this many ms; one line says so, and
+ * the rest are counted in silence. Rounds this side ends are bounded by its own watchdog (three restarts, then none).
+ */
+export const ICE_PEER_ROUNDS = { max: 4, perMs: 60_000 } as const;
+
+/**
+ * A line a page sends for `companion.log`, as main writes it: one line, 400 characters at most; an ICE round's line
+ * (`iceRoundLine`: up to twelve kinds of candidate pair) may be 1200.
+ */
+export function pageLogLine(line: string): string {
+  const one = line.replace(/[\r\n]+/g, ' ').trim();
+  return one.slice(0, /(^|: )ICE round \d+: /.test(one) ? 1200 : 400);
 }
 
 /**
@@ -875,6 +893,16 @@ export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, p
   if (peerLed) next.remoteMs = 0;
   next.idle = connected;
   r.round = next;
+  if (peerLed) {
+    // `ICE_PEER_ROUNDS` (the numbers are written out: this function is embedded in the pages by its source).
+    const seen = (r.peerLedAt || []).filter((t) => now - t < 60000);
+    seen.push(now);
+    r.peerLedAt = seen.slice(-5);
+    if (seen.length > 4) {
+      if (seen.length === 5) log('ICE round ' + round.n + ': the peer restarted ICE more than 4 times in 60 s; the rounds it ends are not written again until that time is up');
+      return;
+    }
+  }
   // A round that did not connect is read a moment after the next one began: only the pairs of the last look count.
   const only = connected ? null : r.ids;
   const none = (): void => log(iceRoundLine(round, now, why, connected, ice, [], null) + ' (no stats)');

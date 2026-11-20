@@ -211,8 +211,9 @@ export interface Stream3dHostOptions {
   playWaitMs?: number;
   helloWaitMs?: number;
   forkStartMs?: number;
-  /** I11.4.9: `START_WAIT_MS` (match/stream3d.ts) for the tests and the harness. */
+  /** I11.4.9: `START_WAIT_MS` and `FORK_HELLO_WAIT_MS` (match/stream3d.ts) for the tests and the harness. */
   startWaitMs?: number;
+  forkHelloWaitMs?: number;
   /** The machine's clock (the tests'); default `Date.now`. */
   now?(): number;
 }
@@ -307,6 +308,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
     ...(o.watchTimeoutMs !== undefined ? { watchTimeoutMs: o.watchTimeoutMs } : {}),
     ...(o.playWaitMs !== undefined ? { playWaitMs: o.playWaitMs } : {}),
     ...(o.startWaitMs !== undefined ? { startWaitMs: o.startWaitMs } : {}),
+    ...(o.forkHelloWaitMs !== undefined ? { forkHelloWaitMs: o.forkHelloWaitMs } : {}),
     ...(o.now ? { now: o.now } : {}),
   });
 
@@ -486,6 +488,10 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
           },
         },
         didNotStart: start.didNotStart,
+        notStarted: () => {
+          start.ended();
+          machine.forkGone();
+        },
       };
     },
 

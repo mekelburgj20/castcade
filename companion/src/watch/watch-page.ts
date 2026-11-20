@@ -65,8 +65,15 @@ export interface WatchPageConfig {
  * connected half a second after it. A restart makes the side that restarts send first (its new ports check the peer's
  * old candidates at once: the recorded stats in `media/ice-round.test-data.json`), where in round one the side that
  * answers sends first; if that order is what one of the routers cannot take, a restart after 2 s connects at 2.5 s
- * instead of 11. With the variable set the watchdog restarts a stuck connection once after that many ms, then goes on
- * as it always did (10, 20, 40 s). Only the side that leads restarts acts on it; the tunnel page only (not voice).
+ * instead of 11. With the variable set, this PC's watchdog has four restarts instead of three: the first after that
+ * many ms, then 10, 20 and 40 s after the one before, and it gives up 40 s after the fourth. The tunnel page only (not
+ * voice), and each PC for itself:
+ * - on the PC that leads restarts (the larger player id) the early restart happens at that many ms;
+ * - on the other PC it would happen 5 s later (the lag every restart of the non-lead side has), and only if the lead
+ *   has not restarted by then: set there alone, with the lead at 10 s, it fires at `first + 5 s` when that is under
+ *   10 s, so the PC that is "not the lead" then restarts first;
+ * - a PC without the variable counts the other's early restart as one of its own three ("ICE restart 1 of 3 by the
+ *   peer") and so gives up one restart earlier than the PC that has it. Set it on both PCs, or know which one leads.
  */
 export function firstRestartMs(env: string | undefined): number | null {
   if (env === undefined || !/^\d{3,4}$/.test(env.trim())) return null;
