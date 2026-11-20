@@ -31,5 +31,9 @@
  *   as 4, from the other side: a peer on 5 refuses the value (its enum is `rtc` | `video`), so the frame does not decode
  *   there, the pair's stream connection never opens and one PC waits for an answer that never comes. A version bump
  *   makes mixed builds refuse each other at HELLO instead; every rig updates through the updater. Never logged.
+ *   I11.4.9 (2026-11-20, the first turn starts in 3D): PARTICIPANT_UPDATE `stream3dWaitMs` (optional) and HELLO_ACK
+ *   `stream3dWait` (defaulted), both never logged, so still 6, by the precedent of `ballEndReady` in 5. A 0.2.46 peer
+ *   strips the keys (zod objects are not strict): as the host it lists nobody and waits for nobody, which is what it
+ *   did; as a client it never says it is waiting and is never waited for, and it ignores the list.
  */
 export const PROTOCOL_VERSION = 6 as const;

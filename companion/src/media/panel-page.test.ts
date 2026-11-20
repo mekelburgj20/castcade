@@ -1211,6 +1211,42 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('I11.12: the page writes one line per ICE round of the voice connection: what every kind of pair sent and received when the restart was decided', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = loadPage({ mic: true, capture: false });
+      p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [{ urls: ['stun:x'] }], capture: null, micDeviceId: null, muted: false, sending: false });
+      p.emit(PANEL_CHANNELS.state, state());
+      await settle();
+      const pc = FakePeerConnection.all[0]!;
+      pc.onnegotiationneeded?.();
+      await settle();
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'answer session:k1' } });
+      await settle();
+      // Checks go out on the one pair and nothing comes back (the first round between the two routers, 2026-11-18).
+      pc.stats = new Map<string, Record<string, unknown>>([
+        ['L', { id: 'L', type: 'local-candidate', candidateType: 'srflx', protocol: 'udp', address: '192.0.2.10', port: 50_000 }],
+        ['R', { id: 'R', type: 'remote-candidate', candidateType: 'srflx', protocol: 'udp', address: '198.51.100.7', port: 61_000 }],
+        ['P', { id: 'P', type: 'candidate-pair', localCandidateId: 'L', remoteCandidateId: 'R', state: 'in-progress', requestsSent: 21, responsesReceived: 0, requestsReceived: 0, responsesSent: 0 }],
+      ]);
+      const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+      const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
+      pc.iceConnectionState = 'checking';
+      tick.cb();
+      vi.advanceTimersByTime(10_000);
+      tick.cb();
+      await settle();
+      const round = logs().filter((l) => l.includes('ICE round'));
+      expect(round).toHaveLength(1);
+      expect(round[0]).toMatch(/^peer krobs: ICE round 1: restart 1 of 3 decided here after 1\d\.\d\d s \(ice checking\); remote description (not seen|at \d+\.\d\d s), checking (not seen|at \d+\.\d\d s), not connected; 1 pair: srflx>srflx udp in-progress sent 21 answered 0, received 0 answered 0; this side leads restarts$/);
+      expect(round[0]).not.toMatch(/192\.0\.2|198\.51|50000|61000/);
+      // The watchdog's own line is still there, as before.
+      expect(logs()).toContain('peer krobs: ICE restart 1 of 3 (checking for 10 s, we lead; no pair yet)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('the layer camera on the page (D7.5.1, 2026-11-02)', () => {

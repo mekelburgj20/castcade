@@ -293,4 +293,25 @@ describe('the restart clock', () => {
     expect(f.log.filter((l) => l.includes('an event listener failed'))).toHaveLength(3);
     vi.restoreAllMocks();
   });
+
+  it('no address in the log: what the helper writes (a log event, an error, its stderr, a line that is not JSON) is masked first; the event itself is passed on as it came', () => {
+    const f = faked();
+    const texts: string[] = [];
+    f.helper.onEvent((e) => {
+      if (e.event === 'log' && typeof e.text === 'string') texts.push(e.text);
+    });
+    f.helper.start();
+    const pair = 'peer 56999e06-838a-4d68-ae8a-1a8385cfb4da: pair srflx 203.0.113.7:60892 -> srflx 198.51.100.23:55389 (candidate pair state changed)';
+    f.children[0]!.say({ event: 'log', level: 'info', text: pair });
+    f.children[0]!.say({ event: 'error', code: 'ice', text: 'no route to [2001:db8::1]:61000' });
+    f.children[0]!.stderr.emit('data', Buffer.from('video: peer k: ICE candidate error 701 from stun:stun.l.google.com:19302 (192.0.2.10:50000): timed out\n'));
+    f.children[0]!.stdout.emit('data', Buffer.from('not json, from 203.0.113.7:1\n'));
+    expect(f.log).toContain('video: peer 56999e06-838a-4d68-ae8a-1a8385cfb4da: pair srflx <addr> -> srflx <addr> (candidate pair state changed)');
+    expect(f.log).toContain('video: helper error ice: no route to <addr>');
+    expect(f.log).toContain('video: peer k: ICE candidate error 701 from stun:stun.l.google.com:19302 (<addr>): timed out');
+    expect(f.log.some((l) => l.includes('an unreadable line from the helper') && l.endsWith('not json, from <addr>'))).toBe(true);
+    expect(f.log.join('\n')).not.toMatch(/203\.0\.113|198\.51\.100|192\.0\.2|2001:db8/);
+    // Only the log is masked: the mesh still gets what the helper said.
+    expect(texts).toEqual([pair]);
+  });
 });

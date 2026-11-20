@@ -35,7 +35,7 @@ param(
     [string]$Tables = 'C:\code\repos\castcade-vpx-deps\run\tables',
     [string]$RomTable = 'Attack from Mars LE (Midway 1995) v600.vpx',
     [string[]]$Rom = @('afm_113b'),
-    [string[]]$Only = @('two', 'three', 'off', 'mismatch', 'rom', 'nostart'),
+    [string[]]$Only = @('two', 'three', 'off', 'mismatch', 'rom', 'nostart', 'gate', 'gatecap'),
     [int]$Turns = 20,
     [string]$Root = 'C:\code\repos\castcade-vpx-deps\run\match-companion',
     [string]$CanonicalTypeLib = 'C:\code\repos\castcade-vpx-deps\run\regbackup\hkcu-typelib-before.reg',

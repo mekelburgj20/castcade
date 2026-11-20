@@ -41,6 +41,11 @@
  *   ends the outstanding grant's ball by hand with a logged TURN_PASS (this host's own ball or a client's), under the
  *   same conditions as a BALL_END (running, no transfer pending, also while paused); the BALL_END that arrives for
  *   that grant afterwards meets the usual `stale_grant` / `not_grant_holder` REJECT.
+ * - I11.4.9 (2026-11-20): `HELLO_ACK.stream3dWait` lists the lobby participants whose PC is still making its 3D
+ *   connection (`PARTICIPANT_UPDATE.stream3dWaitMs`, this host's own through `updateLocal`), each with the ms left of
+ *   its own wait (`stream3dWaiting()`); a PC that says nothing more is dropped from the list a grace after its time ran
+ *   out. The engine only keeps and passes the list: `startIn()` and `start()` do not look at it (the controller holds a
+ *   start for it; `start()` is the host's "start now"). Lobby only: NEXT_GAME and a rejoin never wait.
  */
 import {
   PROTOCOL_VERSION,
@@ -203,6 +208,10 @@ export type OutgoingMediaSignal = Omit<PayloadInput<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
+/** I11.4.9: a PC whose own 3D wait ran out and that said nothing more is waited for this much longer, then let go. */
+export const STREAM3D_WAIT_GRACE_MS = 2_000;
+/** I11.4.9: the longest a PC can ask to be waited for in one PARTICIPANT_UPDATE (the schema's limit). */
+export const STREAM3D_WAIT_MAX_MS = 120_000;
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'TURN_PASS', 'RESULT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 const ZERO_HASH = '0'.repeat(64);
 const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
@@ -242,6 +251,12 @@ export class HostMatch {
   /** A11: the start countdown under way: its timer and when it runs out (this host's clock). */
   private startTimer: TimerHandle | null = null;
   private startAt: number | null = null;
+  /**
+   * I11.4.9: the lobby participants whose PC said its 3D connection is still being made, with when (this host's
+   * clock) it said it would stop waiting. A start from the table waits for them (the controller's `tryStartFromTable`).
+   */
+  private readonly stream3dWait = new Map<PlayerId, number>();
+  private stream3dTimer: TimerHandle | null = null;
   private readonly tableOpen: (game: GameFingerprint) => boolean;
   private readonly signatures = new Map<PlayerId, LogSignRecord>();
   /** Players whose link dropped, by the transport's account (independent of the log). */
@@ -372,6 +387,7 @@ export class HostMatch {
    * to every client. False (nothing done) when nothing changed. A6.1 (2026-11-01): after MATCH_READY only the rig
    * counts (the owner's rig read VR 7 s after Start): it goes to every client as this host's PARTICIPANT_UPDATE.
    * A13: `ballEndReady` is this host's own table (lobby only), told to every client in the same HELLO_ACK.
+   * I11.4.9: so is `stream3dWaitMs`, this host's own 3D connection (lobby only; `stream3dWaiting`).
    */
   updateLocal(u: PayloadOf<'PARTICIPANT_UPDATE'>): boolean {
     this.assertActive();
@@ -385,7 +401,9 @@ export class HostMatch {
     const rigChanged = u.rig !== undefined && u.rig !== me.rig;
     const gameChanged = u.game !== undefined && !sameGame(u.game, this.hostGame);
     const readyChanged = u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady.get(this.localId);
-    if (!rigChanged && !gameChanged && !readyChanged) return false;
+    // I11.4.9: this host's own 3D connection is (or is no longer) being made.
+    const waitChanged = u.stream3dWaitMs !== undefined && this.noteStream3dWait(this.localId, u.stream3dWaitMs);
+    if (!rigChanged && !gameChanged && !readyChanged && !waitChanged) return false;
     if (readyChanged) this.ballEndReady.set(this.localId, u.ballEndReady!);
     if (rigChanged) this.lobby[0] = { ...me, rig: u.rig! };
     if (gameChanged) {
@@ -450,6 +468,61 @@ export class HostMatch {
       });
   }
 
+  /**
+   * I11.4.9 (2026-11-20): the lobby participants (this host included) whose 3D connection is still being made, and the
+   * ms after which each stops being waited for (`PARTICIPANT_UPDATE.stream3dWaitMs`, this host's own through
+   * `updateLocal`). A PC that said nothing more is let go `STREAM3D_WAIT_GRACE_MS` after its own time ran out. Empty
+   * after the start: only the match's first start waits.
+   */
+  stream3dWaiting(): Array<{ playerId: PlayerId; leftMs: number }> {
+    if (this.s.state.phase !== 'lobby') return [];
+    const now = this.s.clock.now();
+    return this.lobby
+      .map((p) => ({ playerId: p.playerId, until: this.stream3dWait.get(p.playerId) }))
+      .filter((x): x is { playerId: PlayerId; until: number } => x.until !== undefined && now < x.until + STREAM3D_WAIT_GRACE_MS)
+      .map((x) => ({ playerId: x.playerId, leftMs: Math.max(0, Math.min(STREAM3D_WAIT_MAX_MS, Math.round(x.until - now))) }));
+  }
+
+  /**
+   * I11.4.9: what a participant said about its 3D connection (0: settled). True when who is waited for changed, or the
+   * time one of them is waited for moved by more than a second (a re-sent estimate is not news).
+   */
+  private noteStream3dWait(id: PlayerId, ms: number): boolean {
+    const now = this.s.clock.now();
+    const before = this.stream3dWait.get(id);
+    const was = before !== undefined && now < before + STREAM3D_WAIT_GRACE_MS;
+    if (ms <= 0) this.stream3dWait.delete(id);
+    else this.stream3dWait.set(id, now + Math.min(STREAM3D_WAIT_MAX_MS, ms));
+    this.armStream3dTimer();
+    const until = this.stream3dWait.get(id);
+    if (until === undefined) return was;
+    return !was || Math.abs(until - (before as number)) > 1000;
+  }
+
+  /** I11.4.9: a PC that never says it settled is let go when its time (and the grace) is up: the lobby hears of it. */
+  private armStream3dTimer(): void {
+    if (this.stream3dTimer !== null) this.s.clock.clearTimeout(this.stream3dTimer);
+    this.stream3dTimer = null;
+    if (this.detached || this.s.state.phase !== 'lobby' || this.stream3dWait.size === 0) return;
+    const now = this.s.clock.now();
+    const next = Math.min(...this.stream3dWait.values()) + STREAM3D_WAIT_GRACE_MS;
+    this.stream3dTimer = this.s.clock.setTimeout(() => {
+      this.stream3dTimer = null;
+      if (this.detached || this.s.state.phase !== 'lobby') return;
+      const t = this.s.clock.now();
+      for (const [id, until] of [...this.stream3dWait]) if (t >= until + STREAM3D_WAIT_GRACE_MS) this.stream3dWait.delete(id);
+      this.armStream3dTimer();
+      this.events.emit('participantUpdated', { ...this.lobby[0]! });
+      this.resendAck();
+    }, Math.max(0, next - now));
+  }
+
+  private clearStream3dWait(): void {
+    if (this.stream3dTimer !== null) this.s.clock.clearTimeout(this.stream3dTimer);
+    this.stream3dTimer = null;
+    this.stream3dWait.clear();
+  }
+
   /** A11: ms left of the start countdown, or null when none runs. */
   countdownRemaining(): number | null {
     return this.startAt === null ? null : Math.max(0, this.startAt - this.s.clock.now());
@@ -493,6 +566,8 @@ export class HostMatch {
     if (this.s.state.phase !== 'lobby') throw new Error('match already started');
     if (this.lobby.length < 2) throw new Error('need at least two participants to start');
     this.clearStartTimer();
+    // I11.4.9: only the first start waits for a 3D connection, and this is it (or the host's "start now").
+    this.clearStream3dWait();
     const payload: PayloadOf<'MATCH_READY'> = {
       matchId: this.matchId,
       ballsPerGame: this.ballsPerGameInit,
@@ -765,6 +840,7 @@ export class HostMatch {
     this.detached = true;
     for (const off of this.unsubscribe) off();
     this.unsubscribe.length = 0;
+    this.clearStream3dWait();
     this.clearBallEndTimer();
     this.clearStartTimer();
     if (this.logSignTimer !== null) {
@@ -929,6 +1005,7 @@ export class HostMatch {
       this.lobbyGames.delete(peer);
       this.ballEndReady.delete(peer);
       this.midnightModeOf.delete(peer);
+      if (this.stream3dWait.delete(peer)) this.armStream3dTimer();
       if (wasIn) this.setMismatch(peer, []);
       this.events.emit('peerLeft', peer);
       // A8 (2026-10-31): the others' rosters drop the leaver too.
@@ -1040,6 +1117,8 @@ export class HostMatch {
     }
     // B26.4: how the Midnight Madness setting reads on that player's table.
     if (u.midnightMode !== undefined && this.noteMidnightMode(msg.from, u.midnightMode)) changed = true;
+    // I11.4.9: that player's 3D connection is (or is no longer) being made.
+    if (u.stream3dWaitMs !== undefined && this.noteStream3dWait(msg.from, u.stream3dWaitMs)) changed = true;
     if (!changed) return;
     this.events.emit('participantUpdated', { ...this.lobby[i]! });
     this.resendAck();
@@ -1079,6 +1158,7 @@ export class HostMatch {
         loading: this.loading(),
         ballEndReady: [...this.ballEndReady].map(([playerId, ready]) => ({ playerId, ready })),
         midnightModes: [...this.midnightModeOf].map(([playerId, m]) => ({ playerId, enabled: m.enabled, adjustment: m.adjustment })),
+        stream3dWait: this.stream3dWaiting(),
       },
       null,
     );

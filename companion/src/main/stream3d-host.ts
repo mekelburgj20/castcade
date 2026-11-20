@@ -28,8 +28,10 @@
  * check and the port picker are handed in, and the control listener can be replaced, so the tests run the real
  * listener against a scripted fork on loopback and a tunnel of their own.
  *
- * The match host hears of a change (`onChange`) only when what it reads changed (the view, the fork being away): the
- * tunnel's own reports (a round-trip time every 2 s per peer) never reach it.
+ * The match host hears of a change (`onChange`) only when what it reads changed (the view, the fork being away, the
+ * wait of the first start): the tunnel's own reports (a round-trip time every 2 s per peer) never reach it. Of those
+ * reports the machine is told two things, when they change: that the tunnel's page is broken for good, and the players
+ * it found no path to (I11.4.9: the match's first start does not wait for a connection that is not coming).
  *
  * The witness is not told anything: a match table in the fork is an ordinary game, scored as any (only its exe is
  * never remembered: `isForkExe`).
@@ -37,7 +39,7 @@
 import { createServer, type Socket } from 'node:net';
 import { win32 } from 'node:path';
 import { forkExeFor, forkMatchEnv, type ForkLaunch } from '../launch/vpx-launch.js';
-import { CONTROL_VERSION, QUIET_LOG_MS, Stream3d, parseControlLine, viewWords, type Stream3dStatus, type Watch3dSetting } from '../match/stream3d.js';
+import { CONTROL_VERSION, QUIET_LOG_MS, Stream3d, parseControlLine, viewWords, type StartWait, type Stream3dStatus, type Watch3dSetting } from '../match/stream3d.js';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { IceServer } from '../media/media-settings.js';
 import type { TunnelEnd, TunnelEndOptions } from '../watch/tunnel-end.js';
@@ -177,8 +179,14 @@ export interface MatchStream3d {
   away(): boolean;
   /** §4.3: `cb` once the fork says `state playing`, at once when it is not away, after 2 s whatever it says (`late`). */
   whenPlaying(cb: (late: boolean) => void): () => void;
+  /** I11.4.9: the match has not started yet (the lobby before game 1): only then is the first start made to wait. */
+  setStartGate(on: boolean): void;
+  /** I11.4.9: whether a table is open on this PC (the witness's reading). */
+  setTableOpen(open: boolean): void;
+  /** I11.4.9: whether the match's first start should wait for this PC's 3D connection, and until when at most. */
+  startWait(): StartWait;
   status(): Stream3dView;
-  /** What `status()`, `showing3d()` or `away()` answer changed. */
+  /** What `status()`, `showing3d()`, `away()` or `startWait()` answer changed. */
   onChange(cb: () => void): () => void;
   close(): Promise<void>;
 }
@@ -203,6 +211,11 @@ export interface Stream3dHostOptions {
   playWaitMs?: number;
   helloWaitMs?: number;
   forkStartMs?: number;
+  /** I11.4.9: `START_WAIT_MS` and `FORK_HELLO_WAIT_MS` (match/stream3d.ts) for the tests and the harness. */
+  startWaitMs?: number;
+  forkHelloWaitMs?: number;
+  /** The machine's clock (the tests'); default `Date.now`. */
+  now?(): number;
 }
 
 export interface Stream3dHost {
@@ -259,7 +272,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
     queued = true;
     queueMicrotask(() => {
       queued = false;
-      const now = current ? JSON.stringify([current.status(), current.away()]) : '';
+      const now = current ? JSON.stringify([current.status(), current.away(), current.startWait()]) : '';
       if (now === told) return;
       told = now;
       for (const cb of [...listeners]) cb();
@@ -294,6 +307,9 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
     name: (peer) => names.get(peer) ?? peer,
     ...(o.watchTimeoutMs !== undefined ? { watchTimeoutMs: o.watchTimeoutMs } : {}),
     ...(o.playWaitMs !== undefined ? { playWaitMs: o.playWaitMs } : {}),
+    ...(o.startWaitMs !== undefined ? { startWaitMs: o.startWaitMs } : {}),
+    ...(o.forkHelloWaitMs !== undefined ? { forkHelloWaitMs: o.forkHelloWaitMs } : {}),
+    ...(o.now ? { now: o.now } : {}),
   });
 
   // ---- §4.4: did the fork Castcade just started come up? ----
@@ -454,6 +470,12 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       // hello names (rule 9), so nothing is known of this table until its VPX says so.
       info(`stream3d: the match table starts in the Castcade VPX build (${exe}): asked to stream on 127.0.0.1:${streamPort}, control on 127.0.0.1:${controlPort}`);
       const start = watchStart();
+      // I11.4.9: this VPX is expected on the control connection: until it is there (or is known not to come), the
+      // match's first start waits for this PC.
+      machine.forkLaunched();
+      void start.didNotStart.then((failed) => {
+        if (failed) machine.forkGone();
+      });
       return {
         options: {
           exe,
@@ -462,9 +484,14 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
           onExit: (code) => {
             info(`stream3d: the match table's VPX closed (exit ${code ?? 'unknown'})`);
             start.ended();
+            machine.forkGone();
           },
         },
         didNotStart: start.didNotStart,
+        notStarted: () => {
+          start.ended();
+          machine.forkGone();
+        },
       };
     },
 
@@ -494,12 +521,18 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
             onPeerInfo: (peer, text) => {
               if (tunnel === t) machine.peerCaps(peer, text);
             },
+            // Of the tunnel's own reports only two things go on: its page is broken for good, and who it found no path to.
+            onChange: () => {
+              if (tunnel !== t || !t) return;
+              const st = t.status();
+              machine.setTunnel({ broken: st.pageError !== null, noPath: Object.entries(st.peers).filter(([, v]) => v.path === 'no_path').map(([id]) => id) });
+            },
           });
           end = t;
           tunnel = t;
           info(`stream3d: the data connections to the other players open${late ? ' now (this PC can use them from here on)' : ' in the lobby'}`);
-          // What this PC's VPX is goes out on the new connections.
-          machine.retell();
+          // What this PC's VPX is goes out on the new connections; the time each PC takes to be heard from counts from here.
+          machine.tunnelOpened();
           if (roster.length > 0) {
             // The others offered long ago, to nobody: each is told to start its side over, before anything of this
             // end's reaches it (the order `dropPeer` of tunnel-end.ts keeps).
@@ -514,6 +547,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
             if (tunnel === t) tunnel = null;
             void t.close().catch(() => undefined);
           }
+          machine.setTunnel({ broken: true, noPath: [] });
           o.log.warn(`stream3d: the data connections could not be opened (${describe(e)}); the 2D video serves this match`);
         }
       };
@@ -553,6 +587,9 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
           }
           return machine.whenPlaying(cb);
         },
+        setStartGate: (on) => void (mine() && machine.setStartGate(on)),
+        setTableOpen: (open) => void (mine() && machine.setTableOpen(open)),
+        startWait: () => (mine() ? machine.startWait() : { pending: false, until: null, why: null, waitingFor: [] }),
         status() {
           const st = machine.status();
           return {

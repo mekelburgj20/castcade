@@ -32,6 +32,11 @@
  *   is open, a 5 s countdown (`HostMatch.startIn`) the whole lobby sees ("Starting the match: <names>"); a second
  *   `game_start` changes nothing. With a table still loading the start is armed and fires once the last one opens;
  *   the host's game ending in the lobby disarms it. The desktop Start button works throughout.
+ *   I11.4.9 (2026-11-20, the first turn starts in 3D): the armed start also waits for the PCs whose 3D connection is
+ *   still being made (the host's `stream3dWaiting()`, a client's HELLO_ACK `stream3dWait`; each PC stops waiting by
+ *   itself after its own limit, `match/stream3d.ts`), and the lobby line says for whom and for how many seconds at
+ *   most. Start match (`holdTabStart`) is held the same way at its first press; a second press starts now. Only the
+ *   match's first start: a next game never waits.
  * - A12 (2026-11-05): no game before the match. The owner pressed Start before the other player joined; the join then
  *   started nothing. `preMatchPlay` decides the host's table in the lobby: `free` (default), the host may play, and a
  *   game running when the lobby becomes complete (two or more in, every table open) is never the match's game 1: the
@@ -91,11 +96,12 @@ import { midnightLine, midnightSettingLine, possessive } from '../witness/midnig
 import type { ClientMatch } from './client.js';
 import type { HostMatch } from './host.js';
 import type { MatchState } from './state.js';
+import { START_WAIT_MS } from './stream3d.js';
 
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<
   HostMatch,
-  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
+  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'stream3dWaiting' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
 >;
 /** What a client-side role must offer (structurally a ClientMatch). */
 export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory' | 'reportMidnightMode'>;
@@ -154,6 +160,14 @@ export interface ControllerStatus {
   /** A13: for the host while a grant is outstanding: the turn Pass the turn would end, and the score it would end at. Else null. */
   pass: { player: PlayerId; name: string; ball: number; score: number } | null;
   /**
+   * I11.4.9: in the lobby, the players a start waits for: their PC is still making its 3D connection (the host's
+   * list) and their table is open. `armed`: this host's start is held for them (`table`: a game started on its table,
+   * and the countdown follows by itself; `tab`: Start match was pressed once: a second press starts now, and the shell
+   * starts the match when `players` is empty). `seconds`: what is left of a held start's one limit (0 while none is
+   * held): `players` is empty from then on, whatever the PCs say.
+   */
+  wait3d: { players: PlayerId[]; seconds: number; armed: 'table' | 'tab' | null };
+  /**
    * A16.2: this player's finished game made the machine's high-score list and the table is held for the initials:
    * unlocked, and the headset stays on this player's own table (`vrViewMode`'s `initialsHold`).
    */
@@ -188,6 +202,8 @@ export interface MatchControllerOptions {
   ballsPerGame?: number;
   /** A11: the countdown before a start from the host's table. Default 5 s. */
   startCountdownMs?: number;
+  /** I11.4.9: the longest a start is held for the 3D connections, in all. Default `START_WAIT_MS` (45 s). */
+  start3dHoldMs?: number;
   /** A12 (2026-11-05): the host's table in the lobby: free play (default) or locked until the lobby is complete. */
   preMatchPlay?: PreMatchPlay;
   /** A12: a game is already running on this player's table when the controller is made (the witness's live game). */
@@ -203,6 +219,14 @@ export interface MatchControllerOptions {
    * Absent, or false: no initials hold.
    */
   highScoreQualifies?: (score: number) => boolean;
+}
+
+/**
+ * I11.4.9: the lobby line without the seconds of a held start ("..., or in 31 s (Start match ..."): what the headset's
+ * lobby peek compares (D8.9), so the number alone never counts as a change of the line.
+ */
+export function lobbyLineKey(message: string | null): string | null {
+  return message === null ? null : message.replace(/, or in \d+ s \(/, ' (');
 }
 
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
@@ -373,6 +397,24 @@ export class MatchController {
   private startArmed = false;
   /** A11: lobby players whose table is not open (the host's `loading()`, a client's last HELLO_ACK). */
   private loadingIds: PlayerId[] = [];
+  /**
+   * I11.4.9: lobby players whose 3D connection is still being made (the host's `stream3dWaiting()`, a client's last
+   * HELLO_ACK), and the timer that keeps a held start's seconds on the panel.
+   */
+  private wait3d: PlayerId[] = [];
+  private wait3dTimer: unknown = null;
+  /**
+   * I11.4.9: when a start was first held for the 3D connections, plus the one limit: from then on nobody is waited
+   * for, whatever any PC says (a late joiner, a PC that keeps asking for more). Null: no start is held.
+   */
+  private holdUntil: number | null = null;
+  private holdTimer: unknown = null;
+  /** I11.4.9: a held Start match was given up in this lobby (`dropTabHold`): the host has waited once, the next press starts. */
+  private tabHoldSpent = false;
+  /** I11.4.9: what the armed start from the table was last said to wait for (one log line per reason). */
+  private armedFor: 'tables' | '3d' | null = null;
+  /** I11.4.9: Start match was pressed while a 3D connection was being made: the shell starts when it settles. */
+  private tabArmed = false;
   /** A12: a game is running on this player's own table (the hook's `game_start` until its `game_end`), any phase. */
   private tableGameRunning: boolean;
   /** A12: free play: the lobby is complete while the host's game runs; the match starts at the next Start after it ends. */
@@ -478,10 +520,154 @@ export class MatchController {
       ballEnds: this.ballEnds(),
       startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
       pass: this.passInfo(),
+      wait3d: this.wait3dStatus(),
       initialsHold: this.initialsHold,
       advisories: this.advisoryLines(),
       panel: this.panel(),
     };
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // I11.4.9: the first start waits for the 3D connections
+  // ------------------------------------------------------------------------------------------
+
+  private holdMs(): number {
+    return this.opts.start3dHoldMs ?? START_WAIT_MS;
+  }
+
+  /**
+   * Who a start waits for now: the players the host lists, still in the lobby, whose table is open (one that is still
+   * loading is the table wait's to hold a start from the table, and never holds a press of Start match). Nobody once a
+   * held start has reached its limit. `seconds`: what is left of that limit while a start is held, else 0.
+   */
+  private wait3dNow(): { ids: PlayerId[]; seconds: number } {
+    if (this.phase !== 'lobby') return { ids: [], seconds: 0 };
+    const now = this.opts.now();
+    if (this.holdUntil !== null && now >= this.holdUntil) return { ids: [], seconds: 0 };
+    const ids = this.wait3d.filter((id) => this.participants().some((p) => p.playerId === id) && !this.loadingIds.includes(id));
+    return { ids, seconds: this.holdUntil !== null && ids.length > 0 ? Math.max(0, Math.ceil((this.holdUntil - now) / 1000)) : 0 };
+  }
+
+  private wait3dStatus(): ControllerStatus['wait3d'] {
+    const w = this.wait3dNow();
+    const host = isHostRole(this.role);
+    return { players: w.ids, seconds: w.seconds, armed: !host || this.phase !== 'lobby' ? null : this.tabArmed ? 'tab' : this.startArmed && this.armedFor === '3d' ? 'table' : null };
+  }
+
+  /** "the 3D connection to Krobs" (the others that are waited for), or this PC's own when it is the only one. */
+  private wait3dWords(ids: readonly PlayerId[]): string {
+    const others = ids.filter((id) => id !== this.localId).map((id) => this.nameOf(id));
+    return others.length > 0 ? `the 3D connection to ${others.join(', ')}` : "this PC's 3D connection";
+  }
+
+  /** The host's list, or a client's last HELLO_ACK: whose 3D connection is still being made. */
+  private noteWait3d(list: ReadonlyArray<{ playerId: PlayerId }>): void {
+    this.wait3d = list.map((x) => x.playerId);
+  }
+
+  /**
+   * A start is held for the 3D connections from now (nothing new when one is held already: a second kind of start,
+   * a PC that joins or asks again, all count toward the same moment). At the limit the start goes on by itself.
+   */
+  private beginHold(): void {
+    if (this.holdUntil !== null) return;
+    this.holdUntil = this.opts.now() + this.holdMs();
+    this.holdTimer = this.opts.setTimeout(() => this.holdDue(), this.holdMs());
+    if (this.wait3dTimer === null) this.wait3dTimer = this.opts.setTimeout(() => this.tickWait3d(), 1000);
+  }
+
+  private holdDue(): void {
+    this.holdTimer = null;
+    const r = this.role;
+    if (this.closed || this.phase !== 'lobby' || this.holdUntil === null || !isHostRole(r)) return;
+    const still = this.wait3d.filter((id) => this.participants().some((p) => p.playerId === id)).map((id) => (id === this.localId ? 'this PC' : this.nameOf(id)));
+    // What happens now, said as it is: a start from the table goes on, unless a table stands in its way; a held Start
+    // match comes due, and the shell starts it or gives it up (it logs which).
+    this.noteLoading(r.loading());
+    const loading = this.loadingIds.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`));
+    const what: string[] = [];
+    if (this.startArmed) {
+      what.push(
+        loading.length > 0
+          ? `the start from the table now waits for ${loading.join(', ')} table${loading.length > 1 ? 's' : ''} to open`
+          : this.unreadableIds().length > 0
+            ? 'the start from the table does not go on: a table cannot report ball ends'
+            : 'the start from the table goes on, and the first turn may be the 2D video',
+      );
+    }
+    if (this.tabArmed) what.push('the held Start match comes due');
+    this.opts.log(`match: ${Math.round(this.holdMs() / 1000)} s passed since the start was held for the 3D connections${still.length > 0 ? ` (still being made: ${still.join(', ')})` : ''}; ${what.join('; ') || 'nothing is held any more'}`);
+    if (this.startArmed) this.tryStartFromTable(r, false);
+    this.push();
+  }
+
+  private endHold(): void {
+    if (this.holdTimer !== null) this.opts.clearTimeout(this.holdTimer);
+    this.holdTimer = null;
+    this.holdUntil = null;
+    if (this.wait3dTimer !== null) this.opts.clearTimeout(this.wait3dTimer);
+    this.wait3dTimer = null;
+  }
+
+  /** The seconds of a held start count down on the lobby line (nothing ticks while no start is held). */
+  private tickWait3d(): void {
+    this.wait3dTimer = null;
+    if (this.closed || this.phase !== 'lobby' || this.holdUntil === null || this.opts.now() >= this.holdUntil) return;
+    this.push();
+    this.wait3dTimer = this.opts.setTimeout(() => this.tickWait3d(), 1000);
+  }
+
+  private clearWait3d(): void {
+    this.endHold();
+    this.wait3d = [];
+    this.tabArmed = false;
+    this.tabHoldSpent = false;
+    this.armedFor = null;
+  }
+
+  /**
+   * I11.4.9: the host pressed Start match (the Match tab, the in-game menu). True: a 3D connection is still being
+   * made and this is the first press: the start is held until it settles or the limit is reached (the shell then
+   * starts; `status().wait3d`), and the lobby line says a second press starts now. False: the caller starts the match
+   * now: nothing to wait for, or this is that second press, or a start from the table is already held for the 3D
+   * connections (its lobby line says Start match starts it now), or somebody's table is still loading (a press then
+   * is what it was before this wait existed), or a held press was already given up in this lobby (`dropTabHold`).
+   */
+  holdTabStart(): boolean {
+    const r = this.role;
+    if (this.closed || !isHostRole(r) || this.phase !== 'lobby' || this.tabArmed) return false;
+    if (this.startArmed && this.armedFor === '3d') {
+      this.opts.log('match: Start match was pressed while the start from the table waited for the 3D connections; the match starts now');
+      return false;
+    }
+    this.noteLoading(r.loading());
+    // A press while somebody's table is still loading is never held: it goes the way it went before there was a wait
+    // (with three or more players the hold would sit there with nothing on the panel saying so, then end in an error).
+    if (this.loadingIds.length > 0) return false;
+    // A hold that was given up in this lobby is not taken again: the host has waited once.
+    if (this.tabHoldSpent) return false;
+    this.noteWait3d(r.stream3dWaiting());
+    const w = this.wait3dNow();
+    if (w.ids.length === 0 || this.participants().length < 2) return false;
+    this.tabArmed = true;
+    this.beginHold();
+    this.opts.log(`match: Start match was pressed; the match starts once ${this.wait3dWords(w.ids)} is up, ${this.wait3dNow().seconds} s at most (Start match again starts it now)`);
+    this.push();
+    return true;
+  }
+
+  /**
+   * I11.4.9: the shell gives up a held Start match (it came due and the start cannot simply go on: a table that cannot
+   * report ball ends, a table still loading, a start that failed). The host has waited once: the next press in this
+   * lobby is not held again (it starts, or asks for the confirmation a press asks for).
+   */
+  dropTabHold(why: string): void {
+    if (!this.tabArmed) return;
+    this.tabArmed = false;
+    this.tabHoldSpent = true;
+    if (!this.startArmed) this.endHold();
+    this.opts.log(`match: the held Start match is off: ${why}; the next press of Start match is not held`);
+    this.push();
   }
 
   private gameNumber(): number {
@@ -754,6 +940,7 @@ export class MatchController {
     this.clearPending();
     this.clearStateTimer();
     this.clearCountdown();
+    this.clearWait3d();
     if (this.spentTimer !== null) this.opts.clearTimeout(this.spentTimer);
     this.spentTimer = null;
     this.spentUnlock = false;
@@ -837,8 +1024,9 @@ export class MatchController {
     }
     const loading = h.loading();
     if (loading.length > 0) {
-      if (!this.startArmed) {
+      if (!this.startArmed || this.armedFor !== 'tables') {
         this.startArmed = true;
+        this.armedFor = 'tables';
         this.opts.log(`match: a game started on the table; the match starts once ${loading.map((id) => this.nameOf(id)).join(', ')}'s table is open`);
         this.push();
       }
@@ -849,13 +1037,34 @@ export class MatchController {
     const unreadable = this.unreadableIds();
     if (unreadable.length > 0) {
       this.startArmed = false;
+      this.armedFor = null;
+      if (!this.tabArmed) this.endHold();
       this.opts.log(
         `match: a game started on the table, but ${unreadable.map((id) => (id === this.localId ? 'your' : `${this.nameOf(id)}'s`)).join(', ')} table cannot report ball ends; the match does not start from the table (Start match on the Match tab starts it anyway)`,
       );
       this.push();
       return;
     }
+    // I11.4.9: the first turn starts in 3D: the countdown waits until every PC's 3D connection is settled (each PC
+    // stops waiting by itself after its own limit), as it waits for a table to open.
+    this.noteWait3d(h.stream3dWaiting());
+    const w = this.wait3dNow();
+    if (w.ids.length > 0) {
+      if (!this.startArmed || this.armedFor !== '3d') {
+        this.startArmed = true;
+        this.armedFor = '3d';
+        this.beginHold();
+        this.opts.log(`match: a game started on the table; the match starts once ${this.wait3dWords(w.ids)} is up, ${this.wait3dNow().seconds} s at most (Start match on the Match tab starts it now)`);
+        this.push();
+      }
+      return;
+    }
+    // A hold that reached its limit stays as it is until the match starts: nobody is waited for from then on.
+    const due = this.holdUntil !== null && this.opts.now() >= this.holdUntil;
+    if (this.startArmed && this.armedFor === '3d' && !due) this.opts.log('match: the 3D connections are settled; the start from the table goes on');
     this.startArmed = false;
+    this.armedFor = null;
+    if (!this.tabArmed && !due) this.endHold();
     const ms = this.opts.startCountdownMs ?? DEFAULT_START_COUNTDOWN_MS;
     let ok = false;
     this.call(() => {
@@ -867,6 +1076,8 @@ export class MatchController {
   private disarmStart(why: string): void {
     if (!this.startArmed) return;
     this.startArmed = false;
+    this.armedFor = null;
+    if (!this.tabArmed) this.endHold();
     this.opts.log(`match: the start from the table is off: ${why}`);
     this.push();
   }
@@ -979,6 +1190,7 @@ export class MatchController {
     this.hostId = this.localId;
     this.lobby = h.roster();
     this.noteLoading(h.loading());
+    this.noteWait3d(h.stream3dWaiting());
     if (h.state.phase === 'lobby') this.noteBallEndReady(h.ballEndReadiness());
     for (const [id, mode] of Object.entries(h.midnightModes())) if (id !== this.localId) this.midnightModes.set(id, mode);
     this.syncLobby(h);
@@ -990,6 +1202,8 @@ export class MatchController {
     offs.push(
       h.on('countdownCancelled', (c) => {
         this.opts.log(`match: the start from the table did not happen: ${c.reason}`);
+        // I11.4.9: a start that is asked for again later is held anew.
+        if (!this.tabArmed) this.endHold();
         this.setCountdown(null);
       }),
     );
@@ -1132,7 +1346,20 @@ export class MatchController {
   /** A host's lobby changed (a join, a leave, a table loaded): the roster, who is loading, and an armed start (A11). */
   private onHostLobby(h: HostRole): void {
     this.noteLoading(h.loading());
+    this.noteWait3d(h.stream3dWaiting());
     this.noteBallEndReady(h.ballEndReadiness());
+    // I11.4.9: a start held from the Match tab is off when the lobby falls below two (the shell starts it otherwise).
+    // The lobby below two: a start that was held for a 3D connection, of either kind, is off, and its limit with it
+    // (a hold that ran out with one player in the lobby would leave the next player who joins not waited for). The
+    // next start is held anew.
+    if (h.roster().length < 2) {
+      const tab = this.tabArmed;
+      this.tabArmed = false;
+      this.tabHoldSpent = false;
+      if (this.startArmed && this.armedFor === '3d') this.disarmStart('the lobby fell below two players while it waited for the 3D connections (start a game on the table again once somebody has joined)');
+      this.endHold();
+      if (tab) this.opts.log('match: the held Start match is off: the lobby fell below two players');
+    }
     if (this.startArmed) this.tryStartFromTable(h, false);
     this.syncLobby(h);
     this.onLobby(h.roster());
@@ -1140,6 +1367,7 @@ export class MatchController {
 
   private onClientAck(ack: PayloadOf<'HELLO_ACK'>): void {
     this.noteLoading(ack.loading);
+    this.noteWait3d(ack.stream3dWait);
     this.noteBallEndReady(Object.fromEntries(ack.ballEndReady.map((x) => [x.playerId, x.ready])));
     // B26.4: what every player said about the Midnight Madness setting; this player's own goes out once it has joined.
     const said = new Set(ack.midnightModes.map((x) => x.playerId));
@@ -1194,6 +1422,7 @@ export class MatchController {
 
   private onReady(p: PayloadOf<'MATCH_READY'>): void {
     this.clearCountdown();
+    this.clearWait3d();
     this.startArmed = false;
     this.waitingForHostGame = false;
     this.lobbyLocked = false;
@@ -1806,7 +2035,7 @@ export class MatchController {
     const count = this.countdownSeconds();
     if (count !== null) return `Starting the match: ${this.participants().map((p) => (p.playerId === this.localId ? 'you' : p.displayName)).join(', ')}`;
     // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
-    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0))) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
+    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
     if (this.phase === 'lobby') return this.lobbyMessage();
     if (this.phase === 'over') {
       if (this.seriesOver) return this.seriesOverLine;
@@ -1839,9 +2068,18 @@ export class MatchController {
       if (host && this.startArmed) return `The match starts once ${tables} ${loading.length > 1 ? 'are' : 'is'} open${warned}`;
       return `Waiting for ${tables} to open${this.lobbyLocked ? '; your table unlocks then' : ''}${warned}`;
     }
+    // I11.4.9: the start is held for a 3D connection: say for whose, for how long at most, and how to start now.
+    const w = this.wait3dNow();
+    const armed = this.wait3dStatus().armed;
+    if (w.ids.length > 0 && armed !== null) {
+      return `The match starts once ${this.wait3dWords(w.ids)} is up, or in ${w.seconds} s (${armed === 'tab' ? 'Start match again' : 'Start match on the Match tab'} starts it now; the first turn may then be the 2D video)${warned}`;
+    }
     if (warn.length > 0) return `${warn.join(' · ')}${host ? ' · Start match on the Match tab starts anyway; Pass the turn then ends such a ball by hand' : ''}`;
     if (host && this.waitingForHostGame) return 'Everyone is in: finish the game on your table, then press Start on it to start the match';
-    return host ? 'Everyone in? Start a game on your table (or press Start match)' : `Waiting for ${this.nameOf(this.hostId)} to start a game on the table`;
+    // No start is held: the line says what a start would wait for and does not change by itself (D8.9: a line that
+    // counted seconds would keep the headset's lobby panel up).
+    const making = w.ids.length > 0 ? ` · ${this.wait3dWords(w.ids)} is still being made (${host ? 'a start' : 'the start'} waits for it, ${Math.round(this.holdMs() / 1000)} s at most)` : '';
+    return host ? `Everyone in? Start a game on your table (or press Start match)${making}` : `Waiting for ${this.nameOf(this.hostId)} to start a game on the table${making}`;
   }
 
   private push(force = false): void {
@@ -1850,7 +2088,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines()]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus()]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

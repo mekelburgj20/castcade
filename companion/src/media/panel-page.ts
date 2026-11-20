@@ -711,6 +711,212 @@ export function iceUfrag(sdp: string | null | undefined): string | null {
 }
 
 /**
+ * I11.12 (2026-11-20): what one ICE round did, for the log. Every connect between the owner's and Krobs' routers on
+ * 2026-11-16 and 2026-11-18 sat in `checking` until the watchdog's first restart (10 s) and connected half a second
+ * after it; voice, the native video and the 3D watch tunnel alike. The logs of those nights say that pairs were formed
+ * and none failed, not whether a single check was ever answered or even received. A round is the time from a peer
+ * connection's opening (round 1), or from the ICE restart that ended the round before, to the next restart, the
+ * connect, or the watchdog giving up. When it ends, one line says, per kind of candidate pair, how many checks were
+ * sent and answered and how many were received and answered, and when the round got its remote description, went to
+ * `checking` and connected. Shared by the panel page (voice) and the 3D watch page (the tunnel), embedded by source.
+ *
+ * Never an address, a port, a ufrag or SDP: candidate types, the protocol, the pair's state and counts only. A
+ * candidate's stats id (an opaque key of the browser's report) is kept in the page to tell which candidates were
+ * already there before the round began (`(old)`: gathered or learned in an earlier round); it is never logged.
+ */
+export interface IceRound {
+  /** 1 for the first round of a peer connection. */
+  n: number;
+  /** When the round began (the page's clock). */
+  at: number;
+  /** The remote ICE username fragment when the round began (kept to notice the round's own remote description; never logged). */
+  ufrag: string | null;
+  /** ms from `at` to this round's remote description, and to the first `checking` after it; null: not (yet). */
+  remoteMs: number | null;
+  checkingMs: number | null;
+  /** The candidates that existed before the round began (stats ids), null in round 1. */
+  known: { local: string[]; remote: string[] } | null;
+  /** The round before ended connected: this one begins when the connection is in trouble again. */
+  idle: boolean;
+}
+
+export function iceRoundStart(n: number, now: number, ufrag: string | null, known: { local: string[]; remote: string[] } | null): IceRound {
+  return { n: n, at: now, ufrag: ufrag, remoteMs: null, checkingMs: null, known: known, idle: false };
+}
+
+/** I11.12: a state change (or a look) during a round: when its remote description came, and its first `checking`. */
+export function iceRoundSeen(round: IceRound, now: number, ice: string, remoteUfrag: string | null): void {
+  if (round.idle) {
+    if (ice === 'connected' || ice === 'completed') return;
+    round.idle = false;
+    round.at = now;
+    round.ufrag = remoteUfrag;
+    round.remoteMs = null;
+    round.checkingMs = null;
+  }
+  if (round.remoteMs === null && remoteUfrag && remoteUfrag !== round.ufrag) round.remoteMs = now - round.at;
+  if (round.checkingMs === null && ice === 'checking' && (round.remoteMs !== null || round.n === 1)) round.checkingMs = now - round.at;
+}
+
+/** I11.12: the stats ids of the candidates in a `getStats()` report (for `IceRound.known`; never logged). */
+export function iceCandidateIds(entries: ReadonlyArray<Record<string, unknown>>): { local: string[]; remote: string[] } {
+  const local: string[] = [];
+  const remote: string[] = [];
+  for (const e of entries) {
+    if (typeof e.id !== 'string') continue;
+    if (e.type === 'local-candidate') local.push(e.id);
+    else if (e.type === 'remote-candidate') remote.push(e.id);
+  }
+  return { local: local, remote: remote };
+}
+
+/**
+ * I11.12: the line for a round that ended (`why`: `connected`, `restart 1 of 3 decided here`, ...), from the report's
+ * entries at that moment. Per kind of pair: `host>srflx udp in-progress sent 21 answered 0, received 0 answered 0`
+ * (local type > remote type, protocol, the pair's state, then the STUN checks this side sent and the answers it got,
+ * and the checks it received and the answers it sent), `(old)` after a candidate that was there before the round
+ * began, `selected` / `nominated` where the browser says so; pairs that read the same are counted (`3x`). `only`: leave
+ * out pairs whose candidates are not in it (a round's line is taken a moment after the next round began).
+ */
+export function iceRoundLine(round: IceRound, now: number, why: string, connected: boolean, ice: string, entries: ReadonlyArray<Record<string, unknown>>, only: { local: string[]; remote: string[] } | null): string {
+  const byId: Record<string, Record<string, unknown>> = {};
+  let selected: unknown = null;
+  for (const e of entries) {
+    if (typeof e.id === 'string') byId[e.id] = e;
+    if (e.type === 'transport' && typeof e.selectedCandidatePairId === 'string') selected = e.selectedCandidatePairId;
+  }
+  const num = (v: unknown): number => (typeof v === 'number' && isFinite(v) && v > 0 ? Math.round(v) : 0);
+  const word = (v: unknown): string => (typeof v === 'string' && /^[a-z-]{1,16}$/.test(v) ? v : '?');
+  const known = round.known;
+  const texts: string[] = [];
+  const counts: number[] = [];
+  /** What a kind is worth in a line that cannot hold every kind: the selected pair, then a pair that worked, then one that carried anything. */
+  const ranks: number[] = [];
+  let total = 0;
+  for (const e of entries) {
+    if (e.type !== 'candidate-pair') continue;
+    const li = typeof e.localCandidateId === 'string' ? e.localCandidateId : '';
+    const ri = typeof e.remoteCandidateId === 'string' ? e.remoteCandidateId : '';
+    if (only && (only.local.indexOf(li) < 0 || only.remote.indexOf(ri) < 0)) continue;
+    const lc = byId[li];
+    const rc = byId[ri];
+    const text =
+      word(lc && lc.candidateType) +
+      (known && known.local.indexOf(li) >= 0 ? '(old)' : '') +
+      '>' +
+      word(rc && rc.candidateType) +
+      (known && known.remote.indexOf(ri) >= 0 ? '(old)' : '') +
+      ' ' +
+      word(lc && lc.protocol) +
+      ' ' +
+      word(e.state) +
+      (typeof e.id === 'string' && e.id === selected ? ' selected' : e.nominated === true ? ' nominated' : '') +
+      ' sent ' +
+      num(e.requestsSent) +
+      ' answered ' +
+      num(e.responsesReceived) +
+      ', received ' +
+      num(e.requestsReceived) +
+      ' answered ' +
+      num(e.responsesSent);
+    total++;
+    const i = texts.indexOf(text);
+    if (i >= 0) counts[i] = (counts[i] as number) + 1;
+    else {
+      texts.push(text);
+      counts.push(1);
+      ranks.push(typeof e.id === 'string' && e.id === selected ? 0 : e.state === 'succeeded' ? 1 : num(e.requestsSent) + num(e.requestsReceived) > 0 ? 2 : 3);
+    }
+  }
+  const secs = (ms: number): string => (Math.max(0, ms) / 1000).toFixed(2) + ' s';
+  const max = 12;
+  // The kinds that say most come first (a PC with several network adapters forms dozens of pairs that never send).
+  const order = texts.map((_t, i) => i).sort((a, b) => (ranks[a] as number) - (ranks[b] as number) || a - b);
+  const shown = order.slice(0, max).map((i) => ((counts[i] as number) > 1 ? counts[i] + 'x ' : '') + texts[i]);
+  return (
+    'ICE round ' +
+    round.n +
+    ': ' +
+    why +
+    ' after ' +
+    secs(now - round.at) +
+    ' (ice ' +
+    word(ice) +
+    '); remote description ' +
+    (round.remoteMs === null ? 'not seen' : 'at ' + secs(round.remoteMs)) +
+    ', checking ' +
+    (round.checkingMs === null ? 'not seen' : 'at ' + secs(round.checkingMs)) +
+    (connected ? ', connected at ' + secs(now - round.at) : ', not connected') +
+    '; ' +
+    total +
+    (total === 1 ? ' pair' : ' pairs') +
+    (shown.length > 0 ? ': ' + shown.join('; ') : '') +
+    (texts.length > max ? '; and ' + (texts.length - max) + ' more kinds' : '')
+  );
+}
+
+/** The part of a page's per-peer record `iceRoundOver` reads and writes. */
+export interface IceRoundPeer {
+  pc: { iceConnectionState: string; remoteDescription: { sdp?: string } | null; getStats?: () => Promise<{ values(): Iterable<unknown> }> };
+  round: IceRound;
+  /** The candidates at the page's last look at the stats (`iceCandidateIds`), null before the first. */
+  ids: { local: string[]; remote: string[] } | null;
+  /** When the last rounds ended that the peer ended (its restarts), for `ICE_PEER_ROUNDS`. */
+  peerLedAt?: number[];
+}
+
+/**
+ * I11.12: a peer can restart ICE as often as it likes (every offer with new credentials is one), and each restart
+ * ends a round here: at most this many of those rounds are written per peer in this many ms; one line says so, and
+ * the rest are counted in silence. Rounds this side ends are bounded by its own watchdog (three restarts, then none).
+ */
+export const ICE_PEER_ROUNDS = { max: 4, perMs: 60_000 } as const;
+
+/**
+ * A line a page sends for `companion.log`, as main writes it: one line, 400 characters at most; an ICE round's line
+ * (`iceRoundLine`: up to twelve kinds of candidate pair) may be 1200.
+ */
+export function pageLogLine(line: string): string {
+  const one = line.replace(/[\r\n]+/g, ' ').trim();
+  return one.slice(0, /(^|: )ICE round \d+: /.test(one) ? 1200 : 400);
+}
+
+/**
+ * I11.12: the round of `r` is over: its line goes to `log` once the stats are in, and the next round begins now.
+ * `peerLed`: the round ended because the peer restarted ICE and this side has already answered (its remote description
+ * is the new round's). The one function both pages call (the panel page for voice, the 3D watch page for the tunnel).
+ */
+export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, peerLed: boolean, now: number, log: (line: string) => void): void {
+  const round = r.round;
+  const ice = r.pc.iceConnectionState;
+  const next = iceRoundStart(round.n + 1, now, iceUfrag(r.pc.remoteDescription && r.pc.remoteDescription.sdp), r.ids);
+  if (peerLed) next.remoteMs = 0;
+  next.idle = connected;
+  r.round = next;
+  if (peerLed) {
+    // `ICE_PEER_ROUNDS` (the numbers are written out: this function is embedded in the pages by its source).
+    const seen = (r.peerLedAt || []).filter((t) => now - t < 60000);
+    seen.push(now);
+    r.peerLedAt = seen.slice(-5);
+    if (seen.length > 4) {
+      if (seen.length === 5) log('ICE round ' + round.n + ': the peer restarted ICE more than 4 times in 60 s; the rounds it ends are not written again until that time is up');
+      return;
+    }
+  }
+  // A round that did not connect is read a moment after the next one began: only the pairs of the last look count.
+  const only = connected ? null : r.ids;
+  const none = (): void => log(iceRoundLine(round, now, why, connected, ice, [], null) + ' (no stats)');
+  let stats: Promise<{ values(): Iterable<unknown> }> | null;
+  try {
+    stats = typeof r.pc.getStats === 'function' ? r.pc.getStats() : null;
+  } catch {
+    stats = null;
+  }
+  if (!stats || typeof stats.then !== 'function') return none();
+  stats.then((rep) => log(iceRoundLine(round, now, why, connected, ice, Array.from(rep.values()) as Array<Record<string, unknown>>, only)), none);
+}
+
+/**
  * D2.9: the watchdog's decision for one connection. `elapsedMs`: since it got stuck, or since the last restart (ours
  * or the peer's) if later; `restarts`: in this stuck spell. `ok`: connected (the caller clears the spell); `wait`;
  * `restart`; `give_up` once `w.backoffMs.length` restarts have not helped. A `failed` connection restarts at once
@@ -812,7 +1018,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1511,6 +1717,19 @@ function current(peer, r) {
 function stuckFor(r, now) {
   return now - Math.max(r.watch.since, r.watch.lastAt);
 }
+/**
+ * I11.12: one line per ICE round of a peer (iceRoundOver, shared with the other page): what each kind of candidate
+ * pair sent and received, and when the round got its remote description, went to checking and connected.
+ */
+function roundSeen(peer, r) {
+  const st = r.pc.iceConnectionState;
+  iceRoundSeen(r.round, Date.now(), st, iceUfrag(r.pc.remoteDescription && r.pc.remoteDescription.sdp));
+  if ((st === 'connected' || st === 'completed') && !r.round.idle && current(peer, r)) roundOver(peer, r, 'connected', true, false);
+}
+function roundOver(peer, r, why, connected, peerLed) {
+  const lead = r.watch.lead;
+  iceRoundOver(r, why, connected, peerLed, Date.now(), (line) => logLine('peer ' + peer + ': ' + line + (lead ? '; this side leads restarts' : '; the peer leads restarts')));
+}
 function iceWatch(peer, r) {
   if (!current(peer, r)) return;
   const pc = r.pc;
@@ -1531,12 +1750,17 @@ function iceWatch(peer, r) {
   const action = iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH);
   if (action === 'restart') {
     const secs = Math.round(stuckFor(r, now) / 1000);
-    if (!mesh.get(peer).restartIce()) return;
+    const n = mesh.get(peer);
+    if (!n || n.closed || typeof pc.restartIce !== 'function') return;
+    // I11.12: the round's stats are asked for before the restart changes them.
+    roundOver(peer, r, 'restart ' + (w.restarts + 1) + ' of ' + ICE_WATCH.backoffMs.length + ' decided here', false, false);
+    if (!n.restartIce()) return;
     w.restarts++;
     w.lastAt = now;
     logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' (' + st + ' for ' + secs + ' s, ' + (w.lead ? 'we lead' : 'the peer did not restart') + '; ' + (r.pairText || 'no pair yet') + ')');
   } else if (action === 'give_up') {
     w.gaveUp = true;
+    roundOver(peer, r, 'gave up after ' + w.restarts + ' restart(s)', false, false);
     logLine('peer ' + peer + ': no path after ' + w.restarts + ' ICE restart(s), ' + st + ' for ' + Math.round((now - w.since) / 1000) + ' s; ' + (r.pairText || 'no pair yet') + (hasRelay() ? '; the TURN relay did not get through' : '; no TURN relay is set'));
     report();
     render();
@@ -1553,6 +1777,7 @@ function notePeerRestart(peer, r) {
   if (w.since === null || w.gaveUp || !current(peer, r)) return;
   w.restarts++;
   w.lastAt = Date.now();
+  roundOver(peer, r, 'restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer', false, true);
   logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer (' + pc.iceConnectionState + ')');
 }
 function iceWatchTick() {
@@ -1573,7 +1798,9 @@ async function probePairs(tick) {
     let info;
     try {
       const rep = await r.pc.getStats();
-      info = icePairInfo([...rep.values()]);
+      const entries = [...rep.values()];
+      info = icePairInfo(entries);
+      r.ids = iceCandidateIds(entries);
     } catch (e) {
       continue;
     }
@@ -1672,7 +1899,7 @@ function openPeer(peer) {
   // encoder starts at the cap instead of ramping from a low guess. The cap itself stays with setParameters (applyBitrate).
   const setRemote = pc.setRemoteDescription.bind(pc);
   pc.setRemoteDescription = (d) => setRemote(d && typeof d.sdp === 'string' ? Object.assign({}, d, { sdp: withBitrateHints(d.sdp, bitrateHintsFor(wantedBitrate())) }) : d);
-  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), pairKey: null, pairText: null, voiceSource: null, voiceGain: null, voiceTrack: null };
+  const r = { pc: pc, stream: new MediaStream(), audio: new Audio(), audioSender: null, videoSender: null, retry: null, tableStream: new MediaStream(), tableAudio: new Audio(), tableSender: null, watch: newWatch(peer), round: iceRoundStart(1, Date.now(), null, null), ids: null, pairKey: null, pairText: null, voiceSource: null, voiceGain: null, voiceTrack: null };
   r.audio.autoplay = true;
   r.audio.srcObject = r.stream;
   // D2.10: the voice plays through a GainNode (routeVoice, once its track is here) so it can go past 100 %; the element
@@ -1708,10 +1935,12 @@ function openPeer(peer) {
   });
   // D2.9: the watchdog (iceWatchTick) restarts a stuck connection; a state change is looked at at once.
   pc.addEventListener('iceconnectionstatechange', () => {
+    roundSeen(peer, r);
     iceWatch(peer, r);
     report();
   });
   pc.addEventListener('signalingstatechange', () => {
+    roundSeen(peer, r);
     if (pc.signalingState === 'stable') {
       void applyBitrate(r);
       notePeerRestart(peer, r);
