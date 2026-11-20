@@ -6,7 +6,9 @@ Everything a tester needs on one page. The full guide with details and troublesh
 ## The ask (about 15 minutes)
 
 Install a small tray app, pair it with your ArcAid account, play one game of pinball to the end, quit the
-player, and tell us what happened. Nothing in your Visual Pinball setup is changed.
+player, and tell us what happened. No table file and no setting of Visual Pinball, PinUP Popper, B2S or DOF is
+changed; step 5 adds one script file beside each table and one in VPX's `scripts` folder. On a cabinet, use
+[`tester-kit-cabinet.md`](tester-kit-cabinet.md) instead of this page.
 
 ## What you need
 
@@ -82,6 +84,7 @@ player, and tell us what happened. Nothing in your Visual Pinball setup is chang
 > I'm testing a small Windows tray app called Castcade that posts your VPX scores to ArcAid
 > automatically (it's the desktop version of the Arcaid Witness). Takes about 15 minutes: install,
 > pair with your ArcAid account, play one game to the end, quit the player, send me a screenshot and a
-> log. It changes nothing in your VPX setup and uninstalls cleanly. Steps:
+> log. It never changes a table file: it adds one small script file beside each table and one in VPX's
+> scripts folder, and one button removes the table scripts again. Steps:
 > https://github.com/mekelburgj20/castcade/blob/main/docs/tester-kit.md
 > Download: https://github.com/mekelburgj20/castcade/releases/tag/v0.2.18
