@@ -6,7 +6,9 @@
  * reuses is the same code by source: `rtc-signaling.ts`'s `PeerNegotiator` / `SignalingMesh` (perfect negotiation,
  * the polite side waiting for the first offer, offers resent while not connected, `reset` on a rebuilt page) and the
  * panel's ICE watchdog helpers (`iceWatchStep` restarts a stuck connection 10 / 20 / 40 s, then gives up and says so),
- * with `iceServers()` from main, so the path through home routers is the one voice already takes.
+ * with `iceServers()` from main, so the path through home routers is the one voice already takes. I11.12: and the
+ * same one line per ICE round as voice writes (`iceRoundOver`, panel-page.ts): what every kind of candidate pair sent
+ * and received, and when the round got its remote description, went to `checking` and connected.
  *
  * The page carries frames and nothing else: `tunnel-end.ts` (main) owns the bridge (`tunnel.ts`) and the sockets.
  * Frames from main go out with `dc.send`; every message that arrives goes to main as it is. Flow: past `FLOW.high`
@@ -15,7 +17,7 @@
  * for the watchdog and the status).
  */
 import { negotiationSource } from '../media/rtc-signaling.js';
-import { ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceWatchStep } from '../media/panel-page.js';
+import { ICE_WATCH, iceCandidateIds, icePairInfo, icePairText, iceRoundLine, iceRoundOver, iceRoundSeen, iceRoundStart, iceUfrag, iceWatchStep } from '../media/panel-page.js';
 import type { IceServer } from '../media/media-settings.js';
 
 /** IPC between the page and `tunnel-end.ts`. */
@@ -53,6 +55,23 @@ export interface WatchPageConfig {
   /** This page replaces one whose connections the peers still hold: `peers` are told to open theirs again (D2.7). */
   reset: boolean;
   peers: string[];
+  /** I11.12: an experiment (`firstRestartMs`): one more ICE restart, this soon after a connection got stuck. Absent: none. */
+  firstRestartMs?: number | null;
+}
+
+/**
+ * I11.12 (2026-11-20): an experiment for a two-router night, off unless `CASTCADE_ICE_FIRST_RESTART_MS` is set (500 to
+ * 9000). Every first ICE round between the owner's and Krobs' routers stalled until the watchdog's restart at 10 s and
+ * connected half a second after it. A restart makes the side that restarts send first (its new ports check the peer's
+ * old candidates at once: the recorded stats in `media/ice-round.test-data.json`), where in round one the side that
+ * answers sends first; if that order is what one of the routers cannot take, a restart after 2 s connects at 2.5 s
+ * instead of 11. With the variable set the watchdog restarts a stuck connection once after that many ms, then goes on
+ * as it always did (10, 20, 40 s). Only the side that leads restarts acts on it; the tunnel page only (not voice).
+ */
+export function firstRestartMs(env: string | undefined): number | null {
+  if (env === undefined || !/^\d{3,4}$/.test(env.trim())) return null;
+  const n = Number(env.trim());
+  return n >= 500 && n <= 9000 ? n : null;
 }
 
 export interface WatchPagePeer {
@@ -82,7 +101,7 @@ export function pathOf(p: WatchPagePeer | undefined): WatchPath {
   return 'connecting';
 }
 
-const HELPERS = [iceWatchStep, icePairInfo, icePairText, iceUfrag];
+const HELPERS = [iceWatchStep, icePairInfo, icePairText, iceUfrag, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver];
 
 export function watchPageHtml(): string {
   return `<!doctype html>
@@ -92,7 +111,8 @@ export function watchPageHtml(): string {
 const { ipcRenderer } = require('electron');
 const C = ${JSON.stringify(WATCH_CHANNELS)};
 const FLOW = ${JSON.stringify(FLOW)};
-const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
+const ICE_WATCH_BASE = ${JSON.stringify(ICE_WATCH)};
+let ICE_WATCH = ICE_WATCH_BASE;
 ${HELPERS.map((f) => f.toString()).join('\n')}
 ${negotiationSource()}
 ${PAGE_SCRIPT}
@@ -138,7 +158,7 @@ function openPeer(peer) {
   const dc = pc.createDataChannel('castcade-watch', { negotiated: true, id: 0, ordered: true });
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = FLOW.low;
-  const r = { pc: pc, dc: dc, open: false, busy: false, watch: newWatch(peer), pair: null, pairKey: null, pairText: null, retry: null };
+  const r = { pc: pc, dc: dc, open: false, busy: false, watch: newWatch(peer), round: iceRoundStart(1, Date.now(), null, null), ids: null, pair: null, pairKey: null, pairText: null, retry: null };
   dc.onopen = () => {
     if (peers.get(peer) !== r) return;
     r.open = true;
@@ -165,11 +185,13 @@ function openPeer(peer) {
     ipcRenderer.send(C.flow, { peer: peer, busy: false });
   };
   pc.addEventListener('iceconnectionstatechange', () => {
+    roundSeen(peer, r);
     iceWatch(peer, r);
     report();
   });
   pc.addEventListener('connectionstatechange', () => report());
   pc.addEventListener('signalingstatechange', () => {
+    roundSeen(peer, r);
     if (pc.signalingState === 'stable') notePeerRestart(peer, r);
     report();
   });
@@ -213,6 +235,19 @@ function current(peer, r) {
   return !!n && n.pc === r.pc && peers.get(peer) === r;
 }
 function stuckFor(r, now) { return now - Math.max(r.watch.since, r.watch.lastAt); }
+/**
+ * I11.12: one line per ICE round of a peer (iceRoundOver, shared with the other page): what each kind of candidate
+ * pair sent and received, and when the round got its remote description, went to checking and connected.
+ */
+function roundSeen(peer, r) {
+  const st = r.pc.iceConnectionState;
+  iceRoundSeen(r.round, Date.now(), st, iceUfrag(r.pc.remoteDescription && r.pc.remoteDescription.sdp));
+  if ((st === 'connected' || st === 'completed') && !r.round.idle && current(peer, r)) roundOver(peer, r, 'connected', true, false);
+}
+function roundOver(peer, r, why, connected, peerLed) {
+  const lead = r.watch.lead;
+  iceRoundOver(r, why, connected, peerLed, Date.now(), (line) => logLine('peer ' + peer + ': ' + line + (lead ? '; this side leads restarts' : '; the peer leads restarts')));
+}
 function iceWatch(peer, r) {
   if (!current(peer, r)) return;
   const pc = r.pc;
@@ -233,12 +268,17 @@ function iceWatch(peer, r) {
   const action = iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH);
   if (action === 'restart') {
     const secs = Math.round(stuckFor(r, now) / 1000);
-    if (!mesh.get(peer).restartIce()) return;
+    const n = mesh.get(peer);
+    if (!n || n.closed || typeof pc.restartIce !== 'function') return;
+    // I11.12: the round's stats are asked for before the restart changes them.
+    roundOver(peer, r, 'restart ' + (w.restarts + 1) + ' of ' + ICE_WATCH.backoffMs.length + ' decided here', false, false);
+    if (!n.restartIce()) return;
     w.restarts++;
     w.lastAt = now;
     logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' (' + st + ' for ' + secs + ' s; ' + (r.pairText || 'no pair yet') + ')');
   } else if (action === 'give_up') {
     w.gaveUp = true;
+    roundOver(peer, r, 'gave up after ' + w.restarts + ' restart(s)', false, false);
     logLine('peer ' + peer + ': no path after ' + w.restarts + ' ICE restart(s), ' + st + ' for ' + Math.round((now - w.since) / 1000) + ' s; ' + (r.pairText || 'no pair yet'));
     report();
   }
@@ -253,9 +293,10 @@ function notePeerRestart(peer, r) {
   if (w.since === null || w.gaveUp || !current(peer, r)) return;
   w.restarts++;
   w.lastAt = Date.now();
+  roundOver(peer, r, 'restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer', false, true);
   logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer (' + pc.iceConnectionState + ')');
 }
-setInterval(() => { for (const [peer, r] of peers) iceWatch(peer, r); }, ICE_WATCH.tickMs);
+setInterval(() => { for (const [peer, r] of peers) iceWatch(peer, r); }, ICE_WATCH_BASE.tickMs);
 
 /** Each peer's candidate pair, logged when it changes (types and protocol only). */
 async function probePairs() {
@@ -263,7 +304,9 @@ async function probePairs() {
     let info;
     try {
       const rep = await r.pc.getStats();
-      info = icePairInfo([...rep.values()]);
+      const entries = [...rep.values()];
+      info = icePairInfo(entries);
+      r.ids = iceCandidateIds(entries);
     } catch (e) {
       continue;
     }
@@ -298,6 +341,10 @@ function configure(cfg) {
   for (const id of [...peers.keys()]) closePeer(id, 'the page was configured again');
   localId = cfg.localId;
   ice = cfg.ice || [];
+  // I11.12: the experiment: one more restart, early, before the usual three.
+  ICE_WATCH = typeof cfg.firstRestartMs === 'number' && cfg.firstRestartMs > 0
+    ? { backoffMs: [cfg.firstRestartMs].concat(ICE_WATCH_BASE.backoffMs), lagMs: ICE_WATCH_BASE.lagMs, tickMs: ICE_WATCH_BASE.tickMs }
+    : ICE_WATCH_BASE;
   mesh = new SignalingMesh(
     localId,
     openPeer,

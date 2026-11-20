@@ -469,7 +469,8 @@ export function peerChanges(before: PanelPageStatus['peers'] | null | undefined,
 export function panelLogLine(line: unknown): string | null {
   if (typeof line !== 'string') return null;
   const one = line.replace(/[\r\n]+/g, ' ').trim();
-  return one ? `media: ${one.slice(0, 400)}` : null;
+  // 1200: an ICE round's line names up to ten kinds of candidate pair (I11.12).
+  return one ? `media: ${one.slice(0, 1200)}` : null;
 }
 
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */

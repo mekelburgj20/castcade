@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { IceServer } from '../media/media-settings.js';
 import { TunnelBridge, type TunnelChannel, type TunnelStats } from './tunnel.js';
-import { WATCH_CHANNELS as C, pathOf, watchPageHtml, type WatchPageConfig, type WatchPagePeer, type WatchPageStatus, type WatchPath } from './watch-page.js';
+import { WATCH_CHANNELS as C, firstRestartMs, pathOf, watchPageHtml, type WatchPageConfig, type WatchPagePeer, type WatchPageStatus, type WatchPath } from './watch-page.js';
 import { signalFrom } from './watch-session.js';
 
 const LOOPBACK = '127.0.0.1';
@@ -147,6 +147,9 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
   const held: Array<[string, MediaSignal]> = [];
   const changed = (): void => o.onChange?.();
   const tag = o.logTag ?? 'watch';
+  // I11.12: an experiment for a two-router night (watch-page.ts `firstRestartMs`); nothing changes without the variable.
+  const early = firstRestartMs(process.env.CASTCADE_ICE_FIRST_RESTART_MS);
+  if (early !== null) o.log(`${tag}: experiment (CASTCADE_ICE_FIRST_RESTART_MS): a data connection that is stuck gets one more ICE restart, after ${early} ms, before the usual 10 / 20 / 40 s`);
 
   const bridge = new TunnelBridge({
     connect: (port) => {
@@ -168,7 +171,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
       (e) => {
         if (!fromPage(e)) return;
         ready = true;
-        const cfg: WatchPageConfig = { localId: o.localId, ice: o.iceServers, reset: restarts > 0, peers: [...wanted] };
+        const cfg: WatchPageConfig = { localId: o.localId, ice: o.iceServers, reset: restarts > 0, peers: [...wanted], firstRestartMs: early };
         win?.webContents.send(C.config, cfg);
         for (const p of wanted) win?.webContents.send(C.addPeer, p);
         // Signals that came while the page loaded (a peer's first offer and its candidates), in order.
@@ -239,7 +242,8 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
       C.log,
       (e, line) => {
         if (!fromPage(e) || typeof line !== 'string') return;
-        o.log(`${tag}: ${line.replace(/[\r\n]+/g, ' ').slice(0, 400)}`);
+        // 1200: an ICE round's line names up to ten kinds of candidate pair (I11.12).
+        o.log(`${tag}: ${line.replace(/[\r\n]+/g, ' ').slice(0, 1200)}`);
       },
     ],
   ];
