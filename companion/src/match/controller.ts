@@ -32,6 +32,11 @@
  *   is open, a 5 s countdown (`HostMatch.startIn`) the whole lobby sees ("Starting the match: <names>"); a second
  *   `game_start` changes nothing. With a table still loading the start is armed and fires once the last one opens;
  *   the host's game ending in the lobby disarms it. The desktop Start button works throughout.
+ *   I11.4.9 (2026-11-20, the first turn starts in 3D): the armed start also waits for the PCs whose 3D connection is
+ *   still being made (the host's `stream3dWaiting()`, a client's HELLO_ACK `stream3dWait`; each PC stops waiting by
+ *   itself after its own limit, `match/stream3d.ts`), and the lobby line says for whom and for how many seconds at
+ *   most. Start match (`holdTabStart`) is held the same way at its first press; a second press starts now. Only the
+ *   match's first start: a next game never waits.
  * - A12 (2026-11-05): no game before the match. The owner pressed Start before the other player joined; the join then
  *   started nothing. `preMatchPlay` decides the host's table in the lobby: `free` (default), the host may play, and a
  *   game running when the lobby becomes complete (two or more in, every table open) is never the match's game 1: the
