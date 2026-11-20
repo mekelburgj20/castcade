@@ -381,8 +381,9 @@ export class ClientMatch {
    * Only the fields that changed are sent. False (nothing sent) before the join or with no change. A6.1 (2026-11-01):
    * after MATCH_READY only the rig is sent (the host passes it on to the others); a table change then is not.
    * A13: `ballEndReady` (whether this table can report ball ends) goes the same way, in the lobby only.
+   * I11.4.9: so does `stream3dWaitMs` (this PC's 3D connection is still being made; 0: settled), in the lobby only.
    */
-  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean }): boolean {
+  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number }): boolean {
     this.assertActive();
     if (!this.joined) return false;
     if (this.s.state.phase !== 'lobby') {
@@ -396,7 +397,9 @@ export class ClientMatch {
     if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
     if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
     if (u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady) payload.ballEndReady = u.ballEndReady;
-    if (payload.rig === undefined && payload.game === undefined && payload.ballEndReady === undefined) return false;
+    // I11.4.9: sent whenever the caller gives it (the caller sends it only on a change; the host compares).
+    if (u.stream3dWaitMs !== undefined) payload.stream3dWaitMs = Math.max(0, Math.min(120_000, Math.round(u.stream3dWaitMs)));
+    if (payload.rig === undefined && payload.game === undefined && payload.ballEndReady === undefined && payload.stream3dWaitMs === undefined) return false;
     if (payload.rig !== undefined) this.participant = { ...this.participant, rig: payload.rig };
     if (payload.game !== undefined) this.game = { ...payload.game };
     if (payload.ballEndReady !== undefined) this.ballEndReady = payload.ballEndReady;

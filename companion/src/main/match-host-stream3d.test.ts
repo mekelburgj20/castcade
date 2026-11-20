@@ -199,6 +199,8 @@ interface SeatOptions {
   /** The same PC after Castcade started again: its folder, its ports file, its table. */
   again?: Seat;
   extra?: Partial<Opts>;
+  /** I11.4.9: the limit of this PC's wait for its 3D connection at the first start (default: the app's 45 s). */
+  startWaitMs?: number;
 }
 
 function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
@@ -227,6 +229,7 @@ function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
     },
     freePort: async () => ++port,
     ports: { read: () => saved.text, write: (text) => void (saved.text = text) },
+    ...(o.startWaitMs !== undefined ? { startWaitMs: o.startWaitMs } : {}),
   });
   streams.push(stream3d);
   const fakes = rigFakes();
@@ -849,6 +852,112 @@ describe('the state stream inside a match (I11.4.2)', () => {
   }, 40_000);
 });
 
+describe('the first turn starts in 3D (I11.4.9)', () => {
+  const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
+  /** Host and one client in the lobby, both tables started in the fork and both forks ready, the data connection still being made. */
+  async function slowLobby(o: { startWaitMs?: number } = {}): Promise<{ hub: TunnelHub; H: Seat; K: Seat; fh: Fork; fk: Fork }> {
+    const hub = new TunnelHub();
+    hub.hold();
+    const H = seat(hub, 'Hosty', o);
+    const K = seat(hub, 'Krobs', o);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
+    await H.mh.tableLaunch();
+    await K.mh.tableLaunch();
+    const fh = await forkOf(H);
+    const fk = await forkOf(K);
+    await until(() => view(H)?.fork === 'ready' && view(K)?.fork === 'ready', 5000, 'both forks ready');
+    return { hub, H, K, fh, fk };
+  }
+
+  it('a start from the table waits for the data connection, every lobby says so, and when it is up the countdown runs and the first turn is watched in 3D from its first moment', async () => {
+    const { hub, H, K, fk } = await slowLobby();
+    // Each PC told the host it is still connecting, and wrote why to its log.
+    await until(() => H.mh.status().wait3d.players.length === 2 && K.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
+    expect(H.lines).toContain("stream3d: the match's start waits for the 3D connection to Krobs: nothing heard from that PC yet (45 s at most)");
+    expect(H.lines.some((l) => /^stream3d: the players were told this PC's 3D connection is still being made: the match's first start waits for it \(4[45] s at most\)$/.test(l))).toBe(true);
+    expect(K.lines.some((l) => /^stream3d: the host was told this PC's 3D connection is still being made: the match's first start waits for it \(4[45] s at most\)$/.test(l))).toBe(true);
+    expect(lineFor(K, H)).toBe('Hosty: the 2D video (the 3D connection to their PC is not up yet)');
+
+    // The host starts a game on its table: no countdown, the lobby line says what is waited for and how to start now.
+    H.t.gameStart();
+    await until(() => /^The match starts once the 3D connection to Krobs is up, or in \d+ s \(Start match on the Match tab starts it now; the first turn may then be the 2D video\)$/.test(message(H)), 5000, "the host's lobby line");
+    expect(H.mh.status().wait3d.armed).toBe('table');
+    expect(message(K)).toMatch(/^Waiting for Hosty to start a game on the table · the 3D connection to Hosty is still being made \(the start waits for it, \d+ s at most\)$/);
+    await sleep(400);
+    expect(H.mh.status().phase).toBe('lobby');
+    expect(H.mh.status().panel?.countdown ?? null).toBeNull();
+
+    // The data connection comes up: both PCs settle, the countdown of a start from the table runs, and the match starts.
+    hub.release();
+    await until(() => lineFor(K, H) === 'Hosty: 3D, on your own table' && lineFor(H, K) === 'Krobs: 3D, on your own table', 5000, 'the 3D lines');
+    await until(() => H.mh.status().wait3d.players.length === 0, 5000, 'nobody waited for');
+    expect(H.lines.some((l) => /^stream3d: the match's start no longer waits for this PC: this PC's 3D connections are settled \(heard from, after this PC's data connections opened: Krobs \d+\.\d s\)$/.test(l))).toBe(true);
+    expect(H.lines).toContain("stream3d: the players were told this PC's 3D connection is settled: the start does not wait for it");
+    expect(H.lines).toContain('match: the 3D connections are settled; the start from the table goes on');
+    await until(() => message(H).startsWith('Starting the match'), 5000, 'the countdown');
+    expect(fk.got).toEqual([]);
+    await until(() => K.mh.status().phase === 'playing' && playerUp(K) === H.id(), 9000, 'the match');
+    // The first turn: Krobs' VPX is sent to the host's table at once, and its headset never shows the theater picture.
+    await until(() => sees(K, fk, H), 5000, "Krobs' fork watching the host");
+    await until(() => K.modes.at(-1) === 'hidden');
+    expect(K.modes).not.toContain('theater');
+  });
+
+  it('Start match: the first press holds the start; at the limit of the wait it goes on by itself with the 2D video, and the watch begins in the middle of that turn when the connection comes up', async () => {
+    const { hub, H, K, fk } = await slowLobby({ startWaitMs: 1500 });
+    await until(() => H.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
+    const st = await H.mh.start();
+    // Held: still the lobby, and the line says a second press starts now.
+    expect(st.phase).toBe('lobby');
+    expect(H.mh.status().wait3d.armed).toBe('tab');
+    expect(message(H)).toMatch(/^The match starts once the 3D connection to Krobs is up, or in \d+ s \(Start match again starts it now; the first turn may then be the 2D video\)$/);
+    // 1.5 s after each VPX was ready the PCs stop waiting, say so, and the held start happens.
+    await until(() => K.mh.status().phase === 'playing' && playerUp(K) === H.id(), 8000, 'the match after the limit');
+    expect(H.lines).toContain("stream3d: the match's start no longer waits for this PC: 2 s passed since this PC's VPX was ready and nothing was heard from Krobs: the first turn may be the 2D video");
+    expect(H.lines).toContain('match: the 3D connections are settled; the match that Start match asked for starts now');
+    // The first turn begins in 2D on Krobs' PC: theater, nothing sent to its fork.
+    await until(() => K.modes.at(-1) === 'theater', 5000, 'theater on the waiting PC');
+    expect(lineFor(K, H)).toBe('Hosty: the 2D video (the 3D connection to their PC is not up yet)');
+    expect(fk.got).toEqual([]);
+    // The connection comes up in the middle of the turn: the same grant, and the fork is sent to watch.
+    hub.release();
+    await until(() => sees(K, fk, H), 5000, 'the watch in the middle of the turn');
+    await until(() => K.modes.at(-1) === 'hidden');
+    expect(playerUp(K)).toBe(H.id());
+    expect(H.mh.status().panel?.ball).toBe(1);
+  });
+
+  it('Start match pressed twice starts now, whatever is still connecting', async () => {
+    const { H, K } = await slowLobby();
+    await until(() => H.mh.status().wait3d.players.length === 2, 5000, 'both PCs listed as waited for');
+    expect((await H.mh.start()).phase).toBe('lobby');
+    await H.mh.start();
+    await until(() => K.mh.status().phase === 'playing' && H.mh.status().phase === 'playing', 5000, 'the match at the second press');
+    expect(H.lines).toContain("stream3d: the match's start no longer waits for this PC: the match started or the lobby is gone, with nothing heard yet from Krobs: they are shown in the 2D video until their PC is heard from");
+    expect(H.mh.status().wait3d).toEqual({ players: [], seconds: 0, armed: null });
+  });
+
+  it('a PC without the Castcade VPX build, and one with 3D watch off, are never waited for: the start is not held', async () => {
+    const hub = new TunnelHub();
+    hub.hold();
+    const H = seat(hub, 'Hosty', { fork: false });
+    const K = seat(hub, 'Krobs');
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
+    await K.mh.setSettings({ watch3d: 'off' });
+    expect(await H.mh.tableLaunch()).toBeNull();
+    expect(await K.mh.tableLaunch()).toBeNull();
+    await sleep(200);
+    expect(H.mh.status().wait3d.players).toEqual([]);
+    await H.mh.start();
+    await until(() => K.mh.status().phase === 'playing', 5000, 'the match');
+    expect([...H.lines, ...K.lines].filter((l) => l.includes("the match's start waits"))).toEqual([]);
+  });
+});
+
 describe('the turn lock and a fork that answers at once (A8)', () => {
   it('whenPlaying that answers before it returns leaves no stale wait behind: the next lock and unlock work as ever', async () => {
     // A stream whose fork is "away" when asked and back by the time the wait is registered.
@@ -860,6 +969,9 @@ describe('the turn lock and a fork that answers at once (A8)', () => {
       setSetting: () => undefined,
       showing3d: () => false,
       away: () => true,
+      setStartGate: () => undefined,
+      setTableOpen: () => undefined,
+      startWait: () => ({ pending: false, until: null, why: null, waitingFor: [] }),
       whenPlaying: (cb) => {
         asked++;
         cb(false);

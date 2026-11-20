@@ -172,8 +172,14 @@
         "adjustment"
       ],
       "additionalProperties": false
+    },
+    "stream3dWaitMs": {
+      "description": "I11.4.9: lobby only: the sender's PC is still making its 3D connection (its VPX build has not connected to its Castcade yet, or nothing has been heard from another player's PC over the state stream's data connection), and stops waiting for it in at most this many ms; 0: settled (or given up). The host lists it in HELLO_ACK `stream3dWait` and holds a start from its table meanwhile. Absent: no change. A peer from before I11.4.9 ignores it.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 120000
     }
   },
   "additionalProperties": false,
-  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
+  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
 }

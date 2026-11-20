@@ -160,6 +160,13 @@ export const HelloAck = z
       .describe(
         'B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged.',
       ),
+    // I11.4.9 (2026-11-20): defaulted and never logged, like `ballEndReady`, so still protocol 6.
+    stream3dWait: z
+      .array(z.object({ playerId: PlayerId, leftMs: z.number().int().min(0).max(120_000) }))
+      .default([])
+      .describe(
+        "I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged.",
+      ),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 
@@ -206,9 +213,20 @@ export const ParticipantUpdate = z
     midnightMode: MidnightMode.optional().describe(
       "B26.4: the Midnight Madness setting on the sender's table (see `MidnightMode`), when its companion could read it, in any phase. In the lobby the host lists it in HELLO_ACK `midnightModes`; after MATCH_READY it passes the update on like a rig change. A peer from before B26.4 ignores it.",
     ),
+    // I11.4.9 (2026-11-20): optional and never logged, so still protocol 6; a peer that does not know it strips the key
+    // (a 0.2.46 host then waits for nobody, as it always did; a 0.2.46 client never says it and is never waited for).
+    stream3dWaitMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(120_000)
+      .optional()
+      .describe(
+        "I11.4.9: lobby only: the sender's PC is still making its 3D connection (its VPX build has not connected to its Castcade yet, or nothing has been heard from another player's PC over the state stream's data connection), and stops waiting for it in at most this many ms; 0: settled (or given up). The host lists it in HELLO_ACK `stream3dWait` and holds a start from its table meanwhile. Absent: no change. A peer from before I11.4.9 ignores it.",
+      ),
   })
   .describe(
-    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.",
   );
 
 export const Refuse = z

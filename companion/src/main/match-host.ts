@@ -60,7 +60,7 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/prot
 import { ClientMatch } from '../match/client.js';
 import { MatchController, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
-import { HostMatch } from '../match/host.js';
+import { HostMatch, STREAM3D_WAIT_MAX_MS } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
@@ -178,6 +178,13 @@ export interface MatchStatus {
    */
   startWarnings: string[];
   /**
+   * I11.4.9 (2026-11-20): in the lobby, the players whose PC is still making its 3D connection, the seconds after which
+   * the last of them is no longer waited for, and whether this host's start is held for it: `table` (a game started
+   * on its table; the countdown follows by itself) or `tab` (Start match was pressed once; the match starts when
+   * `players` is empty, and a second press starts it now). The lobby line (`panel.message`) says the same in words.
+   */
+  wait3d: { players: string[]; seconds: number; armed: 'table' | 'tab' | null };
+  /**
    * B26 (2026-11-16): the Midnight Madness lines. First, from the lobby on, the setting when it is ON on a table
    * that could be read ("Midnight Madness is ON on Krobs' table (adjustment A.2 14 Special Mode)", B26.4); then one
    * line per ball of the current game the mode ran on (this player's own and the others'), oldest first: a fact, the
@@ -272,6 +279,9 @@ export interface MatchHost {
   /**
    * Host only: Start match in the lobby; A10: Next game between games (the same as a game started on the host's table).
    * A13: in the lobby, while `startWarnings` is not empty, it throws unless `anyway` is true (the host confirmed).
+   * I11.4.9: in the lobby, while a PC's 3D connection is still being made (`wait3d.players`), the first call holds the
+   * start (the status comes back still in the lobby, `wait3d.armed: 'tab'`) and the match starts by itself once
+   * nobody is waited for; a second call, or `anyway`, starts it now.
    */
   start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
   /**
@@ -531,6 +541,13 @@ interface Active {
   theaterTimer: ReturnType<typeof setInterval> | null;
   /** I11.4.2: the state stream of this match (`openStream`), null without `stream3d`. */
   stream: MatchStream3d | null;
+  /**
+   * I11.4.9: what the host was last told about this PC's 3D connection (`announceWait3d`): not waited for (null), or
+   * waited for until `until` (null: no limit runs yet). Undefined: nothing told yet.
+   */
+  wait3dSent?: { until: number | null } | null;
+  /** I11.4.9: a Start match that was held for the 3D connections is being started now that they are settled. */
+  heldStartQueued?: boolean;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -825,6 +842,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         };
       }),
       startWarnings: c?.startWarnings ?? [],
+      wait3d: c?.wait3d ?? { players: [], seconds: 0, armed: null },
       advisories: c?.advisories ?? [],
       pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
       transfer: c?.transfer
@@ -945,6 +963,63 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // turn, and a watch that failed in the last one is tried again.
     const grant = (a.controller.currentRole as HostMatch | ClientMatch).state.currentGrant?.grant ?? null;
     s.setTarget(waiting ? p.playerUp : null, waiting && grant ? String(grant.grantSeq) : null);
+    // I11.4.9: only the match's first start waits for the 3D connections: the lobby before game 1 (a next game and a
+    // rejoin are never in that phase).
+    s.setStartGate(c.phase === 'lobby');
+    s.setTableOpen(isTableOpen(gameFingerprintFrom(witness.status(), RECIPE_VERSION)));
+    announceWait3d(a);
+  };
+  /**
+   * I11.4.9: the host is told whether this PC's 3D connection is still being made (PARTICIPANT_UPDATE
+   * `stream3dWaitMs`; the host's own through `updateLocal`), when that changed: it holds the match's first start for
+   * it and lists it for every lobby. Lobby only. A client that has not joined yet says it at the next change.
+   */
+  const announceWait3d = (a: Active): void => {
+    const s = a.stream;
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    if (!s || role.state.phase !== 'lobby') return;
+    const w = s.startWait();
+    const next = w.pending ? { until: w.until } : null;
+    const was = a.wait3dSent;
+    const same = was !== undefined && (next === null ? was === null : was !== null && (next.until === null ? was.until === null : was.until !== null && Math.abs(was.until - next.until) <= 1000));
+    // Nothing was ever said and nothing is waited for: the host assumes that already.
+    if (same || (was === undefined && next === null)) return;
+    // While no limit runs yet (this PC's table is still loading) the host is asked for the longest wait it takes.
+    const ms = next === null ? 0 : next.until === null ? STREAM3D_WAIT_MAX_MS : Math.max(1, Math.min(STREAM3D_WAIT_MAX_MS, Math.round(next.until - Date.now())));
+    // Noted before it is said: the host's own update comes back here through the controller's change, at once.
+    a.wait3dSent = next;
+    try {
+      const said = role instanceof HostMatch ? (role.updateLocal({ stream3dWaitMs: ms }), true) : role.updateParticipant({ stream3dWaitMs: ms });
+      if (!said) {
+        a.wait3dSent = was;
+        return;
+      }
+    } catch (e) {
+      a.wait3dSent = was;
+      log.warn(`stream3d: the host was not told about this PC's 3D connection: ${describeError(e)}`);
+      return;
+    }
+    log.info(
+      next === null
+        ? `stream3d: ${role instanceof HostMatch ? 'the players were' : 'the host was'} told this PC's 3D connection is settled: the start does not wait for it`
+        : `stream3d: ${role instanceof HostMatch ? 'the players were' : 'the host was'} told this PC's 3D connection is still being made: the match's first start waits for it (${Math.ceil(ms / 1000)} s at most)`,
+    );
+  };
+  /**
+   * I11.4.9: a Start match that was held for the 3D connections (`MatchController.holdTabStart`) starts once nobody
+   * is waited for any more. Not from inside `emit`: the start emits.
+   */
+  const startHeld = (a: Active): void => {
+    const w = a.controller.status().wait3d;
+    if (a.heldStartQueued || w.armed !== 'tab' || w.players.length > 0) return;
+    a.heldStartQueued = true;
+    setTimeout(() => {
+      a.heldStartQueued = false;
+      const now = active === a ? a.controller.status().wait3d : null;
+      if (!now || now.armed !== 'tab' || now.players.length > 0) return;
+      log.info('match: the 3D connections are settled; the match that Start match asked for starts now');
+      void api.start({ anyway: true }).catch((e: unknown) => log.warn(`match: the held start did not happen: ${describeError(e)}`));
+    }, 0);
   };
   /**
    * D2.8: the table sound the panel state calls for (`tableAudioPlan`), on the VPX the match uses (the capture's window,
@@ -1002,6 +1077,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) {
       // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
       syncStream(active);
+      startHeld(active);
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
       syncNativeVideo(active);
@@ -2500,6 +2576,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const warnings = a.controller.status().startWarnings;
       if (warnings.length > 0 && o?.anyway !== true) {
         return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: Pass the turn ends such a ball.`));
+      }
+      // I11.4.9: the first turn starts in 3D: while a PC's 3D connection is still being made the first press holds the
+      // start until it is settled (each PC stops waiting by itself after its own limit); a second press starts now.
+      if (o?.anyway !== true && a.controller.holdTabStart()) {
+        lastError = null;
+        emit();
+        return status();
       }
       try {
         r.start();
