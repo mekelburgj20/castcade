@@ -18,6 +18,7 @@
  *     `STOP_GRACE_MS`.
  * Nothing here ever blocks a match: every failure is a status; the Electron video path is the setting's fallback.
  */
+import { maskAddresses } from './log-mask.js';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -213,6 +214,8 @@ export interface VideoHelperOptions {
 }
 
 export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
+  // No address in companion.log: what the native helper writes (its log events, its stderr) is masked first.
+  const log = (line: string): void => opts.log(maskAddresses(line));
   const sp: Spawn = opts.spawn ?? (nodeSpawn as unknown as Spawn);
   const now = opts.now ?? Date.now;
   const later = opts.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
@@ -249,7 +252,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
       try {
         l(e);
       } catch (err) {
-        opts.log(`video: an event listener failed on ${e.event}: ${err instanceof Error ? err.message : String(err)}`);
+        log(`video: an event listener failed on ${e.event}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   };
@@ -259,14 +262,14 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
       case 'ready':
         ready = true;
         probe = { version: typeof e.version === 'string' ? e.version : null, encoder: typeof e.encoder === 'string' ? e.encoder : null, decoder: typeof e.decoder === 'string' ? e.decoder : null };
-        opts.log(`video: helper ${probe.version ?? '(no version)'} ready (encoder ${probe.encoder ?? '?'}, decoder ${probe.decoder ?? '?'})`);
+        log(`video: helper ${probe.version ?? '(no version)'} ready (encoder ${probe.encoder ?? '?'}, decoder ${probe.decoder ?? '?'})`);
         emit();
         break;
       case 'error':
-        opts.log(`video: helper error ${e.code}${e.text ? `: ${e.text}` : ''}`);
+        log(`video: helper error ${e.code}${e.text ? `: ${e.text}` : ''}`);
         break;
       case 'log':
-        opts.log(`video: ${e.level === 'warn' ? 'warning: ' : ''}${e.text}`);
+        log(`video: ${e.level === 'warn' ? 'warning: ' : ''}${e.text}`);
         break;
       default:
         break;
@@ -296,14 +299,14 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
       if (!e) {
         if (!unreadableSaid) {
           unreadableSaid = true;
-          opts.log(`video: an unreadable line from the helper, skipped (logged once per run of it): ${line.slice(0, 120)}`);
+          log(`video: an unreadable line from the helper, skipped (logged once per run of it): ${line.slice(0, 120)}`);
         }
         return;
       }
       if (e.event === 'ready') sawReady = true;
       onEvent(e);
     });
-    readLines(c.stderr, 64 * 1024, (line) => opts.log(line.startsWith('video:') ? line : `video: ${line}`));
+    readLines(c.stderr, 64 * 1024, (line) => log(line.startsWith('video:') ? line : `video: ${line}`));
     let exited = false;
     const onExit = (code: number | null, why: string): void => {
       if (exited) return;
@@ -320,7 +323,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
         return;
       }
       const wait = Math.max(0, lastSpawn + RESTART_MIN_MS - now());
-      opts.log(`video: helper exited (${why}); restarting in ${Math.round(wait / 100) / 10} s`);
+      log(`video: helper exited (${why}); restarting in ${Math.round(wait / 100) / 10} s`);
       restartTimer = later(() => {
         restartTimer = null;
         launch();
@@ -330,7 +333,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
     };
     c.on('error', (e: NodeJS.ErrnoException) => {
       if (child !== c) return;
-      opts.log(`video: helper failed to start: ${e.message}`);
+      log(`video: helper failed to start: ${e.message}`);
       child = null;
       exited = true;
       giveUp(e.code === 'ENOENT' ? 'helper_missing' : `helper_failed:${e.code ?? 'spawn'}`);
@@ -343,7 +346,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
     gaveUp = reason;
     if (restartTimer) cancel(restartTimer);
     restartTimer = null;
-    opts.log(`video: native spectator video unavailable (${reason}); the match goes on with the Electron video`);
+    log(`video: native spectator video unavailable (${reason}); the match goes on with the Electron video`);
     emit();
   }
 
@@ -352,7 +355,7 @@ export function createVideoHelper(opts: VideoHelperOptions): VideoHelper {
       if (!opts.exe) {
         if (!missingSaid) {
           missingSaid = true;
-          opts.log('video: no spectator-video helper in this build; the Electron video path serves the match');
+          log('video: no spectator-video helper in this build; the Electron video path serves the match');
         }
         return;
       }
