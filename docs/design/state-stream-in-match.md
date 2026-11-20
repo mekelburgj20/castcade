@@ -196,7 +196,7 @@ turn lock lifts it without knowing where a slow fork is.
 player, loopback sockets to the local VPX. Only the signalling differs: `sendSignal` goes out as `MEDIA_SIGNAL`
 with a new channel value `stream` (the enum is `rtc | video` today), so **protocol 6**; every PC of a match is
 on the same build through the updater, as at 4 and 5. The connections are opened in the lobby, long before the
-first turn (I11.12: a connect took 10 to 70 s on 2026-11-18).
+first turn (I11.12: a connect took 10 to 70 s on 2026-11-18), and the match's first start waits for them (§4.5).
 
 ### 4.2 Who watches in 3D
 
@@ -259,6 +259,85 @@ player is up. A table the player opened by hand in their own VPX before Host or 
 Consequence to know: on a PC with the fork installed, match games are played and scored in the fork (Panasony's
 10.8.0 plus the stream), not in that player's own exe. The witness reports the build as it is.
 
+### 4.5 The first turn starts in 3D (I11.4.9)
+
+The data connections open in the lobby, and a connect between two routers took 10 to 70 s on 2026-11-18. Without
+more, a match started before a connection is up begins its first turn in the 2D video and switches to 3D in the
+middle of it, when the other PC is heard from (that switch stays: it is what a start "now" gets). The owner's
+ruling (2026-11-19): the first turn is in 3D. So the match's first start waits, the way it waits for a table to
+open, and never longer than 45 s in all.
+
+**Who is waited for** (`match/stream3d.ts`, `startWait`). A PC, while `watch3d` is `auto` and either
+
+- (a) its match table was started in the fork and that VPX is not ready on the control connection yet: until
+  **10 s** (`FORK_HELLO_WAIT_MS`) after the table opened. While the table still loads no limit runs: the lobby's
+  wait for an open table is what holds a start from the table then, and a press of Start match is not held for
+  such a PC at all. A fork from before the role `match` (621694f) never connects and costs these 10 s. A launch
+  that made no process, or a process that ended, is not waited for from that moment; or
+- (b) its VPX is ready and nothing has been heard yet from some other player's PC (no capability over the
+  tunnel): per player, until **45 s** (`START_WAIT_MS`) after this PC began connecting to them (its data
+  connections open and the player in the match, whichever came later), unless the tunnel has given up on that
+  player (no path) or its page is broken. Not from when the VPX was ready: a table left open from the last
+  match, or a player who joins a minute after the host's table loaded, is waited for all the same.
+
+Never: a PC with the setting off, with no fork, or whose fork speaks another control version. Only the lobby
+before game 1: a next game and a rejoin never wait.
+
+**How the host knows.** Each PC says it in the lobby with `PARTICIPANT_UPDATE.stream3dWaitMs` (the ms left of its
+own wait; 0: settled), the host's own through `updateLocal`; the host lists everyone it was told of in
+`HELLO_ACK.stream3dWait`, so every lobby can say who. Both keys are optional / defaulted and never logged:
+still protocol 6 (`protocol/src/version.ts`). A 0.2.46 host strips the key and waits for nobody, a 0.2.46 client
+never sends it and is never waited for. A PC that says nothing more is dropped from the host's list 2 s after
+its own time ran out. A PC whose table is not open yet is listed (so there is no gap between its table opening
+and its being waited for) and holds nothing by that alone.
+
+**What waits, and the one limit** (`match/controller.ts`). A start is held while somebody on the host's list has
+an open table: a start from the host's table (its 5 s countdown begins when nobody is left), and the first press
+of Start match on the Match tab or the in-game menu (the match starts by itself when nobody is left). From the
+moment a start is first held, the match starts within **45 s** (`START_WAIT_MS` again), whatever any PC says
+after that: a PC that asks again and again, a player who joins during the hold, (a) followed by (b). The
+seconds on the lobby line count toward that one moment and never go up.
+
+**Starting now, and what ends a hold.** One press of Start match starts the match now when a start from the table
+is held, and a second press does when Start match itself is held (so does Start anyway). A press of Start match
+while somebody's table is still loading is never held: it is what it was before this wait existed. The engine's
+`start()` and `startIn()` do not look at the list. A held Start match that comes due is a press of Start match at
+that moment and nothing more: if a player joined during the hold whose table cannot report ball ends, or whose
+table is not open yet, the hold is dropped and the Match tab says why (`lastError`); the next press in that
+lobby is not held again (the host has waited once): it starts, or asks for the confirmation a press asks for.
+Nothing is ever logged as confirmed by the host that the host did not confirm. The lobby falling below two ends
+a hold of either kind, and its limit with it: a start from the table is off (the host starts a game again once
+somebody has joined) and the next start is held anew.
+
+**The lobby line**, on the Match tab and the panel:
+
+- host, start held: `The match starts once the 3D connection to Krobs is up, or in 31 s (Start match on the
+  Match tab starts it now; the first turn may then be the 2D video)` (`Start match again` after a held press).
+  The headset's lobby panel stays up while a start is held, as it does for the countdown; what its peek compares
+  is the line without the number (`lobbyLineKey`).
+- host, nothing pressed yet: `Everyone in? Start a game on your table (or press Start match) · the 3D
+  connection to Krobs is still being made (a start waits for it, 45 s at most)`. No counter: the line does not
+  change by itself, so the headset's lobby panel goes away after its 8 s as before (D8.9).
+- client: `Waiting for <host> to start a game on the table · ... (the start waits for it, 45 s at most)`, also
+  without a counter (a client is not told whether the host's start is held).
+
+`companion.log` gets one `stream3d:` line when a PC begins to be waited for (and for what), one when it stops
+(settled, with the seconds each other PC took to be heard from after this PC's data connections opened; or its
+limit; or no path; or the match started without it), and one for what it sent to the host; the host's log says
+when a start is held, when it goes on, and when the 45 s end it.
+
+Known costs and edges.
+
+- A PC with the fork waits for a PC without one until that PC is heard from over the tunnel ("none"), which
+  needs the data connection: 10 to 70 s between two routers, and the full 45 s when the other PC opens no tunnel
+  at all (`watch3d` off there and no fork). Most of it passes while the tables load, and the one limit bounds
+  it; saying "no fork" over the match's own channel instead would remove it (tracked by the lead, not built).
+- A client's first word about its wait reaches the host a moment after its HELLO; a start in that moment does
+  not wait (it switches in the middle of the turn, as before). A countdown that has begun is not stopped by a PC
+  that begins to be waited for after it.
+- A table that takes more than two minutes to load: the PC's "not open yet" word has expired on the host by
+  then, so for the moment between the table opening and the PC's next word a start from the table is not held.
+
 ## 5. What proves it
 
 - Fork, one PC, scripted (no companion): two instances in role `match` and a script on both control
@@ -268,5 +347,11 @@ Consequence to know: on a PC with the fork installed, match games are played and
 - Companion: unit tests with a scripted control client and the relay double: the table of §4.3, every fail-safe
   row, a PC without the fork.
 - Two companions and two forks on one PC through the tunnel harness.
+- §4.5: the rule and the limit at machine level, the engine's list, the controller's wait and its two ways out,
+  and end to end with scripted forks and held signalling (`match/start-wait-3d.test.ts`, `stream3d.test.ts`,
+  `main/match-host-stream3d.test.ts`); with real forks (packaged 9e78aef) and real tunnel pages in the harness's
+  groups `gate` (waited for until the held connection comes up; the first turn then watched in 3D at once) and
+  `gatecap` (the per-player limit; a match started without the connection begins in 2D and the watch goes out
+  when the connection comes up, under the same grant).
 - The rig gate (owner + Krobs): a two-game match in the headsets, each watching the other in 3D, with the ROM's
   sound; one of them then joins with `watch3d` off and sees the 2D picture.

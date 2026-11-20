@@ -255,6 +255,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
         );
         return r;
       }
+      // I11.4.9: no process, so no exit will ever say it: the match's start must not wait for this VPX.
+      fork.notStarted?.();
       log.warn(`launch: the Castcade VPX build did not start (${r.reason}); starting the table in your own VPX`);
     }
     return o.launcher.launch(table.vpxPath);

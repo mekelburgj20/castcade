@@ -305,7 +305,7 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `RECONNECT` | client->host | client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO. |
 | `RECONNECT_ACK` | host->client | host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection. |
 | `MEDIA_SIGNAL` | any | any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media. |
-| `PARTICIPANT_UPDATE` | client->host | client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. |
+| `PARTICIPANT_UPDATE` | client->host | client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. |
 | `NEXT_GAME` | host->all | host -> all, logged. Only after the previous game's RESULT went out. Every listed player starts a fresh game: grant 1 follows, ball counts and scores start again. |
 | `MATCH_END` | host->all | host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. |
 
@@ -353,6 +353,7 @@ host -> client. The HELLO was accepted; the match is not ready until MATCH_READY
 | `loading` | array of string (`^[A-Za-z0-9_.:-]+$`) | yes | Accepted participants whose table is not open yet, as the host judges from their fingerprint (A11): the match does not start from the table until this is empty. |
 | `ballEndReady` | array of object | yes | A13: what each participant (the host included) said about its table's ball ends (`HELLO.ballEndReady`, then `PARTICIPANT_UPDATE.ballEndReady`): `ready` false = that player's table cannot report ball ends, so its turn would never end by itself. A participant not listed is unknown. Defaulted and never logged. |
 | `midnightModes` | array of object | yes | B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged. |
+| `stream3dWait` | array of object | yes | I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged. |
 
 ### `REFUSE`
 
@@ -624,7 +625,7 @@ any -> `to`, through the host: it forwards the frame to `to` only, `from` preser
 
 Direction: client->host.
 
-client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.
+client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -633,6 +634,7 @@ client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `
 | `ballEndReady` | boolean | no | A13: whether the sender's table can report ball ends now (see `HELLO.ballEndReady`), when that changed since HELLO. Lobby only. |
 | `advisory` | object | no | B26: after MATCH_READY only: a flag about one of the sender's own balls (see `PlayerAdvisory`). The host passes the update on to every other participant like a rig change (`from` preserved) and sends its own the same way. A peer from before B26 ignores it. |
 | `midnightMode` | object | no | B26.4: the Midnight Madness setting on the sender's table (see `MidnightMode`), when its companion could read it, in any phase. In the lobby the host lists it in HELLO_ACK `midnightModes`; after MATCH_READY it passes the update on like a rig change. A peer from before B26.4 ignores it. |
+| `stream3dWaitMs` | integer | no | I11.4.9: lobby only: the sender's PC is still making its 3D connection (its VPX build has not connected to its Castcade yet, or nothing has been heard from another player's PC over the state stream's data connection), and stops waiting for it in at most this many ms; 0: settled (or given up). The host lists it in HELLO_ACK `stream3dWait` and holds a start from its table meanwhile. Absent: no change. A peer from before I11.4.9 ignores it. |
 
 ### `NEXT_GAME`
 

@@ -606,6 +606,8 @@ interface MatchStatus {
   }>;
   /** A13: in the lobby, one line per player whose table cannot report ball ends; not empty = Start match asks to confirm. */
   startWarnings: string[];
+  /** I11.4.9: in the lobby, who is still making a 3D connection, for how many seconds at most, and whether this host's start is held for it (`tab`: Start match again starts now). */
+  wait3d: { players: string[]; seconds: number; armed: 'table' | 'tab' | null };
   /** B26: the Midnight Madness setting when it is ON on a table (from the lobby on), then one line per ball of the current game it ran on; a flag only. */
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
@@ -728,7 +730,7 @@ interface CastcadeBridge {
     status(): Promise<MatchStatus>;
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
-    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. */
+    /** Host only: Start match in the lobby; A10: Next game between games. A13: `anyway` confirms a start with `startWarnings`. I11.4.9: while a 3D connection is being made the first call holds the start (`wait3d.armed: 'tab'`), a second starts now. */
     start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
     /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
     passTurn(): Promise<MatchStatus>;

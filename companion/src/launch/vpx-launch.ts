@@ -107,6 +107,12 @@ export function forkMatchEnv(streamPort: number, controlPort: number, logFile: s
 export interface ForkLaunch {
   options: LaunchOptions;
   didNotStart: Promise<boolean>;
+  /**
+   * I11.4.9: the caller's word that `launch` itself answered `ok: false` with these options (the exe or the table file
+   * is gone, the spawn threw): no process was made, so `options.onExit` never comes. Nothing is expected of this start
+   * any more, at once.
+   */
+  notStarted?(): void;
 }
 
 /** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */

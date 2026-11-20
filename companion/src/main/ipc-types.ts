@@ -271,6 +271,9 @@ export interface CastcadeApi {
      * series, Next game (NEXT_GAME, then grant 1 of it), the same as a game started on the host's table.
      * A13 (2026-11-12): in the lobby, while `startWarnings` is not empty (a table that cannot report ball ends), it
      * rejects unless `anyway` is true: the host's explicit confirmation.
+     * I11.4.9 (2026-11-20): in the lobby, while a PC's 3D connection is still being made, the first call holds the
+     * start until it is settled (the status comes back still in the lobby, `wait3d.armed: 'tab'`); a second call
+     * starts now.
      */
     start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */

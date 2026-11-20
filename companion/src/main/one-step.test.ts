@@ -330,6 +330,22 @@ describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
     expect(w.logs).toContain('launch: the Castcade VPX build did not start (VPinballX_GL64_castcade.exe is not in C:\\vpx); starting the table in your own VPX');
   });
 
+  it('I11.4.9: a fork launch that answers "not started" (no process, so no exit ever comes) is said to the match host at once, before the own VPX is started', async () => {
+    const order: string[] = [];
+    const w = world({
+      tableLaunch: async () => ({ options: forkOpts(), didNotStart: new Promise<boolean>(() => undefined), notStarted: () => void order.push('notStarted') }),
+      forkLaunch: { ok: false, reason: 'the table file is no longer there' },
+    });
+    await w.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(order).toEqual(['notStarted']);
+    expect(w.launches.map((l) => l.opts === null)).toEqual([false, true]);
+    // A fork that did start is never told so.
+    const ok: string[] = [];
+    const v = world({ tableLaunch: async () => ({ options: forkOpts(), didNotStart: Promise.resolve(false), notStarted: () => void ok.push('notStarted') }) });
+    await v.one.host({ ...HOST, tablePath: MB.vpxPath });
+    expect(ok).toEqual([]);
+  });
+
   it('A1: a fork whose start fails after the spawn answered ok (an error from the system, an exe that ends at once): the table starts in the player\'s own VPX', async () => {
     // `launch` says ok as soon as the process is spawned: this is what a real EACCES, or a fork that dies, looks like.
     const f = fork();

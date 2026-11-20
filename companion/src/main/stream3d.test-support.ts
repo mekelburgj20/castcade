@@ -124,6 +124,26 @@ export class TunnelHub {
     const y = this.ends.get(b);
     return !!x && !!y && !x.closed && !y.closed && x.opened.has(b) && y.opened.has(a);
   }
+
+  /**
+   * I11.4.9: the data connections take their time (ICE between two routers: 10 to 70 s on 2026-11-18): from `hold()`
+   * every signal an end is handed waits, and `release()` hands them over in order.
+   */
+  private holding = false;
+  private readonly waiting: Array<() => void> = [];
+  hold(): void {
+    this.holding = true;
+  }
+  release(): void {
+    this.holding = false;
+    for (const run of this.waiting.splice(0)) run();
+  }
+  /** True when the signal was kept for `release()`. */
+  keep(run: () => void): boolean {
+    if (!this.holding) return false;
+    this.waiting.push(run);
+    return true;
+  }
 }
 
 export class FakeTunnel implements TunnelEnd {
@@ -171,6 +191,7 @@ export class FakeTunnel implements TunnelEnd {
 
   signal(from: string, s: MediaSignal): void {
     if (this.closed) return;
+    if (this.hub.keep(() => this.signal(from, s))) return;
     this.signalsIn.push([from, s]);
     if (s.kind === 'reset') {
       // As the page's mesh: the sender's connections are new, so this side's is closed and opened again (the lower id offers).

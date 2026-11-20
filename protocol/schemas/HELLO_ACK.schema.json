@@ -313,6 +313,33 @@
         ],
         "additionalProperties": false
       }
+    },
+    "stream3dWait": {
+      "default": [],
+      "description": "I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "playerId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_.:-]+$",
+            "description": "Stable participant id for this match: the ArcAid user id, or a fakeclient label."
+          },
+          "leftMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 120000
+          }
+        },
+        "required": [
+          "playerId",
+          "leftMs"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [
@@ -324,7 +351,8 @@
     "startsInMs",
     "loading",
     "ballEndReady",
-    "midnightModes"
+    "midnightModes",
+    "stream3dWait"
   ],
   "additionalProperties": false,
   "description": "host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint."

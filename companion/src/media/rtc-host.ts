@@ -58,7 +58,7 @@ import { cameraEyeFor, cameraEyesWords, cameraFrameEyes, cameraRequestFor, camer
 import type { LayerCameraEyeGeometry, LayerCameraEyeSide, LayerCameraFrame, LayerCameraRequest, MatchMedia, MatchPlayerId, MediaSignal, MediaSignalling, MediaStatus, PanelFrame, PanelFrameSource, PanelMenu, PanelState, PanelVolume, TableAudioFlags, VideoFrame, VideoFrameSource, VrOverlay, VrStereo } from './match-media-types.js';
 import { describeIce, iceServers, type MediaSettingsStore } from './media-settings.js';
 import { placePanel, type PanelSide, type Rect } from './panel-placement.js';
-import { MIC_LIST_CHANNEL, PANEL_CHANNELS, PANEL_VIDEO, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
+import { MIC_LIST_CHANNEL, PANEL_CHANNELS, PANEL_VIDEO, VIDEO_FEED_MAX, cameraCapture, isCameraCapture, micListPageHtml, pageLogLine, panelPageHtml, videoBitrateFor, type MicDevice, type PanelAttach, type PanelBench, type PanelBenchFrame, type PanelCameraFrame, type PanelCapture, type PanelPageStatus } from './panel-page.js';
 import { SCOREBOARD_CHANNEL, SCOREBOARD_READY_CHANNEL, SCOREBOARD_SIZE, scoreboardPageHtml } from './scoreboard-page.js';
 import { FRAME_SAVE_GRACE_MS, FRAME_SAVE_MAX, FRAME_SAVE_MS, createFrameSaver, playbackIndex, receivedFrameFrom, savedLine, type FrameSaver, type Playback, type SaveFramesResult } from './frame-clip.js';
 import { benchReadout, benchReportFrom, benchWords, type BenchPageReport, type BenchPath, type BenchSource } from './bench.js';
@@ -465,11 +465,11 @@ export function peerChanges(before: PanelPageStatus['peers'] | null | undefined,
   return out;
 }
 
-/** D2.9: a line the page sent for companion.log: one line of text, at most 400 characters, prefixed `media: `; else null. */
+/** D2.9: a line the page sent for companion.log: one line of text, at most 400 characters (I11.12: 1200 for an ICE round's line, `pageLogLine`), prefixed `media: `; else null. */
 export function panelLogLine(line: unknown): string | null {
   if (typeof line !== 'string') return null;
   const one = line.replace(/[\r\n]+/g, ' ').trim();
-  return one ? `media: ${one.slice(0, 400)}` : null;
+  return one ? `media: ${pageLogLine(one)}` : null;
 }
 
 /** The controller's view: the page's report plus what only main knows. Main's own error wins (it is the cause). */

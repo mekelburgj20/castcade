@@ -51,7 +51,7 @@ const TABLES = resolve(opt('tables', String.raw`C:\code\repos\castcade-vpx-deps\
 const CLOSER = resolve(opt('closer', join(dirname(fileURLToPath(import.meta.url)), 'match-stream-harness.ps1')));
 const TURNS = Number(opt('turns', '20'));
 const ROM_TABLE = opt('rom-table', 'Attack from Mars LE (Midway 1995) v600.vpx');
-const ONLY = opt('only', 'two,three,off,mismatch,rom,nostart').split(',').map((s) => s.trim());
+const ONLY = opt('only', 'two,three,off,mismatch,rom,nostart,gate,gatecap').split(',').map((s) => s.trim());
 const NUDGE = join(TABLES, 'Nudge Test and Calibration.vpx');
 /** The exe the companion "knows" on these PCs: never started; the fork is looked for beside it. */
 const PLAIN_EXE = join(dirname(CCMATCH), 'VPinballX_GL64.exe');
@@ -291,6 +291,7 @@ function makePc(group, name, o = {}) {
       return end;
     },
     freePort: async () => nextStreamPort(),
+    ...(o.startWaitMs ? { startWaitMs: o.startWaitMs } : {}),
     ports: { read: () => JSON.stringify({ controlPort: CONTROL_PORT[name] }), write: (text) => (pc.savedPorts = text) },
     listen,
   });
@@ -389,16 +390,29 @@ function openMatch(pcs) {
       sendSignal: (to, s) => {
         if (p.muted) return;
         p.signals.out += 1;
-        setImmediate(() => {
-          const other = by[to];
-          if (!other?.stream) return;
-          other.signals.in += 1;
-          other.stream.signal(p.name, { ...s, channel: 'stream' });
-        });
+        const deliver = () =>
+          setImmediate(() => {
+            const other = by[to];
+            if (!other?.stream) return;
+            other.signals.in += 1;
+            other.stream.signal(p.name, { ...s, channel: 'stream' });
+          });
+        // I11.4.9: a PC whose signals are held (`pc.held = []`) is one whose data connection is still being made;
+        // `releaseSignals` hands them over in order.
+        if (p.held) p.held.push(deliver);
+        else deliver();
       },
     });
   }
   for (const p of pcs) p.stream.setPeers(pcs.filter((x) => x !== p).map((x) => ({ id: x.name, name: x.name.toUpperCase() })));
+}
+
+/** I11.4.9: the signals a PC was holding go out, in order: its data connections are made from here on. */
+function releaseSignals(pc) {
+  const held = pc.held ?? [];
+  pc.held = null;
+  for (const deliver of held) deliver();
+  return held.length;
 }
 
 /** As the match host's lock: at a grant, the table is unlocked once the fork is back on its own table (2 s at most). */
@@ -1108,6 +1122,140 @@ async function groupRom() {
   }
 }
 
+/**
+ * I11.4.9: the first start waits for the 3D connection, with real forks and real tunnel pages. PC b's signalling is
+ * held, so its data connection is "still being made" for as long as the harness says (between two routers on
+ * 2026-11-18: 10 to 70 s). What the match host would read (`startWait`) is read here, and the match "starts" when the
+ * harness says so (`setStartGate(false)`, then the first grant).
+ */
+async function groupGate() {
+  const G = 'gate';
+  const a = makePc(G, 'a');
+  const b = makePc(G, 'b');
+  const g = newGroup(G, [a, b]);
+  const waitWords = (p) => {
+    const w = p.stream.startWait();
+    return `${p.name}: ${w.pending ? `waited for (${w.why}${w.waitingFor.length ? `: ${w.waitingFor.join(', ')}` : ''}; ${w.until === null ? 'no limit runs yet' : `${Math.round((w.until - Date.now()) / 1000)} s left`})` : 'not waited for'}`;
+  };
+  const said = (p, re) => p.lines.filter((l) => re.test(l));
+  try {
+    b.held = [];
+    openMatch(g.pcs);
+    for (const p of g.pcs) p.stream.setStartGate(true);
+    check(G, 'the lobby, no table started yet: neither PC is waited for', !a.stream.startWait().pending && !b.stream.startWait().pending, `${waitWords(a)}; ${waitWords(b)}`);
+    // (a) a match table started in the fork: waited for from the launch, with no limit until the table is open.
+    const fa = await startFork(a, NUDGE, { waitReady: false });
+    const early = a.stream.startWait();
+    check(G, "a's table is started in the fork: a is waited for from that moment (its VPX has not connected yet), with no limit running while the table loads", early.pending && early.why === 'fork' && early.until === null, waitWords(a));
+    const fb = await startFork(b, NUDGE, { waitReady: false });
+    const ready = await until(() => a.stream.status().fork === 'ready' && b.stream.status().fork === 'ready', 150_000, 20);
+    for (const p of g.pcs) p.stream.setTableOpen(true);
+    const wa = a.stream.startWait();
+    const wb = b.stream.startWait();
+    // (b) both forks ready, nothing heard from the other PC: both waited for, 45 s at most from when each PC began
+    // connecting to the other (the match's data connections opened, a few seconds ago).
+    check(
+      G,
+      'both forks are ready and the data connection is not up: each PC is waited for until it hears from the other, 45 s at most, and shows the other in 2D meanwhile',
+      ready && wa.pending && wa.why === 'peers' && wa.waitingFor.join() === 'b' && wb.pending && wb.why === 'peers' && wb.waitingFor.join() === 'a' && wa.until - Date.now() > 30_000 && wa.until - Date.now() <= 45_000 && a.view(b)?.line.includes('not up yet') && b.view(a)?.line.includes('not up yet'),
+      `${waitWords(a)}; ${waitWords(b)}; a: "${a.view(b)?.line}"; b: "${b.view(a)?.line}"; forks ready after ${round(fa?.startedAt ? now() - fa.startedAt : null)} / ${round(fb?.startedAt ? now() - fb.startedAt : null)} ms`,
+    );
+    check(G, 'the log says what each PC waits for', said(a, /the match's start waits for the 3D connection to B: nothing heard from that PC yet \([34]\d s at most\)/).length === 1 && said(b, /the match's start waits for the 3D connection to A: nothing heard from that PC yet/).length === 1, [...said(a, /the match's start/), ...said(b, /the match's start/)].join(' | '));
+    await sleep(6000);
+    check(G, 'six seconds on, still waited for; nothing was sent to either fork', a.stream.startWait().pending && b.stream.startWait().pending && a.rec.every((e) => e.d !== '>') && b.rec.every((e) => e.d !== '>'), `${waitWords(a)}; ${waitWords(b)}`);
+    // The data connection comes up.
+    const t0 = now();
+    const n = releaseSignals(b);
+    const settled = await until(() => !a.stream.startWait().pending && !b.stream.startWait().pending, 30_000, 5);
+    const ms = now() - t0;
+    const both3d = await until(() => a.view(b)?.mode === '3d' && b.view(a)?.mode === '3d', 5000);
+    check(
+      G,
+      'the data connection comes up: both PCs are settled, say how long the connection took, and show each other in 3D',
+      settled && both3d && said(a, /start no longer waits for this PC: this PC's 3D connections are settled \(heard from, after this PC's data connections opened: B \d+\.\d s\)/).length === 1 && said(b, /start no longer waits for this PC: this PC's 3D connections are settled \(heard from, after this PC's data connections opened: A \d+\.\d s\)/).length === 1,
+      `settled ${round(ms)} ms after b's ${n} held signals were let go; a: "${said(a, /start no longer waits/).at(-1) ?? ''}"; b: "${said(b, /start no longer waits/).at(-1) ?? ''}"`,
+    );
+    // The match starts: the first turn is watched in 3D from its first moment.
+    for (const p of g.pcs) p.stream.setStartGate(false);
+    const row = await grant(g, a, 'together');
+    await playFor(g, row, 3000);
+    check(G, 'the first turn after the wait: the watcher is in 3D at once (watch, then state watching), frames flow', row.ok && row.watchers.b?.plan === 'watch' && row.watchers.b?.answer === 'state watching' && row.watchers.b?.bytes > 0, rowWords(row));
+    summary.groups[G] = { watchMs: stats([row.watchers.b?.watchingMs].filter((v) => v != null)) };
+  } catch (e) {
+    check(G, 'the group ran to its end', false, e?.stack ?? String(e));
+  } finally {
+    await endGroup(g);
+  }
+}
+
+/**
+ * I11.4.9: the limit of the wait (8 s here, 45 in the app), and what happens to a match that starts without the
+ * connection: the first turn begins in the 2D video, and the watch begins in the middle of that turn, under the same
+ * grant, when the connection comes up.
+ */
+async function groupGateCap() {
+  const G = 'gatecap';
+  const LIMIT = 8000;
+  const a = makePc(G, 'a', { startWaitMs: LIMIT });
+  const b = makePc(G, 'b', { startWaitMs: LIMIT });
+  const g = newGroup(G, [a, b]);
+  const said = (p, re) => p.lines.filter((l) => re.test(l));
+  try {
+    b.held = [];
+    openMatch(g.pcs);
+    // The limit runs from here: each PC began connecting to the other when the match's data connections opened.
+    const t0 = now();
+    for (const p of g.pcs) p.stream.setStartGate(true);
+    await startFork(a, NUDGE, { waitReady: false });
+    await startFork(b, NUDGE, { waitReady: false });
+    const ready = await until(() => a.stream.status().fork === 'ready' && b.stream.status().fork === 'ready', 150_000, 20);
+    const readyMs = now() - t0;
+    for (const p of g.pcs) p.stream.setTableOpen(true);
+    const pending = a.stream.startWait().pending && b.stream.startWait().pending;
+    let told = 0;
+    const off = a.stream.onChange(() => (told += 1));
+    const over = await until(() => !a.stream.startWait().pending && !b.stream.startWait().pending, LIMIT + 5000, 10);
+    const ms = now() - t0;
+    // `startWait` answers by the clock; the machine's own word (its log line, the change it reports) comes with its
+    // timer, a moment later: the match is not "started" here before both PCs have said why they stopped waiting.
+    await until(() => said(a, /start no longer waits/).length > 0 && said(b, /start no longer waits/).length > 0, 3000, 5);
+    off();
+    check(
+      G,
+      `the limit (${LIMIT / 1000} s here): with no word from the other PC each PC stops being waited for by itself, tells its match host, and says so in the log`,
+      ready && readyMs < LIMIT - 2000 && pending && over && ms > LIMIT - 500 && ms < LIMIT + 1500 && told > 0 && said(a, /start no longer waits for this PC: 8 s passed since this PC began connecting to B and nothing was heard from that PC: the first turn may be the 2D video/).length === 1 && said(b, /start no longer waits for this PC: 8 s passed since this PC began connecting to A and nothing was heard from that PC/).length === 1,
+      `no longer waited for ${round(ms)} ms after the data connections opened (both forks were ready after ${round(readyMs)} ms); a: "${said(a, /start no longer waits/).at(-1) ?? ''}"`,
+    );
+    // The match starts all the same: the first turn is the 2D video on the watcher's PC.
+    for (const p of g.pcs) p.stream.setStartGate(false);
+    g.turn += 1;
+    const mark = b.mark();
+    a.stream.setTarget(null);
+    b.stream.setTarget(a.name, String(g.turn));
+    await sleep(2500);
+    check(G, 'the match starts without the connection: the watcher shows the player in 2D, and nothing is sent to its fork', b.view(a)?.mode === '2d' && b.view(a)?.line.includes('not up yet') && !b.stream.showing3d() && b.rec.slice(mark).every((e) => e.d !== '>'), `b: "${b.view(a)?.line}"; control since the grant: ${b.since(mark).join(' | ') || 'nothing'}`);
+    // The connection comes up in the middle of the turn: the same grant, and the fork is sent to watch.
+    const t1 = now();
+    releaseSignals(b);
+    const sent = await b.waitRec(mark, (e) => e.d === '>' && e.line.startsWith('watch '), 30_000);
+    const ans = sent ? await b.waitRec(b.rec.indexOf(sent) + 1, (e) => e.d === '<' && /^state (watching|failed)/.test(e.line), 8000) : null;
+    const before = b.bytesIn();
+    await sleep(3000);
+    check(
+      G,
+      'the connection comes up in the middle of the turn: the watch goes out under the same grant, the fork shows the player (state watching), frames flow',
+      !!sent && ans?.line === 'state watching' && b.stream.showing3d() && b.bytesIn() > before,
+      `watch sent ${sent ? round(sent.t - t1) : '?'} ms after the signals were let go, answered ${ans ? `"${ans.line}" after ${round(ans.t - sent.t)} ms` : 'by nothing in 8 s'}; ${b.bytesIn() - before} B in 3 s; control: ${b.since(mark).join(' | ')}`,
+    );
+    g.watching.set(b, ans?.line === 'state watching' ? a : null);
+    g.up = a;
+  } catch (e) {
+    check(G, 'the group ran to its end', false, e?.stack ?? String(e));
+  } finally {
+    await endGroup(g);
+  }
+}
+
 /** A fork that never starts, through the app's own one-step and launcher; only the process spawner is the harness's. */
 async function groupNoStart() {
   const G = 'nostart';
@@ -1173,7 +1321,7 @@ async function main() {
   for (const f of [CCMATCH, TEMPLATE, NUDGE, CLOSER]) if (!existsSync(f)) throw new Error(`missing: ${f}`);
   if (/^vpinballx/i.test(CCMATCH.split(/[\\/]/).pop())) throw new Error('the fork must run under a name that does not start with VPinballX (the installed Castcade would take it for a game)');
   const t0 = now();
-  const groups = { two: groupTwo, three: groupThree, off: groupOff, mismatch: groupMismatch, rom: groupRom, nostart: groupNoStart };
+  const groups = { two: groupTwo, three: groupThree, off: groupOff, mismatch: groupMismatch, rom: groupRom, nostart: groupNoStart, gate: groupGate, gatecap: groupGateCap };
   for (const name of ONLY) {
     if (!groups[name]) throw new Error(`no such group: ${name}`);
     log(`==== group ${name} ====`);

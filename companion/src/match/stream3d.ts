@@ -80,6 +80,24 @@
  * The turn lock (§4.3, `whenPlaying`): at the grant the shell lifts the lock only once the fork says `state playing`,
  * `PLAY_WAIT_MS` at most, then anyway (logged). A PC whose fork is on its own table, or that has none, never waits.
  *
+ * The first start (I11.4.9, `startWait`). The first turn of a match should already be in 3D, so the match's first
+ * start waits for this PC while its 3D connection is still being made (the shell tells the host, which holds a start
+ * as it does for a table that is not open, and never for longer than one `START_WAIT_MS` in all: `match/controller.ts`).
+ * This PC is waited for while the setting is `auto` and either
+ *   (a) its match table was started in the Castcade VPX build (`forkLaunched`) and that VPX is not `ready` on the
+ *       control connection yet: until `FORK_HELLO_WAIT_MS` after the table opened (`setTableOpen`; no limit runs while
+ *       the table loads: the lobby's own wait for an open table is what holds a start then). A build from before the
+ *       role `match` never connects, and costs these 10 s, not more; or
+ *   (b) its VPX is ready and nothing has been heard yet from some other player's PC (no capability: the data
+ *       connection to it is not up): per player, until `START_WAIT_MS` after this PC began connecting to them (its
+ *       data connections open and the player in the match, whichever came later), unless the tunnel has given up on
+ *       that player (`setTunnel`: no path) or is broken. Not counted from when this PC's VPX was ready: a table left
+ *       open from the last match, or a player who joins a minute after the host's table loaded, is waited for all the
+ *       same.
+ * A PC with the setting off, with no Castcade VPX build, or whose build speaks another control version is never
+ * waited for. Only while the shell says the match has not started (`setStartGate`): a next game and a rejoin never
+ * wait. A new match (`reset`) starts from nothing.
+ *
  * Every decision and state change is one log line starting `stream3d:`. What comes from a socket or from another PC
  * is never logged raw: a `hello` and a capability are tokens of printable ASCII or they are not read at all, a
  * `state failed` reason and a player's name lose their control characters, and the lines a peer or a fork can cause
@@ -107,6 +125,16 @@ export const FORK_LOG_MAX = 40;
  * when the time is up.
  */
 export const CAPS_CHANGES_MAX = 8;
+/**
+ * I11.4.9: the match's first start waits for this PC's 3D connection at most this long after its VPX was ready on the
+ * control connection (or, while that VPX has not connected yet, after its table opened).
+ */
+export const START_WAIT_MS = 45_000;
+/**
+ * I11.4.9: a match table started in the Castcade VPX build is waited for this long after the table opened, for its VPX
+ * to be on the control connection (a build that has the role `match` connects while the table loads).
+ */
+export const FORK_HELLO_WAIT_MS = 10_000;
 const TOKEN = /^[\x21-\x7e]{1,128}$/;
 const TABLE_IDENTITY = /^[\x21-\x7e]{1,128} [\x21-\x7e]{1,128}$/;
 // eslint-disable-next-line no-control-regex -- control characters are exactly what a line must not hold
@@ -278,6 +306,23 @@ export interface Stream3dDeps {
   now?(): number;
   watchTimeoutMs?: number;
   playWaitMs?: number;
+  /** I11.4.9: `START_WAIT_MS` and `FORK_HELLO_WAIT_MS` for the tests. */
+  startWaitMs?: number;
+  forkHelloWaitMs?: number;
+}
+
+/** I11.4.9: whether the match's first start should wait for this PC's 3D connection (`Stream3d.startWait`). */
+export interface StartWait {
+  pending: boolean;
+  /**
+   * When (the machine's clock) this PC stops being waited for, whatever happens (b: the last of the players it
+   * waits for). Null when it is not waited for, and while its VPX has not connected and its table is not open yet (the
+   * limit starts when the table opens).
+   */
+  until: number | null;
+  /** `fork`: this PC's VPX has not connected to Castcade yet (a); `peers`: nothing heard from `waitingFor` yet (b). */
+  why: 'fork' | 'peers' | null;
+  waitingFor: string[];
 }
 
 export interface Stream3dStatus {
@@ -345,10 +390,31 @@ export class Stream3d {
   private readonly logged = new Map<string, string>();
   private readonly watchTimeoutMs: number;
   private readonly playWaitMs: number;
+  private readonly startWaitMs: number;
+  private readonly forkHelloWaitMs: number;
+  // ---- I11.4.9: the first start waits for the 3D connection ----
+  /** The match has not started yet (the shell's word): only then is anything waited for. */
+  private gate = false;
+  /** A match table was started in the Castcade VPX build and that VPX has not been `ready` since. */
+  private expecting = false;
+  /** When this PC's table opened (the shell's word); null: it is not open. */
+  private tableOpenAt: number | null = null;
+  /** When each other player came into this match on this PC (`setPeers`): with `tunnelAt`, when connecting to them began. */
+  private readonly peerSince = new Map<string, number>();
+  /** When this match's data connections opened on this PC, and how long after that each PC was first heard from. */
+  private tunnelAt: number | null = null;
+  private readonly heardAfter = new Map<string, number>();
+  private tunnelBroken = false;
+  private noPath: string[] = [];
+  private waitTimer: unknown = null;
+  /** What the log last said this PC is waited for (`` : nothing). */
+  private waitSaid = '';
 
   constructor(private readonly d: Stream3dDeps) {
     this.watchTimeoutMs = d.watchTimeoutMs ?? WATCH_TIMEOUT_MS;
     this.playWaitMs = d.playWaitMs ?? PLAY_WAIT_MS;
+    this.startWaitMs = d.startWaitMs ?? START_WAIT_MS;
+    this.forkHelloWaitMs = d.forkHelloWaitMs ?? FORK_HELLO_WAIT_MS;
   }
 
   // ---- the shell ----
@@ -365,6 +431,9 @@ export class Stream3d {
     const next = [...new Set(ids)];
     if (next.length === this.peers.length && next.every((id, i) => id === this.peers[i])) return;
     this.peers = next;
+    const at = this.clock();
+    for (const id of next) if (!this.peerSince.has(id)) this.peerSince.set(id, at);
+    for (const id of [...this.peerSince.keys()]) if (!next.includes(id)) this.peerSince.delete(id);
     for (const id of [...this.caps.keys()]) if (!next.includes(id)) this.caps.delete(id);
     for (const id of [...this.logged.keys()]) if (!next.includes(id)) this.logged.delete(id);
     for (const id of [...this.capsRate.keys()]) if (!next.includes(id)) this.forgetCapsRate(id);
@@ -374,6 +443,8 @@ export class Stream3d {
   /** What `peer`'s PC said over the tunnel (`encodeCaps`), or null: its channel closed. */
   peerCaps(peer: string, text: string | null): void {
     const c = decodeCaps(text);
+    // I11.4.9: how long the connection to that PC took, from this PC's data connections opening to its first word.
+    if (c !== null && this.tunnelAt !== null && !this.heardAfter.has(peer) && this.peers.includes(peer)) this.heardAfter.set(peer, Math.max(0, this.clock() - this.tunnelAt));
     const was = this.caps.get(peer) ?? null;
     // Never the text itself in the log: it is whatever the other PC chose to send, at whatever rate.
     if (c === null && text !== null) this.logQuietly(`caps ${peer}`, `${this.name(peer)}'s PC said something about its VPX this Castcade cannot read (${text.length} characters); taken as nothing said`);
@@ -446,9 +517,17 @@ export class Stream3d {
     this.turn = null;
     this.failed = null;
     this.peers = [];
+    this.peerSince.clear();
     this.caps.clear();
     this.logged.clear();
     for (const id of [...this.capsRate.keys()]) this.forgetCapsRate(id);
+    // I11.4.9: nothing is waited for outside a match's lobby, and nothing is known of this match's tunnel.
+    this.gate = false;
+    this.expecting = false;
+    this.tunnelAt = null;
+    this.tunnelBroken = false;
+    this.noPath = [];
+    this.heardAfter.clear();
     this.sync();
     this.retell();
     for (const w of [...this.waiters]) this.settle(w, false);
@@ -459,6 +538,127 @@ export class Stream3d {
     this.toldCaps = null;
     this.toldPort = undefined;
     this.publish();
+  }
+
+  /**
+   * I11.4.9: this match's data connections opened on this PC just now (`retell` follows): the time each other PC takes
+   * to be heard from is counted from here.
+   */
+  tunnelOpened(): void {
+    this.tunnelAt = this.clock();
+    this.tunnelBroken = false;
+    this.noPath = [];
+    this.heardAfter.clear();
+    this.retell();
+    this.changed();
+  }
+
+  // ---- I11.4.9: the first start ----
+
+  /** The match has not started yet (the lobby before game 1): only then does `startWait` ever say `pending`. */
+  setStartGate(on: boolean): void {
+    if (on === this.gate) return;
+    this.gate = on;
+    this.changed();
+  }
+
+  /** A match table was just started in the Castcade VPX build: its VPX is expected on the control connection. */
+  forkLaunched(): void {
+    if (this.link === 'ready' || this.link === 'version') return;
+    this.expecting = true;
+    this.changed();
+  }
+
+  /** The Castcade VPX build that was started did not come up (it ended, or reported a start error): nothing is expected. */
+  forkGone(): void {
+    if (!this.expecting) return;
+    this.expecting = false;
+    this.changed();
+  }
+
+  /** Whether a table is open on this PC (the witness's reading): the limit of a wait for this PC's VPX runs from then. */
+  setTableOpen(open: boolean): void {
+    if (open === (this.tableOpenAt !== null)) return;
+    this.tableOpenAt = open ? this.clock() : null;
+    this.changed();
+  }
+
+  /** What the tunnel says of its own state: broken for good (its page), and the players it found no path to. */
+  setTunnel(t: { broken: boolean; noPath: readonly string[] }): void {
+    const next = [...t.noPath].sort();
+    if (t.broken === this.tunnelBroken && next.length === this.noPath.length && next.every((id, i) => id === this.noPath[i])) return;
+    this.tunnelBroken = t.broken;
+    this.noPath = next;
+    this.changed();
+  }
+
+  /** When this PC began connecting to `peer`: its data connections open and the player in the match, whichever came later. */
+  private connectingSince(peer: string): number {
+    return Math.max(this.tunnelAt ?? -Infinity, this.peerSince.get(peer) ?? this.clock());
+  }
+
+  /** Whether the match's first start should wait for this PC now (the rule is in the header). */
+  startWait(): StartWait {
+    const none: StartWait = { pending: false, until: null, why: null, waitingFor: [] };
+    if (!this.gate || this.setting !== 'auto') return none;
+    const now = this.clock();
+    if (this.link === 'ready') {
+      if (this.tunnelBroken) return none;
+      const unknown = this.peers.filter((id) => !this.caps.has(id) && !this.noPath.includes(id) && now < this.connectingSince(id) + this.startWaitMs);
+      if (unknown.length === 0) return none;
+      return { pending: true, until: Math.max(...unknown.map((id) => this.connectingSince(id) + this.startWaitMs)), why: 'peers', waitingFor: unknown };
+    }
+    // A VPX nobody started for this match that is between its `hello` and its first `state playing` is ready in a moment.
+    if (this.link === 'version' || !this.expecting) return none;
+    const until = this.tableOpenAt === null ? null : this.tableOpenAt + this.forkHelloWaitMs;
+    if (until !== null && now >= until) return none;
+    return { pending: true, until, why: 'fork', waitingFor: [] };
+  }
+
+  /** The log's lines about the wait (it began, it ended and why), and the timer that ends it at its limit. */
+  private syncWait(): void {
+    const w = this.startWait();
+    if (this.waitTimer !== null) this.d.clearTimeout(this.waitTimer);
+    this.waitTimer = null;
+    const now = this.clock();
+    // The next moment the answer changes by the clock alone: the limit of a player this PC waits for, or of its own VPX.
+    const next = w.why === 'peers' ? Math.min(...w.waitingFor.map((id) => this.connectingSince(id) + this.startWaitMs)) : w.until;
+    if (w.pending && next !== null) {
+      this.waitTimer = this.d.setTimeout(() => {
+        this.waitTimer = null;
+        this.changed();
+      }, Math.max(0, next - now) + 1);
+    }
+    const names = (ids: readonly string[]): string => ids.map((id) => this.name(id)).join(', ');
+    const said = w.pending ? `${w.why}:${w.waitingFor.join(',')}` : '';
+    if (said === this.waitSaid) return;
+    const was = this.waitSaid;
+    this.waitSaid = said;
+    const secs = Math.round(this.startWaitMs / 1000);
+    const forkSecs = Math.round(this.forkHelloWaitMs / 1000);
+    if (w.pending) {
+      this.log(
+        w.why === 'fork'
+          ? `the match's start waits for this PC: its Castcade VPX build has not connected to Castcade yet (${forkSecs} s at most once the table is open)`
+          : `the match's start waits for the 3D connection to ${names(w.waitingFor)}: nothing heard from ${w.waitingFor.length > 1 ? 'their PCs' : 'that PC'} yet (${w.until !== null ? Math.max(0, Math.ceil((w.until - now) / 1000)) : secs} s at most)`,
+      );
+      return;
+    }
+    if (was === '') return;
+    const heard = [...this.heardAfter].map(([id, ms]) => `${this.name(id)} ${(ms / 1000).toFixed(1)} s`).join(', ');
+    const after = heard ? ` (heard from, after this PC's data connections opened: ${heard})` : '';
+    const unknown = this.peers.filter((id) => !this.caps.has(id));
+    const late = unknown.filter((id) => !this.noPath.includes(id));
+    let why: string;
+    if (!this.gate) why = `the match started or the lobby is gone${unknown.length > 0 ? `, with nothing heard yet from ${names(unknown)}: they are shown in the 2D video until their PC is heard from` : ''}`;
+    else if (this.setting !== 'auto') why = '3D watch was turned off on this PC';
+    else if (this.link === 'version') why = 'its Castcade VPX build speaks another version of the control connection';
+    else if (this.link !== 'ready') why = this.expecting ? `${forkSecs} s passed since the table opened and its Castcade VPX build has not connected to Castcade (a build from before the 3D watch in a match does not): the match starts with the 2D video on this PC` : 'the Castcade VPX build is not coming (it ended, or did not start)';
+    else if (this.tunnelBroken) why = "this PC's data connections are not working";
+    else if (unknown.length === 0) why = `this PC's 3D connections are settled${after}`;
+    else if (late.length > 0) why = `${secs} s passed since this PC began connecting to ${names(late)} and nothing was heard from ${late.length > 1 ? 'their PCs' : 'that PC'}: the first turn may be the 2D video`;
+    else why = `the data connection to ${names(unknown)} found no path: the 2D video serves`;
+    this.log(`the match's start no longer waits for this PC: ${why}`);
   }
 
   /** The fork is, or is being sent, away from its own table: the turn lock waits for it (`whenPlaying`). */
@@ -586,7 +786,12 @@ export class Stream3d {
   }
 
   private changed(): void {
+    this.syncWait();
     this.d.onChange();
+  }
+
+  private clock(): number {
+    return (this.d.now ?? Date.now)();
   }
 
   private ownFor(): DecideInput['own'] {
@@ -608,6 +813,7 @@ export class Stream3d {
     }
     if (l.version !== CONTROL_VERSION) {
       this.link = 'version';
+      this.expecting = false;
       this.log(`VPX speaks version ${l.version} of the control connection and this Castcade version ${CONTROL_VERSION}: no 3D on this PC until both are updated; the 2D video serves`);
       this.sync();
       return;
@@ -623,6 +829,7 @@ export class Stream3d {
     if (this.link === 'helloed') {
       // The first line after hello: the fork is on its own table and takes commands from here on.
       this.link = 'ready';
+      this.expecting = false;
       this.forkState = 'playing';
       this.aimed = null;
       this.watchOut = false;

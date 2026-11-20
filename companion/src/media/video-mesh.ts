@@ -26,6 +26,7 @@
  *     next match; the shell stops it at quit).
  * Nothing here ever blocks a match: the status says what the helper is doing; the Electron path serves the rest.
  */
+import { maskAddresses } from './log-mask.js';
 import type { MatchPlayerId, MediaSignal, NativeVideoRung, NativeVideoRungState, NativeVideoStats, NativeVideoStatus, TheaterPath } from './match-media-types.js';
 import type { IceServer } from './media-settings.js';
 import { isPolite } from './rtc-signaling.js';
@@ -144,7 +145,8 @@ export function initiates(localId: MatchPlayerId, remoteId: MatchPlayerId): bool
  * an object with `local` / `remote` (each a string type or `{type}`); either becomes `local↔remote`. Null when none.
  */
 export function pairWords(pair: unknown): string | null {
-  if (typeof pair === 'string') return pair.trim() ? pair.replace(/<->|->|-/, '↔') : null;
+  // Types only: a string that carried an address would go to the Match tab and the log (`maskAddresses`).
+  if (typeof pair === 'string') return pair.trim() ? maskAddresses(pair).replace(/<->|->|-/, '↔') : null;
   if (typeof pair !== 'object' || pair === null) return null;
   const p = pair as { local?: unknown; remote?: unknown };
   const side = (v: unknown): string | null => (typeof v === 'string' ? v : typeof v === 'object' && v !== null && typeof (v as { type?: unknown }).type === 'string' ? (v as { type: string }).type : null);
@@ -256,7 +258,9 @@ const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
 const sourceBox = (s: VideoSource): { width: number; height: number; fps: number } => (s.kind === 'none' ? { width: 0, height: 0, fps: 0 } : { width: s.width, height: s.height, fps: s.fps });
 
 export function createVideoMesh(o: VideoMeshOptions): VideoMesh {
-  const { helper, localId, log } = o;
+  const { helper, localId } = o;
+  // No address in companion.log: these lines carry what the native helper's events say (a pair, a reason).
+  const log = (line: string): void => o.log(maskAddresses(line));
   const later = o.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
   const cancel = o.clearTimeout ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const listeners = new Set<(s: NativeVideoStatus) => void>();
