@@ -689,6 +689,14 @@ export interface LiveSupport {
    * game-over lamp and last-game scores (B10.2, `ballyLiveInputs`). Null when not readable.
    */
   via: 'game_state' | 'sam_end_counter' | 'bally_lamp' | null;
+  /**
+   * C18: live mode can tell when a ball ends on this machine. Only the `game_state` way can: the ball in play and the
+   * player up are in NVRAM and the detector derives a ball end from them. Stern SAM (`sam_end_counter`) and Bally /
+   * Stern M100 (`bally_lamp`) keep both in CPU RAM: their games start and end in the journal, with the scores in
+   * between, and no ball end is ever derived. A match must not be told otherwise (the owner's Spider-Man Vault
+   * Edition, 2026-11-21: "the table can report ball ends", then every turn passed by hand).
+   */
+  ballEnds: boolean;
   /** Live fields the map does not describe at all. */
   absent: string[];
   /** Live fields the map puts outside the NVRAM region, where the hook never sees them (CPU RAM). */
@@ -707,7 +715,7 @@ export interface LiveSupport {
  * descriptor (player 1's score for `scores`). `null` = no map for the ROM.
  */
 export function liveSupport(map: CompiledMap | null): LiveSupport {
-  if (!map) return { readable: false, via: null, absent: [...LIVE_FIELDS], outside: [], reason: 'no NVRAM map for this ROM' };
+  if (!map) return { readable: false, via: null, ballEnds: false, absent: [...LIVE_FIELDS], outside: [], reason: 'no NVRAM map for this ROM' };
   const inNvram = nvramTest(map);
   const absent: string[] = [];
   const outside: string[] = [];
@@ -716,17 +724,31 @@ export function liveSupport(map: CompiledMap | null): LiveSupport {
     if (!first) absent.push(field);
     else if (!inNvram(first)) outside.push(field);
   }
-  if (absent.length === 0 && outside.length === 0) return { readable: true, via: 'game_state', absent, outside, reason: 'live fields in NVRAM' };
+  if (absent.length === 0 && outside.length === 0) return { readable: true, via: 'game_state', ballEnds: true, absent, outside, reason: 'live fields in NVRAM' };
   if (map.platform.name === 'stern-sam' && !absent.includes('scores') && !outside.includes('scores') && samEndCounter(map) !== null) {
-    return { readable: true, via: 'sam_end_counter', absent, outside, reason: 'Stern SAM: scores and the end-of-game record in NVRAM' };
+    return { readable: true, via: 'sam_end_counter', ballEnds: false, absent, outside, reason: 'Stern SAM: scores and the end-of-game record in NVRAM' };
   }
   if (ballyLiveInputs(map) !== null) {
-    return { readable: true, via: 'bally_lamp', absent, outside, reason: `${map.platform.name}: scores, the game-over lamp and the last-game scores in NVRAM (unverified)` };
+    return { readable: true, via: 'bally_lamp', ballEnds: false, absent, outside, reason: `${map.platform.name}: scores, the game-over lamp and the last-game scores in NVRAM (unverified)` };
   }
   const parts: string[] = [];
   if (outside.length > 0) parts.push(`${outside.join(', ')} in CPU RAM`);
   if (absent.length > 0) parts.push(`no ${absent.join(', ')} in the map`);
-  return { readable: false, via: null, absent, outside, reason: `${map.platform.name}: ${parts.join('; ')}` };
+  return { readable: false, via: null, ballEnds: false, absent, outside, reason: `${map.platform.name}: ${parts.join('; ')}` };
+}
+
+/**
+ * C18: why no ball end is read on a machine live mode does follow (`liveSupport`: readable, `ballEnds` false), in the
+ * words a match lobby shows after "Your table cannot report ball ends: ". Null when ball ends are read, or when the
+ * machine is not followed at all (that case has its own sentence, `unreadableNote`).
+ */
+export function noBallEndsReason(support: LiveSupport): string | null {
+  if (!support.readable || support.ballEnds) return null;
+  const missing = [...support.outside, ...support.absent];
+  const fields = [missing.includes('current_ball') ? 'the ball in play' : null, missing.includes('current_player') ? 'the player up' : null].filter((x): x is string => x !== null);
+  const what = fields.length > 0 ? fields.join(' and ') : 'what a ball end is read from';
+  const family = support.via === 'sam_end_counter' ? 'Stern SAM' : 'this machine';
+  return `on ${family} ${what} ${fields.length === 2 ? 'are' : 'is'} out of Castcade's reach (CPU RAM). The scores and the end of the game are read, the end of a ball is not; the host passes each turn by hand (Pass the turn)`;
 }
 
 export function decodeHighScores(map: CompiledMap, nv: Uint8Array): HighScore[] {

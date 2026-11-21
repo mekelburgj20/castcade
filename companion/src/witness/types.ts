@@ -150,6 +150,18 @@ export interface WitnessStatus {
   note?: string | null;
   /** How the open table's games are captured: `live` (hook journal, every game) or `basic` (`.nv` at close); null with no table. */
   captureMode: 'live' | 'basic' | null;
+  /**
+   * C18: whether the open table's ball ends reach the companion, which is what a match's turns need. `captureMode`
+   * does not say it: a Stern SAM or a Bally / Stern M100 machine is `live` (its scores and its game end are read from
+   * the journal) and gives no ball end (`liveSupport().ballEnds`). False in basic mode and on such a machine; true
+   * when the journal carries them; null with no table open, and in live mode until the recipe and the ROM are known.
+   */
+  ballEnds?: boolean | null;
+  /**
+   * C18: with `captureMode: 'live'` and `ballEnds: false`, why, worded to follow "Your table cannot report ball
+   * ends: " in a match lobby (`noBallEndsReason`). Null otherwise; basic mode says why in `note`.
+   */
+  ballEndsNote?: string | null;
   /** The game in progress on a limited-attempts board (live mode only); null otherwise. */
   attempt: AttemptStatus | null;
   /**
