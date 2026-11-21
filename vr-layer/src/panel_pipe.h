@@ -31,7 +31,12 @@
 //       Optional in that object, for tuning the placement without a new layer: "offset": [right, up, ahead] (metres from
 //       the head; `right` is mirrored for the left corner) and "widthM"; absent = the layer's own (layer.cpp);
 //       A protocol-3 layer would take CVB1 for a message of `width` bytes and lose its place in the stream, so the
-//       companion sends it only after a hello of 4 or more;
+//       companion sends it only after a hello of 4 or more. Protocol 5 (layer 0.8.0, D8.12.3), two more optional keys
+//       in that object: "anchor": "room" (the quad stands at a fixed place in the room, captured from the head's pose
+//       the first time it is shown so in a session, instead of in the corner of the view; absent or anything else =
+//       head-locked, as protocol 4) and "place": true (a request, never a state, like "report": capture the place
+//       again now, where the head points). With the anchor, "offset" is measured from where the head was at the
+//       capture, in the level frame of its yaw. A protocol-4 layer leaves both keys unread and keeps the corner;
 //     any other magic: u32 byteLength + payload, skipped (every message after protocol 2 is shaped so).
 #pragma once
 
@@ -49,8 +54,11 @@ constexpr const wchar_t* kPanelPipeName = L"\\\\.\\pipe\\castcade-panel";
 // hello and drops the client on any magic but CVO1, so the companion sends CVC1 / CVO2 only after a hello of 2 or more;
 // a protocol-3 layer (D7.5) also sends CVF1 / CVS1, which a protocol-2 companion never reads (they sit in its socket).
 // Protocol 4 (D8.12, layer 0.7.0): the layer takes CVB1 scoreboard frames and the control's "scoreboard"; a protocol-3
-// companion sends neither, and gets exactly what a protocol-3 layer gave it.
-constexpr uint32_t kPipeProtocol = 4;
+// companion sends neither, and gets exactly what a protocol-3 layer gave it. Protocol 5 (D8.12.3, layer 0.8.0): no new
+// message, two keys in the control's "scoreboard" ("anchor", "place"); the number tells the companion that the layer
+// in VPX reads them (it offers "place it again" only then). A protocol-4 companion sends neither and gets the
+// head-locked corner exactly as a protocol-4 layer drew it.
+constexpr uint32_t kPipeProtocol = 5;
 
 // No frame of a stream for this long → that stream is not live (the companion re-sends its last frame every 2 s while
 // the picture is still, so a gap this long means it stopped feeding; the SteamVR helper hides on the same rule). With
@@ -146,6 +154,10 @@ struct Control {
   bool scoreboardPlaced = false;
   float scoreboardOffset[3] = {0.0f, 0.0f, 0.0f};
   float scoreboardWidthM = 0.0f;
+  // D8.12.3 (layer 0.8.0, protocol 5), the scoreboard object's "anchor": "room": the quad stands in the room (LOCAL
+  // space) at a place captured from the head (layer.cpp placeScoreboard) instead of in the corner of the view. Absent
+  // or anything else (a protocol-4 companion; "follows my head") = false: head-locked, exactly as 0.7.0.
+  bool scoreboardRoom = false;
 };
 constexpr float kScoreboardOffsetMin[3] = {0.0f, -1.0f, 0.3f};
 constexpr float kScoreboardOffsetMax[3] = {2.0f, 2.0f, 5.0f};
@@ -180,6 +192,14 @@ bool panelPipeSend(const uint8_t* data, size_t length);
 // D7.6.2: goes up by one on every new connection (after the hello) and every control with "report": true; the render
 // thread sends the session report whenever it differs from the value at its last report.
 uint32_t panelPipeReportSerial();
+
+// D8.12.3: goes up by one on every control whose "scoreboard" carries "place": true ("place it again"); the render
+// thread captures the scoreboard's place from the head whenever it differs from the value at its last look.
+uint32_t panelPipeScoreboardPlaceSerial();
+
+// D8.12.3: the control's "scoreboard" read into `c` (its scoreboard fields only; nothing is stored or logged): what
+// applyControl does with that key. True when the object carries "place": true. Here for tools/scoreboard_place_test.cpp.
+bool panelPipeReadScoreboard(const std::string& body, Control& c);
 
 // D7.6.2: a companion is connected now (a write may succeed).
 bool panelPipeConnected();

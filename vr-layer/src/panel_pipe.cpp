@@ -67,6 +67,8 @@ State& state() {
 std::atomic<uint64_t> g_lastFrameAt[kStreamCount];
 // D7.6.2: connections plus report requests so far (panelPipeReportSerial).
 std::atomic<uint32_t> g_reportSerial{0};
+// D8.12.3: "place it again" requests so far (panelPipeScoreboardPlaceSerial).
+std::atomic<uint32_t> g_scoreboardPlaceSerial{0};
 
 uint32_t le32(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |
@@ -287,18 +289,21 @@ float jsonFeather(const std::string& body) {
 // D8.12: "scoreboard" in the control: {"corner": "top-right" | "top-left"} → on, in that corner (anything but
 // "top-left", or no corner: top-right); absent, null or not an object → off. Optional "offset": [right, up, ahead]
 // (three finite numbers, each clamped to its range; anything else = the layer's own placement) and "widthM" (a
-// finite number above 0, clamped; anything else = the layer's own width).
-void jsonScoreboard(const std::string& body, Control& c) {
-  c.scoreboard = c.scoreboardLeft = c.scoreboardPlaced = false;
+// finite number above 0, clamped; anything else = the layer's own width). D8.12.3 (protocol 5): "anchor": "room" → in
+// the room (anything else, or no anchor: head-locked, as a protocol-4 companion's control always is); returns whether
+// the object carries "place": true (a request to capture the place again; never part of the state).
+bool jsonScoreboard(const std::string& body, Control& c) {
+  c.scoreboard = c.scoreboardLeft = c.scoreboardPlaced = c.scoreboardRoom = false;
   c.scoreboardOffset[0] = c.scoreboardOffset[1] = c.scoreboardOffset[2] = 0.0f;
   c.scoreboardWidthM = 0.0f;
   const size_t i = valueAt(body, "scoreboard");
-  if (i == std::string::npos || i >= body.size() || body[i] != '{') return;
+  if (i == std::string::npos || i >= body.size() || body[i] != '{') return false;
   const size_t end = body.find('}', i);
-  if (end == std::string::npos) return;
+  if (end == std::string::npos) return false;
   const std::string obj = body.substr(i, end - i + 1);
   c.scoreboard = true;
   c.scoreboardLeft = jsonString(obj, "corner") == "top-left";
+  c.scoreboardRoom = jsonString(obj, "anchor") == "room";
   double at[3] = {0.0, 0.0, 0.0};
   const size_t o = valueAt(obj, "offset");
   if (o != std::string::npos && jsonNumbers(obj, o, at, 3) == 3 && std::isfinite(at[0]) && std::isfinite(at[1]) && std::isfinite(at[2])) {
@@ -309,6 +314,7 @@ void jsonScoreboard(const std::string& body, Control& c) {
   double w = 0.0;
   if (jsonNumber(obj, "widthM", w) && std::isfinite(w) && w > 0.0)
     c.scoreboardWidthM = static_cast<float>(w < kScoreboardWidthMinM ? kScoreboardWidthMinM : w > kScoreboardWidthMaxM ? kScoreboardWidthMaxM : w);
+  return jsonTrue(obj, "place");
 }
 
 // `v` with `places` decimals for a log line, locale-free (std::to_string and printf's %f follow the process's locale,
@@ -404,7 +410,7 @@ void applyControl(const std::string& body) {
   // D10.2: likewise, a control without "video" means theater takes CVO2 frames.
   c.videoRing = jsonVideoRing(body);
   // D8.12: likewise, a control without "scoreboard" means none.
-  jsonScoreboard(body, c);
+  const bool scoreboardPlace = jsonScoreboard(body, c);
   bool scoreboardChanged = false;
   bool changed = false, cameraChanged = false, testChanged = false, eyesChanged = false, tuneChanged = false, featherChanged = false, videoRingChanged = false;
   {
@@ -419,16 +425,23 @@ void applyControl(const std::string& body) {
     videoRingChanged = st.control.videoRing != c.videoRing;
     scoreboardChanged = st.control.scoreboard != c.scoreboard || st.control.scoreboardLeft != c.scoreboardLeft || st.control.scoreboardPlaced != c.scoreboardPlaced ||
                         st.control.scoreboardWidthM != c.scoreboardWidthM || st.control.scoreboardOffset[0] != c.scoreboardOffset[0] ||
-                        st.control.scoreboardOffset[1] != c.scoreboardOffset[1] || st.control.scoreboardOffset[2] != c.scoreboardOffset[2];
+                        st.control.scoreboardOffset[1] != c.scoreboardOffset[1] || st.control.scoreboardOffset[2] != c.scoreboardOffset[2] ||
+                        st.control.scoreboardRoom != c.scoreboardRoom;
     st.control = c;
   }
   if (scoreboardChanged) {
     logLine(c.scoreboard ? std::string("pipe: scoreboard asked, ") + (c.scoreboardLeft ? "top left" : "top right") + " (drawn in hidden and theater)" +
+                               (c.scoreboardRoom ? ", fixed in the room" : "") +
                                (c.scoreboardPlaced ? ", centre " + fixed(c.scoreboardOffset[0], 2) + " m to the side, " + fixed(c.scoreboardOffset[1], 2) + " m up, " +
                                                          fixed(c.scoreboardOffset[2], 2) + " m ahead"
                                                    : std::string()) +
                                (c.scoreboardWidthM > 0.0f ? ", " + fixed(c.scoreboardWidthM, 2) + " m wide" : std::string())
                          : std::string("pipe: scoreboard off"));
+  }
+  // D8.12.3: a request, not a state (as "report" below): every control that carries it asks again.
+  if (scoreboardPlace) {
+    g_scoreboardPlaceSerial.fetch_add(1);
+    logLine("pipe: the companion asked to place the scoreboard again, where the head points");
   }
   if (videoRingChanged) {
     logLine(c.videoRing.empty() ? std::string("pipe: theater video from the pipe (CVO2)") : "pipe: theater video from the recv ring '" + c.videoRing + "'");
@@ -657,6 +670,10 @@ bool panelPipeSend(const uint8_t* data, size_t length) {
 }
 
 uint32_t panelPipeReportSerial() { return g_reportSerial.load(); }
+
+uint32_t panelPipeScoreboardPlaceSerial() { return g_scoreboardPlaceSerial.load(); }
+
+bool panelPipeReadScoreboard(const std::string& body, Control& c) { return jsonScoreboard(body, c); }
 
 bool panelPipeConnected() {
   std::lock_guard<std::mutex> lk(state().m);
