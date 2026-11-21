@@ -207,3 +207,19 @@ jobs:
           ls -la witness
           if [ -e witness/latest.yml ]; then echo 'the Witness artifact holds a latest.yml'; exit 1; fi
           gh release upload "$GITHUB_REF_NAME" --clobber --repo "$GITHUB_REPOSITORY"             witness/Castcade-Witness-Setup-*.exe             witness/Castcade-Witness-Setup-*.exe.blockmap             witness/witness.yml
+      # Last, so that a failure here leaves a complete release. Whichever tag workflow creates the release writes one
+      # generic line; this replaces it once both installers are there.
+      - name: Say on the release page which installer is which
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          {
+            echo "Two installers; pick one. Either installs over the other and keeps your pairing."
+            echo
+            echo "- **Castcade-Setup-$v.exe**: the full app (Arcaid Witness scoring, matches, voice, VR streaming)."
+            echo "- **Castcade-Witness-Setup-$v.exe**: the Witness alone, for cabinets and tournament scoring."
+            echo
+            echo "Guides: docs/tester-kit.md, and docs/tester-kit-cabinet.md for a cabinet. Unsigned proof of concept."
+          } > notes.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

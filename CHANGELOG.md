@@ -7,8 +7,15 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.47] — 2026-11-20
+
 Protocol 6 is unchanged: this build and 0.2.46 play a match together (a 0.2.46 host does not wait for the 3D
-connections, and a 0.2.46 client is not waited for).
+connections, and a 0.2.46 client is not waited for). The first release with two installers: `Castcade-Setup-0.2.47.exe`
+is the full app as before, `Castcade-Witness-Setup-0.2.47.exe` is the Witness alone (E10, below); the release page says
+which is which. For an installed 0.2.46 this is the first update that is offered and installs in sight (E9). The
+layer, the native helpers and the hook library (0.6.0) are as in 0.2.46. Released on the owner's word; no Witness
+installer had been run on a PC that the tracker knows of (E10.3), and the jobs that publish it ran for the first time
+with this tag.
 
 ### Added
 
@@ -45,6 +52,12 @@ connections, and a 0.2.46 client is not waited for).
   and `--smoke` name it (`edition witness` / `edition full`). The full installer and the full app are unchanged.
   `main/edition.ts`, `main/edition-leftovers.ts`, `electron-builder.witness.yml`, `build/installer-witness.nsh`,
   `.github/workflows/release.yml` (jobs `witness` and `witness-publish`), `npm run dist:win:witness` / `pack:dir:witness`.
+
+### Changed
+
+- **The release page says which installer is which.** Once both installers are on a release, its notes name the full
+  app and the Witness edition by file name and point at the two tester kits. `.github/workflows/release.yml` (job
+  `witness-publish`).
 
 ### Fixed
 
