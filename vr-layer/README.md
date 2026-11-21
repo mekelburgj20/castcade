@@ -5,8 +5,9 @@ OpenXR API layer: the OpenXR loader puts it between VPinballX and the OpenXR run
 submits by the mode the companion asks for: **hidden** (VPX's frame untouched: the player's own turn), **panel** (the
 match panel as a head-locked quad, low in the view) or **theater** (VPX's own world removed; the opponent's video fixed
 in the room: a life-size stereo window onto the sender's view when the sender's VR preview shows both eyes, else a large
-screen). Since 0.7.0 (D8.12) it also draws the **scoreboard**, a small head-locked quad in a top corner of the view, in
-hidden and theater ("The scoreboard" below). The companion side is
+screen). Since 0.7.0 (D8.12) it also draws the **scoreboard**, a small quad in hidden and theater: fixed at a place in
+the room since 0.8.0 (D8.12.3), or head-locked in a top corner of the view as 0.7.0 drew it ("The scoreboard" below).
+The companion side is
 `companion/src/media/vr-layer.ts`; it registers the layer and feeds it over a named pipe.
 
 Why a layer and not the SteamVR helper (`vr-overlay/`): on the owner's rig and Krobs', VPX
@@ -24,6 +25,10 @@ cmake -B build -A x64            # the newest Visual Studio generator; MSVC x64
 cmake --build build --config Release
 # → build/Release/XrApiLayer_castcade_panel.dll, XrApiLayer_castcade_panel.json, THIRD-PARTY.md
 ```
+
+The build also makes and runs `scoreboard_place_test.exe` (0.8.0, D8.12.3; `tools/scoreboard_place_test.cpp`): the
+checks of the scoreboard's place in the room that need no headset (the pose maths of `src/scoreboard_place.h`, the
+reading of the control's `scoreboard` object). A failed check fails the build. It is never shipped, like `ring_feed.exe`.
 
 Static CRT (`/MT`), `/O2` with link-time code generation. CI (`.github/workflows/vr-layer.yml`) is the build of record:
 it uploads the three files as the artifact `castcade-vr-layer-win-x64` on every change here, and on a `v*` tag attaches
@@ -109,7 +114,7 @@ create a short-lived session on its own D3D11 or Vulkan device before VPX's firs
 "not supported, this session passes through", which is expected. `XR_LOADER_DEBUG=all` in VPX's environment makes the
 loader itself print what it found.
 
-## The pipe (protocol 4, D8.12; protocol 3, D7.5; protocol 2, D7.4)
+## The pipe (protocol 5, D8.12.3; protocol 4, D8.12; protocol 3, D7.5; protocol 2, D7.4)
 
 `\\.\pipe\castcade-panel`, byte mode, one client at a time, local clients only. Little-endian throughout. The pipe is
 overlapped on the layer's side since D7.5 (the camera's worker writes while the reader thread waits for the companion;
@@ -117,13 +122,13 @@ on a synchronous handle Windows would queue the write behind the read).
 
 | Direction | Magic | Then | Meaning |
 |---|---|---|---|
-| layer → companion, once on connect | `CVH1` | u32 protocol (4) | hello; a protocol-1 layer (0.2.26) sends none |
+| layer → companion, once on connect | `CVH1` | u32 protocol (5) | hello; a protocol-1 layer (0.2.26) sends none |
 | layer → companion (protocol 3) | `CVF1` | u32 byteLength, then u16 jsonLength, the UTF-8 JSON header, the eyes' JPEG payloads back to back | a camera frame ("The camera" below) |
 | layer → companion (protocol 3) | `CVS1` | u32 byteLength, UTF-8 JSON | the camera's state: `{"camera": "on"\|"off"\|"refused", "why": "<text>"}`, on `on` also `"api"`, `"source": [w, h]` (the eye render), `"size": [w, h]` (per eye, as sent), `"fps"`, `"whole"` (layer 0.5.2: true when the whole render is sent), `"eye": "left"\|"right"` (layer 0.5.3, D8.1: only when one eye is sent; absent for both), `"ring": "<token>"`, `"ringState": "ok"\|"failed"` and, failed, `"ringWhy"` (layer 0.6.0, D10.2: only when a ring was asked; "The rings" below); or (D7.6.2, layer 0.5.0) `{"kind": "session", ...}`: the session report ("The session report" below) |
 | companion → layer | `CVO1` | u32 width, height, byteLength (= w·h·4), BGRA top-down | a panel frame: the panel page's paint (960x640), the SteamVR helper's stdin format |
 | companion → layer | `CVO2` | same header, **RGBA** top-down | a video frame: the opponent's feed (at most 1920x1080; side by side at most 3840x1080) |
 | companion → layer (protocol 4) | `CVB1` | the header of `CVO1`, BGRA top-down | a scoreboard frame: the scoreboard page's paint (512x384, transparent around the card; layer 0.7.0, D8.12, "The scoreboard" below) |
-| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it). Layer 0.5.2, the window's frame (all optional; absent = as before): `"camera": {…, "whole": true}` (D7.5.10: each eye's whole render scaled into the box, no crop; the frame header's `rect` is then `[0, 0, render w, render h]`), `"tune": {"depthM": <m> \| null, "dyDeg": [left, right]}` (D7.5.9 / D7.6.10: the distance the stereo window's frame is placed at, 0.3–100 m, null or 0 = infinity as before; and a vertical offset per eye in degrees, ±10, that moves that eye's quad up or down; the calibration pattern follows both) and `"feather": <0–0.25>` (D7.5.11: the fraction of one eye's half width over which the side-by-side video window's alpha ramps from 0 at each edge to 1, so the frame fades into the black behind it; 0 = hard edges; the pattern, the mono screen and the panel are never feathered). Layer 0.5.3 (D8.1, ADR 0009): `"camera": {…, "eye": "left" \| "right"}` sends that one eye only (the frame header's `eyes` has one entry, one payload follows); absent or any other value = both eyes, as before. Layer 0.6.0 (D10.2): `"camera": {…, "ring": "<token>"}` publishes the eye as BGRA into the send ring instead of `CVF1` JPEG, and `"video": {"ring": "<token>"}` draws theater from the recv ring instead of `CVO2` ("The rings" below; absent = as before). Layer 0.7.0, protocol 4 (D8.12): `"scoreboard": {"corner": "top-right" \| "top-left"}` draws the scoreboard in that corner while the mode on screen is hidden or theater (absent or null = no scoreboard; the companion sends its whole control every time) |
+| companion → layer | `CVC1` | u32 byteLength (≤ 64 KiB), UTF-8 JSON | the control: `{"mode": "hidden"\|"panel"\|"theater", "stereo": "mono"\|"sbs", "panelPos": "low"\|"center"}`, optionally `"theaterScale": <number>` (D7.4.5; 0.25–4, default 1) and, protocol 3, `"camera": {"width": w, "height": h, "fps": f}` or `"camera": null` (D7.5: each eye in a w x h box at f fps, or no camera; a control without the key leaves it as it was) and `"report": true` (D7.6.2: send the session report now; a request, not a state, so the companion puts it on one control only), `"test": "pattern"` (D7.6.1: the calibration pattern; the companion sends its whole control every time, so a control without the key turns it off), `"eyes": [{"fov": [l, r, u, d], "rect": [x, y, w, h], "render": [w, h]}, …]` (D7.5.2, layer 0.5.1: the sender's two eyes, left then right, as its camera frames' headers carry them: fov in radians with OpenXR's signs, the crop taken inside the render with y from the top; the stereo window is then placed from the sender's crop in the sender's fov; absent or null = not known, and VPX's centre-crop rule places it). Layer 0.5.2, the window's frame (all optional; absent = as before): `"camera": {…, "whole": true}` (D7.5.10: each eye's whole render scaled into the box, no crop; the frame header's `rect` is then `[0, 0, render w, render h]`), `"tune": {"depthM": <m> \| null, "dyDeg": [left, right]}` (D7.5.9 / D7.6.10: the distance the stereo window's frame is placed at, 0.3–100 m, null or 0 = infinity as before; and a vertical offset per eye in degrees, ±10, that moves that eye's quad up or down; the calibration pattern follows both) and `"feather": <0–0.25>` (D7.5.11: the fraction of one eye's half width over which the side-by-side video window's alpha ramps from 0 at each edge to 1, so the frame fades into the black behind it; 0 = hard edges; the pattern, the mono screen and the panel are never feathered). Layer 0.5.3 (D8.1, ADR 0009): `"camera": {…, "eye": "left" \| "right"}` sends that one eye only (the frame header's `eyes` has one entry, one payload follows); absent or any other value = both eyes, as before. Layer 0.6.0 (D10.2): `"camera": {…, "ring": "<token>"}` publishes the eye as BGRA into the send ring instead of `CVF1` JPEG, and `"video": {"ring": "<token>"}` draws theater from the recv ring instead of `CVO2` ("The rings" below; absent = as before). Layer 0.7.0, protocol 4 (D8.12): `"scoreboard": {"corner": "top-right" \| "top-left"}` draws the scoreboard in that corner while the mode on screen is hidden or theater (absent or null = no scoreboard; the companion sends its whole control every time). Layer 0.8.0, protocol 5 (D8.12.3), two more optional keys in that object: `"anchor": "room"` (the quad stands at a fixed place in the room instead of in the corner of the view; absent or any other value = head-locked, as 0.7.0) and `"place": true` (capture that place again now, where the head points; a request like `report`, so the companion puts it on one control only) |
 | companion → layer | anything else | u32 byteLength, payload | skipped, logged once (every message after protocol 2 is shaped so) |
 
 Every layer → companion message after the hello is magic + u32 byteLength + payload too, so a companion skips what it
@@ -142,7 +147,11 @@ connection; a companion from before D7.6.2 logs it once as an unreadable `CVS1` 
 only `CVB1` and the control's `scoreboard`: a protocol-3 layer would read a `CVB1`'s width as a message length and lose
 its place in the stream, so the companion sends both only after a hello of 4 or more (a 0.6.0 layer gets byte for byte
 the controls it always got, and no scoreboard); a protocol-3 companion sends neither, and a 0.7.0 layer then draws
-exactly what 0.6.0 drew.
+exactly what 0.6.0 drew. Protocol 5 (D8.12.3) adds no message, only the scoreboard object's `anchor` and `place`. The
+companion sends them only after a hello of 5 or more, so a 0.7.0 layer (a VPX started before the update) gets byte for
+byte the protocol-4 control and keeps the scoreboard on the head (the companion says so once in its log, and its in-game
+menu greys out "Put the scoreboard where I look"); a protocol-4 companion sends neither key, and a 0.8.0 layer then
+draws the head-locked corner exactly as 0.7.0 did. Either side may be one version behind the other.
 
 ## The session report (layer 0.5.0, D7.6.2)
 
@@ -266,32 +275,63 @@ Log lines to read after the first run (`vr-layer.log`):
 - `camera: off (why): N frames sent in S s (F fps), D dropped (ring full a, worker behind b, write failed c); average …` — the summary, with the drops that say which side was slow;
 - `camera: refused: …` — why the companion fell back to the screen capture.
 
-## The scoreboard (layer 0.7.0, D8.12)
+## The scoreboard (layer 0.7.0, D8.12; in the room since 0.8.0, D8.12.3)
 
-A small scoreboard that stays in a top corner of the view during a match: each player's name and score in turn order
-with the player up marked, the game and the ball, and the session tally (games played, wins per player). The picture
-is the companion's (`companion/src/media/scoreboard-page.ts`, a second small offscreen page; 512x384, premultiplied
-BGRA, transparent except for the card, which sits at the frame's bottom edge and grows upward with the player count);
-the layer only places it.
+A small scoreboard during a match: each player's name and score in turn order with the player up marked, the game and
+the ball, and the session tally (games played, wins per player). The picture is the companion's
+(`companion/src/media/scoreboard-page.ts`, a second small offscreen page; 512x384, premultiplied BGRA, transparent
+except for the card, which sits at the frame's bottom edge and grows upward with the player count); the layer only
+places it. 0.7.0 held it in a top corner of the view, on the head. The owner after the first match night with it
+(2026-11-20): "the score panel in VR is annoying. It shouldn't move with head tracking. Perhaps it can be static
+somewhere and we have to turn our heads to look at it?" Since 0.8.0 it stands at a fixed place in the room when the
+control says `"anchor": "room"` (the companion's default); without the key it is the 0.7.0 corner, unchanged.
 
-- **Wire**: `CVB1` frames (the `CVO1` header, BGRA) and the control's `"scoreboard": {"corner": …}`. Frames arrive
-  when the picture changes (at most 5 a second) and every 2 s while it is still.
-- **Placement**: a quad in `VIEW` space (head-locked, like the panel), 0.32 m wide, its height by the frame's aspect
-  (0.24 m for 4:3), centred at `±0.46, 0.40, -1.0` m and turned to face the eye: 17° to 32° to the side, 14° to 25°
-  up (a two-player card, which hugs the frame's bottom edge, ends about 20° up). Far above a playfield, and above a
-  16:9 theater screen (13.5° up at that azimuth, from where theater began); a square picture (a VR sender's whole eye:
-  23° up and to the side) passes under the card's inner end at its top corner. Blended by the source alpha as
-  premultiplied. A first placement, not yet judged in a headset: the control's scoreboard object also takes
-  `"offset": [right, up, ahead]` (metres from the head, clamped to 0–2, −1–2, 0.3–5; `right` is mirrored for the left
-  corner) and `"widthM"` (0.05–2), so it can be moved without a new layer; the companion sends neither today.
+- **Wire**: `CVB1` frames (the `CVO1` header, BGRA) and the control's `"scoreboard": {"corner": …}`, with `"anchor":
+  "room"` and `"place": true` since protocol 5. Frames arrive when the picture changes (at most 5 a second) and every
+  2 s while it is still.
+- **Placement in the room** (`"anchor": "room"`; `src/scoreboard_place.h` is the maths, `placeScoreboard` in
+  `src/layer.cpp` the capture): a quad in `LOCAL` space, 0.32 m wide, its height by the frame's aspect (0.24 m for 4:3).
+  `LOCAL` is gravity-aligned and does not move while the head moves or turns; it is the space the theater screen has
+  stood in since D7.4. The place is worked out once from the head's pose (`xrLocateSpace` of `VIEW` in `LOCAL` at the
+  frame's display time) and kept for the session:
+  - *the corner rule*, the first time the scoreboard is shown so in a session: **0.64 m to the side, 0.21 m up, 0.99 m
+    ahead** of where the head was, in a level frame turned by the head's yaw: 33° to the side (the corner's side: right,
+    or left), 10° above eye level, 1.20 m away, 15° wide. Only the yaw is read: a head that looks down at the playfield
+    or is tilted puts the board in the same place as a level one. Against the head-locked corner (25° to the side, 20°
+    up from the gaze, 1.17 m) it is further to the side, since the head can turn to it (33° clears a backbox and the
+    edge of the 2.4 m theater screen), and lower, since it is no longer measured from a gaze that points down;
+  - *the gaze rule*, at each `"place": true` ("Put the scoreboard where I look" in the companion's in-game menu): the
+    board's centre goes 1.20 m along the head's forward, yaw and pitch (the pitch clamped to ±75°). The request is
+    taken even while the panel hides the scoreboard (the menu is on the panel). A change of the control's corner
+    afterwards returns to the corner rule, from the same capture.
+  Either way the board faces the place the head was at and is upright (its right edge level, whatever the head's roll).
+  The capture needs the head's orientation from the runtime; until it has one the quad is drawn head-locked, and a
+  request that gets none within a second is dropped (both logged). A position the runtime cannot give is `LOCAL`'s
+  origin, as for theater. The place is the session's: a new VPX captures anew. It is fixed in the runtime's space, not
+  to the table: recentring the table with VPX's own key moves the table and not the board (place it again), and what
+  a runtime does to `LOCAL` at its own recentre is the runtime's.
+- **Placement on the head** (no anchor: a protocol-4 companion, or "Follows my head"): a quad in `VIEW` space
+  (head-locked, like the panel), the same size, centred at `±0.46, 0.40, -1.0` m and turned to face the eye: 17° to 32°
+  to the side, 14° to 25° up (a two-player card, which hugs the frame's bottom edge, ends about 20° up). Far above a
+  playfield, and above a 16:9 theater screen (13.5° up at that azimuth, from where theater began); a square picture (a
+  VR sender's whole eye: 23° up and to the side) passes under the card's inner end at its top corner.
+- **Tuning without a new layer**: the scoreboard object also takes `"offset": [right, up, ahead]` (metres, clamped to
+  0–2, −1–2, 0.3–5; `right` is mirrored for the left corner) and `"widthM"` (0.05–2). On the head the offset is from
+  the head; in the room it replaces the corner rule's offset (from where the head was, in the level frame of its yaw).
+  The companion sends them from `match.json` `scoreboardPlace` (no UI). Blended by the source alpha as premultiplied.
 - **When**: the control asks for it, a `CVB1` frame arrived within 5 s (a companion that went takes it away, as with
   the panel), and the mode on screen is **hidden** (the app's frame plus this one quad) or **theater** (over the
   black, beside the screen; under the fade, so a dip to black takes it along). Never in panel mode (the panel shows
   the scores) and never with the calibration pattern. With no scoreboard a hidden frame is still passed through
   untouched.
-- **Log**: `pipe: scoreboard asked, top right (drawn in hidden and theater)` / `pipe: scoreboard off`, `pipe: first
-  scoreboard frame 512x384`, `session: scoreboard swapchain …`, `scoreboard: shown top right, 512x384 frame on a 0.32 m
-  wide quad` / `scoreboard: not shown` (one line per change).
+- **Log**: `pipe: scoreboard asked, top right (drawn in hidden and theater), fixed in the room` / `pipe: scoreboard
+  off`, `pipe: first scoreboard frame 512x384`, `session: scoreboard swapchain …`, `scoreboard: placed in the room, up
+  and to the side of where the head faced (the head at x, y, z m, yaw N degrees), in LOCAL space; it stays there for
+  this session`, `pipe: the companion asked to place the scoreboard again, where the head points`, `scoreboard: placed
+  again where the head points (…, pitch N degrees), 1.20 m away, in LOCAL space`, `scoreboard: shown fixed in the room,
+  512x384 frame` / `scoreboard: shown top right, 512x384 frame` / `scoreboard: not shown` (one line per change).
+- **Not seen in a headset yet** (0.8.0): the numbers are a first placement, and that `LOCAL` holds the board still
+  against the table on Virtual Desktop's runtime through OpenComposite is inferred from theater, which does.
 
 ## The rings (layer 0.6.0, D10.2)
 
@@ -381,7 +421,7 @@ skipped, publish 0.45 ms a frame.
 - Hooks `xrCreateSession` (the graphics binding: `XrGraphicsBindingD3D11KHR` or `XrGraphicsBindingOpenGLWin32KHR`; any
   other binding passes through, logged by name), `xrDestroySession`, `xrEndFrame` and `xrDestroyInstance`.
 - Everything of the layer's own (two reference spaces, its swapchains, the mode on screen, the fade, the theater
-  screen's place) belongs to one session. OpenComposite creates a short D3D11 session before VPX's OpenGL one (the
+  screen's place, the scoreboard's place in the room) belongs to one session. OpenComposite creates a short D3D11 session before VPX's OpenGL one (the
   owner's log, 0.2.26); each gets its own.
 - **Swapchains**, made at the first frame of each kind and again at a new size: `panel` (BGRA data), `video` (RGBA
   data), `shade` (8x8, black with the fade's alpha), `scoreboard` (BGRA data; 0.7.0). sRGB first (Chromium's pixels are sRGB), else UNORM; on D3D11 the
@@ -390,7 +430,8 @@ skipped, publish 0.45 ms a frame.
   origin is its bottom-left), the app's context made current if it is not, the app's texture binding, unpack state and
   pixel-unpack buffer restored. A video frame is uploaded only in theater mode.
 - **Modes**, each `xrEndFrame` with at least one app layer (a frame without layers passes untouched):
-  - *hidden*: the app's frame as it is (0.7.0: plus the scoreboard's quad while one is asked and live).
+  - *hidden*: the app's frame as it is (0.7.0: plus the scoreboard's quad while one is asked and live; 0.8.0: in
+    `LOCAL` space when the control anchors it to the room, else in `VIEW` space).
   - *panel*: the app's layers plus a quad in `VIEW` space, 0.40 m wide at `0, -0.42, -0.9` m turned to face the eye
     (below the playfield's line of sight: the D7.3 placement covered it); `panelPos: center` is the D7.3 placement,
     0.55 m at `0, -0.28, -0.9`. Blended by the source alpha as premultiplied.

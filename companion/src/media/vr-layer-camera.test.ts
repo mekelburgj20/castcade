@@ -237,8 +237,8 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe('createVrLayerOverlay: the camera (D7.5)', () => {
-  it('this side speaks protocol 4 (D8.12: the scoreboard); the camera needs 3', () => {
-    expect(VR_LAYER_PROTOCOL).toBe(4);
+  it('this side speaks protocol 5 (D8.12.3: the scoreboard in the room); the camera needs 3', () => {
+    expect(VR_LAYER_PROTOCOL).toBe(5);
     expect(VR_LAYER_CAMERA_PROTOCOL).toBe(3);
   });
 

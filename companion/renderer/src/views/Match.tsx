@@ -97,7 +97,7 @@ export function Match({ state }: { state: CastcadeState }) {
     );
   };
   const setView = (
-    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner' | 'watch3d'>>,
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner' | 'scoreboardAnchor' | 'watch3d'>>,
   ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -627,8 +627,25 @@ export function Match({ state }: { state: CastcadeState }) {
               <option value="off">Off</option>
             </select>
             <small>
-              A small scoreboard in a top corner while you play and while you watch: scores, ball, game, and the games played and wins this session. Needs the
-              Castcade OpenXR layer (not SteamVR); after an update, restart VPX once. Takes effect at once.
+              A small scoreboard up and to that side while you play and while you watch: scores, ball, game, and the games played and wins this session.
+              Needs the Castcade OpenXR layer (not SteamVR); after an update, restart VPX once. Takes effect at once.
+            </small>
+          </label>
+          {/* D8.12.3: fixed in the room (the default) or on the head, as it was before. */}
+          <label className="field">
+            <span>Scoreboard stays</span>
+            <select
+              value={st.settings.scoreboardAnchor}
+              disabled={!st.settings.scoreboard}
+              onChange={(e) => setView({ scoreboardAnchor: e.target.value === 'head' ? 'head' : 'room' })}
+            >
+              <option value="room">Fixed in the room</option>
+              <option value="head">Follows my head</option>
+            </select>
+            <small>
+              Fixed in the room: it stays where it was put when the table opened, up and to the side of where you were facing, and you turn your head to
+              read it. To move it, look where you want it and choose "Put the scoreboard where I look" in the in-game menu. Follows my head: it sits in the
+              corner of your view and moves with it. Takes effect at once; after an update, restart VPX once (until then it follows your head).
             </small>
           </label>
           <label className="field">

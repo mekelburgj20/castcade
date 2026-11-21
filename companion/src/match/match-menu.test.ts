@@ -14,6 +14,7 @@ const facts = (over: Partial<MenuFacts> = {}): MenuFacts => ({
   theirTable: 100,
   myTable: 100,
   mic: 'open',
+  scoreboardPlace: null,
   ...over,
 });
 
@@ -98,6 +99,31 @@ describe('the in-game menu (D8.10, 2026-11-14)', () => {
     const none = run({ ...f, mic: 'unavailable' }, [...mic, 'choose']);
     expect(none.effects).toEqual([]);
     expect(none.state.note).toBe('No microphone on this PC');
+  });
+
+  it('D8.12.3: "Put the scoreboard where I look": there only while the scoreboard is held in the room, one choose places it and closes the menu', () => {
+    const f = facts({ role: 'client', phase: 'playing', scoreboardPlace: 'ready' });
+    // No such line without a scoreboard in the room (a desktop rig, the lobby, "follows my head"): the menu is the D8.10 one.
+    expect(menuItems(facts({ role: 'client', phase: 'playing' })).map((i) => i.id)).toEqual(['voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
+    expect(menuItems(f).map((i) => i.id)).toEqual(['voice', 'theirTable', 'myTable', 'mic', 'scoreboard', 'leave', 'close']);
+    expect(menuItems(f).find((i) => i.id === 'scoreboard')).toEqual({ id: 'scoreboard', label: 'Put the scoreboard where I look', value: null, off: null, confirm: null });
+    const to: MenuKey[] = ['menu', 'menu', 'menu', 'menu', 'menu'];
+    expect(run(f, to).state.at).toBe('scoreboard');
+    const chosen = run(f, [...to, 'choose']);
+    expect(chosen.effects).toEqual([{ kind: 'placeScoreboard' }]);
+    expect(chosen.state).toBe(MENU_CLOSED); // the panel goes, so the scoreboard is seen at its new place at once
+    expect(run(f, [...to, 'right']).effects).toEqual([{ kind: 'placeScoreboard' }]);
+    expect(run(f, [...to, 'left']).effects).toEqual([]);
+    // The layer VPX loaded cannot do it, or none is connected: the line says why, nothing is asked, the menu stays.
+    const old = run({ ...f, scoreboardPlace: 'old_layer' }, [...to, 'choose']);
+    expect(old.effects).toEqual([]);
+    expect(old.state).toMatchObject({ open: true, at: 'scoreboard', note: 'Restart VPX first: until then the scoreboard follows your head' });
+    const none = run({ ...f, scoreboardPlace: 'not_connected' }, [...to, 'choose']);
+    expect(none.effects).toEqual([]);
+    expect(none.state.note).toBe('The headset is not showing Castcade yet');
+    expect(menuView(old.state, menuItems({ ...f, scoreboardPlace: 'old_layer' }), '')?.items[4]).toEqual({ label: 'Put the scoreboard where I look', value: null, off: true });
+    // Leave match is one line further down, and still asks twice.
+    expect(run(f, [...to, 'menu', 'choose', 'choose']).effects).toEqual([{ kind: 'leave' }]);
   });
 
   it('keeps its place when a line goes (the match started while the menu was open)', () => {

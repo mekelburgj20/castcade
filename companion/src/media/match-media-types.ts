@@ -532,17 +532,42 @@ export interface VrOverlay {
    * layer (0.7.0) and only while set, so every control to an older layer, and every control without a scoreboard, is
    * byte for byte what it was. `place` (optional): the quad's centre and width when not the layer's own, on the
    * control as `scoreboard: {corner, offset, widthM}`. Cleared by `stop`. Idempotent.
+   *
+   * D8.12.3 (2026-11-21): `anchor` (absent: `head`). `room` goes on the control as `scoreboard: {corner, anchor:
+   * 'room'}`, to a protocol-5 layer (0.8.0) only; `head`, and every control to a protocol-4 layer, is byte for byte
+   * the D8.12 control (a 0.7.0 layer keeps the corner on the head until VPX restarts with the new layer; said once).
    */
-  setScoreboard?(o: { frames: PanelFrameSource | null; corner: ScoreboardCorner | null; place?: ScoreboardPlace | null }): void;
+  setScoreboard?(o: { frames: PanelFrameSource | null; corner: ScoreboardCorner | null; place?: ScoreboardPlace | null; anchor?: ScoreboardAnchor }): void;
+  /**
+   * D8.12.3 (2026-11-21), the OpenXR layer only: "place it again": the layer captures the scoreboard's place in the
+   * room anew, where the head points at that moment (`place: true` in the control's scoreboard object: a request on
+   * one control, never a state). `placed`: the request went to a protocol-5 layer; anything else: nothing was sent,
+   * and why (no layer on the pipe, a layer from before 0.8.0, or no scoreboard held in the room now).
+   */
+  placeScoreboard?(): ScoreboardPlaceResult;
 }
 
 /** D8.12: the corner of the headset view the scoreboard sits in (the Match tab's setting; the layer's control). */
 export type ScoreboardCorner = 'top-right' | 'top-left';
 
 /**
+ * D8.12.3 (2026-11-21, the owner after the first match night: "It shouldn't move with head tracking"): where the
+ * scoreboard is held. `room` (the default): at a fixed place in the room, up and to the side (the corner's side) of
+ * where the head faced when it was first shown in that VPX session, until it is placed again from the in-game menu.
+ * `head`: in the corner of the view, moving with the head (D8.12 as it was).
+ */
+export type ScoreboardAnchor = 'room' | 'head';
+
+/** D8.12.3: what `placeScoreboard` did: sent, or why not. */
+export type ScoreboardPlaceResult = 'placed' | 'not_connected' | 'old_layer' | 'not_in_room';
+
+/**
  * D8.12: the scoreboard quad's place, for tuning it without a new layer (`match.json` `scoreboardPlace`, no UI): its
  * centre in metres from the head as [right, up, ahead] (`right` is mirrored for the top-left corner; the layer clamps
  * 0–2, −1–2, 0.3–5) and its width in metres (0.05–2). The layer's own placement is [0.46, 0.40, 1.0], 0.32 m wide.
+ * D8.12.3: with the scoreboard fixed in the room the same three numbers are measured from where the head was when the
+ * place was captured, level and turned by its yaw (the layer's own: [0.64, 0.21, 0.99], 33° to the side, 10° above
+ * eye level, 1.2 m away); a place set from the in-game menu ("where I look") reads only the width.
  */
 export interface ScoreboardPlace {
   offset: [number, number, number];

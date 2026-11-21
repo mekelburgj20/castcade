@@ -14,11 +14,16 @@
  *   - the choose key chooses the line; with one spare button only, the menu key pressed twice quickly does the same;
  *   - while the menu is open the arrow keys work too: Up / Down move, Right chooses or raises, Left lowers.
  * A line that ends something (Leave match, a start with a warning) asks for a second choose.
+ *
+ * D8.12.3 (2026-11-21): one more line while the headset's scoreboard is held at a place in the room, "Put the
+ * scoreboard where I look": the player points the head where the scoreboard should be and chooses the line; the OpenXR
+ * layer captures the place again from the head's pose at that moment (`placeScoreboard` on the overlay). The menu is on
+ * the head-locked panel, so it stays readable wherever the head points.
  */
 
 import type { PanelMenu } from '../media/match-media-types.js';
 
-export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'leave' | 'close';
+export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'scoreboard' | 'leave' | 'close';
 export type MenuVolume = 'voice' | 'theirTable' | 'myTable';
 
 /** What the match host knows that decides the menu's lines. */
@@ -37,6 +42,13 @@ export interface MenuFacts {
   theirTable: number;
   myTable: number;
   mic: 'open' | 'muted' | 'unavailable';
+  /**
+   * D8.12.3: the "Put the scoreboard where I look" line. null: no such line (no headset scoreboard in this match now,
+   * or it follows the head by the Match tab's setting). `ready`: the layer in VPX can place it. `old_layer`: the layer
+   * VPX loaded predates the scoreboard in the room (it follows the head until VPX restarts). `not_connected`: no layer
+   * is on the pipe yet.
+   */
+  scoreboardPlace: 'ready' | 'old_layer' | 'not_connected' | null;
 }
 
 export interface MenuItem {
@@ -83,6 +95,20 @@ export function menuItems(f: MenuFacts): MenuItem[] {
     off: f.mic === 'unavailable' ? 'No microphone on this PC' : null,
     confirm: null,
   });
+  if (f.scoreboardPlace !== null) {
+    items.push({
+      id: 'scoreboard',
+      label: 'Put the scoreboard where I look',
+      value: null,
+      off:
+        f.scoreboardPlace === 'old_layer'
+          ? 'Restart VPX first: until then the scoreboard follows your head'
+          : f.scoreboardPlace === 'not_connected'
+            ? 'The headset is not showing Castcade yet'
+            : null,
+      confirm: null,
+    });
+  }
   // The host's leave between games is End match (A10); at any other time, and for a client, it is Leave match.
   const ends = f.role === 'host' && f.phase === 'over' && !f.seriesOver;
   items.push({
@@ -116,6 +142,8 @@ export type MenuEffect =
   /** `to`: the new value in percent, already inside the line's range. */
   | { kind: 'volume'; which: MenuVolume; to: number }
   | { kind: 'mic'; muted: boolean }
+  /** D8.12.3: the layer captures the scoreboard's place again, where the head points now. */
+  | { kind: 'placeScoreboard' }
   | { kind: 'leave' };
 
 /** The index of the chosen line among `items` (the first line when it is gone or none was chosen). */
@@ -162,6 +190,9 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
       return { state: MENU_CLOSED, effect: { kind: 'next' } };
     case 'mic':
       return { state: here, effect: { kind: 'mic', muted: facts.mic === 'open' } };
+    case 'scoreboard':
+      // The menu closes: the panel goes, and the scoreboard is seen at its new place at once.
+      return { state: MENU_CLOSED, effect: { kind: 'placeScoreboard' } };
     case 'leave':
       return { state: MENU_CLOSED, effect: { kind: 'leave' } };
     default:

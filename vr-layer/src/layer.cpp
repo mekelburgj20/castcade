@@ -34,6 +34,10 @@
 //   - D7.6.1 (2026-11-03), the calibration pattern: on control "test": "pattern", theater shows a stereo grid the
 //     layer draws itself with the geometry the stereo window assumes (drawPatternEye), whatever the mode, until the
 //     control (or the pipe) drops it;
+//   - D8.12 (2026-11-15), the scoreboard: a small quad over hidden and theater, head-locked in a top corner; D8.12.3
+//     (2026-11-21, layer 0.8.0): fixed in the room instead when the control says "anchor": "room" (LOCAL space, a place
+//     captured once per session from the head's pose, scoreboard_place.h; "place": true captures it again where the
+//     head points); a control without the anchor keeps the head-locked corner exactly as it was;
 //   - never throws across the API: an exception (or, with /EHa, a structured exception) turns the layer off for the
 //     process; an OpenXR call of ours that fails turns it off for that session. Each logs once.
 #include <windows.h>
@@ -69,6 +73,7 @@
 #include "frame_ring.h"
 #include "layer_log.h"
 #include "panel_pipe.h"
+#include "scoreboard_place.h"
 
 namespace castcade {
 namespace {
@@ -95,6 +100,10 @@ constexpr float kPanelCentreOffset[3] = {0.0f, -0.28f, -0.9f};
 // out is past where the eye turns comfortably, and the quad is head-locked, so the head cannot bring it closer. The
 // numbers are a first placement, not yet seen in a headset: the control's "offset" and "widthM" (panel_pipe.h) move
 // it without a new layer. Left: the mirror image.
+// D8.12.3 (2026-11-21, layer 0.8.0; the owner after the first match night: "It shouldn't move with head tracking"): this
+// head-locked corner is what a control WITHOUT "anchor": "room" gets (an older companion, or the Match tab's "follows my
+// head"); with it the quad stands in the room, in LOCAL space, at a place captured from the head (scoreboard_place.h,
+// kScoreboardRoomOffset; placeScoreboard below). The width is the same in both.
 constexpr float kScoreboardWidthM = 0.32f;
 constexpr float kScoreboardOffset[3] = {0.46f, 0.40f, 1.0f};  // right, up, ahead (metres from the head)
 
@@ -268,7 +277,16 @@ struct Session {
   XrSpace local = XR_NULL_HANDLE;  // fixed in the room: the theater screen (D7.4)
   Surface panel, video, shade;
   Surface scoreboard;  // D8.12 (0.7.0): the small corner scoreboard's frames (CVB1)
-  int scoreboardShown = -1;  // what the last frame drew, for one log line per change: -1 none, 0 top right, 1 top left
+  int scoreboardShown = -1;  // what the last frame drew, for one log line per change: -1 none, 0 top right, 1 top left, +2 in the room
+  // D8.12.3 (0.8.0): the scoreboard's place in the room: the capture of the head it is worked out from (none until the
+  // scoreboard is first shown with "anchor": "room" in this session; kept for the session's life, whatever the control
+  // does meanwhile), the corner the control named at the last look, the pipe's place-request serial at the last look
+  // and, while a request waits for the head's pose, when it was seen (0: none waits).
+  bool scoreAnchored = false;
+  ScoreboardAnchor scoreAnchor;
+  bool scoreCornerLeft = false;
+  uint32_t scorePlaceSerial = 0;
+  uint64_t scoreGazeAskedAt = 0;
   std::vector<uint8_t> pixels, staging;
   uint32_t pixelsW = 0, pixelsH = 0;
   // D7.4: the mode on screen, the fade (0 clear .. 1 black), the shade's uploaded level, the screen's place.
@@ -408,36 +426,12 @@ const char* bindingName(XrStructureType t) {
 // A quad at `offset` (head space) turned so its front (+Z) faces the eye, kept upright: the SteamVR helper's
 // facingOrigin() (vr-overlay/src/main.cpp) as a quaternion. At the low offset that is a ~25° tilt back.
 XrPosef facingEye(const float offset[3]) {
+  // The arithmetic is in scoreboard_place.h since D8.12.3 (the scoreboard in the room turns to face a place with it
+  // too, and tools/scoreboard_place_test.cpp proves it at build time); the same operations as since D7.3.
+  const PlacePose f = placeFacingOrigin(offset);
   XrPosef p{};
-  p.position = {offset[0], offset[1], offset[2]};
-  p.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
-  const float tx = -offset[0], ty = -offset[1], tz = -offset[2];
-  const float tl = std::sqrt(tx * tx + ty * ty + tz * tz);
-  if (tl < 1e-4f) return p;
-  const float nx = tx / tl, ny = ty / tl, nz = tz / tl;  // front
-  float rx = nz, ry = 0.0f, rz = -nx;                    // right = up(0,1,0) x front
-  const float rl = std::sqrt(rx * rx + rz * rz);
-  if (rl < 1e-4f) rx = 1.0f, rz = 0.0f;
-  else rx /= rl, rz /= rl;
-  const float ux = ny * rz - nz * ry, uy = nz * rx - nx * rz, uz = nx * ry - ny * rx;  // up = front x right
-  // Columns right, up, front → quaternion (Shepperd).
-  const float m00 = rx, m01 = ux, m02 = nx, m10 = ry, m11 = uy, m12 = ny, m20 = rz, m21 = uz, m22 = nz;
-  const float tr = m00 + m11 + m22;
-  XrQuaternionf q{};
-  if (tr > 0.0f) {
-    const float s = std::sqrt(tr + 1.0f) * 2.0f;
-    q.w = 0.25f * s, q.x = (m21 - m12) / s, q.y = (m02 - m20) / s, q.z = (m10 - m01) / s;
-  } else if (m00 > m11 && m00 > m22) {
-    const float s = std::sqrt(1.0f + m00 - m11 - m22) * 2.0f;
-    q.w = (m21 - m12) / s, q.x = 0.25f * s, q.y = (m01 + m10) / s, q.z = (m02 + m20) / s;
-  } else if (m11 > m22) {
-    const float s = std::sqrt(1.0f + m11 - m00 - m22) * 2.0f;
-    q.w = (m02 - m20) / s, q.x = (m01 + m10) / s, q.y = 0.25f * s, q.z = (m12 + m21) / s;
-  } else {
-    const float s = std::sqrt(1.0f + m22 - m00 - m11) * 2.0f;
-    q.w = (m10 - m01) / s, q.x = (m02 + m20) / s, q.y = (m12 + m21) / s, q.z = 0.25f * s;
-  }
-  p.orientation = q;
+  p.position = {f.position.x, f.position.y, f.position.z};
+  p.orientation = {f.orientation.x, f.orientation.y, f.orientation.z, f.orientation.w};
   return p;
 }
 
@@ -1323,6 +1317,42 @@ void recentre(Session& s, XrTime when) {
   locateEyes(s, when);
 }
 
+// D8.12.3 (2026-11-21, layer 0.8.0): the scoreboard's place in the room, captured from the head now: VIEW in LOCAL at
+// the frame's display time, as the recentre above reads it. LOCAL because it is gravity-aligned (the board's "upright"
+// is the room's), does not move while the head moves or turns, and is the space the theater screen has stood in on
+// every rig since D7.4; the app's own spaces are never touched (the layer does not hook them), and a table VPX moves
+// with its own recentre key moves in VPX's maths, which no space of the runtime follows: that is what "place it again"
+// is for. `atGaze` false: the corner rule (up and to the side of where the head faced); true: where the head points.
+// False when the runtime gives no orientation for the head at this instant (tracking not up yet, or the call failed):
+// nothing is kept, the caller draws the board head-locked this frame and asks again at the next. A position the
+// runtime cannot give is LOCAL's origin (the head at the session's start, by the spec), as for theater.
+constexpr uint64_t kScoreboardGazeWaitMs = 1000;  // a "place it again" the head's pose cannot answer within this is dropped
+
+bool placeScoreboard(Session& s, XrTime when, bool atGaze) {
+  XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+  const XrResult r = s.next.locateSpace(s.view, s.local, when, &loc);
+  if (XR_FAILED(r)) {
+    logOnce("scoreboard_locate_failed", "scoreboard: xrLocateSpace(VIEW in LOCAL) failed (" + resultName(s.next, s.instance, r) +
+                                            "); it follows the head until the runtime gives the head's pose");
+    return false;
+  }
+  if (!(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
+    logOnce("scoreboard_no_pose", "scoreboard: the runtime has no pose for the head yet; it follows the head until it has");
+    return false;
+  }
+  const bool positioned = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+  const PlaceVec head = positioned ? PlaceVec{loc.pose.position.x, loc.pose.position.y, loc.pose.position.z} : PlaceVec{};
+  const XrQuaternionf& q = loc.pose.orientation;
+  s.scoreAnchor = scoreboardAnchor(head, {q.x, q.y, q.z, q.w}, atGaze);
+  s.scoreAnchored = true;
+  const std::string from = fmt("the head at %.2f, %.2f, %.2f m", s.scoreAnchor.head.x, s.scoreAnchor.head.y, s.scoreAnchor.head.z) +
+                           (positioned ? "" : " (no position from the runtime: LOCAL's origin)") + fmt(", yaw %.0f degrees", s.scoreAnchor.yaw * kDegPerRad);
+  logLine(atGaze ? "scoreboard: placed again where the head points (" + from +
+                       fmt(", pitch %.0f degrees), %.2f m away, in LOCAL space", s.scoreAnchor.pitch * kDegPerRad, kScoreboardGazeDistanceM)
+                 : "scoreboard: placed in the room, up and to the side of where the head faced (" + from + "), in LOCAL space; it stays there for this session");
+  return true;
+}
+
 // What the companion's mode means now, given what has arrived: theater needs a picture (the video, else the panel
 // frame on the screen), panel needs the panel; nothing live for 5 s → hidden, whatever was asked (a crashed
 // companion never leaves a player in the dark).
@@ -1909,11 +1939,41 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
   // within 5 s, as it does the panel), over the player's own table (hidden) and beside the theater screen; never with
   // the panel (which shows the scores itself) or the calibration pattern.
   const bool scoreUp = c.scoreboard && !pattern && s.shown != ViewMode::Panel && s.scoreboard.released && s.scoreboard.width > 0 && panelPipeLive(Stream::Scoreboard);
-  const int scoreNow = scoreUp ? (c.scoreboardLeft ? 1 : 0) : -1;
+  // D8.12.3: in the room when the control says so. The place is captured the first time the scoreboard is shown that
+  // way in this session, and again at each "place it again" (a request on the pipe, taken even while the panel hides
+  // the scoreboard: the in-game menu that sends it is on the panel). Until a capture succeeds the quad is head-locked,
+  // as it is for a control without the anchor.
+  const uint32_t placeSerial = panelPipeScoreboardPlaceSerial();
+  if (placeSerial != s.scorePlaceSerial) {
+    s.scorePlaceSerial = placeSerial;
+    s.scoreGazeAskedAt = GetTickCount64();
+  }
+  if (s.scoreGazeAskedAt != 0 && GetTickCount64() - s.scoreGazeAskedAt > kScoreboardGazeWaitMs) {
+    s.scoreGazeAskedAt = 0;
+    logLine("scoreboard: asked to be placed again, but the runtime gave no pose for the head in time; it stays where it was");
+  }
+  bool scoreRoom = false;
+  if (c.scoreboard && c.scoreboardRoom) {
+    // The other corner is asked after a "place it again": back to the corner rule, from the same capture.
+    if (s.scoreAnchored && s.scoreAnchor.atGaze && s.scoreCornerLeft != c.scoreboardLeft) {
+      s.scoreAnchor.atGaze = false;
+      logLine(std::string("scoreboard: the corner changed: up and to the ") + (c.scoreboardLeft ? "left" : "right") + " of where the head faced when it was placed");
+    }
+    s.scoreCornerLeft = c.scoreboardLeft;
+    const bool gaze = s.scoreGazeAskedAt != 0;
+    if (gaze || (scoreUp && !s.scoreAnchored)) {
+      if (!ensureSpaces(s)) return false;
+      if (placeScoreboard(s, info.displayTime, gaze)) s.scoreGazeAskedAt = 0;
+    }
+    scoreRoom = s.scoreAnchored;
+  } else {
+    s.scoreGazeAskedAt = 0;  // a request without the room anchor on the control places nothing
+  }
+  const int scoreNow = scoreUp ? (c.scoreboardLeft ? 1 : 0) + (scoreRoom ? 2 : 0) : -1;
   if (scoreNow != s.scoreboardShown) {
     s.scoreboardShown = scoreNow;
-    logLine(scoreUp ? std::string("scoreboard: shown ") + (c.scoreboardLeft ? "top left" : "top right") + ", " + std::to_string(s.scoreboard.width) + "x" +
-                          std::to_string(s.scoreboard.height) + " frame"
+    logLine(scoreUp ? std::string("scoreboard: shown ") + (scoreRoom ? "fixed in the room" : c.scoreboardLeft ? "top left" : "top right") + ", " +
+                          std::to_string(s.scoreboard.width) + "x" + std::to_string(s.scoreboard.height) + " frame"
                     : std::string("scoreboard: not shown"));
   }
   if (s.shown == ViewMode::Hidden && level == 0 && !scoreUp) return false;
@@ -1978,8 +2038,16 @@ bool compose(Session& s, const XrFrameEndInfo& info, const Control& c) {
     const float* at = c.scoreboardPlaced ? c.scoreboardOffset : kScoreboardOffset;
     const float offset[3] = {c.scoreboardLeft ? -at[0] : at[0], at[1], -at[2]};
     const float width = c.scoreboardWidthM > 0.0f ? c.scoreboardWidthM : kScoreboardWidthM;
-    add(quadAt(s, used++, s.view, s.scoreboard, XR_EYE_VISIBILITY_BOTH, 0, w(s.scoreboard), facingEye(offset),
-               {width, width * static_cast<float>(s.scoreboard.height) / static_cast<float>(s.scoreboard.width)}, true));
+    const XrExtent2Df size{width, width * static_cast<float>(s.scoreboard.height) / static_cast<float>(s.scoreboard.width)};
+    if (scoreRoom) {
+      // D8.12.3: fixed in the room: LOCAL space, the pose worked out from the capture (the control's "offset", when it
+      // carries one, is then measured from where the head was, in the level frame of its yaw).
+      const PlacePose p = scoreboardRoomPose(s.scoreAnchor, c.scoreboardLeft, c.scoreboardPlaced ? c.scoreboardOffset : kScoreboardRoomOffset);
+      const XrPosef pose{{p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w}, {p.position.x, p.position.y, p.position.z}};
+      add(quadAt(s, used++, s.local, s.scoreboard, XR_EYE_VISIBILITY_BOTH, 0, w(s.scoreboard), pose, size, true));
+    } else {
+      add(quadAt(s, used++, s.view, s.scoreboard, XR_EYE_VISIBILITY_BOTH, 0, w(s.scoreboard), facingEye(offset), size, true));
+    }
   }
   if (level > 0 && s.shade.released) add(quadAt(s, used++, s.view, s.shade, XR_EYE_VISIBILITY_BOTH, 0, w(s.shade), shadePose, {kShadeSizeM, kShadeSizeM}, true));
   if (s.layers.size() > s.maxLayers) {
@@ -2016,6 +2084,7 @@ void onSessionCreated(const Instance& inst, const XrSessionCreateInfo* info, XrS
   s->shade.name = "shade";
   s->scoreboard.name = "scoreboard";  // D8.12
   s->scoreboard.order = Order::BGRA;
+  s->scorePlaceSerial = panelPipeScoreboardPlaceSerial();  // D8.12.3: a request from before this session is not this session's
   s->pattern.name = "pattern";  // D7.6.1
   s->pattern.order = Order::RGBA;
   s->screenPose = ahead(kScreenDistanceM);  // until the first recentre (a quad's pose must be a unit quaternion)

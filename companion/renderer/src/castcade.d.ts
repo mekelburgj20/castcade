@@ -560,6 +560,8 @@ interface MatchSettings {
   scoreboardCorner: 'top-right' | 'top-left';
   /** D8.12: the scoreboard quad's centre ([right, up, ahead], metres from the head) and width; null: the layer's own. No UI. */
   scoreboardPlace: { offset: [number, number, number]; widthM: number } | null;
+  /** D8.12.3: the scoreboard fixed in the room (the default; placed again from the in-game menu) or in the corner of the view, moving with the head. */
+  scoreboardAnchor: 'room' | 'head';
   /** I11.4.2: the player up on this PC's own table in 3D while this player waits: whenever both PCs can, or never. */
   watch3d: 'auto' | 'off';
 }
