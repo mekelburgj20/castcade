@@ -211,6 +211,109 @@ describe('Stern SAM: games from NVRAM alone (B10, owner\'s rig 2026-10-25/26)', 
   });
 });
 
+/**
+ * A Stern SAM audit record at NVRAM offset `o`: 16 bytes, a u32 value, 0, the value again, and 0xFFFFFFFF minus the sum
+ * of those twelve bytes (all little-endian; the end-of-game record `samEndCounter` reads has the same check word).
+ * Null when the bytes there are not one (also while the ROM is half-way through writing it).
+ */
+function samRecord(b: Uint8Array, o: number): number | null {
+  if (o + 16 > b.length) return null;
+  const u32 = (at: number) => (b[at]! | (b[at + 1]! << 8) | (b[at + 2]! << 16) | (b[at + 3]! << 24)) >>> 0;
+  let sum = 0;
+  for (let i = 0; i < 12; i++) sum += b[o + i]!;
+  return u32(o + 4) === 0 && u32(o + 8) === u32(o) && u32(o + 12) === (0xffffffff - sum) >>> 0 ? u32(o) : null;
+}
+
+describe('C18: Spider-Man Vault Edition (smanve_101, Stern SAM), the match night with no ball end (owner\'s rig, 2026-11-21)', () => {
+  const lookup = async () => {
+    const maps = new Map<string, CompiledMap | null>();
+    for (const rom of ['smanve_101', 'acd_170h', 'twd_160h']) maps.set(rom, await corpus.mapFor(rom));
+    return (rom: string) => maps.get(rom) ?? null;
+  };
+  const order = (events: JournalEvent[]) => games(events).filter((e) => e.kind !== 'current_scores').map((e) => e.kind);
+  const deltas = (lines: string[]) => lines.filter((l) => l.includes('"nvram_delta"')).map((l) => JSON.parse(l) as { t: number; d: [number, number, number][] });
+
+  it('the match night: the game starts and ends with its score, and no ball end is derived (three balls were played)', async () => {
+    const { lines } = loadFixture('fixtures/nvram/smanve_101/2026-11-21-1');
+    const { events, detector } = replayDetector(lines, { mapFor: await lookup() });
+    expect(order(events)).toEqual(['game_start', 'game_end']);
+    expect(ofKind(events, 'game_start')[0]).toMatchObject({ t: 76.385, players: 1 });
+    expect(ofKind(events, 'game_end')[0]).toEqual({ kind: 'game_end', t: 686.414, scores: [10252590, 0, 0, 0], players: 1 });
+    // The score the owner passed the turn at by hand, twice (08:06:58 and 08:11:41 UTC; t=0 is 08:02:04).
+    const passed = ofKind(events, 'current_scores').filter((e) => e.t > 250 && e.t < 631);
+    expect(passed.map((e) => e.scores[0])).toEqual([6456810]);
+    expect(detector.summary()).toMatchObject({ rom: 'smanve_101', exited: true, inGame: false, torn: 0, orphanDeltas: 0, ballsSeen: [], counts: { game_start: 1, current_scores: 191, ball_end: 0, game_end: 1, game_abandoned: 0 } });
+  });
+
+  it('why: between the game\'s start and its end the journal holds nothing but player 1\'s score', async () => {
+    const { lines } = loadFixture('fixtures/nvram/smanve_101/2026-11-21-1');
+    const all = deltas(lines);
+    const seen = [...new Set(all.flatMap((e) => e.d.map(([o]) => o)))].sort((a, b) => a - b);
+    // Player 1's score (its three low bytes), the end-of-game counter, credits: all the watch list let through.
+    expect(seen).toEqual([68060, 68068, 68069, 68070, 69644]);
+    const inGame = all.filter((e) => e.t > 76.385 && e.t < 686.414);
+    expect(inGame).toHaveLength(190);
+    expect(inGame.every((e) => e.d.every(([o]) => o >= 68068 && o <= 68071))).toBe(true);
+    // Credits fall with the start, the counter rises with the end; neither moves at a ball.
+    expect(all.filter((e) => e.d.some(([o]) => o === 69644)).map((e) => e.t)).toEqual([76.385]);
+    expect(all.filter((e) => e.d.some(([o]) => o === 68060)).map((e) => e.t)).toEqual([686.414]);
+    // What changed in NVRAM and was not on the watch list is counted, not kept.
+    expect(lines.find((l) => l.includes('"table_exit"'))).toContain('"filtered_bytes":5820');
+  });
+
+  it('the earlier sessions of the same journal: one game ended, two were left; no ball end was ever read on this ROM', async () => {
+    const { lines } = loadFixture('fixtures/nvram/smanve_101/2026-11-05-1');
+    const { events } = replayDetector(lines, { mapFor: await lookup() });
+    expect(events.filter((e) => e.kind === 'table_loaded')).toHaveLength(3);
+    expect(order(events)).toEqual(['game_start', 'game_end', 'game_start', 'game_abandoned', 'game_start', 'game_abandoned']);
+    expect(ofKind(events, 'game_end').map((e) => [e.scores[0], e.players])).toEqual([[29726280, 1]]);
+    expect(ofKind(events, 'game_abandoned').map((e) => e.scores[0])).toEqual([14562950, 14947680]);
+    expect(ofKind(events, 'ball_end')).toEqual([]);
+  });
+
+  /**
+   * Not a detector rule: the recorded evidence for what could be one (`fixtures/README.md`, "Stern SAM ball ends").
+   * The two SAM recordings that kept every NVRAM byte (B10) each hold one audit record that goes up by one when a
+   * ball drains, before the bonus is added. Its address differs per ROM, and the hook does not journal it.
+   */
+  it('evidence for a follow-up: on acd_170h and twd_160h one audit record rises once per ball; on smanve_101 a candidate reads 0, 3, 6, 8 at the four table loads', async () => {
+    const mapFor = await lookup();
+    const risesPerGame = (base: string, offset: number): number[] => {
+      const d = new JournalDetector({ mapFor });
+      const perGame: number[] = [];
+      let last: number | null = null;
+      for (const line of loadFixture(base).lines) {
+        for (const ev of d.feed(line)) if (ev.kind === 'game_start') perGame.push(0);
+        const v = d.shadow ? samRecord(d.shadow, offset) : null;
+        if (v === null) continue;
+        if (last !== null && v !== last) {
+          // Every change is +1 and falls inside a game.
+          expect(v).toBe(last + 1);
+          expect(d.summary()?.inGame).toBe(true);
+          perGame[perGame.length - 1]!++;
+        }
+        last = v;
+      }
+      return perGame;
+    };
+    // acd_170h: two 1-player games, a 2-player game, then a game left after its first ball drained.
+    expect(risesPerGame('fixtures/nvram/acd_170h/2026-10-25-1', 0x26a8)).toEqual([3, 3, 6, 1]);
+    // twd_160h: a 1-player game, a 2-player game, a game left during ball 1.
+    expect(risesPerGame('fixtures/nvram/twd_160h/2026-10-26-1', 0x27e0)).toEqual([3, 6, 0]);
+    // smanve_101: only the snapshot at each table load has these bytes. One finished game, then two that were left.
+    const snapshots = ['fixtures/nvram/smanve_101/2026-11-05-1', 'fixtures/nvram/smanve_101/2026-11-21-1'].flatMap((base) =>
+      loadFixture(base)
+        .lines.filter((l) => l.includes('"nvram_full"'))
+        .map((l) => samRecord(Uint8Array.from((JSON.parse(l) as { bytes: number[] }).bytes), 0x2440)),
+    );
+    expect(snapshots).toEqual([0, 3, 6, 8]);
+    // And it is not among the bytes the hook journals during a game, on any of the three.
+    for (const [rom, offset] of [['acd_170h', 0x26a8], ['twd_160h', 0x27e0], ['smanve_101', 0x2440]] as const) {
+      expect(watchOffsets(mapFor(rom)!).some((o) => o >= offset && o < offset + 16)).toBe(false);
+    }
+  });
+});
+
 describe('samTransition (pure)', () => {
   const sam = (scores: number[], playerCount = 1) => state({ scores, playerCount, currentBall: null, currentPlayer: null, gameOver: null });
 

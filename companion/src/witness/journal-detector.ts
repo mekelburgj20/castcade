@@ -17,7 +17,9 @@
  * - **Stern SAM (recipe A, no ball or game-over field in reach).** SAM keeps those in CPU RAM, which
  *   `ChangedNVRAM` never reports. `samTransition` derives the game from what NVRAM does hold: the
  *   scores resetting to 0 starts a game, the last-game record's counter (`samEndCounter`) ends it,
- *   and there are no ball ends.
+ *   and there are no ball ends (`liveSupport().ballEnds` is false, and a match is told so: C18). An audit record
+ *   that counts drained balls exists in NVRAM, at an address of its own per ROM, off the watch list; what it would
+ *   take to use it is in `fixtures/README.md`, "Stern SAM ball ends".
  * - **Bally AS-2518-17/-35 and Stern M100 (recipe A, ball and player in CPU RAM).** `ballyTransition`
  *   reads the game-over lamp and the last-game scores the ROM writes into NVRAM at game over
  *   (`ballyLiveInputs`); no ball ends either (B10.2, inferred from the map notes, unverified on a rig).

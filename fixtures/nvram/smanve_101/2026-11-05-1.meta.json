@@ -1,0 +1,20 @@
+{
+  "vpx_version": "10.8.0 (the owner's rig; the build of those three days is not in the companion log any more)",
+  "vpinmame_version": "the rig's VPinMAME nightly",
+  "rig": "owner's rig, Windows 11",
+  "lib_version": "0.5.0",
+  "recipe": "A",
+  "recipe_version": "0.3.1",
+  "recorded": "2026-11-05",
+  "rom": "smanve_101",
+  "platform": "stern-sam",
+  "table_file": "Spider-Man Classic (Stern 2007) VPW Mod 2.1.vpx",
+  "table_id": "Spider-Man Classic (Stern 2007) VPW Mod 2.1",
+  "journal_sha256": "ae34f8d89f9c15bf16985ae47c3b3a359d28be0bd6f05eec5bc5a9489afded91",
+  "journal_file": "2026-11-05-1.jsonl.gz",
+  "played_by": "the owner by hand, three table loads (sessions 2026-11-05T22:12:21, 2026-11-06T11:28:45, 2026-11-07T08:54:55 local), one 1-player game each: the first on a fresh NVRAM and played to game over, the second and third left by closing the table",
+  "games": 1,
+  "oracle": false,
+  "expected": "Stern SAM, no ball events. Session 1: game_start at the first points (t=52.344, a fresh NVRAM has no last game to reset), game_end 29726280 (t=304.211, the end-of-game counter 0 -> 1). Session 2: game_start (t=15.051), game_abandoned at table_exit with 14562950. Session 3: game_start (t=15.334), game_abandoned at table_exit with 14947680. No ball_end in any.",
+  "notes": "C18: the earlier sessions of the journal the match night (2026-11-21-1) was appended to; they answer whether a ball end was ever read on this ROM (never). Each load starts with one nvram_full of the whole 128K NVRAM, so the four snapshots (three here, one in 2026-11-21-1) bracket three games. Between them 19 records of the ROM's audit area change (16 bytes each: value u32, 0, the value again, 0xFFFFFFFF minus the byte sum, the layout of the end-of-game record). One of them, at NVRAM offset 0x2440 (9280), reads 0, 3, 6, 8: +3 over the finished three-ball game, +3 and +2 over the two games that were left. It is the candidate for a count of balls played on this ROM, unproven: these bytes are not on the watch list, so the journal does not say when they change (fixtures/README.md, Stern SAM ball ends)."
+}

@@ -1106,6 +1106,118 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(st.note).toBe(`${TFTC_TABLE}: this machine's live score can't be read yet (no NVRAM map for this ROM). At most the last game of this session posts, when the table closes.`);
   });
 
+  describe('C18: following a table is not reading its ball ends (Spider-Man Vault Edition, Stern SAM, the match of 2026-11-21)', () => {
+    const SMAN_TABLE = 'Spider-Man Classic (Stern 2007) VPW Mod 2.1';
+    const SMAN_PATH = `C:\\Tables\\${SMAN_TABLE}.vpx`;
+    const SMAN_SIDECAR = `C:\\Tables\\${SMAN_TABLE}.vbs`;
+    const SMAN_CMD = `"C:\\VPX\\VPinballX64.exe" -Play "${SMAN_PATH}"`;
+    const SMAN_JOURNAL = '/journal/Spider-Man_Classic_Stern_2007_VPW_Mod_2.1.jsonl';
+    const SMAN_STAMP = '"session":"2026-11-21T00:02:03"';
+    const SAM_REASON = "on Stern SAM the ball in play and the player up are out of Castcade's reach (CPU RAM). The scores and the end of the game are read, the end of a ball is not; the host passes each turn by hand (Pass the turn)";
+
+    /** The table as the import leaves it: the file, a sidecar, and (unless `manifest` is false) the manifest that names its ROM. */
+    function smanHarness(manifest = true, logs: string[] = []) {
+      const h = harness({}, { journalDir: '/journal', journalPollMs: 250, log: (line) => logs.push(line) });
+      h.fs.put(SMAN_PATH, MM_VPX);
+      h.fs.put(SMAN_SIDECAR, SIDECAR_HEAD.replace(TFTC_TABLE, SMAN_TABLE).replace('tftc_400', 'smanve_101') + "Sub Table1_KeyDown(ByVal KeyCode)\r\nEnd Sub\r\n");
+      if (manifest) {
+        h.fs.put(
+          manifestPathFor(manifestDirFor('/data'), SMAN_TABLE),
+          JSON.stringify({
+            tableId: SMAN_TABLE, vpxPath: SMAN_PATH, vpxSha256: null, vpxSize: MM_VPX.length, vpxMtimeMs: 0, scriptSha256: '0'.repeat(64),
+            class: 'A', recipe: 'A', recipeVersion: RECIPE_VERSION, libVersion: '0.6.0', rom: 'smanve_101', sidecarPath: SMAN_SIDECAR,
+            sidecarSha256: '0'.repeat(64), anchors: {}, warnings: [], renderedAt: '2026-11-20T00:00:00Z', verified: null,
+          }),
+        );
+      }
+      return h;
+    }
+
+    /** The journal of the match night with its session stamp moved to `atMs`, so it reads as this process's session. */
+    function smanJournalAt(atMs: number): string {
+      const lines = readJournalLines(repo('fixtures/nvram/smanve_101/2026-11-21-1.jsonl.gz'));
+      if (!lines[0]?.includes(SMAN_STAMP)) throw new Error('fixture changed: table_loaded stamp not found');
+      lines[0] = lines[0].replace(SMAN_STAMP, `"session":"${hookStamp(atMs)}"`);
+      return lines.join('\n');
+    }
+
+    it('the journal of that night: live, every score and the game end read, no ball end, and the status says so from the moment live mode arms', async () => {
+      const logs: string[] = [];
+      const h = smanHarness(true, logs);
+      const events: GameEvent[] = [];
+      h.witness.on('event', (ev) => events.push(ev));
+      await h.witness.start();
+      expect(h.witness.status()).toMatchObject({ captureMode: null, ballEnds: null, ballEndsNote: null });
+      await h.launch(SMAN_CMD, 31);
+      // Armed on the sidecar; VPX has written nothing yet. The lobby of a match is told at this moment (08:02:00 that
+      // night, four seconds before `table_loaded`), and what it was told was "the table can report ball ends".
+      await h.until(() => h.witness.status().captureMode === 'live');
+      expect(h.witness.status()).toMatchObject({ currentTable: SMAN_TABLE, captureMode: 'live', ballEnds: false, ballEndsNote: SAM_REASON, note: null });
+
+      h.fs.put(SMAN_JOURNAL, smanJournalAt(h.clock.now() + 4000));
+      await h.poll();
+      await h.until(() => h.captures.length === 1);
+      // The game posts as it ends, as it did that night: this is live mode.
+      expect(h.captures[0]).toMatchObject({ table: SMAN_TABLE, rom: 'smanve_101', players: 1, score: 10252590, mode: 'live' });
+      expect(h.paths('/score')[0]?.params).toMatchObject({ rom: 'smanve_101', score: '10252590', reason: 'game_over', quit: '0' });
+      // What a match heard from this table: a start, the scores, the end. Never a ball end, over three balls.
+      expect([...new Set(events.map((e) => e.kind))]).toEqual(['game_start', 'current_scores', 'game_end']);
+      expect(events.filter((e) => e.kind === 'ball_end')).toEqual([]);
+      expect(h.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: false, ballEndsNote: SAM_REASON });
+      expect(logs.filter((l) => l.includes("ball ends can't be read"))).toEqual([
+        `witness: ${SMAN_TABLE}: ball ends can't be read on this machine (ROM smanve_101, Stern SAM: scores and the end-of-game record in NVRAM): every game posts as it ends; in a match each turn on it is passed by hand`,
+      ]);
+      expect(h.errors).toEqual([]);
+
+      await h.exit();
+      await h.settle(8000);
+      expect(h.witness.status()).toMatchObject({ currentTable: null, captureMode: null, ballEnds: null, ballEndsNote: null });
+    });
+
+    it('without a manifest nothing is promised while the table loads: unknown until the hook names the ROM, then no', async () => {
+      const h = smanHarness(false);
+      await h.witness.start();
+      await h.launch(SMAN_CMD, 31);
+      await h.until(() => h.witness.status().captureMode === 'live');
+      expect(h.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: null, ballEndsNote: null });
+      h.fs.put(SMAN_JOURNAL, smanJournalAt(h.clock.now() + 4000).split('\n').slice(0, 4).join('\n') + '\n');
+      await h.poll();
+      await h.until(() => h.witness.status().ballEnds === false);
+      expect(h.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: false, ballEndsNote: SAM_REASON });
+    });
+
+    it('a machine whose ball is in NVRAM says yes (Data East), a table in basic mode says no, and its reason stays in the note', async () => {
+      const h = liveHarness();
+      await h.witness.start();
+      await h.launch(TFTC_CMD, 31);
+      // No manifest here: unknown until `table_loaded`.
+      expect(h.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: null });
+      h.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","recipe_version":"${RECIPE_VERSION}","rom":"tftc_400","lib":"0.6.0","session":"${hookStamp(h.clock.now())}","locked":false}\n`);
+      await h.poll();
+      await h.until(() => h.witness.status().ballEnds === true);
+      expect(h.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, ballEndsNote: null });
+
+      // A ROM the hook cannot read at all: basic mode, as before, with the B12 sentence in `note`.
+      const b = liveHarness();
+      await b.witness.start();
+      await b.launch(TFTC_CMD, 31);
+      b.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"A","rom":"zz_999","lib":"0.4.0","session":"${hookStamp(b.clock.now())}","locked":false}\n`);
+      await b.poll();
+      await b.until(() => b.witness.status().captureMode === 'basic');
+      expect(b.witness.status()).toMatchObject({ captureMode: 'basic', ballEnds: false, ballEndsNote: null });
+      expect(b.witness.status().note).toMatch(/this machine's live score can't be read yet/);
+
+      // An original's script recipe journals its ball ends itself.
+      const o = liveHarness();
+      await o.witness.start();
+      await o.launch(TFTC_CMD, 31);
+      o.fs.put(TFTC_JOURNAL, `{"event":"table_loaded","t":0,"table":"T","recipe":"B","recipe_version":"${RECIPE_VERSION}","rom":"","lib":"0.6.0","session":"${hookStamp(o.clock.now())}","locked":false}\n`);
+      await o.poll();
+      await o.until(() => o.witness.status().ballEnds === true);
+      expect(o.witness.status()).toMatchObject({ captureMode: 'live', ballEnds: true, ballEndsNote: null });
+    });
+  });
+
   it('B15: a table that loaded an older patch than this build says so once, and stays live', async () => {
     const h = liveHarness();
     await h.witness.start();
