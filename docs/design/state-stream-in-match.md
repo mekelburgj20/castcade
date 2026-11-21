@@ -270,10 +270,15 @@ open, and never longer than 45 s in all.
 **Who is waited for** (`match/stream3d.ts`, `startWait`). A PC, while `watch3d` is `auto` and either
 
 - (a) its match table was started in the fork and that VPX is not ready on the control connection yet: until
-  **10 s** (`FORK_HELLO_WAIT_MS`) after the table opened. While the table still loads no limit runs: the lobby's
-  wait for an open table is what holds a start from the table then, and a press of Start match is not held for
-  such a PC at all. A fork from before the role `match` (621694f) never connects and costs these 10 s. A launch
-  that made no process, or a process that ended, is not waited for from that moment; or
+  **45 s** (`FORK_HELLO_WAIT_MS`) after the table was seen open. "Seen open" is the witness finding the VPX
+  process with the table on its command line, a few seconds after the start; the fork connects at its first
+  frame, when the table has loaded (Game of Thrones LE, 2026-11-20: seen at 3.4 s, connected at 14.6 s, and the
+  10 s this limit first had ran out 1.2 s before the hello: I11.4.13). While the table is not seen yet no limit
+  runs: the lobby's wait for an open table is what holds a start from the table then, and a press of Start match
+  is not held for such a PC at all. A VPX that connects after the limit still gets the PC its wait (b), from that
+  moment. A fork from before the role `match` (621694f) never connects: that costs the limit once, and for the
+  rest of the app's run a start in that build is not waited for (the log says so; its first `hello` undoes it). A
+  launch that made no process, or a process that ended, is not waited for from that moment; or
 - (b) its VPX is ready and nothing has been heard yet from some other player's PC (no capability over the
   tunnel): per player, until **45 s** (`START_WAIT_MS`) after this PC began connecting to them (its data
   connections open and the player in the match, whichever came later), unless the tunnel has given up on that
@@ -282,6 +287,19 @@ open, and never longer than 45 s in all.
 
 Never: a PC with the setting off, with no fork, or whose fork speaks another control version. Only the lobby
 before game 1: a next game and a rejoin never wait.
+
+**What the lobby says besides** (I11.4.11, I11.4.12), on the Match tab and the panel, before the start:
+
+- the two PCs have different files of the table (the table advisory that was there: "same table, different file",
+  "different table file"), and, on a PC whose VPX is the fork, what that costs: `the other player's turns are
+  shown as the flat video, not in 3D: use the identical table file on both PCs`. A joining PC looks for the
+  host's identical file first: the copies of that title that nothing has hashed are hashed (eight at most, one at
+  a time, kept by path, size and time), and a same-name copy is only started when none is the host's file.
+- this PC has the fork beside its VPX and `watch3d` on, and the table that is open is not on the control
+  connection because Castcade did not start it (opened by hand, or open before the match): `Not in 3D: this
+  table was not started by Castcade. For 3D, close VPX and let Castcade start the table (host or join with VPX
+  closed)`. Not while a table Castcade started is still loading, not for a build that never connects, not on a
+  PC without the fork or with `watch3d` off; gone when it no longer applies.
 
 **How the host knows.** Each PC says it in the lobby with `PARTICIPANT_UPDATE.stream3dWaitMs` (the ms left of its
 own wait; 0: settled), the host's own through `updateLocal`; the host lists everyone it was told of in

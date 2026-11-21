@@ -54,6 +54,10 @@ function world(
     tableLaunch?: () => Promise<ForkLaunch | null>;
     /** I11.4.2: the result of a launch that names another exe (the fork). */
     forkLaunch?: LaunchResult;
+    /** I11.4.11: the hashes of table files by path (a file not listed cannot be read), and every path asked for. */
+    hashes?: Record<string, string>;
+    /** I11.4.11: how long a join waits for the host's file hash. Default here 0: the host's fingerprints of these tests carry a name only. */
+    hostHashWaitMs?: number;
   } = {},
 ) {
   const matchCbs = new Set<(s: MatchStatus) => void>();
@@ -68,6 +72,8 @@ function world(
   const logs: string[] = [];
   const joins: Array<[string, string]> = [];
   const timers: Array<{ fn: () => void; ms: number; dead: boolean }> = [];
+  const hashed: string[] = [];
+  let clock = 1_000_000;
   const status = (): MatchStatus => ({ ...m }) as unknown as MatchStatus;
   const launcher: VpxLauncher = {
     async launch(path, opts) {
@@ -108,6 +114,16 @@ function world(
     clipboard: { writeText: (t) => void clips.push(t) },
     tables: async () => o.tables ?? [MB, AFM],
     tableFiles: async () => o.files ?? [],
+    ...(o.hashes
+      ? {
+          hashTable: async (path: string) => {
+            hashed.push(path);
+            return o.hashes?.[path] ?? null;
+          },
+        }
+      : {}),
+    hostHashWaitMs: o.hostHashWaitMs ?? 0,
+    now: () => clock,
     arcaidBaseUrl: () => o.arcaid ?? null,
     log: { info: (l) => void logs.push(l), warn: (l) => void logs.push(l) },
     setTimeout: (fn, ms) => {
@@ -125,6 +141,12 @@ function world(
     clips,
     logs,
     joins,
+    hashed,
+    timers,
+    /** The clock of the wait for the host's file hash moves on. */
+    advance(ms: number) {
+      clock += ms;
+    },
     /** The witness sees a table open (or, with null, VPX close). */
     async table(name: string | null) {
       open = name;
@@ -600,6 +622,82 @@ describe('one step to a match: a link (A14 step 2)', () => {
     await both.hostTable(fingerprint('Attack from Mars (Bally 1995) 2.0'));
     await both.one.openLink(LINK, { trusted: true });
     expect(both.launched).toEqual([AFM.vpxPath]);
+  });
+
+  it("I11.4.11: the host's identical file is found among the copies that nothing has hashed: it wins over an imported table of the same name (Congo, 2026-11-20)", async () => {
+    const HOST = 'fc'.repeat(32);
+    // An imported, modified copy (hashed: another file), and the plain download in the tables folder (never hashed).
+    const modified = table('Congo (Williams 1995) MR mod', { sha256: '76'.repeat(32) });
+    const plain = table('Congo (Williams 1995)_VPW_V1.0', { imported: false });
+    const other = table('Congo (Williams 1995) VR room', { imported: false });
+    const w = world({ tables: [modified, AFM], files: [other, plain], hashes: { [plain.vpxPath]: HOST, [other.vpxPath]: '11'.repeat(32) } });
+    await w.hostTable(fingerprint('Congo (Williams 1995)', HOST));
+    await w.one.openLink(LINK, { trusted: true });
+    expect(w.launched).toEqual([plain.vpxPath]);
+    // Only the copies of that title with no hash were read, and no further once the file was found.
+    expect(w.hashed).toEqual([other.vpxPath, plain.vpxPath]);
+    expect(w.logs).toContain("launch: hashed 2 of 2 copies of the host's Congo (Williams 1995) that had no hash: one is the identical file");
+    expect(w.logs.some((l) => l.includes('started (the host plays Congo (Williams 1995): same file, not imported)'))).toBe(true);
+  });
+
+  it('I11.4.11: no copy here is the host file: the same-name copy is started as before, and the log says the files differ; a file that cannot be read is passed over', async () => {
+    const HOST = 'fc'.repeat(32);
+    const modified = table('Congo (Williams 1995) MR mod', { sha256: '76'.repeat(32) });
+    const broken = table('Congo (Williams 1995) copy', { imported: false });
+    const w = world({ tables: [modified], files: [broken], hashes: {} });
+    await w.hostTable(fingerprint('Congo (Williams 1995)', HOST));
+    await w.one.openLink(LINK, { trusted: true });
+    expect(w.hashed).toEqual([broken.vpxPath]);
+    expect(w.launched).toEqual([modified.vpxPath]);
+    expect(w.logs).toContain("launch: hashed 0 of 1 copy of the host's Congo (Williams 1995) that had no hash: none is the identical file");
+    expect(w.logs).toContain("launch: no copy of Congo (Williams 1995) on this PC is the host's file; Congo (Williams 1995) MR mod is started by its name (the lobby says the files differ)");
+  });
+
+  it('I11.4.11: nothing is hashed when a table with the host hash is known already, when the host names no hash, or for tables of another title', async () => {
+    const HOST = 'fc'.repeat(32);
+    const same = table('Congo (Williams 1995)', { sha256: HOST });
+    const copy = table('Congo (Williams 1995) again', { imported: false });
+    const known = world({ tables: [same, AFM], files: [copy], hashes: { [copy.vpxPath]: HOST } });
+    await known.hostTable(fingerprint('Congo (Williams 1995)', HOST));
+    await known.one.openLink(LINK, { trusted: true });
+    expect(known.hashed).toEqual([]);
+    expect(known.launched).toEqual([same.vpxPath]);
+    const nameOnly = world({ tables: [AFM], files: [copy], hashes: { [copy.vpxPath]: HOST } });
+    await nameOnly.hostTable(fingerprint('Congo (Williams 1995)'));
+    await nameOnly.one.openLink(LINK, { trusted: true });
+    expect(nameOnly.hashed).toEqual([]);
+    expect(nameOnly.launched).toEqual([copy.vpxPath]);
+    const elsewhere = world({ tables: [], files: [table('Attack from Mars (Bally 1995)', { imported: false }), copy], hashes: { [copy.vpxPath]: HOST } });
+    await elsewhere.hostTable(fingerprint('Congo (Williams 1995)', HOST));
+    await elsewhere.one.openLink(LINK, { trusted: true });
+    expect(elsewhere.hashed).toEqual([copy.vpxPath]);
+  });
+
+  it("I11.4.11: the host's table is named a moment before its file is hashed: the join waits for the hash (3 s at most) instead of picking by name at once", async () => {
+    const HOST = 'fc'.repeat(32);
+    const modified = table('Congo (Williams 1995) MR mod', { sha256: '76'.repeat(32) });
+    const same = table('Congo (Williams 1995)_VPW_V1.0', { sha256: HOST });
+    const w = world({ tables: [modified, same], hostHashWaitMs: 3000 });
+    // The host's first word: the file's name, no hash yet.
+    await w.hostTable(fingerprint('Congo (Williams 1995)_VPW_V1.0'));
+    await w.one.openLink(LINK, { trusted: true });
+    expect(w.launched).toEqual([]);
+    expect(w.one.status().launch).toMatchObject({ state: 'waiting_host' });
+    // Its second, 0.4 s later: the TableInfo name and the hash. The identical file is started, not the first by name.
+    w.advance(400);
+    await w.hostTable(fingerprint('Congo (Williams 1995)', HOST));
+    expect(w.launched).toEqual([same.vpxPath]);
+
+    // A host whose file is never hashed (its witness cannot read it): after 3 s the table is looked for by name.
+    const never = world({ tables: [modified], hostHashWaitMs: 3000 });
+    await never.hostTable(fingerprint('Congo (Williams 1995)'));
+    await never.one.openLink(LINK, { trusted: true });
+    expect(never.launched).toEqual([]);
+    never.advance(3001);
+    never.expire();
+    await flush();
+    expect(never.launched).toEqual([modified.vpxPath]);
+    expect(never.logs).toContain("launch: the host's Congo (Williams 1995) came with no file hash in 3 s; the table is looked for by name");
   });
 
   it("the host's fingerprint is only compared, never run: a path in the table name starts nothing", async () => {

@@ -10,6 +10,10 @@
  *
  * Within a rung an imported table wins over a file that was only found in the folder, then the most recently played.
  * The fingerprint comes from another PC: it is only ever compared with what is on this disk, never used as a path.
+ *
+ * I11.4.11 (2026-11-21): rung 1 needs a hash on this side, and a file that was only found in the folder has none (nor
+ * has an imported one that changed since it was read). `unhashedCandidates` names the files that could still be the
+ * host's: the caller hashes them (`table-hash.ts`) and asks again, so the identical file wins over a same-name copy.
  */
 import type { GameFingerprint } from '@castcade/protocol';
 import type { KnownTable } from './known-tables.js';
@@ -33,6 +37,26 @@ export function titleOf(name: string): string {
 }
 
 const RANK: Record<TableMatchKind, number> = { same_file: 0, same_rom: 1, same_name: 2 };
+
+/** The host's file hash, lower-case; null when its fingerprint carries none yet (zeros). */
+export function hostHash(hostGame: Pick<GameFingerprint, 'tableHash'>): string | null {
+  return ZERO.test(hostGame.tableHash) ? null : hostGame.tableHash.toLowerCase();
+}
+
+/** How many files of one title are hashed for one join, at most (imported ones first, then by the list's order). */
+export const HASH_CANDIDATES_MAX = 8;
+
+/**
+ * I11.4.11: when the host's hash is known and no table here has it, the tables that could still be that file: the
+ * same name or title as the host's game (or its ROM), and no hash yet. Empty when a table with the host's hash is
+ * known already, or the host's hash is not.
+ */
+export function unhashedCandidates(hostGame: Pick<GameFingerprint, 'tableName' | 'tableHash' | 'romName'>, tables: readonly KnownTable[]): KnownTable[] {
+  const hash = hostHash(hostGame);
+  if (!hash || tables.some((t) => t.sha256 === hash)) return [];
+  const out = tables.filter((t) => t.sha256 === null && findLocalTable({ ...hostGame, tableHash: '0'.repeat(64) }, [t]) !== null);
+  return [...out.filter((t) => t.imported), ...out.filter((t) => !t.imported)].slice(0, HASH_CANDIDATES_MAX);
+}
 
 export function findLocalTable(hostGame: Pick<GameFingerprint, 'tableName' | 'tableHash' | 'romName'>, tables: readonly KnownTable[]): TableMatch | null {
   const hash = ZERO.test(hostGame.tableHash) ? null : hostGame.tableHash.toLowerCase();

@@ -58,7 +58,7 @@ import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
-import { MatchController, lobbyLineKey, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MatchController, TABLE_BY_HAND_NOTE, lobbyLineKey, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch, STREAM3D_WAIT_MAX_MS } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
@@ -549,6 +549,8 @@ interface Active {
   wait3dSent?: { until: number | null } | null;
   /** I11.4.9: a Start match that was held for the 3D connections is being started now that they are settled. */
   heldStartQueued?: boolean;
+  /** I11.4.12: the lobby says that this PC's table was not started by Castcade (logged when it begins and ends). */
+  byHandSaid?: boolean;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -971,8 +973,25 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // I11.4.9: only the match's first start waits for the 3D connections: the lobby before game 1 (a next game and a
     // rejoin are never in that phase).
     s.setStartGate(c.phase === 'lobby');
-    s.setTableOpen(isTableOpen(gameFingerprintFrom(witness.status(), RECIPE_VERSION)));
+    const tableOpen = isTableOpen(gameFingerprintFrom(witness.status(), RECIPE_VERSION));
+    s.setTableOpen(tableOpen);
     announceWait3d(a);
+    // I11.4.11: with this PC's VPX in the Castcade build, the lobby's table line says what a different file costs.
+    const v = s.status();
+    a.controller.set3dInPlay(settings.watch3d === 'auto' && v.fork !== 'none');
+    // I11.4.12: the Castcade VPX build is here and 3D is wanted, and the table that is open was not started in it by
+    // Castcade (opened by hand, or open before the match): said in the lobby, where the player looks, for as long as
+    // it is so. Not while a table Castcade started is still loading, and not for a build that never connects.
+    const byHand = c.phase === 'lobby' && settings.watch3d === 'auto' && v.forkInstalled === true && v.fork === 'none' && !v.expecting && !v.forkSilent && tableOpen;
+    if (byHand !== (a.byHandSaid ?? false)) {
+      a.byHandSaid = byHand;
+      log.info(
+        byHand
+          ? 'stream3d: the table open on this PC was not started by Castcade in the Castcade VPX build (opened by hand, or open before the match): this PC shows and is shown in the 2D video; the lobby says so and what to do'
+          : 'stream3d: the lobby no longer says that the table was not started by Castcade (it does not apply any more)',
+      );
+    }
+    a.controller.setLobbyNote(byHand ? TABLE_BY_HAND_NOTE : null);
   };
   /**
    * I11.4.9: the host is told whether this PC's 3D connection is still being made (PARTICIPANT_UPDATE

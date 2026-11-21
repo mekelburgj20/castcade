@@ -85,15 +85,20 @@
  * as it does for a table that is not open, and never for longer than one `START_WAIT_MS` in all: `match/controller.ts`).
  * This PC is waited for while the setting is `auto` and either
  *   (a) its match table was started in the Castcade VPX build (`forkLaunched`) and that VPX is not `ready` on the
- *       control connection yet: until `FORK_HELLO_WAIT_MS` after the table opened (`setTableOpen`; no limit runs while
- *       the table loads: the lobby's own wait for an open table is what holds a start then). A build from before the
- *       role `match` never connects, and costs these 10 s, not more; or
+ *       control connection yet: until `FORK_HELLO_WAIT_MS` after the table was seen open (`setTableOpen`). "Seen
+ *       open" is the witness finding the VPX process with the table on its command line, seconds after the start
+ *       and long before the table has loaded; the fork connects at its first frame, when the load is over (Game of
+ *       Thrones LE, 2026-11-20: seen at 3.4 s, connected at 14.6 s; I11.4.13). So the limit is a table's loading
+ *       time, 45 s, and the one limit on a held start bounds it (`match/controller.ts`). A build from before the
+ *       role `match` never connects: the shell remembers that for the run and does not wait for it again
+ *       (`forkSilent`, `main/stream3d-host.ts`); or
  *   (b) its VPX is ready and nothing has been heard yet from some other player's PC (no capability: the data
  *       connection to it is not up): per player, until `START_WAIT_MS` after this PC began connecting to them (its
  *       data connections open and the player in the match, whichever came later), unless the tunnel has given up on
  *       that player (`setTunnel`: no path) or is broken. Not counted from when this PC's VPX was ready: a table left
  *       open from the last match, or a player who joins a minute after the host's table loaded, is waited for all the
- *       same.
+ *       same. One exception (I11.4.13): a VPX that connects after its own limit (a) has passed gets its 45 s from
+ *       that moment, so a table that loaded slowly is not left without the wait.
  * A PC with the setting off, with no Castcade VPX build, or whose build speaks another control version is never
  * waited for. Only while the shell says the match has not started (`setStartGate`): a next game and a rejoin never
  * wait. A new match (`reset`) starts from nothing.
@@ -131,10 +136,11 @@ export const CAPS_CHANGES_MAX = 8;
  */
 export const START_WAIT_MS = 45_000;
 /**
- * I11.4.9: a match table started in the Castcade VPX build is waited for this long after the table opened, for its VPX
- * to be on the control connection (a build that has the role `match` connects while the table loads).
+ * I11.4.9, I11.4.13: a match table started in the Castcade VPX build is waited for this long after the table was seen
+ * open, for its VPX to be on the control connection. The fork connects when the table has loaded (its first frame),
+ * and the table is "seen open" when its process is found, seconds into the load: 10 s were too short for a slow table.
  */
-export const FORK_HELLO_WAIT_MS = 10_000;
+export const FORK_HELLO_WAIT_MS = 45_000;
 const TOKEN = /^[\x21-\x7e]{1,128}$/;
 const TABLE_IDENTITY = /^[\x21-\x7e]{1,128} [\x21-\x7e]{1,128}$/;
 // eslint-disable-next-line no-control-regex -- control characters are exactly what a line must not hold
@@ -399,6 +405,14 @@ export class Stream3d {
   private expecting = false;
   /** When this PC's table opened (the shell's word); null: it is not open. */
   private tableOpenAt: number | null = null;
+  /**
+   * I11.4.13: when this PC's VPX was ready, if that was after its own limit (a) had passed: connecting to the others
+   * counts from there, so the PC still gets its wait (b). Null otherwise: a VPX that was there in time, or drops and
+   * connects again, gets no more time than the 45 s since connecting began.
+   */
+  private lateReadyAt: number | null = null;
+  /** I11.4.13: the wait for this PC's VPX (a) ended at its limit, and that VPX has not connected since. */
+  private forkLate = false;
   /** When each other player came into this match on this PC (`setPeers`): with `tunnelAt`, when connecting to them began. */
   private readonly peerSince = new Map<string, number>();
   /** When this match's data connections opened on this PC, and how long after that each PC was first heard from. */
@@ -524,6 +538,8 @@ export class Stream3d {
     // I11.4.9: nothing is waited for outside a match's lobby, and nothing is known of this match's tunnel.
     this.gate = false;
     this.expecting = false;
+    this.forkLate = false;
+    this.lateReadyAt = null;
     this.tunnelAt = null;
     this.tunnelBroken = false;
     this.noPath = [];
@@ -566,6 +582,9 @@ export class Stream3d {
   forkLaunched(): void {
     if (this.link === 'ready' || this.link === 'version') return;
     this.expecting = true;
+    // The limit counts from this start's table being seen open, not from a sighting before it.
+    this.tableOpenAt = null;
+    this.forkLate = false;
     this.changed();
   }
 
@@ -594,7 +613,21 @@ export class Stream3d {
 
   /** When this PC began connecting to `peer`: its data connections open and the player in the match, whichever came later. */
   private connectingSince(peer: string): number {
-    return Math.max(this.tunnelAt ?? -Infinity, this.peerSince.get(peer) ?? this.clock());
+    return Math.max(this.tunnelAt ?? -Infinity, this.lateReadyAt ?? -Infinity, this.peerSince.get(peer) ?? this.clock());
+  }
+
+  /** I11.4.12: a match table was started in the Castcade VPX build and its VPX is not on the control connection yet (it may still be loading). */
+  expectingFork(): boolean {
+    return this.expecting && this.link !== 'ready' && this.link !== 'version';
+  }
+
+  /**
+   * I11.4.13: the VPX that was started for the match table has not connected within its limit and still has not:
+   * a build from before the 3D watch in a match (or a table that takes longer than the limit to load). The shell
+   * remembers it for the run, so the next start is not made to wait for the same build.
+   */
+  forkSilent(): boolean {
+    return this.forkLate && this.link === 'none';
   }
 
   /** Whether the match's first start should wait for this PC now (the rule is in the header). */
@@ -653,7 +686,13 @@ export class Stream3d {
     if (!this.gate) why = `the match started or the lobby is gone${unknown.length > 0 ? `, with nothing heard yet from ${names(unknown)}: they are shown in the 2D video until their PC is heard from` : ''}`;
     else if (this.setting !== 'auto') why = '3D watch was turned off on this PC';
     else if (this.link === 'version') why = 'its Castcade VPX build speaks another version of the control connection';
-    else if (this.link !== 'ready') why = this.expecting ? `${forkSecs} s passed since the table opened and its Castcade VPX build has not connected to Castcade (a build from before the 3D watch in a match does not): the match starts with the 2D video on this PC` : 'the Castcade VPX build is not coming (it ended, or did not start)';
+    else if (this.link !== 'ready') {
+      // Not a verdict on the build: a table that is still loading connects when it is up, and is then waited for (b).
+      if (this.expecting) this.forkLate = true;
+      why = this.expecting
+        ? `${forkSecs} s passed since the table was seen open and its Castcade VPX build has not connected to Castcade yet (it connects when the table has loaded; a build from before the 3D watch in a match never does): a start does not wait for this PC's VPX any longer`
+        : 'the Castcade VPX build is not coming (it ended, or did not start)';
+    }
     else if (this.tunnelBroken) why = "this PC's data connections are not working";
     else if (unknown.length === 0) why = `this PC's 3D connections are settled${after}`;
     else if (late.length > 0) why = `${secs} s passed since this PC began connecting to ${names(late)} and nothing was heard from ${late.length > 1 ? 'their PCs' : 'that PC'}: the first turn may be the 2D video`;
@@ -829,6 +868,11 @@ export class Stream3d {
     if (this.link === 'helloed') {
       // The first line after hello: the fork is on its own table and takes commands from here on.
       this.link = 'ready';
+      if (this.forkLate) {
+        this.forkLate = false;
+        this.lateReadyAt = this.clock();
+        this.log(`VPX connected ${this.tableOpenAt !== null ? `${Math.round((this.lateReadyAt - this.tableOpenAt) / 1000)} s after its table was seen open, ` : ''}after the start had stopped waiting for it: from here on this PC is waited for like any other, until the other players' PCs are heard from`);
+      }
       this.expecting = false;
       this.forkState = 'playing';
       this.aimed = null;

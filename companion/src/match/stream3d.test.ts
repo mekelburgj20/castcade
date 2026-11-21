@@ -1143,23 +1143,28 @@ describe('the first start waits for the 3D connection (I11.4.9)', () => {
     expect(r.m.startWait()).toMatchObject({ pending: true, until: r.clock.now() + START_WAIT_MS });
   });
 
-  it('(a) a match table started in the Castcade VPX build is waited for until its VPX is ready: no limit while the table loads, 10 s once it is open', () => {
+  it('(a) a match table started in the Castcade VPX build is waited for until its VPX is ready: no limit while the table loads, 45 s once it is seen open', () => {
     const r = lobby();
     const t0 = r.clock.now();
     r.m.forkLaunched();
     // The table is still loading: no limit runs yet (the lobby's wait for an open table is what holds a start).
     expect(r.m.startWait()).toEqual({ pending: true, until: null, why: 'fork', waitingFor: [] });
-    expect(waitLines(r)).toEqual(["stream3d: the match's start waits for this PC: its Castcade VPX build has not connected to Castcade yet (10 s at most once the table is open)"]);
+    expect(waitLines(r)).toEqual(["stream3d: the match's start waits for this PC: its Castcade VPX build has not connected to Castcade yet (45 s at most once the table is open)"]);
+    expect(r.m.expectingFork()).toBe(true);
     r.clock.advance(30_000);
     expect(r.m.startWait().pending).toBe(true);
     r.m.setTableOpen(true);
     const opened = r.clock.now();
     expect(r.m.startWait()).toEqual({ pending: true, until: opened + FORK_HELLO_WAIT_MS, why: 'fork', waitingFor: [] });
-    r.clock.advance(1_500);
+    // Game of Thrones LE, 2026-11-20: the VPX connected 11.2 s after its table was seen open. Still waited for then.
+    r.clock.advance(11_200);
+    expect(r.m.startWait()).toMatchObject({ pending: true, why: 'fork' });
     r.fork.connect();
     r.fork.say(HELLO);
     expect(r.m.startWait()).toMatchObject({ pending: true, why: 'fork' }); // hello, not ready yet
     r.fork.say('state playing');
+    expect(r.m.expectingFork()).toBe(false);
+    expect(r.logs.filter((l) => l.includes('from before the 3D watch'))).toEqual([]);
     // Ready: now (b), and its limit is the one that has been running since this PC began connecting to Krobs.
     expect(r.m.startWait()).toEqual({ pending: true, until: t0 + START_WAIT_MS, why: 'peers', waitingFor: ['b'] });
     r.m.peerCaps('b', encodeCaps(SAME));
@@ -1180,16 +1185,37 @@ describe('the first start waits for the 3D connection (I11.4.9)', () => {
     expect(r.clock.now() - t0).toBe(START_WAIT_MS + 1);
   });
 
-  it('(a) the limit: a build that never connects (one from before the 3D watch in a match) costs 10 s after the table opened, not 45', () => {
+  it('(a) the limit: 45 s after the table was seen open the start stops waiting for a VPX that has not connected; the line does not call the build old, and the shell is told the build is silent', () => {
     const r = lobby();
     r.m.forkLaunched();
     r.m.setTableOpen(true);
     r.clock.advance(FORK_HELLO_WAIT_MS - 1);
     expect(r.m.startWait().pending).toBe(true);
+    expect(r.m.forkSilent()).toBe(false);
     r.clock.advance(2);
     expect(r.m.startWait()).toEqual(NONE);
-    expect(waitLines(r).at(-1)).toBe("stream3d: the match's start no longer waits for this PC: 10 s passed since the table opened and its Castcade VPX build has not connected to Castcade (a build from before the 3D watch in a match does not): the match starts with the 2D video on this PC");
+    expect(waitLines(r).at(-1)).toBe("stream3d: the match's start no longer waits for this PC: 45 s passed since the table was seen open and its Castcade VPX build has not connected to Castcade yet (it connects when the table has loaded; a build from before the 3D watch in a match never does): a start does not wait for this PC's VPX any longer");
+    // What the shell remembers for the run (a start in that build is not waited for again), until it connects.
+    expect(r.m.forkSilent()).toBe(true);
+    expect(r.m.expectingFork()).toBe(true);
     r.clock.advance(START_WAIT_MS);
+    expect(r.m.startWait()).toEqual(NONE);
+  });
+
+  it('I11.4.13: a VPX that connects after its limit (a table that loaded slowly) is not left without the wait: the PC gets its 45 s for the other players from that moment, and the log says what happened', () => {
+    const r = lobby();
+    r.m.forkLaunched();
+    r.m.setTableOpen(true);
+    r.clock.advance(FORK_HELLO_WAIT_MS + 1_200);
+    expect(r.m.startWait()).toEqual(NONE);
+    // The hello comes 1.2 s after the limit; a start is not asked for yet, or is still held.
+    r.fork.up();
+    const ready = r.clock.now();
+    expect(r.m.forkSilent()).toBe(false);
+    expect(r.m.startWait()).toEqual({ pending: true, until: ready + START_WAIT_MS, why: 'peers', waitingFor: ['b'] });
+    expect(r.logs).toContain("stream3d: VPX connected 46 s after its table was seen open, after the start had stopped waiting for it: from here on this PC is waited for like any other, until the other players' PCs are heard from");
+    expect(waitLines(r).at(-1)).toBe("stream3d: the match's start waits for the 3D connection to Krobs: nothing heard from that PC yet (45 s at most)");
+    r.m.peerCaps('b', encodeCaps(SAME));
     expect(r.m.startWait()).toEqual(NONE);
   });
 
