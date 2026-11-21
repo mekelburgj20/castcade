@@ -17,6 +17,7 @@ nothing outside this repository: only the maps and platform files the recorded j
 | `tftc_104` … `tftc_400` | `maps/dataeast/version3/tftc_400.map.json` | `platforms/dataeast.json` |
 | `acd_170h` | `maps/stern/sam/acd_170h.map.json` | `platforms/stern-sam.json` |
 | `twd_160h` | `maps/stern/sam/twd_160h.map.json` | `platforms/stern-sam.json` |
+| `smanve_100`, `smanve_101`, `smanve_101c` | `maps/stern/sam/smanve_101.map.json` (C18: the match night with no ball end) | `platforms/stern-sam.json` |
 | `afm_113`, `afm_113b` | `maps/williams/wpc/afm_113.map.json` (has an `adjustments` block; used by `adjustments.test.ts` with synthetic bytes, no recording) | `platforms/williams-wpc-12K.json` |
 | `eballd14`, `eballdld`, `eballdlx` | `maps/bally/as-2518-35/eballdlx.map.json` (B10.2 Bally detector, synthetic bytes, no recording yet) | `platforms/bally-35-8K.json` |
 | the 13 Stern M100 ROMs (`stars`, `stingray`, `trident`, …) | `maps/stern/m100/generic.map.json` (B10.2, synthetic bytes) | `platforms/stern-m100.json` |

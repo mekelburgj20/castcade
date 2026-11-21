@@ -1,0 +1,21 @@
+{
+  "vpx_version": "10.8.0.9999.castcade-9e78aef (VPinballX_GL64_castcade.exe, the Castcade VPX fork, role match; per the companion log)",
+  "vpinmame_version": "3.7.0.222",
+  "rig": "owner's rig, Windows 11, played in a VR headset via Virtual Desktop (OpenXR)",
+  "companion_version": "0.2.47",
+  "lib_version": "0.6.0",
+  "recipe": "A",
+  "recipe_version": "0.3.2",
+  "recorded": "2026-11-21",
+  "rom": "smanve_101",
+  "platform": "stern-sam",
+  "table_file": "Spider-Man Classic (Stern 2007) VPW Mod 2.1.vpx",
+  "table_id": "Spider-Man Classic (Stern 2007) VPW Mod 2.1",
+  "journal_sha256": "319d6a7cf3c8c40327dfc7dbfc185fb0a35105d0f322dc693e5b78dc0eca5294",
+  "journal_file": "2026-11-21-1.jsonl.gz",
+  "played_by": "the owner by hand, one table load (session 2026-11-21T00:02:03 local, UTC-8; the hook's t=0 is 08:02:04 UTC): his side of the two-player match JTWURE against Krobs, one 1-player game of three balls to game over. The table was locked for the other player's turn from t=294.8 to t=557.1 (08:06:58 to 08:11:21 UTC).",
+  "games": 1,
+  "oracle": false,
+  "expected": "Stern SAM, no ball events: one game_start (t=76.385, the scores back to 0), 191 current_scores, one game_end (t=686.414, the end-of-game record's counter 1 -> 2) with 10252590, players 1. No ball_end, no game_abandoned.",
+  "notes": "C18: the journal of the match in which the lobby said 'the table can report ball ends' and no ball end ever reached it (the owner passed the turn by hand at 6456810, twice). Of the watch list (recipe 0.3.2) five offsets changed during the session: player 1's score (68068-68070, 191 changes), the end-of-game counter (68060, once, 0.25 s after the last score) and credits (69644, once, at the start); 5820 other changed bytes were dropped by the watch list (filtered_bytes) and are not in the journal. The map puts current_ball (0x00032AB9), current_player (0x00032AB8) and game_over (0x00032AEA) in CPU RAM, which ChangedNVRAM never reports, and player_count (67840) did not move. So nothing in this journal moves when a ball ends except the score itself. Read from the score alone (an inference, not a signal the detector may use): the three balls probably ended near t=207.2 (+141120 after 5 s of silence, then 16.6 s without a score), t=250.8 (+368340 after 11 s of silence, the last score before the hand pass 44 s later) and t=686.2 (+214320, the game's end 0.25 s later). A score pause cannot stand in for a ball end: the game has four pauses of 11 s or longer during play (after t=92.6, 207.2, 239.9 and 664.6), and the +2000000 at t=664.6 with 12.8 s of silence after it has a twin in every earlier session of this table (2026-11-05-1). What would have to be recorded to do better is in fixtures/README.md (Stern SAM ball ends)."
+}
