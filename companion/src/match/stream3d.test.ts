@@ -1202,6 +1202,28 @@ describe('the first start waits for the 3D connection (I11.4.9)', () => {
     expect(r.m.startWait()).toEqual(NONE);
   });
 
+  it('I11.4.13: the silent mark is the limit passing with the VPX still expected, whatever the lobby did meanwhile; a VPX that was closed before its limit is never marked', () => {
+    // The match starts 20 s in (the gate goes off); the build still has not connected at its limit: marked.
+    const started = lobby();
+    started.m.forkLaunched();
+    started.m.setTableOpen(true);
+    started.clock.advance(20_000);
+    started.m.setStartGate(false);
+    expect(started.m.forkSilent()).toBe(false);
+    started.clock.advance(FORK_HELLO_WAIT_MS - 20_000 + 2);
+    expect(started.m.forkSilent()).toBe(true);
+    // The player closes VPX 20 s in: nothing is expected any more, and the limit passing means nothing.
+    const closed = lobby();
+    closed.m.forkLaunched();
+    closed.m.setTableOpen(true);
+    closed.clock.advance(20_000);
+    closed.m.forkGone();
+    closed.m.setTableOpen(false);
+    closed.clock.advance(FORK_HELLO_WAIT_MS);
+    expect(closed.m.forkSilent()).toBe(false);
+    expect(closed.m.expectingFork()).toBe(false);
+  });
+
   it('I11.4.13: a VPX that connects after its limit (a table that loaded slowly) is not left without the wait: the PC gets its 45 s for the other players from that moment, and the log says what happened', () => {
     const r = lobby();
     r.m.forkLaunched();

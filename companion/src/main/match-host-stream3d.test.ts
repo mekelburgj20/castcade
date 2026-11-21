@@ -201,6 +201,8 @@ interface SeatOptions {
   extra?: Partial<Opts>;
   /** I11.4.9: the limit of this PC's wait for its 3D connection at the first start (default: the app's 45 s). */
   startWaitMs?: number;
+  /** I11.4.12: how long a fork that left the control connection is given to be back before the lobby says anything. */
+  forkReconnectGraceMs?: number;
 }
 
 function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
@@ -230,6 +232,7 @@ function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
     freePort: async () => ++port,
     ports: { read: () => saved.text, write: (text) => void (saved.text = text) },
     ...(o.startWaitMs !== undefined ? { startWaitMs: o.startWaitMs } : {}),
+    ...(o.forkReconnectGraceMs !== undefined ? { forkReconnectGraceMs: o.forkReconnectGraceMs } : {}),
   });
   streams.push(stream3d);
   const fakes = rigFakes();
@@ -989,7 +992,7 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
 
 describe('a table that Castcade did not start in the Castcade VPX build (I11.4.12)', () => {
   const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
-  const NOTE = 'Not in 3D: this table was not started by Castcade. For 3D, close VPX and let Castcade start the table (host or join with VPX closed)';
+  const NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again';
 
   it('with the build beside VPX and 3D watch on, a table that is open and not on the control connection is said in the lobby, on the panel line and in the log, and no longer once Castcade has started the table', async () => {
     const hub = new TunnelHub();
@@ -1001,18 +1004,63 @@ describe('a table that Castcade did not start in the Castcade VPX build (I11.4.1
     // Both tables are open (the witness says so) and neither was started by Castcade: nothing is on a control connection.
     await until(() => message(H).endsWith(NOTE) && message(K).endsWith(NOTE), 5000, 'the note on both lobby lines');
     expect(message(K)).toBe(`Waiting for Hosty to start a game on the table · ${NOTE}`);
-    expect(K.lines.filter((l) => l.includes('was not started by Castcade in the Castcade VPX build'))).toHaveLength(1);
+    expect(K.lines.filter((l) => l.includes('is not running in the Castcade VPX build (opened by hand'))).toHaveLength(1);
     // Krobs closes VPX and lets Castcade start the table: while it loads nothing is said, and nothing when it is up.
     await K.mh.tableLaunch();
-    await until(() => !message(K).includes('not started by Castcade'), 5000, 'the note gone while the table loads');
-    expect(K.lines).toContain('stream3d: the lobby no longer says that the table was not started by Castcade (it does not apply any more)');
+    await until(() => !message(K).includes('not running in the Castcade VPX build'), 5000, 'the note gone while the table loads');
+    expect(K.lines).toContain('stream3d: the lobby no longer says that the table is not running in the Castcade VPX build (it does not apply any more)');
     await forkOf(K);
     await until(() => view(K)?.fork === 'ready', 5000, "Krobs' fork ready");
     await sleep(100);
-    expect(message(K)).not.toContain('not started by Castcade');
+    expect(message(K)).not.toContain('not running in the Castcade VPX build');
     // The host's is still open by hand: its line keeps saying so, once in its log.
     expect(message(H).endsWith(NOTE)).toBe(true);
-    expect(H.lines.filter((l) => l.includes('was not started by Castcade in the Castcade VPX build'))).toHaveLength(1);
+    expect(H.lines.filter((l) => l.includes('is not running in the Castcade VPX build (opened by hand'))).toHaveLength(1);
+  });
+
+  it('Castcade itself tried the build for this match and it did not start: the lobby says that 3D is not available on this PC for this match, not to start the table again', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs');
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
+    // Castcade starts Krobs' table in the build; the launch answers "not started" (as one-step is told), and one-step
+    // starts the player's own VPX: a table is open, and it is not in the build.
+    const launch = await K.mh.tableLaunch();
+    launch!.notStarted!();
+    const FAILED = 'Not in 3D on this PC for this match: the Castcade VPX build did not start (the log has the reason)';
+    await until(() => message(K).endsWith(FAILED), 5000, 'the note that the build did not start');
+    expect(message(K)).not.toContain('started again by Castcade');
+    expect(K.lines.some((l) => l.includes('is not running in the Castcade VPX build (Castcade tried that build for this match and it did not start)'))).toBe(true);
+  });
+
+  it('a table Castcade started in the build whose control connection drops for a moment gets no note while the build reconnects by itself; one that stays away does', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty', { forkReconnectGraceMs: 700 });
+    const K = seat(hub, 'Krobs');
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2, 8000, 'both in the lobby');
+    await H.mh.tableLaunch();
+    const f = await forkOf(H);
+    await until(() => view(H)?.fork === 'ready', 5000, 'the fork ready');
+    expect(message(H)).not.toContain('not running in the Castcade VPX build');
+    // (This test's witness sees a table open from the start, so the note was there until Castcade started the table.)
+    const said = (): number => H.lines.filter((l) => l.includes('is not running in the Castcade VPX build')).length;
+    const before = said();
+    // The connection drops; the build is back within its two seconds.
+    f.close();
+    await until(() => view(H)?.fork === 'none', 3000, 'the fork off the control connection');
+    await sleep(300);
+    expect(message(H)).not.toContain('not running in the Castcade VPX build');
+    const again = await forkOf(H);
+    await until(() => view(H)?.fork === 'ready', 5000, 'the fork back');
+    await sleep(600);
+    expect(said()).toBe(before);
+    // It goes for good (the table was closed and opened by hand): after the grace the lobby says so.
+    again.close();
+    await until(() => message(H).endsWith(NOTE), 5000, 'the note after the grace');
   });
 
   it('never on a PC without the build, nor with 3D watch off', async () => {
@@ -1022,12 +1070,12 @@ describe('a table that Castcade did not start in the Castcade VPX build (I11.4.1
     const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
     await K.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
-    await until(() => message(K).includes('not started by Castcade'), 5000, 'the note where the build is');
+    await until(() => message(K).includes('not running in the Castcade VPX build'), 5000, 'the note where the build is');
     await K.mh.setSettings({ watch3d: 'off' });
-    await until(() => !message(K).includes('not started by Castcade'), 5000, 'the note gone with 3D watch off');
+    await until(() => !message(K).includes('not running in the Castcade VPX build'), 5000, 'the note gone with 3D watch off');
     await sleep(150);
-    expect(message(H)).not.toContain('not started by Castcade');
-    expect(H.lines.filter((l) => l.includes('not started by Castcade'))).toEqual([]);
+    expect(message(H)).not.toContain('not running in the Castcade VPX build');
+    expect(H.lines.filter((l) => l.includes('not running in the Castcade VPX build'))).toEqual([]);
   });
 });
 

@@ -11,6 +11,13 @@
  * Within a rung an imported table wins over a file that was only found in the folder, then the most recently played.
  * The fingerprint comes from another PC: it is only ever compared with what is on this disk, never used as a path.
  *
+ * A table that can report ball ends is never displaced by one that cannot (I11.4.11 review): an imported table has the
+ * sidecar patch, a file that was only found in the folder has not (the witness runs it in basic mode, the lobby says
+ * its ball ends cannot be reported, and every ball of that player needs Pass the turn). So when any imported table
+ * matches, the pick is among the imported ones (the identical file first), and a file that is not imported is only
+ * picked when no imported copy of the game exists. `identical` then names the host's file when it is on this PC and
+ * was passed over: the player can import it for 3D.
+ *
  * I11.4.11 (2026-11-21): rung 1 needs a hash on this side, and a file that was only found in the folder has none (nor
  * has an imported one that changed since it was read). `unhashedCandidates` names the files that could still be the
  * host's: the caller hashes them (`table-hash.ts`) and asks again, so the identical file wins over a same-name copy.
@@ -23,6 +30,8 @@ export type TableMatchKind = 'same_file' | 'same_rom' | 'same_name';
 export interface TableMatch {
   table: KnownTable;
   how: TableMatchKind;
+  /** The host's identical file on this PC, when it is not imported and an imported copy was picked instead. */
+  identical?: KnownTable;
 }
 
 const ZERO = /^0{64}$/;
@@ -38,24 +47,27 @@ export function titleOf(name: string): string {
 
 const RANK: Record<TableMatchKind, number> = { same_file: 0, same_rom: 1, same_name: 2 };
 
+/** I11.4.11: an imported copy was started although the host's identical file is on this PC, not imported (`file`: its name). */
+export const identicalFileNote = (file: string): string => `For 3D: the host's file is on this PC as "${file}", not imported. Import it in Castcade and rejoin`;
+
 /** The host's file hash, lower-case; null when its fingerprint carries none yet (zeros). */
 export function hostHash(hostGame: Pick<GameFingerprint, 'tableHash'>): string | null {
   return ZERO.test(hostGame.tableHash) ? null : hostGame.tableHash.toLowerCase();
 }
 
-/** How many files of one title are hashed for one join, at most (imported ones first, then by the list's order). */
+/** How many files of one title are hashed for one join, at most (imported ones first, then by the list's order): the caller's cut. */
 export const HASH_CANDIDATES_MAX = 8;
 
 /**
  * I11.4.11: when the host's hash is known and no table here has it, the tables that could still be that file: the
  * same name or title as the host's game (or its ROM), and no hash yet. Empty when a table with the host's hash is
- * known already, or the host's hash is not.
+ * known already, or the host's hash is not. All of them, imported first: the caller hashes `HASH_CANDIDATES_MAX`.
  */
 export function unhashedCandidates(hostGame: Pick<GameFingerprint, 'tableName' | 'tableHash' | 'romName'>, tables: readonly KnownTable[]): KnownTable[] {
   const hash = hostHash(hostGame);
   if (!hash || tables.some((t) => t.sha256 === hash)) return [];
   const out = tables.filter((t) => t.sha256 === null && findLocalTable({ ...hostGame, tableHash: '0'.repeat(64) }, [t]) !== null);
-  return [...out.filter((t) => t.imported), ...out.filter((t) => !t.imported)].slice(0, HASH_CANDIDATES_MAX);
+  return [...out.filter((t) => t.imported), ...out.filter((t) => !t.imported)];
 }
 
 export function findLocalTable(hostGame: Pick<GameFingerprint, 'tableName' | 'tableHash' | 'romName'>, tables: readonly KnownTable[]): TableMatch | null {
@@ -81,5 +93,10 @@ export function findLocalTable(hostGame: Pick<GameFingerprint, 'tableName' | 'ta
     scored.push({ m: { table: t, how }, score: RANK[how] * 4 + (exact || how !== 'same_name' ? 0 : 2) + (t.imported ? 0 : 1), order });
   });
   scored.sort((a, b) => a.score - b.score || a.order - b.order);
-  return scored[0]?.m ?? null;
+  // A table that can report ball ends (an imported one) is never displaced by one that cannot.
+  const imported = scored.filter((x) => x.m.table.imported);
+  const best = (imported.length > 0 ? imported : scored)[0]?.m ?? null;
+  if (!best || best.how === 'same_file') return best;
+  const identical = scored.find((x) => x.m.how === 'same_file' && !x.m.table.imported)?.m.table;
+  return identical ? { ...best, identical } : best;
 }

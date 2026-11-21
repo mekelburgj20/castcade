@@ -23,7 +23,7 @@
  * imports Electron.
  */
 import type { GameFingerprint } from '@castcade/protocol';
-import { findLocalTable, hostHash, unhashedCandidates } from '../launch/find-table.js';
+import { HASH_CANDIDATES_MAX, findLocalTable, hostHash, identicalFileNote, unhashedCandidates } from '../launch/find-table.js';
 import type { KnownTable } from '../launch/known-tables.js';
 import type { ForkLaunch, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
@@ -114,6 +114,10 @@ export interface OneStepOptions {
     onStatus(cb: (s: MatchStatus) => void): () => void;
     /** The host's game as this rig knows it (a client: from HELLO_ACK), null with no match. */
     hostGame(): GameFingerprint | null;
+    /** I11.4.11: 3D can run on this PC (the Castcade VPX build is beside VPX and 3D watch is on): only then is the host's identical file worth looking for. Absent: no. */
+    wants3d?(): boolean;
+    /** I11.4.11: one more thing for the lobby line of this match (the host's file is here, not imported), or null. */
+    setLaunchNote?(note: string | null): void;
     /**
      * I11.4.2: how a match table is started now: the launch options of the Castcade VPX build with the state stream,
      * and whether that start took (`MatchHost.tableLaunch`); or null / absent: the plain A14 launch.
@@ -134,7 +138,7 @@ export interface OneStepOptions {
    * I11.4.11: the SHA-256 of a table file nothing has hashed yet (`launch/table-hash.ts`: streamed, cached by path,
    * size and time), for finding the host's identical file among the copies of its title. Absent: none is hashed.
    */
-  hashTable?(vpxPath: string): Promise<string | null>;
+  hashTable?(vpxPath: string, signal?: AbortSignal): Promise<string | null>;
   /** I11.4.11: how long a join waits for the host's file hash once the host's table is named. Default 3 s. */
   hostHashWaitMs?: number;
   /** The clock of that wait; default `Date.now`. */
@@ -188,6 +192,12 @@ export function createOneStep(o: OneStepOptions): OneStep {
   /** I11.4.11: the host's table was first seen named and not yet hashed, for the match with this code, at this time. */
   let nameOnly: { code: string; at: number } | null = null;
   let hashTimer: unknown = null;
+  /** I11.4.11: the reads of the copies with no hash, for one match and one host file; `done`: what they found is used. */
+  let hashRun: { key: string; ctl: AbortController; done: boolean; hashes: Map<string, string> } | null = null;
+  const abortHashing = (): void => {
+    if (hashRun && !hashRun.done) hashRun.ctl.abort();
+    hashRun = null;
+  };
   const now = o.now ?? ((): number => Date.now());
   const HOST_HASH_WAIT_MS = o.hostHashWaitMs ?? 3000;
   const clearHashTimer = (): void => {
@@ -320,6 +330,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
       hostTable = null;
       nameOnly = null;
       clearHashTimer();
+      abortHashing();
+      match.setLaunchNote?.(null);
       if (launch.state !== 'idle' && launch.state !== 'starting') setLaunch(IDLE);
       return;
     }
@@ -337,6 +349,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (launch.state === 'starting') return;
     if (open !== null) {
       // Any order: the table is open already (the player opened it, or it never closed). Nothing is started.
+      abortHashing();
       want = null;
       log.info(`launch: ${open} is already open; nothing started`);
       setLaunch({ state: 'running', table: open, detail: `Using the table that is already open: ${open}` });
@@ -381,22 +394,42 @@ export function createOneStep(o: OneStepOptions): OneStep {
     const files = o.tableFiles ? await o.tableFiles(known).catch(() => [] as KnownTable[]) : [];
     let all = [...known, ...files];
     // I11.4.11: the host's file is known by its hash and no table here has that hash: the copies of that title that
-    // nothing has hashed yet are hashed now (a few at most, one at a time, each kept for the next time), so the
-    // identical file is found where there is one, and a same-name copy is only taken when there is none.
-    const unhashed = o.hashTable ? unhashedCandidates(game, all) : [];
-    if (unhashed.length > 0 && o.hashTable) {
-      const want0 = hostHash(game);
-      setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the host's file among ${unhashed.length} ${unhashed.length === 1 ? 'copy' : 'copies'} of ${game.tableName} on this PC` });
-      emit();
-      const hashed = new Map<string, string>();
-      for (const t of unhashed) {
-        const sha = await o.hashTable(t.vpxPath).catch(() => null);
-        if (stopped) return;
-        if (sha) hashed.set(t.vpxPath, sha.toLowerCase());
-        if (sha && sha.toLowerCase() === want0) break;
+    // nothing has hashed yet are hashed (a few at most, one at a time, each kept for the next time), so the identical
+    // file is found where there is one. Only on a PC where the identical file buys something (3D: the Castcade VPX
+    // build is here and 3D watch is on). Not in the way of anything: the reads run beside this, the join has long
+    // returned, and the match ending, a table opened by hand, a new Host or Join or `stop` end them at once.
+    const want0 = hostHash(game);
+    const key = `${w.code}|${want0 ?? ''}`;
+    if (hashRun && hashRun.key !== key) abortHashing();
+    if (hashRun && !hashRun.done) return;
+    if (hashRun?.done) {
+      const got = hashRun.hashes;
+      all = all.map((t) => (got.has(t.vpxPath) ? { ...t, sha256: got.get(t.vpxPath) as string } : t));
+    } else if (o.hashTable && want0 !== null && (match.wants3d?.() ?? false)) {
+      const every = unhashedCandidates(game, all);
+      const some = every.slice(0, HASH_CANDIDATES_MAX);
+      if (some.length > 0) {
+        const run = { key, ctl: new AbortController(), done: false, hashes: new Map<string, string>() };
+        hashRun = run;
+        const hashTable = o.hashTable;
+        setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the host's file among ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of ${game.tableName} on this PC` });
+        void (async (): Promise<void> => {
+          for (const t of some) {
+            if (run.ctl.signal.aborted) return;
+            const sha = await hashTable(t.vpxPath, run.ctl.signal).catch(() => null);
+            if (sha) run.hashes.set(t.vpxPath, sha.toLowerCase());
+            if (sha && sha.toLowerCase() === want0) break;
+          }
+          if (hashRun !== run || run.ctl.signal.aborted || stopped) return;
+          run.done = true;
+          const found = [...run.hashes.values()].includes(want0);
+          log.info(
+            `launch: hashed ${run.hashes.size} of ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of the host's ${game.tableName} that had no hash: ${found ? 'one is the identical file' : 'none is the identical file'}${!found && every.length > some.length ? `; ${every.length - some.length} more ${every.length - some.length === 1 ? 'copy was' : 'copies were'} not looked at (${HASH_CANDIDATES_MAX} at most)` : ''}`,
+          );
+          void reconcile();
+        })();
+        return;
       }
-      all = all.map((t) => (hashed.has(t.vpxPath) ? { ...t, sha256: hashed.get(t.vpxPath) as string } : t));
-      log.info(`launch: hashed ${hashed.size} of ${unhashed.length} ${unhashed.length === 1 ? 'copy' : 'copies'} of the host's ${game.tableName} that had no hash: ${[...hashed.values()].includes(want0 as string) ? 'one is the identical file' : 'none is the identical file'}`);
     }
     // The world may have moved while the lists were read.
     if (want !== w || tableOpen() !== null || match.status().code !== w.code) {
@@ -411,8 +444,14 @@ export function createOneStep(o: OneStepOptions): OneStep {
       return;
     }
     // Not the host's file: said here for the log; the lobby's table line says it to the player before the start.
-    if (found.how !== 'same_file' && hostHash(game) !== null) log.warn(`launch: no copy of ${game.tableName} on this PC is the host's file; ${found.table.tableId} is started by its name (the lobby says the files differ)`);
+    if (found.identical) {
+      // The host's file is here and is not imported: the imported copy is started all the same (it can report ball
+      // ends, the other cannot: a match that takes turns comes before 3D), and the player is told how to get 3D.
+      log.warn(`launch: the host's file is on this PC as ${found.identical.tableId}, not imported; ${found.table.tableId} (imported: it reports ball ends) is started. For 3D: import ${found.identical.tableId} in Castcade and rejoin`);
+      match.setLaunchNote?.(identicalFileNote(found.identical.tableId));
+    } else if (found.how !== 'same_file' && hostHash(game) !== null) log.warn(`launch: no copy of ${game.tableName} on this PC is the host's file; ${found.table.tableId} is started by its name (the lobby says the files differ)`);
     await start(found.table, `the host plays ${game.tableName}: ${found.how.replace('_', ' ')}${found.table.imported ? '' : ', not imported'}`);
+    if (found.identical && launch.state !== 'failed') setLaunch({ ...launch, detail: `${launch.detail ?? ''}${launch.detail ? ' · ' : ''}${identicalFileNote(found.identical.tableId)}` });
   };
   const reconcile = async (): Promise<void> => {
     if (stopped) return;
@@ -455,6 +494,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
 
   /** Join by a checked link; throws what the match host threw. The table is then the wish `settle` works on. */
   const join = async (link: JoinLink, displayName = ''): Promise<MatchStatus> => {
+    // I11.4.11: a new join: what was being read for the last match is given up at once.
+    abortHashing();
     const m = match.status();
     if (m.role !== 'none') {
       if (m.code === link.code) throw new Error('You are already in this match.');
@@ -481,6 +522,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     },
 
     async host(h) {
+      abortHashing();
       let pick: KnownTable | null = null;
       if (h.tablePath !== null) {
         // Only a table from Castcade's own list: the renderer's string is a key into it, never a path to run.
@@ -600,6 +642,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       stopped = true;
       clearLaunchTimer();
       clearHashTimer();
+      abortHashing();
       for (const off of offs) off();
       listeners.clear();
     },

@@ -574,7 +574,7 @@ describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12)', (
     const { host, clock, H, c } = await rig();
     c.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
     expect(c.line()).toBe(`Waiting for Hosty to start a game on the table · ${TABLE_BY_HAND_NOTE}`);
-    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table was not started by Castcade. For 3D, close VPX and let Castcade start the table (host or join with VPX closed)');
+    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again');
     // Only on the PC it is about.
     expect(H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
     let changes = 0;
@@ -597,6 +597,6 @@ describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12)', (
     clock.advance(5_000);
     await flush();
     expect(host.state.phase).toBe('running');
-    expect(H.line() ?? '').not.toContain('not started by Castcade');
+    expect(H.line() ?? '').not.toContain('not running in the Castcade VPX build');
   });
 });

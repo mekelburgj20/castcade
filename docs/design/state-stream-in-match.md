@@ -291,15 +291,25 @@ before game 1: a next game and a rejoin never wait.
 **What the lobby says besides** (I11.4.11, I11.4.12), on the Match tab and the panel, before the start:
 
 - the two PCs have different files of the table (the table advisory that was there: "same table, different file",
-  "different table file"), and, on a PC whose VPX is the fork, what that costs: `the other player's turns are
-  shown as the flat video, not in 3D: use the identical table file on both PCs`. A joining PC looks for the
-  host's identical file first: the copies of that title that nothing has hashed are hashed (eight at most, one at
-  a time, kept by path, size and time), and a same-name copy is only started when none is the host's file.
+  "different table file"), and, where the identical file would give 3D (this PC's VPX ready in the fork, the other
+  PC not known to have none), what that costs: `the other player's turns are shown as the flat video, not in 3D:
+  use the identical table file on both PCs`.
+- which table a joining PC starts: one that can report ball ends is never displaced by one that cannot (a match
+  that takes turns comes before 3D). Among imported tables the host's identical file wins; a file that is not
+  imported is started only when no imported copy of the game exists. To know the identical file, the copies of
+  that title that nothing has hashed are hashed (eight at most, one at a time, kept by path, size and time, given
+  up at once when the match ends or the player opens a table), only on a PC where 3D can run. When an imported
+  copy is started although the host's file is on this PC, not imported, the launch state and the lobby line say:
+  `For 3D: the host's file is on this PC as "<file>", not imported. Import it in Castcade and rejoin`. Importing
+  it automatically is not built.
 - this PC has the fork beside its VPX and `watch3d` on, and the table that is open is not on the control
-  connection because Castcade did not start it (opened by hand, or open before the match): `Not in 3D: this
-  table was not started by Castcade. For 3D, close VPX and let Castcade start the table (host or join with VPX
-  closed)`. Not while a table Castcade started is still loading, not for a build that never connects, not on a
-  PC without the fork or with `watch3d` off; gone when it no longer applies.
+  connection (opened by hand, open before the match, left from a 3D watch session, started while `watch3d` was
+  off): `Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by
+  Castcade: close VPX, then host or join again`. When Castcade itself tried the fork for this match and it did not
+  start: `Not in 3D on this PC for this match: the Castcade VPX build did not start (the log has the reason)`. Not
+  while a table Castcade started is still loading, not for the 5 s a fork that dropped off the control connection
+  is given to be back, not for a build that never connects, not on a PC without the fork or with `watch3d` off;
+  gone when it no longer applies.
 
 **How the host knows.** Each PC says it in the lobby with `PARTICIPANT_UPDATE.stream3dWaitMs` (the ms left of its
 own wait; 0: settled), the host's own through `updateLocal`; the host lists everyone it was told of in

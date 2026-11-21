@@ -662,6 +662,19 @@ export class Stream3d {
         this.changed();
       }, Math.max(0, next - now) + 1);
     }
+    // I11.4.13: the mark of a build that did not connect within its limit, whatever the lobby did meanwhile (a match
+    // that started before the limit must not make the next match wait for the same build). A VPX that was closed
+    // before its limit is not expected any more, and is never marked.
+    const overdue = this.expecting && this.link !== 'ready' && this.link !== 'version' && this.tableOpenAt !== null ? this.tableOpenAt + this.forkHelloWaitMs : null;
+    if (overdue !== null) {
+      if (now >= overdue) this.forkLate = true;
+      else if (this.waitTimer === null) {
+        this.waitTimer = this.d.setTimeout(() => {
+          this.waitTimer = null;
+          this.changed();
+        }, overdue - now + 1);
+      }
+    }
     const names = (ids: readonly string[]): string => ids.map((id) => this.name(id)).join(', ');
     const said = w.pending ? `${w.why}:${w.waitingFor.join(',')}` : '';
     if (said === this.waitSaid) return;
@@ -688,7 +701,6 @@ export class Stream3d {
     else if (this.link === 'version') why = 'its Castcade VPX build speaks another version of the control connection';
     else if (this.link !== 'ready') {
       // Not a verdict on the build: a table that is still loading connects when it is up, and is then waited for (b).
-      if (this.expecting) this.forkLate = true;
       why = this.expecting
         ? `${forkSecs} s passed since the table was seen open and its Castcade VPX build has not connected to Castcade yet (it connects when the table has loaded; a build from before the 3D watch in a match never does): a start does not wait for this PC's VPX any longer`
         : 'the Castcade VPX build is not coming (it ended, or did not start)';

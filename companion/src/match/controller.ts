@@ -235,10 +235,13 @@ export function lobbyLineKey(message: string | null): string | null {
  */
 export const FILES_DIFFER_COST = "the other player's turns are shown as the flat video, not in 3D: use the identical table file on both PCs";
 /**
- * I11.4.12 (2026-11-21): the lobby's note on a PC that has the Castcade VPX build, with a table open that Castcade did
- * not start in it (opened by hand, or open before the match).
+ * I11.4.12 (2026-11-21): the lobby's note on a PC that has the Castcade VPX build, with a table open that is not
+ * running in it: opened by hand, open before the match, left from a 3D watch session, started while 3D watch was
+ * off. What it says is true in each of those.
  */
-export const TABLE_BY_HAND_NOTE = 'Not in 3D: this table was not started by Castcade. For 3D, close VPX and let Castcade start the table (host or join with VPX closed)';
+export const TABLE_BY_HAND_NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again';
+/** I11.4.12: Castcade itself tried the Castcade VPX build for this match's table and it did not start: nothing the player can do by starting it again. */
+export const TABLE_FORK_FAILED_NOTE = 'Not in 3D on this PC for this match: the Castcade VPX build did not start (the log has the reason)';
 
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
 export type PreMatchPlay = 'free' | 'locked';

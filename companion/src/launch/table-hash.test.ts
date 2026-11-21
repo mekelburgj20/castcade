@@ -15,6 +15,7 @@ function world(saved: string | null = null) {
     [B]: { size: 10, mtimeMs: 5, sha: 'bb'.repeat(32) },
   };
   const reads: string[] = [];
+  const signals: Array<AbortSignal | null> = [];
   let running = 0;
   let most = 0;
   const store = { text: saved };
@@ -28,16 +29,18 @@ function world(saved: string | null = null) {
   const hasher = createTableHasher({
     fs,
     io: { read: () => store.text, write: (t) => void (store.text = t) },
-    hash: async (_fs, p) => {
+    hash: async (_fs, p, signal) => {
       reads.push(p);
+      signals.push(signal ?? null);
       running += 1;
       most = Math.max(most, running);
       await new Promise((r) => setTimeout(r, 5));
       running -= 1;
+      if (signal?.aborted) throw new Error('aborted');
       return files[p]!.sha;
     },
   });
-  return { hasher, files, reads, store, most: () => most };
+  return { hasher, files, reads, signals, store, most: () => most };
 }
 
 describe('the hash of a table file (I11.4.11)', () => {
@@ -62,6 +65,22 @@ describe('the hash of a table file (I11.4.11)', () => {
     expect(await w.hasher.hashOf(String.raw`C:\Tables\gone.vpx`)).toBeNull();
     const torn = world('{ not json');
     expect(await torn.hasher.hashOf(B)).toBe('bb'.repeat(32));
+  });
+
+  it('a read can be given up: the signal reaches the reader, an aborted read answers null and is not kept, and one that was still waiting its turn is never begun', async () => {
+    const w = world();
+    const ctl = new AbortController();
+    const first = w.hasher.hashOf(A, ctl.signal);
+    const second = w.hasher.hashOf(B, ctl.signal);
+    await new Promise((r) => setTimeout(r, 1));
+    ctl.abort();
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(w.reads).toEqual([A]);
+    expect(w.signals[0]).toBe(ctl.signal);
+    // Nothing of it was kept: asked again, the file is read.
+    expect(await w.hasher.hashOf(A)).toBe('aa'.repeat(32));
+    expect(w.reads).toEqual([A, A]);
   });
 
   it('one file at a time, whoever asks', async () => {
