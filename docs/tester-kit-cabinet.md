@@ -2,10 +2,13 @@
 
 For two setups, both of which run Visual Pinball X 10.8.0 on Windows:
 
-- **A.** A virtual pinball cabinet with a Windows PC inside.
+- **A.** A standalone virtual pinball cabinet: a VPin with its own Windows PC inside.
 - **B.** An AtGames Legends Pinball 4KP driven by a Windows PC in OTG mode.
 
 The steps are the same for both. Where a setup differs, the step says so, and section 7 has the notes for each.
+
+Castcade is a Windows app. It does not run with VPX Standalone, the Visual Pinball builds for Linux, macOS,
+Android and iOS.
 
 ## 1. What you are testing
 
@@ -48,9 +51,12 @@ To undo everything: Castcade → **Settings → Import tables for live scores �
 The probe is a script that reads how the machine is set up and writes one text file. It changes nothing,
 needs no administrator rights and sends nothing anywhere.
 
-1. Unzip `castcade-probe.zip` into any folder on the PC that runs VPX.
-2. Double-click **Castcade Probe.cmd**. A window lists what it found; lines that start with `PROBLEM` or
-   `CHECK` are the ones that matter.
+1. Download
+   [`castcade-probe.zip`](https://github.com/mekelburgj20/castcade/releases/download/v0.2.47/castcade-probe.zip)
+   and unzip it into any folder on the PC that runs VPX. `README.md` inside says what it reads.
+2. Double-click **Castcade Probe.cmd**. If Windows says *Windows protected your PC*, click
+   **More info → Run anyway**. A window lists what it found; lines that start with `PROBLEM` or `CHECK` are
+   the ones that matter.
 3. Send back the file it names, `castcade-probe-<date>.txt`. It holds no password and no token, and your
    Windows user name is replaced with `<user>`.
 
@@ -64,7 +70,10 @@ You need a keyboard and a mouse on the PC for this part. On a cabinet the Castca
 display, which is usually the playfield.
 
 1. **Download** the newest `Castcade-Witness-Setup-<version>.exe` from
-   <https://github.com/mekelburgj20/castcade/releases>. Take the file with **Witness** in its name.
+   <https://github.com/mekelburgj20/castcade/releases> (the first one is
+   [`Castcade-Witness-Setup-0.2.47.exe`](https://github.com/mekelburgj20/castcade/releases/download/v0.2.47/Castcade-Witness-Setup-0.2.47.exe)).
+   Take the file with **Witness** in its name. `Castcade-Setup-…` without it is the full app, with the match and
+   VR streaming features this test does not use.
 2. **Install.** It is not code-signed yet, so SmartScreen says *Windows protected your PC*: click
    **More info → Run anyway**. Castcade starts in the tray (the **C** icon by the clock).
 3. **Pair.** On <https://arcaid.app>: **Account Settings → Arcaid Witness → create a pairing code**. In
@@ -140,3 +149,14 @@ And send:
 - A balloon *"Castcade could not keep a table patch"* means an antivirus removed the script Castcade put
   beside a table. The table still plays. Windows Security → Protection history → allow the file, then
   Status → **Patch now**.
+
+## Copy-paste invite
+
+> I'm testing the Witness edition of Castcade, a small Windows tray app that posts your VPX scores to ArcAid by
+> itself, so a tournament can count scores and attempts without anyone typing them in. It is new and nobody has
+> run it on a cabinet yet, so "it didn't work, here is what I saw" is a useful answer. About 5 minutes for a
+> read-only setup check, 15 to install, then three short games. It works on a VPin with its own Windows PC and on
+> an AtGames 4KP in OTG. It never changes a table file: it adds one small script file beside each table and one in
+> VPX's scripts folder, and one button removes the table scripts again.
+> Steps: https://github.com/mekelburgj20/castcade/blob/main/docs/tester-kit-cabinet.md
+> Send your scores to: (room) / (tournament)
