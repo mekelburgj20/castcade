@@ -65,6 +65,14 @@ jobs:
           node companion/scripts/fetch-audio-helper.mjs --from audio-helper/build/Release
       # D10.1: the native spectator-video helper (video-helper.yml builds the release's zip in parallel). Fetches its deps
       # (libwebrtc, FFmpeg shared build; sha256-pinned), builds, and stages exe + FFmpeg dlls + THIRD-PARTY.md.
+      # E11: the dated BtbN autobuild the helper pins is gone upstream (HTTP 404 on 2026-11-20; the first v0.2.47 run
+      # failed here). Its files live in the Actions cache video-helper.yml keeps on main: same path and key, so the same
+      # archive. fetch-ffmpeg.mjs checks the folder against the sha256 pin and downloads only on a miss.
+      - name: Restore the video helper's pinned FFmpeg from the cache video-helper.yml keeps
+        uses: actions/cache/restore@v4
+        with:
+          path: video-helper/deps/ffmpeg
+          key: video-ffmpeg-${{ runner.os }}-${{ hashFiles('video-helper/ffmpeg.sha256') }}
       - name: Build the native video helper and stage it into companion/resources/video-helper
         shell: bash
         run: |
