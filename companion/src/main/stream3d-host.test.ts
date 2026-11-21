@@ -56,6 +56,7 @@ interface PcOptions {
   playWaitMs?: number;
   helloWaitMs?: number;
   forkStartMs?: number;
+  forkHelloWaitMs?: number;
 }
 
 function pc(hub: TunnelHub, id: string, o: PcOptions = {}): Pc {
@@ -76,6 +77,7 @@ function pc(hub: TunnelHub, id: string, o: PcOptions = {}): Pc {
     ...(o.playWaitMs !== undefined ? { playWaitMs: o.playWaitMs } : {}),
     ...(o.helloWaitMs !== undefined ? { helloWaitMs: o.helloWaitMs } : {}),
     ...(o.forkStartMs !== undefined ? { forkStartMs: o.forkStartMs } : {}),
+    ...(o.forkHelloWaitMs !== undefined ? { forkHelloWaitMs: o.forkHelloWaitMs } : {}),
   });
   hosts.push(host);
   return { id, host, logs, saved, tunnel: () => hub.all.filter((t) => t.id === id).at(-1) as FakeTunnel };
@@ -228,6 +230,56 @@ describe('a launch and the wait of the first start (I11.4.9)', () => {
     expect(s.a!.startWait().pending).toBe(true);
     ended!.options.onExit!(1);
     expect(s.a!.startWait().pending).toBe(false);
+  });
+});
+
+describe('what the view says of the fork, and a build that never connects (I11.4.12, I11.4.13)', () => {
+  it('the view says whether the Castcade VPX build is beside VPX at all, and whether a table started in it is still expected', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    const c = pc(hub, 'c', { fork: false });
+    const s = match([a, c]);
+    await until(() => s.a!.status().forkInstalled === true && s.c!.status().forkInstalled === false, 2000, 'the look for the fork exe');
+    expect(s.a!.status()).toMatchObject({ fork: 'none', expecting: false, forkSilent: false });
+    await a.host.launch('auto');
+    expect(s.a!.status().expecting).toBe(true);
+    // Its VPX connects: on the control connection, nothing expected any more.
+    const f = await forkOf(a);
+    f.say('state playing');
+    await until(() => s.a!.status().fork === 'ready', 2000, 'the fork ready');
+    expect(s.a!.status().expecting).toBe(false);
+  });
+
+  it('a build that did not connect within its limit is remembered for the run: the next start in it is not waited for, and the log says so; its first hello forgets it', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a', { forkHelloWaitMs: 60 });
+    const b = pc(hub, 'b');
+    let s = match([a, b]);
+    s.a!.setStartGate(true);
+    await a.host.launch('auto');
+    s.a!.setTableOpen(true);
+    expect(s.a!.startWait()).toMatchObject({ pending: true, why: 'fork' });
+    await until(() => s.a!.status().forkSilent, 2000, 'the limit');
+    expect(s.a!.startWait().pending).toBe(false);
+    expect(a.logs).toContain('stream3d: the Castcade VPX build that was started has not connected; for the rest of this run a match start does not wait for it (it counts again the moment it connects)');
+    // The next match of this run, the same build: started in it all the same, and not waited for.
+    s = match([a, b]);
+    s.a!.setStartGate(true);
+    expect(await a.host.launch('auto')).not.toBeNull();
+    s.a!.setTableOpen(true);
+    expect(s.a!.startWait().pending).toBe(false);
+    expect(s.a!.status()).toMatchObject({ expecting: false, forkSilent: true });
+    expect(a.logs).toContain('stream3d: this Castcade VPX build did not connect the last time it was started in this run (a build from before the 3D watch in a match): the start does not wait for it');
+    // It connects after all (a table that only loaded slowly): it counts again from here on.
+    const f = await forkOf(a);
+    f.say('state playing');
+    await until(() => s.a!.status().fork === 'ready' && !s.a!.status().forkSilent, 2000, 'the hello');
+    f.close();
+    await until(() => s.a!.status().fork === 'none', 2000, 'the fork gone');
+    s = match([a, b]);
+    s.a!.setStartGate(true);
+    await a.host.launch('auto');
+    expect(s.a!.startWait()).toMatchObject({ pending: true, why: 'fork' });
   });
 });
 
