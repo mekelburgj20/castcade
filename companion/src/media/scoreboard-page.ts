@@ -6,10 +6,12 @@
  * A second, small offscreen page beside the match panel (`panel-page.ts`): no media, no controls, only the panel state
  * the match panel gets, drawn as a card: the game and the ball, each player's name and score in turn order with the
  * player who is up marked, and the session tally. `rtc-host.ts` opens it with the headset panel and hands its paint to
- * the OpenXR layer as `CVB1` frames (`vr-layer.ts`, pipe protocol 4), which draws it as a small head-locked quad in a
- * top corner of the view while the mode on screen is hidden (this player's own ball) or theater (vr-layer/README.md
- * "The scoreboard"). The page's background is transparent: the card hugs its rows at the bottom of the frame, so two
- * players make a short card and four a taller one on the same quad.
+ * the OpenXR layer as `CVB1` frames (`vr-layer.ts`, pipe protocol 4), which draws it as a small quad while the mode on
+ * screen is hidden (this player's own ball) or theater (vr-layer/README.md "The scoreboard"): since D8.12.3
+ * (2026-11-21, layer 0.8.0) at a fixed place in the room, up and to the side of where the head faced when the table
+ * opened, or, by the Match tab's setting and with an older layer, head-locked in a top corner of the view as D8.12
+ * drew it. The page's background is transparent: the card hugs its rows at the bottom of the frame, so two players
+ * make a short card and four a taller one on the same quad.
  *
  * The helpers are embedded in the page as their source text (`toString`), like the match panel's: keep them
  * self-contained (no imports, no closures over this module).

@@ -12,7 +12,7 @@ import type { ClientMatch } from '../match/client.js';
 import { HostMatch } from '../match/host.js';
 import { exportPublicKeyB64, generateKeys, type KeyPair } from '../match/keys.js';
 import { cleanShortcut } from '../match/match-menu.js';
-import type { MediaSignal, MediaSignalling, ScoreboardPlace } from '../media/match-media-types.js';
+import type { MediaSignal, MediaSignalling, ScoreboardAnchor, ScoreboardPlace } from '../media/match-media-types.js';
 import type { WitnessStatus } from '../witness/types.js';
 import { describeVrEvidence, vrRuntimeOf, type VrObservation, type VrRuntime } from '../witness/vr-detect.js';
 
@@ -119,6 +119,14 @@ export interface MatchSettings {
    */
   scoreboardPlace: ScoreboardPlace | null;
   /**
+   * D8.12.3 (2026-11-21, the owner after the first match night: "the score panel in VR is annoying. It shouldn't move
+   * with head tracking"): where the headset's scoreboard is held. `room` (the default): at a fixed place in the room,
+   * up and to the side (`scoreboardCorner`'s side) of where the head faced when the table opened; the in-game menu
+   * places it again where the player looks. `head`: in the corner of the view, moving with the head, as D8.12 was.
+   * `room` needs layer 0.8.0 in VPX; with an older one the scoreboard follows the head until VPX restarts.
+   */
+  scoreboardAnchor: ScoreboardAnchor;
+  /**
    * I11.4.2 (2026-11-19, ADR 0011): the player up on this PC's own table in 3D while this player waits: `auto`
    * (whenever both PCs run the Castcade VPX build on the identical table file; else the 2D video), or `off` (always
    * the 2D video, and a match table Castcade starts runs in the player's own VPX).
@@ -160,6 +168,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   scoreboard: true,
   scoreboardCorner: 'top-right',
   scoreboardPlace: null,
+  // D8.12.3 (2026-11-21)
+  scoreboardAnchor: 'room',
   // I11.4.2 (2026-11-19)
   watch3d: 'auto',
 };
@@ -274,6 +284,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (p.scoreboardCorner === 'top-right' || p.scoreboardCorner === 'top-left') next.scoreboardCorner = p.scoreboardCorner;
   // A place that is not one (or null) is the layer's own placement.
   if ('scoreboardPlace' in p) next.scoreboardPlace = cleanScoreboardPlace(p.scoreboardPlace);
+  // D8.12.3: two words; anything else keeps the current one.
+  if (p.scoreboardAnchor === 'room' || p.scoreboardAnchor === 'head') next.scoreboardAnchor = p.scoreboardAnchor;
   // I11.4.2: two words; anything else keeps the current one.
   if (p.watch3d === 'auto' || p.watch3d === 'off') next.watch3d = p.watch3d;
   return next;

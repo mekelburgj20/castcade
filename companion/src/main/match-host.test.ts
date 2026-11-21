@@ -919,10 +919,10 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
       return { media, pages, board };
     };
     const asked = (o: ReturnType<typeof fakeOverlay>) => {
-      const said: Array<{ frames: unknown; corner: string | null; place: unknown }> = [];
-      (o.overlay as unknown as Record<string, unknown>).setScoreboard = (x: { frames: unknown; corner: string | null; place: unknown }) => {
+      const said: Array<{ frames: unknown; corner: string | null; place: unknown; anchor?: string }> = [];
+      (o.overlay as unknown as Record<string, unknown>).setScoreboard = (x: { frames: unknown; corner: string | null; place: unknown; anchor?: string }) => {
         const last = said.at(-1);
-        if (!last || last.frames !== x.frames || last.corner !== x.corner || last.place !== x.place) said.push(x);
+        if (!last || last.frames !== x.frames || last.corner !== x.corner || last.place !== x.place || last.anchor !== x.anchor) said.push(x);
       };
       return said;
     };
@@ -935,17 +935,24 @@ describe('match host: the rig (A6, 2026-10-31)', () => {
     await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Owner' });
     expect(H.mh.status().settings).toMatchObject({ scoreboard: true, scoreboardCorner: 'top-right' });
     expect(b.pages).toEqual([true]);
-    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null });
+    // D8.12.3: fixed in the room is the default, and rides along with every call.
+    expect(H.mh.status().settings.scoreboardAnchor).toBe('room');
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null, anchor: 'room' });
     // Off on the Match tab: the page goes and the layer is told there are no frames; on again: back.
     H.mh.setSettings({ scoreboard: false });
     expect(b.pages).toEqual([true, false]);
-    expect(said.at(-1)).toEqual({ frames: null, corner: null, place: null });
+    expect(said.at(-1)).toEqual({ frames: null, corner: null, place: null, anchor: 'room' });
     H.mh.setSettings({ scoreboard: true, scoreboardCorner: 'top-left' });
     expect(b.pages).toEqual([true, false, true]);
-    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null });
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: null, anchor: 'room' });
     // The placement knob (match.json; no UI) rides along.
     H.mh.setSettings({ scoreboardPlace: { offset: [0.5, 0.45, 1.2], widthM: 0.4 } } as never);
-    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: { offset: [0.5, 0.45, 1.2], widthM: 0.4 } });
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: { offset: [0.5, 0.45, 1.2], widthM: 0.4 }, anchor: 'room' });
+    // D8.12.3: "Follows my head" on the Match tab reaches the layer at once, and back.
+    H.mh.setSettings({ scoreboardAnchor: 'head' });
+    expect(said.at(-1)).toEqual({ frames: b.board, corner: null, place: { offset: [0.5, 0.45, 1.2], widthM: 0.4 }, anchor: 'head' });
+    H.mh.setSettings({ scoreboardAnchor: 'room' });
+    expect(said.at(-1)?.anchor).toBe('room');
     await H.mh.leave();
 
     // SteamVR: the helper draws the panel only; no scoreboard page is opened for it.
@@ -1666,6 +1673,72 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(held.has('Control+Alt+M')).toBe(false);
     await H.mh.leave();
     expect(held.size).toBe(0);
+  }, 15_000);
+
+  it('D8.12.3: "Put the scoreboard where I look" is on the menu of a layer rig in a match, asks the layer once, and is off for a layer that cannot', async () => {
+    type Menu = { items: Array<{ label: string; value: string | null; off: boolean }>; index: number; note: string | null; hint: string } | null;
+    const menus: Menu[] = [];
+    const m = fakeMedia();
+    const board = { onFrame: () => () => undefined };
+    let page = false;
+    const media = { ...m.media, setMenu: (v: Menu) => void menus.push(v), setScoreboard: (want: boolean) => void (page = want), scoreboardFrames: () => (page ? board : null) };
+    const layer = fakeOverlay();
+    let protocol: number | null = 5;
+    let placed = 0;
+    const anchors: Array<string | undefined> = [];
+    Object.assign(layer.overlay as unknown as Record<string, unknown>, {
+      setScoreboard: (x: { anchor?: string }) => void anchors.push(x.anchor),
+      layerProtocol: () => protocol,
+      placeScoreboard: () => (placed++, 'placed'),
+    });
+    const held = new Map<string, () => void>();
+    const shortcuts = { register: (acc: string, cb: () => void) => (held.set(acc, cb), true), unregister: (acc: string) => void held.delete(acc) };
+    let t = 1_000_000;
+    const H = make('menu-board', 'ab'.repeat(32), { witness: liveWitness(VR_VD, VR_OFF).w, media: media as never, vrLayer: layer.overlay, shortcuts, now: () => t });
+    const C = make('menu-board-client', 'ab'.repeat(32));
+    const press = (acc: string, after = 1000): void => {
+      t += after;
+      held.get(acc)!();
+    };
+    const labels = (): string[] => menus.at(-1)!.items.map((i) => i.label);
+    const LINE = 'Put the scoreboard where I look';
+    const hs = await H.mh.host({ port: 43000 + Math.floor(Math.random() * 2000), ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    // The lobby has no scoreboard, so no such line.
+    press('Control+Alt+M');
+    expect(labels()).not.toContain(LINE);
+    press('Control+Alt+K'); // Start match
+    await until(() => H.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+    expect(anchors.at(-1)).toBe('room');
+    // In the match: the line is there, between the microphone and Leave match; choosing it asks the layer once and closes the menu.
+    press('Control+Alt+M');
+    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', LINE, 'Leave match', 'Close menu']);
+    expect(menus.at(-1)!.items[4]!.off).toBe(false);
+    for (let i = 0; i < 4; i++) press('Down');
+    expect(placed).toBe(0);
+    press('Control+Alt+K');
+    expect(placed).toBe(1);
+    expect(menus.at(-1)).toBeNull();
+    expect(layer.modes.at(-1)).toBe('hidden'); // the panel is gone: the table and the scoreboard at its new place
+    // The layer in VPX is 0.7.0 (protocol 4): the line is greyed, says why, and nothing is asked.
+    protocol = 4;
+    press('Control+Alt+M');
+    expect(menus.at(-1)!.items[4]).toEqual({ label: LINE, value: null, off: true });
+    for (let i = 0; i < 4; i++) press('Down');
+    press('Control+Alt+K');
+    expect(placed).toBe(1);
+    expect(menus.at(-1)!.note).toBe('Restart VPX first: until then the scoreboard follows your head');
+    // "Follows my head" on the Match tab: the line goes (the open menu follows), and comes back with the room.
+    protocol = 5;
+    H.mh.setSettings({ scoreboardAnchor: 'head' });
+    expect(labels()).not.toContain(LINE);
+    H.mh.setSettings({ scoreboardAnchor: 'room' });
+    expect(labels()).toContain(LINE);
+    H.mh.setSettings({ scoreboard: false });
+    expect(labels()).not.toContain(LINE);
+    await H.mh.leave();
+    await C.mh.leave().catch(() => undefined);
   }, 15_000);
 
   it('says so when another program holds the menu key', async () => {

@@ -116,7 +116,7 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K', scoreboard: true, scoreboardCorner: 'top-right', scoreboardPlace: null, watch3d: 'auto' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K', scoreboard: true, scoreboardCorner: 'top-right', scoreboardPlace: null, scoreboardAnchor: 'room', watch3d: 'auto' });
     expect(patchMatchSettings(s, { port: 80, ballsPerGame: 4, displayName: '' })).toEqual({ ...s, displayName: null });
     // I11.4.2 (2026-11-19): 3D watch in a match: auto by default, off on request, anything else ignored; a file from before it reads as auto.
     expect(patchMatchSettings(s, { watch3d: 'off' }).watch3d).toBe('off');
@@ -135,6 +135,14 @@ describe('match setup (A6)', () => {
     for (const bad of [{ offset: [0.5, 0.4], widthM: 0.3 }, { offset: [0.5, 0.4, 'x'], widthM: 0.3 }, { offset: [0.5, 0.4, 1], widthM: 0 }, 'top', null]) {
       expect(patchMatchSettings(placed, { scoreboardPlace: bad }).scoreboardPlace).toBeNull();
     }
+    // D8.12.3 (2026-11-21): where the scoreboard is held: fixed in the room by default (a match.json from before it reads so
+    // too), on the head on request, anything else ignored; saved and read back.
+    expect(DEFAULT_MATCH_SETTINGS.scoreboardAnchor).toBe('room');
+    expect(readMatchSettings(JSON.stringify({ port: 28000, settingsVersion: 2, scoreboard: true, scoreboardCorner: 'top-left' })).scoreboardAnchor).toBe('room');
+    expect(patchMatchSettings(s, { scoreboardAnchor: 'head' })).toEqual({ ...s, scoreboardAnchor: 'head' });
+    expect(patchMatchSettings({ ...s, scoreboardAnchor: 'head' }, { scoreboardAnchor: 'world' }).scoreboardAnchor).toBe('head');
+    expect(patchMatchSettings({ ...s, scoreboardAnchor: 'head' }, { scoreboardAnchor: 'room' }).scoreboardAnchor).toBe('room');
+    expect(readMatchSettings(writeMatchSettings({ ...s, scoreboardAnchor: 'head' })).scoreboardAnchor).toBe('head');
     // A12 (2026-11-05): the host's table before the match: free by default, locked on request, anything else ignored.
     expect(patchMatchSettings(s, { preMatchPlay: 'locked' }).preMatchPlay).toBe('locked');
     expect(patchMatchSettings(s, { preMatchPlay: 'open' }).preMatchPlay).toBe('free');
