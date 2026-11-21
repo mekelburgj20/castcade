@@ -317,7 +317,7 @@ async function seats(balls = 2) {
 const scores = (s: number): ControllerFeed => ({ kind: 'current_scores', t: 0, scores: [s], player: 1, ball: 1 });
 const ballEnd = (ball: number): ControllerFeed => ({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 });
 const gameStart: ControllerFeed = { kind: 'game_start', t: 0, players: 1 } as ControllerFeed;
-const UNREAD = 'its score is not being read (not patched, or an original table)';
+const UNREAD = 'it is not patched, an original table, or a machine whose ball ends cannot be read';
 const DARK = "Dark Chaos is an original table (no ROM). Castcade can't read an original's score yet.";
 
 describe('A13: the lobby names a table that cannot report ball ends (controller)', () => {

@@ -23,7 +23,7 @@ vi.mock('electron', () => {
   return { BrowserWindow, ipcMain: { on: () => undefined } };
 });
 
-const { createMatchHost } = await import('./match-host.js');
+const { ballEndsFrom, createMatchHost } = await import('./match-host.js');
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
@@ -1302,6 +1302,18 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     };
   };
   const row = (mh: MatchHost, name: string) => mh.status().participants.find((p) => p.name === name);
+
+  it('C18: a table that is followed live but gives no ball ends (Stern SAM) is not promised to the lobby', () => {
+    const SAM = "on Stern SAM the ball in play and the player up are out of Castcade's reach (CPU RAM). The scores and the end of the game are read, the end of a ball is not; the host passes each turn by hand (Pass the turn)";
+    expect(ballEndsFrom({ captureMode: 'live', note: null, ballEnds: false, ballEndsNote: SAM })).toEqual({ ready: false, reason: SAM });
+    expect(ballEndsFrom({ captureMode: 'live', note: null, ballEnds: true, ballEndsNote: null })).toEqual({ ready: true, reason: null });
+    // Live, and the witness does not know the ROM yet: nothing is said (unknown is never warned about, and never promised).
+    expect(ballEndsFrom({ captureMode: 'live', note: null, ballEnds: null, ballEndsNote: null })).toEqual({ ready: null, reason: null });
+    // A status that does not carry the field reads as before.
+    expect(ballEndsFrom({ captureMode: 'live', note: null })).toEqual({ ready: true, reason: null });
+    expect(ballEndsFrom({ captureMode: 'basic', note: DARK, ballEnds: false, ballEndsNote: null })).toEqual({ ready: false, reason: DARK });
+    expect(ballEndsFrom({ captureMode: null, note: null, ballEnds: null, ballEndsNote: null })).toEqual({ ready: null, reason: null });
+  });
 
   it('the flag reaches the host and every lobby, follows the table, and the start needs Start anyway; then the host passes each turn', async () => {
     const sha = 'ab'.repeat(32);
