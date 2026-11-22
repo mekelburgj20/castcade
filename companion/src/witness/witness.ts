@@ -53,7 +53,7 @@ import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffRe
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, noBallEndsReason, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
-import { MIDNIGHT_GAME_NOTE } from './midnight.js';
+import { MIDNIGHT_GAME_NOTE, midnightEnabled, midnightEvidence, midnightWire, utcOffsetMinutes } from './midnight.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
 import {
@@ -1001,6 +1001,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     lead?: string | null;
     /** B26.4: the ROM counted a Midnight Madness during this game (live mode, a ROM with such an audit). */
     midnightRan?: boolean;
+    /** B26.6: the detector watched that audit during this game, so `midnightRan` false means "did not run". */
+    midnightMonitored?: boolean;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -1041,12 +1043,21 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (wireTable !== table) details.push(`sent to ArcAid as "${wireTable}"${wireSlug ? ` (or "${wireSlug}")` : ''}`);
     // B26: some WPC ROMs start a bonus multiball when the machine's clock (the PC's, through VPinMAME) passes midnight
     // during a ball. B26.4: said only when the ROM's own audit of the mode went up during this game (live mode), never
-    // guessed from the clock; a ROM without such an audit is not monitored. A flag in the log and the capture detail
-    // only: nothing on the wire yet (ArcAid has no param for it), and the score posts as ever.
+    // guessed from the clock; a ROM without such an audit is not monitored. A flag in the log and the capture detail.
     if (decision.kind === 'score' && p.midnightRan) {
       details.push(MIDNIGHT_GAME_NOTE);
       log(`witness: ${table}: ${MIDNIGHT_GAME_NOTE}`);
     }
+    // B26.6 (owner ruling 2026-11-22): the tournament decides (refuse, or flag only) from the device's clock: was a game
+    // of a Midnight Madness title in play at local midnight. ArcAid has `started` and `ended`; it needs this PC's offset
+    // from UTC to know where midnight was. With it goes what this rig knows about the mode: the adjustment as it reads
+    // in the bytes the score came from (both modes), and whether the ROM counted the mode (live mode, a watched audit).
+    const midnight = midnightEvidence(map, rom);
+    const midnightOn = map && nvBytes ? midnightEnabled(map, midnight, nvBytes) : null;
+    const midnightParam = midnightWire({
+      setting: midnight.setting && midnightOn !== null ? { enabled: midnightOn, adjustment: midnight.setting.name } : null,
+      ran: live && p.midnightMonitored ? p.midnightRan === true : null,
+    });
 
     const durationSec = Math.max(0, Math.round((ended - started) / 1000));
     const result: LastCapture = {
@@ -1104,6 +1115,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           ...(p.attemptKey ? { attempt: p.attemptKey } : {}),
           ...(engineWire(engine) ? { engine: engineWire(engine) } : {}),
           ...(scorePlausibilityWire(p.plausibility ?? null) ? { score_plausibility: scorePlausibilityWire(p.plausibility ?? null) } : {}),
+          utc_offset: utcOffsetMinutes(started),
+          ...(midnightParam ? { midnight: midnightParam } : {}),
         },
       });
       const mapped = outcomeForPost(posted);
@@ -1747,7 +1760,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const engine: EngineAttestation | null = live.engineGame.length > 0 || live.engineLast
       ? { atStart: live.engineGame[0] ?? live.engineLast, changes: live.engineGame.slice(1) }
       : null;
-    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result(), midnightRan: live.midnightRan });
+    await publish({ session, rom, map, nvBytes: live.detector.shadow, started, ended: endedAt, decision, details, live: true, attemptKey: live.attempt?.key ?? null, engine, plausibility: live.scoreTrack.result(), midnightRan: live.midnightRan, midnightMonitored: live.detector.midnightCounter !== null });
     // B17: whatever the outcome (the persisted queue owns delivery retries), this game is done: a restart must not replay it.
     if (live.gameKey) await postedGames.add(live.gameKey).catch((err: unknown) => fail(`posted games: ${err instanceof Error ? err.message : String(err)}`));
     live.gameKey = null;

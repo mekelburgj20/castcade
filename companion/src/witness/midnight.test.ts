@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { JournalDetector, type JournalEvent } from './journal-detector.js';
 import { compileMap, createMapCorpus, gameStateOffsets, highScoreOffsets, watchOffsets, type CompiledMap } from './maps.js';
-import { MIDNIGHT_GAME_NOTE, midnightCount, midnightEnabled, midnightEvidence, midnightLine, midnightSettingLine, midnightWatchOffsets } from './midnight.js';
+import { MIDNIGHT_GAME_NOTE, midnightCount, midnightEnabled, midnightEvidence, midnightLine, midnightSettingLine, midnightWatchOffsets, midnightWire, utcOffsetMinutes } from './midnight.js';
 
 const corpus = createMapCorpus(fileURLToPath(new URL('../../../fixtures/maps', import.meta.url)));
 const mapOf = async (rom: string): Promise<CompiledMap> => {
@@ -154,6 +154,26 @@ describe('the wording (B26.4)', () => {
     expect(midnightSettingLine([{ name: null, setting: OFF }, { name: 'Krobs', setting: null }])).toBeNull();
     expect(midnightSettingLine([{ name: null, setting: null }, { name: 'Krobs', setting: null }])).toBeNull();
     expect(midnightSettingLine([])).toBeNull();
+  });
+});
+
+describe('what goes with a score (B26.6): the clock offset and what the rig knows', () => {
+  const ON = { enabled: true, adjustment: 'A.2 14 Special Mode' };
+  const OFF = { enabled: false, adjustment: 'A.2 14 Special Mode' };
+
+  it('the offset is minutes east of UTC on this machine at that moment, whatever its time zone', () => {
+    const at = Date.UTC(2026, 10, 22, 7, 36, 42);
+    expect(utcOffsetMinutes(at)).toBe(-new Date(at).getTimezoneOffset());
+    expect(Number.isInteger(utcOffsetMinutes(at))).toBe(true);
+    expect(Math.abs(utcOffsetMinutes(at))).toBeLessThanOrEqual(14 * 60);
+  });
+
+  it('the setting and the count, each only when known; nothing known sends nothing', () => {
+    expect(midnightWire({ setting: null, ran: null })).toBeNull();
+    expect(JSON.parse(midnightWire({ setting: ON, ran: null })!)).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode' });
+    expect(JSON.parse(midnightWire({ setting: OFF, ran: false })!)).toEqual({ setting: 'off', adjustment: 'A.2 14 Special Mode', ran: false });
+    // A ROM whose audit is watched but whose adjustment is not readable (congo_20): the count alone.
+    expect(JSON.parse(midnightWire({ setting: null, ran: true })!)).toEqual({ ran: true });
   });
 });
 

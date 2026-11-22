@@ -339,6 +339,10 @@ export class ArcaidClient {
       engine?: string | null;
       /** B6.1: compact JSON of how player 1's score moved (`scorePlausibilityWire`); live mode only; a flag, never a gate. */
       score_plausibility?: string | null;
+      /** B26.6: this PC's offset from UTC in minutes east, at the game's start (`utcOffsetMinutes`); ArcAid places local midnight with it. */
+      utc_offset?: number;
+      /** B26.6: compact JSON of what this rig knows about Midnight Madness on the table (`midnightWire`); absent on most machines. */
+      midnight?: string | null;
     },
   ): Promise<ScoreWireStatus> {
     const { body } = await this.get('api/witness/score', params, token);

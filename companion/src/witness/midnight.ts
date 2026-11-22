@@ -200,5 +200,33 @@ export function midnightLine(name: string | null, ball: number): string {
   return `Midnight Madness ran on ${possessive(name)} ball ${ball} (counted by that table's ROM)`;
 }
 
+/**
+ * B26.6 (owner ruling 2026-11-22): a tournament may refuse, or only flag, a game of a Midnight Madness title that was in
+ * play at the device's local midnight. ArcAid decides that from the game's `started` / `ended` (epoch seconds) and the
+ * device's offset from UTC, which only the device knows. Minutes EAST of UTC (Los Angeles in winter: -480), read at the
+ * game's start: a daylight-saving change falls after midnight, so the offset at the start is the one in force at the
+ * midnight inside the game.
+ */
+export function utcOffsetMinutes(ms: number): number {
+  return -new Date(ms).getTimezoneOffset();
+}
+
+/**
+ * The compact `midnight` JSON on a score: what this rig knows about the mode on the table the score came from. Null
+ * (the param is not sent) when it knows nothing, which is most machines.
+ *
+ * - `setting` `on` / `off` and `adjustment` (`A.2 14 Special Mode`): the operator adjustment as it reads in the NVRAM
+ *   bytes the score came from. The owner's stated end state: a game on a table with the mode OFF is permitted.
+ * - `ran`: the ROM's own audit of the mode went up during this game (true) or did not (false). Only from live mode on a
+ *   ROM with such an audit; absent means not monitored, never "did not run".
+ */
+export function midnightWire(p: { setting: MidnightSettingReport | null; ran: boolean | null }): string | null {
+  if (!p.setting && p.ran === null) return null;
+  return JSON.stringify({
+    ...(p.setting ? { setting: p.setting.enabled ? 'on' : 'off', adjustment: p.setting.adjustment } : {}),
+    ...(p.ran !== null ? { ran: p.ran } : {}),
+  });
+}
+
 /** The witness's capture detail and log wording for a solo game the mode ran in. */
 export const MIDNIGHT_GAME_NOTE = 'Midnight Madness ran during the game (counted by the ROM)';

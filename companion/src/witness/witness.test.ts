@@ -8,6 +8,7 @@ import { ArcaidError, type AttemptStartAnswer, type FetchLike } from './arcaid-c
 import { MemoryFs } from './fs.js';
 import { readJournalLines, replayJournal } from './journal-replay.js';
 import { createMapCorpus } from './maps.js';
+import { utcOffsetMinutes } from './midnight.js';
 import { createStaticRegistry, NVRAM_DIRECTORY_VALUE, VPM_GLOBALS_KEY } from './nvram-dir.js';
 import type { ProcessInfo } from './process-watch.js';
 import { buildOwnerStyleVpx } from './synth-vpx.test-support.js';
@@ -377,7 +378,7 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
       dur: String(dur),
     });
     const score = posts[2]?.params ?? {};
-    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'fingerprint', 'ini', 'quit', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'vps_game', 'vps_table']);
+    expect(Object.keys(score).sort()).toEqual(['build', 'device', 'dur', 'ended', 'fingerprint', 'ini', 'quit', 'reason', 'rom', 'score', 'slug', 'started', 'table', 'table_save_rev', 'table_sha256', 'utc_offset', 'vps_game', 'vps_table']);
     expect(score['quit']).toBe('0'); // B16: the .nv says game over
     // F4: the playfield fingerprint rides beside the file hash.
     expect(score['fingerprint']).toMatch(/^pf1:[0-9a-f]{64}$/);
@@ -608,6 +609,11 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.captures[0]).toMatchObject({ outcome: 'ingested', rom: 'mm_109c', score: 1089510 });
     expect(logs.some((l) => l.includes('Midnight Madness'))).toBe(false);
     expect(h.captures[0]?.detail).not.toContain('Midnight Madness');
+    // B26.6: the companion still guesses nothing; it sends the clock's offset (basic mode too) and ArcAid applies the
+    // tournament's rule. A machine without the mode sends no `midnight`.
+    const params = h.paths('/score')[0]?.params ?? {};
+    expect(Number(params['utc_offset'])).toBe(utcOffsetMinutes(1_760_000_000_000));
+    expect('midnight' in params).toBe(false);
   });
 
   it('skips when no .nv changed (original table) and when the ROM has no map', async () => {
@@ -2018,17 +2024,23 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
     expect(h.captures[1]?.detail).toContain('Midnight Madness ran during the game (counted by the ROM)');
     expect(logs).toContain(`witness: ${TFTC_TABLE}: Midnight Madness ran (the ROM's audit B.4 31 SPECIAL MODES went from 3 to 4 during the game, ball 1)`);
     expect(logs.filter((l) => l.endsWith(': Midnight Madness ran during the game (counted by the ROM)'))).toHaveLength(1);
-    // Not a game event; and the wire is the same for both games.
+    // Not a game event; the wire has the same params for both games.
     expect(games.slice(before).map((e) => e.kind).filter((k) => k !== 'current_scores')).toEqual(['game_start', 'ball_end', 'game_end']);
     const keys = (i: number) => Object.keys(h.paths('/score')[i]?.params ?? {}).sort();
+    const sent = (i: number) => h.paths('/score')[i]?.params ?? {};
     expect(h.paths('/score')).toHaveLength(2);
     expect(keys(1)).toEqual(keys(0));
-    expect(keys(1).some((k) => /midnight|advis/i.test(k))).toBe(false);
+    // B26.6: every score says where this PC's clock stands against UTC, and what the rig knows about the mode: the
+    // adjustment as it reads, and whether the ROM counted the mode during that game.
+    expect(Number.isInteger(Number(sent(0)['utc_offset']))).toBe(true);
+    expect(JSON.parse(String(sent(0)['midnight']))).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode', ran: false });
+    expect(JSON.parse(String(sent(1)['midnight']))).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode', ran: true });
     // Game 3 starts clean; the operator turns the mode off between games and the reading follows.
     text += JSON.stringify({ event: 'nvram_delta', t: 50, n: 1, d: [[7266, 0, 1]] }) + '\n' + j.game(60, 3_000_000, null);
     h.fs.put(TFTC_JOURNAL, text);
     await settle();
     expect(h.witness.midnightSetting()).toEqual({ enabled: false, adjustment: 'A.2 14 Special Mode' });
+    expect(JSON.parse(String(sent(2)['midnight']))).toEqual({ setting: 'off', adjustment: 'A.2 14 Special Mode', ran: false });
     expect(h.captures[2]?.detail).not.toContain('Midnight Madness');
     expect(ran).toHaveLength(1);
     expect(h.errors).toEqual([]);

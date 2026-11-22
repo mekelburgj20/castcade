@@ -55,6 +55,9 @@ export type QueuedPost =
         play_device?: 'pc' | 'vr_headset';
         attempt?: string | null;
         engine?: string | null;
+        /** B26.6: minutes east of UTC at the game's start, and what the rig knows about Midnight Madness. */
+        utc_offset?: number;
+        midnight?: string | null;
       };
     }
   | {

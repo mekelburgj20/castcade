@@ -7,6 +7,18 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Added
+
+- **Every score says where the PC's clock stands, and what the rig knows about Midnight Madness (B26.6).** The owner's
+  ruling of 2026-11-22: a tournament may refuse, or only flag, a game of a Midnight Madness title that was in play at
+  the device's local midnight, on cabinets and PCs alike. ArcAid decides that from the game's start and end and the
+  device's offset from UTC, so the score now carries `utc_offset` (minutes east of UTC at the game's start, in both
+  modes), and, on a machine where it can be read, `midnight`: the operator adjustment as it reads in the bytes the
+  score came from (`on` / `off`, Congo 2.1 and Johnny Mnemonic today) and whether the ROM counted the mode during the
+  game (live mode). Castcade itself still guesses nothing from the clock and refuses nothing. Today's ArcAid ignores
+  both; the rule is `docs/arcaid-side-changes.md` §25. `witness/midnight.ts`, `witness/witness.ts`,
+  `witness/arcaid-client.ts`, `witness/queue.ts`.
+
 ## [0.2.48] — 2026-11-21
 
 Protocol 6 is unchanged: this build plays a match with 0.2.46 and 0.2.47. It is what the first two-PC match night with
