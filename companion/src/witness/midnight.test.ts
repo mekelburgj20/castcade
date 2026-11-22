@@ -163,8 +163,10 @@ describe('what goes with a score (B26.6): the clock offset and what the rig know
 
   it('the offset is minutes east of UTC on this machine at that moment, whatever its time zone', () => {
     const at = Date.UTC(2026, 10, 22, 7, 36, 42);
-    expect(utcOffsetMinutes(at)).toBe(-new Date(at).getTimezoneOffset());
+    expect(utcOffsetMinutes(at)).toBe(0 - new Date(at).getTimezoneOffset());
     expect(Number.isInteger(utcOffsetMinutes(at))).toBe(true);
+    // A machine set to UTC (CI is) must give 0, never -0.
+    expect(Object.is(utcOffsetMinutes(at), -0)).toBe(false);
     expect(Math.abs(utcOffsetMinutes(at))).toBeLessThanOrEqual(14 * 60);
   });
 

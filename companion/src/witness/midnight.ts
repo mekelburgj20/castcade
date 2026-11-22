@@ -208,7 +208,8 @@ export function midnightLine(name: string | null, ball: number): string {
  * midnight inside the game.
  */
 export function utcOffsetMinutes(ms: number): number {
-  return -new Date(ms).getTimezoneOffset();
+  // `0 - x`, not `-x`: on a machine set to UTC a negation would give -0.
+  return 0 - new Date(ms).getTimezoneOffset();
 }
 
 /**
