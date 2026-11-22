@@ -67,7 +67,7 @@ Castcade installs to `%LOCALAPPDATA%\Programs\Castcade` and writes its settings 
      *Table options* (the 10.8 options you set for this table), *Adjustments* (the ROM's operator settings
      against factory, filled in after the game; many ROMs have no adjustments map yet), *VPX build* and
      *VPinMAME* (version and build family: official release, Panasony VR community build, nightly build or
-     unrecognised; VPinMAME's cheat flag). Nothing here is enforced; it is what Sanctioned play will read. A
+     unrecognised). Nothing here is enforced; it is what Sanctioned play will read. A
      Panasony VR build or a VPinMAME nightly is named as such, which is normal and only informational,
    - *Last capture*: the table, the ROM, the score, and *posted to ArcAid*.
 5. If the tournament is a **live event** with a check-in lobby: leave Castcade running and VPX closed

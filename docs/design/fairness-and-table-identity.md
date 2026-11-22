@@ -187,7 +187,11 @@ always whole). Flag only. The runner's baseline, the preflight verdict and remem
 - **ROM revision.** Different revisions change rules. Sanctioned pins the ROM id (already sent).
 - **VPinMAME's cheat flag and modified binaries.** Report the per-ROM `cheat` option from the
   VPinMAME registry settings; hash the VPX executable and the VPinMAME DLL against known release
-  builds. A custom build is flagged, not refused (people do compile their own).
+  builds. A custom build is flagged, not refused (people do compile their own). **What the option is
+  (read in the PinMAME source, 2026-11-21):** VPinMAME's dialog calls it "Skip Pinball Startup Test"; on a
+  WPC machine it skips the boot checksum (`src/wpc/wpc.c`) and nothing else, and it arms MAME's generic
+  cheat engine, which needs a `cheat.dat` the player supplies. So the companion sends it and, since the
+  build after 0.2.48, does not show it (WORK B27); whether Sanctioned refuses it is WORK B27.1.
 - **Memory trainers.** A tool editing the score in RAM shows as score jumps between live journal
   samples larger than the machine's largest single award, and as scores off the ROM's scoring
   granularity. Flag for review (live mode). **Shipped as facts plus one flag (B6.1, 2026-10-25):** the maps carry

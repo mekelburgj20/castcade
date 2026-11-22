@@ -269,10 +269,14 @@ export function createBuildAttester(deps: BuildAttesterDeps): BuildAttester {
   };
 }
 
-export function describeBuild(b: BuildAttestation | null, cheat: boolean | null): string {
+/**
+ * The builds in words, for the capture detail and the log. VPinMAME's `cheat` option is measured and sent
+ * (`buildWire`) but not worded here: its dialog names it "Skip Pinball Startup Test", and on a WPC machine that is
+ * all it does (the boot checksum is skipped), so "cheat ON" read as an accusation to a tester (2026-11-21).
+ */
+export function describeBuild(b: BuildAttestation | null): string {
   if (!b) return 'build unknown';
   const v = b.vpx ? `VPX ${b.vpx.version?.fileVersionText ?? b.vpx.version?.fileVersion ?? b.vpx.sha256.slice(0, 12)} (${b.vpx.family === 'official' ? 'official' : describeFamily(b.vpx)})` : 'VPX exe unread';
   const m = b.vpinmame ? `VPinMAME ${b.vpinmame.version?.fileVersion ?? b.vpinmame.sha256.slice(0, 12)} (${b.vpinmame.family === 'official' ? 'official' : describeFamily(b.vpinmame)})` : 'VPinMAME DLL not found';
-  const c = cheat === null ? '' : cheat ? ', cheat ON' : ', cheat off';
-  return `${v}; ${m}${c}`;
+  return `${v}; ${m}`;
 }

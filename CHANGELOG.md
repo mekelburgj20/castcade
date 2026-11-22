@@ -7,6 +7,13 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+### Changed
+
+- **"cheat ON" is no longer shown.** Status and the capture detail named VPinMAME's per-ROM `cheat` option, and a
+  tester changed his registry over it (2026-11-21). VPinMAME's own dialog calls that option "Skip Pinball Startup
+  Test": on a WPC machine it skips the boot checksum and nothing else. It is still measured and still sent to ArcAid
+  as `build.cheat` (`witness/build-attestation.ts`, `renderer/src/views/Attestation.tsx`).
+
 ## [0.2.48] — 2026-11-21
 
 Protocol 6 is unchanged: this build plays a match with 0.2.46 and 0.2.47. It is what the first two-PC match night with

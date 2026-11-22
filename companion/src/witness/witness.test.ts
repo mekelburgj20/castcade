@@ -431,7 +431,9 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect(h.captures[0]?.identity).toMatchObject({ vpsGame: { id: '-5yMpqSy' }, vpsTable: { id: 'zbyQ01wi3L' }, gameSource: 'rom' });
     expect(h.captures[0]?.attestation).toMatchObject({ vpmCheat: true, adjustments: null, iniChanged: false, ini: { stockPhysics: true } });
     expect(h.captures[0]?.detail).toMatch(/VPS game Medieval Madness \(-5yMpqSy\), table VPW 1\.0\.1/);
-    expect(h.captures[0]?.detail).toMatch(/stock physics, difficulty override 75%, slope 7\.25°, 1 table option; no adjustments map for this ROM; VPX [0-9a-f]{12} \(unrecognised build\); VPinMAME [0-9a-f]{12} \(unrecognised build\), cheat ON/);
+    expect(h.captures[0]?.detail).toMatch(/stock physics, difficulty override 75%, slope 7\.25°, 1 table option; no adjustments map for this ROM; VPX [0-9a-f]{12} \(unrecognised build\); VPinMAME [0-9a-f]{12} \(unrecognised build\)(;|$)/);
+    // Sent (above) and kept on the capture, never worded for the player: it is VPinMAME's "Skip Pinball Startup Test".
+    expect(h.captures[0]?.detail).not.toMatch(/cheat/i);
     expect(h.errors).toEqual([]);
 
     // VPX gone: checked in again right after the capture, and on every heartbeat tick while idle.
