@@ -652,7 +652,7 @@ clock passes midnight during a game. PinMAME takes that clock from the device (`
 
 - `utc_offset`: an integer, the device's offset from UTC in minutes EAST (Los Angeles in winter `-480`), read at the
   game's start. Sent with every score by companion ≥ 0.2.49, in both modes. The cabinet app does not send it yet
-  (F31): the launcher's timestamps carry the offset and the app drops it when it parses them.
+  (F32): the launcher's timestamps carry the offset and the app drops it when it parses them.
 - `midnight`: compact JSON, only from a rig that knows something: `{ "setting": "on" | "off", "adjustment":
   "A.2 14 Special Mode", "ran": true | false }`, each part present only when known. `setting` is the operator
   adjustment as it reads in the NVRAM bytes the score came from (today `congo_21` and Johnny Mnemonic; confirmed on
@@ -670,7 +670,7 @@ minutes; the game is a *midnight game* when a local 00:00:00 lies in [`started`,
   the game used stays used.
 
 The option is its own switch on the tournament, usable in Open play and in Sanctioned play. No `utc_offset` (an older
-companion, a cabinet before F31): the game cannot be checked; say so on the trail, refuse nothing.
+companion, a cabinet before F32): the game cannot be checked; say so on the trail, refuse nothing.
 
 **Which titles.** Congo, Dirty Harry, Johnny Mnemonic, Junk Yard, NBA Fastbreak and WHO dunnit (a players' list;
 no official one was found; the maps corpus has the mode's audit for five of them, not Junk Yard). Match on the
@@ -681,7 +681,7 @@ catalogue game the score resolved to, with the ROM family as the fallback (`cong
 switch is one line when the owner wants it. `midnight.ran` is not part of the rule; store it, show it on the
 Integrity panel.
 
-## 26. The cross-device approved catalogue (Castcade B28 / F30, owner rulings 2026-11-22)
+## 26. The cross-device approved catalogue (Castcade B29 / F31, owner rulings 2026-11-22)
 
 **Not built.** One list of tables that count on cabinets and on PCs alike, so a cross-device tournament needs no
 setup from a player and one choice from a runner.
@@ -700,14 +700,14 @@ player downloads it), `tableChecksum`, `tableVpsId`, `romVersion`, `romFileUrl`,
    table passes; a moved flipper does not).
 3. A cabinet score passes now on the catalogue slug and ROM; it is tightened when the cabinet reports file hashes
    (W15, or the signed record's `table_md5` / `config_version`).
-4. A pilot of about 20 of the most played tables first (Castcade B28.1 has the candidates).
+4. A pilot of about 20 of the most played tables first (Castcade B29.1 has the candidates).
 
 **What ArcAid adds per entry.** The manifest's table identity (W88); a blessed playfield fingerprint, taken from the
-first PC score whose file matches the manifest checksum (the companion will send `table_md5`, B28.3); a check of what
+first PC score whose file matches the manifest checksum (the companion will send `table_md5`, B29.3); a check of what
 the cabinet bundle changes against the author's file (ini keys, a replaced `table.vbs`), sorted into neutral or
 touches play. The tournament form picks an entry, which sets the required table, fingerprint and ROM.
 
-**Not known yet (Castcade B28.2).** What the 19 patches do; whether `tableChecksum` is of the download or of the
+**Not known yet (Castcade B29.2).** What the 19 patches do; whether `tableChecksum` is of the download or of the
 `.vpx` inside an archive; whether the cabinet's VPX fork and desktop 10.8.0 play the same physics for one file.
 
 ## Not asked of ArcAid

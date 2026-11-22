@@ -134,7 +134,7 @@ describe('VPinMAME DLL and cheat flag', () => {
     expect(b.vpx?.family).toBe('panasony');
     expect(b.vpinmame?.family).toBe('nightly');
     expect(b.notes).toEqual(['VPX is a Panasony VR community build, not the official 10.8.0 release', 'VPinMAME is a nightly build, not the official 3.6.0 release']);
-    expect(describeBuild(b, false)).toBe('VPX 10.8.0.2079.Panasony (Panasony VR community build); VPinMAME 3.7.0.222 (nightly build), cheat off');
+    expect(describeBuild(b)).toBe('VPX 10.8.0.2079.Panasony (Panasony VR community build); VPinMAME 3.7.0.222 (nightly build)');
     expect(lines).toEqual(['witness: build 10.8.0.2079.Panasony / VPinMAME 3, 7, 0, 222']);
     const again = await attester.forExe(EXE);
     expect(again.vpx).toBe(b.vpx); // cached promise result, same object

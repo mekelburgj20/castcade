@@ -1030,7 +1030,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     if (live) details.push(describeEngine(engine));
     if (live) details.push(describeScorePlausibility(p.plausibility ?? null));
     if (rom) details.push(describeAdjustments(adjustments));
-    details.push(describeBuild(attestation.build, vpmCheat));
+    details.push(describeBuild(attestation.build));
     if (attestation.vr) details.push(describeVr(attestation.vr));
     if (session.scriptDiff) details.push(describeScriptDiff(session.scriptDiff));
 

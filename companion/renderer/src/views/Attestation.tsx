@@ -116,10 +116,7 @@ export function AttestationView({ a, compact = false }: { a: Attestation; compac
         {a.vr && <span className="muted"> · {a.vr.inVr ? 'played in a VR headset' : 'played on the monitor'}</span>}
       </dd>
       <dt>VPinMAME</dt>
-      <dd className={a.vpmCheat === true ? 'warn' : ''} title={a.build?.vpinmame?.sha256 ?? ''}>
-        {vpm}
-        {a.vpmCheat !== null && <span className={a.vpmCheat ? 'warn' : 'muted'}> · cheat {a.vpmCheat ? 'ON' : 'off'}</span>}
-      </dd>
+      <dd title={a.build?.vpinmame?.sha256 ?? ''}>{vpm}</dd>
       {a.iniChanged && (
         <>
           <dt />
