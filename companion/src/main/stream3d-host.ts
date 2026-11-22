@@ -39,7 +39,7 @@
 import { createServer, type Socket } from 'node:net';
 import { win32 } from 'node:path';
 import { forkExeFor, forkMatchEnv, type ForkLaunch } from '../launch/vpx-launch.js';
-import { CONTROL_VERSION, QUIET_LOG_MS, Stream3d, parseControlLine, viewWords, type StartWait, type Stream3dStatus, type Watch3dSetting } from '../match/stream3d.js';
+import { CONTROL_VERSION, QUIET_LOG_MS, Stream3d, parseControlLine, viewWords, type StartWait, type Stream3dStatus, type Watch3dSetting, type Why2d } from '../match/stream3d.js';
 import type { MediaSignal } from '../media/match-media-types.js';
 import type { IceServer } from '../media/media-settings.js';
 import type { TunnelEnd, TunnelEndOptions } from '../watch/tunnel-end.js';
@@ -55,6 +55,8 @@ export const PENDING_MAX = 4;
 /** A fork that ends this soon after its start, with no `hello` from its VPX, did not start. */
 export const FORK_START_MS = 5_000;
 export const MATCH_LOG = 'vpx-stream-match.log';
+/** I11.4.12: a fork whose control connection dropped is given this long to be back (it retries every 2 s) before anything is said of it. */
+export const FORK_RECONNECT_GRACE_MS = 5_000;
 const PAGE_FILE = 'stream3d-tunnel.html';
 const PARTITION = 'castcade-stream3d';
 
@@ -158,8 +160,18 @@ export interface Stream3dView {
   build: string | null;
   /** The player shown in 3D now (the fork is aimed at them), or null. */
   watching: string | null;
+  /** I11.4.12: a match table was started in the Castcade VPX build and its VPX has not connected yet (it may still be loading). */
+  expecting: boolean;
+  /** I11.4.12: the Castcade VPX build is beside the VPX exe Castcade knows; null while that is not known yet. */
+  forkInstalled: boolean | null;
+  /** I11.4.13: the build that was started for a match table this run never connected (one from before the 3D watch in a match). */
+  forkSilent: boolean;
+  /** I11.4.12: Castcade tried the Castcade VPX build for this match's table and it did not start (it ended at once, the launch failed, no loopback port). */
+  forkFailed: boolean;
+  /** I11.4.12: the VPX that was on the control connection left it less than `FORK_RECONNECT_GRACE_MS` ago (it reconnects every 2 s by itself). */
+  reconnecting: boolean;
   /** One line per other player: what this PC shows of them while they are up, and why when it is the 2D video. */
-  players: Array<{ id: string; name: string; mode: '3d' | '2d'; line: string }>;
+  players: Array<{ id: string; name: string; mode: '3d' | '2d'; why: Why2d | null; line: string }>;
 }
 
 export interface MatchStream3d {
@@ -211,6 +223,8 @@ export interface Stream3dHostOptions {
   playWaitMs?: number;
   helloWaitMs?: number;
   forkStartMs?: number;
+  /** I11.4.12: `FORK_RECONNECT_GRACE_MS` for the tests. */
+  forkReconnectGraceMs?: number;
   /** I11.4.9: `START_WAIT_MS` and `FORK_HELLO_WAIT_MS` (match/stream3d.ts) for the tests and the harness. */
   startWaitMs?: number;
   forkHelloWaitMs?: number;
@@ -259,6 +273,17 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
   /** The current match's look at whether its tunnel should open now. */
   let check: (() => void) | null = null;
   let stopped = false;
+  /** I11.4.12: whether the fork is beside the known VPX exe, as last looked (at a match's opening and at a launch). */
+  let installed: boolean | null = null;
+  /**
+   * I11.4.13: the fork exe whose VPX did not connect within its limit this run (a build from before the 3D watch in a
+   * match), and the exe started last. A start in that exe is not waited for again; its first `hello` forgets it.
+   */
+  let silentExe: string | null = null;
+  let lastExe: string | null = null;
+  /** I11.4.12: the fork was tried for the current match's table and did not start; when the fork last left the control connection. */
+  let forkFailed = false;
+  let lostAt: number | null = null;
   const names = new Map<string, string>();
   const listeners = new Set<() => void>();
   let queued = false;
@@ -299,6 +324,10 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
     setPlayerPort: (port) => tunnel?.setPlayerPort(port),
     setCaps: (caps) => tunnel?.setInfo(caps),
     onChange: () => {
+      if (lastExe !== null && silentExe !== lastExe && machine.forkSilent()) {
+        silentExe = lastExe;
+        info('stream3d: the Castcade VPX build that was started has not connected; for the rest of this run a match start does not wait for it (it counts again the moment it connects)');
+      }
       check?.();
       notify();
     },
@@ -389,7 +418,8 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       }
       conn = c;
       connPort = l.version === CONTROL_VERSION && l.streamPort > 0 ? l.streamPort : null;
-      // The VPX of a start that was being watched is up.
+      // The VPX of a start that was being watched is up, and a build that was taken for silent is not.
+      silentExe = null;
       for (const settle of [...starts]) settle(false);
       machine.forkConnected();
       machine.forkLine(text);
@@ -398,6 +428,10 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       if (dropPending(c) || c !== conn) return;
       conn = null;
       connPort = null;
+      // I11.4.12: it reconnects by itself in a moment; what is said of a table without the fork waits that long.
+      lostAt = Date.now();
+      const t = setTimeout(() => notify(), (o.forkReconnectGraceMs ?? FORK_RECONNECT_GRACE_MS) + 50);
+      (t as { unref?: () => void }).unref?.();
       // Whoever it replaced may come back now.
       displaced.clear();
       machine.forkDisconnected(why);
@@ -448,7 +482,12 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       }
       const exe = forkExeFor(o.vpxExe());
       if (!exe) return null; // Castcade knows no VPX yet: the plain launch says so
-      if (!(await o.exists(exe).catch(() => false))) {
+      const there = await o.exists(exe).catch(() => false);
+      if (installed !== there) {
+        installed = there;
+        notify();
+      }
+      if (!there) {
         info(`stream3d: the Castcade VPX build (${win32.basename(exe)}) is not in ${win32.dirname(exe)}: the match table starts in your own VPX (the 2D video)`);
         return null;
       }
@@ -459,6 +498,8 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
         streamPort = await o.freePort();
       } catch (e) {
         o.log.warn(`stream3d: no loopback port for the Castcade VPX build (${describe(e)}): the match table starts in your own VPX (the 2D video)`);
+        forkFailed = true;
+        notify();
         return null;
       }
       try {
@@ -471,10 +512,16 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       info(`stream3d: the match table starts in the Castcade VPX build (${exe}): asked to stream on 127.0.0.1:${streamPort}, control on 127.0.0.1:${controlPort}`);
       const start = watchStart();
       // I11.4.9: this VPX is expected on the control connection: until it is there (or is known not to come), the
-      // match's first start waits for this PC.
-      machine.forkLaunched();
+      // match's first start waits for this PC. I11.4.13: not for a build that never connected this run.
+      lastExe = exe;
+      if (silentExe === exe) info('stream3d: this Castcade VPX build did not connect the last time it was started in this run (a build from before the 3D watch in a match): the start does not wait for it');
+      else machine.forkLaunched();
       void start.didNotStart.then((failed) => {
-        if (failed) machine.forkGone();
+        if (!failed) return;
+        machine.forkGone();
+        // I11.4.12: Castcade tried the fork for this table and it did not start: said as that, not as a table opened by hand.
+        forkFailed = true;
+        notify();
       });
       return {
         options: {
@@ -597,7 +644,12 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
             fork: st.fork,
             build: st.build,
             watching: st.showing3d ? st.target : null,
-            players: Object.entries(st.peers).map(([id, v]) => ({ id, name: names.get(id) ?? id, mode: v.mode, line: `${names.get(id) ?? id}: ${viewWords(v)}` })),
+            expecting: machine.expectingFork(),
+            forkInstalled: installed,
+            forkSilent: silentExe !== null,
+            forkFailed,
+            reconnecting: lostAt !== null && st.fork === 'none' && Date.now() - lostAt < (o.forkReconnectGraceMs ?? FORK_RECONNECT_GRACE_MS),
+            players: Object.entries(st.peers).map(([id, v]) => ({ id, name: names.get(id) ?? id, mode: v.mode, why: v.mode === '2d' ? v.why : null, line: `${names.get(id) ?? id}: ${viewWords(v)}` })),
           };
         },
         onChange(cb) {
@@ -608,6 +660,7 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
       };
       current = self;
       told = '';
+      forkFailed = false;
       // A fresh match: nothing known of anyone.
       machine.reset();
       machine.setSetting(setting);
@@ -615,6 +668,19 @@ export function createStream3dHost(o: Stream3dHostOptions): Stream3dHost {
         if (wanted()) openTunnel(true);
       };
       void ensureControl().catch(() => undefined);
+      // I11.4.12: is the Castcade VPX build beside the VPX exe at all (a table opened by hand is only worth a word then).
+      const forkExe = forkExeFor(o.vpxExe());
+      if (!forkExe) installed = false;
+      else {
+        void o.exists(forkExe).then(
+          (v) => {
+            if (installed === v) return;
+            installed = v;
+            notify();
+          },
+          () => undefined,
+        );
+      }
       info(`stream3d: on for this match (${setting === 'auto' ? '3D whenever both PCs can' : 'turned off on this PC: the 2D video'})`);
       if (wanted()) openTunnel(false);
       else info('stream3d: no data connections are opened on this PC: 3D watch is off and no Castcade VPX build is on the control port (they open if either changes)');

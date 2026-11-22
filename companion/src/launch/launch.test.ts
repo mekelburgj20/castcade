@@ -143,7 +143,10 @@ describe("the host's table on this PC (A14)", () => {
   it('an imported table is preferred to a file only found in the folder; within a rung the list order (most recent first) decides', () => {
     const found = known('Attack from Mars', { imported: false });
     const imported = known('Attack From Mars (Bally 1995)');
-    expect(findLocalTable(game('Attack from Mars'), [found, imported])?.table).toBe(found); // the whole name beats the title alone
+    // I11.4.11 review: an imported table (it can report ball ends) is never displaced by a file that is only found,
+    // whatever its name: before, the whole name of a found file beat the title of an imported one.
+    expect(findLocalTable(game('Attack from Mars'), [found, imported])?.table).toBe(imported);
+    expect(findLocalTable(game('Attack from Mars'), [found])?.table).toBe(found);
     expect(findLocalTable(game('Attack from Mars (remake)'), [found, imported])?.table).toBe(imported);
     const a = known('Medieval Madness (Williams 1997) A');
     const b = known('Medieval Madness (Williams 1997) B');

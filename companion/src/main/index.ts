@@ -66,6 +66,7 @@ import { matchSignalling } from './match-setup.js';
 import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
+import { createTableHasher } from '../launch/table-hash.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
 import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
@@ -1076,6 +1077,11 @@ async function main(): Promise<void> {
         if (file) recent.note(file, new Date().toISOString());
       });
       const known = () => listKnownTables({ fs: nodeFs, manifestDir, dataDir: store.get().dataDir, recent: recent.played });
+      const hashesFile = join(userData, 'table-hashes.json');
+      const tableHasher = createTableHasher({
+        fs: nodeFs,
+        io: { read: () => (existsSync(hashesFile) ? readFileSync(hashesFile, 'utf8') : null), write: (text) => writeFileSync(hashesFile, text) },
+      });
       oneStep = createOneStep({
         match: matchHost,
         witness: host,
@@ -1088,6 +1094,8 @@ async function main(): Promise<void> {
         clipboard: { writeText: (text) => clipboard.writeText(text) },
         tables: known,
         tableFiles: (have) => listTableFiles(nodeFs, tables.resolveTablesDir(null), have),
+        // I11.4.11: the host's identical file is found among the copies of its title that nothing has hashed yet.
+        hashTable: (vpxPath) => tableHasher.hashOf(vpxPath),
         arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
         log: logger,
       });

@@ -10,7 +10,7 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/prot
 import { HelloAck, PROTOCOL_VERSION, ParticipantUpdate } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
-import { MatchController, lobbyLineKey, type ControllerFeed } from './controller.js';
+import { FILES_DIFFER_COST, MatchController, TABLE_BY_HAND_NOTE, lobbyLineKey, type ControllerFeed } from './controller.js';
 import { HostMatch, STREAM3D_WAIT_GRACE_MS } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -539,5 +539,64 @@ describe('the controller: the start waits for the 3D connections (I11.4.9)', () 
     await flush();
     expect(host.state.gameNumber).toBe(2);
     expect(H.ctl.status()).toMatchObject({ phase: 'playing', wait3d: { players: [], armed: null } });
+  });
+});
+
+describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12)', () => {
+  /** The same table in another file: only the hash differs (a re-save, a modified copy). */
+  const OTHER_FILE: GameFingerprint = { ...game, tableHash: 'cd'.repeat(32) };
+
+  it('I11.4.11: two different files of the table: with 3D in play the table line says what that costs and how to fix it, on both PCs, before the start', async () => {
+    const r = await rig([]);
+    await r.add('c', OTHER_FILE);
+    const { H } = r;
+    const c = r.cs['c']!;
+    // As it was: the difference is named, and nothing says what it means for 3D.
+    expect(H.line()).toBe('same table, different file (a re-save or another download): Krobs');
+    expect(c.line()).toBe('same table, different file (a re-save or another download): you');
+    // This PC's VPX is the Castcade build on the control connection (the shell's word).
+    H.ctl.set3dInPlay(true);
+    c.ctl.set3dInPlay(true);
+    expect(H.line()).toBe(`same table, different file (a re-save or another download): Krobs · ${FILES_DIFFER_COST}`);
+    expect(c.line()).toBe(`same table, different file (a re-save or another download): you · ${FILES_DIFFER_COST}`);
+    expect(FILES_DIFFER_COST).toBe("the other player's turns are shown as the flat video, not in 3D: use the identical table file on both PCs");
+    // Once the match runs the table line is what it always was (the turn prompts need the room).
+    r.host.start();
+    await flush();
+    expect(H.line()).not.toContain('flat video');
+    // The identical file: nothing is said at all.
+    const same = await rig();
+    same.H.ctl.set3dInPlay(true);
+    expect(same.H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
+  });
+
+  it("I11.4.12: the shell's note (a table Castcade did not start) rides on the lobby line of that PC, does not change by itself, and goes when it no longer applies or the match starts", async () => {
+    const { host, clock, H, c } = await rig();
+    c.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
+    expect(c.line()).toBe(`Waiting for Hosty to start a game on the table · ${TABLE_BY_HAND_NOTE}`);
+    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again');
+    // Only on the PC it is about.
+    expect(H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
+    let changes = 0;
+    c.ctl.onChange(() => changes++);
+    clock.advance(20_000);
+    await flush(2);
+    expect(changes).toBe(0);
+    // The same word again is no change; taking it away is one.
+    c.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
+    expect(changes).toBe(0);
+    c.ctl.setLobbyNote(null);
+    expect(changes).toBe(1);
+    expect(c.line()).toBe('Waiting for Hosty to start a game on the table');
+    // On the host too, with whatever else its line says; not over the countdown, not in the match.
+    H.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
+    expect(H.line()).toBe(`Everyone in? Start a game on your table (or press Start match) · ${TABLE_BY_HAND_NOTE}`);
+    H.ctl.feed(gameStart);
+    await flush();
+    expect(H.line()).toBe('Starting the match: you, Krobs');
+    clock.advance(5_000);
+    await flush();
+    expect(host.state.phase).toBe('running');
+    expect(H.line() ?? '').not.toContain('not running in the Castcade VPX build');
   });
 });

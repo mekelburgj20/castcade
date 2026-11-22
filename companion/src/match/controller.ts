@@ -229,6 +229,20 @@ export function lobbyLineKey(message: string | null): string | null {
   return message === null ? null : message.replace(/, or in \d+ s \(/, ' (');
 }
 
+/**
+ * I11.4.11 (2026-11-21, Congo: two different files of the table, found out in the headset): what the lobby's table
+ * line adds, before the start, on a PC where 3D is in play, to "same table, different file" / "different table file".
+ */
+export const FILES_DIFFER_COST = "the other player's turns are shown as the flat video, not in 3D: use the identical table file on both PCs";
+/**
+ * I11.4.12 (2026-11-21): the lobby's note on a PC that has the Castcade VPX build, with a table open that is not
+ * running in it: opened by hand, open before the match, left from a 3D watch session, started while 3D watch was
+ * off. What it says is true in each of those.
+ */
+export const TABLE_BY_HAND_NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again';
+/** I11.4.12: Castcade itself tried the Castcade VPX build for this match's table and it did not start: nothing the player can do by starting it again. */
+export const TABLE_FORK_FAILED_NOTE = 'Not in 3D on this PC for this match: the Castcade VPX build did not start (the log has the reason)';
+
 /** A12 (2026-11-05): match.json `preMatchPlay` (main/match-setup.ts). */
 export type PreMatchPlay = 'free' | 'locked';
 
@@ -411,6 +425,10 @@ export class MatchController {
   private holdTimer: unknown = null;
   /** I11.4.9: a held Start match was given up in this lobby (`dropTabHold`): the host has waited once, the next press starts. */
   private tabHoldSpent = false;
+  /** I11.4.12: one more thing the lobby line says (the shell's: a table that Castcade did not start gets no 3D); null: nothing. */
+  private lobbyNote: string | null = null;
+  /** I11.4.11: 3D is in play on this PC (the shell's word): the lobby's table line then says what a different file costs. */
+  private in3d = false;
   /** I11.4.9: what the armed start from the table was last said to wait for (one log line per reason). */
   private armedFor: 'tables' | '3d' | null = null;
   /** I11.4.9: Start match was pressed while a 3D connection was being made: the shell starts when it settles. */
@@ -483,6 +501,26 @@ export class MatchController {
       for (const id of peers) this.opts.media?.addPeer(id);
     });
     this.opts.log(`match: picked up again from the saved log: game ${this.gameNumber()}, ${this.phase}${g ? `, ${g.player === this.localId ? 'my' : `${this.nameOf(g.player)}'s`} ball ${g.ballNumber}` : ''}`);
+  }
+
+  /**
+   * I11.4.12: a note of the shell's for the lobby line, on the Match tab and the panel alike (null takes it away). It
+   * does not change by itself, so the headset's lobby panel shows it once, for its peek (D8.9).
+   */
+  setLobbyNote(note: string | null): void {
+    if (this.closed || note === this.lobbyNote) return;
+    this.lobbyNote = note;
+    this.push();
+  }
+
+  /**
+   * I11.4.11: whether 3D is in play on this PC (its VPX is the Castcade build on the control connection, `watch3d`
+   * auto). The lobby's table line then says, before the start, what a different table file costs and how to fix it.
+   */
+  set3dInPlay(on: boolean): void {
+    if (this.closed || on === this.in3d) return;
+    this.in3d = on;
+    this.push();
   }
 
   /** A12: the Match tab changed the setting during a lobby: the lobby lock follows at once. */
@@ -2031,12 +2069,18 @@ export class MatchController {
       if (what) byWhat.set(what, [...(byWhat.get(what) ?? []), id === this.localId ? 'you' : this.nameOf(id)]);
     }
     const st = this.role.state;
+    // I11.4.12: the shell's note rides on whatever the lobby says (not on the countdown).
+    const note = this.phase === 'lobby' && this.lobbyNote ? ` · ${this.lobbyNote}` : '';
     // A11: the countdown is the one line that matters in the lobby, over a table note.
     const count = this.countdownSeconds();
     if (count !== null) return `Starting the match: ${this.participants().map((p) => (p.playerId === this.localId ? 'you' : p.displayName)).join(', ')}`;
     // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
-    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) return [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
-    if (this.phase === 'lobby') return this.lobbyMessage();
+    if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) {
+      const line = [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
+      // I11.4.11: before the start, with 3D in play: what the difference costs, said where the player looks.
+      return this.phase === 'lobby' ? `${line}${this.in3d ? ` · ${FILES_DIFFER_COST}` : ''}${note}` : line;
+    }
+    if (this.phase === 'lobby') return `${this.lobbyMessage()}${note}`;
     if (this.phase === 'over') {
       if (this.seriesOver) return this.seriesOverLine;
       return isHostRole(this.role) ? 'Next game: start a game on your table (or press Next game)' : `Next game: ${this.nameOf(this.hostId)} starts a game on the table`;
