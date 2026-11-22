@@ -7,6 +7,79 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.48] — 2026-11-21
+
+Protocol 6 is unchanged: this build plays a match with 0.2.46 and 0.2.47. It is what the first two-PC match night with
+the 3D stream (the owner and Krobs, 2026-11-20, on 0.2.47) left to fix or to say plainly. The OpenXR layer is **0.8.0**
+(pipe protocol 5), built by the tag: restart VPX once after the update, since a VPX that was open keeps layer 0.7.0 and
+the scoreboard on the head until then. The native helpers and the hook library (0.6.0) are as in 0.2.47. Released on
+the owner's word; **nothing in it has been in a headset or on two PCs** (the checks are D8.12.3.1 and I11.4.14). The
+Castcade VPX build is not part of the installer; its own new zip is named at the end.
+
+### Added
+
+- **The scoreboard stays in the room (D8.12.3; layer 0.8.0).** The owner after the first match night: "the score panel
+  in VR is annoying. It shouldn't move with head tracking." The scoreboard now stands at a fixed place in the room, up
+  and to the side of where the head faced when it was first shown (33 degrees to the side, a little above eye level,
+  1.2 m away), and stays there while the head moves. **Scoreboard stays** on the Match tab chooses *Fixed in the room*
+  (the default, also for settings from before) or *Follows my head* (the corner of 0.2.44); the in-game menu has a new
+  line, **Put the scoreboard where I look**, which places it again where the head points. The place is fixed in the
+  runtime's space, not to the table: after VPX's own table recentre, place it again. While VPX still runs layer 0.7.0
+  the corner stays on the head, the log says so once and the menu line is greyed out with the reason. The place is a
+  first guess that no headset has shown (`match.json` `scoreboardPlace` moves it). `vr-layer/src/scoreboard_place.h`,
+  `vr-layer/src/layer.cpp`, `vr-layer/src/panel_pipe.cpp`, `media/vr-layer.ts`, `match/match-menu.ts`,
+  `main/match-setup.ts`, `renderer/src/views/Match.tsx`.
+
+### Fixed
+
+- **A joining PC picks the host's identical table file (I11.4.11).** On Congo, Krobs' Castcade opened his modified copy
+  of the same name (766 parts against the owner's 769), and both PCs got the 2D video. A `.vpx` that was only found in
+  the tables folder had no hash, so it could never be recognised as the host's file. Now the copies of the host's title
+  are hashed when the host's hash is known (eight at most, beside the join, given up when the match ends), and a join
+  in the moment before the host's hash is known waits for it (3 s at most). Among imported tables the identical file
+  wins. An imported table is never displaced by a file that is not imported, because only an imported table reports
+  ball ends: then the imported copy is started and the lobby names the identical file and says to import it and rejoin
+  for 3D. Before the start, on a PC with the Castcade VPX build, the lobby says what a different file costs. Importing
+  the identical file by itself is not built (I11.4.11.1). `launch/table-hash.ts`, `launch/find-table.ts`,
+  `main/one-step.ts`, `match/controller.ts`.
+- **A table opened by hand is told so (I11.4.12).** Only a table Castcade starts runs in the Castcade VPX build with the
+  match role; one opened by hand, or open before the match, got the 2D video with nothing said where the player looks.
+  With the build beside VPX and 3D watch on, the lobby line (Match tab and the panel in the headset) now says that the
+  open table is not running in that build and what to do: close VPX and let Castcade start the table. When Castcade
+  itself tried the build for this match and it did not start, it says that instead. `main/match-host.ts`,
+  `main/stream3d-host.ts`.
+- **A slow table is waited for (I11.4.13).** The Castcade VPX build reports in at its first frame, and it had 10 s for
+  that after its process was seen; Game of Thrones LE took 11.2 s, so the start stopped waiting for that PC early and
+  the log blamed an old build. The limit is 45 s (the one 45 s limit on a held start bounds it); the log names an old
+  build only when the report never comes, and a build that never reports costs its limit once per run.
+  `match/stream3d.ts`.
+- **The lobby no longer promises ball ends a machine cannot give (C18).** On Spider-Man Vault Edition (Stern SAM) the
+  lobby said "the table can report ball ends" and none came; the turns were passed by hand. A Stern SAM machine keeps
+  the ball in play and the player up in CPU RAM, where Castcade cannot read them: its journal has the scores and the
+  end of the game and nothing else (the night's journal is now a fixture and says so line by line). The witness now
+  reports whether a table's ball ends are read at all, false on Stern SAM and on the Bally / Stern machines read by a
+  lamp, and the lobby says before the start that the host passes each turn there (**Pass the turn**), with the reason.
+  The scores and the game's end are read as before. Real ball ends on these machines need a recording per ROM
+  (C18.1, C18.2; `fixtures/README.md`, "Stern SAM ball ends"). `witness/maps.ts` (`liveSupport().ballEnds`),
+  `witness/witness.ts`, `main/match-host.ts` (`ballEndsFrom`), `match/controller.ts`.
+
+### Wire / journal
+
+- Nothing on the match wire or in the journal changes. The layer's pipe is **protocol 5**: no new message, two keys in
+  the control's `scoreboard` object (`anchor: "room"`, `place: true`), sent only to a layer that said 5; either side
+  may be one version behind the other. Covered by `media/vr-layer-scoreboard.test.ts` and
+  `vr-layer/tools/scoreboard_place_test.cpp` (87 checks, run by the layer's build).
+- New fixtures: `fixtures/nvram/smanve_101/2026-11-05-1` and `2026-11-21-1`, with the map vendored in `fixtures/maps`.
+
+### The Castcade VPX build (its own zip, not in the installer)
+
+- **Build 9adaab5** (`castcade-vpx`, branch `castcade/state-stream`): Panasony's nudge movement for VR, which moves the
+  whole table in the room by `NudgeStrength` x `AnalogNudgeGainX / Y`, is off unless `CastcadeVRNudgeShake = 1` stands
+  under `[Player]` in `VPinballX.ini` (I11.15). With the ini of an official VPX install it made a player's own table
+  look smeared and doubled on the match night (cured there with `NudgeStrength = 0`). In a headset the build now shows
+  a nudge as the official 10.8.0 does. Compiled and packaged; not yet run (I11.15.1). 0.2.48 plays with build 9e78aef
+  as well.
+
 ## [0.2.47] — 2026-11-20
 
 Protocol 6 is unchanged: this build and 0.2.46 play a match together (a 0.2.46 host does not wait for the 3D
