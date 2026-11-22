@@ -27,7 +27,12 @@ cmake_minimum_required(VERSION 3.20)
 # 0.7.0: D8.12, pipe protocol 4: the corner scoreboard. CVB1 frames (BGRA, the header of CVO1) and the control's
 #        "scoreboard": {"corner": "top-right" | "top-left"} draw a small head-locked quad in a top corner of the view while
 #        the mode on screen is hidden or theater. A protocol-3 companion sends neither and sees no difference.
-project(castcade_vr_layer VERSION 0.7.0 LANGUAGES CXX)
+# 0.8.0: D8.12.3, pipe protocol 5: the scoreboard fixed in the room. The control's "scoreboard": {…, "anchor": "room"}
+#        draws it in LOCAL space at a place captured from the head's pose the first time it is shown so in a session
+#        (src/scoreboard_place.h), and "place": true (a request) captures it again where the head points. No new message:
+#        a protocol-4 companion sends neither key and gets the head-locked corner exactly as 0.7.0 drew it.
+#        tools/scoreboard_place_test.exe (not shipped) checks the placement maths and the control's reading in every build.
+project(castcade_vr_layer VERSION 0.8.0 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
@@ -84,6 +89,17 @@ target_compile_features(ring_feed PRIVATE cxx_std_17)
 target_compile_definitions(ring_feed PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(ring_feed PRIVATE /W4 /permissive- /utf-8 /EHsc "$<$<CONFIG:Release>:/O2>")
 target_link_libraries(ring_feed PRIVATE winmm)
+
+# D8.12.3: scoreboard_place_test.exe, the checks of the scoreboard's place in the room that need no headset: the pose
+# maths (src/scoreboard_place.h, which layer.cpp also places the panel with) and the reading of the control's
+# "scoreboard" object (src/panel_pipe.cpp). Built here and run after it links, so a failed check fails the build (the
+# CI build of record included); never shipped. It opens no pipe and writes no log.
+add_executable(scoreboard_place_test tools/scoreboard_place_test.cpp src/panel_pipe.cpp src/layer_log.cpp)
+target_include_directories(scoreboard_place_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_features(scoreboard_place_test PRIVATE cxx_std_17)
+target_compile_definitions(scoreboard_place_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(scoreboard_place_test PRIVATE /W4 /permissive- /utf-8 /EHsc "$<$<CONFIG:Release>:/O2>")
+add_custom_command(TARGET scoreboard_place_test POST_BUILD COMMAND scoreboard_place_test COMMENT "scoreboard_place_test: the scoreboard's place in the room")
 
 # The manifest and THIRD-PARTY.md beside the dll, so build/Release/ is the shippable set as-is (CI zips it; the
 # companion's dev fallback registers the json from there).

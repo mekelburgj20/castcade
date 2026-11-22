@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { VR_LAYER_SCOREBOARD_MAGIC, type PanelFrame, type PanelFrameSource } from './match-media-types.js';
 import { KEEPALIVE_MS } from './panel-frame-writer.js';
-import { CONNECT_RETRY_MS, createVrLayerOverlay, VR_LAYER_PROTOCOL, VR_LAYER_SCOREBOARD_PROTOCOL, type Exec } from './vr-layer.js';
+import { CONNECT_RETRY_MS, createVrLayerOverlay, VR_LAYER_PROTOCOL, VR_LAYER_SCOREBOARD_PROTOCOL, VR_LAYER_SCOREBOARD_ROOM_PROTOCOL, type Exec } from './vr-layer.js';
 
 class FakePipe extends EventEmitter {
   readonly chunks: Buffer[] = [];
@@ -92,9 +92,10 @@ const PLAIN = (mode: string): string => `{"mode":"${mode}","stereo":"mono","pane
 afterEach(() => vi.useRealTimers());
 
 describe('createVrLayerOverlay: the corner scoreboard (D8.12)', () => {
-  it('this side speaks protocol 4, the first with the scoreboard; its frames are CVB1', () => {
-    expect(VR_LAYER_PROTOCOL).toBe(4);
+  it('protocol 4 is the first with the scoreboard, and its frames are CVB1; this side speaks 5 since D8.12.3 (the scoreboard in the room)', () => {
+    expect(VR_LAYER_PROTOCOL).toBe(5);
     expect(VR_LAYER_SCOREBOARD_PROTOCOL).toBe(4);
+    expect(VR_LAYER_SCOREBOARD_ROOM_PROTOCOL).toBe(5);
     expect(VR_LAYER_SCOREBOARD_MAGIC).toBe('CVB1');
   });
 
@@ -238,6 +239,155 @@ describe('createVrLayerOverlay: the corner scoreboard (D8.12)', () => {
     h.pipes.at(-1)!.emit('data', hello(4));
     h.board.push(frame(9));
     expect(written(h.pipes.at(-1)!)).toEqual([PLAIN('panel')]);
+    await h.ov.stop();
+  });
+});
+
+/**
+ * D8.12.3 (2026-11-21): the scoreboard fixed in the room. Pipe protocol 5 adds no message, only `anchor` and `place` in
+ * the control's scoreboard object; a protocol-4 layer (0.7.0, loaded by a VPX started before the update) must get the
+ * control it always got.
+ */
+describe('createVrLayerOverlay: the scoreboard fixed in the room (D8.12.3)', () => {
+  const BOARD = (mode: string, board: string): string => `{"mode":"${mode}","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null,"scoreboard":${board}}`;
+  /** A connected layer of `protocol` in hidden mode with a scoreboard page. */
+  async function connected(protocol: number) {
+    const h = setup();
+    await h.ov.start(h.panel.src);
+    h.ov.setMode('hidden');
+    h.pipes[0]!.answer();
+    h.pipes[0]!.emit('data', hello(protocol));
+    return h;
+  }
+
+  it('a protocol-5 layer: `anchor: room` rides in the scoreboard object; `head` is byte for byte the D8.12 control; a change during a match is one control, no restart', async () => {
+    vi.useFakeTimers();
+    const h = await connected(5);
+    expect(h.log).toContain('vr-layer: the layer speaks pipe protocol 5 (modes, theater, camera, scoreboard, scoreboard in the room)');
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    expect(written(h.pipes[0]!).at(-1)).toBe(BOARD('hidden', '{"corner":"top-right","anchor":"room"}'));
+    expect(h.log).toContain('vr-layer: scoreboard top-right, fixed in the room');
+    expect(h.log).toContain('vr-layer: mode hidden (mono, camera off, scoreboard top-right, fixed in the room)');
+    // The same again: nothing.
+    const n = written(h.pipes[0]!).length;
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    expect(written(h.pipes[0]!)).toHaveLength(n);
+    // "Follows my head" on the Match tab, mid-match: one control, the one a 0.2.47 companion sends.
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'head' });
+    expect(written(h.pipes[0]!).slice(n)).toEqual([BOARD('hidden', '{"corner":"top-right"}')]);
+    expect(h.log).toContain('vr-layer: scoreboard on the head');
+    // No anchor given (a caller from before D8.12.3) is the head too: nothing more is sent.
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right' });
+    expect(written(h.pipes[0]!)).toHaveLength(n + 1);
+    // And back to the room; the corner and the tuning knob keep their places in the object.
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-left', anchor: 'room', place: { offset: [0.7, 0.2, 1], widthM: 0.3 } });
+    expect(written(h.pipes[0]!).at(-1)).toBe(BOARD('hidden', '{"corner":"top-left","anchor":"room","offset":[0.7,0.2,1],"widthM":0.3}'));
+    // The lobby (no corner): no scoreboard object at all, whatever the anchor.
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: null, anchor: 'room' });
+    expect(written(h.pipes[0]!).at(-1)).toBe(PLAIN('hidden'));
+    await h.ov.stop();
+  });
+
+  it('"place it again": `place: true` on one control only, never deduplicated, never left on the next control', async () => {
+    vi.useFakeTimers();
+    const h = await connected(5);
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    const n = written(h.pipes[0]!).length;
+    expect(h.ov.placeScoreboard?.()).toBe('placed');
+    expect(written(h.pipes[0]!).slice(n)).toEqual([BOARD('hidden', '{"corner":"top-right","anchor":"room","place":true}')]);
+    expect(h.log).toContain('vr-layer: asked the layer to place the scoreboard again, where the head points');
+    // Asked again with nothing else changed: sent again (a request, not a state).
+    expect(h.ov.placeScoreboard?.()).toBe('placed');
+    expect(written(h.pipes[0]!).slice(n)).toHaveLength(2);
+    // The next control (the turn changes) does not carry it, and an unchanged state is still not re-sent.
+    h.ov.setMode('theater');
+    expect(written(h.pipes[0]!).at(-1)).toBe(BOARD('theater', '{"corner":"top-right","anchor":"room"}'));
+    h.ov.setMode('theater');
+    expect(written(h.pipes[0]!).slice(n)).toHaveLength(3);
+    // The menu is on the panel: the request goes in panel mode too (the layer takes it while the panel hides the scoreboard).
+    h.ov.setMode('panel');
+    expect(h.ov.placeScoreboard?.()).toBe('placed');
+    expect(written(h.pipes[0]!).at(-1)).toBe(BOARD('panel', '{"corner":"top-right","anchor":"room","place":true}'));
+    // A session report asked afterwards is its own request, without the place.
+    void h.ov.requestSession?.(1000);
+    expect(written(h.pipes[0]!).at(-1)).toBe('{"mode":"panel","stereo":"mono","panelPos":"low","theaterScale":1,"camera":null,"scoreboard":{"corner":"top-right","anchor":"room"},"report":true}');
+    vi.advanceTimersByTime(1000);
+    await h.ov.stop();
+  });
+
+  it('nothing to place: on the head, in the lobby, or with no layer on the pipe; nothing is written', async () => {
+    vi.useFakeTimers();
+    const h = setup();
+    await h.ov.start(h.panel.src);
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    expect(h.ov.placeScoreboard?.()).toBe('not_connected'); // no pipe yet
+    h.pipes[0]!.answer();
+    expect(h.ov.placeScoreboard?.()).toBe('not_connected'); // connected, but the layer has not said its protocol
+    h.pipes[0]!.emit('data', hello(5));
+    const n = written(h.pipes[0]!).length;
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'head' });
+    expect(h.ov.placeScoreboard?.()).toBe('not_in_room');
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: null, anchor: 'room' });
+    expect(h.ov.placeScoreboard?.()).toBe('not_in_room');
+    expect(written(h.pipes[0]!).slice(n).filter((w) => typeof w === 'string' && w.includes('place'))).toEqual([]);
+    await h.ov.stop();
+  });
+
+  it('a protocol-4 layer (0.7.0): asked for the room, it gets byte for byte the D8.12 control and frames, said once; no place request; the room and the request reach the 0.8.0 layer after a VPX restart', async () => {
+    vi.useFakeTimers();
+    const h = await connected(4);
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    h.board.push(frame(4));
+    h.ov.setMode('theater');
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-left', anchor: 'room' });
+    expect(written(h.pipes[0]!).slice(1)).toEqual([
+      BOARD('hidden', '{"corner":"top-right"}'),
+      ['CVB1', 2, 1, 4],
+      BOARD('theater', '{"corner":"top-right"}'),
+      BOARD('theater', '{"corner":"top-left"}'),
+    ]);
+    expect(h.log.filter((l) => l.includes('before the scoreboard in the room'))).toEqual([
+      'vr-layer: the scoreboard is asked fixed in the room, but the layer in VPX speaks pipe protocol 4 (before the scoreboard in the room): it follows the head until VPX restarts with the new layer',
+    ]);
+    const n = written(h.pipes[0]!).length;
+    expect(h.ov.placeScoreboard?.()).toBe('old_layer');
+    expect(written(h.pipes[0]!)).toHaveLength(n);
+    // VPX restarts with layer 0.8.0: the next connection gets the anchor (and the newest frame); the request works.
+    h.pipes[0]!.hangUp();
+    vi.advanceTimersByTime(CONNECT_RETRY_MS);
+    h.pipes[1]!.answer();
+    h.pipes[1]!.emit('data', hello(5));
+    expect(written(h.pipes[1]!)).toEqual([BOARD('theater', '{"corner":"top-left","anchor":"room"}'), ['CVB1', 2, 1, 4]]);
+    expect(h.ov.placeScoreboard?.()).toBe('placed');
+    expect(written(h.pipes[1]!).at(-1)).toBe(BOARD('theater', '{"corner":"top-left","anchor":"room","place":true}'));
+    await h.ov.stop();
+  });
+
+  it('a protocol-3 layer gets nothing of it, and a layer newer than this companion (a hello of 6) is spoken to as protocol 5', async () => {
+    vi.useFakeTimers();
+    const old = await connected(3);
+    old.ov.setScoreboard?.({ frames: old.board.src, corner: 'top-right', anchor: 'room' });
+    expect(written(old.pipes[0]!)).toEqual([PLAIN('hidden')]);
+    expect(old.ov.placeScoreboard?.()).toBe('old_layer');
+    await old.ov.stop();
+    const newer = await connected(6);
+    newer.ov.setScoreboard?.({ frames: newer.board.src, corner: 'top-right', anchor: 'room' });
+    expect(written(newer.pipes[0]!).at(-1)).toBe(BOARD('hidden', '{"corner":"top-right","anchor":"room"}'));
+    expect(newer.ov.placeScoreboard?.()).toBe('placed');
+    await newer.ov.stop();
+  });
+
+  it('stop forgets the anchor: the next start is on the head until the match host says otherwise', async () => {
+    vi.useFakeTimers();
+    const h = await connected(5);
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right', anchor: 'room' });
+    await h.ov.stop();
+    await h.ov.start(h.panel.src);
+    h.pipes.at(-1)!.answer();
+    h.pipes.at(-1)!.emit('data', hello(5));
+    h.ov.setScoreboard?.({ frames: h.board.src, corner: 'top-right' });
+    expect(written(h.pipes.at(-1)!).at(-1)).toBe(BOARD('hidden', '{"corner":"top-right"}'));
+    expect(h.ov.placeScoreboard?.()).toBe('not_in_room');
     await h.ov.stop();
   });
 });

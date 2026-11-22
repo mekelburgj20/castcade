@@ -82,7 +82,7 @@ import type { VideoHelper, VideoSink } from '../media/video-helper.js';
 import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
-import { tuneWords } from '../media/vr-layer.js';
+import { tuneWords, VR_LAYER_SCOREBOARD_ROOM_PROTOCOL } from '../media/vr-layer.js';
 import type { TableAudioHelper } from '../media/audio-helper.js';
 import { tableAudioPid, tableAudioPlan } from '../media/table-audio-policy.js';
 import { RECIPE_VERSION } from '../patcher/render.js';
@@ -1106,12 +1106,29 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /**
    * D8.12 (2026-11-15): the corner scoreboard follows the match and the Match tab's setting: its page beside a
    * headset panel on a layer rig, and the corner on the layer's control while a match is on (`scoreboardWanted`: not
-   * in the lobby; the layer leaves it out while the full panel is up). Every call is idempotent.
+   * in the lobby; the layer leaves it out while the full panel is up). Every call is idempotent. D8.12.3: where it is
+   * held (fixed in the room, or on the head) is the Match tab's setting too, and applies live like the corner.
    */
   const syncScoreboard = (a: Active): void => {
     const to = a.overlay?.setScoreboard ? a.overlay : null;
     opts.media?.setScoreboard?.(settings.scoreboard && to !== null);
-    to?.setScoreboard?.({ frames: opts.media?.scoreboardFrames?.() ?? null, corner: scoreboardWanted(a.controller.panel(), settings.scoreboard) ? settings.scoreboardCorner : null, place: settings.scoreboardPlace });
+    to?.setScoreboard?.({
+      frames: opts.media?.scoreboardFrames?.() ?? null,
+      corner: scoreboardWanted(a.controller.panel(), settings.scoreboard) ? settings.scoreboardCorner : null,
+      place: settings.scoreboardPlace,
+      anchor: settings.scoreboardAnchor,
+    });
+  };
+  /**
+   * D8.12.3: the in-game menu's "Put the scoreboard where I look" line (`MenuFacts.scoreboardPlace`): there while this
+   * match has a scoreboard in the headset that is held in the room (the rule of `syncScoreboard`, on an overlay that
+   * can place it: the OpenXR layer), and ready once the layer in VPX is one that does it.
+   */
+  const scoreboardPlaceFact = (a: Active): MenuFacts['scoreboardPlace'] => {
+    const to = a.overlay?.setScoreboard && a.overlay.placeScoreboard ? a.overlay : null;
+    if (!to || settings.scoreboardAnchor !== 'room' || !scoreboardWanted(a.controller.panel(), settings.scoreboard) || !opts.media?.scoreboardFrames?.()) return null;
+    const protocol = to.layerProtocol?.() ?? null;
+    return protocol === null ? 'not_connected' : protocol < VR_LAYER_SCOREBOARD_ROOM_PROTOCOL ? 'old_layer' : 'ready';
   };
   /** A10: a client whose series is over closes the match after the linger (the host's End match tears down at once). */
   const scheduleSeriesEnd = (a: Active): void => {
@@ -1677,6 +1694,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       theirTable: settings.othersTableVolume,
       myTable: settings.myTableWhileUp,
       mic: st.panel.mic,
+      scoreboardPlace: scoreboardPlaceFact(a),
     };
   };
   const menuHint = (): string => {
@@ -1749,6 +1767,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         log.info(`match: microphone ${effect.muted ? 'muted' : 'on'} (menu)`);
         api.setMuted(effect.muted);
         return;
+      case 'placeScoreboard': {
+        // D8.12.3: the layer captures the place from the head's pose at its next frame.
+        const did = active?.overlay?.placeScoreboard?.() ?? 'not_connected';
+        if (did === 'placed') log.info('match: the scoreboard is placed again where the player looks (menu)');
+        else log.warn(`match: the scoreboard was not placed again from the menu (${did})`);
+        return;
+      }
       case 'leave':
         log.info('match: Leave chosen in the menu');
         void api.leave().catch((e: unknown) => log.warn(`match: leave from the menu: ${describeError(e)}`));
