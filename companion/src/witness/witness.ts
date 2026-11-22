@@ -53,7 +53,7 @@ import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffRe
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
 import { createMapCorpus, decodeGameState, liveSupport, noBallEndsReason, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
-import { MIDNIGHT_GAME_NOTE, midnightEnabled, midnightEvidence, midnightWire, utcOffsetMinutes } from './midnight.js';
+import { MIDNIGHT_GAME_NOTE, MIDNIGHT_SPAN_NOTE, midnightEnabled, midnightEvidence, midnightSpan, midnightWire, utcOffsetMinutes } from './midnight.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
 import {
@@ -1003,6 +1003,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     midnightRan?: boolean;
     /** B26.6: the detector watched that audit during this game, so `midnightRan` false means "did not run". */
     midnightMonitored?: boolean;
+    /** B26.7: basic mode, the audit in the `.nv` before the sitting and after it (`midnightSpan`); null = not known. */
+    midnightSpan?: 'same' | 'rose' | null;
   }): Promise<void> => {
     const { session, rom, map, nvBytes, started, ended, decision, details, live } = p;
     const { deviceId, token } = store.get();
@@ -1052,11 +1054,19 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     // of a Midnight Madness title in play at local midnight. ArcAid has `started` and `ended`; it needs this PC's offset
     // from UTC to know where midnight was. With it goes what this rig knows about the mode: the adjustment as it reads
     // in the bytes the score came from (both modes), and whether the ROM counted the mode (live mode, a watched audit).
+    // B26.7: basic mode reads the same audit from the `.nv` before and after the sitting: unchanged = it ran in no game
+    // of the sitting; higher = it ran in one of them, which basic mode cannot name (it posts the last game only).
     const midnight = midnightEvidence(map, rom);
     const midnightOn = map && nvBytes ? midnightEnabled(map, midnight, nvBytes) : null;
+    const span = live ? null : (p.midnightSpan ?? null);
+    if (decision.kind === 'score' && span === 'rose') {
+      details.push(MIDNIGHT_SPAN_NOTE);
+      log(`witness: ${table}: ${MIDNIGHT_SPAN_NOTE}`);
+    }
     const midnightParam = midnightWire({
       setting: midnight.setting && midnightOn !== null ? { enabled: midnightOn, adjustment: midnight.setting.name } : null,
-      ran: live && p.midnightMonitored ? p.midnightRan === true : null,
+      ran: live ? (p.midnightMonitored ? p.midnightRan === true : null) : span === 'same' ? false : null,
+      ranSpan: span === 'rose',
     });
 
     const durationSec = Math.max(0, Math.round((ended - started) / 1000));
@@ -1185,7 +1195,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       status.lastClose = { table: session.live?.tableId ?? session.launch.table ?? UNKNOWN_TABLE, at: iso(ended), rung: rung.rung, kind: rung.kind, text: rung.note, vpxPath: rung.patchable ? session.patchablePath : null };
     }
     const lead = rung ? `${decision.kind === 'score' ? decision.reason : 'no score'}: ${rung.detail}` : null;
-    await publish({ session, rom, map, nvBytes, started, ended, decision, details, live: false, lead });
+    const span = name ? midnightSpan(map, midnightEvidence(map, rom), baseline?.get(name)?.bytes ?? null, nvBytes) : null;
+    await publish({ session, rom, map, nvBytes, started, ended, decision, details, live: false, lead, midnightSpan: span });
   };
 
   /** C11: the rung a close-time read fell on, from what the session knew; null when no table was ever named. */

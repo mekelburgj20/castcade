@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { JournalDetector, type JournalEvent } from './journal-detector.js';
 import { compileMap, createMapCorpus, gameStateOffsets, highScoreOffsets, watchOffsets, type CompiledMap } from './maps.js';
-import { MIDNIGHT_GAME_NOTE, midnightCount, midnightEnabled, midnightEvidence, midnightLine, midnightSettingLine, midnightWatchOffsets, midnightWire, utcOffsetMinutes } from './midnight.js';
+import { MIDNIGHT_GAME_NOTE, midnightCount, midnightEnabled, midnightEvidence, midnightLine, midnightSettingLine, midnightSpan, midnightWatchOffsets, midnightWire, utcOffsetMinutes } from './midnight.js';
 
 const corpus = createMapCorpus(fileURLToPath(new URL('../../../fixtures/maps', import.meta.url)));
 const mapOf = async (rom: string): Promise<CompiledMap> => {
@@ -176,6 +176,30 @@ describe('what goes with a score (B26.6): the clock offset and what the rig know
     expect(JSON.parse(midnightWire({ setting: OFF, ran: false })!)).toEqual({ setting: 'off', adjustment: 'A.2 14 Special Mode', ran: false });
     // A ROM whose audit is watched but whose adjustment is not readable (congo_20): the count alone.
     expect(JSON.parse(midnightWire({ setting: null, ran: true })!)).toEqual({ ran: true });
+    // B26.7: a rise that cannot be placed in one game is its own key, and enough on its own to send the param.
+    expect(JSON.parse(midnightWire({ setting: null, ran: null, ranSpan: true })!)).toEqual({ ran_span: true });
+    expect(JSON.parse(midnightWire({ setting: ON, ran: null, ranSpan: true })!)).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode', ran_span: true });
+    expect(midnightWire({ setting: null, ran: null, ranSpan: false })).toBeNull();
+  });
+
+  it('B26.7, basic mode: the audit in the .nv before the sitting and after it: same, rose, or nothing to say', async () => {
+    const congo = await mapOf('congo_21');
+    const e = midnightEvidence(congo, 'congo_21');
+    const nv = (count: number): Uint8Array => {
+      const b = new Uint8Array(0x3000);
+      b[6859] = count;
+      return b;
+    };
+    expect(midnightSpan(congo, e, nv(3), nv(3))).toBe('same');
+    expect(midnightSpan(congo, e, nv(3), nv(4))).toBe('rose');
+    expect(midnightSpan(congo, e, nv(0), nv(2))).toBe('rose');
+    // An audit reset in the service menu, a first run with no .nv yet, a file too short, a ROM with no such audit.
+    expect(midnightSpan(congo, e, nv(3), nv(0))).toBeNull();
+    expect(midnightSpan(congo, e, null, nv(1))).toBeNull();
+    expect(midnightSpan(congo, e, nv(1), null)).toBeNull();
+    expect(midnightSpan(congo, e, new Uint8Array(100), nv(1))).toBeNull();
+    expect(midnightSpan(congo, midnightEvidence(null), nv(1), nv(2))).toBeNull();
+    expect(midnightSpan(null, e, nv(1), nv(2))).toBeNull();
   });
 });
 

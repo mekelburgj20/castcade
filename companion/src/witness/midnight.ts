@@ -218,16 +218,42 @@ export function utcOffsetMinutes(ms: number): number {
  *
  * - `setting` `on` / `off` and `adjustment` (`A.2 14 Special Mode`): the operator adjustment as it reads in the NVRAM
  *   bytes the score came from. The owner's stated end state: a game on a table with the mode OFF is permitted.
- * - `ran`: the ROM's own audit of the mode went up during this game (true) or did not (false). Only from live mode on a
- *   ROM with such an audit; absent means not monitored, never "did not run".
+ * - `ran`: the ROM's own audit of the mode went up during this game (true) or did not (false). From live mode on a ROM
+ *   with such an audit, and `false` from basic mode when the audit did not move in the whole sitting (`midnightSpan`);
+ *   absent means not monitored, never "did not run".
+ * - `ran_span`: the audit went up between two readings that hold this game and possibly others (basic mode: the
+ *   sitting), so it cannot be placed in one game.
  */
-export function midnightWire(p: { setting: MidnightSettingReport | null; ran: boolean | null }): string | null {
-  if (!p.setting && p.ran === null) return null;
+export function midnightWire(p: { setting: MidnightSettingReport | null; ran: boolean | null; ranSpan?: boolean }): string | null {
+  if (!p.setting && p.ran === null && !p.ranSpan) return null;
   return JSON.stringify({
     ...(p.setting ? { setting: p.setting.enabled ? 'on' : 'off', adjustment: p.setting.adjustment } : {}),
     ...(p.ran !== null ? { ran: p.ran } : {}),
+    ...(p.ranSpan ? { ran_span: true } : {}),
   });
+}
+
+/**
+ * B26.7: basic mode has no journal, so no ball-by-ball watch of the audit; but the `.nv` that lay there when VPX opened
+ * and the one VPinMAME wrote at the close both hold it. `same`: the count did not go up in this sitting, so the mode
+ * ran in no game of it. `rose`: it ran in some game of the sitting, which need not be the one whose score is posted
+ * (basic mode posts the last game only). Null, and nothing is said: no such audit, a `.nv` missing (a first run), or a
+ * lower count (an audit reset in the service menu).
+ */
+export function midnightSpan(
+  map: CompiledMap | null | undefined,
+  evidence: MidnightEvidence,
+  before: Uint8Array | null | undefined,
+  after: Uint8Array | null | undefined,
+): 'same' | 'rose' | null {
+  if (!map || !evidence.counter || !before || !after) return null;
+  const a = midnightCount(map, evidence, before);
+  const b = midnightCount(map, evidence, after);
+  if (a === null || b === null || b < a) return null;
+  return b > a ? 'rose' : 'same';
 }
 
 /** The witness's capture detail and log wording for a solo game the mode ran in. */
 export const MIDNIGHT_GAME_NOTE = 'Midnight Madness ran during the game (counted by the ROM)';
+/** Basic mode: the count went up while VPX was open; which game it was is not known. */
+export const MIDNIGHT_SPAN_NOTE = 'Midnight Madness ran while this table was open (counted by the ROM); basic mode cannot say in which game';

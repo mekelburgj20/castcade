@@ -18,6 +18,12 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   game (live mode). Castcade itself still guesses nothing from the clock and refuses nothing. Today's ArcAid ignores
   both; the rule is `docs/arcaid-side-changes.md` §25. `witness/midnight.ts`, `witness/witness.ts`,
   `witness/arcaid-client.ts`, `witness/queue.ts`.
+- **An unpatched table says whether the ROM counted a Midnight Madness too (B26.7).** Basic mode has no journal, but
+  the `.nv` that lay there when VPX opened and the one written at the close both hold the ROM's audit of the mode. If
+  the count did not move, the score says the mode did not run (`ran` false). If it went up, the score says it ran
+  while the table was open (`ran_span`), with a line in the capture detail and the log: basic mode posts the last
+  game only and cannot say which game it was. Monitored where the map has the audit: Congo, Dirty Harry, Johnny
+  Mnemonic, NBA Fastbreak, WHO dunnit. `midnightSpan` in `witness/midnight.ts`.
 
 ### Changed
 

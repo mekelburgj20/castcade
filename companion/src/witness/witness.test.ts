@@ -618,6 +618,42 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     expect('midnight' in params).toBe(false);
   });
 
+  it('B26.7: basic mode on a ROM with the audit: a sitting in which the count did not move says the mode did not run; one in which it went up says so, without naming the game', async () => {
+    // congo_21: game over at 135, players at 946, ball at 947, player 1's score (BCD) at 5792, audit B.4 31 at 6857, A.2 14 at 7265.
+    const congoNv = (score: number, count: number): Uint8Array => {
+      const b = new Uint8Array(0x3000);
+      b[135] = 1;
+      b[946] = 1;
+      b[947] = 1;
+      const digits = String(score).padStart(12, '0');
+      for (let i = 0; i < 6; i++) b[5792 + i] = Number.parseInt(digits.slice(i * 2, i * 2 + 2), 16);
+      b[6859] = count;
+      b[7266] = 1;
+      return b;
+    };
+    const logs: string[] = [];
+    const h = harness({}, { log: (l) => logs.push(l) });
+    await h.fs.mkdir('/nv');
+    h.fs.put('/nv/congo_21.nv', congoNv(1_000_000, 3));
+    await h.witness.start();
+    await h.launch();
+    await h.playFor(100_000);
+    h.fs.put('/nv/congo_21.nv', congoNv(52_000_000, 3));
+    await h.exit();
+    expect(h.captures[0]).toMatchObject({ outcome: 'ingested', rom: 'congo_21', score: 52_000_000 });
+    expect(JSON.parse(String(h.paths('/score')[0]?.params['midnight']))).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode', ran: false });
+    expect(h.captures[0]?.detail).not.toContain('Midnight Madness');
+
+    await h.launch();
+    await h.playFor(100_000);
+    h.fs.put('/nv/congo_21.nv', congoNv(77_000_000, 4));
+    await h.exit();
+    expect(h.captures[1]).toMatchObject({ outcome: 'ingested', rom: 'congo_21', score: 77_000_000 });
+    expect(JSON.parse(String(h.paths('/score')[1]?.params['midnight']))).toEqual({ setting: 'on', adjustment: 'A.2 14 Special Mode', ran_span: true });
+    expect(h.captures[1]?.detail).toContain('Midnight Madness ran while this table was open');
+    expect(logs.some((l) => l.includes('Congo') && l.includes('Midnight Madness ran while this table was open'))).toBe(true);
+  });
+
   it('skips when no .nv changed (original table) and when the ROM has no map', async () => {
     const h = harness({}, { nvSettleMs: 0 });
     await h.fs.mkdir('/nv');
