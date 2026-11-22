@@ -794,7 +794,7 @@ export class MatchController {
     return this.unreadableIds().map((id) =>
       id === this.localId
         ? `Your table cannot report ball ends: ${this.localBallEndsReason ?? 'Castcade is not reading its score (not patched, or an original table)'}`
-        : `${this.nameOf(id)}'s table cannot report ball ends: its score is not being read (not patched, or an original table)`,
+        : `${this.nameOf(id)}'s table cannot report ball ends: it is not patched, an original table, or a machine whose ball ends cannot be read`,
     );
   }
 

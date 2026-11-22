@@ -590,7 +590,11 @@ function lobbyKey(s: WitnessStatus): string {
  * table's hook journal (true); `basic` = a table is open and it does not (false, with the witness's own sentence
  * when it has one: not patched, an original table, a machine it cannot read); no table = unknown (null).
  */
-export function ballEndsFrom(s: Pick<WitnessStatus, 'captureMode' | 'note'>): { ready: boolean | null; reason: string | null } {
+export function ballEndsFrom(s: Pick<WitnessStatus, 'captureMode' | 'note' | 'ballEnds' | 'ballEndsNote'>): { ready: boolean | null; reason: string | null } {
+  // C18: a table that is followed is not thereby one whose ball ends are read (Stern SAM, Bally / Stern M100: the
+  // scores and the game end, no ball end). The witness says which (`ballEnds`); null there = not known yet.
+  if (s.captureMode === 'live' && s.ballEnds === false) return { ready: false, reason: s.ballEndsNote?.trim() || null };
+  if (s.captureMode === 'live' && s.ballEnds === null) return { ready: null, reason: null };
   if (s.captureMode === 'live') return { ready: true, reason: null };
   if (s.captureMode === 'basic') return { ready: false, reason: s.note?.trim() || null };
   return { ready: null, reason: null };

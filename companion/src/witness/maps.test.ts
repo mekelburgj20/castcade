@@ -17,6 +17,7 @@ import {
   samEndCounter,
   ballyLiveInputs,
   liveSupport,
+  noBallEndsReason,
   stripRomVersion,
   toInt,
   type Json,
@@ -319,6 +320,48 @@ describe('liveSupport (B12)', () => {
     expect(s).toMatchObject({ readable: false, absent: ['current_ball'] });
     expect(s.reason).toMatch(/no current_ball in the map/);
     expect(liveSupport(null)).toMatchObject({ readable: false, reason: 'no NVRAM map for this ROM' });
+  });
+});
+
+describe('liveSupport: ball ends (C18, the match night on Spider-Man Vault Edition, 2026-11-21)', () => {
+  it('smanve_101 is followed live and gives no ball end: ball and player are CPU RAM, as on every Stern SAM map here', async () => {
+    for (const rom of ['smanve_101', 'smanve_100', 'smanve_101c', 'acd_170h', 'twd_160h']) {
+      const s = liveSupport(await corpus.mapFor(rom));
+      expect(s).toMatchObject({ readable: true, via: 'sam_end_counter', ballEnds: false, absent: [], outside: ['game_over', 'current_ball', 'current_player'] });
+      expect(noBallEndsReason(s)).toBe(
+        "on Stern SAM the ball in play and the player up are out of Castcade's reach (CPU RAM). The scores and the end of the game are read, the end of a ball is not; the host passes each turn by hand (Pass the turn)",
+      );
+    }
+  });
+
+  it('what the hook is told to journal on smanve_101 holds no ball and no player: the score, the end-of-game counter, credits, player count, three adjustments, the high scores', async () => {
+    const map = (await corpus.mapFor('smanve_101'))!;
+    // Player count, the counter (4 bytes at score - 8), four 4-byte scores, credits; then free play, balls per game, max credits, volume.
+    expect(gameStateOffsets(map)).toEqual([0x2108, 0x2118, 0x2120, 0x10250, 0x10900, 68060, 68061, 68062, 68063, ...Array.from({ length: 16 }, (_, i) => 68068 + i), 0x1100c]);
+    for (const field of ['current_ball', 'current_player', 'game_over']) {
+      const addr = toInt(map.gameState[field]![0]!['start']);
+      expect(addr).toBeLessThan(0x02100000); // CPU RAM: ChangedNVRAM never reports it
+    }
+  });
+
+  it('the four live fields in NVRAM give ball ends (WPC, Data East, Gottlieb System 3); nothing to explain', async () => {
+    for (const rom of ['mm_109c', 'mb_106b', 'tftc_400', 'cueball']) {
+      const s = liveSupport(await corpus.mapFor(rom));
+      expect(s).toMatchObject({ readable: true, via: 'game_state', ballEnds: true });
+      expect(noBallEndsReason(s)).toBeNull();
+    }
+  });
+
+  it('Bally AS-2518-35 and Stern M100 are followed by the lamp and give no ball end either; a machine that is not followed has its own sentence', async () => {
+    for (const rom of ['eballdlx', 'stingray']) {
+      const s = liveSupport(await corpus.mapFor(rom));
+      expect(s).toMatchObject({ readable: true, via: 'bally_lamp', ballEnds: false });
+      expect(noBallEndsReason(s)).toMatch(/^on this machine the ball in play and the player up are out of Castcade's reach .*the end of a ball is not/);
+    }
+    for (const s of [liveSupport(null), liveSupport(await corpus.mapFor('dvlrider')), liveSupport(await corpus.mapFor('cheetah'))]) {
+      expect(s).toMatchObject({ readable: false, ballEnds: false });
+      expect(noBallEndsReason(s)).toBeNull();
+    }
   });
 });
 

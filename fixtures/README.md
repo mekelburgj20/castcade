@@ -6,7 +6,10 @@ live-mode gate), recorded 2026-10-23; a fifth, `nvram/mm_109c/2026-10-25-1` (hoo
 first `engine` line), recorded 2026-10-25; two Stern SAM sessions, `nvram/acd_170h/2026-10-25-1` and
 `nvram/twd_160h/2026-10-26-1` (every NVRAM byte journaled, B10), recorded 2026-10-25/26; one Gottlieb System 3 session,
 `nvram/cueball/2026-11-01-1` (hook 0.4.1, one game; the ball byte is cleared 3.5 s before game over, the finding behind
-"System 3 posts at close"), recorded 2026-11-01. Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
+"System 3 posts at close"), recorded 2026-11-01; two Stern SAM sessions of Spider-Man Vault Edition,
+`nvram/smanve_101/2026-11-05-1` (three table loads) and `nvram/smanve_101/2026-11-21-1` (the owner's side of a two-player
+match in which no ball end reached the match: C18, "Stern SAM ball ends" below), watched bytes only.
+Used by CI from Phase 2–3.** A fourth, hand-played MM session (2026-10-17, two games + one abandoned at
 exit) is archived locally only, 18.7 MB gzipped is too large for git; see `docs/phase-0-spike.md` §8 "Owner's hands-on pass". Journals are written by the hook to
 `%LOCALAPPDATA%\Castcade\journal\<table-id>.jsonl`; copy a session here under the names below. NVRAM journals are large
 (the 0.1.0 hook writes every changed byte: 37 MB for two games of Medieval Madness) so they are stored **gzipped**
@@ -72,6 +75,46 @@ Locally, point both variables at the clones under `C:\code\repos\ArcAid\tmp\vpx-
 A meta with `"oracle": false` is skipped there (Stern SAM: the tailer has no rules for it) and judged by the vitest
 replay alone. A new fixture needs only its `.meta.json` with `games` (and `recipe`) set; bump the pins here and in
 `ci.yml` together.
+
+## Stern SAM ball ends: what is recorded, and what would have to be (C18)
+
+Live mode follows a Stern SAM machine for its scores and its game end (`samEndCounter`) and derives **no ball end**:
+the maps put the ball in play, the player up and game over in CPU RAM, which `ChangedNVRAM` never reports. So
+`liveSupport().ballEnds` is false for every SAM map (and for Bally AS-2518-17/-35 and Stern M100, read by the lamp), the
+witness reports it (`WitnessStatus.ballEnds`), and a match on such a table takes its turns by hand (Pass the turn).
+
+`nvram/smanve_101/2026-11-21-1` is the night that showed it (match JTWURE, 2026-11-21 08:02 to 08:13 UTC). Between the
+game's start and its end the journal holds 190 lines and every one is player 1's score; credits fall once at the start
+and the end-of-game counter rises once at the end. The 5820 other bytes that changed in NVRAM were not on the watch list
+and are not in the journal. A pause in the score cannot stand in for a ball end: that game has four pauses of 11 s or
+longer during play (after t=92.6, 207.2, 239.9 and 664.6) for the two ball changes of a three-ball game, and every
+session of this table has a +2,000,000 award followed by 8 to 13 s of silence.
+
+What the two recordings that kept every NVRAM byte show (`acd_170h/2026-10-25-1`, `twd_160h/2026-10-26-1`, B10): each
+ROM has one record in its audit area that goes up by one when a ball drains, 0.9 to 4.5 s before the bonus is added to
+the score: 13 times over the four games of `acd_170h` (3, 3, 6 for the 2-player game, 1 for the game left after its
+first drain) at NVRAM offset `0x26A8`, 9 times over the three games of `twd_160h` (3, 6, 0) at `0x27E0`. A record is 16
+bytes: the value (u32, little-endian), 0, the value again, and 0xFFFFFFFF minus the byte sum of those twelve (the
+end-of-game record has the same check word). `journal-detector.test.ts` ("evidence for a follow-up") replays this.
+
+What is not known, and what to record to know it:
+
+1. **The record's address on `smanve_101`.** The four table-load snapshots of the two `smanve_101` fixtures bracket
+   three games; 19 audit records differ between them and one, at `0x2440`, reads 0, 3, 6, 8 (one finished three-ball
+   game, then two games that were left). It is a candidate only: no journal shows when it changes. Record one session
+   with every NVRAM byte journaled (the B10 way: remove the `Castcade_WatchBytes` line from the rendered sidecar, so
+   `filtered_bytes` is 0) or with the 16 bytes at `0x2440` on the watch list: one player, three balls to game over, the
+   drain times noted by hand.
+2. **What else moves it.** In the same recording or a second one: a ball the ball saver returns (the count must not
+   rise), an extra ball (does it rise at each drain; nothing in NVRAM says the same player shoots again), a tilt, a
+   game left in the middle of a ball.
+3. **Every other SAM ROM.** The address differs on the three ROMs looked at and no SAM map of the corpus has an
+   `audits` block, so each ROM needs its own recording (or a map contribution upstream) before its ball ends are
+   promised.
+
+With that, the companion side is: the record's bytes on the watch list (`watchOffsets`; a recipe bump re-makes the
+sidecars), a rule beside `samTransition` (the count up by one with a game open is a `ball_end`), and `ballEnds` true
+for the ROMs whose record is known. The journal format does not change.
 
 ## What does not live here
 

@@ -52,7 +52,7 @@ import { RECIPE_VERSION, disableSidecar, manifestPathFor, readManifest, type Man
 import { describeScriptDiff, scriptDiffReport, scriptDiffWire, type ScriptDiffReport } from './script-diff.js';
 import { exitRungFor, type ExitRung, type LiveFacts, type UnpatchedFacts } from './exit-rung.js';
 import { isNotFound, nodeFs, type WitnessFs } from './fs.js';
-import { createMapCorpus, decodeGameState, liveSupport, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
+import { createMapCorpus, decodeGameState, liveSupport, noBallEndsReason, romFromNvName, type CompiledMap, type GameState, type MapCorpus } from './maps.js';
 import { MIDNIGHT_GAME_NOTE } from './midnight.js';
 import { createRegQueryReader, resolveNvramDir, type RegistryReader } from './nvram-dir.js';
 import { changedNvFiles, snapshotNvFiles, waitForNvChange, DEFAULT_NV_POLL_MS, DEFAULT_NV_SETTLE_MS, type NvSnapshot } from './nvram-snapshot.js';
@@ -314,6 +314,15 @@ interface LiveSession {
    */
   unreadable: string | null;
   /**
+   * C18: whether this table's ball ends reach the companion. Following the journal does not say it: a Stern SAM or a
+   * Bally / Stern M100 machine is followed for its scores and its game end and gives no ball end (`liveSupport`'s
+   * `ballEnds`). True for a machine whose map has the ball in NVRAM and for an original's script recipe (it journals
+   * `ball_end` itself); false with `noBallEnds`, the reason, for a machine followed without them; null until the
+   * recipe and the ROM are known (from the import manifest when live mode arms, then from the hook's `table_loaded`).
+   */
+  ballEnds: boolean | null;
+  noBallEnds: string | null;
+  /**
    * B15: the Status line when the table loaded a patch older than this build renders (`recipe_version` in
    * `table_loaded`), e.g. one opened while the sidecar watch was still re-making patches after an update. Null when current.
    */
@@ -491,6 +500,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     lastError: null,
     note: null,
     captureMode: null,
+    ballEnds: null,
+    ballEndsNote: null,
     attempt: null,
     attemptStart: null,
     patchNow: null,
@@ -776,6 +787,10 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     status.captureMode = active ? (following ? 'live' : 'basic') : null;
     status.attempt = active?.live?.attempt ?? null;
     status.note = sessions.size > 0 && !status.currentTable ? 'VPX is open; no table known yet' : active && !following ? active.unpatchedNote : (active?.live?.oldPatchNote ?? null);
+    // C18: a table that is followed is not thereby a table whose ball ends are read (Stern SAM, Bally / Stern M100).
+    const liveBallEnds = following ? (active?.live?.ballEnds ?? null) : null;
+    status.ballEnds = !active ? null : following ? liveBallEnds : false;
+    status.ballEndsNote = liveBallEnds === false ? (active?.live?.noBallEnds ?? null) : null;
     // C11: the open table is in basic mode and the import would patch it: Status offers Patch now.
     status.patchNow = active && !active.live && active.patchablePath && active.launch.table ? { table: active.launch.table, vpxPath: active.patchablePath } : null;
   };
@@ -1335,6 +1350,19 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     emitter.emit('notice', { kind: 'unpatched', table, patchable, vpxPath, title: patchable ? 'Castcade: table not patched' : original ? 'Castcade: score not read' : 'Castcade: basic mode', message });
   };
 
+  /**
+   * C18: whether a table of this recipe and ROM gives the companion its ball ends, and why not when it is followed
+   * without them. Recipe A asks the ROM's map (`liveSupport`); the script recipes journal `ball_end` themselves.
+   * Null: not known (no recipe named, or a recipe-A table that names no ROM).
+   */
+  const ballEndsFor = async (recipe: string | null, rom: string | null): Promise<{ ballEnds: boolean | null; reason: string | null }> => {
+    if (recipe === null) return { ballEnds: null, reason: null };
+    if (recipe !== 'A') return { ballEnds: true, reason: null };
+    if (!rom) return { ballEnds: null, reason: null };
+    const support = liveSupport(await corpus.mapFor(rom).catch(() => null));
+    return { ballEnds: support.readable && support.ballEnds, reason: noBallEndsReason(support) };
+  };
+
   const startLive = async (session: OpenSession, vpxPath: string): Promise<void> => {
     if (session.live || !journalRoot) return;
     const embedded = !(await hasSidecar(vpxPath).catch(() => false));
@@ -1347,6 +1375,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     const tableId = tableBaseName(vpxPath);
     const path = joinPath(journalRoot, journalFileName(tableId));
     const manifest = await readManifest(fs, manifestPathFor(manifestDir, tableId)).catch(() => null);
+    // C18: the manifest names the recipe and the ROM before VPX has loaded the table, so a match lobby hears whether
+    // this table's ball ends are read when live mode arms, not after its first sentence. `table_loaded` has the last word.
+    const early = manifest ? await ballEndsFor(manifest.recipe, manifest.rom) : { ballEnds: null, reason: null };
     const live: LiveSession = {
       tail: new JournalTail(path, { fs, clock, pollMs: deps.journalPollMs, from: 'start' }),
       detector: new JournalDetector(),
@@ -1375,6 +1406,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       scoreTrack: new ScoreTrack(),
       midnightRan: false,
       unreadable: null,
+      ballEnds: early.ballEnds,
+      noBallEnds: early.reason,
       oldPatchNote: null,
       embedded,
       lib: null,
@@ -1564,6 +1597,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
           session.unpatchedNote = unreadableNote(live.tableId, support.reason);
           log(`witness: ${live.tableId}: live score can't be read on this machine (ROM ${ev.rom}, ${support.reason}); at most one score posts, at close`);
         }
+        // C18: followed, but without its ball ends (Stern SAM, Bally / Stern M100). Said once per load, and in the status
+        // a match lobby reads, so nobody is told "the table can report ball ends" on such a machine.
+        live.ballEnds = support.readable && support.ballEnds;
+        live.noBallEnds = noBallEndsReason(support);
+        if (live.noBallEnds) log(`witness: ${live.tableId}: ball ends can't be read on this machine (ROM ${ev.rom}, ${support.reason}): every game posts as it ends; in a match each turn on it is passed by hand`);
+      } else {
+        const be = await ballEndsFor(ev.recipe, ev.rom);
+        live.ballEnds = be.ballEnds;
+        live.noBallEnds = be.reason;
       }
       await resampleVrAtLoad(session);
       setGame({ table: live.tableId, inGame: false, scores: [], player: null, ball: null });
