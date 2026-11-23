@@ -7,6 +7,15 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.49] — 2026-11-22
+
+Protocol 6 is unchanged: this build plays a match with 0.2.46, 0.2.47 and 0.2.48. It is a companion-only release: the
+OpenXR layer (0.8.0), the native helpers and the hook library (0.6.0) are as in 0.2.48, so nothing in VPX has to be
+restarted for it. It carries the companion's half of the owner's Midnight Madness ruling of 2026-11-22 and one wording
+fix on the Status view. Released on the owner's word. **No game has yet been played across midnight with it**: that the
+ROM's "Special Modes" audit counts Midnight Madness is still inferred from its name (the check is B26.1), and ArcAid
+does nothing with the two new values until its tournament option is built (F29).
+
 ### Added
 
 - **Every score says where the PC's clock stands, and what the rig knows about Midnight Madness (B26.6).** The owner's
@@ -31,6 +40,12 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   tester changed his registry over it (2026-11-21). VPinMAME's own dialog calls that option "Skip Pinball Startup
   Test": on a WPC machine it skips the boot checksum and nothing else. It is still measured and still sent to ArcAid
   as `build.cheat` (`witness/build-attestation.ts`, `renderer/src/views/Attestation.tsx`).
+
+**Wire / journal:** two optional query parameters on `GET /api/witness/score`: `utc_offset` (an integer, minutes east
+of UTC at the game's start) and `midnight` (compact JSON with the optional keys `setting`, `adjustment`, `ran` and
+`ran_span`); the contract is `docs/arcaid-side-changes.md` §25, and a server that does not know them ignores them. No
+protocol message and no journal line changed. Covered by `witness/midnight.test.ts` and the B26.6 / B26.7 cases in
+`witness/witness.test.ts` (a synthetic `congo_21.nv`; no recorded fixture, since no game has crossed midnight yet).
 
 ## [0.2.48] — 2026-11-21
 
