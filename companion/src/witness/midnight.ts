@@ -200,5 +200,60 @@ export function midnightLine(name: string | null, ball: number): string {
   return `Midnight Madness ran on ${possessive(name)} ball ${ball} (counted by that table's ROM)`;
 }
 
+/**
+ * B26.6 (owner ruling 2026-11-22): a tournament may refuse, or only flag, a game of a Midnight Madness title that was in
+ * play at the device's local midnight. ArcAid decides that from the game's `started` / `ended` (epoch seconds) and the
+ * device's offset from UTC, which only the device knows. Minutes EAST of UTC (Los Angeles in winter: -480), read at the
+ * game's start: a daylight-saving change falls after midnight, so the offset at the start is the one in force at the
+ * midnight inside the game.
+ */
+export function utcOffsetMinutes(ms: number): number {
+  // `0 - x`, not `-x`: on a machine set to UTC a negation would give -0.
+  return 0 - new Date(ms).getTimezoneOffset();
+}
+
+/**
+ * The compact `midnight` JSON on a score: what this rig knows about the mode on the table the score came from. Null
+ * (the param is not sent) when it knows nothing, which is most machines.
+ *
+ * - `setting` `on` / `off` and `adjustment` (`A.2 14 Special Mode`): the operator adjustment as it reads in the NVRAM
+ *   bytes the score came from. The owner's stated end state: a game on a table with the mode OFF is permitted.
+ * - `ran`: the ROM's own audit of the mode went up during this game (true) or did not (false). From live mode on a ROM
+ *   with such an audit, and `false` from basic mode when the audit did not move in the whole sitting (`midnightSpan`);
+ *   absent means not monitored, never "did not run".
+ * - `ran_span`: the audit went up between two readings that hold this game and possibly others (basic mode: the
+ *   sitting), so it cannot be placed in one game.
+ */
+export function midnightWire(p: { setting: MidnightSettingReport | null; ran: boolean | null; ranSpan?: boolean }): string | null {
+  if (!p.setting && p.ran === null && !p.ranSpan) return null;
+  return JSON.stringify({
+    ...(p.setting ? { setting: p.setting.enabled ? 'on' : 'off', adjustment: p.setting.adjustment } : {}),
+    ...(p.ran !== null ? { ran: p.ran } : {}),
+    ...(p.ranSpan ? { ran_span: true } : {}),
+  });
+}
+
+/**
+ * B26.7: basic mode has no journal, so no ball-by-ball watch of the audit; but the `.nv` that lay there when VPX opened
+ * and the one VPinMAME wrote at the close both hold it. `same`: the count did not go up in this sitting, so the mode
+ * ran in no game of it. `rose`: it ran in some game of the sitting, which need not be the one whose score is posted
+ * (basic mode posts the last game only). Null, and nothing is said: no such audit, a `.nv` missing (a first run), or a
+ * lower count (an audit reset in the service menu).
+ */
+export function midnightSpan(
+  map: CompiledMap | null | undefined,
+  evidence: MidnightEvidence,
+  before: Uint8Array | null | undefined,
+  after: Uint8Array | null | undefined,
+): 'same' | 'rose' | null {
+  if (!map || !evidence.counter || !before || !after) return null;
+  const a = midnightCount(map, evidence, before);
+  const b = midnightCount(map, evidence, after);
+  if (a === null || b === null || b < a) return null;
+  return b > a ? 'rose' : 'same';
+}
+
 /** The witness's capture detail and log wording for a solo game the mode ran in. */
 export const MIDNIGHT_GAME_NOTE = 'Midnight Madness ran during the game (counted by the ROM)';
+/** Basic mode: the count went up while VPX was open; which game it was is not known. */
+export const MIDNIGHT_SPAN_NOTE = 'Midnight Madness ran while this table was open (counted by the ROM); basic mode cannot say in which game';

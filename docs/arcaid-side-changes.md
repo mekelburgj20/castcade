@@ -633,6 +633,116 @@ Castcade out of scope. The owner asked on 2026-11-13 for testers' Castcade logs 
 
 No change to the upload route, the tar check or the storage.
 
+## 25. Midnight Madness: a tournament option, refuse or flag (Castcade B26.6 / F29, owner ruling 2026-11-22)
+
+**Not built in ArcAid.** The companion sends its half from 0.2.49; today's server ignores both params.
+
+**The ruling.** "I want for both Cabinet witness and desktop witness to have the option in the tournament config to
+refuse or flag (check box to refuse, not checked means flag only) Midnight Madness scores. This will be based on
+device time for the score submittal, and if the game start to game end window included midnight, for games that have
+this option. Eventually though, I want to be able to inspect whether or not the option is disabled, and if so,
+midnight scores will be permitted." A refused game still uses its attempt on a Limited-attempts board (same day):
+otherwise a player who sets the PC clock to 23:58 can void a bad game.
+
+**Why the clock.** Some 1995 to 1997 Williams / Bally WPC machines start a one-minute multiball when the machine's
+clock passes midnight during a game. PinMAME takes that clock from the device (`wpc_systime()`: `time()` then
+`localtime()`), so it is each device's own local midnight, and a player can bring it on by setting the clock.
+
+**What arrives on `GET /api/witness/score`.**
+
+- `utc_offset`: an integer, the device's offset from UTC in minutes EAST (Los Angeles in winter `-480`), read at the
+  game's start. Sent with every score by companion ≥ 0.2.49, in both modes. The cabinet app does not send it yet
+  (F32): the launcher's timestamps carry the offset and the app drops it when it parses them.
+- `midnight`: compact JSON, only from a rig that knows something: `{ "setting": "on" | "off", "adjustment":
+  "A.2 14 Special Mode", "ran": true | false, "ran_span": true }`, each part present only when known. `setting` is
+  the operator adjustment as it reads in the NVRAM bytes the score came from (today `congo_21` and Johnny Mnemonic;
+  confirmed on the owner's rig for `congo_21` on 2026-11-21). `ran` is the ROM's own audit of the mode going up
+  during the game (live mode on a ROM with that audit; from basic mode only `false`, when the audit did not move
+  while the table was open); absent means not monitored, never "did not run". `ran_span`: the audit went up between
+  two readings that hold this game and possibly others, so it cannot be placed in one game (the companion's basic
+  mode, where the span is the whole sitting and only its last game is posted; a cabinet whose readings do not
+  separate two games).
+
+Read both like the other evidence (`parseWitnessEvidence`: optional, malformed = dropped, never a 400).
+
+**Where a cabinet gets it (found 2026-11-22; the app's half is F32).** The cabinet app has no NVRAM, but the
+ScoreServer in the Legends Unchained build decodes it and writes a state file beside the score file the app already
+reads: `external/vpx-<slug>/scoreserver/vpx-<slug>.json`. On a ROM table whose map has audits that file holds
+`audits.entries[]` (`group`, `label`, `value`) with its own `timestamp`, rewritten at game start, at game end and at
+other moments. A tester's WHO dunnit file of 2026-08-22 has `B.4 FEATURE AUDS.` / `SPECIAL MODES` = `0`. Legends
+Unchained's own maps package (2026-10-28) has that audit for all five Midnight Madness titles in its catalogue
+(`congo_21`, `dh_lx2`, `jm_12r`, `nbaf_31`, `wd_12`; Junk Yard is not in the catalogue) and the enabling adjustment
+for Johnny Mnemonic only, so `setting` arrives from a cabinet on that title alone. The app samples the file as it
+changes, and a game whose reading before and reading after differ is a game the mode ran in. `utc_offset` is the
+offset on the launcher's session journal times. Not confirmed: that today's launcher still writes the block (the
+samples are from August), that the audit counts Midnight Madness (the same open check as on desktop, B26.1), and that
+the cabinet's PinMAME clock is the local time the launcher stamps. One game of Congo across the cabinet's midnight
+answers all three.
+
+**The rule.** For a game of a Midnight Madness title, with `utc_offset` present: local time = UTC + `utc_offset`
+minutes; the game is a *midnight game* when a local 00:00:00 lies in [`started`, `ended`]. Then:
+
+- the tournament's box unchecked (the default): the score lands as ever, flagged "in play at the device's midnight";
+- checked: the score is kept off that tournament's board, answered like a Sanctioned refusal (`not_sanctioned` with
+  the reason in `reasons`, which the companion already shows) and falls to the player's Global record. The attempt
+  the game used stays used.
+
+The option is its own switch on the tournament, usable in Open play and in Sanctioned play. No `utc_offset` (an older
+companion, a cabinet before F32): the game cannot be checked; say so on the trail, refuse nothing.
+
+**Which titles.** Congo, Dirty Harry, Johnny Mnemonic, Junk Yard, NBA Fastbreak and WHO dunnit (a players' list;
+no official one was found; the maps corpus has the mode's audit for five of them, not Junk Yard). Match on the
+catalogue game the score resolved to, with the ROM family as the fallback (`congo_*`, `dh_*`, `jm_*`, `jy_*`,
+`nbaf_*`, `wd_*`): a cabinet's `rom` can be free text.
+
+**The counter in the rule (proposed 2026-11-22, when the owner asked for the mode itself to be detected on both
+producers; theirs to confirm).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
+covers a cabinet whose time zone is wrong and a score with no `utc_offset`. `ran_span` and an absent `ran` decide
+nothing: the clock rule above stands. `ran` `false` does NOT clear a game the clock rule caught until the counter is
+confirmed on a rig (B26.1): that the audit counts Midnight Madness is read from its name, not yet seen to go up.
+Once it is confirmed, `ran` `false` clears the game, which is the owner's end state by a second road.
+
+**Later, the owner's end state.** `midnight.setting` `off` permits a midnight game. The companion sends it now so the
+switch is one line when the owner wants it. Store `midnight` whole and show it on the Integrity panel.
+
+**What would make the cabinet's reading as strong as its score (an ask of Legends Unchained, not a dependency).**
+The state file is unsigned and holds only the latest reading. Three additions, in order of value: (1) in the signed
+`game_end` record of each game, the audits that changed during that game (`label`, before, after), which joins the
+`adjustments` field of the Record Proposal v1 and needs no sampling by the app; (2) the A.2 "Special Mode"
+adjustment in their Congo, Dirty Harry, NBA Fastbreak and WHO dunnit maps (Castcade has it for `congo_21`: two bytes
+at NVRAM 7265, 1 = YES), so the setting is read on a cabinet; (3) a fixed emulated clock for tournament play, which
+prevents the mode outright: PinMAME's source has one since 2026-09-28 (`rtc_set_start` in `src/timer.c`, B26.2),
+and whether their libpinmame build exposes it is not known.
+
+## 26. The cross-device approved catalogue (Castcade B29 / F31, owner rulings 2026-11-22)
+
+**Not built.** One list of tables that count on cabinets and on PCs alike, so a cross-device tournament needs no
+setup from a player and one choice from a runner.
+
+**What it is built on.** The Legends Unchained manifest ArcAid already imports. Read on 2026-11-21, its 377 entries
+each carry `tableFileUrl` (a link to the author's file, mostly VPUniverse and VPForums; nothing is redistributed, the
+player downloads it), `tableChecksum`, `tableVpsId`, `romVersion`, `romFileUrl`, `romChecksum`, `configVersion`,
+`repoConfigChecksum`, and for 19 tables a `diffFileUrl` patch. Ask Legends Unchained before building on it.
+
+**The rulings.**
+
+1. The cabinet's shipped config is the baseline; the PC is checked against it (the cabinet rebuilds its ini at every
+   launch and the player cannot change it). Known conflict: cabinets ship `PBWAccelGainX/Y` 230 / 630, the Sanctioned
+   default caps a PC at 150.
+2. A PC file passes on the exact checksum OR on the playfield fingerprint (a re-saved or VR-edited copy of the same
+   table passes; a moved flipper does not).
+3. A cabinet score passes now on the catalogue slug and ROM; it is tightened when the cabinet reports file hashes
+   (W15, or the signed record's `table_md5` / `config_version`).
+4. A pilot of about 20 of the most played tables first (Castcade B29.1 has the candidates).
+
+**What ArcAid adds per entry.** The manifest's table identity (W88); a blessed playfield fingerprint, taken from the
+first PC score whose file matches the manifest checksum (the companion will send `table_md5`, B29.3); a check of what
+the cabinet bundle changes against the author's file (ini keys, a replaced `table.vbs`), sorted into neutral or
+touches play. The tournament form picks an entry, which sets the required table, fingerprint and ROM.
+
+**Not known yet (Castcade B29.2).** What the 19 patches do; whether `tableChecksum` is of the download or of the
+`.vpx` inside an archive; whether the cabinet's VPX fork and desktop 10.8.0 play the same physics for one file.
+
 ## Not asked of ArcAid
 
 - No media, TURN or SFU on the ArcAid server (peer-hosted by ruling).
