@@ -58,12 +58,13 @@ import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from '../match/client.js';
-import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
+import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind } from '../match/controller.js';
 import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch, STREAM3D_WAIT_MAX_MS } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
 import { replayLog, type MatchState } from '../match/state.js';
+import { forkIdentityText, parseForkIdentityText, type ForkIdentity } from '../launch/fork-identity.js';
 import type { ForkLaunch } from '../launch/vpx-launch.js';
 import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
@@ -336,8 +337,17 @@ export interface MatchHost {
   tableLaunch(): Promise<ForkLaunch | null>;
   /** I11.4.11: 3D can run on this PC: the Castcade VPX build is beside VPX and 3D watch is on. */
   wants3d(): boolean;
-  /** I11.4.11: the launch's word for this match's lobby line (the host's identical file is on this PC, not imported); null takes it away. */
-  setLaunchNote(note: string | null): void;
+  /**
+   * I11.4.11: the launch's word for this match's lobby line (the host's identical file is on this PC, not imported);
+   * null takes it away. I11.4.15: `not3d` says the copy that was started is known not to hold the host's table objects:
+   * the lobby then says so before the start, with the note's remedy when there is one.
+   */
+  setLaunchNote(note: string | null, not3d?: boolean): void;
+  /**
+   * I11.4.15: the table objects of the host's table (`launch/fork-identity.ts`): a client's from HELLO_ACK
+   * (`hostTableObjects`), the host's own as it last announced them; null: not known, or no match.
+   */
+  hostTableObjects(): ForkIdentity | null;
   /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
@@ -397,6 +407,12 @@ export interface MatchHostOptions {
    * the tunnel and the 3D-or-2D decision. Absent → every match is 2D, as before.
    */
   stream3d?: Stream3dHost;
+  /**
+   * I11.4.15: the table objects of a table file on this PC (`launch/table-objects.ts`: what the Castcade VPX build
+   * reported for it, else computed from the file; kept by path, size and time). A host announces its own table's with
+   * its fingerprint until its VPX has said them itself. Absent → nothing is announced before that `hello`.
+   */
+  tableObjects?(vpxPath: string): Promise<ForkIdentity | null>;
   appVersion: string;
   log: Logger;
   /**
@@ -557,6 +573,14 @@ interface Active {
   byHandSaid?: boolean;
   /** I11.4.11: the launch's word for the lobby line (the host's identical file is on this PC, not imported), or null. */
   launchNote?: string | null;
+  /** I11.4.15: the copy the launch started is known not to hold the host's table objects (`setLaunchNote`'s `not3d`). */
+  launchNot3d?: boolean;
+  /** I11.4.15: a host: where the table objects it last announced came from (its VPX's `hello`, or a file), so each is announced once. */
+  objectsKey?: string;
+  /** I11.4.15: a host: the table objects it last announced (`hostTableObjects`). */
+  objectsSent?: ForkIdentity | null;
+  /** I11.4.15: the lobby's word about table objects, as last logged (one line when it changes). */
+  objectsSaid?: string;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -986,10 +1010,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const tableOpen = isTableOpen(gameFingerprintFrom(witness.status(), RECIPE_VERSION));
     s.setTableOpen(tableOpen);
     announceWait3d(a);
-    // I11.4.11: the lobby's table line says what a different file costs only where the identical file would give 3D:
-    // this PC's VPX is ready in the Castcade build, and some other PC is not known to have none.
+    // I11.4.15 (it was I11.4.11's "what a different file costs"): what the 3D view needs is the same table objects in
+    // both VPX, not the same bytes, and the stream's own decision says which it is once both are up. Where this PC
+    // shows every other player in 3D, the lobby's table line says a different file costs nothing; where a player's
+    // table is known to hold other objects, the lobby says so before the start (below); else nothing is said of 3D.
     const v = s.status();
-    a.controller.set3dInPlay(settings.watch3d === 'auto' && v.fork === 'ready' && v.players.some((x) => x.why !== 'no_fork_there'));
+    a.controller.setFilesGive3d(settings.watch3d === 'auto' && v.fork === 'ready' && v.players.length > 0 && v.players.every((x) => x.mode === '3d'));
     // I11.4.12: the Castcade VPX build is here and 3D is wanted, and the table that is open was not started in it by
     // Castcade (opened by hand, or open before the match): said in the lobby, where the player looks, for as long as
     // it is so. Not while a table Castcade started is still loading, and not for a build that never connects.
@@ -1006,8 +1032,76 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // What is true in each case: the table is not in the build. When Castcade itself tried the build for this match
     // and it did not start, starting the table again would only go round the same loop: that is said instead.
     // I11.4.11: and the word of the launch (the host's identical file is on this PC, not imported), while 3D is wanted.
-    const notes = [byHand ? (v.forkFailed ? TABLE_FORK_FAILED_NOTE : TABLE_BY_HAND_NOTE) : null, c.phase === 'lobby' && settings.watch3d === 'auto' && v.forkInstalled === true ? (a.launchNote ?? null) : null].filter((x): x is string => x !== null);
+    const lobby3d = c.phase === 'lobby' && settings.watch3d === 'auto' && v.forkInstalled === true;
+    // I11.4.15: other table objects, said before the start with who it is about. Known two ways: both VPX are up in
+    // the Castcade build and name different tables (either PC, any player), or, on a joining PC whose table is still
+    // loading, the host said its table's objects and the copy that was started has others (`launchNot3d`). The
+    // launch's word is dropped once the two VPX themselves say 3D runs (the player opened another copy since).
+    const role = a.controller.currentRole as HostMatch | ClientMatch;
+    const hostId = role instanceof ClientMatch ? role.hostId : null;
+    const hostIn3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.mode === '3d');
+    const early = lobby3d && a.launchNot3d === true && !hostIn3d;
+    const who = lobby3d && v.fork === 'ready' ? v.players.filter((x) => x.why === 'other_table').map((x) => ({ id: x.id, name: x.name })) : [];
+    const bothSaid = who.length > 0;
+    if (early && hostId !== null && !who.some((x) => x.id === hostId)) who.push({ id: hostId, name: c.participants.find((x) => x.playerId === hostId)?.displayName ?? 'the host' });
+    const objectsNote = who.length > 0 ? tableObjectsNote(who.map((x) => x.name)) : null;
+    const said = who.map((x) => x.name).join(', ');
+    if (said !== (a.objectsSaid ?? '')) {
+      a.objectsSaid = said;
+      log.info(
+        said
+          ? `stream3d: this PC's table and ${said}'s do not hold the same table objects (${bothSaid ? 'both VPX said so' : "the host's word against the copy that was started here"}): the 2D video between them; the lobby says so`
+          : 'stream3d: the lobby no longer says that the table objects differ (it does not apply any more)',
+      );
+    }
+    const launchNote = lobby3d && !(a.launchNot3d === true && hostIn3d) ? (a.launchNote ?? null) : null;
+    const notes = [byHand ? (v.forkFailed ? TABLE_FORK_FAILED_NOTE : TABLE_BY_HAND_NOTE) : null, objectsNote, launchNote].filter((x): x is string => x !== null);
     a.controller.setLobbyNote(notes.length > 0 ? notes.join(' · ') : null);
+  };
+  /**
+   * I11.4.15 (2026-11-24): a host says what its table's objects are (HELLO_ACK `hostTableObjects`), so a joining PC
+   * picks, among its copies of the table, one the 3D view works with. What the host's own VPX named in its `hello`
+   * when it is up in the Castcade build (that is what the other PC's VPX is compared with); before that, and on a
+   * host whose table runs in its own VPX, what the file computes to (`opts.tableObjects`), so a joiner need not wait
+   * for the host's table to load. Lobby only; each source is announced once.
+   */
+  const syncObjects = (a: Active): void => {
+    const role = a.controller.currentRole;
+    if (!(role instanceof HostMatch) || role.state.phase !== 'lobby') return;
+    const tell = (objects: ForkIdentity | null, from: string): void => {
+      let done: boolean;
+      try {
+        done = role.setHostTableObjects(objects);
+      } catch (e) {
+        log.warn(`match: the table objects did not go out: ${describeError(e)}`);
+        return;
+      }
+      a.objectsSent = objects;
+      if (done) log.info(`match: lobby update: table objects ${objects ? `${forkIdentityText(objects)} (${from})` : 'not known'}; the players were told`);
+    };
+    const said = parseForkIdentityText(a.stream?.status().table ?? null);
+    if (said) {
+      const key = `fork|${forkIdentityText(said)}`;
+      if (key === a.objectsKey) return;
+      a.objectsKey = key;
+      tell(said, 'as the Castcade VPX build named them');
+      return;
+    }
+    const id = witness.status().currentIdentity;
+    const key = id?.filePath ? `file|${id.filePath}|${id.sha256 ?? ''}` : 'none';
+    if (key === a.objectsKey) return;
+    a.objectsKey = key;
+    const read = opts.tableObjects;
+    if (!id?.filePath || !read) {
+      tell(null, '');
+      return;
+    }
+    void read(id.filePath).then(
+      (objects) => {
+        if (active === a && a.objectsKey === key && a.controller.currentRole === role && role.state.phase === 'lobby') tell(objects, 'computed from the file');
+      },
+      () => undefined,
+    );
   };
   /**
    * I11.4.9: the host is told whether this PC's 3D connection is still being made (PARTICIPANT_UPDATE
@@ -1155,6 +1249,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) {
       // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
       syncStream(active);
+      // I11.4.15: a host says what its table's objects are (its VPX's own word once it is up, the file's before).
+      syncObjects(active);
       startHeld(active);
       syncVrMode(active);
       // D10.3: the native sender follows the turn beside the headset mode.
@@ -1346,6 +1442,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         a.controller.setMessage(null);
         a.reconcileDue = true;
         tryReconcile(a);
+      }),
+    );
+    // I11.4.15: the host said (or took back) what its table's objects are: nothing on the panel changes by it, so the
+    // status is raised here for whoever picks this PC's table by it (`one-step.ts`).
+    a.offs.push(
+      engine.on('hostTableObjects', (objects) => {
+        if (active !== a) return;
+        log.info(`match: the host's table objects: ${objects ? forkIdentityText(objects) : 'not known'}`);
+        emit();
       }),
     );
     a.offs.push(engine.on('hostLost', () => void endMatch(a, `The host did not come back within ${waitWords}: the match is over.`)));
@@ -2325,6 +2430,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         followLog(a);
         watchHost(a, out.engine);
         log.info(`match: joined ${parsed.code} ${parsed.via === 'relay' ? 'through ArcAid' : `at ${parsed.url}`}`);
+        // I11.4.15: the first HELLO_ACK came before anything listened; a later one is logged by `watchHost`.
+        const hostObjects = out.engine.hostTableObjects();
+        if (hostObjects) log.info(`match: the host's table objects: ${forkIdentityText(hostObjects)}`);
         await openPanel(a);
         // The table may have loaded while joining (A6, 2026-10-31).
         checkLobby(a, witness.status());
@@ -2888,11 +2996,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     wants3d() {
       return !!active?.stream && settings.watch3d === 'auto' && active.stream.status().forkInstalled === true;
     },
-    setLaunchNote(note) {
+    setLaunchNote(note, not3d = false) {
       const a = active;
-      if (!a || (a.launchNote ?? null) === note) return;
+      if (!a || ((a.launchNote ?? null) === note && (a.launchNot3d ?? false) === not3d)) return;
       a.launchNote = note;
+      a.launchNot3d = not3d;
       emit();
+    },
+    hostTableObjects() {
+      const a = active;
+      if (!a) return null;
+      const role = a.controller.currentRole;
+      const o = role instanceof ClientMatch ? role.hostTableObjects() : (a.objectsSent ?? null);
+      return o ? { editables: o.editables, hash: o.hash } : null;
     },
     async saveFrames() {
       const media = opts.media;

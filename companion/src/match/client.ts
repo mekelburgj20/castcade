@@ -110,6 +110,8 @@ export interface ClientEvents extends Record<string, unknown> {
   tableMismatch: { playerId: PlayerId; mismatches: PayloadOf<'REFUSE'>['mismatches'] };
   /** A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (someone's rig or table changed): the roster now. */
   roster: PayloadOf<'HELLO_ACK'>;
+  /** I11.4.15: HELLO_ACK's `hostTableObjects` is another value than the last one (`hostTableObjects()` has it); raised before `joined` / `roster`. */
+  hostTableObjects: { editables: number; hash: string } | null;
   ready: PayloadOf<'MATCH_READY'>;
   grant: GrantBody;
   myTurn: GrantBody;
@@ -195,6 +197,8 @@ export class ClientMatch {
   private mismatchFields = '';
   /** The host's fingerprint from the last HELLO_ACK: what this client's own entry in `tableMismatches()` compares with. */
   private ackHostGame: GameFingerprint | null = null;
+  /** I11.4.15: the host's table objects from the last HELLO_ACK (`hostTableObjects`); null: not said. */
+  private ackHostObjects: { editables: number; hash: string } | null = null;
   /** A8 (2026-10-31): the OTHER participants the host found different, from the last HELLO_ACK (or a step-down). */
   private readonly othersMismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
   private readonly throwdownCode: string;
@@ -338,6 +342,15 @@ export class ClientMatch {
   hostGame(): GameFingerprint | null {
     const g = this.s.state.game ?? this.ackHostGame;
     return g ? { ...g } : null;
+  }
+
+  /**
+   * I11.4.15 (2026-11-24): the table objects of the host's table as its last HELLO_ACK said them (what the Castcade
+   * VPX build names for it: the thing two PCs must share for the 3D view); null before any, and from a host that does
+   * not say it. Compared with this PC's copies of the table, nothing else.
+   */
+  hostTableObjects(): { editables: number; hash: string } | null {
+    return this.ackHostObjects ? { ...this.ackHostObjects } : null;
   }
 
   snapshot(): { role: 'client'; state: MatchState; log: LogHead; inputUnlocked: boolean; myGrant: GrantBody | null; hostId: PlayerId | null; signed: boolean } {
@@ -777,6 +790,13 @@ export class ClientMatch {
   /** `tableMismatch` when what differs from `hostGame` changed since the last HELLO_ACK (first one: only a difference). */
   private compareHostGame(ack: PayloadOf<'HELLO_ACK'>): void {
     this.ackHostGame = ack.hostGame ? { ...ack.hostGame } : null;
+    // I11.4.15: the host's table objects ride on the same message; only a change is raised.
+    const objects = ack.hostTableObjects ?? null;
+    const was = this.ackHostObjects;
+    if (objects === null ? was !== null : was === null || was.editables !== objects.editables || was.hash !== objects.hash) {
+      this.ackHostObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
+      this.events.emit('hostTableObjects', this.hostTableObjects());
+    }
     const mismatches = ack.hostGame ? compareFingerprints(ack.hostGame, this.game, ack.hostPlayerId) : [];
     const fields = mismatches.map((m) => m.field).join(',');
     if (fields !== this.mismatchFields) {

@@ -230,10 +230,18 @@ export function lobbyLineKey(message: string | null): string | null {
 }
 
 /**
- * I11.4.11 (2026-11-21, Congo: two different files of the table, found out in the headset): what the lobby's table
- * line adds, before the start, on a PC where 3D is in play, to "same table, different file" / "different table file".
+ * I11.4.15 (2026-11-24; it replaces I11.4.11's `FILES_DIFFER_COST`, which said "not in 3D" whenever the bytes
+ * differed): what the lobby's table line adds, before the start, to "same table, different file" / "different table
+ * file" on a PC that shows every other player in 3D: the 3D view needs the same table objects, not the same bytes.
  */
-export const FILES_DIFFER_COST = "the other player's turns are shown as the flat video, not in 3D: use the identical table file on both PCs";
+export const FILES_GIVE_3D = '3D works all the same: the files hold the same table objects';
+/**
+ * I11.4.15: the lobby's note on a PC whose table and another player's are known not to hold the same table objects
+ * (both run the Castcade VPX build and name different tables, or the host said its table's objects and this PC's copy
+ * has others): said before the start, with who it is about (`who`: their names, or null for the host of a joining PC).
+ */
+export const tableObjectsNote = (who: readonly string[] | null): string =>
+  `Not in 3D with ${who && who.length > 0 ? who.join(', ') : 'the host'}: the two table files do not hold the same table objects, so their turns are shown as the flat video`;
 /**
  * I11.4.12 (2026-11-21): the lobby's note on a PC that has the Castcade VPX build, with a table open that is not
  * running in it: opened by hand, open before the match, left from a 3D watch session, started while 3D watch was
@@ -434,8 +442,8 @@ export class MatchController {
   private tabHoldSpent = false;
   /** I11.4.12: one more thing the lobby line says (the shell's: a table that Castcade did not start gets no 3D); null: nothing. */
   private lobbyNote: string | null = null;
-  /** I11.4.11: 3D is in play on this PC (the shell's word): the lobby's table line then says what a different file costs. */
-  private in3d = false;
+  /** I11.4.15: 3D works on this PC with every other player (the shell's word): the lobby's table line then says a different file costs nothing there. */
+  private files3d = false;
   /** I11.4.9: what the armed start from the table was last said to wait for (one log line per reason). */
   private armedFor: 'tables' | '3d' | null = null;
   /** I11.4.9: Start match was pressed while a 3D connection was being made: the shell starts when it settles. */
@@ -521,12 +529,15 @@ export class MatchController {
   }
 
   /**
-   * I11.4.11: whether 3D is in play on this PC (its VPX is the Castcade build on the control connection, `watch3d`
-   * auto). The lobby's table line then says, before the start, what a different table file costs and how to fix it.
+   * I11.4.15 (it was I11.4.11's `set3dInPlay`): whether this PC shows every other player in 3D (its VPX and theirs
+   * are the Castcade build and name the same table objects). The lobby's table line then says, beside "different
+   * file", that 3D is not lost by it. A PC that is known not to get 3D for its table is told by the shell's lobby note
+   * (`tableObjectsNote`), and while nothing is known the line says nothing of 3D: I11.4.11 warned whenever the bytes
+   * differed, and on the match night of 2026-11-23 it was wrong for two tables of two.
    */
-  set3dInPlay(on: boolean): void {
-    if (this.closed || on === this.in3d) return;
-    this.in3d = on;
+  setFilesGive3d(on: boolean): void {
+    if (this.closed || on === this.files3d) return;
+    this.files3d = on;
     this.push();
   }
 
@@ -2084,8 +2095,8 @@ export class MatchController {
     // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
     if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) {
       const line = [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
-      // I11.4.11: before the start, with 3D in play: what the difference costs, said where the player looks.
-      return this.phase === 'lobby' ? `${line}${this.in3d ? ` · ${FILES_DIFFER_COST}` : ''}${note}` : line;
+      // I11.4.15: before the start, where the files differ and 3D runs all the same: said where the player looks.
+      return this.phase === 'lobby' ? `${line}${this.files3d ? ` · ${FILES_GIVE_3D}` : ''}${note}` : line;
     }
     if (this.phase === 'lobby') return `${this.lobbyMessage()}${note}`;
     if (this.phase === 'over') {

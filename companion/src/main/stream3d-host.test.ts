@@ -207,6 +207,59 @@ describe('the launch of a match table (§4.4)', () => {
   });
 });
 
+describe('the table objects a started table reports (I11.4.15)', () => {
+  it("the hello that names the stream port a start asked for gives that start its table objects; the view carries them while the VPX is ready", async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    const s = match([a]);
+    expect(s.a!.status().table).toBeNull();
+    // The launch asks for 9701; the table's VPX says hello on that port: its word is this table's.
+    const launch = await a.host.launch('auto');
+    let said: { editables: number; hash: string } | null | undefined;
+    void launch!.objects!.then((v) => (said = v));
+    const f = await forkOf(a, '769 FC87DDEFD36BDD13', 9701);
+    await until(() => said !== undefined);
+    expect(said).toEqual({ editables: 769, hash: 'fc87ddefd36bdd13' });
+    await until(() => s.a!.status().fork === 'ready');
+    expect(s.a!.status().table).toBe('769 FC87DDEFD36BDD13');
+    // The VPX closes: nothing is named any more.
+    f.close();
+    await until(() => s.a!.status().fork === 'none');
+    expect(s.a!.status().table).toBeNull();
+  });
+
+  it('a hello on another port (a table left open, a second VPX) is not that start\'s word; a start whose VPX closes, never starts or is followed by another start answers null; so does a table identity that is no count and hash', async () => {
+    const hub = new TunnelHub();
+    const a = pc(hub, 'a');
+    // A table of the last match is still open and says hello again (Castcade restarted under it): not the new start's.
+    const first = await a.host.launch('auto'); // asks for 9701
+    let one: unknown = 'pending';
+    void first!.objects!.then((v) => (one = v));
+    await forkOf(a, '738 512b43b0598d481c', 50_101);
+    await sleep(30);
+    expect(one).toBe('pending');
+    // Another start comes first: the earlier one will never be told.
+    const second = await a.host.launch('auto'); // asks for 9702
+    await until(() => one !== 'pending');
+    expect(one).toBeNull();
+    // Its VPX closes before any hello.
+    second!.options.onExit?.(0);
+    expect(await second!.objects).toBeNull();
+    // A launch that made no process.
+    const third = await a.host.launch('auto'); // 9703
+    third!.notStarted?.();
+    expect(await third!.objects).toBeNull();
+    // The right port, and a table identity this Castcade cannot read as a count and a hash (another build's shape).
+    const fourth = await a.host.launch('auto'); // 9704
+    await forkOf(a, 'many abcdef', 9704);
+    expect(await fourth!.objects).toBeNull();
+    // Stopping Castcade answers a start that is still waited for.
+    const fifth = await a.host.launch('auto');
+    await a.host.stop();
+    expect(await fifth!.objects).toBeNull();
+  });
+});
+
 describe('a launch and the wait of the first start (I11.4.9)', () => {
   it('a table started in the fork is waited for from the launch; a launch that made no process (`notStarted`), or a process that ended, is not, at once', async () => {
     const hub = new TunnelHub();

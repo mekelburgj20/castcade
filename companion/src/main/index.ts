@@ -67,6 +67,7 @@ import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol 
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
+import { createTableObjects } from '../launch/table-objects.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
 import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
@@ -1014,10 +1015,20 @@ async function main(): Promise<void> {
     logger.error(`stream3d: could not set up (${describeError(e)}); matches show the 2D video this run`);
   }
 
+  // I11.4.15: the table objects of this PC's table files (what the Castcade VPX build names for each: the thing two
+  // PCs must share for the 3D view), computed from the file or learned from the build, kept by path, size and time.
+  const objectsFile = join(userData, 'table-objects.json');
+  const tableObjects = createTableObjects({
+    fs: nodeFs,
+    io: { read: () => (existsSync(objectsFile) ? readFileSync(objectsFile, 'utf8') : null), write: (text) => writeFileSync(objectsFile, text) },
+  });
+
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
   let matchHost: MatchHost | null = null;
   if (features.match) try {
     matchHost = createMatchHost({
+      // I11.4.15: a host says its table's objects with its fingerprint, so a joining PC can pick a copy 3D works with.
+      tableObjects: (vpxPath) => tableObjects.objectsOf(vpxPath),
       file: join(userData, 'match.json'),
       keysFile: join(userData, 'match-keys.json'),
       witness: host,
@@ -1097,6 +1108,9 @@ async function main(): Promise<void> {
         tableFiles: (have) => listTableFiles(nodeFs, tables.resolveTablesDir(null), have),
         // I11.4.11: the host's identical file is found among the copies of its title that nothing has hashed yet.
         hashTable: (vpxPath) => tableHasher.hashOf(vpxPath),
+        // I11.4.15: and among copies that are not the identical file, one with the host's table objects is.
+        tableObjects: (vpxPath, signal) => tableObjects.objectsOf(vpxPath, signal),
+        learnObjects: (vpxPath, objects) => tableObjects.learn(vpxPath, objects),
         arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
         log: logger,
       });

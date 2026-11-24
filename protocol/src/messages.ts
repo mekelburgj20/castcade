@@ -167,6 +167,22 @@ export const HelloAck = z
       .describe(
         "I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged.",
       ),
+    // I11.4.15 (2026-11-24): defaulted and never logged, like `stream3dWait`, so still protocol 6. On HELLO_ACK and not
+    // in `GameFingerprint` on purpose: the fingerprint is also MATCH_READY's `game`, which is logged, and a peer that
+    // strips an unknown key there would hash a different log.
+    hostTableObjects: z
+      .object({
+        editables: z.number().int().min(0).max(0xffffffff).describe("How many table objects (editables) the host's table has once loaded."),
+        hash: z
+          .string()
+          .regex(/^[0-9a-f]{16}$/)
+          .describe('64-bit FNV-1a over each object in order: its item type (u32), the length of its name (u32) and the name (UTF-16LE); 16 hex digits, lower-case.'),
+      })
+      .nullable()
+      .default(null)
+      .describe(
+        "I11.4.15: the identity the Castcade VPX build gives the host's table (its `hello`'s `<editables> <table hash>`): what two PCs must have in common for the 3D view, where `hostGame.tableHash` only says whether the bytes are the same. As the host's VPX said it, or, before that, as the host's companion computed it from the file. A joining PC uses it to pick, among its copies of the table, one the 3D view works with. null: not known (no table open, a file it cannot be told from, a companion from before I11.4.15). Compared only, never a gate. Defaulted and never logged.",
+      ),
   })
   .describe('host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.');
 

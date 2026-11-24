@@ -23,8 +23,10 @@
  * imports Electron.
  */
 import type { GameFingerprint } from '@castcade/protocol';
-import { HASH_CANDIDATES_MAX, findLocalTable, hostHash, identicalFileNote, unhashedCandidates } from '../launch/find-table.js';
+import { HASH_CANDIDATES_MAX, OBJECTS_CANDIDATES_MAX, findLocalTable, hostHash, identicalFileNote, objectsCandidates, sameObjectsNote, unhashedCandidates, type ObjectsEvidence } from '../launch/find-table.js';
+import { forkIdentityText, sameForkIdentity, type ForkIdentity } from '../launch/fork-identity.js';
 import type { KnownTable } from '../launch/known-tables.js';
+import { objectsDisagreeLine } from '../launch/table-objects.js';
 import type { ForkLaunch, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
@@ -116,8 +118,13 @@ export interface OneStepOptions {
     hostGame(): GameFingerprint | null;
     /** I11.4.11: 3D can run on this PC (the Castcade VPX build is beside VPX and 3D watch is on): only then is the host's identical file worth looking for. Absent: no. */
     wants3d?(): boolean;
-    /** I11.4.11: one more thing for the lobby line of this match (the host's file is here, not imported), or null. */
-    setLaunchNote?(note: string | null): void;
+    /**
+     * I11.4.11: one more thing for the lobby line of this match (the host's file is here, not imported), or null.
+     * I11.4.15: `not3d`: the copy that was started is known not to hold the host's table objects.
+     */
+    setLaunchNote?(note: string | null, not3d?: boolean): void;
+    /** I11.4.15: the host's table objects as HELLO_ACK said them (`launch/fork-identity.ts`); null: not said. Absent: never known. */
+    hostTableObjects?(): ForkIdentity | null;
     /**
      * I11.4.2: how a match table is started now: the launch options of the Castcade VPX build with the state stream,
      * and whether that start took (`MatchHost.tableLaunch`); or null / absent: the plain A14 launch.
@@ -139,7 +146,22 @@ export interface OneStepOptions {
    * size and time), for finding the host's identical file among the copies of its title. Absent: none is hashed.
    */
   hashTable?(vpxPath: string, signal?: AbortSignal): Promise<string | null>;
-  /** I11.4.11: how long a join waits for the host's file hash once the host's table is named. Default 3 s. */
+  /**
+   * I11.4.15: the table objects of a table file on this PC (`launch/table-objects.ts`: what the Castcade VPX build
+   * reported for it, else computed from the file; kept by path, size and time), for ranking the copies of the host's
+   * title by what the 3D view needs. Absent: the copies rank by file hash and name alone, as before.
+   */
+  tableObjects?(vpxPath: string, signal?: AbortSignal): Promise<ForkIdentity | null>;
+  /**
+   * I11.4.15: the Castcade VPX build said what the objects of the table Castcade just started in it are: kept for that
+   * file. Answers the identity that had been computed for the file when it is another one (then said in the log).
+   */
+  learnObjects?(vpxPath: string, objects: ForkIdentity): Promise<{ computed: ForkIdentity } | null>;
+  /**
+   * I11.4.11: how long a join waits for the host's file hash once the host's table is named. Default 3 s. I11.4.15:
+   * and as long again for the host's table objects, from when its table was named or its hash came, when the
+   * identical file is not on this PC and 3D can run here.
+   */
   hostHashWaitMs?: number;
   /** The clock of that wait; default `Date.now`. */
   now?(): number;
@@ -194,9 +216,19 @@ export function createOneStep(o: OneStepOptions): OneStep {
   let hashTimer: unknown = null;
   /** I11.4.11: the reads of the copies with no hash, for one match and one host file; `done`: what they found is used. */
   let hashRun: { key: string; ctl: AbortController; done: boolean; hashes: Map<string, string> } | null = null;
+  /** I11.4.15: when the host's open table was first seen for the match with this code, and when its file hash was: the wait for its table objects counts from the later one. */
+  let hostSeen: { code: string; at: number; hashAt: number | null } | null = null;
+  /** I11.4.15: the reads of the table objects of this PC's copies, for one match and one host table; `done`: what they found is used. */
+  let objectsRun: { key: string; ctl: AbortController; done: boolean; ids: Map<string, ForkIdentity> } | null = null;
+  const abortObjects = (): void => {
+    if (objectsRun && !objectsRun.done) objectsRun.ctl.abort();
+    objectsRun = null;
+  };
+  /** Every read for the pick is given up: the hashes (I11.4.11) and the table objects (I11.4.15). */
   const abortHashing = (): void => {
     if (hashRun && !hashRun.done) hashRun.ctl.abort();
     hashRun = null;
+    abortObjects();
   };
   const now = o.now ?? ((): number => Date.now());
   const HOST_HASH_WAIT_MS = o.hostHashWaitMs ?? 3000;
@@ -267,6 +299,16 @@ export function createOneStep(o: OneStepOptions): OneStep {
       const r = await o.launcher.launch(table.vpxPath, fork.options);
       if (r.ok) {
         const code = match.status().code;
+        // I11.4.15: what this table's VPX says its objects are is kept for the file: the build's own word comes
+        // before anything computed, and a file the computation gets wrong shows in the log.
+        void fork.objects?.then(
+          async (said) => {
+            if (!said || stopped || !o.learnObjects) return;
+            const other = await o.learnObjects(table.vpxPath, said).catch(() => null);
+            if (other) log.warn(objectsDisagreeLine(table.tableId, said, other.computed));
+          },
+          () => undefined,
+        );
         void fork.didNotStart.then(
           (failed) => {
             if (!failed || stopped) return;
@@ -329,6 +371,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       copiedFor = null;
       hostTable = null;
       nameOnly = null;
+      hostSeen = null;
       clearHashTimer();
       abortHashing();
       match.setLaunchNote?.(null);
@@ -372,6 +415,11 @@ export function createOneStep(o: OneStepOptions): OneStep {
       setLaunch({ state: 'waiting_host', table: null, detail: "Waiting for the host's table to open; Castcade then starts the same table here" });
       return;
     }
+    // I11.4.15: the host's table objects are waited for from when its table was seen, or from when its file hash came
+    // if that is later (the host reads both from the file at once, and either may land first).
+    if (hostSeen === null || hostSeen.code !== w.code) hostSeen = { code: w.code, at: now(), hashAt: null };
+    if (hostSeen.hashAt === null && hostHash(game) !== null) hostSeen.hashAt = now();
+    const seenAt = hostSeen.hashAt ?? hostSeen.at;
     // I11.4.11: the host's table is named a moment before its file is hashed (its witness reads the name, then the
     // file). A table picked in that moment could only be picked by name: the hash is waited for, briefly.
     if (hostHash(game) === null) {
@@ -436,22 +484,95 @@ export function createOneStep(o: OneStepOptions): OneStep {
       settleAgain = true;
       return;
     }
-    const found = findLocalTable(game, all);
+    // I11.4.15: the identical file is not on this PC (or is passed over): the bytes say nothing more, and what the 3D
+    // view needs is the same table objects in both VPX. The host says its table's (HELLO_ACK); this PC's copies of
+    // that title are read for theirs (a few at most, one at a time, each kept for the next time; beside this, given
+    // up as the hashing is), and the pick ranks by them. Only on a PC where 3D can run. A host that says nothing (an
+    // older Castcade) is waited for from the moment its table was seen, as long as its file hash is, and no longer.
+    let evidence: ObjectsEvidence | undefined;
+    const readObjects = o.tableObjects;
+    const byBytes = findLocalTable(game, all);
+    if (byBytes && byBytes.how !== 'same_file' && readObjects && (match.wants3d?.() ?? false)) {
+      const hostObjects = match.hostTableObjects?.() ?? null;
+      if (hostObjects === null) {
+        const left = HOST_HASH_WAIT_MS - (now() - seenAt);
+        if (left > 0) {
+          setLaunch({ state: 'waiting_host', table: null, detail: "The host's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
+          clearHashTimer();
+          hashTimer = later(() => {
+            hashTimer = null;
+            void reconcile();
+          }, left + 20);
+          return;
+        }
+        if (match.hostTableObjects) log.info(`launch: the host's ${game.tableName} came with no table objects in ${HOST_HASH_WAIT_MS / 1000} s (an older Castcade there, or a file they cannot be told from); the table is picked by its file and name`);
+        abortObjects();
+      } else {
+        const okey = `${w.code}|${forkIdentityText(hostObjects)}`;
+        if (objectsRun && objectsRun.key !== okey) abortObjects();
+        if (objectsRun && !objectsRun.done) return;
+        if (!objectsRun) {
+          const every = objectsCandidates(game, all);
+          const some = every.slice(0, OBJECTS_CANDIDATES_MAX);
+          const run = { key: okey, ctl: new AbortController(), done: false, ids: new Map<string, ForkIdentity>() };
+          objectsRun = run;
+          const copies = (n: number): string => `${n} ${n === 1 ? 'copy' : 'copies'}`;
+          setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${game.tableName} on this PC: which holds the same table objects as the host's` });
+          void (async (): Promise<void> => {
+            for (const t of some) {
+              if (run.ctl.signal.aborted) return;
+              const id = await readObjects(t.vpxPath, run.ctl.signal).catch(() => null);
+              if (id) run.ids.set(t.vpxPath, id);
+            }
+            if (objectsRun !== run || run.ctl.signal.aborted || stopped) return;
+            run.done = true;
+            const same = [...run.ids.values()].filter((id) => sameForkIdentity(id, hostObjects)).length;
+            log.info(
+              `launch: the table objects of ${copies(some.length)} of the host's ${game.tableName} (table ${forkIdentityText(hostObjects)}): ${same} the same, ${run.ids.size - same} other, ${some.length - run.ids.size} not to be told${every.length > some.length ? `; ${copies(every.length - some.length)} more not looked at (${OBJECTS_CANDIDATES_MAX} at most)` : ''}`,
+            );
+            void reconcile();
+          })();
+          return;
+        }
+        evidence = { host: hostObjects, local: objectsRun.ids };
+      }
+    }
+    const found = findLocalTable(game, all, evidence);
     want = null;
     if (!found) {
       log.info(`launch: no local table for the host's ${game.tableName}`);
       setLaunch({ state: 'needed', table: game.tableName, detail: `The host plays ${game.tableName}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the match.` });
       return;
     }
-    // Not the host's file: said here for the log; the lobby's table line says it to the player before the start.
+    // Not the host's file: said here for the log; the lobby says it to the player before the start.
+    const theirs = evidence?.host ? forkIdentityText(evidence.host) : null;
+    const mine = evidence?.local.get(found.table.vpxPath) ?? null;
+    /** I11.4.15: this copy is known not to hold the host's table objects: no 3D with it. */
+    const not3d = found.objects === 'differs';
+    let note: string | null = null;
     if (found.identical) {
       // The host's file is here and is not imported: the imported copy is started all the same (it can report ball
       // ends, the other cannot: a match that takes turns comes before 3D), and the player is told how to get 3D.
       log.warn(`launch: the host's file is on this PC as ${found.identical.tableId}, not imported; ${found.table.tableId} (imported: it reports ball ends) is started. For 3D: import ${found.identical.tableId} in Castcade and rejoin`);
-      match.setLaunchNote?.(identicalFileNote(found.identical.tableId));
+      note = identicalFileNote(found.identical.tableId);
+    } else if (found.how !== 'same_file' && found.objects === 'same') {
+      // I11.4.15: other bytes, the same objects: a re-save or another download of the host's table. 3D runs.
+      log.info(`launch: ${found.table.tableId} is not the host's file and holds the same table objects (table ${theirs ?? ''}): 3D works with it`);
+    } else if (not3d) {
+      // I11.4.15: said plainly before the start, with the copy that would give 3D when this PC has one.
+      log.warn(
+        `launch: ${found.table.tableId} does not hold the host's table objects (table ${mine ? forkIdentityText(mine) : 'unknown'} here, ${theirs ?? 'unknown'} on the host's PC): the 2D video, not 3D. ${
+          found.sameObjects
+            ? `${found.sameObjects.tableId} on this PC holds them and is not imported (${found.table.tableId} is: it reports ball ends). For 3D: import ${found.sameObjects.tableId} in Castcade and rejoin`
+            : `No copy of ${game.tableName} on this PC that Castcade looked at holds them`
+        }`,
+      );
+      if (found.sameObjects) note = sameObjectsNote(found.sameObjects.tableId);
     } else if (found.how !== 'same_file' && hostHash(game) !== null) log.warn(`launch: no copy of ${game.tableName} on this PC is the host's file; ${found.table.tableId} is started by its name (the lobby says the files differ)`);
-    await start(found.table, `the host plays ${game.tableName}: ${found.how.replace('_', ' ')}${found.table.imported ? '' : ', not imported'}`);
-    if (found.identical && launch.state !== 'failed') setLaunch({ ...launch, detail: `${launch.detail ?? ''}${launch.detail ? ' · ' : ''}${identicalFileNote(found.identical.tableId)}` });
+    if (note !== null || not3d) match.setLaunchNote?.(note, not3d);
+    const objectsWord = found.how === 'same_file' ? '' : found.objects === 'same' ? ', the same table objects' : not3d ? ', other table objects' : '';
+    await start(found.table, `the host plays ${game.tableName}: ${found.how.replace('_', ' ')}${objectsWord}${found.table.imported ? '' : ', not imported'}`);
+    if (note !== null && launch.state !== 'failed') setLaunch({ ...launch, detail: `${launch.detail ?? ''}${launch.detail ? ' · ' : ''}${note}` });
   };
   const reconcile = async (): Promise<void> => {
     if (stopped) return;

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { Manifest } from '../patcher/index.js';
 import { MemoryFs } from '../witness/fs.js';
 import { createIdentityStore } from '../witness/identity-store.js';
-import { findLocalTable, titleOf } from './find-table.js';
+import { findLocalTable, objectsCandidates, sameObjectsNote, titleOf } from './find-table.js';
 import { createRecentTables, listKnownTables, listTableFiles, type KnownTable } from './known-tables.js';
 import { FORK_EXE_NAME, createVpxLauncher, forkExeFor, forkMatchEnv, forkStreamEnv, launchEnv, planLaunch, type SpawnOptions } from './vpx-launch.js';
 
@@ -160,6 +160,80 @@ describe("the host's table on this PC (A14)", () => {
     expect(findLocalTable(game('no table open'), tables)).toBeNull();
     expect(findLocalTable(game('..\\..\\Windows\\System32\\calc'), tables)).toBeNull();
     expect(findLocalTable(game('Monster Bash'), [])).toBeNull();
+  });
+
+  // I11.4.15: the match night of 2026-11-23. The host's Congo is table `769 fc87…`; the joining PC has two imported
+  // copies, neither the host's bytes: the standard one (the same table objects: 3D ran) and a Mixed Reality mod
+  // (`766 e4b9…`: 2D), and the mod had been played last.
+  const HOST = { editables: 769, hash: 'fc87ddefd36bdd13' };
+  const MOD = { editables: 766, hash: 'e4b9bf66f04cfcf9' };
+  const CONGO = game('Congo (Williams 1995)', '90'.repeat(32));
+  const evidence = (local: Array<[KnownTable, { editables: number; hash: string }]>, host: { editables: number; hash: string } | null = HOST) => ({ host, local: new Map(local.map(([t, id]) => [t.vpxPath, id] as const)) });
+
+  it("I11.4.15: below the identical file the copies rank by their table objects: the host's, then not known, then others; the copy played last never wins over one with the host's objects", () => {
+    const mod = known('Congo (Williams 1995) MR mod', { sha256: '6d'.repeat(32), lastPlayedAt: '2026-11-23T23:55:00.000Z' });
+    const std = known('Congo (Williams 1995)_VPW_V1.0', { sha256: '34'.repeat(32), lastPlayedAt: '2026-11-20T00:00:00.000Z' });
+    const unread = known('Congo (Williams 1995) other', { lastPlayedAt: '2026-11-24T00:00:00.000Z' });
+    // As 0.2.50 picked: by the list's order, most recently played first.
+    expect(findLocalTable(CONGO, [mod, std])).toMatchObject({ table: mod, how: 'same_name', objects: 'unknown' });
+    // With the table objects known, in either order of the list: the copy that gives 3D.
+    for (const list of [[mod, std], [std, mod]]) {
+      expect(findLocalTable(CONGO, list, evidence([[mod, MOD], [std, HOST]]))).toMatchObject({ table: std, how: 'same_name', objects: 'same' });
+    }
+    // A copy whose objects are not known comes before one known to hold others, and after one with the host's.
+    expect(findLocalTable(CONGO, [mod, unread], evidence([[mod, MOD]]))).toMatchObject({ table: unread, objects: 'unknown' });
+    expect(findLocalTable(CONGO, [unread, mod, std], evidence([[mod, MOD], [std, HOST]]))).toMatchObject({ table: std, objects: 'same' });
+    // Only copies with other objects: the first of them, said as that (the caller says 2D before the start).
+    expect(findLocalTable(CONGO, [mod], evidence([[mod, MOD]]))).toMatchObject({ table: mod, objects: 'differs' });
+    // The objects come before the name: a copy matched by its title alone, with the host's objects, wins over the whole name with others.
+    const whole = known('Congo (Williams 1995)', { lastPlayedAt: '2026-11-24T00:00:00.000Z' });
+    expect(findLocalTable(CONGO, [whole, std], evidence([[whole, MOD], [std, HOST]]))?.table).toBe(std);
+    // The identical file stays first, whatever is known of the others, and is `same` by definition.
+    const identical = known('congo_host_copy', { sha256: '90'.repeat(32) });
+    expect(findLocalTable(CONGO, [std, identical], evidence([[std, HOST]]))).toMatchObject({ table: identical, how: 'same_file', objects: 'same' });
+    // Where nothing separates two copies, the list's order (played last first) still decides.
+    const a = known('Congo (Williams 1995) A');
+    const b = known('Congo (Williams 1995) B');
+    expect(findLocalTable(CONGO, [a, b], evidence([[a, HOST], [b, HOST]]))?.table).toBe(a);
+    expect(findLocalTable(CONGO, [b, a], evidence([[a, MOD], [b, MOD]]))?.table).toBe(b);
+    // A host that says no table objects (an older Castcade): what is known here proves nothing, the old order stands.
+    expect(findLocalTable(CONGO, [mod, std], evidence([[mod, MOD], [std, HOST]], null))).toMatchObject({ table: mod, objects: 'unknown' });
+  });
+
+  it("I11.4.15: an imported table is still never displaced by one that is not: the imported copy is picked whatever its objects, and a copy with the host's objects (or the identical file) that was passed over is named", () => {
+    const mod = known('Congo (Williams 1995) MR mod', { sha256: '6d'.repeat(32) });
+    const plain = known('Congo (Williams 1995)_VPW_V1.0', { imported: false, sha256: '34'.repeat(32) });
+    const identical = known('congo_host_copy', { imported: false, sha256: '90'.repeat(32) });
+    // The imported copy holds other objects, a found one holds the host's: the imported one is started, the other named.
+    const passed = findLocalTable(CONGO, [mod, plain], evidence([[mod, MOD], [plain, HOST]]));
+    expect(passed).toMatchObject({ table: mod, objects: 'differs', sameObjects: plain });
+    expect(passed?.identical).toBeUndefined();
+    // The identical file is the better thing to name when it is there too.
+    const both = findLocalTable(CONGO, [mod, plain, identical], evidence([[mod, MOD], [plain, HOST]]));
+    expect(both).toMatchObject({ table: mod, objects: 'differs', identical });
+    expect(both?.sameObjects).toBeUndefined();
+    // The imported copy holds the host's objects: 3D works with it, so nothing is named, the identical file neither.
+    const std = known('Congo (Williams 1995) standard', { sha256: '34'.repeat(32) });
+    const fine = findLocalTable(CONGO, [std, identical], evidence([[std, HOST]]));
+    expect(fine).toMatchObject({ table: std, objects: 'same' });
+    expect(fine?.identical).toBeUndefined();
+    // The imported copy's objects are not known: the identical file is named as before, a copy with the host's objects is not
+    // (nothing says the imported one would not give 3D).
+    expect(findLocalTable(CONGO, [mod, identical], evidence([]))).toMatchObject({ table: mod, objects: 'unknown', identical });
+    expect(findLocalTable(CONGO, [mod, plain], evidence([[plain, HOST]]))?.sameObjects).toBeUndefined();
+    // No imported copy at all: among the found ones, the one with the host's objects.
+    const vr = known('Congo (Williams 1995) VR room', { imported: false });
+    expect(findLocalTable(CONGO, [vr, plain], evidence([[vr, MOD], [plain, HOST]]))).toMatchObject({ table: plain, objects: 'same' });
+    expect(sameObjectsNote('Congo (Williams 1995)_VPW_V1.0')).toBe('For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin');
+  });
+
+  it("I11.4.15: the copies whose table objects are worth reading: every copy of the host's game, imported first, nothing else", () => {
+    const mod = known('Congo (Williams 1995) MR mod');
+    const found = known('Congo (Williams 1995) VR', { imported: false });
+    const afm = known('Attack from Mars');
+    const byHash = known('renamed copy', { sha256: '90'.repeat(32), imported: false });
+    expect(objectsCandidates(CONGO, [found, afm, byHash, mod]).map((t) => t.tableId)).toEqual(['Congo (Williams 1995) MR mod', 'Congo (Williams 1995) VR', 'renamed copy']);
+    expect(objectsCandidates(game('Twilight Zone'), [found, afm, mod])).toEqual([]);
   });
 
   it('titleOf: the words before the first bracket, without a version', () => {
