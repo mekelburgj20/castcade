@@ -399,7 +399,13 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
   (**owner ruling 2026-10-19: the Panasony VR mod of VPX is allowed even in Sanctioned play**), `nightly` passes
   by default behind a runner toggle, and `unknown` passes only when the runner has blessed that hash for the
   tournament (their own, or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
-  cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
+  cheat option. **Owner ruling 2026-11-24 (Castcade B27.1): it matters in no kind of tournament.** It is the
+  checkbox VPinMAME calls "Skip Pinball Startup Test" (a boot shortcut; fairness §5), so it is evidence a reviewer
+  may read and never a reason to refuse. As built, ArcAid still refuses `true` in every Sanctioned tournament, with
+  no runner toggle (`src/utils/sanctionedRules.ts`, the `cheat` rule), and the admin panel labels the value
+  "VPinMAME cheat: ON" (`admin-ui/src/components/IntegrityPanel.tsx`). **Asked of ArcAid (Castcade F30):** drop the
+  `cheat` rule from the Sanctioned verdict (keep parsing and storing `build.cheat`), and where the value is shown,
+  say "startup test skipped: yes / no". `VpxScoreIngestService`: match candidates by `vps_game` against
 `global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
 working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
 score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to
