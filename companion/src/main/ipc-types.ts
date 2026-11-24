@@ -4,7 +4,7 @@
  * mirrors the same shapes by hand because the renderer is a separate tsconfig.
  */
 import type { RedactedSettings, SettingsPatch } from './settings.js';
-import type { WitnessStatus } from '../witness/types.js';
+import type { SendLogsResult, WitnessStatus } from '../witness/types.js';
 import type { EngineStatus } from '../media/stream-engine.js';
 import type { StreamSettings } from '../media/stream-settings.js';
 import type { PreviewStatus, StreamSettingsView } from './stream-host.js';
@@ -17,7 +17,7 @@ import type { WatchStatus } from './watch-host.js';
 import type { UpdateStatus } from './updater.js';
 
 export type { OneStepStatus, TableChoice, UpdateStatus, WatchStatus };
-export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
+export type { EngineStatus, MatchSettings, MatchStatus, PreviewStatus, BenchStatus, ClipSummary, RedactedSettings, SaveFramesResult, SendLogsResult, SettingsPatch, StreamSettings, StreamSettingsView, WitnessStatus };
 
 export const IPC = {
   witnessStatus: 'witness:status',
@@ -26,6 +26,8 @@ export const IPC = {
   witnessSetPaused: 'witness:setPaused',
   witnessConfirmTable: 'witness:confirmTable',
   witnessStartAttempts: 'witness:startAttempts',
+  /** E8.3: Settings' Send logs to Arcaid support. */
+  witnessSendLogs: 'witness:sendLogs',
   settingsGet: 'settings:get',
   settingsSet: 'settings:set',
   appOpenExternal: 'app:openExternal',
@@ -210,6 +212,8 @@ export interface CastcadeApi {
     confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
     /** B21: press "Start attempts" on ArcAid (W45); the answer lands on `WitnessStatus.attemptStart`. */
     startAttempts(): Promise<WitnessStatus>;
+    /** E8.3: this PC's logs to Arcaid support (the Super Admin's list), in one press; never rejects, the answer is a sentence. */
+    sendLogs(): Promise<SendLogsResult>;
     onStatus(cb: (status: WitnessStatus) => void): () => void;
   };
   settings: {

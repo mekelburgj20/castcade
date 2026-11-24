@@ -416,6 +416,20 @@ export class ArcaidClient {
     return { logs: typeof logs === 'string' && LOG_REQUEST_ID.test(logs) ? logs : null };
   }
 
+  /**
+   * E8.3: `GET /api/witness/logs/request?device` (ArcAid W105, 2.249.0): this device asks, for its paired player, to
+   * send its logs to Arcaid support. The answer is the id of a request marked "share on receipt": the bundle uploaded
+   * for it (`uploadLogs`) is in the Super Admin's list the moment it arrives. `pending` = the device already had a
+   * request waiting (the same id, now marked). Refusals keep ArcAid's `code` on the error's body: 429 `LIMITED` (one
+   * device-started request in 10 minutes), 400 `LOGS_UNSUPPORTED` (the device row is not a desktop).
+   */
+  async requestLogs(token: string, device: string): Promise<{ id: string; status: 'requested' | 'pending' }> {
+    const { body } = await this.get('api/witness/logs/request', { device }, token);
+    const id = body['id'];
+    if (typeof id !== 'string' || !LOG_REQUEST_ID.test(id)) throw new ArcaidError('client', 'ArcAid returned no log request', 200, body);
+    return { id, status: body['status'] === 'pending' ? 'pending' : 'requested' };
+  }
+
   /** E8: `POST /api/witness/logs?device&request`: the bundle (one ustar archive) answering a log request. */
   async uploadLogs(token: string, device: string, request: string, tar: Uint8Array): Promise<void> {
     await this.post('api/witness/logs', { device, request }, token, tar);

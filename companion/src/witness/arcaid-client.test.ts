@@ -227,4 +227,20 @@ describe('ArcaidClient', () => {
     expect(lines.some((l) => /POST api\/witness\/logs 2048 bytes$/.test(l))).toBe(true);
     expect(lines.join('\n')).not.toContain('tok');
   });
+
+  it("E8.3 (ArcAid W105): requestLogs asks for a share-on-receipt request and returns its id; a refusal keeps ArcAid's code", async () => {
+    const id = 'ab'.repeat(16);
+    const { fetch, calls } = fakeFetch(() => ({ status: 200, body: { ok: true, status: 'pending', id } }));
+    const client = new ArcaidClient({ baseUrl: 'https://arcaid.app', fetch });
+    expect(await client.requestLogs('tok', 'd')).toEqual({ id, status: 'pending' });
+    expect(calls[0]?.url.pathname).toBe('/api/witness/logs/request');
+    expect(Object.fromEntries(calls[0]?.url.searchParams ?? [])).toEqual({ device: 'd' });
+    expect(calls[0]?.headers['x-witness-token']).toBe('tok');
+
+    const noId = new ArcaidClient({ baseUrl: 'https://a', fetch: fakeFetch(() => ({ status: 200, body: { ok: true, status: 'requested', id: '../x' } })).fetch });
+    await expect(noId.requestLogs('t', 'd')).rejects.toMatchObject({ kind: 'client', message: 'ArcAid returned no log request' });
+
+    const limited = new ArcaidClient({ baseUrl: 'https://a', fetch: fakeFetch(() => ({ status: 429, body: { ok: false, code: 'LIMITED' } })).fetch });
+    await expect(limited.requestLogs('t', 'd')).rejects.toMatchObject({ kind: 'client', status: 429, body: { code: 'LIMITED' }, retryable: false });
+  });
 });

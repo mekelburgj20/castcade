@@ -258,6 +258,12 @@ interface TablesPatchNowResult {
   text: string;
 }
 
+/** E8.3: what Send logs to Arcaid support came to (mirrors `witness/types.ts`). */
+interface SendLogsResult {
+  ok: boolean;
+  text: string;
+}
+
 interface RedactedSettings {
   arcaidBaseUrl: string;
   deviceId: string;
@@ -706,6 +712,7 @@ interface CastcadeBridge {
     setPaused(paused: boolean): Promise<WitnessStatus>;
     confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
     startAttempts(): Promise<WitnessStatus>;
+    sendLogs(): Promise<SendLogsResult>;
     onStatus(cb: (status: WitnessStatus) => void): () => void;
   };
   readonly settings: {

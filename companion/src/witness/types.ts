@@ -260,6 +260,12 @@ export interface JournalMark {
   offset: number;
 }
 
+/** E8.3: what "Send logs to Arcaid support" came to, as the sentence Settings shows. */
+export interface SendLogsResult {
+  ok: boolean;
+  text: string;
+}
+
 export interface Witness {
   start(): Promise<void>;
   /** Stops watching, the journal tails included; `start()` on the same instance continues where they stopped. */
@@ -285,6 +291,12 @@ export interface Witness {
    * device routes to when none is loaded. Throws when unpaired or when ArcAid cannot be reached.
    */
   startAttempts(): Promise<WitnessStatus>;
+  /**
+   * E8.3: "Send logs to Arcaid support": this PC's log bundle (the one ArcAid's log pull gets), asked for by this
+   * device and uploaded at once; ArcAid shows it to the Super Admin on arrival (W105). One send at a time: a second
+   * call while one runs gets the same answer. Never throws; a failure is `ok: false` with the reason as a sentence.
+   */
+  sendLogsToSupport(): Promise<SendLogsResult>;
   status(): WitnessStatus;
   /** D1.1: the game on screen right now (live mode), or null. */
   liveGame(): LiveGame | null;

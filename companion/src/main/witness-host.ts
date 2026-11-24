@@ -9,7 +9,7 @@ import { win32 } from 'node:path';
 import { createWitness, DEFAULT_ROM_MAP_REFRESH_MS, DEFAULT_VPS_REFRESH_MS, type WitnessDeps } from '../witness/index.js';
 import { nodeFs } from '../witness/fs.js';
 import { isForkExe } from '../witness/process-watch.js';
-import type { JournalMark, LastCapture, LiveGame, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
+import type { JournalMark, LastCapture, LiveGame, SendLogsResult, Witness, WitnessSettings, WitnessStatus, WitnessNotice } from '../witness/types.js';
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
 import type { MidnightSettingReport } from '../witness/midnight.js';
 import type { VrObservation } from '../witness/vr-detect.js';
@@ -24,6 +24,8 @@ export interface WitnessHost {
   confirmTable(filePath: string, vpsTableId: string | null): Promise<WitnessStatus>;
   /** B21: press "Start attempts" on ArcAid for the loaded table (or every start-required table this device routes to). */
   startAttempts(): Promise<WitnessStatus>;
+  /** E8.3: "Send logs to Arcaid support" (`Witness.sendLogsToSupport`); never rejects. */
+  sendLogsToSupport(): Promise<SendLogsResult>;
   /** Pause = stop watching (status.running false) without forgetting anything. */
   setPaused(paused: boolean): Promise<WitnessStatus>;
   isPaused(): boolean;
@@ -199,6 +201,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
     },
     // The module logs the answer (or the failure) and emits the status itself.
     startAttempts: () => witness.startAttempts(),
+    // The module logs the request, the upload and every failure itself.
+    sendLogsToSupport: () => witness.sendLogsToSupport(),
     isPaused: () => paused,
     async setPaused(next) {
       if (next === paused) return witness.status();

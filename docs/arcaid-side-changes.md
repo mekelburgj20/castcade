@@ -633,6 +633,20 @@ Castcade out of scope. The owner asked on 2026-11-13 for testers' Castcade logs 
 
 No change to the upload route, the tar check or the storage.
 
+**From the app (Castcade E8.3, 2026-11-24; nothing asked of ArcAid).** ArcAid answered point 2 for cabinets with W105
+(2.249.0): `GET /api/witness/logs/request?device` on the device token makes the player's own request marked share
+on receipt, and the bundle is in the Super Admin's list when it arrives. The route takes any device that
+`logsSupported` allows, so a Castcade PC too. The companion's **Settings → Send logs to Arcaid support** calls it and
+uploads to the id it returns, at once (not at the next heartbeat). What the companion relies on:
+
+- `200 {status: 'requested' | 'pending', id}`; `429 {code: 'LIMITED'}` (one device-started request per device in 10
+  minutes, counted from the newest such row whatever its state, unless one is still pending); `400 {code:
+  'LOGS_UNSUPPORTED'}` (a device row that is not `desktop`: a pairing from before #363, fixed by pairing again);
+- a pending request is answered with its own id again, so an upload that failed on the network is sent again to the
+  same request; the companion sends `logs/fail` only for a refusal of the bundle itself;
+- the bundle carries no note: `sendToSupport` gets `null` from the on-receipt path. A note typed in the app would need
+  a `note` parameter on this route (not asked for).
+
 ## 25. Midnight Madness: a tournament option, refuse or flag (Castcade B26.6 / F29, owner ruling 2026-11-22)
 
 **Not built in ArcAid.** The companion sends its half from 0.2.49; today's server ignores both params.

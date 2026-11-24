@@ -577,6 +577,7 @@ function registerIpc(
     return host.confirmTable(filePath, vpsTableId);
   });
   ipcMain.handle(IPC.witnessStartAttempts, () => host.startAttempts());
+  ipcMain.handle(IPC.witnessSendLogs, () => host.sendLogsToSupport());
   ipcMain.handle(IPC.settingsGet, () => redactSettings(store.get()));
   ipcMain.handle(IPC.settingsSet, async (_e, patch: unknown) => {
     const clean = sanitizePatch(patch);

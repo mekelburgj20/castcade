@@ -16,6 +16,8 @@ export function Settings({ state }: { state: CastcadeState }) {
   const [tables, setTables] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [sendingLogs, setSendingLogs] = useState(false);
+  const [logsSent, setLogsSent] = useState<SendLogsResult | null>(null);
 
   useEffect(() => {
     if (settings) {
@@ -33,6 +35,20 @@ export function Settings({ state }: { state: CastcadeState }) {
       setSaved(`${what} saved`);
     } catch (e) {
       setError(describe(e));
+    }
+  }
+
+  /** E8.3: this PC's logs to Arcaid support in one press; main answers with the sentence to show, whatever happened. */
+  async function sendLogs() {
+    if (!bridge) return;
+    setSendingLogs(true);
+    setLogsSent(null);
+    try {
+      setLogsSent(await bridge.witness.sendLogs());
+    } catch (e) {
+      setLogsSent({ ok: false, text: `Logs not sent: ${describe(e)}` });
+    } finally {
+      setSendingLogs(false);
     }
   }
 
@@ -134,6 +150,18 @@ export function Settings({ state }: { state: CastcadeState }) {
           <span>Start with Windows (hidden in the tray)</span>
         </label>
         {loginItem && !loginItem.supported && <small className="muted">Available in the installed app only.</small>}
+      </div>
+
+      <div className="card">
+        <button type="button" disabled={!bridge || !status?.paired || sendingLogs} onClick={() => void sendLogs()}>
+          {sendingLogs ? 'Sending logs…' : 'Send logs to Arcaid support'}
+        </button>
+        <p className="muted">
+          {status && !status.paired ? 'Pair this PC first (Pairing tab): the logs go through its pairing. ' : ''}
+          Sends this PC's Castcade logs to Arcaid support: the app log, the VR layer log, the newest VR report and the
+          newest table journals (up to 12 MB, so best between games). Never your pairing, settings, tables or ROMs.
+        </p>
+        {logsSent && <p className={logsSent.ok ? 'ok' : 'error'}>{logsSent.text}</p>}
       </div>
 
       {error && <p className="error">{error}</p>}
