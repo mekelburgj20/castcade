@@ -301,14 +301,19 @@ export const DEFAULT_VR_VIEW: VrViewSettings = { theaterDuringMyTurn: 'hidden', 
 
 /**
  * D7.4: the headset's mode for a panel state. My ball → `theaterDuringMyTurn`; another player's ball → `spectate`;
- * the lobby, a pause (someone dropped: the panel says why), the gap between grants and the result → the panel.
+ * the lobby, a pause (someone dropped: the panel says why; not over this player's own live ball, D8.14 below), the gap
+ * between grants and the result → the panel.
  * D8.9 / D8.10 (2026-11-14): `now.menuOpen` → the panel (the menu is drawn on it); `now.lobbyQuiet` (the match host:
  * this table is free to play and the lobby has said nothing new for a few seconds) → nothing over the table.
  * A16.2 (2026-11-15): `now.initialsHold` (this player is entering high-score initials on their own table) → what they
  * see on their own ball, whoever is up and in any phase (the result included): never the other player's picture.
+ * D8.14 (2026-11-23, the owner in match ECVYGP: ArcAid dropped the match for one second during his ball, the host
+ * paused for Krobs, and the panel stood over his playfield for 2.3 s): a pause while this player's own ball is in play
+ * (`ball` not null: the table stays unlocked through a pause, so the ball is live) changes nothing over the table. The
+ * scoreboard beside it says `PAUSED` (`scoreboard-page.ts`); the panel and its reason come when the ball has ended.
  */
 export function vrViewMode(
-  p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'>,
+  p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> & { ball?: number | null },
   settings: VrViewSettings = DEFAULT_VR_VIEW,
   now: { menuOpen?: boolean; lobbyQuiet?: boolean; initialsHold?: boolean } = {},
 ): VrViewMode {
@@ -317,6 +322,8 @@ export function vrViewMode(
   if (now.menuOpen) return 'panel';
   if (now.initialsHold) return settings.theaterDuringMyTurn;
   if (p.phase === 'idle' && now.lobbyQuiet) return 'hidden';
+  // D8.14: a caller that gives no `ball` (undefined) is read as a ball in play.
+  if (p.phase === 'paused' && p.myTurn && p.ball !== null) return settings.theaterDuringMyTurn;
   if (p.phase !== 'playing') return 'panel';
   if (p.myTurn) return settings.theaterDuringMyTurn;
   return p.playerUp !== null ? settings.spectate : 'panel';

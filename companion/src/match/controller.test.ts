@@ -533,9 +533,17 @@ describe('vrViewMode (D7.4, 2026-10-31)', () => {
     expect(vrViewMode(at('playing', true, 'me'))).toBe('hidden');
     expect(vrViewMode(at('playing', false, 'krobs'))).toBe('theater');
     expect(vrViewMode(at('playing', false, null))).toBe('panel');
-    expect(vrViewMode(at('paused', true, 'me'))).toBe('panel');
     expect(vrViewMode(at('paused', false, 'krobs'))).toBe('panel');
     expect(vrViewMode(at('over', false, null))).toBe('panel');
+  });
+
+  it('D8.14: a pause during my own live ball puts nothing over my table; the panel comes once the ball has ended', () => {
+    expect(vrViewMode({ ...at('paused', true, 'me'), ball: 2 })).toBe('hidden');
+    expect(vrViewMode(at('paused', true, 'me'))).toBe('hidden');
+    expect(vrViewMode({ ...at('paused', true, 'me'), ball: null })).toBe('panel');
+    expect(vrViewMode({ ...at('paused', false, 'krobs'), ball: 2 })).toBe('panel');
+    expect(vrViewMode({ ...at('paused', true, 'me'), ball: 2 }, { theaterDuringMyTurn: 'panel', spectate: 'theater' })).toBe('panel');
+    expect(vrViewMode({ ...at('paused', true, 'me'), ball: 2 }, DEFAULT_VR_VIEW, { menuOpen: true })).toBe('panel');
   });
 
   it('the two settings: the panel on my ball, the panel on theirs', () => {
