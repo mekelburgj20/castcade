@@ -647,6 +647,15 @@ uploads to the id it returns, at once (not at the next heartbeat). What the comp
 - the bundle carries no note: `sendToSupport` gets `null` from the on-receipt path. A note typed in the app would need
   a `note` parameter on this route (not asked for).
 
+**The bundle is wider from Castcade E8.4 (2026-11-24, owner).** The same tar, to the same route, also holds
+`vpx/VPinballX.ini` (VPX's settings file, secret-looking values removed), `vpx/vpinball.log`, `vpx/crash.txt` and
+`vpx-stream-<match|play|watch>.log`. Nothing in the route, the tar check or the storage changes.
+
+**Asked of ArcAid (one line of wording, Castcade F34):** the sentence under **Send to Arcaid support** for a
+Castcade PC in `WitnessDeviceSupport.tsx` reads "Sends Castcade's logs, its VR layer log and recent table journals
+from that PC to the Arcaid team." It is the player's consent line, so it should name what is new: Visual Pinball's
+settings file (VPinballX.ini), its log and its last crash report. ADR 0040's amendment lists the same four items.
+
 ## 25. Midnight Madness: a tournament option, refuse or flag (Castcade B26.6 / F29, owner ruling 2026-11-22)
 
 **Not built in ArcAid.** The companion sends its half from 0.2.49; today's server ignores both params.

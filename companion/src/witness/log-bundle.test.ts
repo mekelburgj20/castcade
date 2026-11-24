@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { collectLogBundle, JOURNAL_MAX_FILES, LOG_FILE_MAX_BYTES, tarArchive, tarName } from './log-bundle.js';
+import { collectLogBundle, JOURNAL_MAX_BYTES, JOURNAL_MAX_FILES, LOG_FILE_MAX_BYTES, maskIniSecrets, tarArchive, tarName, VPX_LOG_MAX_BYTES } from './log-bundle.js';
 
 /** The names and sizes in a ustar archive, checking each header as ArcAid's `looksLikeTar` does (magic + checksum). */
 function listTar(tar: Uint8Array): Array<{ name: string; size: number; text: string }> {
@@ -109,5 +109,72 @@ describe('log-bundle (E8, ArcAid W99)', () => {
     writeFileSync(join(dir, 'companion.log'), 'one line\n');
     const b = await collectLogBundle({ companionLog: join(dir, 'companion.log'), layerLog: null, journalDir: join(dir, 'missing'), about: [] });
     expect(listTar(b.tar).map((e) => e.name)).toEqual(['manifest.txt', 'companion.log']);
+  });
+
+  it("E8.4: VPX's ini, log and crash report and the fork's stream logs go in; the ini's secrets and crash.dmp do not", async () => {
+    const logs = join(dir, 'roaming', 'logs');
+    const exeDir = join(dir, 'vpx');
+    const prefDir = join(dir, 'appdata', 'VPinballX');
+    const journals = join(dir, 'local', 'journal');
+    for (const d of [logs, exeDir, prefDir, journals]) mkdirSync(d, { recursive: true });
+    const at = (file: string, sec: number): void => utimesSync(file, sec, sec);
+    writeFileSync(join(logs, 'companion.log'), 'app\n');
+    writeFileSync(join(logs, 'vpx-stream-match.log'), 'x'.repeat(VPX_LOG_MAX_BYTES) + 'MATCH END');
+    writeFileSync(join(logs, 'vpx-stream-watch.log'), 'watch\n');
+    writeFileSync(join(logs, 'vpx-stream-notes.txt'), 'not a stream log');
+    at(join(logs, 'vpx-stream-match.log'), 300);
+    at(join(logs, 'vpx-stream-watch.log'), 200);
+    // latin1 bytes outside the masked lines come through untouched
+    writeFileSync(join(exeDir, 'VPinballX.ini'), Buffer.from('[Player]\r\nLFlipKey = 42\r\nName = caf\xe9\r\n[Plugin.X]\r\nApiKey = SECRET1\r\n password=SECRET2\r\n; token = a comment\r\n', 'latin1'));
+    // the copy VPX wrote last wins, wherever it was started from
+    writeFileSync(join(exeDir, 'vpinball.log'), 'old log\n');
+    writeFileSync(join(prefDir, 'vpinball.log'), 'new log\n');
+    at(join(exeDir, 'vpinball.log'), 100);
+    at(join(prefDir, 'vpinball.log'), 500);
+    writeFileSync(join(exeDir, 'crash.txt'), 'Crash report\n');
+    writeFileSync(join(exeDir, 'crash.dmp'), 'MEMORYIMAGE');
+    writeFileSync(join(journals, 'table.jsonl'), '{}\n');
+
+    const b = await collectLogBundle({
+      companionLog: join(logs, 'companion.log'),
+      layerLog: null,
+      journalDir: journals,
+      vpxIni: join(exeDir, 'VPinballX.ini'),
+      vpxDirs: [exeDir, prefDir, join(dir, 'missing')],
+      about: [],
+    });
+    const entries = listTar(b.tar);
+    expect(entries.map((e) => e.name)).toEqual(['manifest.txt', 'vpx/VPinballX.ini', 'vpx/crash.txt', 'companion.log', 'vpx/vpinball.log', 'vpx-stream-match.log', 'vpx-stream-watch.log', 'journal/table.jsonl']);
+    const byName = new Map(entries.map((e) => [e.name, e]));
+    const iniAt = Buffer.from(b.tar).indexOf('[Player]');
+    const ini = Buffer.from(b.tar.subarray(iniAt, iniAt + byName.get('vpx/VPinballX.ini')!.size)).toString('latin1');
+    expect(ini).toBe('[Player]\r\nLFlipKey = 42\r\nName = caf\xe9\r\n[Plugin.X]\r\nApiKey =<removed>\r\n password=<removed>\r\n; token = a comment\r\n');
+    expect(byName.get('vpx/vpinball.log')!.text).toBe('new log\n');
+    const match = byName.get('vpx-stream-match.log')!;
+    expect(match.size).toBe(VPX_LOG_MAX_BYTES);
+    expect(match.text.endsWith('MATCH END')).toBe(true);
+    const all = Buffer.from(b.tar).toString('latin1');
+    for (const never of ['SECRET1', 'SECRET2', 'MEMORYIMAGE', 'not a stream log']) expect(all).not.toContain(never);
+  });
+
+  it('E8.4: maskIniSecrets blanks only the value of a key that names a secret', () => {
+    expect(maskIniSecrets('LFlipKey = 42\nJoyCustom1Key=7\nAuthToken = abc\nApi_Key=k\n')).toBe('LFlipKey = 42\nJoyCustom1Key=7\nAuthToken =<removed>\nApi_Key=<removed>\n');
+    expect(maskIniSecrets('[Token]\nA = 1\n')).toBe('[Token]\nA = 1\n');
+  });
+
+  it('E8.4: a file that finds no room is named in the manifest, and the journals are what gives way', async () => {
+    const journals = join(dir, 'journal');
+    mkdirSync(journals);
+    writeFileSync(join(dir, 'companion.log'), 'app\n');
+    writeFileSync(join(dir, 'VPinballX.ini'), '[Player]\n');
+    // room for two journals of the three
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(join(journals, `t${i}.jsonl`), 'j'.repeat(JOURNAL_MAX_BYTES));
+      utimesSync(join(journals, `t${i}.jsonl`), 1000 + i, 1000 + i);
+    }
+    const b = await collectLogBundle({ companionLog: join(dir, 'companion.log'), layerLog: null, journalDir: journals, vpxIni: join(dir, 'VPinballX.ini'), about: [], maxBytes: 2 * JOURNAL_MAX_BYTES + 1000 });
+    const entries = listTar(b.tar);
+    expect(entries.map((e) => e.name)).toEqual(['manifest.txt', 'vpx/VPinballX.ini', 'companion.log', 'journal/t2.jsonl', 'journal/t1.jsonl']);
+    expect(entries[0]!.text).toContain('journal/t0.jsonl  left out: no room');
   });
 });

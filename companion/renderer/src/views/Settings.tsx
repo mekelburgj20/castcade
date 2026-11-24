@@ -158,8 +158,10 @@ export function Settings({ state }: { state: CastcadeState }) {
         </button>
         <p className="muted">
           {status && !status.paired ? 'Pair this PC first (Pairing tab): the logs go through its pairing. ' : ''}
-          Sends this PC's Castcade logs to Arcaid support: the app log, the VR layer log, the newest VR report and the
-          newest table journals (up to 12 MB, so best between games). Never your pairing, settings, tables or ROMs.
+          Sends this PC's Castcade and Visual Pinball logs to Arcaid support: the app log, the VR layer and 3D stream
+          logs, the newest VR report, the newest table journals, and Visual Pinball's settings file (VPinballX.ini), log
+          and last crash report (up to 12 MB, so best between games). Never your pairing, Castcade's own settings
+          files, tables or ROMs.
         </p>
         {logsSent && <p className={logsSent.ok ? 'ok' : 'error'}>{logsSent.text}</p>}
       </div>

@@ -9,13 +9,22 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 - **Send logs to Arcaid support, from the app (E8.3).** Settings has one button, in both editions: it reads this
   PC's log bundle (the same allow-list as ArcAid's Get logs: the app log, the VR layer log, the newest VR report, the
-  six newest table journals; never the pairing, settings, a table or a ROM), asks ArcAid for a log request on the
+  six newest table journals, and from E8.4 below VPX's own files; never the pairing, Castcade's settings files, a
+  table or a ROM), asks ArcAid for a log request on the
   PC's pairing (`GET /api/witness/logs/request`, ArcAid W105, the route the cabinet tile uses) and uploads at once.
   ArcAid puts the bundle in Super Admin → Witness releases and logs on arrival and alerts the operator; the player
   presses nothing on arcaid.app. No ArcAid change. ArcAid takes one such request from a device in 10 minutes, so the
   bundle is read before ArcAid is asked, an upload that dies on the network leaves the request open (a second press
   sends to it, and the next heartbeat tries once by itself), and each refusal is said in its own words (not paired,
   the 10 minutes, a pairing from before ArcAid knew Castcade PCs: pair again).
+- **The log bundle also holds VPX's own files and the 3D stream logs (E8.4).** Both ways of sending it (the button
+  above, and Get logs on arcaid.app) now add: `vpx/VPinballX.ini` (the ini VPX reads for the exe Castcade last saw
+  run: beside the exe, else `%APPDATA%\VPinballX`; the value of any key named like a password, token, secret or API
+  key is replaced with `<removed>`), `vpx/vpinball.log` and `vpx/crash.txt` (the newest copy in the exe's folder or
+  the ini's; the end of each, 500 KB at most; never `crash.dmp`), and the fork's `vpx-stream-match.log`,
+  `vpx-stream-play.log` and `vpx-stream-watch.log` (the end of each, 500 KB at most). `manifest.txt` names the exe
+  and the ini, and any file that found no room in the 12 MB; the small files go first and the journals last, newest
+  first, so a full bundle leaves out its oldest journal. `companion/src/witness/log-bundle.ts`.
 
 ## [0.2.49] — 2026-11-22
 
