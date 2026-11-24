@@ -7,6 +7,17 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+## [0.2.50] — 2026-11-24
+
+Protocol 6 is unchanged: this build plays a match with 0.2.46 to 0.2.49. It is a companion-only release: the OpenXR
+layer (0.8.0), the native helpers and the hook library (0.6.0) are as in 0.2.48, so nothing in VPX has to be restarted
+for it. One fix from the match night of 2026-11-23 (the owner and Krobs on 0.2.49) and one addition, the logs sent to
+Arcaid support from the app. Released on the owner's word. **Neither has been tried outside its tests**: no pause has
+been seen in a headset with the fix (the check is D8.14.1), and the button has not been pressed on an installed build
+(E8.3.1).
+
+### Added
+
 - **Send logs to Arcaid support, from the app (E8.3).** Settings has one button, in both editions: it reads this
   PC's log bundle (the same allow-list as ArcAid's Get logs: the app log, the VR layer log, the newest VR report, the
   six newest table journals; never the pairing, settings, a table or a ROM), asks ArcAid for a log request on the
@@ -16,6 +27,26 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
   bundle is read before ArcAid is asked, an upload that dies on the network leaves the request open (a second press
   sends to it, and the next heartbeat tries once by itself), and each refusal is said in its own words (not paired,
   the 10 minutes, a pairing from before ArcAid knew Castcade PCs: pair again).
+
+### Fixed
+
+- **A pause during your own ball no longer puts the panel over your playfield (D8.14).** In the owner's match ECVYGP
+  ArcAid stopped carrying the match for one second, the host paused, and the full "waiting" panel stood over his table
+  for 2.3 s while his ball was in play ("It messed up my game"). While this player's own ball is live a pause now
+  changes nothing over the table: the view stays what the "during my turn" setting says, and the scoreboard beside the
+  table already reads `PAUSED`. The panel with the reason comes once the ball has ended, and it still comes at once for
+  a player who is waiting, for the in-game menu, and with "during my turn" set to the panel. `vrViewMode` in
+  `match/controller.ts`.
+
+Not in this build, and open from the same night: the pause itself and the voice connection that is made again when
+ArcAid is away for a second (A18), the pick of a joining PC's table copy (I11.4.15), the scoreboard that stays where the
+head faced at the match's start (D8.12.3.2), and the watched player's DMD on a PC with a captured DMD window, which is
+in the Castcade VPX build 32c0746 and in no Castcade update (I11.5.1).
+
+**Wire / journal:** no score parameter, no protocol message and no journal line changed. The companion calls one more
+ArcAid route, which exists on prod since ArcAid 2.249.0: `GET /api/witness/logs/request` on the PC's pairing (E8.3;
+the contract is `docs/arcaid-side-changes.md` §24, covered by `witness/arcaid-client.test.ts` and
+`witness/witness.test.ts`).
 
 ## [0.2.49] — 2026-11-22
 
