@@ -32,7 +32,10 @@ cmake_minimum_required(VERSION 3.20)
 #        (src/scoreboard_place.h), and "place": true (a request) captures it again where the head points. No new message:
 #        a protocol-4 companion sends neither key and gets the head-locked corner exactly as 0.7.0 drew it.
 #        tools/scoreboard_place_test.exe (not shipped) checks the placement maths and the control's reading in every build.
-project(castcade_vr_layer VERSION 0.8.0 LANGUAGES CXX)
+# 0.8.1: D8.12.3.2, the board puts itself back in view: a scoreboard in the room that has been out of view for 8 s (more
+#        than 90 degrees to the side of where the head faces, or twice as far away as it was placed) is placed again by
+#        the corner rule from the head as it is then. The layer's own doing: no message, no key, pipe protocol stays 5.
+project(castcade_vr_layer VERSION 0.8.1 LANGUAGES CXX)
 
 # D7.3.3: which build this is, on the layer's "loaded in" log line (CI passes the tag on tag pushes, else the short sha),
 # so a VPX that kept an older dll is visible in castcade-vr-layer.log. A local build says "dev".
