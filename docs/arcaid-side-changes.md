@@ -651,7 +651,7 @@ uploads to the id it returns, at once (not at the next heartbeat). What the comp
 `vpx/VPinballX.ini` (VPX's settings file, secret-looking values removed), `vpx/vpinball.log`, `vpx/crash.txt` and
 `vpx-stream-<match|play|watch>.log`. Nothing in the route, the tar check or the storage changes.
 
-**Asked of ArcAid (one line of wording, Castcade F34):** the sentence under **Send to Arcaid support** for a
+**Asked of ArcAid (one line of wording, Castcade F37):** the sentence under **Send to Arcaid support** for a
 Castcade PC in `WitnessDeviceSupport.tsx` reads "Sends Castcade's logs, its VR layer log and recent table journals
 from that PC to the Arcaid team." It is the player's consent line, so it should name what is new: Visual Pinball's
 settings file (VPinballX.ini), its log and its last crash report. ADR 0040's amendment lists the same four items.
@@ -710,7 +710,9 @@ minutes; the game is a *midnight game* when a local 00:00:00 lies in [`started`,
   the reason in `reasons`, which the companion already shows) and falls to the player's Global record. The attempt
   the game used stays used.
 
-The option is its own switch on the tournament, usable in Open play and in Sanctioned play. No `utc_offset` (an older
+The option is its own switch on the tournament, usable in Open play and in Sanctioned play (confirmed by the owner
+2026-11-24: not a Sanctioned rule, since Sanctioned play refuses every score without evidence, a cabinet's among
+them). No `utc_offset` (an older
 companion, a cabinet before F32): the game cannot be checked; say so on the trail, refuse nothing.
 
 **Which titles.** Congo, Dirty Harry, Johnny Mnemonic, Junk Yard, NBA Fastbreak and WHO dunnit (a players' list;
@@ -719,7 +721,7 @@ catalogue game the score resolved to, with the ROM family as the fallback (`cong
 `nbaf_*`, `wd_*`): a cabinet's `rom` can be free text.
 
 **The counter in the rule (proposed 2026-11-22, when the owner asked for the mode itself to be detected on both
-producers; theirs to confirm).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
+producers; confirmed by the owner 2026-11-24).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
 covers a cabinet whose time zone is wrong and a score with no `utc_offset`. `ran_span` and an absent `ran` decide
 nothing: the clock rule above stands. `ran` `false` does NOT clear a game the clock rule caught until the counter is
 confirmed on a rig (B26.1): that the audit counts Midnight Madness is read from its name, not yet seen to go up.
