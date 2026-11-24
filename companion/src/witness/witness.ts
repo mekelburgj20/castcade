@@ -85,7 +85,7 @@ import { catalogueTableName } from './table-name.js';
 import { createVpsIndex } from './vps-index.js';
 import { createVpsRefresh, shortVersion, vpsRefreshDir, type VpsRefresh } from './vps-refresh.js';
 import { createRomMapStore, fetchRomMap, withServedRoms, type CachedRomMap, type RomMap } from './rom-map.js';
-import type { AttemptStatus, CaptureOutcome, JournalMark, LastCapture, LiveGame, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
+import type { AttemptStatus, CaptureOutcome, JournalMark, LastCapture, LiveGame, SendLogsResult, Witness, WitnessEvents, WitnessSettingsStore, WitnessStatus } from './types.js';
 
 export interface WitnessDeps {
   clock?: Clock;
@@ -130,10 +130,11 @@ export interface WitnessDeps {
   nvAlivePollMs?: number;
   heartbeatIntervalMs?: number;
   /**
-   * E8: this rig's logs as one ustar archive, built when a heartbeat answer carries a log request (ArcAid W99).
+   * E8: this rig's logs as one ustar archive, built when a heartbeat answer carries a log request (ArcAid W99) and
+   * when the player presses Send logs to Arcaid support (E8.3).
    * Omitted = requests are ignored (tests; the shell passes `collectLogBundle` over its log folders).
    */
-  logBundle?: () => Promise<{ tar: Uint8Array; files: Array<{ name: string; bytes: number }> }>;
+  logBundle?: () => Promise<LogBundleOut>;
   /**
    * B8: how often the ROM → VPS game map ArcAid serves is re-fetched (once at start, then this often). Omitted or
    * null = never, and the shipped seed alone maps ROMs: the shell passes `DEFAULT_ROM_MAP_REFRESH_MS`, so tests that
@@ -160,6 +161,31 @@ export interface WitnessDeps {
 }
 
 /** ArcAid's `HEARTBEAT_STALE_SEC` is 300; two beats per window keeps a desktop "online" through one miss. */
+/** E8: what `WitnessDeps.logBundle` builds (`collectLogBundle`). */
+type LogBundleOut = { tar: Uint8Array; files: Array<{ name: string; bytes: number }> };
+/** E8: how one upload of a bundle ended. */
+type LogUpload = { ok: true; files: number; bytes: number } | { ok: false; reason: 'collect_failed' | 'upload_failed'; err: unknown };
+
+/**
+ * E8.3: why Send logs to Arcaid support did not send, in the player's words. ArcAid's refusals carry a `code`:
+ * `LIMITED` (429: one device-started request in 10 minutes), `LOGS_UNSUPPORTED` (400: the device row is not a
+ * desktop, a pairing from before ArcAid had them), `NO_REQUEST` (404 on the upload: the request ended meanwhile).
+ */
+export function logsNotSentText(err: unknown): string {
+  if (!(err instanceof ArcaidError)) return `Logs not sent: ${err instanceof Error ? err.message : String(err)}.`;
+  const code = typeof err.body === 'object' && err.body !== null ? (err.body as Record<string, unknown>)['code'] : undefined;
+  if (err.kind === 'auth') return 'Logs not sent: ArcAid no longer knows this PC. Pair it again (Pairing tab), then press again.';
+  if (code === 'LIMITED') {
+    return 'Logs not sent: ArcAid takes one set of logs from a PC in 10 minutes, and this PC asked less than 10 minutes ago. If that one went through, Arcaid support has it; otherwise press again in a few minutes.';
+  }
+  if (code === 'LOGS_UNSUPPORTED') {
+    return 'Logs not sent: ArcAid has this PC down as a device that cannot send logs (a pairing from before it knew Castcade PCs). Unpair and pair it again (Pairing tab), then press again.';
+  }
+  if (code === 'NO_REQUEST') return 'Logs not sent: ArcAid stopped waiting for them. Press again.';
+  if (err.retryable) return `Logs not sent: ${err.message}. Press again when the connection is back.`;
+  return `Logs not sent: ArcAid refused them (${typeof code === 'string' ? code : err.message}).`;
+}
+
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 120_000;
 export const DEFAULT_NV_ALIVE_POLL_MS = 3_000;
 export const DEFAULT_HASH_WAIT_MS = 3_000;
@@ -630,22 +656,85 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
    * it, once per id. Never touches the Witness status: a failed upload is a log line and a `fail` to ArcAid.
    */
   const logRequestsSeen = new Set<string>();
+  /** The upload running for a request id: the heartbeat's answer and the app's own button (E8.3) never send one id twice at once. */
+  const logUploads = new Map<string, Promise<LogUpload>>();
+  const uploadLogBundle = (request: string, token: string, deviceId: string, ready?: LogBundleOut): Promise<LogUpload> => {
+    const running = logUploads.get(request);
+    if (running) return running;
+    const run = (async (): Promise<LogUpload> => {
+      let reason: 'collect_failed' | 'upload_failed' = 'collect_failed';
+      try {
+        const bundle = ready ?? (await deps.logBundle!());
+        reason = 'upload_failed';
+        await arcaid().uploadLogs(token, deviceId, request, bundle.tar);
+        log(`witness: logs sent to ArcAid: ${bundle.files.length} file(s), ${Math.round(bundle.tar.length / 1024)} KB (${bundle.files.map((f) => f.name).join(', ')})`);
+        return { ok: true, files: bundle.files.length, bytes: bundle.tar.length };
+      } catch (err) {
+        log(`witness: logs not sent (${reason}): ${err instanceof Error ? err.message : String(err)}`);
+        return { ok: false, reason, err };
+      }
+    })().finally(() => logUploads.delete(request));
+    logUploads.set(request, run);
+    return run;
+  };
   const sendLogs = async (request: string, token: string, deviceId: string): Promise<void> => {
     if (!deps.logBundle || logRequestsSeen.has(request)) return;
     logRequestsSeen.add(request);
     log(`witness: ArcAid asked for this device's logs (request ${request.slice(0, 8)})`);
-    let reason = 'collect_failed';
-    try {
-      const bundle = await deps.logBundle();
-      reason = 'upload_failed';
-      await arcaid().uploadLogs(token, deviceId, request, bundle.tar);
-      log(`witness: logs sent to ArcAid: ${bundle.files.length} file(s), ${Math.round(bundle.tar.length / 1024)} KB (${bundle.files.map((f) => f.name).join(', ')})`);
-    } catch (err) {
-      log(`witness: logs not sent (${reason}): ${err instanceof Error ? err.message : String(err)}`);
+    const sent = await uploadLogBundle(request, token, deviceId);
+    if (!sent.ok) {
       await arcaid()
-        .logsFailed(token, deviceId, request, reason)
+        .logsFailed(token, deviceId, request, sent.reason)
         .catch(() => undefined);
     }
+  };
+
+  /**
+   * E8.3: "Send logs to Arcaid support" pressed in this app. The bundle is the one a log request gets; what differs
+   * is who asks: this device, for its paired player (`requestLogs`, ArcAid W105), and ArcAid puts the bundle in the
+   * Super Admin's list the moment it arrives. It is uploaded at once, not at the next heartbeat. Order matters: the
+   * bundle is read BEFORE ArcAid is asked, because ArcAid takes one device-started request in 10 minutes and a
+   * request that fails counts. For the same reason an upload that failed on the network is not reported as failed:
+   * the request stays open at ArcAid (15 minutes), so a second press sends to the same request, and the next
+   * heartbeat tries it once by itself. Never touches the Witness status; never throws.
+   */
+  let supportSend: Promise<SendLogsResult> | null = null;
+  const sendLogsToSupport = (): Promise<SendLogsResult> => {
+    supportSend ??= (async (): Promise<SendLogsResult> => {
+      const { token, deviceId } = store.get();
+      if (!token) return { ok: false, text: 'Logs not sent: this PC is not paired with ArcAid. Pair it first (Pairing tab); the logs go through its pairing.' };
+      if (!deps.logBundle) return { ok: false, text: 'Logs not sent: this build cannot collect its logs.' };
+      let bundle: LogBundleOut;
+      try {
+        bundle = await deps.logBundle();
+      } catch (err) {
+        log(`witness: logs not sent to Arcaid support (collect_failed): ${err instanceof Error ? err.message : String(err)}`);
+        return { ok: false, text: `Logs not sent: this PC's logs could not be read (${err instanceof Error ? err.message : String(err)}).` };
+      }
+      let request: string;
+      try {
+        const asked = await arcaid().requestLogs(token, deviceId);
+        request = asked.id;
+        log(`witness: Send logs to Arcaid support (request ${request.slice(0, 8)}, ${asked.status === 'pending' ? 'one ArcAid already waited for' : 'new'})`);
+      } catch (err) {
+        log(`witness: logs not sent to Arcaid support: ArcAid did not take the request: ${err instanceof Error ? err.message : String(err)}`);
+        return { ok: false, text: logsNotSentText(err) };
+      }
+      logRequestsSeen.add(request); // the heartbeat's answer names this id too, until ArcAid has the bundle
+      const sent = await uploadLogBundle(request, token, deviceId, bundle);
+      if (sent.ok) return { ok: true, text: `Logs sent to Arcaid support: ${sent.files} file${sent.files === 1 ? '' : 's'}, ${Math.round(sent.bytes / 1024).toLocaleString('en-US')} KB.` };
+      if (sent.err instanceof ArcaidError && sent.err.retryable) {
+        logRequestsSeen.delete(request);
+        return { ok: false, text: `${logsNotSentText(sent.err)}${status.running ? ' Castcade also tries once more by itself within two minutes.' : ''}` };
+      }
+      await arcaid()
+        .logsFailed(token, deviceId, request, sent.reason)
+        .catch(() => undefined);
+      return { ok: false, text: logsNotSentText(sent.err) };
+    })().finally(() => {
+      supportSend = null;
+    });
+    return supportSend;
   };
 
   const beat = async (): Promise<void> => {
@@ -2133,6 +2222,8 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
       emitStatus();
       return { ...status };
     },
+
+    sendLogsToSupport,
 
     liveGame() {
       return liveGame;

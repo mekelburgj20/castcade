@@ -283,6 +283,112 @@ describe('createWitness: -Play sessions (capture at exit)', () => {
     await n.witness.stop();
   });
 
+  it('E8.3 (ArcAid W105): Send logs to Arcaid support reads the bundle, asks ArcAid for a request and uploads at once', async () => {
+    const id = 'ab'.repeat(16);
+    const order: string[] = [];
+    const logBundle = async () => {
+      order.push('bundle');
+      return { tar: new Uint8Array(2048), files: [{ name: 'manifest.txt', bytes: 10 }, { name: 'companion.log', bytes: 10 }] };
+    };
+    const h = harness({}, { logBundle });
+    h.setRespond((path) => {
+      order.push(path);
+      if (path.endsWith('/logs/request')) return { status: 200, body: { ok: true, status: 'requested', id } };
+      return path.endsWith('/heartbeat') ? { status: 200, body: { ok: true, logs: id } } : { status: 200, body: { ok: true } };
+    });
+    // Two presses at once are one send.
+    const [a, b] = await Promise.all([h.witness.sendLogsToSupport(), h.witness.sendLogsToSupport()]);
+    expect(a).toEqual({ ok: true, text: 'Logs sent to Arcaid support: 2 files, 2 KB.' });
+    expect(b).toEqual(a);
+    expect(order).toEqual(['bundle', '/api/witness/logs/request', '/api/witness/logs']);
+    expect(h.calls.map((c) => [c.path, c.params, c.token])).toEqual([
+      ['/api/witness/logs/request', { device: 'dev-1' }, 'tok'],
+      ['/api/witness/logs', { device: 'dev-1', request: id }, 'tok'],
+    ]);
+    // A heartbeat answer that still names the id (answered before ArcAid had the bundle): not sent a second time.
+    await h.witness.start();
+    await h.flush();
+    expect(h.paths('/heartbeat').length).toBeGreaterThanOrEqual(1);
+    expect(h.paths('/witness/logs')).toHaveLength(1);
+    expect(h.witness.status().lastError).toBeNull();
+    await h.witness.stop();
+  });
+
+  it('E8.3: a press that cannot send says why, and does not use up the one request ArcAid takes in 10 minutes', async () => {
+    const id = 'cd'.repeat(16);
+    const logBundle = async () => ({ tar: new Uint8Array(1024), files: [{ name: 'companion.log', bytes: 10 }] });
+    const requested = (status: 'requested' | 'pending' = 'requested') => ({ status: 200, body: { ok: true, status, id } });
+
+    // Not paired: nothing is asked.
+    const u = harness({ token: null }, { logBundle });
+    expect(await u.witness.sendLogsToSupport()).toMatchObject({ ok: false, text: expect.stringContaining('not paired') });
+    expect(u.calls).toHaveLength(0);
+
+    // The logs cannot be read: ArcAid is not asked (a request that fails counts against the 10 minutes).
+    const c = harness(
+      {},
+      {
+        logBundle: async () => {
+          throw new Error('EBUSY companion.log');
+        },
+      },
+    );
+    expect(await c.witness.sendLogsToSupport()).toMatchObject({ ok: false, text: expect.stringContaining('EBUSY companion.log') });
+    expect(c.calls).toHaveLength(0);
+
+    // ArcAid's refusals of the request, each in its own words; the Witness status is untouched.
+    const l = harness({}, { logBundle });
+    l.setRespond(() => ({ status: 429, body: { ok: false, code: 'LIMITED' } }));
+    expect((await l.witness.sendLogsToSupport()).text).toMatch(/one set of logs from a PC in 10 minutes/);
+    l.setRespond(() => ({ status: 400, body: { ok: false, code: 'LOGS_UNSUPPORTED' } }));
+    expect((await l.witness.sendLogsToSupport()).text).toMatch(/Unpair and pair it again/);
+    l.setRespond(() => ({ status: 401, body: { ok: false } }));
+    expect((await l.witness.sendLogsToSupport()).text).toMatch(/no longer knows this PC/);
+    expect(l.paths('/witness/logs')).toHaveLength(0);
+    expect(l.witness.status().lastError).toBeNull();
+
+    // The upload dies on the network: no `fail`, so the request stays open at ArcAid and a second press sends to it.
+    const n = harness({}, { logBundle });
+    let down = true;
+    n.setRespond((path) => (path.endsWith('/logs/request') ? requested(down ? 'requested' : 'pending') : path.endsWith('/witness/logs') && down ? new TypeError('fetch failed') : { status: 200, body: { ok: true } }));
+    expect(await n.witness.sendLogsToSupport()).toEqual({ ok: false, text: 'Logs not sent: ArcAid unreachable: fetch failed. Press again when the connection is back.' });
+    expect(n.paths('/logs/fail')).toHaveLength(0);
+    down = false;
+    expect((await n.witness.sendLogsToSupport()).ok).toBe(true);
+    expect(n.paths('/witness/logs').map((x) => x.params)).toEqual([
+      { device: 'dev-1', request: id },
+      { device: 'dev-1', request: id },
+    ]);
+
+    // ... and while the witness runs, the next heartbeat that names the request sends it once more by itself.
+    const r = harness({}, { logBundle });
+    let asked = false;
+    let failing = true;
+    r.setRespond((path) => {
+      if (path.endsWith('/logs/request')) {
+        asked = true;
+        return requested();
+      }
+      if (path.endsWith('/heartbeat')) return { status: 200, body: asked ? { ok: true, logs: id } : { ok: true } };
+      return path.endsWith('/witness/logs') && failing ? new TypeError('fetch failed') : { status: 200, body: { ok: true } };
+    });
+    await r.witness.start();
+    await r.flush();
+    expect((await r.witness.sendLogsToSupport()).text).toMatch(/Castcade also tries once more by itself within two minutes\.$/);
+    failing = false;
+    r.clock.advance(120_000);
+    await r.flush();
+    expect(r.paths('/witness/logs')).toHaveLength(2);
+    expect(r.paths('/logs/fail')).toHaveLength(0);
+    await r.witness.stop();
+
+    // ArcAid refuses the bundle itself: final, and reported to ArcAid as a cabinet would.
+    const t = harness({}, { logBundle });
+    t.setRespond((path) => (path.endsWith('/logs/request') ? requested() : path.endsWith('/witness/logs') ? { status: 413, body: { ok: false, code: 'TOO_LARGE' } } : { status: 200, body: { ok: true } }));
+    expect(await t.witness.sendLogsToSupport()).toEqual({ ok: false, text: 'Logs not sent: ArcAid refused them (TOO_LARGE).' });
+    expect(t.calls.filter((x) => x.path === '/api/witness/logs/fail').map((x) => x.params)).toEqual([{ device: 'dev-1', request: id, reason: 'upload_failed' }]);
+  });
+
   it('heartbeats and checks in on start, opens the session at launch, closes it with the score on exit', async () => {
     const h = harness({}, { registry: createStaticRegistry(RIG_REGISTRY), env: {} });
     await h.fs.mkdir('/nv');
