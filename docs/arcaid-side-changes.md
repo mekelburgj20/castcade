@@ -701,7 +701,9 @@ minutes; the game is a *midnight game* when a local 00:00:00 lies in [`started`,
   the reason in `reasons`, which the companion already shows) and falls to the player's Global record. The attempt
   the game used stays used.
 
-The option is its own switch on the tournament, usable in Open play and in Sanctioned play. No `utc_offset` (an older
+The option is its own switch on the tournament, usable in Open play and in Sanctioned play (confirmed by the owner
+2026-11-24: not a Sanctioned rule, since Sanctioned play refuses every score without evidence, a cabinet's among
+them). No `utc_offset` (an older
 companion, a cabinet before F32): the game cannot be checked; say so on the trail, refuse nothing.
 
 **Which titles.** Congo, Dirty Harry, Johnny Mnemonic, Junk Yard, NBA Fastbreak and WHO dunnit (a players' list;
@@ -710,7 +712,7 @@ catalogue game the score resolved to, with the ROM family as the fallback (`cong
 `nbaf_*`, `wd_*`): a cabinet's `rom` can be free text.
 
 **The counter in the rule (proposed 2026-11-22, when the owner asked for the mode itself to be detected on both
-producers; theirs to confirm).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
+producers; confirmed by the owner 2026-11-24).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
 covers a cabinet whose time zone is wrong and a score with no `utc_offset`. `ran_span` and an absent `ran` decide
 nothing: the clock rule above stands. `ran` `false` does NOT clear a game the clock rule caught until the counter is
 confirmed on a rig (B26.1): that the audit counts Midnight Madness is read from its name, not yet seen to go up.
