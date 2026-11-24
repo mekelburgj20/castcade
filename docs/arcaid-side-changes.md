@@ -689,7 +689,7 @@ Unchained's own maps package (2026-10-28) has that audit for all five Midnight M
 for Johnny Mnemonic only, so `setting` arrives from a cabinet on that title alone. The app samples the file as it
 changes, and a game whose reading before and reading after differ is a game the mode ran in. `utc_offset` is the
 offset on the launcher's session journal times. Not confirmed: that today's launcher still writes the block (the
-samples are from August), that the audit counts Midnight Madness (the same open check as on desktop, B26.1), and that
+samples are from August), that the cabinet's file shows the count go up (on desktop it did, `congo_21`, B26.1), and that
 the cabinet's PinMAME clock is the local time the launcher stamps. One game of Congo across the cabinet's midnight
 answers all three.
 
@@ -714,9 +714,11 @@ catalogue game the score resolved to, with the ROM family as the fallback (`cong
 **The counter in the rule (proposed 2026-11-22, when the owner asked for the mode itself to be detected on both
 producers; confirmed by the owner 2026-11-24).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
 covers a cabinet whose time zone is wrong and a score with no `utc_offset`. `ran_span` and an absent `ran` decide
-nothing: the clock rule above stands. `ran` `false` does NOT clear a game the clock rule caught until the counter is
-confirmed on a rig (B26.1): that the audit counts Midnight Madness is read from its name, not yet seen to go up.
-Once it is confirmed, `ran` `false` clears the game, which is the owner's end state by a second road.
+nothing: the clock rule above stands. `ran` `false` clears a game the clock rule caught only on a ROM whose counter
+has been seen to go up with the mode, which is the owner's end state by a second road. Seen so far on `congo_21`
+only (B26.1: a live match on 2026-11-23, "Midnight Madness ran on Krobs' ball 3" fifteen seconds after his midnight;
+his audit B.4 31 read 02 on 2026-11-24). On the other four titles the audit is taken by its name, so there `ran`
+`false` clears nothing yet.
 
 **Later, the owner's end state.** `midnight.setting` `off` permits a midnight game. The companion sends it now so the
 switch is one line when the owner wants it. Store `midnight` whole and show it on the Integrity panel.
