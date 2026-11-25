@@ -512,6 +512,15 @@ export class ClientMatch {
   }
 
   /**
+   * A17 step 3: the lobby's table as the last HELLO_ACK said it: in a lobby the pick (its identity keys), whatever
+   * match is being played; null before any. `hostGame()` is the match's own table once a match has started (the open
+   * table of its first player), so it is not what tells a change of the lobby's table.
+   */
+  lobbyTable(): GameFingerprint | null {
+    return this.ackHostGame ? { ...this.ackHostGame } : null;
+  }
+
+  /**
    * I11.4.15 (2026-11-24): the table objects of the host's table as its last HELLO_ACK said them (what the Castcade
    * VPX build names for it: the thing two PCs must share for the 3D view); null before any, and from a host that does
    * not say it. Compared with this PC's copies of the table, nothing else.

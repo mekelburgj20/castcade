@@ -145,7 +145,7 @@ const match: MatchStatus = {
   resume: null,
 };
 
-const oneStep: OneStepStatus = { link: null, message: null, copied: false, pending: null, launch: { state: 'idle', table: null, detail: null }, tableToStart: null, notice: null, attention: 0 };
+const oneStep: OneStepStatus = { link: null, message: null, copied: false, pending: null, launch: { state: 'idle', table: null, detail: null }, tableToStart: null, change: null, notice: null, attention: 0 };
 
 /** An API object: what it has, as given; any other call answers null; any other `onX` subscription is a no-op. */
 const api = (o: Record<string, unknown>): Record<string, unknown> =>

@@ -116,7 +116,11 @@ describe('match setup (A6)', () => {
     expect(readMatchSettings(null)).toEqual(DEFAULT_MATCH_SETTINGS);
     expect(readMatchSettings('not json')).toEqual(DEFAULT_MATCH_SETTINGS);
     const s = patchMatchSettings(DEFAULT_MATCH_SETTINGS, { port: '28000', ballsPerGame: 5, displayName: '  Krobs  ', cueVolume: 140 });
-    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K', scoreboard: true, scoreboardCorner: 'top-right', scoreboardPlace: null, scoreboardAnchor: 'room', watch3d: 'auto', stance: 'play' });
+    expect(s).toEqual({ port: 28000, ballsPerGame: 5, displayName: 'Krobs', cueVolume: 100, theaterDuringMyTurn: 'hidden', spectate: 'theater', previewStereo: 'auto', tableMuteMine: true, tableSendMine: true, tableHearOthers: true, theaterScale: 1, cameraSource: 'layer', cameraEyes: 'one', settingsVersion: 2, cameraView: 'whole', windowDepthM: null, eyeOffsetDeg: [0, 0], softEdge: 0.03, preMatchPlay: 'free', startTableOnHost: false, voiceVolume: 150, othersTableVolume: 100, myTableWhileUp: 100, menuKey: 'Control+Alt+M', menuChooseKey: 'Control+Alt+K', scoreboard: true, scoreboardCorner: 'top-right', scoreboardPlace: null, scoreboardAnchor: 'room', watch3d: 'auto', stance: 'play', changeTablesForMe: true });
+    // A17 step 3: "Change tables for me": a boolean, on by default; anything else keeps the current value.
+    expect(patchMatchSettings(s, { changeTablesForMe: false }).changeTablesForMe).toBe(false);
+    expect(patchMatchSettings({ ...s, changeTablesForMe: false }, { changeTablesForMe: 'yes' as never }).changeTablesForMe).toBe(false);
+    expect(readMatchSettings(writeMatchSettings({ ...s, changeTablesForMe: false })).changeTablesForMe).toBe(false);
     // A17 step 7: this person's choice for the next start in a lobby: two words, anything else keeps the current one.
     expect(patchMatchSettings(s, { stance: 'watch' }).stance).toBe('watch');
     expect(patchMatchSettings({ ...s, stance: 'watch' }, { stance: 'maybe' as never }).stance).toBe('watch');

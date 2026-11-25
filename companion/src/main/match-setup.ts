@@ -137,6 +137,13 @@ export interface MatchSettings {
    * or Watch. Kept per PC, said at the join, changed at any time; it counts from the next start.
    */
   stance: 'play' | 'watch';
+  /**
+   * A17 step 3 (2026-11-25, alpha-match.md section 11.5): "Change tables for me". On (the default): when the lobby's
+   * table changes, Castcade closes the table that is open on this PC and opens this PC's copy of the new one
+   * (`one-step.ts`; never during a game, never a table it cannot follow). Off: the Match tab shows the new table with
+   * an Open it button and nothing closes by itself.
+   */
+  changeTablesForMe: boolean;
 }
 
 export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
@@ -179,6 +186,8 @@ export const DEFAULT_MATCH_SETTINGS: MatchSettings = {
   watch3d: 'auto',
   // A17 step 7 (2026-11-25)
   stance: 'play',
+  // A17 step 3 (2026-11-25)
+  changeTablesForMe: true,
 };
 
 /** D8.1: the current `settingsVersion`; a saved file below it is migrated once at load (`loadMatchSettings`). */
@@ -297,6 +306,8 @@ export function patchMatchSettings(current: MatchSettings, patch: unknown): Matc
   if (p.watch3d === 'auto' || p.watch3d === 'off') next.watch3d = p.watch3d;
   // A17 step 7: two words; anything else keeps the current one.
   if (p.stance === 'play' || p.stance === 'watch') next.stance = p.stance;
+  // A17 step 3: a boolean; anything else keeps the current value.
+  if (typeof p.changeTablesForMe === 'boolean') next.changeTablesForMe = p.changeTablesForMe;
   return next;
 }
 

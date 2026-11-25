@@ -446,6 +446,17 @@ export interface MatchHost {
    */
   hostTableObjects(): ForkIdentity | null;
   /**
+   * A17 step 3: this PC's table is held for the high-score initials of this player's finished game (the controller's
+   * A16.2 hold). `one-step.ts` closes no table while it is: the lobby's new table waits for the initials.
+   */
+  tableHeld(): boolean;
+  /**
+   * A17 step 3: the lobby's table, which since step 6 is a pick (`HELLO_ACK.hostGame`, its identity keys) and not a
+   * PC's open VPX: on the lobby's PC the engine's own, on a joined PC the last HELLO_ACK's. Null with no lobby. It is
+   * what `one-step.ts` follows; `hostGame()` is a match's own table once one has started.
+   */
+  lobbyTable(): GameFingerprint | null;
+  /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
@@ -4015,6 +4026,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const role = a.controller.currentRole;
       const o = role instanceof ClientMatch ? role.hostTableObjects() : (a.objectsSent ?? null);
       return o ? { editables: o.editables, hash: o.hash } : null;
+    },
+    tableHeld() {
+      return active?.controller.status().initialsHold ?? false;
+    },
+    lobbyTable() {
+      const role = active?.controller.currentRole;
+      if (role instanceof ClientMatch) return role.lobbyTable();
+      return role instanceof HostMatch ? role.table().game : null;
     },
     async saveFrames() {
       const media = opts.media;
