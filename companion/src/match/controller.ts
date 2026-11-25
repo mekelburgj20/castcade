@@ -171,6 +171,11 @@ export interface ControllerStatus {
   /** A13: for the host while a grant is outstanding: the turn Pass the turn would end, and the score it would end at. Else null. */
   pass: { player: PlayerId; name: string; ball: number; score: number } | null;
   /**
+   * A17 step 4 (2026-11-24): for the player who is up, while their ball can be ended by hand (End my ball): the ball
+   * and the score it would end at (the last one this table reported, else what the log has for this player). Else null.
+   */
+  endBall: { ball: number; score: number } | null;
+  /**
    * I11.4.9: in the lobby, the players a start waits for: their PC is still making its 3D connection (the host's
    * list) and their table is open. `armed`: this host's start is held for them (`table`: a game started on its table,
    * and the countdown follows by itself; `tab`: Start match was pressed once: a second press starts now, and the shell
@@ -322,11 +327,16 @@ export const DEFAULT_VR_VIEW: VrViewSettings = { theaterDuringMyTurn: 'hidden', 
  * paused for Krobs, and the panel stood over his playfield for 2.3 s): a pause while this player's own ball is in play
  * (`ball` not null: the table stays unlocked through a pause, so the ball is live) changes nothing over the table. The
  * scoreboard beside it says `PAUSED` (`scoreboard-page.ts`); the panel and its reason come when the ball has ended.
+ * A17 step 4 (2026-11-24, alpha-match.md §11.6): the same for the people watching. `now.upAway`: the match is paused
+ * for the player who is up (their link to the host dropped past the grace; `pausedFor`), their ball is still in play
+ * and their picture still arrives on this PC (the shell reads that: the native video's frames, the page's video
+ * track, a 3D watch that runs). Then a watcher keeps what `spectate` says, as while playing: that player is playing
+ * on, and the media never crossed the host. The scoreboard says who is away. When the picture stops, the panel comes.
  */
 export function vrViewMode(
-  p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> & { ball?: number | null },
+  p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> & { ball?: number | null; pausedFor?: PlayerId | null },
   settings: VrViewSettings = DEFAULT_VR_VIEW,
-  now: { menuOpen?: boolean; lobbyQuiet?: boolean; initialsHold?: boolean } = {},
+  now: { menuOpen?: boolean; lobbyQuiet?: boolean; initialsHold?: boolean; upAway?: boolean } = {},
 ): VrViewMode {
   // D8.10: the in-game menu is on the panel, whatever the turn. D8.9: a lobby with nothing new to say stays out of
   // the way of a player whose table is free to play.
@@ -335,9 +345,18 @@ export function vrViewMode(
   if (p.phase === 'idle' && now.lobbyQuiet) return 'hidden';
   // D8.14: a caller that gives no `ball` (undefined) is read as a ball in play.
   if (p.phase === 'paused' && p.myTurn && p.ball !== null) return settings.theaterDuringMyTurn;
+  if (now.upAway && pausedForPlayerUp(p)) return settings.spectate;
   if (p.phase !== 'playing') return 'panel';
   if (p.myTurn) return settings.theaterDuringMyTurn;
   return p.playerUp !== null ? settings.spectate : 'panel';
+}
+
+/**
+ * A17 step 4: this PC watches, and the match is paused for the player who is up while their ball is in play: the one
+ * pause that says nothing about what this PC is shown (`vrViewMode`'s `upAway`, the shell's 3D watch).
+ */
+export function pausedForPlayerUp(p: Pick<PanelState, 'phase' | 'myTurn' | 'playerUp'> & { ball?: number | null; pausedFor?: PlayerId | null }): boolean {
+  return p.phase === 'paused' && !p.myTurn && p.playerUp !== null && p.pausedFor === p.playerUp && p.ball !== null;
 }
 
 interface PendingBallEnd {
@@ -597,6 +616,7 @@ export class MatchController {
       ballEnds: this.ballEnds(),
       startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
       pass: this.passInfo(),
+      endBall: this.endBallInfo(),
       wait3d: this.wait3dStatus(),
       initialsHold: this.initialsHold,
       advisories: this.advisoryLines(),
@@ -875,6 +895,36 @@ export class MatchController {
       ok = r.passTurn(info.score);
     }, 'TURN_PASS');
     return ok;
+  }
+
+  /** A17 step 4: what End my ball would end now, or null: this player holds the grant, the match is not paused, no transfer waits. */
+  private endBallInfo(): ControllerStatus['endBall'] {
+    const g = this.holding;
+    if (this.closed || !g || this.phase !== 'playing' || this.role.state.pendingTransfer) return null;
+    return { ball: g.ballNumber, score: this.myScore ?? this.role.state.players[this.localId]?.score ?? 0 };
+  }
+
+  /**
+   * A17 step 4 (2026-11-24, alpha-match.md §11.2): End my ball. The player who is up ends their own ball by hand, at
+   * the score as it stands: their BALL_END with `detectorReason: 'manual'` and no shoot-again, which the schema has
+   * had since protocol 1 and every host takes as an ordinary ball end. It is for a table whose ball ends Castcade
+   * cannot read and for a ball that is stuck: until now only the host could move such a turn on (Pass the turn). A
+   * ball the table has already ended (its bonus score is being waited for) is reported now, as the table said it.
+   * False, with the reason in the log, when this player has no ball to end.
+   */
+  endMyBall(): boolean {
+    const g = this.holding;
+    if (!g || this.endBallInfo() === null) {
+      this.opts.log(`match: End my ball: nothing to end (${!g ? 'this player does not hold the turn' : this.phase === 'paused' ? 'the match is paused' : 'a host transfer is under way'})`);
+      return false;
+    }
+    if (this.pending) {
+      this.opts.log('match: End my ball: the table has ended this ball already; reported now, without waiting for the bonus score');
+      this.flushBallEnd();
+      return true;
+    }
+    this.sendBallEnd(g, false, 'manual');
+    return true;
   }
 
   /**
@@ -1824,10 +1874,18 @@ export class MatchController {
   private flushBallEnd(): void {
     const p = this.pending;
     if (!p) return;
+    this.sendBallEnd(p.grant, p.shootAgain, 'nvram');
+  }
+
+  /**
+   * This player's ball is over: the table said so (`nvram`), or the player did (A17 step 4: `manual`, End my ball; the
+   * score is then the last one the table reported, else what the log has for this player).
+   */
+  private sendBallEnd(grant: GrantBody, shootAgain: boolean, reason: 'nvram' | 'manual'): void {
     this.clearPending();
     this.clearStateTimer();
-    const finalScore = this.myScore ?? 0;
-    if (!p.shootAgain) this.myBallsDone = Math.max(this.myBallsDone, p.grant.ballNumber);
+    const finalScore = this.myScore ?? (reason === 'manual' ? (this.role.state.players[this.localId]?.score ?? 0) : 0);
+    if (!shootAgain) this.myBallsDone = Math.max(this.myBallsDone, grant.ballNumber);
     this.scores.set(this.localId, finalScore);
     // Bookkeeping first: a HostMatch issues the next grant inside localBallEnd.
     this.holding = null;
@@ -1835,11 +1893,11 @@ export class MatchController {
     this.noteMyGameDone();
     this.noteInitialsHold(finalScore);
     this.setLocked(true);
-    this.opts.log(`match: BALL_END ball ${p.grant.ballNumber} score ${finalScore}${p.shootAgain ? ' (shoot again)' : ''}`);
+    this.opts.log(`match: BALL_END ball ${grant.ballNumber} score ${finalScore}${shootAgain ? ' (shoot again)' : ''}${reason === 'manual' ? ' (ended by hand: End my ball)' : ''}`);
     this.call(() => {
       const r = this.role;
-      if (isHostRole(r)) r.localBallEnd(finalScore, 'nvram', p.shootAgain);
-      else r.reportBallEnd(finalScore, 'nvram', p.shootAgain);
+      if (isHostRole(r)) r.localBallEnd(finalScore, reason, shootAgain);
+      else r.reportBallEnd(finalScore, reason, shootAgain);
     }, 'BALL_END');
     this.push();
   }
@@ -2255,6 +2313,8 @@ export class MatchController {
       result: this.result ? this.result.map((r) => (this.midnightBalls(r.id).length > 0 ? { ...r, flags: ['midnight' as const] } : r)) : null,
       message: this.panelMessage(),
       mic: this.opts.media?.status().mic ?? 'unavailable',
+      // A17 step 4: who a disconnect pause waits for (the key is absent otherwise).
+      ...(this.phase === 'paused' && st.paused?.reason === 'disconnect' && st.paused.player ? { pausedFor: st.paused.player } : {}),
     };
   }
 
@@ -2341,7 +2401,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus()]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus(), this.endBallInfo()]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

@@ -61,6 +61,12 @@ export interface PanelState {
   /** One line for the player: an error, "different table file", "waiting for <name>". Null when nothing to say. */
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';
+  /**
+   * A17 step 4 (2026-11-24): while `phase` is `paused` for a player whose link to the host dropped, that player; absent
+   * for any other pause and outside one. When it is the player who is up and their ball is still in play, the people
+   * watching keep their picture for as long as it arrives (`vrViewMode`'s `upAway`), and the scoreboard says who is away.
+   */
+  pausedFor?: MatchPlayerId | null;
 }
 
 /**

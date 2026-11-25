@@ -45,7 +45,7 @@ export function Match({ state }: { state: CastcadeState }) {
   const [copied, setCopied] = useState(false);
   // A13: the two host actions that ask first: a start with a table that cannot report ball ends, and Pass the turn.
   // `pass` remembers whose ball was asked about: if the turn moves on meanwhile, the question is withdrawn.
-  const [confirming, setConfirming] = useState<{ what: 'start' } | { what: 'pass'; turn: string } | null>(null);
+  const [confirming, setConfirming] = useState<{ what: 'start' } | { what: 'pass'; turn: string } | { what: 'endBall'; turn: string } | null>(null);
   const [volume, setVolume] = useState<number | null>(null);
   // D2.10 (2026-11-05): the three volume sliders while being dragged; null shows the saved setting (a key press moves it too).
   const [voice, setVoice] = useState<number | null>(null);
@@ -389,6 +389,18 @@ export function Match({ state }: { state: CastcadeState }) {
                   Pass the turn
                 </button>
               )}
+              {/* A17 step 4 (2026-11-24): the player who is up ends their own ball by hand (an unreadable table, a stuck ball). */}
+              {st.phase === 'playing' && st.endBall && (
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy || (confirming?.what === 'endBall' && confirming.turn === endBallKey(st))}
+                  title="End your own ball now at the score as it stands; the turn passes to the next player"
+                  onClick={() => setConfirming({ what: 'endBall', turn: endBallKey(st) })}
+                >
+                  End my ball
+                </button>
+              )}
               {st.role === 'host' && st.phase === 'over' && !st.series?.over && (
                 <button
                   type="button"
@@ -412,7 +424,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.role === 'host' && st.phase === 'lobby' && confirming?.what === 'start' && st.startWarnings.length > 0 && (
               <div className="row">
                 <span className="warn">
-                  {st.startWarnings.join(' · ')}. Such a turn never ends by itself: you would end each of those balls with Pass the turn.
+                  {st.startWarnings.join(' · ')}. Such a turn never ends by itself: that player ends each of those balls with End my ball (the in-game menu or this tab), or you end it with Pass the turn.
                 </span>
                 <button
                   type="button"
@@ -445,6 +457,25 @@ export function Match({ state }: { state: CastcadeState }) {
                   }}
                 >
                   Pass the turn
+                </button>
+                <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            {confirming?.what === 'endBall' && confirming.turn === endBallKey(st) && st.endBall && st.phase === 'playing' && (
+              <div className="row">
+                <span className="warn">End your ball now at {st.endBall.score.toLocaleString()}? The turn passes.</span>
+                <button
+                  type="button"
+                  className="small"
+                  disabled={busy}
+                  onClick={() => {
+                    setConfirming(null);
+                    void run(() => bridge.match.endMyBall());
+                  }}
+                >
+                  End my ball
                 </button>
                 <button type="button" className="small" disabled={busy} onClick={() => setConfirming(null)}>
                   Cancel
@@ -968,6 +999,11 @@ function mediaLine(m: MatchStatus['media']): string {
  * not running. D10.3.6 (2026-11-07): once the mesh fell back (a peer's connection failed with the helper's restarts
  * exhausted, or the helper went away), the line says the Electron video serves this match, and keeps the encoder.
  */
+/** A17 step 4: the ball End my ball was asked about, so a confirmation never lands on a later ball. */
+function endBallKey(st: MatchStatus): string {
+  return st.endBall ? `${st.endBall.ball}#${st.panel?.game ?? 1}` : '';
+}
+
 /** A13: the turn Pass the turn was asked about (who and which ball), so a confirmation never lands on a later turn. */
 function passTurnKey(st: MatchStatus): string {
   return st.pass ? `${st.pass.name}#${st.pass.ball}#${st.panel?.game ?? 1}` : '';

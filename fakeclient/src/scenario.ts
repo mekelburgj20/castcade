@@ -27,6 +27,11 @@ export interface PlayerScript {
   rogueBallEnd?: boolean;
   /** Fingerprint overrides for this player; any difference from the host's gets refused. */
   game?: Partial<GameFingerprint>;
+  /**
+   * A17 step 4 (2026-11-24): this player ends every ball by hand (End my ball): its BALL_ENDs say `detectorReason:
+   * 'manual'` where the scripted player otherwise says `script`. Nothing else about its play changes.
+   */
+  endsByHand?: boolean;
 }
 
 export interface TransferScript {

@@ -126,6 +126,34 @@ describe('the in-game menu (D8.10, 2026-11-14)', () => {
     expect(run(f, [...to, 'menu', 'choose', 'choose']).effects).toEqual([{ kind: 'leave' }]);
   });
 
+  it('A17 step 4 (2026-11-24): the End my ball line: there for the player who is up, host or client, after the scoreboard line and before Leave match; it says the score and asks twice', () => {
+    const f = facts({ role: 'client', phase: 'playing', endBall: { ball: 2, score: 12_345_670 } });
+    expect(menuItems(f).map((i) => i.id)).toEqual(['voice', 'theirTable', 'myTable', 'mic', 'endBall', 'leave', 'close']);
+    expect(menuItems({ ...f, role: 'host', scoreboardPlace: 'ready' }).map((i) => i.id)).toEqual(['voice', 'theirTable', 'myTable', 'mic', 'scoreboard', 'endBall', 'leave', 'close']);
+    expect(menuItems(f).find((i) => i.id === 'endBall')).toEqual({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: 'Choose again to end your ball at 12,345,670' });
+    // Not this player's ball, the match paused, or facts from before the line existed: no such line.
+    expect(menuItems({ ...f, endBall: null }).map((i) => i.id)).not.toContain('endBall');
+    expect(menuItems(facts({ role: 'client', phase: 'playing' })).map((i) => i.id)).not.toContain('endBall');
+    const to: MenuKey[] = ['menu', 'menu', 'menu', 'menu', 'menu'];
+    expect(run(f, to).state.at).toBe('endBall');
+    // The first choose asks, with the score; nothing is done yet.
+    const asked = run(f, [...to, 'choose']);
+    expect(asked.effects).toEqual([]);
+    expect(asked.state).toEqual({ open: true, at: 'endBall', confirming: 'endBall', note: 'Choose again to end your ball at 12,345,670' });
+    // The second does it and closes the menu; the arrow to the right chooses like the choose key; left does nothing.
+    const done = run(f, [...to, 'choose', 'choose']);
+    expect(done.effects).toEqual([{ kind: 'endBall' }]);
+    expect(done.state).toBe(MENU_CLOSED);
+    expect(run(f, [...to, 'right', 'right']).effects).toEqual([{ kind: 'endBall' }]);
+    expect(run(f, [...to, 'choose', 'left']).effects).toEqual([]);
+    // Moving away withdraws the question: coming back asks again.
+    expect(run(f, [...to, 'choose', 'up', 'down', 'choose']).effects).toEqual([]);
+    // A ball that has no score yet says so as a number.
+    expect(menuItems({ ...f, endBall: { ball: 1, score: 0 } }).find((i) => i.id === 'endBall')?.confirm).toBe('Choose again to end your ball at 0');
+    // Leave match is one line further down, and still asks twice.
+    expect(run(f, [...to, 'menu', 'choose', 'choose']).effects).toEqual([{ kind: 'leave' }]);
+  });
+
   it('keeps its place when a line goes (the match started while the menu was open)', () => {
     const open = run(facts(), ['menu', 'menu']).state; // on Voice volume
     const playing = facts({ phase: 'playing' });

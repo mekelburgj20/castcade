@@ -598,6 +598,70 @@ describe('the state stream inside a match (I11.4.2)', () => {
     expect(hub.all).toHaveLength(2);
   }, 40_000);
 
+  it('A17 step 4 (2026-11-24): a pause for the player up keeps the 3D watch; the re-issued grant does not start it over; no picture: the panel', async () => {
+    const r = await startFakeRelay({ devices: { 'dev-Hosty': 'tok-h', 'dev-Krobs': 'tok-k' } });
+    relays.push(r);
+    const paired = (name: string, token: string): Partial<Opts> => ({ relay: () => ({ baseUrl: r.url, deviceId: `dev-${name}`, deviceToken: token }), relayTimeouts: { connectMs: 1500, ackMs: 1500 }, upAwayPictureMs: 400 });
+    const hub = new TunnelHub();
+    const {
+      seats: [H, K],
+      forks: { Hosty: fh },
+    } = (await lobby(hub, [
+      ['Hosty', { extra: paired('Hosty', 'tok-h') }],
+      ['Krobs', { extra: paired('Krobs', 'tok-k') }],
+    ])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
+    await H.mh.start();
+    await endBall(H, 1, 1000);
+    // Krobs is up; the host watches him in 3D, its headset showing nothing over the table.
+    await until(() => up(K, 1) && sees(H, fh, K) && H.modes.at(-1) === 'hidden', 8000, 'the host to watch Krobs in 3D');
+    const before = { play: fh!.count('play'), watch: fh!.count('watch'), modes: H.modes.length };
+    // Every status of the host from here on: the phase, who the pause is for, who it watches, what the headset shows.
+    const seen: Array<{ phase: string; pausedFor: string | null; watching: string | null; mode: string | undefined }> = [];
+    const off = H.mh.onStatus((s) => seen.push({ phase: s.phase, pausedFor: s.panel?.pausedFor ?? null, watching: s.stream3d?.watching ?? null, mode: H.modes.at(-1) }));
+
+    // ---- Krobs' link to the host drops in the middle of his ball (ArcAid loses him), and he is back by himself ----
+    r.dropDevice('dev-Krobs');
+    await until(() => seen.some((x) => x.phase === 'paused'), 8000, 'the pause for Krobs');
+    await until(() => H.mh.status().phase === 'playing' && K.mh.status().phase === 'playing' && up(K, 1), 15_000, 'the resume');
+    // The pause was for the player who is up, and the grant was issued again after his RESUME.
+    const paused = seen.filter((x) => x.phase === 'paused');
+    expect(paused.length).toBeGreaterThan(0);
+    expect(paused.every((x) => x.pausedFor === K.id())).toBe(true);
+    // All through it the host went on watching Krobs' table in 3D: its fork was not called back at the pause and not
+    // sent to watch again at the re-issued grant, and its headset never showed the panel.
+    expect(seen.every((x) => x.watching === K.id())).toBe(true);
+    expect({ play: fh!.count('play'), watch: fh!.count('watch') }).toEqual({ play: before.play, watch: before.watch });
+    expect(H.modes.slice(before.modes)).toEqual([]);
+    expect(sees(H, fh, K)).toBe(true);
+    // Its table stayed locked (it is still Krobs' ball), and the data connection is the one made in the lobby.
+    expect(existsSync(H.lock)).toBe(true);
+    expect(hub.all).toHaveLength(2);
+
+    // ---- no picture: the panel ----
+    // Krobs is gone from the match for good this time (his pairing is revoked: he cannot come back), still playing:
+    // the pause stands, and the host keeps watching for as long as his stream arrives.
+    seen.length = 0;
+    r.revoke('dev-Krobs');
+    r.dropDevice('dev-Krobs');
+    await until(() => H.mh.status().phase === 'paused', 8000, 'the standing pause');
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', pausedFor: K.id(), playerUp: K.id(), ball: 1 });
+    await sleep(900); // more than twice the time a missing picture is given
+    expect(watching(H)).toBe(K.id());
+    expect(H.modes.slice(before.modes)).toEqual([]);
+    expect(fh!.count('play')).toBe(before.play);
+    // His stream stops (his Castcade closes): the fork is called back, and with no 2D picture arriving either the
+    // panel comes, as at any pause before.
+    await K.stream3d.stop();
+    await until(() => fh!.count('play') === before.play + 1 && watching(H) === null, 8000, 'the fork called back');
+    await until(() => H.modes.at(-1) === 'panel', 4000, 'the panel');
+    expect(H.modes.slice(before.modes)).toEqual(['panel']);
+    // The log of the night has one line for each pause in which the picture was kept, and one for its end here.
+    expect(H.lines.filter((l) => l.includes('their picture still arrives on this PC, so what this PC shows of their table stays'))).toHaveLength(2);
+    expect(H.lines.filter((l) => l === "match: Krobs's picture no longer arrives on this PC (the match is still paused for them): the panel now")).toHaveLength(1);
+    expect(existsSync(H.lock)).toBe(true);
+    off();
+  }, 60_000);
+
   it('the initials hold (A16.2): a player whose finished game is on the high-score list keeps their own table; their fork is not sent to watch', async () => {
     const hub = new TunnelHub();
     const {

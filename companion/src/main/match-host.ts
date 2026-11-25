@@ -80,6 +80,8 @@ import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createRes
 import type { Transport } from '../match/transport.js';
 import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
 import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
+// A17 step 4: on a line of its own, away from the controller's other names above (another branch edits that line).
+import { pausedForPlayerUp } from '../match/controller.js';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState, PanelVolume, VrOverlay, VrOverlayStatus, VrViewMode } from '../media/match-media-types.js';
 import { DEFAULT_MEDIA_SETTINGS, iceServers, type MediaSettingsStore, type TurnServer, type VideoPath } from '../media/media-settings.js';
 import type { MicDevice } from '../media/panel-page.js';
@@ -206,6 +208,11 @@ export interface MatchStatus {
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
   pass: { name: string; ball: number; score: number } | null;
+  /**
+   * A17 step 4 (2026-11-24): for the player who is up, while they can end their own ball by hand (End my ball): the
+   * ball and the score it would end at. Else null (not this player's ball, the match paused, no match).
+   */
+  endBall: { ball: number; score: number } | null;
   /** A8 (2026-10-31): a host transfer under way (proposed, not committed yet), with names; the engine acks it by itself. */
   transfer: { proposer: string; newHost: string | null; reason: 'host_left' | 'host_requested' } | null;
   /**
@@ -303,6 +310,13 @@ export interface MatchHost {
    * turn, as if its BALL_END had arrived (TURN_PASS in the match log). The Match tab confirms first.
    */
   passTurn(): Promise<MatchStatus>;
+  /**
+   * A17 step 4 (2026-11-24): End my ball. The player who is up, host or client, ends their own ball at the score as
+   * it stands (the last one their table reported) and the turn passes: their own BALL_END, `manual`, an ordinary ball
+   * end to every host since protocol 1. For a table whose ball ends cannot be read and for a stuck ball. The Match
+   * tab and the in-game menu confirm first. Throws when this player has no ball to end (`status().endBall` is null).
+   */
+  endMyBall(): Promise<MatchStatus>;
   /** A8 (2026-10-31): host only: end a pause nobody resumed (a dropped player that is not coming back reconnects never). */
   resume(): Promise<MatchStatus>;
   /** Leave the match; A10: the host's leave between games is End match (MATCH_END to everyone first). */
@@ -445,6 +459,8 @@ export interface MatchHostOptions {
   now?: () => number;
   /** A15: the saved match. Default `match-resume.json` beside `file`. */
   resumeFile?: string;
+  /** A17 step 4 test seam: `UP_AWAY_PICTURE_MS`, how long a picture may be missing in a pause for the player who is up before the panel comes. */
+  upAwayPictureMs?: number;
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
   hostWaitMs?: number;
   rejoinTimeoutMs?: number;
@@ -504,6 +520,11 @@ const SERIES_OVER_LINGER_MS = 20_000;
 const BENCH_HIDE_MS = 300;
 /** D10.3.8: the theater-path watch's own tick (the helper's stats come once a second too, but not when nothing arrives). */
 const THEATER_WATCH_MS = 1_000;
+/**
+ * A17 step 4: in a pause for the player who is up, how long their picture may be missing on this PC before the panel
+ * comes: the Castcade VPX build ends a 3D watch after as long without a frame.
+ */
+const UP_AWAY_PICTURE_MS = 3_000;
 /** D10.8: how long teardown waits for the router to drop the port mapping. */
 const UNMAP_TIMEOUT_MS = 2_000;
 /** D10.8: a code the relay says is in use is replaced this many times before the match goes direct. */
@@ -564,6 +585,14 @@ interface Active {
   /** D10.3.8: theater's picture source while the sink is the layer's ring (`syncNativeVideo`), and its 1 s clock. */
   theater: TheaterPathState;
   theaterTimer: ReturnType<typeof setInterval> | null;
+  /**
+   * A17 step 4: in a pause for the player who is up: when that player's picture was last seen to arrive on this PC
+   * (`upAwayNow`), and the timer that looks again once it could have run out. Both cleared outside such a pause.
+   */
+  upSeenAt?: number | null;
+  upAwayTimer?: ReturnType<typeof setTimeout> | null;
+  /** A17 step 4: that picture is being kept (said once in the log when it begins, once when it stops arriving). */
+  upKept?: boolean;
   /** I11.4.2: the state stream of this match (`openStream`), null without `stream3d`. */
   stream: MatchStream3d | null;
   /**
@@ -890,6 +919,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       wait3d: c?.wait3d ?? { players: [], seconds: 0, armed: null },
       advisories: c?.advisories ?? [],
       pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
+      endBall: c?.endBall ? { ...c.endBall } : null,
       transfer: c?.transfer
         ? {
             proposer: nameIn(c, c.transfer.proposer),
@@ -976,13 +1006,64 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     return now >= peekUntil;
   };
+  /**
+   * A17 step 4 (2026-11-24, alpha-match.md §11.6): the match is paused for the player who is up (their link to the
+   * host dropped past the grace; they may well be playing on, and nothing of their picture ever crossed the host), and
+   * their picture still arrives on this PC. Then this PC keeps what it was looking at (`vrViewMode`'s `upAway`).
+   *
+   * "Arrives" is read where each picture is already read: the native video's recv stats for that player (frames per
+   * second above 0: the theater path's own source, `syncNativeVideo`), the panel page's video track from them
+   * (`receivingVideo`: live and not muted), and for 3D the watch itself (`showing3d`: the fork ends a watch that has
+   * had no frame for 3 s, state-stream-in-match.md §3 rule 12). A picture that stops is given `UP_AWAY_PICTURE_MS`
+   * (the fork's own 3 s) before the panel comes, so one empty second of statistics does not flip the headset; a
+   * timer looks again when that time is up, because nothing else may change to bring `emit` round.
+   */
+  const upAwayNow = (a: Active): boolean => {
+    const p = a.controller.panel();
+    const up = pausedForPlayerUp(p) ? p.playerUp : null;
+    if (up === null) {
+      a.upSeenAt = null;
+      a.upKept = false;
+      if (a.upAwayTimer) clearTimeout(a.upAwayTimer);
+      a.upAwayTimer = null;
+      return false;
+    }
+    const now = clock();
+    const graceMs = opts.upAwayPictureMs ?? UP_AWAY_PICTURE_MS;
+    const arrives =
+      (a.stream?.showing3d() ?? false) || (a.video?.status().peers[up]?.recv?.fps ?? 0) > 0 || opts.media?.status().peers?.[up]?.receivingVideo === true;
+    if (arrives) a.upSeenAt = now;
+    const kept = a.upSeenAt !== null && a.upSeenAt !== undefined && now - a.upSeenAt < graceMs;
+    if (kept && !arrives && !a.upAwayTimer) {
+      a.upAwayTimer = setTimeout(
+        () => {
+          a.upAwayTimer = null;
+          if (active === a) emit();
+        },
+        Math.max(20, graceMs - (now - (a.upSeenAt ?? now)) + 20),
+      );
+    }
+    // One line when it begins and one when it ends, for the log of a night: the pause itself is the engine's line.
+    if (kept !== (a.upKept ?? false)) {
+      a.upKept = kept;
+      const who = nameIn(a.controller.status(), up);
+      log.info(
+        kept
+          ? `match: the match is paused for ${who}, who is up and away from the host; their picture still arrives on this PC, so what this PC shows of their table stays`
+          : `match: ${who}'s picture no longer arrives on this PC (the match is still paused for them): the panel now`,
+      );
+    }
+    return kept;
+  };
   const syncVrMode = (a: Active): void => {
     const to = a.overlay;
     if (!to) return;
     syncWindowTune(to);
     const p = a.controller.panel();
     // A16.2: while this player enters high-score initials the headset stays on their own table.
-    const turn = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold });
+    // A17 step 4: a pause for the player who is up leaves a watcher's picture where it is, while it arrives.
+    const upAway = upAwayNow(a);
+    const turn = vrViewMode(p, settings, { menuOpen: menu.open, lobbyQuiet: lobbyQuiet(p), initialsHold: a.controller.status().initialsHold, upAway });
     // I11.4.2 (§4.3): while this PC's VPX shows the player up on its own table there is no theater picture: nothing
     // over the table (the corner scoreboard stays: `syncScoreboard`). The panel (the setting, the menu) is untouched.
     const in3d = turn === 'theater' && (a.stream?.showing3d() ?? false);
@@ -1007,9 +1088,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     s.setSetting(settings.watch3d);
     s.setPeers(c.participants.filter((x) => x.playerId !== me).map((x) => ({ id: x.playerId, name: x.displayName })));
     const p = c.panel;
-    const waiting = p.phase === 'playing' && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
+    // A17 step 4 (alpha-match.md §11.6): a pause for the player who is up is no reason to call the fork back: that
+    // player may be playing on, and the stream never crossed the host. The watch ends by the fork's own rule when no
+    // frame comes for 3 s (then 2D, or the panel). Until 0.2.50 every pause sent `play`, and the re-issued grant after
+    // the RESUME sent `watch` again: the watcher saw their own table for the length of the pause.
+    const waiting = (p.phase === 'playing' || pausedForPlayerUp(p)) && !p.myTurn && p.playerUp !== null && p.playerUp !== me && c.locked && !c.initialsHold;
     // The turn is the grant: a new one to the same player (shoot again, the last player with balls left) is a new
-    // turn, and a watch that failed in the last one is tried again.
+    // turn, and a watch that failed in the last one is tried again. A grant issued again after a RESUME is a new
+    // number too: a watch that runs is left as it is by it (the machine re-aims only at another player), and one that
+    // failed while the player was away is tried again, which is wanted.
     const grant = (a.controller.currentRole as HostMatch | ClientMatch).state.currentGrant?.grant ?? null;
     s.setTarget(waiting ? p.playerUp : null, waiting && grant ? String(grant.grantSeq) : null);
     // I11.4.9: only the match's first start waits for the 3D connections: the lobby before game 1 (a next game and a
@@ -1674,7 +1761,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /** D10.3.8: this rig is in theater with the layer's ring as the sink: the only place the theater path means anything. */
   const theaterOnRing = (a: Active): boolean =>
-    a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings) === 'theater' && !(a.stream?.showing3d() ?? false); // I11.4.2: not while the player up is shown in 3D
+    a.video !== null && videoSink(a).kind === 'ring' && vrViewMode(a.controller.panel(), settings, { upAway: upAwayNow(a) }) === 'theater' && !(a.stream?.showing3d() ?? false); // I11.4.2: not while the player up is shown in 3D; A17 step 4: theater also through a pause for the player up
   /**
    * The mesh follows the match: a helper peer per other participant; `send` on exactly when the headset would be
    * hidden for this rig's own ball (the same panel state `syncVrMode` reads: playing and my turn); the sink and the
@@ -1854,6 +1941,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       myTable: settings.myTableWhileUp,
       mic: st.panel.mic,
       scoreboardPlace: scoreboardPlaceFact(a),
+      endBall: st.endBall,
     };
   };
   const menuHint = (): string => {
@@ -1933,6 +2021,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         else log.warn(`match: the scoreboard was not placed again from the menu (${did})`);
         return;
       }
+      case 'endBall':
+        log.info('match: End my ball chosen in the menu');
+        void api.endMyBall().catch((e: unknown) => log.warn(`match: End my ball from the menu: ${describeError(e)}`));
+        return;
       case 'leave':
         log.info('match: Leave chosen in the menu');
         void api.leave().catch((e: unknown) => log.warn(`match: leave from the menu: ${describeError(e)}`));
@@ -2768,6 +2860,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     else dropRecord(a);
     if (a.endTimer) clearTimeout(a.endTimer);
     a.endTimer = null;
+    // A17 step 4: a pause is a match's.
+    if (a.upAwayTimer) clearTimeout(a.upAwayTimer);
+    a.upAwayTimer = null;
+    a.upSeenAt = null;
+    a.upKept = false;
     // A15: the table's events of this match, and where its journal stood, are no other match's.
     a.backlog = new TableBacklog<GameEvent>(null, false);
     a.mark = null;
@@ -2872,7 +2969,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // A13: a table that cannot report ball ends holds its first turn for ever: the host confirms such a start.
       const warnings = a.controller.status().startWarnings;
       if (warnings.length > 0 && o?.anyway !== true) {
-        return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: Pass the turn ends such a ball.`));
+        // A17 step 4: the player concerned ends such a ball themselves (End my ball); Pass the turn stays the host's.
+        return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: that player ends each ball with End my ball (the in-game menu or the Match tab), or you end it with Pass the turn.`));
       }
       // I11.4.9: the first turn starts in 3D: while a PC's 3D connection is still being made the first press holds the
       // start until it is settled (each PC stops waiting by itself after its own limit); a second press starts now.
@@ -2910,6 +3008,19 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? 'the host could not pass it'}`));
       lastError = null;
       log.info(`match: ${a.code} turn passed from the Match tab: ${p.name}'s ball ${p.ball} ended at ${p.score}`);
+      emit();
+      return status();
+    },
+    async endMyBall() {
+      const a = active;
+      if (!a) return fail(new Error('No match'));
+      const b = a.controller.status().endBall;
+      if (!b || !a.controller.endMyBall()) {
+        const st = a.controller.status();
+        return fail(new Error(`Your ball cannot be ended now: ${st.phase === 'paused' ? 'the match is paused' : !st.myTurn ? 'it is not your ball' : 'the turn is changing hands'}`));
+      }
+      lastError = null;
+      log.info(`match: ${a.code} End my ball: ball ${b.ball} ended by hand at ${b.score}`);
       emit();
       return status();
     },

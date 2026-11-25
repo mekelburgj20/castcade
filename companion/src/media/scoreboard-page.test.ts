@@ -73,6 +73,21 @@ describe('the corner scoreboard (D8.12)', () => {
     expect(scoreboardView(state({ players: [] }))).toBeNull();
   });
 
+  it('A17 step 4 (2026-11-24): the AWAY title: a pause for the player who is up reads `KROBS AWAY ·` on a watcher\'s card; any other pause, and that player\'s own card, read PAUSED', () => {
+    // Krobs is up, his link to the host dropped, and the match is paused for him: the people watching keep his
+    // picture while it arrives, and this card is what says he is away.
+    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'krobs' }))?.title).toBe('KROBS AWAY · GAME 2 · BALL 2 OF 3');
+    // A pause with nobody named (the host's own, a ball-end timeout), and one for a player who is not the one up.
+    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: null }))?.title).toBe('PAUSED · GAME 2 · BALL 2 OF 3');
+    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'owner' }))?.title).toBe('PAUSED · GAME 2 · BALL 2 OF 3');
+    // The card of the player the pause is for (back on the link, their own ball): PAUSED, as D8.14 has it.
+    expect(scoreboardView(state({ phase: 'paused', myTurn: true, playerUp: 'owner', pausedFor: 'owner' }))?.title).toBe('PAUSED · GAME 1 · BALL 2 OF 3');
+    // Outside a pause the key means nothing.
+    expect(scoreboardView(state({ pausedFor: 'krobs' }))?.title).toBe('GAME 1 · BALL 2 OF 3');
+    // The page embeds the rule with the rest of the view.
+    expect(scoreboardPageHtml()).toMatch(/toUpperCase\(\) \+ ["'] AWAY["']/);
+  });
+
   it('wanted: a match is on and the setting is on; never in the lobby', () => {
     expect(scoreboardWanted(state(), true)).toBe(true);
     expect(scoreboardWanted(state({ phase: 'paused' }), true)).toBe(true);

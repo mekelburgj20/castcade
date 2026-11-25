@@ -19,11 +19,15 @@
  * scoreboard where I look": the player points the head where the scoreboard should be and chooses the line; the OpenXR
  * layer captures the place again from the head's pose at that moment (`placeScoreboard` on the overlay). The menu is on
  * the head-locked panel, so it stays readable wherever the head points.
+ *
+ * A17 step 4 (2026-11-24, alpha-match.md §11.2, §11.9): "End my ball" for the player who is up: their ball ends at
+ * the score as it stands and the turn passes (their own BALL_END, `manual`). For a table whose ball ends Castcade
+ * cannot read and for a stuck ball, from the headset, where the player is; it asks for a second choose.
  */
 
 import type { PanelMenu } from '../media/match-media-types.js';
 
-export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'scoreboard' | 'leave' | 'close';
+export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'scoreboard' | 'endBall' | 'leave' | 'close';
 export type MenuVolume = 'voice' | 'theirTable' | 'myTable';
 
 /** What the match host knows that decides the menu's lines. */
@@ -49,6 +53,11 @@ export interface MenuFacts {
    * is on the pipe yet.
    */
   scoreboardPlace: 'ready' | 'old_layer' | 'not_connected' | null;
+  /**
+   * A17 step 4: the "End my ball" line: the ball this player is playing and the score it would end at; null (or absent,
+   * in facts from before it): no such line (it is not this player's ball, or the match is paused).
+   */
+  endBall?: { ball: number; score: number } | null;
 }
 
 export interface MenuItem {
@@ -109,6 +118,10 @@ export function menuItems(f: MenuFacts): MenuItem[] {
       confirm: null,
     });
   }
+  // A17 step 4: the player who is up may end their own ball by hand; the score is said before it is done.
+  if (f.endBall) {
+    items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: `Choose again to end your ball at ${f.endBall.score.toLocaleString('en-US')}` });
+  }
   // The host's leave between games is End match (A10); at any other time, and for a client, it is Leave match.
   const ends = f.role === 'host' && f.phase === 'over' && !f.seriesOver;
   items.push({
@@ -144,6 +157,8 @@ export type MenuEffect =
   | { kind: 'mic'; muted: boolean }
   /** D8.12.3: the layer captures the scoreboard's place again, where the head points now. */
   | { kind: 'placeScoreboard' }
+  /** A17 step 4: this player's own ball ends now, by hand. */
+  | { kind: 'endBall' }
   | { kind: 'leave' };
 
 /** The index of the chosen line among `items` (the first line when it is gone or none was chosen). */
@@ -193,6 +208,8 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
     case 'scoreboard':
       // The menu closes: the panel goes, and the scoreboard is seen at its new place at once.
       return { state: MENU_CLOSED, effect: { kind: 'placeScoreboard' } };
+    case 'endBall':
+      return { state: MENU_CLOSED, effect: { kind: 'endBall' } };
     case 'leave':
       return { state: MENU_CLOSED, effect: { kind: 'leave' } };
     default:

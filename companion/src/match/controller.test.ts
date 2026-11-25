@@ -7,10 +7,11 @@ import { describe, expect, it } from 'vitest';
 import type { GameFingerprint, ParticipantInfo } from '@castcade/protocol';
 import type { MatchMedia, MediaSignalling, MediaStatus, PanelState } from '../media/match-media-types.js';
 import { headerText, stripRows } from '../media/panel-page.js';
+import { scoreboardView } from '../media/scoreboard-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { midnightLine } from '../witness/midnight.js';
-import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, MIDNIGHT_LINE_MS, mismatchWords, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
+import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, MIDNIGHT_LINE_MS, mismatchWords, pausedForPlayerUp, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -1021,6 +1022,212 @@ describe("A17 step 2 (2026-11-24): the controller's share of what ends with a ma
     await l.C.ctl.close();
     expect(l.C.ctl.panel().countdown ?? null).toBeNull();
     expect(l.C.media.detached).toBe(true);
+  });
+});
+
+describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who is up', () => {
+  const gameStart: ControllerFeed = { kind: 'game_start', t: 0, players: 1 };
+  const lastBallEnd = (host: HostMatch) => [...host.log.entries()].reverse().find((e) => e.message?.type === 'BALL_END')?.message;
+  /** A started match with the host's ball 1 over at 500: the client is up. */
+  async function clientUp(balls = 3) {
+    const s = await rig(balls);
+    s.host.start();
+    await flush();
+    s.H.ctl.feed(gameStart);
+    s.H.ctl.feed(scores(500));
+    s.H.ctl.feed(ballEnd(1));
+    s.H.ctl.feed(scores(500));
+    await flush();
+    expect(s.C.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+    return s;
+  }
+
+  it("End my ball reports the grant's ball at the last score: a BALL_END of the player's own, `manual`, no shoot-again; the table locks and the turn passes", async () => {
+    const s = await clientUp();
+    const { host, client, H, C } = s;
+    // Only the player who is up has a ball to end.
+    expect(H.ctl.status().endBall).toBeNull();
+    expect(H.ctl.endMyBall()).toBe(false);
+    expect(H.logs.at(-1)).toBe('match: End my ball: nothing to end (this player does not hold the turn)');
+    // Nothing reported from the table yet: the score is what the log has for this player.
+    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(12_345_670));
+    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 12_345_670 });
+    const grant = host.state.currentGrant?.grant;
+    const locks = C.locks.length;
+
+    expect(C.ctl.endMyBall()).toBe(true);
+    await flush();
+    const m = lastBallEnd(host);
+    expect(m).toMatchObject({ type: 'BALL_END', from: 'c', payload: { grantSeq: grant?.grantSeq, ballNumber: 1, finalScore: 12_345_670, detectorReason: 'manual', shootAgain: false } });
+    expect(C.locks.slice(locks)).toEqual(['lock']);
+    expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, endBall: null });
+    expect(C.media.sending.at(-1)).toBe(false);
+    expect(C.logs).toContain('match: BALL_END ball 1 score 12345670 (ended by hand: End my ball)');
+    // The turn passed: the host is up on ball 2, and both logs are the same log.
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 2, score: 500 } });
+    expect(host.state.players['c']).toMatchObject({ score: 12_345_670, ballsPlayed: 1 });
+    expect(client.log.head()).toEqual(host.log.head());
+    // The ball that was ended by hand drains on the table a moment later: nothing more is reported for it.
+    const entries = host.log.length;
+    C.ctl.feed(ballEnd(1));
+    C.ctl.feed(scores(12_400_000));
+    s.clock.advance(5000);
+    await flush();
+    expect(host.log.length).toBe(entries);
+    expect(C.ctl.endMyBall()).toBe(false);
+  });
+
+  it('End my ball on the host, on a table that never reports anything: each ball ends at what the log has for that player, and the game still comes to its result', async () => {
+    const s = await rig(1);
+    const { host, H, C } = s;
+    host.start();
+    await flush();
+    expect(H.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    expect(H.ctl.endMyBall()).toBe(true);
+    await flush();
+    expect(lastBallEnd(host)).toMatchObject({ from: 'h', payload: { ballNumber: 1, finalScore: 0, detectorReason: 'manual', shootAgain: false } });
+    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    expect(C.ctl.endMyBall()).toBe(true);
+    await flush();
+    expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
+    expect(headerText(H.media.panel)).toBe('GAME 1 OVER');
+    expect(H.ctl.status().endBall).toBeNull();
+    expect(C.ctl.status().endBall).toBeNull();
+  });
+
+  it('End my ball while the table has already ended the ball (its bonus score is waited for): that ball end is reported now, as the table said it, shoot-again included', async () => {
+    const s = await clientUp();
+    const { host, C } = s;
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(900));
+    C.ctl.feed(ballEnd(1, 1));
+    expect(C.ctl.endMyBall()).toBe(true);
+    await flush();
+    expect(lastBallEnd(host)).toMatchObject({ from: 'c', payload: { finalScore: 900, detectorReason: 'nvram', shootAgain: true } });
+    // Shoot again: the same ball is granted again, and can be ended by hand like any other.
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 1, score: 900 } });
+  });
+
+  it('the other PC knows nothing of End my ball (a companion up to 0.2.50: here its engine with no controller of this build): as the host it logs the ball end like any other and grants the next turn; as a client it folds it, takes its turn and signs the same log', async () => {
+    // ---- an old host, a new client ----
+    {
+      const bus = new MemoryBus();
+      const clock = new ManualClock();
+      const hk = generateKeys();
+      const ck = generateKeys();
+      const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'OLDHST', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+      const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'OLDHST', hostId: 'h', clock });
+      const rejects: string[] = [];
+      host.on('reject', (r) => rejects.push(`${r.refType}:${r.code}`));
+      const C = seat(client, clock);
+      await C.ctl.open();
+      client.join();
+      await flush();
+      host.start();
+      await flush();
+      // The host's own ball, as its table reports it; then the client ends its ball by hand.
+      host.localBallEnd(500, 'nvram');
+      await flush();
+      expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+      C.ctl.feed(scores(800));
+      expect(C.ctl.endMyBall()).toBe(true);
+      await flush();
+      expect(rejects).toEqual([]);
+      const ends = host.log.entries().filter((e) => e.message?.type === 'BALL_END').map((e) => (e.message?.type === 'BALL_END' ? `${e.message.from}:${e.message.payload.detectorReason}:${e.message.payload.finalScore}` : ''));
+      expect(ends).toEqual(['h:nvram:500', 'c:manual:800']);
+      // The game came to its result, with the client's signature under the log that holds the manual ball end.
+      expect(host.state.phase).toBe('ended');
+      expect(client.log.head()).toEqual(host.log.head());
+      expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
+      expect(C.media.panel.result?.map((x) => [x.id, x.score])).toEqual([
+        ['c', 800],
+        ['h', 500],
+      ]);
+    }
+    // ---- a new host, an old client ----
+    {
+      const bus = new MemoryBus();
+      const clock = new ManualClock();
+      const hk = generateKeys();
+      const ck = generateKeys();
+      const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'OLDCLI', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+      const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'OLDCLI', hostId: 'h', clock });
+      const H = seat(host, clock, 1);
+      await H.ctl.open();
+      const seen: string[] = [];
+      client.on('ballEnd', (m) => seen.push(`ballEnd ${m.from} ${m.payload.detectorReason} ${m.payload.finalScore}`));
+      client.on('myTurn', (g) => seen.push(`myTurn ball ${g.ballNumber}`));
+      client.on('dropped', (d) => seen.push(`dropped ${d.type}`));
+      client.on('desync', () => seen.push('desync'));
+      const results: Array<{ logMatches: boolean; signatureValid: boolean }> = [];
+      client.on('result', (r) => results.push({ logMatches: r.logMatches, signatureValid: r.signatureValid }));
+      client.join();
+      await flush();
+      host.start();
+      await flush();
+      H.ctl.feed(gameStart);
+      H.ctl.feed(scores(4200));
+      expect(H.ctl.endMyBall()).toBe(true);
+      await flush();
+      // What the old client was handed: an ordinary ball end of the host's, then its own grant.
+      expect(seen).toEqual(['ballEnd h manual 4200', 'myTurn ball 1']);
+      expect(client.state.players['h']).toMatchObject({ score: 4200, ballsPlayed: 1, status: 'finished' });
+      client.reportBallEnd(3000, 'nvram');
+      await flush();
+      expect(results).toEqual([{ logMatches: true, signatureValid: true }]);
+      expect(client.log.head()).toEqual(host.log.head());
+      expect(H.media.panel.result?.map((x) => [x.id, x.score])).toEqual([
+        ['h', 4200],
+        ['c', 3000],
+      ]);
+    }
+  });
+
+  it('paused for the player up with the picture arriving: spectate; and not during the pause itself is a ball ended by hand', async () => {
+    const s = await clientUp();
+    const { H, C } = s;
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(700));
+    await flush();
+    // The client's link to the host drops while it is up: the match pauses for it (no grace in this rig).
+    s.bus.disconnect('c');
+    await flush();
+    const p = H.media.panel;
+    expect(p).toMatchObject({ phase: 'paused', myTurn: false, playerUp: 'c', ball: 1, pausedFor: 'c', message: 'Paused: waiting for Krobs to reconnect' });
+    expect(pausedForPlayerUp(p)).toBe(true);
+    // Their picture still arrives on this PC (the shell's word): what a watcher saw stays. It does not: the panel.
+    expect(vrViewMode(p, DEFAULT_VR_VIEW, { upAway: true })).toBe('theater');
+    expect(vrViewMode(p, { ...DEFAULT_VR_VIEW, spectate: 'panel' }, { upAway: true })).toBe('panel');
+    expect(vrViewMode(p, DEFAULT_VR_VIEW, { upAway: false })).toBe('panel');
+    expect(vrViewMode(p)).toBe('panel');
+    // The menu and an initials hold of this player's own still come first.
+    expect(vrViewMode(p, DEFAULT_VR_VIEW, { upAway: true, menuOpen: true })).toBe('panel');
+    expect(vrViewMode(p, DEFAULT_VR_VIEW, { upAway: true, initialsHold: true })).toBe('hidden');
+    // The scoreboard is what says who is away.
+    expect(scoreboardView(p)?.title).toBe('KROBS AWAY · GAME 1 · BALL 1 OF 3');
+    // The host is not up and has nothing to end; a pause is not the moment for it either.
+    expect(H.ctl.status().endBall).toBeNull();
+    // The player who is away does not know it is paused (its link is down) and plays on: its own view is its own.
+    expect(C.ctl.status().phase).toBe('playing');
+  });
+
+  it('vrViewMode: `upAway` counts only in a pause for the player who is up, with their ball in play, on a PC that watches', () => {
+    const base = { phase: 'paused' as const, myTurn: false, playerUp: 'krobs', ball: 2, pausedFor: 'krobs' };
+    expect(vrViewMode(base, DEFAULT_VR_VIEW, { upAway: true })).toBe('theater');
+    // A pause for somebody else, or of another kind (no `pausedFor`): the panel says why, as before.
+    expect(vrViewMode({ ...base, pausedFor: 'chuck' }, DEFAULT_VR_VIEW, { upAway: true })).toBe('panel');
+    expect(vrViewMode({ ...base, pausedFor: null }, DEFAULT_VR_VIEW, { upAway: true })).toBe('panel');
+    expect(vrViewMode({ phase: 'paused', myTurn: false, playerUp: 'krobs', ball: 2 }, DEFAULT_VR_VIEW, { upAway: true })).toBe('panel');
+    // Their ball is over (the pause came at their next grant): nothing to keep.
+    expect(vrViewMode({ ...base, ball: null }, DEFAULT_VR_VIEW, { upAway: true })).toBe('panel');
+    // My own ball: D8.14's rule, untouched by this one.
+    expect(vrViewMode({ ...base, myTurn: true, playerUp: 'me', pausedFor: 'me' }, DEFAULT_VR_VIEW, { upAway: true })).toBe('hidden');
+    // While playing the fact changes nothing.
+    expect(vrViewMode({ ...base, phase: 'playing', pausedFor: null }, DEFAULT_VR_VIEW, { upAway: true })).toBe('theater');
+    expect(pausedForPlayerUp({ ...base, phase: 'playing' })).toBe(false);
+    expect(pausedForPlayerUp({ ...base, myTurn: true })).toBe(false);
   });
 });
 

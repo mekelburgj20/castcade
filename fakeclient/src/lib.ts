@@ -452,8 +452,10 @@ export class FakePlayer {
   }
 
   private reportBallEnd(finalScore: number, shootAgain: boolean, override?: { grantSeq: number; ballNumber: number }): void {
-    if (this.host) this.host.localBallEnd(finalScore, 'script', shootAgain, override);
-    else if (this.client) this.client.reportBallEnd(finalScore, 'script', shootAgain, override);
+    // A17 step 4: a player who ends its balls by hand says so; to a host it is a ball end like any other.
+    const reason = this.opts.script.endsByHand ? 'manual' : 'script';
+    if (this.host) this.host.localBallEnd(finalScore, reason, shootAgain, override);
+    else if (this.client) this.client.reportBallEnd(finalScore, reason, shootAgain, override);
     else throw new Error('no engine');
   }
 

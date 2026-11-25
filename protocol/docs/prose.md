@@ -76,8 +76,8 @@ only do for a table whose hook journal it follows. `HELLO.ballEndReady` says whe
 one (absent: unknown, no table open yet); a lobby `PARTICIPANT_UPDATE.ballEndReady` replaces it when that
 changes; `HELLO_ACK.ballEndReady` carries what every participant said, the host included, to every client. It
 is advice for the lobby (the companion names the players whose table cannot report ball ends and asks the host
-to confirm the start); the host still may start, and such a match is played with `TURN_PASS` (below). None of
-the three fields is logged.
+to confirm the start); the host still may start, and such a match is played with the holder's own manual
+`BALL_END` (End my ball, below) or the host's `TURN_PASS`. None of the three fields is logged.
 
 ## Turn rotation (alternating mode)
 
@@ -106,6 +106,15 @@ the three fields is logged.
   accepted while paused, like a `BALL_END`); a client drops one that does not name the outstanding grant. A
   `BALL_END` for the passed grant that arrives afterwards gets `REJECT` (`stale_grant`, or `not_grant_holder`
   when another player holds the next grant) and changes nothing.
+- End my ball (A17 step 4, the build after 0.2.50; nothing new on the wire): the grant holder's player ends the
+  ball by hand, when no ball end will come from the table (a table the holder's companion cannot read, a stuck
+  ball). It is the holder's own `BALL_END` for the outstanding grant with `detectorReason: "manual"`,
+  `shootAgain: false` and `finalScore` at the score as it stands (the last one its table reported, else what the
+  log has for that player). No participant reads `detectorReason` to decide anything, on any protocol version: the
+  host checks the sender, the grant and the ball as for every `BALL_END`, logs the frame as it came and goes on with
+  the rotation, and a client folds it the same way; the value is in the log for the record, which is how a ball
+  ended by its player differs from one the host passed (`TURN_PASS`). A companion offers it only to the grant
+  holder and only while the match is not paused.
 - A player's game ends after `BALL_END` (or `TURN_PASS`) for ball `ballsPerGame` (with `shootAgain: false`), or on
   `GAME_OVER`, or on `FORFEIT`. The host keeps rotating among players whose games have not ended. A
   `GAME_OVER` for a game that has already ended is answered with `REJECT` (`unexpected_state`).
@@ -164,6 +173,13 @@ the three fields is logged.
     mode has no grant holder: there the drop pauses once the grace is over.
   - A host from before A18 pauses at the drop itself, for any player; a client must take either (it does: a `PAUSE`
     is a `PAUSE`).
+  - **What the others are shown during that pause** (A17 step 4, the build after 0.2.50; nothing on the wire).
+    `PAUSE(disconnect, player)` for the grant holder is about the holder's link to the host and says nothing of the
+    holder's media, which never crossed the host: the holder may be playing on. A companion that is watching the
+    holder goes on showing the holder's table (the video, or the state stream on its own table) for as long as
+    that picture arrives, and says who is away beside it; when the picture stops arriving it shows the pause. The
+    grant the host issues again after the `RESUME` changes nothing in what is shown. A companion up to 0.2.50 shows
+    the pause at once and its own table until that grant.
   - Inside the grace the peer is still a player of the match in every other respect: a game that ends waits for its
     `LOG_SIGN` like anyone's (the log-sign timeout bounds it), and a `NEXT_GAME` the host wants meanwhile is held
     until the grace is over one way or the other, so that `playerOrder` lists the peer when it is back and leaves it

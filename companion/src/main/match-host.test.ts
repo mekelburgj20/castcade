@@ -1385,6 +1385,42 @@ describe('match host: tables that cannot report ball ends (A13, 2026-11-12)', ()
     await H.mh.start();
     await expect(H.mh.passTurn()).resolves.toMatchObject({ phase: 'playing' });
   }, 15_000);
+
+  it('A17 step 4 (2026-11-24): End my ball: on tables that cannot report ball ends each player ends their own balls, the client too, and a whole game is played without Pass the turn', async () => {
+    const sha = 'ab'.repeat(32);
+    const H = make('a17-4-host', sha, { witness: capturing(sha, 'basic').w, ephemeralPort: true });
+    const C = make('a17-4-client', sha, { witness: capturing(sha, 'basic').w, ephemeralPort: true });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && H.mh.status().startWarnings.length === 2);
+    // Nobody has a ball to end before the match.
+    expect(H.mh.status().endBall).toBeNull();
+    await expect(H.mh.endMyBall()).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
+    // The start still asks, and now says who ends such a ball: the player, or the host.
+    await expect(H.mh.start()).rejects.toThrow(/cannot report ball ends.*Start anyway to play it by hand: that player ends each ball with End my ball \(the in-game menu or the Match tab\), or you end it with Pass the turn\.$/);
+    await H.mh.start({ anyway: true });
+    await until(() => C.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+
+    for (let ball = 1; ball <= 3; ball++) {
+      // The host's ball: only the host has it to end; a client that tries is told it is not its ball.
+      await until(() => H.mh.status().endBall?.ball === ball, 8000);
+      expect(H.mh.status().endBall).toEqual({ ball, score: 0 });
+      expect(C.mh.status().endBall).toBeNull();
+      await expect(C.mh.endMyBall()).rejects.toThrow('Your ball cannot be ended now: it is not your ball');
+      const ended = await H.mh.endMyBall();
+      expect(ended).toMatchObject({ endBall: null, lastError: null });
+      // The client's ball: the same from the other seat. Until now only the host's Pass the turn moved this turn on.
+      await until(() => C.mh.status().endBall?.ball === ball && C.mh.status().locked === false, 8000);
+      expect(H.mh.status().endBall).toBeNull();
+      expect(existsSync(H.lock)).toBe(true);
+      await C.mh.endMyBall();
+      await until(() => C.mh.status().locked || C.mh.status().phase === 'over', 8000);
+    }
+    await until(() => H.mh.status().phase === 'over' && C.mh.status().phase === 'over', 8000);
+    expect(H.mh.status().panel?.players.map((x) => x.ballsDone)).toEqual([3, 3]);
+    expect(C.mh.status().panel?.result?.map((x) => x.score)).toEqual([0, 0]);
+    expect(H.mh.status().endBall).toBeNull();
+  }, 30_000);
 });
 
 describe('D10.8 (2026-11-12): match control through ArcAid, and the router port as the fallback', () => {
@@ -1749,6 +1785,63 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(matchHalfOf({} as MatchHost)).toBeNull();
   }, 30_000);
 
+  it('A17 step 4 (2026-11-24): paused for the player up with the 2D picture arriving: the headset stays in the theater and the scoreboard says who is away; the picture stops: the panel; it is back: the theater again', async () => {
+    const r = await fakeRelay();
+    // The host, in a headset, whose panel page says whether the client's video arrives (the test changes it).
+    const m = fakeMedia();
+    const base = m.media as unknown as Record<string, unknown> & { status(): Record<string, unknown> };
+    const listeners = new Set<() => void>();
+    let receiving = true;
+    let clientId = '';
+    const media = {
+      ...base,
+      status: () => ({ ...base.status(), peers: clientId ? { [clientId]: { ice: 'connected', receivingVideo: receiving, receivingAudio: true } } : {} }),
+      onStatus: (cb: () => void) => (listeners.add(cb), () => listeners.delete(cb)),
+    };
+    const pageSays = (on: boolean): void => {
+      receiving = on;
+      for (const cb of [...listeners]) cb();
+    };
+    const o = fakeOverlay();
+    const hl = collect();
+    const H = mk('a17-4-pause-host', { ...paired(r, 'h'), witness: liveWitness(VR_ON, VR_OFF).w, media: media as never, vrOverlay: o.overlay, log: hl.log, upAwayPictureMs: 300 });
+    const C = mk('a17-4-pause-client', paired(r, 'c'));
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    clientId = C.mh.status().localId as string;
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    // Krobs is up: the host's headset shows his table (the theater).
+    await until(() => C.mh.status().panel?.myTurn === true && o.modes.at(-1) === 'theater', 8000);
+    const modes = o.modes.length;
+
+    // Krobs' link to the host goes and does not come back (his pairing is revoked); he plays on, and his picture,
+    // which never crossed the host, still arrives.
+    r.revoke('dev-c');
+    r.dropDevice('dev-c');
+    await until(() => H.mh.status().phase === 'paused', 8000);
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: clientId, pausedFor: clientId, myTurn: false, message: 'Paused: waiting for Krobs to reconnect' });
+    await new Promise((res) => setTimeout(res, 700)); // more than twice the time a missing picture is given
+    pageSays(true);
+    // The headset was never taken to the panel. Until 0.2.50 every pause put the panel over the picture.
+    expect(o.modes.slice(modes)).toEqual([]);
+    expect(hl.lines.filter((l) => l.includes('paused for Krobs, who is up and away from the host; their picture still arrives on this PC'))).toHaveLength(1);
+
+    // The picture stops arriving: a moment's grace, then the panel that says why, as at any pause.
+    pageSays(false);
+    expect(o.modes.slice(modes)).toEqual([]);
+    await until(() => o.modes.at(-1) === 'panel', 3000);
+    expect(o.modes.slice(modes)).toEqual(['panel']);
+    expect(hl.lines).toContain("match: Krobs's picture no longer arrives on this PC (the match is still paused for them): the panel now");
+    // It arrives again while the pause still stands: back to the theater.
+    pageSays(true);
+    expect(o.modes.slice(modes)).toEqual(['panel', 'theater']);
+    // The host's own table stayed locked throughout: it is still Krobs' ball.
+    expect(existsSync(H.lock)).toBe(true);
+  }, 30_000);
+
   it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
     const r = await fakeRelay();
     const H = a18Seat('a18b-host', 'h', r, 111, 0);
@@ -1960,7 +2053,8 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     press('Control+Alt+M', 33);
     expect(o.modes.at(-1)).toBe('panel');
     expect(menus.at(-1)).toMatchObject({ index: 0 });
-    expect(menus.at(-1)!.items.map((i) => i.label)).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Leave match', 'Close menu']);
+    // A17 step 4: it is this player's ball, so End my ball is on the menu, before Leave match.
+    expect(menus.at(-1)!.items.map((i) => i.label)).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Leave match', 'Close menu']);
     // The volumes: the arrow raises, the choose key raises too; saved and pushed live.
     press('Right');
     expect(H.mh.status().settings.voiceVolume).toBe(175);
@@ -1979,6 +2073,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(muted).toEqual([true]);
     press('Down');
     press('Down');
+    press('Down');
     press('Control+Alt+K');
     expect(menus.at(-1)).toBeNull();
     expect(o.modes.at(-1)).toBe('hidden');
@@ -1990,6 +2085,56 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     await H.mh.leave();
     expect(held.size).toBe(0);
   }, 15_000);
+
+  it('A17 step 4 (2026-11-24): End my ball from the in-game menu: the line is there on this player\'s own ball, says the score, and the second choose ends the ball', async () => {
+    type Menu = { items: Array<{ label: string; value: string | null; off: boolean }>; index: number; note: string | null; hint: string } | null;
+    type Feed = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
+    const menus: Menu[] = [];
+    const m = fakeMedia();
+    const media = { ...m.media, setMenu: (v: Menu) => void menus.push(v) };
+    const held = new Map<string, () => void>();
+    const shortcuts = { register: (acc: string, cb: () => void) => (held.set(acc, cb), true), unregister: (acc: string) => void held.delete(acc) };
+    // The host's table reports its score (and never a ball end: the ball is stuck).
+    const heard: ((ev: Feed) => void)[] = [];
+    const wit = { ...liveWitness(VR_OFF, VR_OFF).w, onEvent: (cb: (ev: Feed) => void) => (heard.push(cb), () => undefined) } as unknown as WitnessHost;
+    let t = 1_000_000;
+    const H = make('menu-endball', 'ab'.repeat(32), { witness: wit, media: media as never, shortcuts, now: () => t, ephemeralPort: true });
+    const C = make('menu-endball-client', 'ab'.repeat(32), { ephemeralPort: true });
+    const press = (acc: string, after = 1000): void => {
+      t += after;
+      held.get(acc)!();
+    };
+    const labels = (): string[] => menus.at(-1)!.items.map((i) => i.label);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    // The lobby has no ball to end.
+    press('Control+Alt+M');
+    expect(labels()).not.toContain('End my ball');
+    press('Control+Alt+K'); // Start match
+    await until(() => H.mh.status().phase === 'playing' && H.mh.status().panel?.myTurn === true);
+    for (const cb of heard) cb({ kind: 'game_start', t: 0, players: 1 } as Feed);
+    for (const cb of heard) cb({ kind: 'current_scores', t: 0, scores: [12_345_670], player: 1, ball: 1 } as Feed);
+    await until(() => H.mh.status().endBall?.score === 12_345_670);
+
+    press('Control+Alt+M');
+    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'End my ball', 'Leave match', 'Close menu']);
+    for (let i = 0; i < 4; i++) press('Down');
+    expect(menus.at(-1)!.index).toBe(4);
+    // The first choose asks, with the score as it stands; the ball is still this player's.
+    press('Control+Alt+K');
+    expect(menus.at(-1)!.note).toBe('Choose again to end your ball at 12,345,670');
+    expect(H.mh.status().panel?.myTurn).toBe(true);
+    // The second ends it: the menu closes, the table locks and the turn passes to the client.
+    press('Control+Alt+K');
+    expect(menus.at(-1)).toBeNull();
+    await until(() => C.mh.status().panel?.myTurn === true && H.mh.status().locked, 8000);
+    expect(H.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_345_670, ballsDone: 1 });
+    expect(C.mh.status().panel?.players.find((p) => p.name === 'Owner')).toMatchObject({ score: 12_345_670, ballsDone: 1 });
+    // It is the client's ball now: the host's menu has no such line any more.
+    press('Control+Alt+M');
+    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', 'Leave match', 'Close menu']);
+  }, 20_000);
 
   it('D8.12.3: "Put the scoreboard where I look" is on the menu of a layer rig in a match, asks the layer once, and is off for a layer that cannot', async () => {
     type Menu = { items: Array<{ label: string; value: string | null; off: boolean }>; index: number; note: string | null; hint: string } | null;
@@ -2029,7 +2174,7 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     expect(anchors.at(-1)).toBe('room');
     // In the match: the line is there, between the microphone and Leave match; choosing it asks the layer once and closes the menu.
     press('Control+Alt+M');
-    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', LINE, 'Leave match', 'Close menu']);
+    expect(labels()).toEqual(['Voice volume', 'Their table sound', 'My table while I play', 'Microphone', LINE, 'End my ball', 'Leave match', 'Close menu']);
     expect(menus.at(-1)!.items[4]!.off).toBe(false);
     for (let i = 0; i < 4; i++) press('Down');
     expect(placed).toBe(0);

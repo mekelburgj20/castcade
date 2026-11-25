@@ -77,6 +77,8 @@ export const IPC = {
   matchResume: 'match:resume',
   /** A13: the host's Pass the turn. */
   matchPassTurn: 'match:passTurn',
+  /** A17 step 4: End my ball, by the player who is up. */
+  matchEndMyBall: 'match:endMyBall',
   /** D7.6.3: save 2 s of eye frames to the logs folder. */
   matchSaveFrames: 'match:saveFrames',
   /** D7.6: the VR test bench. */
@@ -282,6 +284,8 @@ export interface CastcadeApi {
     start(opts?: { anyway?: boolean }): Promise<MatchStatus>;
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
     passTurn(): Promise<MatchStatus>;
+    /** A17 step 4 (2026-11-24): the player who is up ends their own ball at the score as it stands; the turn passes (BALL_END, `manual`). */
+    endMyBall(): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */

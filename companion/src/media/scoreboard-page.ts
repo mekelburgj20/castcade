@@ -45,7 +45,7 @@ export interface ScoreboardRow {
 }
 
 export interface ScoreboardView {
-  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `GAME 3 OVER`. */
+  /** `GAME 3 · BALL 2 OF 3`, `PAUSED · GAME 3 · BALL 2 OF 3`, `KROBS AWAY · GAME 3 · BALL 2 OF 3` (A17 step 4), `GAME 3 OVER`. */
   title: string;
   /** The players in turn order (the controller's), never re-sorted: a row does not jump while a score climbs. */
   rows: ScoreboardRow[];
@@ -79,7 +79,13 @@ export function scoreboardView(s: PanelState | null): ScoreboardView | null {
   let title = 'GAME ' + game;
   if (s.phase === 'over') title += ' OVER';
   else if (s.ball !== null) title += ' · BALL ' + s.ball + ' OF ' + s.ballsPerGame;
-  if (s.phase === 'paused') title = 'PAUSED · ' + title;
+  if (s.phase === 'paused') {
+    // A17 step 4 (2026-11-24): a pause for the player who is up, read by somebody who watches them: that player is
+    // away from the host and may well be playing on, and the watcher keeps the picture while it arrives. The card is
+    // then all that says so: `KROBS AWAY · GAME 2 · BALL 1 OF 3`. Any other pause, and the player's own card: PAUSED.
+    const up = s.pausedFor && s.pausedFor === s.playerUp && !s.myTurn ? s.players.find((p) => p.id === s.pausedFor) : null;
+    title = (up ? up.name.toUpperCase() + ' AWAY' : 'PAUSED') + ' · ' + title;
+  }
   const rows = s.players.map((p) => ({
     name: p.name,
     score: p.score === null ? '–' : p.score.toLocaleString('en-US'),
