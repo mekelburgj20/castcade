@@ -829,8 +829,9 @@ The hook keeps journaling. `TableBacklog` (`match-resume.ts`) sits between the w
 
 Owner, 2026-11-23, after a night of four matches, each with a new code and a voice connection made again: "keep our
 audio session live, even between matches … 'join lobby'. Anyone in the lobby can all chat. Then we start and end
-matches without leaving the lobby." **Design only: nothing in this section is built.** The rulings it is built on
-(2026-11-23 and 2026-11-24, fixed):
+matches without leaving the lobby." **Design only: nothing in this section is built.** Revised 2026-11-24 after an
+independent review that checked it against the code; the lead's rulings on that review are worked in, and §11.13
+lists what they changed. The owner's rulings it is built on (2026-11-23 and 2026-11-24, fixed):
 
 1. One lobby, joined once an evening; the voice stays live between matches.
 2. Anyone in the lobby can start a match.
@@ -843,14 +844,16 @@ matches without leaving the lobby." **Design only: nothing in this section is bu
 8. "We never want another player's disconnect to cause the active player to have a messed up session."
 
 The lead's decisions, kept: the PC that opened the lobby arbitrates every match in it, also one somebody else starts
-and one its owner only watches, and the lobby ends when that PC leaves (a hand-over is A10.2); a watcher is on the
-voice and hears the table of the player who is up; the lobby is protocol 7; a watcher is in no result and each match
-is its own Throwdown (ADR 0002). Two are changed by what the code says, both in §11.13: a watcher's table **is**
-locked while it shows the player who is up, and Watch is not written into any logged message.
+and one its owner only watches, and the lobby ends when that PC leaves (the hand-over to another PC is the next work
+after this, §11.8a); a watcher is on the voice and hears the table of the player who is up; the lobby is protocol 7;
+a watcher is in no result and each match is its own Throwdown (ADR 0002). Two are changed by what the code says,
+both in §11.13: a watcher's table **is** locked while it shows the player who is up, and Watch is not written into
+any logged message.
 
 Words used here: **the lobby's PC** is the PC that opened the lobby (the `host` in the code and the protocol; every
 other PC is a `client`, whether its owner plays or watches). A **member** is anyone in the lobby. A **player** is a
-member who is in the match being played. A **watcher** is a member who is not.
+member who is in the match being played. A **watcher** is a member who is not. **The starter** is the one person
+whose Start on their own table begins a game (§11.4).
 
 ### 11.1 What is there today (read in the code)
 
@@ -862,9 +865,16 @@ member who is in the match being played. A **watcher** is a member who is not.
   series already knows a person who is in the roster and not in a game (`NEXT_GAME.playerOrder` leaves out a player
   who dropped; `protocol/docs/prose.md`: "A participant left out of a game is still in the roster … it plays, signs
   and ranks only in the games it is listed for").
+- **A PC that is in no game still reports from its table.** `MatchController.feed` sends `GAME_OVER` at the table's
+  `game_end` and a `FORFEIT` at `table_exit` whenever `inPlay()` holds and `myGameDone()` does not, and both are so
+  for a PC that is not in `players`; `leave()` forfeits the same way. The host rejects both (`onGameOver`,
+  `onForfeit`), so the log is safe, but that PC's panel says "The host rejected GAME_OVER". Only `restore()` sets
+  `myGameOver` for such a PC today.
 - **The voice begins at the match, not at the join.** The panel page is attached at Host / Join with no peers;
-  `MatchController.onReady` adds them at `MATCH_READY` (`match/controller.ts`). The native video connections and the
-  state-stream tunnels do open in the lobby (`syncNativeVideo` and `syncStream` follow the roster on every status).
+  `MatchController.onReady` adds them at `MATCH_READY` (`match/controller.ts`). **And adding a peer is a re-open:**
+  `SignalingMesh.add` (`media/rtc-signaling.ts`) removes the peer and builds a new connection, and the controller
+  calls `addPeer` in `onReady`, in `onPeerBack` and in `restore`. The native video connections and the state-stream
+  tunnels do open in the lobby (`syncNativeVideo` and `syncStream` follow the roster on every status).
 - **What ends the media.** The host's End match is `leave()`: `MATCH_END`, 300 ms, `teardown`. A client closes by
   itself `SERIES_OVER_LINGER_MS` (20 s) after `MATCH_END` (`scheduleSeriesEnd`). `teardown` closes the video mesh
   (`closeVideo`), the stream tunnels (`stream.close()`), the overlay, the controller (whose `close()` calls
@@ -874,13 +884,23 @@ member who is in the match being played. A **watcher** is a member who is not.
   `match_not_started`). **A drop during a game pauses the match at once** when the person still has balls to play,
   whoever is up (`onPeerLeave` → `pause('disconnect', peer)`), although the rotation would pause by itself when the
   turn reaches a person who is gone (`advance()`). The other half of A18.
-- **The table is the host's.** `HELLO_ACK.hostGame` is the fingerprint of whatever the host's witness sees open; a
-  joining PC finds its copy from it (`launch/find-table.ts`) and starts it (`main/one-step.ts`, the wish `want`).
-  "A table that is already open is used and nothing is started", and nothing in the companion closes VPX.
+- **A pause takes the picture away.** `vrViewMode` gives everyone but the player up the panel in any phase but
+  `playing`, and `syncStream` sends a VPX to watch only while the phase is `playing`: a 3D watcher's VPX goes back
+  to its own table at a pause, and the watch starts again at the grant that follows the `RESUME`.
+- **The table is the host's.** `HELLO_ACK.hostGame` is the fingerprint of whatever the host's witness sees open, and
+  the host has no other fingerprint of its own: `loading()` reads `hostGame` for the host's row, `updateLocal`
+  overwrites it, and the host is never in `tableMismatches`. A joining PC finds its copy from it
+  (`launch/find-table.ts`) and starts it (`main/one-step.ts`, the wish `want`). "A table that is already open is used
+  and nothing is started", and nothing in the companion closes VPX.
+- **A host can hand a match over, in the engine only.** `transferHost`, `commitTransfer`, `resumeFromLog` and
+  `ClientMatch`'s side of it exist and are tested (`fakeclient/scenarios/four-player-transfer-*.json`,
+  `ws-transfer.test.ts`), during a game and for a match's roster. The companion never starts one and its clients
+  never take over (`hostLeftTransfer: false`), and the relay does not carry one (§3a).
 - **The room on ArcAid** (`C:\code\repos\ArcAid\src\api\matchRelay.ts`, ADR 0039): it holds 8 sockets, the host's
-  included; it ends 12 hours after it was made, whatever happens in it; `match:lock` cannot be undone ("a new match
-  is a new code") and from then on refuses a device that never had a seat. The companion locks at the first game
-  (`api.start` → `relay.lock()`).
+  included; it ends 12 hours after it was made, whatever happens in it; it outlives its host's socket by 30 s;
+  `match:lock` cannot be undone ("a new match is a new code") and from then on refuses a device that never had a
+  seat. The companion locks when the Match tab's Start match starts the first game (`api.start` → `relay.lock()`);
+  a start from the table never locks.
 
 ### 11.2 The model
 
@@ -889,9 +909,9 @@ Three things, one inside the other:
 - **A lobby** is the room: one code, one set of connections (match control, voice, video, state stream), the list of
   members with what each has chosen (Play or Watch), and the table. It lives from Open lobby until the lobby's PC
   closes it. It has no log and no result.
-- **A match** is what it is today (§8): a series of games by the same players on the same table, one hash-chained
-  log, one Throwdown, a tally of wins. A lobby holds any number of matches, one after the other. A match ends when
-  somebody presses End match, when the table changes, or when the next Start is with other players than it had.
+- **A match** is what it is today (§8): a series of games on one table by the players it started with, one
+  hash-chained log, one Throwdown, a tally of wins. A lobby holds any number of matches, one after the other. A
+  match ends when somebody presses End match, when the table changes, or when somebody presses Start a new match.
 - **A game** is one round of that match: every player's balls, one signed `RESULT`.
 
 So nothing changes inside a match. What is new is that the end of a match is not the end of the connection, that
@@ -904,56 +924,78 @@ the players of a match are a choice and not "everyone who joined", and that peop
    +---------+   Start (2+ set to Play)    +--------+   every player done    +---------------+
    |  LOBBY  | --------------------------> |  GAME  | ---------------------> | BETWEEN GAMES |
    | no match|                             |        | <--------------------- | a match is    |
-   +---------+ <-------------------------- +--------+  Start: same players   | open, RESULT  |
-        ^        End match for everyone                and table (NEXT_GAME) | is out        |
-        |        (the lobby's PC)                                            +---------------+
-        |                                                                           |
+   +---------+ <-------------------------- +--------+  Start: its players    | open, RESULT  |
+        ^        End match for everyone                who are set to Play   | is out        |
+        |        (the lobby's PC; the game             (NEXT_GAME)           +---------------+
+        |         has no result)                                                    |
         +---------------------------------------------------------------------------+
-          End match · the table changes · Start with other players (a new match follows at once)
+          End match · the table changes · Start a new match (the new match follows at once)
 
  In every state: people join and leave, switch Play / Watch, talk. The lobby's PC leaving closes the lobby.
 ```
 
-| State | The engine's phase | Tables | Who may do what |
-|---|---|---|---|
-| **Lobby** | `lobby` | every table is its owner's | anyone: Start, change the table, Play / Watch, leave; a newcomer joins |
-| **Game** | `running` | the player who is up plays; the other players and the watchers are locked (§11.3) | a player: give up their own game; the lobby's PC: Pass the turn, Resume, End match for everyone; anyone: Play / Watch for the next match, leave; a newcomer joins and watches |
-| **Between games** | `ended`, the match still open | every table is its owner's | anyone: Start (the next game, or a new match), End match, change the table, Play / Watch, leave; a newcomer joins |
+| State | The engine's phase | Who may do what |
+|---|---|---|
+| **Lobby** | `lobby` | anyone: Start, change the table, Play / Watch, leave; a newcomer joins |
+| **Game** | `running` | the player who is up: End my ball; a player: give up their own game; the lobby's PC: Pass the turn, Resume, End match for everyone; anyone: Play / Watch for later, leave; a newcomer joins and watches |
+| **Between games** | `ended`, the match still open | anyone: Start (Next game, or Start a new match), End match, change the table, Play / Watch, leave; a newcomer joins |
 
-Two things in that table differ from today:
+**Whose table is whose.** At any moment outside a game exactly one named person, **the starter**, can begin a game
+by pressing Start on their own table; everyone else starts from the in-game menu or the Match tab. No rule lets two
+tables both believe they began the match's game (§11.4 has who the starter is and why this closes the hole).
 
-- **Between games every table is unlocked**, not only the host's (§8 kept a client's locked "until its grant in the
-  next game"). Anyone may start the next game from their own table, so everyone needs their Start key. What the
-  lock protected against, a game played alone that the next grant then scores, is covered by a check at the start
-  instead (§11.4, "a game of their own").
-- **The lobby's PC is not always a player.** It arbitrates as before (it signs the grants, keeps the log, sends the
-  `RESULT`); when its owner is set to Watch it is simply not in `playerOrder`.
+| Who | Lobby (no match open) | A start is counting down | Game | Between games (a match open) |
+|---|---|---|---|---|
+| **The starter** | Free. Start on the table asks for the match | Asked from their table: free, their game has begun. Asked from a button, by anyone: locked until their grant | By turn | Free. Start on the table asks for the next game |
+| **A player of the open match who is not the starter** | (no match is open) | Locked | By turn: free while up, locked while waiting | Locked, as a client's table is today. An initials hold or the window in which a finished game ends on the machine (A16, A16.2) keeps the table as it does today. Starts from the menu or the Match tab |
+| **Set to Play, not in the open match** (in the Lobby: everyone set to Play but the starter) | Free play. Their Start begins a game of their own, never the match's | In this start and no game of their own running: locked. In a game of their own: free, and the start waits | Locked while this PC shows the player up; free while a game of their own runs | Free play: they are not in the match |
+| **Set to Watch** | Free play | Free | Locked while this PC shows the player up; free while a game of their own runs | Free play |
+
+Free play outside a match stays for everyone who is not in it. Between games the players' tables stay as §8 has
+them (the starter's free, the others' locked), with one change: the starter is a named person who can be any player,
+not always the host.
 
 **What End match and Leave mean now.**
 
 - **End match**: the match is closed, its tally is final, and everyone is back in the lobby. Nobody leaves and no
-  connection closes. Between games anyone can press it. During a game only the lobby's PC can, after a confirmation
-  ("End the match for everyone? The game being played is given up."): it forfeits everybody still playing, the
-  `RESULT` goes out, then `MATCH_END`. Most evenings nobody presses it: a new table or other players end the match
-  by themselves.
+  connection closes. Between games anyone can press it. Most evenings nobody does: a new table or Start a new match
+  ends the match by itself.
+- **End match for everyone** (the lobby's PC, during a game, after a confirmation: "End the match for everyone? The
+  game being played gets no result."): **the game is a win for nobody and does not count in the tally.** No
+  `FORFEIT` is logged and no `RESULT` is sent for it: the log stops where it is, and `MATCH_END` (never logged)
+  says which game was left unfinished (`abandoned`, §11.7). The tally is that of the last `RESULT`. The panel shows
+  `MATCH ENDED · GAME 3 NOT FINISHED`, the scores as they stood with no places, and the tally of the games before.
+  So no logged message changes shape and nothing changes in the fold; a match whose only game was left unfinished
+  has no result at all, and nothing of it is posted.
+- **End my ball** (the player who is up, confirmed): their own `BALL_END` with `detectorReason: 'manual'` at their
+  score as it stands, which the schema already has. It is what Pass the turn is for the lobby's PC, in the hands of
+  the person it concerns: a table the companion cannot read, or a ball that is stuck, no longer needs the owner of
+  the lobby's PC at their keyboard.
 - **Give up this game** (a player, during a game): what Leave did to a player's own game until now, a `FORFEIT`.
   The others play on; the person stays in the lobby and watches.
 - **Leave lobby**: this person is out: voice, video and state stream to them close, their table is unlocked, their
   row goes. A player who leaves during a game gives it up first. The others carry on.
-- **Close lobby** (the lobby's PC's Leave, confirmed: "This closes the lobby for everyone"): a running game is ended
-  as by End match, then every PC is told (`LOBBY_CLOSED`, §11.7) and tears down as it does today at a match's end.
+- **Close lobby** (the lobby's PC's Leave, confirmed: "This closes the lobby for everyone"): a game being played is
+  ended as by End match for everyone, then every PC is told (`LOBBY_CLOSED`, §11.7) and tears down as it does today
+  at a match's end.
 
 ### 11.3 Play and Watch
 
 - **Each person chooses for themselves**, on the Match tab or in the in-game menu, at any time. The choice is kept
   per PC (`match.json` `stance`, `play` by default) and said at the join. It takes effect at the next Start: a
   switch during a game changes nothing in that game (a player who wants out now presses Give up this game; a
-  watcher who wants in is in from the next Start). Nobody sets it for somebody else.
-- **A match is played by the people set to Play at the moment it starts**, two to four of them. Its tally goes on
-  from game to game while those people and the table stay the same; when the people set to Play at a Start are not
-  the players of the open match, that match ends and a new one starts (the countdown and the button say so, §11.9).
-- **A watcher's PC is a waiting player's PC whose turn never comes.** Read from the code, every piece already does
-  the right thing for a person who is never up:
+  watcher who wants in is in from a later Start). Nobody sets it for somebody else.
+- **Who plays a game** (the lobby's PC decides it at each start, §11.4):
+  - with no match open: the people set to Play who are here and have the table;
+  - with a match open: **the players of that match who are set to Play and here**, two or more of them. A player who
+    is away or has switched to Watch sits that game out and is still in the match, as a dropped player is in a
+    series today. This is `NEXT_GAME`, and the tally goes on;
+  - **a person who is not in the open match comes in only when somebody presses Start a new match**: never by a
+    Start on a table, never by a default. A newcomer who joined on Play while a series runs watches it until then.
+- **A person without the table does not hold anyone up.** A member whose PC has no copy of the lobby's table
+  (`noCopy`) counts as not set to Play for that start, as a person who is away does. Their row keeps `PLAY · NO
+  TABLE`, and they watch in the 2D video.
+- **A watcher's PC is a waiting player's PC whose turn never comes.** Checked in the code, piece by piece:
   - the voice: unchanged, everybody to everybody;
   - the table sound: `tableAudioPlan` mutes this PC's own table and plays the table of the player up for anyone
     whose turn it is not; a watcher is never tapped;
@@ -962,96 +1004,152 @@ Two things in that table differ from today:
   - 3D: `syncStream` sends this PC's VPX to watch the player up when the table is locked, the fork is on the control
     connection and the table identity is the same as the player's; else the 2D video, with the reason on the Match
     tab as today;
-  - never a grant, never `setSending(true)`, never a `BALL_END`, never a `LOG_SIGN`, in no `RESULT`.
+  - the log: `ClientMatch.maybeSignLog` already skips a PC that is not in `playerOrder`.
+- **One thing must change for it: a PC that is not in `playerOrder` reports nothing from its table.** Today it would
+  send `GAME_OVER` and `FORFEIT` for a game it is not in (§11.1). `onReady` and `onNextGame` set `myGameOver` for a
+  PC whose id is not in the order (what `restore()` does already), and `leave()` forfeits nothing for it. The test
+  is named in step 7 (§11.12): "a watcher's table game ends, and its table closes, during a match: nothing is sent,
+  nothing is on its panel".
 - **A watcher's table is locked while a game is played** (from `MATCH_READY` or `NEXT_GAME` to the game's `RESULT`),
   and its own again between games and in the lobby. This overturns "never a lock" (§11.13): the 3D watch is built
   on the lock (`syncStream` sends the fork to watch only while `locked`; state-stream-in-match.md §4.3), and in the
   2D theater a key pressed in the headset still reaches the table underneath, so a watcher's Start key would begin
   a game nobody sees or hears.
-- **Never in the middle of a game of one's own** (A14's rule, §9.3). A watcher who is playing alone when a match
-  starts keeps their table, their view and their sound until that game ends; then the lock goes on and the player
-  up is shown. The roster says `own game` for them meanwhile.
-- **The roster** (Match tab and the full panel) lists every member: name, rig, `PLAY` or `WATCH`, and what is wrong
-  if anything (`LOADING`, `NO TABLE`, `OTHER TABLE`, `OWN GAME`, `AWAY`, the table-file advisories of today). **The
-  score strip and the scoreboard** (`scoreboard-page.ts`) list the players of the match in turn order, as today,
-  and are the same for a watcher; under the strip the full panel has one line, `Watching: Chuck, Dana`. The tally is
-  the open match's.
+- **Never in the middle of a game of one's own** (A14's rule, §9.3). A watcher who is playing alone when a game of
+  the match starts keeps their table, their view and their sound until their own game ends; then the lock goes on
+  and the player up is shown. The roster says `OWN GAME` for them meanwhile.
+- **A person who joins while a ball is in play** gets the voice at once, with everyone. The `video` and `stream`
+  connections between their PC and the PC of the player who is up are opened when that ball ends, so nothing is
+  set up on the PC of a person who is playing (an encoder in their video helper, a tunnel beside their VPX). With
+  everyone else they open at once. Until then the newcomer's panel reads `KROBS IS UP` with the scores, and "You
+  see the table from the next ball".
+- **The roster** (Match tab and the full panel) lists every member, the lobby's PC like any other: name, rig,
+  `PLAY` or `WATCH`, and what is wrong if anything (`LOADING`, `NO TABLE`, `OTHER TABLE`, `OWN GAME`, `AWAY`, the
+  table-file advisories of today). **The score strip and the scoreboard** (`scoreboard-page.ts`) list the players
+  of the match in turn order, as today, and are the same for a watcher; under the strip the full panel has one
+  line, `Watching: Chuck, Dana`. The tally is the open match's.
 
 ### 11.4 Starting a match, by anyone
 
 Start is one request with one set of checks, whoever makes it. The lobby's PC makes it to itself; any other PC sends
-`START_REQUEST` (§11.7) and the lobby's PC answers by starting, by announcing a start that waits, or with a sentence.
+`START_REQUEST` (§11.7) and the lobby's PC answers by announcing the start, by announcing a start that waits, or
+with a sentence.
 
-**Three ways to ask**, all three open to every member:
+**The starter.** One person, named in `HELLO_ACK.starter` and on every panel:
 
-- the Match tab's button (**Start match**; between games **Next game** or **Start a new match**, §11.9);
-- the in-game menu's first line, the same words (`match-menu.ts`: today only the host has it);
-- **a game started on the table** (A11's first-game rule, for everyone set to Play): the hook's `game_start` on the
-  table of a person set to Play, in the lobby or between games, asks for a start `fromTable`. That person is first
-  in the order, because their game has begun (today "the host first" for the same reason). A watcher's `game_start`
-  asks for nothing: a person who wants to play alone between matches sets themselves to Watch.
+- with no match open: the first person in the lobby's list (the opener, then in the order people joined) who is set
+  to Play, is here and has the table;
+- between games: the player who went first in the game just played, while they are here and set to Play; else the
+  next in that game's order;
+- a person who starts from the menu or the Match tab goes first in the game that follows, and is the starter after
+  it.
 
-**The checks**, in this order, on the lobby's PC (`HostMatch.requestStart`, new; today's rules are the controller's
-`tryStartFromTable` and `api.start` in `match-host.ts`, and they move with it):
+**Three ways to ask**, and who has which:
+
+- the Match tab's button (**Start match**, **Next game**, **Start a new match**, §11.9): every member;
+- the in-game menu's first line, the same words (`match-menu.ts`: today only the host has it): every member;
+- **a game started on the table** (A11's first-game rule): the starter only. Their `game_start` in the lobby or
+  between games asks `fromTable`, and they go first because their game has begun (today "the host first" for the
+  same reason). Anybody else's `game_start` is never a request: where their table is free it is a game of their
+  own, where it is locked the key does nothing.
+
+**Every start counts down 5 s**, from a table or from a button (today a button starts at once). The countdown is
+what closes the hole of two tables: when it is announced, the PC of every person in the start locks its table at
+once, unless a game is running on it (the starter's own `fromTable` game, or somebody's game of their own, which
+that PC then says, `ownGame`). When it runs out the lobby's PC runs the checks again, and only then sends
+`MATCH_READY` or `NEXT_GAME`. If a check fails then, the start becomes one that waits and the locks of the
+countdown come off. While a start counts down or waits:
+
+- the starter's `game_start` arriving after somebody else's button press puts the starter first (theirs is the one
+  table that can have begun a game; it can only arrive in the moment before the countdown's lock reached their PC);
+- a second press of Start during the countdown changes nothing, and anybody can press **Cancel the start**
+  (`START_CANCEL`): the locks come off, and a game the starter began on their table is then a game of their own
+  (A12's rule: the next Start after it ends asks again);
+- a person in the start who switches to Watch is taken out of it; with fewer than two left it is cancelled, and the
+  panel says who ("Krobs set himself to Watch: the start is off"). A switch to Play counts from the next start;
+- a table pick is refused: "A match is starting: cancel the start to change the table."
+
+**The checks**, in this order, on the lobby's PC, at the request and again when the countdown runs out
+(`HostMatch.requestStart`, new; today's rules are the controller's `tryStartFromTable` and `api.start` in
+`match-host.ts`, and they move with it):
 
 | Check | When it fails |
 |---|---|
 | No game is being played | Refused: "A game is being played." |
 | No start is under way | Nothing happens: the asker sees the start that is already announced |
-| Two or more people are set to Play and not away (four at most: the lobby's size) | Refused: "Only MekelburgJ is set to Play: a match needs two." |
-| Each of them has the lobby's table | Refused: "Krobs does not have Monster Bash: he can watch, or pick another table." |
+| The last game's `RESULT` is out (`nextGameBlocker`: up to 10 s after the last ball) | The start **waits** for it. Today such a start is silently ignored |
+| Two or more people play it (§11.3: set to Play, here, with the table; with a match open, its players only) | Refused: "Only MekelburgJ is set to Play: a match needs two." With a match open and somebody outside it set to Play: "Only MekelburgJ of this match is set to Play. Press Start a new match to play with Dana." |
 | Each of their tables is open | The start **waits** (A11's armed start): "The match starts once Krobs' table is open." |
-| None of them is in a game of their own (other than the asker's `fromTable` game) | The start **waits** (A12, for everyone): "The match starts once Krobs' game on his table has ended." |
-| Each of their tables can report ball ends (A13) | Refused unless the asker confirmed (`anyway`): the sentence of today, and Start anyway |
-| Their 3D connections are settled (I11.4.9) | The start **waits**, 45 s at most from the first held start, as today; a second press starts now |
+| Each of their open tables is the lobby's table, not another game (`OTHER TABLE`) | The start **waits**: "The match starts once Krobs has Monster Bash open (he has Congo open)." |
+| None of them is in a game of their own (other than the starter's `fromTable` game) | The start **waits** (A12, for everyone): "The match starts once Krobs' game on his table has ended." |
+| Each of their tables can report ball ends (A13) | Refused unless the asker confirmed (`anyway`): the sentence of today, and Start anyway. The player concerned ends each of their balls with End my ball |
+| Their 3D connections are settled (I11.4.9) | The start **waits**, 45 s at most from the first held start, as today |
 
-Then: a request `fromTable` counts down 5 s on every panel (`STARTING IN 5`, "Krobs starts the match: Krobs,
-MekelburgJ"); a button or menu press starts at once, as Start match does today.
-
-- **A start that waits belongs to the person who asked.** It is announced to everyone with their name and what it
-  waits for (`HELLO_ACK.startWaits`, §11.7; today a client is told nothing of a held start). It is dropped when that
-  person leaves, switches to Watch, or (for a start from the table) their game ends; and when fewer than two are
-  left set to Play. Anybody's press of Start while one waits starts now if only the 3D connections are waited for,
-  and changes nothing otherwise.
+- **A start that waits belongs to the person who asked.** It is announced to everyone with their name, who it is
+  for and what it waits for (`HELLO_ACK.start`, §11.7; today a client is told nothing of a held start). It is
+  dropped when that person leaves, switches to Watch or cancels, when (for a start from the table) their game ends,
+  and when fewer than two are left to play it. When what it waits for is over, the countdown begins.
+- **A second press of Start by anyone, while a start waits, starts without what is waited for** (`now`): without the
+  3D connections (as today), and without the people whose table is not ready (loading, another game, a game of
+  their own), if two are left. The button then reads **Start without Krobs**. One person who has gone to bed with
+  a table half loaded cannot hold three others.
 - **The 3D wait counts players only.** The owner's ruling was that the first turn is in 3D for the people playing.
   A watcher whose connection is late gets the 2D video and switches to 3D in the middle of the turn, which the code
   already does. The wait applies to every start in a lobby, not only the first: after a table change every VPX is
   new (`FORK_HELLO_WAIT_MS` runs again); with nothing still being made it holds nothing.
-- **Next game or new match.** The lobby's PC decides, and the words on the button say which before the press: the
-  same people set to Play as the open match's players, and the same table → `NEXT_GAME` in the same log (the order:
-  the asker first when `fromTable`, else as in the last game). Anything else → `MATCH_END` for the open match, then
-  a new log and `MATCH_READY` (the order: the asker first when `fromTable`, then the others in the order they
-  joined the lobby).
+- **Next game or new match** is the asker's choice, never a side effect. With a match open, a start from the table
+  and **Next game** are `NEXT_GAME` with the match's players who are set to Play and here (§11.3). **Start a new
+  match** (`START_REQUEST.newMatch`, a button and a menu line of its own, shown when somebody outside the open
+  match is set to Play) ends the open match (`MATCH_END`) and starts one with everyone set to Play. With no match
+  open every start is a new match. The order: the asker first, then the others as in the last game, or, in a new
+  match, in the order they joined the lobby.
 - **Who confirmed.** A start with a table that cannot report ball ends is confirmed by the person who asked
-  (`START_REQUEST.anyway`); the lobby's PC logs who. Pass the turn stays with the lobby's PC.
-- **Known edge, as today.** Two people who press Start on their tables inside the same countdown: the first is the
-  asker; the second's game is theirs to keep until their grant, exactly as a client who started a game before the
-  host did today (a ball lost before the grant is lost; A10.1's "table back on attract" signal is the cure).
+  (`START_REQUEST.anyway`), a client included, because the player concerned can end their own balls (End my
+  ball); the lobby's PC logs who confirmed. Pass the turn stays with the lobby's PC as well.
+- **The initials hold and the window of a finished game** (A16, A16.2) are left as they are: a start does not wait
+  for them, as today, and the table they keep unlocked stays so until they end. A `game_start` out of one is a
+  request only when it is the starter's.
+- **`preMatchPlay`** (A12's "Table locked until someone joins") is retired in a lobby: outside a match every table
+  is its owner's by the table above. The key stays in `match.json` and is not read; its line on the Match tab goes
+  with step 9.
 
 ### 11.5 Changing the table
 
-- **Anyone picks**, between matches or between games, on the Match tab: the picker of §9.1 (`TablePicker`: the
-  imported tables, Browse…). Not during a game ("A game is being played: the table changes after it"). Not from
-  the headset in the first version: a picker needs a list (§11.13).
-- **The lobby has a table**: one `GameFingerprint`, the one every PC compares its own table with. It is what
-  `HELLO_ACK.hostGame` already is, with a new meaning: not "what the host's VPX has open" but "what was picked",
-  and by whom (`tablePickedBy`). The pick is made from what the picker's PC knows of the file before it is open
-  (`KnownTable`: name, SHA-256, ROM; a file never hashed is hashed first, `launch/table-hash.ts`); when the picker's
-  own VPX has it open, that PC's full fingerprint replaces it, as the host's does today. A lobby opened with "No
-  table: I open it myself" takes the first table its opener opens as the pick, which is today's behaviour. Opening
-  a table by hand on any other PC is never a pick: that person's row says `OTHER TABLE`.
+- **Anyone picks**, in the lobby or between games, on the Match tab: the picker of §9.1 (`TablePicker`: the
+  imported tables, Browse…). Not during a game ("A game is being played: the table changes after it"), and not
+  while a start counts down or waits (§11.4). Not from the headset in the first version: a picker needs a list
+  (§11.13).
+- **The lobby has a table, and it is a pick, not somebody's open VPX.** `HELLO_ACK.hostGame` carries it, with
+  `tablePickedBy`. **The lobby's PC becomes a member row like any other**: its own fingerprint (kept beside the
+  pick; `updateLocal` stops overwriting `hostGame`), its own `LOADING` while its table is not open, its own entry
+  in `tableMismatches`. A lobby opened with "No table: I open it myself" takes the first table its opener opens as
+  the pick, which is today's behaviour. Opening a table by hand on any other PC is never a pick: that person's row
+  says `OTHER TABLE`.
+- **What a pick is made of: the lobby's table identity.** Of `GameFingerprint`: `kind`, `tableName`, `tableHash`
+  (the SHA-256 of the `.vpx`; a file never hashed is hashed first, `launch/table-hash.ts`) and `romName`, which the
+  picker's PC knows before the table is open (`KnownTable`); and beside them the Castcade VPX build's own table
+  identity (the fork's `<editables> <table hash>`) once I11.4.15, on another branch now, adds it to what is
+  announced. The other keys (`romHash`, `physicsHash`, `recipeVersion`, `sidecarHash`, `emulatorVersion`) are facts
+  of one PC's copy and are null or empty in a pick. So a member's row is compared with the pick on the identity
+  keys only (`compareFingerprints` compares every key today, and would flag everyone against a pick): the same
+  file; the same game in another file (today's advisory); another game (`OTHER TABLE`). The muted build note of
+  today (`emulatorVersion`) is a comparison between the players of a start. `MATCH_READY.game` is the full
+  fingerprint of the open table of the first player in the order, never a pick.
 - **The announcement** is the next `HELLO_ACK` (it goes to every member on every change). An open match ends at
   that moment (`MATCH_END`, "the table changed"): a tally is for one table.
 - **What each PC does** when the lobby's table changes to another game (`one-step.ts`: the wish `want` learns that a
   table can be open and wrong). At the join nothing changes: a table that is already open is kept, as today (§9.3),
   and the row says how it differs.
   1. Find its copy by the rules of `launch/find-table.ts` as they are then (the identical file, then the same game;
-     an imported table before a file only found in the folder; I11.4.15 adds the fork's own table identity). The
-     pick is only ever compared with what is on this disk: never a path, as today.
+     an imported table before a file only found in the folder; I11.4.15's identity when it is in). The pick is only
+     ever compared with what is on this disk: never a path, as today.
   2. No copy: nothing is closed. This PC says so (`PARTICIPANT_UPDATE.noCopy`), its row reads `NO TABLE`, its Match
      tab "Krobs picked Monster Bash. Castcade found no copy of it on this PC: you can watch, or pick another
      table." The person stays in the lobby with the voice, and watches in the 2D video.
-  3. A game is running on the open table: nothing is closed until it ends (the row: `OWN GAME`).
+  3. **Nothing is closed that might be a game.** A game is running on the open table, or an initials hold or the
+     window of a finished game (A16, A16.2) is on: wait for its end (the row: `OWN GAME`). And a table Castcade
+     cannot follow (the witness in `basic` mode, no hook journal: `ballEndsFrom`) is never closed by Castcade,
+     because it cannot know whether a game is on: this PC is asked, as in rung 3 below.
   4. Otherwise close the open table, then start the copy the way a match table is started today (`launchTable`: in
      the Castcade VPX build when it is there and `watch3d` is `auto`). The row reads `LOADING` until the witness
      sees the new table.
@@ -1061,8 +1159,9 @@ MekelburgJ"); a button or menu press starts at once, as Start match does today.
      unknown line, rule 13, and falls to the next rung);
   2. any other VPX: its player window is asked to close (`WM_CLOSE` to the window of the witness's VPX pid, by the
      PowerShell route `media/window-geometry.ts` already uses), which is what Alt+F4 does;
-  3. still open 15 s later: this PC's Match tab and row say "Close the table on this PC: Castcade opens Monster
-     Bash when it is closed", and the wish waits for the witness's `table_exit`. Never a forced end of the process.
+  3. still open 15 s later, or a table Castcade cannot follow: this PC's Match tab and row say "Close the table on
+     this PC: Castcade opens Monster Bash when it is closed", and the wish waits for the witness's `table_exit`.
+     Never a forced end of the process.
   A setting, "Change tables for me" (`match.json`, on by default; ADR 0007: automate it): off, the tab shows the
   pick with an **Open it** button and nothing closes by itself.
 - **What the lobby shows meanwhile**: the header `CHANGING TABLE · MONSTER BASH`, each row its state, and Start
@@ -1078,8 +1177,8 @@ MekelburgJ"); a button or menu press starts at once, as Start match does today.
   - The picture source (the layer camera's ring, or the window capture) is found again as at any table start;
     nobody is up, so nothing is being sent.
   - The 3D: the new VPX says `hello` with the new table's identity on the control connection, which lives for the
-    app's run (`stream3d-host.ts`), and each PC tells the others again what it has over the tunnel. That a new
-    `hello` is passed on to PCs already connected is to be checked when this is built.
+    app's run (`stream3d-host.ts`), and what this PC can do is announced again to the PCs already connected
+    (`Stream3d.publish` in `match/stream3d.ts` tells the tunnel whenever it changed).
 
 ### 11.6 Media across matches
 
@@ -1088,11 +1187,13 @@ PCs. Nothing is opened or closed at a match's start or end, at a game's, or at a
 
 | Connection (`MEDIA_SIGNAL.channel`) | Carries | Today |
 |---|---|---|
-| `rtc`, the panel page | every microphone to everyone, always; the table sound of the player up; the Electron video while that path is in use | opened at `MATCH_READY`, closed at `teardown`; closed for a person whose link drops |
+| `rtc`, the panel page | every microphone to everyone, always; the table sound of the player up; the Electron video while that path is in use | opened at `MATCH_READY`, closed at `teardown`; made again at every `addPeer`; closed for a person whose link drops |
 | `video`, `castcade-video.exe` | the picture of the player up, one encoder per receiving PC, sending only while up | opened in the lobby, closed at `teardown` |
 | `stream`, the tunnel | the state stream from the VPX of the player up to each PC that watches in 3D; what each PC's VPX can do | opened in the lobby, closed at `teardown` |
 
-Match control (the WebSocket listener or the ArcAid room) is kept the same way.
+One exception to "from the moment": the `video` and `stream` connections between a newcomer and a person who is on
+a ball wait for that ball's end (§11.3). Match control (the WebSocket listener or the ArcAid room) is kept the
+same way as the three.
 
 **Per turn**, as today and nothing more: who sends the picture and the table sound (`setSending`, the helper's
 `mesh.setSending`, the tap), whose table is muted, which VPX watches which (`watch` / `play`), the headset's mode,
@@ -1116,16 +1217,41 @@ instant); not encoding for it is A17.1's first saving.
 
 **What must change.**
 
-- `MatchController`: voice peers follow the lobby's members (`onLobby`), not `MATCH_READY`; a match's end returns
-  the controller to the lobby (scores, result and holds cleared; the series kept on the panel until the next start)
-  instead of ending it; `close()` and its `media.detach()` are for leaving the lobby only.
-- `match-host.ts`: `Active` is the lobby's life. `teardown` is split: what ends with a match (the saved match, the
-  per-game state, the lock) and what ends with the lobby (media, video mesh, stream, overlay, transport, the ArcAid
-  room, the router port). A client's `scheduleSeriesEnd` goes: `MATCH_END` is no reason to close anything.
-  `syncNativeVideo` and `syncStream` take the members, not the match's participants.
-- A link that drops closes no media connection (A18 does this for today's match): the peers stay while the person
-  is `away`, and ICE decides by itself whether the path between the two PCs is still good. Media between two PCs
-  never crossed the lobby's PC or ArcAid, so a control drop is no evidence about it.
+- **Adding a peer that is already held makes no new connection.** `rtc-host.ts` `addPeer` does nothing for a peer
+  the page holds (the mesh's own `add` keeps its meaning: `reopen` and the `reset` signal use it). With that, voice
+  peers follow the lobby's members (`MatchController.onLobby`), and the calls in `onReady`, `onPeerBack` and
+  `restore` are harmless. Without it "the voice from the join on" would rebuild every voice connection at
+  `MATCH_READY` and at every reconnect, which is the fault this item exists to remove.
+- **A pause for the player who is up does not take their picture away** (the lead's ruling). While the match is
+  paused for the disconnect of the person who holds the grant, or while the lobby's PC is away during a ball
+  (§11.8a), and that person's picture still arrives, everyone else keeps what they were looking at: the theater or
+  the 3D watch. Who is away is said without a full panel: the scoreboard's title (`KROBS AWAY · GAME 2 · BALL 1 OF
+  3`, as `PAUSED ·` is said to the player up today, D8.14) and the desktop panel's line. Three changes, in step 4
+  (§11.12), which needs no lobby:
+  - `vrViewMode`: a new fact `now.upAway` ("paused for the player up, their picture arrives") gives `spectate` as
+    in `playing`, where today any phase but `playing` gives the panel;
+  - `syncStream`: `waiting` holds in that state too, where today it needs `p.phase === 'playing'`; and a grant
+    issued again for the same player and ball after the `RESUME` does not start a running watch over (the turn key
+    today is the `grantSeq`, which a re-issue changes);
+  - "their picture arrives" is read where it is already read: the theater-path watch's `recv` (`syncNativeVideo`),
+    the Electron page's `receivingVideo`, and for 3D the fork's own rule (no frame for 3 s ends the watch,
+    state-stream-in-match.md §3 rule 12). When it stops arriving the panel comes, as today.
+  `PanelState` gains who the pause is for.
+- `MatchController`: a match's end returns the controller to the lobby (scores, result and holds cleared; the
+  series kept on the panel until the next start) instead of ending it; `close()` and its `media.detach()` are for
+  leaving the lobby only.
+- `match-host.ts`: `Active` is the lobby's life, and `teardown` is split. **What ends with a match:** the saved
+  match (`dropRecord`), `Session.onCommit` and the record's heartbeat (until step 8 makes the record the lobby's),
+  the `TableBacklog` and the journal mark,
+  the per-game state of the controller, the lock, the table sound put back (`tableAudio.apply`, `unlevel`), the end
+  timer. **What ends with the lobby:** the media (`controller.close()`), the video mesh, the stream tunnels, the
+  overlay, the in-game menu and its global keys (`unregisterKeys`, `closeMenu`), the lobby peek timer, the
+  transport, the ArcAid room, the router port. A client's `scheduleSeriesEnd` goes: `MATCH_END` is no reason to
+  close anything. `syncNativeVideo` and `syncStream` take the members, not the match's participants.
+- A link that drops closes no media connection (A18 does this for today's match; step 1 starts from A18 as it is
+  merged and does not do it again): the peers stay while the person is `away`, and ICE decides by itself whether
+  the path between the two PCs is still good. Media between two PCs never crossed the lobby's PC or ArcAid, so a
+  control drop is no evidence about it.
 - `relay.lock()` is not called in a lobby (§11.10).
 
 ### 11.7 The wire: protocol 7
@@ -1140,15 +1266,18 @@ untouched, and what ArcAid will ingest (A5, F6) is what it would have ingested b
 
 - `MATCH_READY.matchId` is `<lobby code>-<n>` (`JHDFEF-2`), `n` counting the lobby's matches from 1: each match is
   its own Throwdown. Grants, `RESULT` and the signatures carry that id. `hostPlayerId` is the lobby's PC, which need
-  not be in `playerOrder`.
-- `NEXT_GAME.playerOrder`: the players of the match still connected, the asker first when the game was started from
-  a table (today: "the host first").
+  not be in `playerOrder`. `game` is the first player's full fingerprint (§11.5).
+- `NEXT_GAME.playerOrder`: the match's players who are set to Play and here, the asker first (today: the roster
+  still connected, "the host first").
+- `BALL_END` with `detectorReason: 'manual'` from the grant holder is End my ball. The value is in the schema; no
+  companion sends it today.
 - **Where one match's log ends and the next begins.** A match's log ends, as today, at the entry that ends its last
-  game; `MATCH_END` is not logged. The next match's log starts from nothing: index 0, `prevHash` 64 zeros, its own
+  game; `MATCH_END` is not logged. A game ended for everyone leaves the log where it stood, in the middle of that
+  game, unsigned for it. The next match's log starts from nothing: index 0, `prevHash` 64 zeros, its own
   `MATCH_READY`, `grantSeq` from 1. Nothing chains one match to the next. `seq` (the envelope's) is per sender for
-  the whole lobby and never starts over. A frame of a match that has ended (its `matchId`) is rejected.
-- **Never logged:** who is in the lobby, who watches, who asked for a start, the table picks, joins and leaves of
-  members who are not playing.
+  the whole lobby and never starts over.
+- **Never logged:** who is in the lobby, who watches, who is away, who asked for a start, the starter, the table
+  picks, joins and leaves of members who are not playing.
 
 **Not logged, new or changed** (in the style of `protocol/src/messages.ts`):
 
@@ -1164,201 +1293,338 @@ stance: Stance.optional().describe("A17: the sender's choice now."),
 noCopy: z.boolean().optional().describe("A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has."),
 ownGame: z.boolean().optional().describe("A17: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher)."),
 
-// HELLO_ACK: the lobby as it is now. From protocol 7 it is sent to every member on every change IN EVERY PHASE,
-// not only before the first game. All defaulted, none logged.
+// HELLO_ACK: the lobby as it is now. In a lobby it is sent to every member on every change IN EVERY PHASE, not only
+// before the first game. All defaulted, none logged. `hostGame` is the lobby's PICKED table (its identity keys; the
+// others null or empty, §11.5); the host is listed in `loading` and `tableMismatches` like any member.
 stances: z.array(z.object({ playerId: PlayerId, stance: Stance })).default([]),
 away: z.array(PlayerId).default([]).describe('Members whose link is down and whose place is kept (§11.8).'),
 noCopy: z.array(PlayerId).default([]),
 ownGame: z.array(PlayerId).default([]),
-tablePickedBy: PlayerId.nullable().default(null).describe('Who picked `hostGame`, which from protocol 7 is the lobby\'s table, not the table open on the host.'),
+otherTable: z.array(PlayerId).default([]).describe('Members whose open table is another game than the pick.'),
+tablePickedBy: PlayerId.nullable().default(null),
 ballsPerGame: z.number().int().min(1).max(10).nullable().default(null),
+starter: PlayerId.nullable().default(null).describe('A17: the one member whose Start on their own table asks for a game (§11.4).'),
 match: z
+  .object({ matchId: MatchId, players: z.array(PlayerId).min(2).max(4), game: GameNumber, state: z.enum(['game', 'between']) })
+  .nullable()
+  .default(null)
+  .describe('The match that is open; null in the lobby. Its log follows in MATCH_LOG for a member who has none.'),
+start: z
   .object({
-    matchId: MatchId,
-    players: z.array(PlayerId).min(2).max(4),
-    game: GameNumber,
-    state: z.enum(['game', 'between']),
-    logLength: z.number().int().min(0),
+    by: PlayerId,
+    players: z.array(PlayerId).min(2).max(4).describe('Who plays it, the first to go first.'),
+    newMatch: z.boolean(),
+    waitsFor: z.enum(['result', 'tables', 'other_tables', 'own_games', '3d']).nullable().describe('null: it is counting down (`startsInMs`).'),
+    waitsOn: z.array(PlayerId).default([]),
+    leftMs: z.number().int().min(0).max(120_000).nullable(),
   })
   .nullable()
   .default(null)
-  .describe('The match that is open, for a member who joined after it began; null in the lobby.'),
-startWaits: z
-  .object({ by: PlayerId, for: z.enum(['tables', 'own_games', '3d']), players: z.array(PlayerId), leftMs: z.number().int().min(0).max(120_000).nullable() })
-  .nullable()
-  .default(null)
-  .describe('A start that was asked for and waits (§11.4). `startsInMs` stays the countdown; `startBy` names who asked.'),
-startBy: PlayerId.nullable().default(null),
+  .describe('A17: the start that is announced: counting down or waiting (§11.4). Each PC in `players` locks its table when it counts down, unless a game runs on it.'),
 
-// New: a member asks the host to start. client -> host. The host starts, announces a wait, or answers REJECT
-// (`unexpected_state`) whose `message` is the sentence the asker is shown.
+// New: a member asks the host to start. client -> host. The host announces the start (HELLO_ACK `start`), or
+// answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown.
 export const StartRequest = z.object({
-  fromTable: z.boolean().describe("True: the sender's own game began on its table (A11); the sender is first in the order."),
+  fromTable: z.boolean().describe("True: the sender's own game began on its table (A11). Taken from the starter only."),
+  newMatch: z.boolean().default(false).describe('True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`).'),
   anyway: z.boolean().default(false).describe('A13: the sender confirmed a start with a table that cannot report ball ends.'),
-  now: z.boolean().default(false).describe('I11.4.9: do not wait for the 3D connections (a second press).'),
+  now: z.boolean().default(false).describe('Do not wait: start without the 3D connections and without the people whose table is not ready (a second press).'),
 });
 
-// New: a member asks the host to end the open match between games. client -> host. MATCH_END follows, or REJECT.
-export const EndRequest = z.object({});
-
-// New: a member picks the lobby's table. client -> host. HELLO_ACK follows with the new `hostGame`, or REJECT.
-export const TablePick = z.object({ game: GameFingerprint });
+// New: client -> host, each answered by the change it asks for (HELLO_ACK, MATCH_END) or by REJECT.
+export const StartCancel = z.object({});                       // take back the start that counts down or waits
+export const EndRequest = z.object({});                        // end the open match, between games
+export const TablePick = z.object({ game: GameFingerprint });  // the identity keys of §11.5
 
 // New: the host closes the lobby. host -> all. Every member tears down; nobody reconnects afterwards.
-// (MATCH_END keeps its shape; from protocol 7 it means "this match is over, back to the lobby".)
 export const LobbyClosed = z.object({ reason: z.string().max(200) });
 
-// RECONNECT_ACK: one more key.
-restart: z.boolean().default(false).describe("A17: true: the sender's log is not of the match that is open now (or none is): drop it; `entries` is the open match's whole log, empty when none is."),
+// New: the open match's log, to a member who does not hold it. host -> client, in pages of at most 100 entries
+// (about 50 KB), so that no frame comes near the relay's 256 KB.
+export const MatchLogPage = z.object({
+  match: MatchId,
+  restart: z.boolean().describe('True on the first page of a whole log: the receiver starts an empty log for `match`.'),
+  entries: z.array(LogEntry).max(100),
+  logHash: Sha256Hex.describe("The host's head after the last page."),
+  logLength: z.number().int().min(0),
+  more: z.boolean().describe('Another page follows at once. False: the receiver is current.'),
+});
+
+// MATCH_END: in a lobby it means "this match is over, back to the lobby". Never logged, so it may change.
+games: z.number().int().min(0).max(999).describe('Games of the match that have a RESULT.'),  // was GameNumber (min 1)
+abandoned: GameNumber.nullable().default(null).describe('A17: the game that was being played and was ended for everyone: no RESULT, a win for nobody.'),
+
+// RECONNECT: the envelope's matchId is ALWAYS the lobby code. Two more keys, and a new signed body.
+match: MatchId.nullable().default(null).describe('The match the sender holds a log of; null: none.'),
+// signature: over canonicalJson({ lobby, player, match, logHash, logLength, seq }), seq being the envelope's own.
+
+// RECONNECT_ACK: three more keys, and one more code.
+match: MatchId.nullable().default(null).describe('The match that is open now; null: none.'),
+restart: z.boolean().default(false).describe("True: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG."),
+more: z.boolean().default(false).describe('`entries` holds at most 100; the rest follows in MATCH_LOG.'),
+// `code` gains 'protocol_version' (the sender speaks another version; see the refusals below).
 ```
 
-`MESSAGE_DIRECTION`: `START_REQUEST`, `END_REQUEST` and `TABLE_PICK` are `client->host`, `LOBBY_CLOSED` is
-`host->all`. The lobby's PC does the first three to itself through the engine, with no message. `HELLO.throwdownCode`
-is the lobby's code (the name is from before the lobby).
+`MESSAGE_DIRECTION`: `START_REQUEST`, `START_CANCEL`, `END_REQUEST` and `TABLE_PICK` are `client->host`;
+`MATCH_LOG` is `host->client` and `LOBBY_CLOSED` `host->all`. The lobby's PC does the first four to itself
+through the engine, with no message. `HELLO.throwdownCode` is the lobby's code (the name is from before the lobby).
 
 **Rules that change** (`protocol/docs/prose.md` gets a section "The lobby"):
 
-- `HELLO` is accepted in every phase while there is room. `REFUSE` `match_started` is not sent in a lobby;
+- **`HELLO` is accepted in every phase while there is room.** `REFUSE` `match_started` is not sent in a lobby;
   `match_full` reads "This lobby is full (four people)."
-- A member who joins while a match is open reads `HELLO_ACK.match` and sends `RECONNECT` for that `matchId` from an
-  empty log (length 0, 64 zeros), which the host already answers with the whole log (`checkReconnect`).
-- `RECONNECT` is how a member comes back in every phase, the lobby included (today `match_not_started`). It is
-  checked against the member's key as the lobby holds it, not against a match's roster (a watcher is in none). Its
-  signature is over the `matchId` of the envelope: the open match's, or the lobby code when the member holds no log.
+- **A member who joins while a match is open is given its log unasked.** In the same turn in which it accepts the
+  `HELLO` the host sends `HELLO_ACK` and then the whole log in `MATCH_LOG` pages, and **the host sends the logged
+  stream only to members whose log it has sent in full** (today `send('all')` reaches any socket that has said
+  `HELLO`). A client commits a logged frame only into a log it holds in full for that match. Without this a
+  `BALL_END` that falls between the `HELLO_ACK` and the log goes into the newcomer's empty log at index 0
+  (`ClientMatch.handle` commits it unconditionally) and the log that follows does not fit on it.
+- **`RECONNECT` is how a member comes back in every phase**, the lobby included (today `match_not_started`). It is
+  checked against the member's key as the lobby holds it, not against a match's roster (a watcher is in none). One
+  form for every case: the envelope's `matchId` and the signed body carry the lobby code, and the match the member
+  holds a log of goes in `match`. The host answers: the same match is open and the head is known → the entries
+  after it, as today, in pages; another match is open, or none → `restart`, and the open match's log in `MATCH_LOG`.
+  A member whose place is gone (`unknown_player`) falls back to a fresh `HELLO`, which a lobby takes while there is
+  room.
+- **A `RECONNECT` cannot be used twice.** Its signature covers the envelope's `seq`, and the host takes it only when
+  that `seq` is above the last it took from that member (`Session.checkSeq`, which runs on every frame already;
+  today the signature does not cover `seq`, so a captured `RECONNECT` can be sent again in a new envelope, and in a
+  lobby with no log its body would be the same all evening). A counter, not a nonce: a nonce needs an exchange
+  before the first frame on a new link. A lobby's PC that restarted has lost the counters; it keeps the last one
+  per member in its saved lobby (written with the 15 s heartbeat), so the window in which an old one would still
+  pass is that long, once.
 - `PARTICIPANT_UPDATE` counts in every phase for `rig`, `game`, `ballEndReady`, `stance`, `noCopy`, `ownGame` and
   `midnightMode`. A match's logged roster and fingerprint stay what its `MATCH_READY` said.
-- `MEDIA_SIGNAL`, `STATE`, `DMD_FRAME` and the logged stream go to every member, not to a match's roster
-  (`isParticipant`, `mirror` in `host.ts`).
-- The envelope's `matchId`: the lobby code on lobby messages (`START_REQUEST`, `END_REQUEST`, `TABLE_PICK`,
-  `PARTICIPANT_UPDATE`, `MEDIA_SIGNAL`), the open match's id on match messages.
+- `MEDIA_SIGNAL`, `STATE` and `DMD_FRAME` go to every member, not to a match's roster (`isParticipant`, `mirror` in
+  `host.ts`).
+- **The envelope's `matchId`**: the lobby code on lobby messages (`RECONNECT`, `START_REQUEST`, `START_CANCEL`,
+  `END_REQUEST`, `TABLE_PICK`, `PARTICIPANT_UPDATE`, `MEDIA_SIGNAL`), the open match's id on match messages. A
+  match frame with the id of a match that is over is dropped by whoever receives it. **Two checks a client does
+  not make today**, both in step 6 (§11.12): `ClientMatch.handle` reads no envelope `matchId` at all; and with
+  `grantSeq` starting at 1 in every match, `lastGrantSeqSeen` (its only guard against an old grant) is reset per
+  match, so a grant is also checked against `grant.matchId`, which is signed.
 - A drop of a member who is not holding the grant sends nothing and logs nothing (§11.8).
+- **No host transfer in a lobby** in the first version: with the lobby on, `transferHost` refuses and a client
+  never proposes itself. The engine's transfer code and its tests are not touched; they are the base of the
+  hand-over (§11.8a).
 
-**Why 7.** Each new key alone would have stayed 6 by the precedent of `ballEndReady`. Together they change what a
-peer must do: a 0.2.50 client closes the connection 20 s after `MATCH_END`, never asks for a start, never says
-whether it plays, and would take a `HELLO_ACK` in the middle of a game for nothing; a 0.2.50 host refuses a join
-after the first game and drops the three new messages. A lobby of mixed builds half works, which is worse than a
-refusal.
+**Why 7, and when.** Each new key alone would have stayed 6 by the precedent of `ballEndReady`. Together they change
+what a peer must do: a 0.2.50 client closes the connection 20 s after `MATCH_END`, never asks for a start, never
+says whether it plays, and would take a `HELLO_ACK` in the middle of a game for nothing; a 0.2.50 host refuses a
+join after the first game and drops the new messages. A lobby of mixed builds half works, which is worse than a
+refusal. **The version changes in the step in which the shell turns the lobby on (step 7), not when the schemas
+land:** until then the engine's lobby behaviour sits behind an option that is off (`HostOptions.lobby`,
+`ClientOptions.lobby`), no new message is sent, and the new keys of `HELLO_ACK` go out at their defaults, which a
+0.2.50 peer strips. Every build before step 7 plays with 0.2.50, so a fix can still be released on protocol 6.
 
-**How a 0.2.50 PC is refused, in a plain sentence.** Today it is not: `foreignVersionRefusal`
+**How a PC on another version is refused, in a plain sentence.** Today it is not: `foreignVersionRefusal`
 (`transport-ws.ts`, shared by the relay transport) answers a `HELLO` of another version with a `REFUSE` built in the
 host's own version, and the envelope's `v` is a literal, so the older client cannot decode the answer and reports a
-host that did not answer. Two changes, both in the step that makes main protocol 7:
+host that did not answer; and it reads `HELLO` only, so a `RECONNECT` of another version gets nothing at all and its
+sender waits out the whole host wait. Three changes, harmless on protocol 6 and so in step 1:
 
 - the `REFUSE` is written in the asker's version (its `v`; the shape of `REFUSE` is the same in 6 and 7), with the
   message "This lobby needs Castcade 0.2.51 or newer. Update Castcade on this PC (Settings, Check for updates) and
   join again." (0.2.51 stands for whichever release first carries protocol 7.) A 0.2.50 client shows it as "The
   host refused: …" (`match-host.ts` `joinMatch`). Not tried.
-- the new client, when a frame during a join does not decode and its JSON says `REFUSE` or another `v`, says "The
-  lobby's PC runs an older Castcade (protocol 6; this PC has 7). Ask its owner to update, then join again." instead
-  of the timeout.
+- a `RECONNECT` of another version is answered in the asker's version with a `RECONNECT_ACK` that does not accept
+  it. A 0.2.50 client knows no code that says why (`unknown_player` is the nearest it has; from protocol 7 the
+  code is `protocol_version`), so what it shows is "The host did not take this PC back into the match", at once
+  and not after three minutes. This is the case of the evening the update arrives: a lobby's PC that restarted into
+  the new version, and a client still on the old one coming back.
+- the new client, when a frame during a join or a rejoin does not decode and its JSON carries another `v`, says "The
+  lobby's PC runs another version of Castcade (protocol 6; this PC has 7). Both need the same: update, then join
+  again." instead of the timeout.
 
 ### 11.8 Drops and rejoins
 
 Ruling 8 as a rule of the engine: **a link that drops changes the game only for the person whose link it is, and
-only when the game needs that person.** Three pieces:
+only when the game needs that person.** A18, being built on another branch now, does three things for today's
+match: a disconnect of a player who is not up changes nothing for the player who is up, a relay drop has a few
+seconds' grace before it counts, and no media is made again. This design starts from A18 as it is merged and adds
+what a lobby needs on top:
 
-- **Away.** A member whose link drops is `away`: the row says so, the place is kept, and nothing is sent to the log.
-  A person who is away for 3 minutes (the time a client already waits for a host, `HOST_WAIT_MS`) loses the place;
-  a later return is a new join, if there is room. A18's few seconds of grace come first: a drop shorter than that
-  is not shown at all.
-- **No pause for a person who is not up.** `HostMatch.onPeerLeave` stops pausing for every dropped player; the
-  pause that `advance()` already raises when the next grant would go to a person who is gone is the only one for a
-  waiting player (it is what `protocol/docs/prose.md` describes: "If the next grant would go to a player the host
-  knows to be disconnected, the host sends `PAUSE(disconnect, player)` instead of the grant").
-- **No media closed on a drop** (§11.6).
-
-The 3 minutes of a person who is waited for at their turn do not run while the lobby's PC is itself cut off from
-ArcAid (`relay.onState` `reconnecting`): then everyone who came through ArcAid is away at once, and none of them is
-at fault.
+- **Away.** A member whose link drops (past A18's grace) is `away`: the row says so, the place is kept, and nothing
+  is sent to the log.
+- **Two clocks, and only two.**
+  - **The place**, for a member the game does not need (a watcher; anyone in the lobby or between games): 3 minutes
+    away, and the row goes. A later return is a new join: the `RECONNECT` is answered `unknown_player` and the PC
+    falls back to `HELLO`, which a lobby takes while there is room ("Rejoin the lobby" is offered for 20 minutes
+    after a restart and works either way).
+  - **The turn**, for a player: it runs **only from the pause at that player's own turn**, never during another
+    player's ball, and nothing is logged about a waiting player during another player's ball. 3 minutes after that
+    pause the lobby's PC forfeits them (`disconnected` in the `RESULT`) and the game goes on; its owner can do it
+    sooner (**Play on without Krobs**). A player who is waited for keeps their place for as long.
+- **Both clocks stop while the lobby's PC is itself cut off from ArcAid** (`relay.onState` `reconnecting`), and
+  start again from zero when the room is registered again: everyone who came through ArcAid is away at once then,
+  none of them is at fault, and a client's next ask for the room can be minutes away (§11.8a).
+- **Whose drop is it.** When the lobby's PC loses ArcAid, nobody is paused for it: it is the lobby's PC that is
+  away, for everyone (the row below, and §11.8a). A pause for a player is raised only for a link that is down while
+  the lobby's PC's own connection to ArcAid is up, or for a direct link.
 
 | Who drops | In the lobby, or between games | During a game |
 |---|---|---|
-| **A watcher** | `AWAY`. Back by itself (`RECONNECT`). Gone after 3 minutes | The same. No player sees anything but the row |
-| **A player who is waiting** | As a watcher. While away they do not count as set to Play (§11.4) | Nothing is logged and nothing pauses: the player up plays on with the same picture, sound and scoreboard. If the turn reaches them while they are away: `PAUSE(disconnect)`, "Waiting for Krobs to come back (2:41)". Back: their own `RESUME` (`resumeAfterMyDrop`), then the grant. Not back after 3 minutes, or when the lobby's PC presses **Play on without Krobs**: forfeited (`disconnected` in the `RESULT`) and the game goes on |
-| **The player who is up** | (nobody is up) | Their table stays theirs and nothing comes over it (the lock never goes on in a ball; D8.14). The others: `PAUSE(disconnect)` after A18's grace, "Krobs lost the connection: waiting (2:41)"; the picture and the voice go on if the path between the PCs is alive, since no media was closed. Back: `RESUME`, and a ball that ended meanwhile is reported once (§10.4, `TableBacklog`). Not back after 3 minutes: forfeited as above |
-| **The lobby's PC** | Every other PC: "MekelburgJ's Castcade closed or lost its connection: waiting up to 3 minutes for it." The voice between the others goes on (it never crossed that PC). Back: everyone returns by `RECONNECT`. Not back: "The lobby is closed: MekelburgJ's Castcade did not come back within 3 minutes", teardown, every table unlocked | The player up plays their ball to its end; no grant can follow it, so the game waits there. The same message, and nothing over the table of the player up. Back within the 3 minutes (about 2 through ArcAid, §10.5): the game goes on. Not back: the lobby and the match are over |
-| **ArcAid for a moment** (A18: four times in one night) | Everyone but the lobby's PC is away for those seconds and back; no row changes inside A18's grace | Nothing, unless a turn changes hands in those seconds: then a pause until the next player's link is back, with no media made again |
+| **A watcher** | `AWAY`. Back by itself (`RECONNECT`). The place goes after 3 minutes | The same. No player sees anything but the row |
+| **A player who is waiting** | As a watcher. While away they do not play a game that starts (§11.3) | Nothing is logged and nothing pauses: the player up plays on with the same picture, sound and scoreboard. If the turn reaches them while they are away: `PAUSE(disconnect)`, "Waiting for Krobs to come back (2:41)", counted from that pause. Back: their own `RESUME` (`resumeAfterMyDrop`), then the grant. Not back after the 3 minutes, or Play on without Krobs: forfeited, and the game goes on |
+| **The player who is up** | (nobody is up) | Their table stays theirs and nothing comes over it (the lock never goes on in a ball; D8.14). `PAUSE(disconnect)` for them, the pause at their own turn. The others keep the picture while it arrives (§11.6), and the scoreboard says `KROBS AWAY`. Back: `RESUME`, and a ball that ended meanwhile is reported once (§10.4, `TableBacklog`). After 3 minutes: **if their picture or state stream still reaches the lobby's PC they are playing, and nothing is done by itself**; the lobby PC's owner is asked: "Krobs has been out of the lobby's reach for 3 minutes and is still playing. **Keep waiting** · **End Krobs' ball** (Pass the turn) · **Play on without Krobs**". If nothing of theirs arrives any more: forfeited, as a waiting player is |
+| **The lobby's PC** | §11.8a | §11.8a |
+| **ArcAid for a moment** (A18: four times in one night), which is the lobby's PC losing it | Inside A18's grace nothing is shown. Past it: every other member sees the lobby's PC away; both clocks stand still | The ball in play goes on. No pause is raised for anyone. If the ball ends before ArcAid is back, the game waits there (§11.8a) |
 
 **A restart of Castcade (A14.5, §10) in a lobby.**
 
-- `match-resume.json` is written from the moment a lobby is opened or joined, not from `MATCH_READY`: the code or
-  invite, this person's id, name and choice, the other names, and the open match's log when there is one. The
-  lobby's PC also saves what only it knows: the members with their keys and choices, the table, the number of the
-  next match, the balls per game. (§10.5: "A host's lobby is not saved" stops being true.)
+- `match-resume.json` becomes **version 2** and is written from the moment a lobby is opened or joined (today
+  `saveResume` returns in the lobby): the code or invite, this person's id, name and choice, the other names, and
+  the open match's log when there is one. The lobby's PC also saves what only it knows: the members with their keys
+  and choices, the table, the starter, the number of the next match, the balls per game, the last `seq` it took
+  from each member. (§10.5: "A host's lobby is not saved" stops being true.) A version 1 record is dropped: it is
+  of another protocol.
+- `rejoin()` today throws a record away when this PC is not in the saved log's roster ("it was not played with this
+  PC's match keys"). That would catch every watcher and a lobby's PC that only watches: the check becomes "this PC's
+  key is the one the record was saved with", and `resumeFromLog` stops insisting that the host is in the roster.
 - At start, as today: in the lobby under 75 s ago, or restarted for an update → back without asking; else the Match
   tab offers "You were in a lobby with Krobs and ChuckRibbits. **Rejoin the lobby** / **Forget it**" (the lobby's
-  PC: **Open it again**). The bounds stay 20 minutes for a client and 3 for the lobby's PC.
+  PC: **Open it again**). The bound is 20 minutes for both (§11.8a).
 - A client comes back with `RECONNECT` from its saved head. The match it was in still open: the entries since, as
-  today. Another match or none: `restart`, and it is in the lobby as it is now. Its choice is the one the lobby's
-  PC holds for it. A player's table events from the time Castcade was closed are handled as in §10.4.
+  today. Another match or none: `restart`, and it is in the lobby as it is now. Its place gone: `HELLO`. Its choice
+  is the one the lobby's PC holds for it. A player's table events from the time Castcade was closed are handled as
+  in §10.4.
 - The lobby's PC opens the same code again (§10.3), with every member away until they return; an open match is
-  taken up from its log (`resumeFromLog`, which today insists that this PC is in the match's roster: it may not be).
+  taken up from its log.
 - Voice, video and state stream are made again for the PC that restarted (its processes are gone), and only for it.
+
+### 11.8a The one PC a match depends on
+
+**In the first version the lobby's PC is the one PC whose loss stops a match, and this is accepted, not solved.**
+Every other PC can drop, restart or leave without the player who is up noticing. When the lobby's PC goes (its
+Castcade closes, its network or its connection to ArcAid drops), also when its owner was only watching:
+
+- **The ball in play finishes undisturbed.** The table of the player who is up stays theirs, nothing comes over it,
+  the picture and the sound keep reaching everyone (they never crossed that PC), and everyone keeps talking. The
+  scores on the scoreboard stop moving, because `STATE` goes through the lobby's PC; its title says `LOBBY PC AWAY`.
+- **Then the match waits.** When the ball ends, the player's own companion locks their table (new: it knows the ball
+  is over; today the lock waits for the host's echo of the `BALL_END`) and keeps the ball end to report, as
+  `TableBacklog` does for a dropped link (§10.4); nobody can be granted the next turn. Every panel says: "MekelburgJ's PC
+  is away. The match goes on when it is back: waiting up to 20 minutes (18:12 left). You can keep talking; Leave
+  lobby ends the wait for you."
+- **For 20 minutes**, the time a client's saved match is good for today (`CLIENT_RESUME_MAX_MS`, the protocol's own
+  limit for one ball), where today a client waits 3 minutes and, through ArcAid, about 2 (§10.5). The room on ArcAid
+  dies 30 s after its host's socket, but the returning PC registers the same code again (§3a), so the limit is only
+  how often a waiting PC may ask for a room that is not there: ArcAid holds a device back at eight misses in ten
+  minutes. A waiting PC asks at once, after 2 s, after 6 s, and then every 150 s (six asks in the first ten minutes,
+  four in every ten after: `RejoinPolicy` learns to go on asking slowly instead of stopping after five). So a
+  lobby's PC that comes back is found within two and a half minutes at worst, and at once on a direct link. The
+  saved lobby of the lobby's PC is good for the same 20 minutes (today 3).
+- **Back**: every member returns by `RECONNECT`, the ball end that was kept is reported, the next grant goes out.
+  The clocks of §11.8 start from zero.
+- **Not back in 20 minutes**: "The lobby is closed: MekelburgJ's PC did not come back", teardown, every table
+  unlocked. The match is over without a result for the game that was open.
+
+Two things in the first version keep this to the one case:
+
+- **End my ball** (§11.2): no match needs the hands of the lobby PC's owner. A player on a table that cannot report
+  ball ends, or with a stuck ball, moves the match on themselves.
+- A player who is idle on their ball while the owner of the lobby's PC is away from the keyboard is still only moved
+  on by the 20-minute ball limit, Pass the turn, or their own End my ball. That stays.
+
+**The hand-over of a lobby to another PC is the next work after the first version** (A10.2, to be filed by the lead
+in this shape; not a step of §11.12). What it needs:
+
+- **The engine**: the transfer that exists (`HOST_TRANSFER`, `host_requested` and `host_left`; `commitTransfer`,
+  `resumeFromLog`; tested by `ws-transfer.test.ts` and the two `four-player-transfer` scenarios, which this design
+  leaves untouched) works during a game and for a match's roster. A lobby needs it also between games and with no
+  match open, where there is no log to anchor it: a signed copy of the lobby's state takes the log's place.
+- **What is carried**: the members with their keys and choices, who is away, the table pick, the starter, the number
+  of the next match, the balls per game, each member's last `seq`, the table differences. A successor named in
+  advance (a `HELLO_ACK` key) gets this copy on every change, so it can take over a lobby whose PC is gone and not
+  only one that hands over politely.
+- **ArcAid's relay**: a room belongs to the device that made it, and another device's `match:host` for the same code
+  is `code_in_use`. It needs a way for the room to change hands: the host naming a successor that may claim the
+  code, at once when it hands over and after the 30 s when it is gone. `HOST_TRANSFER.newHostEndpoint` is a `ws://`
+  address today and needs an answer for a room.
+- **The media** needs nothing: it never crossed the lobby's PC.
 
 ### 11.9 The screens
 
 **The Match tab, with no lobby.** Two cards where Host a match and Join a match are (`Match.tsx`, `OneStep.tsx`):
 
 - **Open a lobby**: the table picker, Balls per game, Your name, the button **Open lobby**. Under it: "You get a
-  code to send. Everyone who joins can talk, play or watch. Play as many matches as you like without leaving."
-- **Join a lobby**: Code or link, **Join**. A link that asks first (§9.2) asks: "Join this lobby? … Joining turns
-  your microphone on for the people in it and starts the lobby's table in VPX."
+  code to send. Everyone who joins can talk, play or watch. Play as many matches as you like without leaving. Your
+  microphone is on for the others from the moment you open it."
+- **Join a lobby**: Code or link, **Join**, and "Your microphone is on for the people in the lobby from the moment
+  you join." A link that asks first (§9.2) asks: "Join this lobby? … Joining turns your microphone on for the
+  people in it and starts the lobby's table in VPX."
+
+The sentence about the microphone goes onto today's Host and Join cards already in step 1, the step that turns the
+microphone on at the join.
 
 **The Match tab, in a lobby**, top to bottom:
 
-- `Lobby JHDFEF · Through ArcAid · 3 of 4 here`, and the Invite card of today (the code, the link, Copy, the chat
-  line "Castcade lobby on Monster Bash: https://arcaid.app/castcade/join/JHDFEF").
+- `Lobby JHDFEF · Through ArcAid · 3 of 4 here`, and the Invite card **on every member's tab**, not only the
+  opener's (`one-step.ts` `linkOf` gives a link to the host alone today): the code, the link, Copy, the chat line
+  "Castcade lobby on Monster Bash: https://arcaid.app/castcade/join/JHDFEF". The notices of `one-step.ts` say
+  "lobby" where they say "match" ("That lobby is gone or cannot be reached: ask for a new link.").
 - **In the next match I** `[ Play ]` `[ Watch ]`. Under it, when it applies: "You are watching this match. You are
-  in from the next one." / "You play this match. You watch from the next one."
-- The people, one row each:
-  `MekelburgJ (you) · opened the lobby · VR · PLAY` ·
+  in when somebody starts a new match." / "You play this match. You sit out from the next game."
+- The people, one row each, the opener's like any other:
+  `MekelburgJ (you) · opened the lobby · VR · PLAY · starts from the table` ·
   `Krobs · VR · PLAY · LOADING` ·
   `ChuckRibbits · VR · WATCH · NO TABLE` ·
   `Dana · PC · PLAY · AWAY 0:42`.
 - `Table: Monster Bash (Williams 1998) · picked by Krobs` and **Change table…**: the picker, then "Everyone's VPX
   closes its table and opens Congo. The match that is open ends. **Change table** / Cancel". On a PC with the
-  setting off: "Krobs picked Congo. **Open it**".
+  setting off, or with a table Castcade cannot follow: "Krobs picked Congo. **Open it**" / "Close your table:
+  Castcade opens Congo when it is closed."
 - The start button, whose words and line say what a press does:
   - **Start match** · "MekelburgJ and Krobs play. ChuckRibbits watches."
   - **Next game** · "Game 3 of this match. MekelburgJ 1 win, Krobs 1."
-  - **Start a new match** · "Dana plays too now: the last match is final at MekelburgJ 2, Krobs 1."
+  - beside it, when somebody outside the match is set to Play, **Start a new match** · "Dana plays too. The match
+    that is open ends at MekelburgJ 2, Krobs 1."
   - greyed, with the check that fails (§11.4): "Two people have to be set to Play."
-  - while a start waits: "Krobs starts the match once Dana's table is open."
-- Between games **End match** · "Closes the tally. Everyone stays in the lobby." During a game, a player has **Give
-  up this game**, and the lobby's PC has **End match for everyone**, **Pass the turn** and **Resume** as today.
+  - while a start counts down: "Krobs starts the match: Krobs, MekelburgJ · 4" and **Cancel the start**.
+  - while a start waits: "Krobs starts the match once Dana's table is open." and **Start without Dana** / **Cancel
+    the start**.
+- During a game: the player who is up has **End my ball** ("End your ball now at 12,345,670? The turn passes.");
+  a player has **Give up this game**; the lobby's PC has **End match for everyone**, **Pass the turn** and
+  **Resume** as today, **Play on without Krobs** while a player is waited for, and the question of §11.8 for a
+  player who is up and out of reach. Between games, **End match** · "Closes the tally. Everyone stays in the lobby."
 - **Leave lobby**; on the lobby's PC **Close lobby** · "This closes the lobby for everyone."
 
 **The panel** (the headset, or the desktop panel window; `panel-page.ts` `headerText`, `controller.ts`
 `lobbyMessage`):
 
 - In the lobby the header is `LOBBY · 3 HERE` (today `WAITING FOR THE START`), `STARTING IN 5` in a countdown,
-  `CHANGING TABLE` while tables are being opened. The rows are the members with `PLAY` / `WATCH`. The line:
-  "Everyone in? Anyone set to Play starts a game on their table (or Start match in the menu)" · "Waiting for a
-  second player: only MekelburgJ is set to Play" · "Krobs starts the match once Dana's table is open" · for a
-  watcher "You are set to Watch: the match starts without you". The lobby panel gets out of the way of a free table
-  after 8 s as today (D8.9).
+  `CHANGING TABLE` while tables are being opened. The rows are the members with `PLAY` / `WATCH`. The line names
+  the starter, so that one person and no other reaches for their Start key: to the starter "Everyone in? Start a
+  game on your table (or Start match in the menu)"; to everyone else "Krobs starts the match from his table. To
+  start it yourself: Start match in the menu"; "Waiting for a second player: only MekelburgJ is set to Play";
+  "Krobs starts the match once Dana's table is open"; to a watcher "You are set to Watch: the match starts without
+  you". The lobby panel gets out of the way of a free table after 8 s as today (D8.9).
 - In a game the header is today's: `YOUR BALL 2` for the player up, `KROBS IS UP` for everyone else, a watcher
   included. Under the score strip: `Watching: ChuckRibbits, Dana`.
-- Between games: `GAME 2 OVER`, the standings and the tally as today, and "Next game: anyone set to Play starts a
-  game on their table (or Next game in the menu)".
+- Between games: `GAME 2 OVER`, the standings and the tally as today, and to the starter "Next game: start a game
+  on your table (or Next game in the menu)", to the others "Next game: Krobs starts a game on his table. To start
+  it yourself: Next game in the menu".
 - After End match: `MATCH OVER` with the final tally for 20 s (the time a client's panel lingered before it
-  closed), then the lobby.
+  closed), then the lobby. After End match for everyone: `MATCH ENDED · GAME 3 NOT FINISHED` (§11.2).
 
 **The in-game menu** (`match-menu.ts` `menuItems`), for every member, top to bottom: **Start match** / **Next game**
-/ **Start a new match** (off with the sentence of the check that fails; a second choose where Start anyway is
-needed); **Play or watch** `PLAY` (a choose flips it; the note: "You watch from the next match"); the three volumes;
-Microphone; Put the scoreboard where I look; **Give up this game** (a player, during a game: "Choose again to give
-up this game"); **End match** (between games: "Choose again to end the match; everyone stays in the lobby");
-**Leave lobby** ("Choose again to leave the lobby"; the lobby's PC: "Choose again to close the lobby for everyone");
-Close menu. The table is changed on the Match tab only.
+(off with the sentence of the check that fails; a second choose where Start anyway is needed; while a start waits
+the line is **Start without Dana**, while one counts down **Cancel the start**); **Start a new match** (when it
+applies; "Choose again: the open match ends"); **Play or watch** `PLAY` (a choose flips it); the three volumes;
+Microphone; Put the scoreboard where I look; **End my ball** (the player who is up: "Choose again to end your ball
+at 12,345,670"); **Give up this game** (a player, during a game: "Choose again to give up this game"); **End
+match** (between games: "Choose again to end the match; everyone stays in the lobby"); **Leave lobby** ("Choose
+again to leave the lobby"; the lobby's PC: "Choose again to close the lobby for everyone"); Close menu. The table
+is changed on the Match tab only.
 
 **The scoreboard** (`scoreboard-page.ts`) is the same card for a watcher as for a player: `GAME 2 · BALL 1 OF 3`,
-the players in turn order with the one who is up marked, the tally of the open match. It is shown while a game is
-on and not in the lobby (`scoreboardWanted`), as today.
+the players in turn order with the one who is up marked, the tally of the open match; `KROBS AWAY ·` or `LOBBY PC
+AWAY ·` before the title when that is so. It is shown while a game is on and not in the lobby (`scoreboardWanted`),
+as today.
 
-`PanelState` (`match-media-types.ts`) gains the lobby's rows (`members`: id, name, Play or Watch, the flags) and this
-person's own choice. `players` stays the players of the match, so the strip, the scoreboard and `tallyText` do not
-change.
+`PanelState` (`match-media-types.ts`) gains the lobby's rows (`members`: id, name, Play or Watch, the flags), the
+starter, this person's own choice and who a pause is for. `players` stays the players of the match, so the strip,
+the scoreboard and `tallyText` do not change.
 
 ### 11.10 ArcAid
 
@@ -1370,15 +1636,17 @@ change.
 | Ends 12 h after it was made (`MATCH_ROOM_TTL_MS`), whatever happens in it; nothing extends it | An evening fits. A lobby left open past it gets `expired`, which the host already answers by registering the same code again (§3a) |
 | 8 sockets, the host's included (`MATCH_MAX_SOCKETS`). A device that comes back on a new socket holds two until the old one times out | Enough for four |
 | `match:lock` has no unlock; a locked room refuses a device that never had a seat | **A lobby is never locked.** The companion stops calling `relay.lock()` (and `REHOST_LOCK_MS` with it) |
-| Kept in memory; a deploy ends every room, and nobody is sent `match:closed` (the code that would is only run by the tests) | The sockets drop, the host registers the code again, every member relinks (§3a). With §11.8 that is seconds of `AWAY`, not a pause |
-| The host has 30 s to come back (`MATCH_HOST_GRACE_MS`); clients are not told it is away | As today (§10.5) |
+| Kept in memory; a deploy ends every room, and nobody is sent `match:closed` (the code that would is only run by the tests) | The sockets drop, the host registers the code again, every member relinks (§3a). By §11.8 that is the lobby's PC away for some seconds, not a pause |
+| The host has 30 s to come back (`MATCH_HOST_GRACE_MS`); clients are not told it is away; after it the room is closed | The returning PC registers the code again and the members find it by asking (§11.8a) |
+| A device is held back for 15 minutes after eight wrong or missing codes in ten (`MATCH_MISS_LIMIT`) | What sets how often a waiting PC may ask: six times in the first ten minutes, four in each ten after (§11.8a) |
+| A frame is 256 KB at most (`MATCH_MAX_DATA_BYTES`) | A whole log is sent in pages of 100 entries, about 50 KB (§11.7). Today a `RECONNECT_ACK` past about 500 entries is reported and not sent (`docs/arcaid-side-changes.md` §4a) |
 | Two roles, host and client; a client reaches only the host | A watcher is a client like any other. Nothing to add |
 | 200 frames per 10 s per client socket and per destination from the host | A player's `STATE` to three others is half a bucket, as with three clients today |
 | No link between a room and a Throwdown; the roster check is an empty seam (`admitJoin`) | See below |
 
 What an unlocked room costs: the six-letter code is the only key for as long as the lobby is open. Any paired PC
-that has it can take a place until four are in (ArcAid still stops guessing: eight wrong codes in ten minutes hold a
-device back for fifteen). The members see who joined, and it is a room of friends; §11.13 has the cheap switch.
+that has it can take a place until four are in (ArcAid still stops guessing, by the row above). The members see who
+joined, and it is a room of friends; §11.13 has the cheap switch.
 
 **Items the lead can file** (ArcAid's section W, mirrored in section F here):
 
@@ -1386,15 +1654,25 @@ device back for fifteen). The members see who joined, and it is a room of friend
    enforced where the seat is given and not only at `HELLO`.
 2. *Later, small:* `match:closed {reason: 'server_restart'}` sent when the process is told to stop, so a deploy is
    told and not guessed from a dead socket.
-3. *Later:* the 12 hours counted from the last frame, not from creation, or left as it is: the companion heals it.
-4. *For A17.1:* more than 8 sockets in a room.
-5. *For A5 / F6, a change of plan to write down now:* **a room is no longer one Throwdown.** F6 (ArcAid W8.3, W8.4)
+3. *Later, small:* a PC that waits for a code is told when it is hosted again, instead of asking every 150 s under
+   the lockout (§11.8a).
+4. *Later:* the 12 hours counted from the last frame, not from creation, or left as it is: the companion heals it.
+5. *For A17.1:* more than 8 sockets in a room.
+6. *For the hand-over (§11.8a):* a room that can change hands to a successor its host named.
+7. *For A5 / F6, a change of plan to write down now:* **a room is no longer one Throwdown.** F6 (ArcAid W8.3, W8.4)
    meant to admit a device to a room by the roster of the Throwdown the code names. A lobby's room outlives its
    matches and holds people who are in no roster. So: a room is admitted by the lobby's own list (the invited
    friends of A14.8 / F28, or today's "has the code"), and a Throwdown is made **per match**, from what the lobby's
    PC posts: the match id `<code>-<n>`, the players of its `MATCH_READY`, one `RESULT` per game with the series
-   (§8's request, unchanged). Watchers are posted nowhere. Nothing is posted today (A5 waits on F6).
-6. *For A14.8 / F28:* what a friend is invited to is a lobby ("Krobs is online: invite to my lobby"), not a match.
+   (§8's request, unchanged). Two notes for that ingest:
+   - **the poster, and the key of `RESULT.hostSignature`, may belong to a device that is not on that Throwdown's
+     roster** (the lobby's PC only watched). ArcAid takes the host's key from the paired device that posts
+     (`witness_devices.public_key`), not from the roster;
+   - **`<code>-<n>` is unique only for a room's life**: codes are six random letters and come round again. ArcAid
+     keys a match on the hash of its log (`RESULT.logHash` of its first game), not on the id.
+   Watchers are posted nowhere. A game ended for everyone has no `RESULT` and is posted nowhere. Nothing is posted
+   today (A5 waits on F6).
+8. *For A14.8 / F28:* what a friend is invited to is a lobby ("Krobs is online: invite to my lobby"), not a match.
 
 ### 11.11 Five or more (A17.1)
 
@@ -1409,59 +1687,85 @@ What stops at four is the media, as D9 says, not this design:
   - A watcher is in no logged message. A match's log, its `RESULT` and what ArcAid ingests are the same with one
     watcher or with fifty; the limit of four on `playerOrder` is the limit on players, which the rulings do not ask
     to lift.
-  - The size of the lobby is one constant in the engine (`onHello`'s `>= 4`), with no schema behind it
-    (`HELLO_ACK.participants` has no maximum).
+  - The size of the lobby is one number in the engine (`HostOptions.lobby.size`; today `onHello`'s `>= 4`), with no
+    schema behind it (`HELLO_ACK.participants` has no maximum).
   - Who a PC holds media connections with comes from one list, the members, in one place per kind (`onLobby`,
-    `syncNativeVideo`, `syncStream`). A forwarder changes the answer of those three, not the lobby.
-  - Match control is already a star through the lobby's PC, with a rate counted per destination.
+    `syncNativeVideo`, `syncStream`), and the rule that holds a newcomer's `video` and `stream` back from a person
+    on a ball is the same rule a forwarder would use. A forwarder changes the answer of those three, not the lobby.
+  - Match control is already a star through the lobby's PC, with a rate counted per destination, and a log is
+    already sent in pages.
   - `Stance` is an enum, and "does this PC need the 2D picture" is a fact the tunnel already knows (it is watching
     in 3D or it is not): the first saving, no encoder for a PC that watches in 3D, needs no new message.
 
 ### 11.12 The build plan
 
-Each step is one pull request and leaves main releasable. **Steps 1 to 3 change no message: main stays protocol 6
-and plays with 0.2.50. Step 4 makes main protocol 7**, because it is the first that changes what a peer must do
-(§11.7); from there to step 8 main is a protocol 7 build that still plays one match per lobby until the step that
-changes it, and it is released once, after step 8. Sizes: S about a day of an agent's work, M two or three, L a week.
+Each step is one pull request and leaves main releasable. **Steps 1 to 6 leave main on protocol 6 and playing with
+0.2.50; step 7 makes main protocol 7.** That is possible because the engine's lobby behaviour (steps 5 and 6) sits
+behind an option that the shell only turns on in step 7 (§11.7): with it off the engine is today's engine, which is
+proved by today's suites passing untouched. So a fix can be released on protocol 6 at any time before step 7, and
+from step 7 on main is a lobby build that is released once, after step 10. Step 1 starts from A18 as it is merged
+(§11.8) and repeats none of it. Sizes: S about a day of an agent's work, M two or three, L a week.
 
-| # | Step | Protocol | Size | Tests |
-|---|---|---|---|---|
-| 1 | **The voice from the join on, and nothing closed on a drop.** Voice peers follow the lobby roster (`MatchController.onLobby`), a dropped link removes no peer (on top of A18, which must be merged first). A 0.2.50 PC in the same lobby holds the early offer until its own `MATCH_READY` (`SignalingMesh.receive` keeps 64 early signals), so the voice with it starts when it did before | 6 | S | `controller.test.ts`: "the voice is up in the lobby", "a dropped link keeps its voice peer"; `main/match-host-orderings.test.ts`: every ordering still passes |
-| 2 | **`match-host.ts`: what ends with a match, what ends with the lobby.** `teardown` split in two with no change in behaviour (both halves still run together) | 6 | M | The existing suites unchanged; `main/match-host.test.ts`: "the match half leaves the voice, the video mesh and the tunnel attached" |
-| 3 | **A table that is open and wrong is closed and the right one opened** (`launch/vpx-close.ts`, the wish in `one-step.ts`, the fork's `quit` in castcade-vpx). Useful by itself: the host opens another table in today's lobby and every joined PC follows the change of `hostGame` (from one named table to another; a table that was open at the join is still kept) | 6 | M | `launch/vpx-close.test.ts` (the three rungs against a scripted fork and a fake window); `one-step.test.ts`: "another table is open: closed, then started", "a game is running: nothing closes", "no copy: nothing closes". Rig: check 9 below |
-| 4 | **Protocol 7: the lobby in the protocol and the engine.** The schemas of §11.7, `version.ts`, the prose section, `SPEC.md` regenerated, the refusal in the asker's version. `HostMatch` keeps its members for its whole life, takes a `HELLO` in every phase, starts a match with the people set to Play (`start({ players })`, the lobby's PC allowed out of it), and at `MATCH_END` goes back to the lobby with a new log (`Session.newMatch()`); `ClientMatch` the same (its per-match counters start over: `lastGrantSeqSeen`, `signedGame`, `resultsReceived`). The shell still leaves at a match's end, as today: the host's End match sends `MATCH_END`, then `LOBBY_CLOSED` | **7** | L | `match/lobby.test.ts` on `MemoryBus`; fakeclient scenarios `lobby-two-matches`, `lobby-watcher`, `lobby-host-watches`, `lobby-join-mid-game`, `lobby-series-then-new-match` (the scenario file gets `matches: []` and a `stance` per player); `protocol` generate `--check`; `transport-ws.test.ts`: "a HELLO of protocol 6 is refused in protocol 6" |
-| 5 | **Requests and drops in the engine.** `START_REQUEST` with the checks of §11.4 (`HostMatch.requestStart`), `END_REQUEST`, `TABLE_PICK`, `away`, `RECONNECT` in every phase and `restart`, no pause for a person who is not up, the forfeit after 3 minutes | 7 | L | fakeclient `lobby-start-by-client`, `lobby-start-from-client-table`, `lobby-watcher-drops`, `lobby-waiting-player-drops`, `lobby-player-up-drops`, `lobby-rejoin-other-match`; `match/lobby-start.test.ts` (one test per row of the table in §11.4); `fakeclient/src/relay.test.ts`: a relay drop during a ball pauses nobody |
-| 6 | **The lobby in the shell.** `Active` lives across matches; the controller returns to the lobby; no `relay.lock()`; Play / Watch, Start, End match and Give up this game as IPC; a watcher's lock, view, sound and 3D; `match-resume.json` from the join | 7 | L | `main/match-host-lobby.test.ts` (two and three real match hosts, a driven witness): two matches with the voice peers untouched, a watcher locked and shown the player up, a watcher in a game of their own left alone, the lobby's PC watching, a restart in the lobby and in a match; `main/match-host-stream3d.test.ts`: a watcher's fork is sent to watch |
-| 7 | **The screens.** The Match tab, the panel's lobby view and `Watching:` line, the menu's lines, the words of §11.9 | 7 | M | `match-menu.test.ts`, `panel-page.test.ts` (`headerText`, the rows), `scoreboard-page.test.ts` (a watcher's card), the renderer's view tests |
-| 8 | **The table changes in a lobby.** `TABLE_PICK` wired to step 3, the rows `NO TABLE` / `OTHER TABLE` / `OWN GAME`, the open match ended, the 3D wait after a change | 7 | M | fakeclient `lobby-table-change`; `one-step.test.ts`: "the lobby's table changed: this PC follows", "Change tables for me off: it asks"; `main/match-host-lobby.test.ts`: a match on the new table starts with the voice peers untouched |
+| # | Step | Protocol | Size | New tests | Existing suites |
+|---|---|---|---|---|---|
+| 1 | **The voice from the join on.** Voice peers follow the lobby roster (`MatchController.onLobby`); `addPeer` for a peer already held makes no new connection (`rtc-host.ts`); the microphone sentence on the Host and Join cards; the refusals in the asker's version (§11.7). A 0.2.50 PC in the same lobby holds the early offer until its own `MATCH_READY` (`SignalingMesh.receive` keeps 64 early signals), so the voice with it starts when it did before | 6 | S | `controller.test.ts`: "the voice is up in the lobby"; "MATCH_READY, NEXT_GAME and a reconnect make no `addPeer` / `removePeer` call that opens or closes a connection"; `rtc-host.test.ts`: "addPeer for a peer already held is not passed to the page"; `transport-relay.test.ts` and `fakeclient/src/ws-smoke.test.ts` (where the refusal of another version is tested today): "a HELLO, and a RECONNECT, of another version are answered in that version" | Change: `controller.test.ts` and `main/match-host.test.ts` where they expect the peers at `MATCH_READY`; the two just named, where they expect the `REFUSE` in the host's version. Untouched: `rtc-signaling.test.ts` (the mesh's `add` keeps its meaning), `engine`, `series`, `turn-pass`, `restart`, the rest of fakeclient, `main/match-host-orderings.test.ts` |
+| 2 | **`match-host.ts`: what ends with a match, what ends with the lobby.** `teardown` split in two by the list of §11.6, with no change in behaviour (both halves still run together) | 6 | M | `main/match-host.test.ts`: "the match half leaves the voice, the video mesh, the tunnel, the overlay and the menu keys as they are" | Untouched, all of them: `main/match-host*.test.ts`, `main/match-restart.test.ts`, `main/witness-restart.test.ts`, `main/one-step.test.ts` |
+| 3 | **A table that is open and wrong is closed and the right one opened** (`launch/vpx-close.ts`, the wish in `one-step.ts`, the fork's `quit` in castcade-vpx). It has an effect by itself: a host who opens another table in today's lobby moves every joined PC to it (a change of `hostGame` from one named table to another; a table that was open at the join is still kept), so the two cases in which nothing may be closed are tests of this step | 6 | M | `launch/vpx-close.test.ts` (the three rungs against a scripted fork and a fake window); `one-step.test.ts`: "another table is open: closed, then started", "a game is running: nothing closes", "an initials hold, and the window of a finished game: nothing closes", "a table Castcade cannot follow (basic mode): never closed, the player is asked", "no copy: nothing closes". Rig: check 11 below | Change: `one-step.test.ts` gains cases. Untouched: its "a table that is already open is used" cases, `main/match-host-orderings.test.ts` |
+| 4 | **For the player who is up, and the people watching them.** End my ball (`BALL_END` `manual`: the Match tab and the menu); a pause for the player up keeps the others' picture (`vrViewMode`, `syncStream`, the scoreboard's title, §11.6) | 6 | M | `controller.test.ts`: "End my ball reports the grant's ball at the last score", "paused for the player up with the picture arriving: spectate"; `main/match-host-stream3d.test.ts`: "a pause for the player up keeps the 3D watch; the re-issued grant does not start it over; no picture: the panel"; `match-menu.test.ts`: the End my ball line; `scoreboard-page.test.ts`: the `AWAY` title | Change: the `vrViewMode` cases of `controller.test.ts` that expect the panel at a pause. Untouched: its D8.14 cases, `turn-pass.test.ts`, `engine.test.ts` (a `manual` `BALL_END` is an ordinary one to the host) |
+| 5 | **The engine, behind the option (1): the lobby and its matches.** The schemas and the prose of §11.7 (nothing new is sent with the option off; `PROTOCOL_VERSION` stays 6, and `version.ts` says so). With `lobby` on: `HostMatch` keeps its members for its whole life, the lobby's PC a member row, takes a `HELLO` in every phase and answers with the log in pages, sends the logged stream only to members that hold it, starts a match with given players (the lobby's PC allowed out of them), goes back to the lobby at `MATCH_END` with a new log (`Session.newMatch()`), refuses a transfer; `ClientMatch` the same (its per-match counters start over: `lastGrantSeqSeen`, `signedGame`, `resultsReceived`) | 6 | L | `match/lobby.test.ts` on `MemoryBus`; fakeclient scenarios `lobby-two-matches`, `lobby-watcher`, `lobby-host-watches`, `lobby-join-mid-game` (a `BALL_END` lands between the `HELLO_ACK` and the last page), `lobby-long-log` (a log of 600 entries, in pages, through the relay double), `lobby-series-then-new-match` (the scenario file gets `lobby: true`, `matches: []` and a `stance` per player); `protocol` generate `--check` | **Untouched, as the proof that the option gates it:** `engine`, `series`, `turn-pass`, `restart`, `participant-update`, `media-signal`, `state`, `start-wait-3d`, the nine scenarios of `scenarios.test.ts` (its loader learns the new keys), `gate`, `relay`, `ws-reconnect`, `ws-smoke`, `ws-transfer`. Change: `protocol/test/messages.test.ts` and `generated.test.ts` (new shapes) |
+| 6 | **The engine, behind the option (2): asking, and dropping.** `START_REQUEST` with the checks of §11.4 at the request and at the countdown's end (`HostMatch.requestStart`), the starter, the countdown on every start and `START_CANCEL`, Next game against Start a new match, `END_REQUEST`, End match for everyone with no result, `TABLE_PICK`, `away`, the two clocks and what stops them, `RECONNECT` in every phase with its `seq` signed, the fallback to `HELLO`, the two client checks of §11.7 | 6 | L | `match/lobby-start.test.ts` (one test per row of the table in §11.4, at the request and at the countdown's end; "two Starts in the same countdown: one game, the starter first"; "a non-starter's game_start is never a request"); fakeclient `lobby-start-by-client`, `lobby-start-from-starter-table`, `lobby-two-starts`, `lobby-start-without`, `lobby-watcher-drops`, `lobby-waiting-player-drops`, `lobby-player-up-drops`, `lobby-rejoin-other-match`, `lobby-ended-for-everyone` (no `RESULT`, the tally unchanged), `lobby-reconnect-replayed` (refused); `fakeclient/src/relay.test.ts`: "in a lobby a relay drop during a ball pauses nobody" | Untouched: the same list as step 5. (`silent-client-pause` is a ball-end timeout, not a drop, and stays as it is. The tests that hold today's pause on a drop are `engine.test.ts` "a dropped client pauses the match…", `ws-reconnect.test.ts`, `relay.test.ts` and `restart.test.ts`: they are A18's to change, not this step's, and with the option off this step leaves them as A18 left them) |
+| 7 | **The shell turns the lobby on: protocol 7.** `PROTOCOL_VERSION` 7. `Active` lives across matches; the controller returns to the lobby; no `relay.lock()`; Play / Watch, the three starts, Cancel, End match and Give up this game as IPC, with plain controls on the Match tab; a PC not in `playerOrder` reports nothing from its table (§11.3); a watcher's lock, view, sound and 3D; a game of one's own left alone; the locks of §11.2 and of a countdown; a newcomer's `video` and `stream` held back from a person on a ball; the waits of §11.8a (`RejoinPolicy`, 20 minutes) | **7** | L | `main/match-host-lobby.test.ts` (two and three real match hosts, a driven witness): two matches with not one `addPeer` or `removePeer` between them; "a watcher's table game ends, and its table closes, during a match: nothing is sent, nothing is on its panel"; a watcher locked and shown the player up; a watcher in a game of their own left alone; the lobby's PC watching; a join during a ball: the video mesh and the tunnel of the player up get the newcomer at the ball's end; the lobby's PC away for 5 minutes during a ball: the ball end is kept and reported, the turn goes on; `main/match-host-stream3d.test.ts`: a watcher's fork is sent to watch; `transport-relay.test.ts`: the slow asks never pass six in ten minutes | Change: `main/match-host.test.ts`, `-orderings`, `main/match-restart.test.ts`, `main/witness-restart.test.ts`, `main/one-step.test.ts` and `controller.test.ts` where they expect a teardown at `MATCH_END`, the 20 s linger, a start at once from the button, or `preMatchPlay`; whatever pins the version in `protocol/test`. Untouched: every engine suite and all of fakeclient (they run with the option as each test sets it), `ws-transfer.test.ts` and the two transfer scenarios |
+| 8 | **A restart in a lobby.** `match-resume.json` version 2, written from the join; the lobby's PC saves its lobby; `rejoin()` and `resumeFromLog` without the roster check (§11.8) | 7 | M | `main/match-resume.test.ts`: version 2, a version 1 record dropped; `main/match-restart.test.ts`: a client restarts in the lobby, between games and during a ball; a watcher restarts; the lobby's PC restarts while it only watches | Change: `main/match-resume.test.ts`, `main/match-restart.test.ts`. Untouched: `match/restart.test.ts` (the engine's side) |
+| 9 | **The screens.** The Match tab, the invite on every member's tab, the panel's lobby view, the starter's prompt and the `Watching:` line, the menu's lines, the words of §11.9; `preMatchPlay` off the tab | 7 | M | `match-menu.test.ts`, `panel-page.test.ts` (`headerText`, the rows, the two prompts), `scoreboard-page.test.ts` (a watcher's card), `one-step.test.ts`: "a client has the link and the chat line" | Change: those four. Untouched: `panel-page-series.test.ts`, `panel-page-table.test.ts` |
+| 10 | **The table changes in a lobby.** `TABLE_PICK` wired to step 3, the pick's identity keys, the rows `NO TABLE` / `OTHER TABLE` / `OWN GAME`, the open match ended, the 3D wait after a change | 7 | M | fakeclient `lobby-table-change`, `lobby-pick-during-start` (refused); `one-step.test.ts`: "the lobby's table changed: this PC follows", "Change tables for me off: it asks"; `main/match-host-lobby.test.ts`: a match on the new table starts with the voice peers untouched; "a pick before the picker's table is open flags nobody" | Change: `one-step.test.ts`, `participant-update.test.ts` (the comparison on the identity keys, with the option on) |
 
-Then the release, and the checks only two or more PCs can make. **A tester's list** (two PCs for 1 to 9, three or
-four for 10 to 14; both in headsets where it says so):
+Then the release, and the checks only two or more PCs can make. **A tester's list** (two PCs for 1 to 13, three or
+four for 14 to 20; both in headsets where it says so):
 
 1. Open a lobby, send the code, the friend joins: you hear each other **before** any table is open.
-2. Start match from the friend's Match tab, not the opener's: it starts. Again from the friend's headset menu.
-3. The friend starts a game on their table in the lobby: both headsets count `STARTING IN 5` with their name, and
-   their first ball is ball 1 of the match.
-4. Play a game. Next game from either table. The tally reads 1 and 1 after two games.
-5. End match: both are back in the lobby, still talking; `companion.log` on both has no `ice new` between the first
+2. Start match from the friend's Match tab, not the opener's: both headsets count `STARTING IN 5`, and it starts
+   with the friend first. Again from the friend's headset menu.
+3. The starter starts a game on their table in the lobby: both headsets count down with their name, and their first
+   ball is ball 1 of the match. The other person does the same when they are not the starter: nothing starts for
+   anyone, and their panel says who the starter is.
+4. **Two Starts at nearly the same moment**: on a count of three the starter presses Start on their table and the
+   other presses Start match in the menu. One match starts, the starter goes first, and no ball is in play on the
+   other table when their turn comes. The same with the two the other way round (the menu a moment earlier).
+5. Cancel the start from the other headset during the countdown: both tables are free again.
+6. Play a game. Next game from the starter's table, then from the other's menu. The tally reads 1 and 1.
+7. End my ball in the middle of a ball: the turn passes at the score on the display; the table is locked.
+8. End match: both are back in the lobby, still talking; `companion.log` on both has no `ice new` between the first
    join and the end of the evening.
-6. Pull the friend's network cable for 20 s while you are on a ball: your picture, your scoreboard and your flippers
-   do not change; their row says `AWAY`; they are back by themselves. The same with ArcAid's connection cut on the
-   opener's PC (block arcaid.app for 20 s).
-7. End the friend's Castcade from Task Manager in the lobby and start it again within a minute: back in the lobby
-   by itself, the voice back.
-8. End the opener's Castcade and leave it: after 3 minutes the friend's Match tab says the lobby is closed and
-   their table is unlocked.
-9. Change table from the friend's Match tab: both VPX close their table and open the new one; you keep talking
-   through it; a ROM table's high scores are still there the next time it is opened (the NVRAM was written); in a
-   headset, what the runtime shows between the two tables and that the panel comes back.
-10. A third person joins while a game is being played: they hear everyone at once and see the player who is up.
-11. The third person set to Watch: a match of two starts without them; they see the player up in 3D when they have
+9. Pull the friend's network cable for 20 s while you are on a ball: your picture, your scoreboard and your flippers
+   do not change; their row says `AWAY`; they are back by themselves. Then the same while the friend is on the
+   ball: you keep their picture, the scoreboard says they are away, no panel covers it.
+10. End the friend's Castcade from Task Manager in the lobby and start it again within a minute: back in the lobby
+    by itself, the voice back.
+11. Change table from the friend's Match tab: both VPX close their table and open the new one; you keep talking
+    through it; a ROM table's high scores are still there the next time it is opened (the NVRAM was written); in a
+    headset, what the runtime shows between the two tables and that the panel comes back. With a game running on
+    one PC, and with a table that is not imported open on one PC: that table is not closed.
+12. **The lobby's PC goes away**, its owner only watching: end its Castcade during the other person's ball. They
+    finish the ball without a change on their table; then every panel says it waits, with the minutes. Start that
+    Castcade again after 5 minutes: everyone is back by themselves within about 3 minutes (at once on a direct
+    lobby), the kept ball end is reported, the next turn starts. Block arcaid.app on the lobby's PC for 20 s
+    instead: nobody is paused.
+13. End the opener's Castcade and leave it: after 20 minutes the friend's Match tab says the lobby is closed and
+    their table is unlocked.
+14. A third person joins **while a ball is in play**: they hear everyone at once and see the scores; the table
+    appears at the next ball. The player who was up had `CASTCADE_FRAMELOG` on: no slow frame at the moment of the
+    join, nor at the moment the ball ended.
+15. The third person joined on Play during a series of two: a start from the starter's table is the next game of
+    the two, and the third still watches. Start a new match brings them in.
+16. The third person set to Watch: a match of two starts without them; they see the player up in 3D when they have
     the Castcade VPX build and the identical file, the flat video when not; their flippers and Start do nothing
-    while it is played, and work again between games.
-12. The opener sets themselves to Watch: the other two play a whole match that the opener only watches.
-13. The watcher closes Castcade in the middle of a ball: neither player sees or hears a change.
-14. Four in the lobby, two playing: the player up reads their send statistics on the Match tab (three pictures out);
+    while it is played, and work again between games. Their own table game, started before the match, is theirs
+    until it ends, and nothing about it shows on anyone's panel.
+17. The opener sets themselves to Watch: the other two play a whole match that the opener only watches.
+18. The watcher closes Castcade in the middle of a ball: neither player sees or hears a change.
+19. A person set to Play has no copy of the table, another has theirs still loading: the first does not hold the
+    start; the second does until Start without them is pressed.
+20. Four in the lobby, two playing: the player up reads their send statistics on the Match tab (three pictures out);
     a fifth person is told "This lobby is full (four people)." A PC on 0.2.50 is told to update, in a sentence.
 
 ### 11.13 Decisions taken alone, and open points
@@ -1469,51 +1773,63 @@ four for 10 to 14; both in headsets where it says so):
 **Changed from the lead's list, because of the code.**
 
 - **A watcher's table is locked while a game is played** (the lead: "never a lock"). `syncStream` sends a VPX to
-  watch only while its table is locked, and the fork holds the local game and its keys for the length of the watch;
-  in the 2D theater nothing holds the keys, and Start would begin a game under the picture, unheard. A watcher is
-  still never granted. The one exception is a game of their own that was already running (§11.3).
+  watch only while its table is locked, and `onReady` already locks every PC; in the 2D theater nothing holds the
+  keys, and Start would begin a game under the picture, unheard. A watcher is still never granted. The one
+  exception is a game of their own that was already running (§11.3).
 - **Watch is not a new role in any logged message** (the lead: "Watch is a new role in the protocol"). The engine
   already has a person who is in the room and not in the game (`NEXT_GAME.playerOrder`), and keeping watchers out
   of `MATCH_READY` leaves the log, the fold and the future ArcAid ingest as they are. The lobby is still protocol 7,
   for the reasons in §11.7.
 
+**Changed by the review of 2026-11-24 and the lead's rulings on it.**
+
+- Every table unlocked between games is withdrawn: it made two people's Start on their tables the common accident.
+  One named starter instead, every start a countdown with a cancel, and a game of one's own never taken for the
+  match's (§11.2, §11.4).
+- Next game or new match is the asker's choice: a start from a table and a default can no longer end a series or
+  pull a newcomer into one (§11.3, §11.4).
+- The forfeit of a person who is away counts from the pause at their own turn, and a player who is up and still
+  seen to be playing is never forfeited by a clock (§11.8).
+- The lobby's PC is said to be the one PC a match depends on, the wait for it is 20 minutes and not 2 or 3, End my
+  ball takes the turn out of its owner's hands, and the hand-over is described as the next work (§11.8a).
+- A game ended for everyone has no result (§11.2); a pause for the player up keeps the picture (§11.6); a person who
+  joins during a ball costs the player nothing until it ends (§11.3); the log reaches a newcomer unasked and in
+  pages (§11.7); the protocol version changes when the shell turns the lobby on (§11.12).
+
 **Decided here, each reversible in its step.**
 
-- A match stays a series: the tally goes on while the players and the table are the same, and ends by itself when
-  either changes. The other shape, every Start a new match and one tally for the evening kept by the lobby, is
+- A match stays a series: the tally goes on from game to game until somebody ends the match, changes the table or
+  starts a new one. The other shape, every Start a new match and one tally for the evening kept by the lobby, is
   less engine and loses §8's signed series; it would also need a new place for the scoreboard's tally.
-- Every table is unlocked between games; a start waits for a player's game of their own instead (§11.2, §11.4).
 - The 3D wait holds a start for players only, and applies to every start in a lobby (§11.4).
-- A person who is away at their turn is forfeited after 3 minutes; the lobby's PC can do it sooner (§11.8). Today
-  the host pauses until someone acts, which in a lobby of four would hold three people for one who went to bed.
-- Only the lobby's PC ends a match in the middle of a game (§11.2). It could always end it by leaving; nobody else
-  should be able to take a ball away from the player who is up.
+- Only the lobby's PC ends a match in the middle of a game (§11.2). All the players together can end it too, each
+  by giving up; nobody else should be able to take a ball away from the player who is up.
 - `HELLO_ACK` is the lobby's state in every phase; there is no separate lobby message (§11.7).
-- A newcomer is set to Play unless their PC remembers Watch (§11.3).
+- A newcomer is set to Play unless their PC remembers Watch (§11.3); it brings them into nothing by itself.
+- `preMatchPlay` is retired in a lobby (§11.4).
+- The wait for the lobby's PC is 20 minutes, and both the place and the turn count 3 (§11.8, §11.8a).
 
 **Open, for the lead.**
 
-1. **Does a Start on the table still start a match when the lobby lasts all evening?** A11's rule is kept here for
-   everyone set to Play, because it is how the owner starts from the headset; a person who wants to play alone
-   sets themselves to Watch. The risk: somebody set to Play starts a game to pass the time and starts a match for
-   everyone. *Recommended:* keep it, and let the countdown say who started. The cure if it proves too eager is the
-   one A11.1 already names, a Castcade key, at the cost of a journal version and a fixture; a cancel during the
-   countdown would be a smaller one (a fourth request message, S).
-2. **A person who is in the lobby to talk, and wants neither to play nor to watch** (their own table, their own
-   sound, while the others play a match). Not in the first version: a watcher's table is theirs between games and
-   locked during one. *Recommended:* later, as a third value of `Stance` (`alone`), which is why it is an enum; the
+1. **A person who is in the lobby to talk, and wants neither to play nor to watch** during a match (their own
+   table, their own sound). In the first version they can finish a game of their own that was running, and are a
+   watcher after it. *Recommended:* later, as a third value of `Stance` (`alone`), which is why it is an enum; the
    cost is one more branch in the lock, the view and the table sound, and one more button.
-3. **Closed to new people.** An unlocked room is open to anyone who has the code (§11.10). *Recommended:* add a
+2. **Closed to new people.** An unlocked room is open to anyone who has the code (§11.10). *Recommended:* add a
    switch on the lobby's PC, "New people can join" (on by default), that makes the engine refuse a `HELLO` from a
-   device that was never a member ("This lobby is not taking new people"); S, in step 7, no ArcAid work. The lock
+   device that was never a member ("This lobby is not taking new people"); S, in step 9, no ArcAid work. The lock
    on ArcAid's side (item 1 of §11.10) can follow.
-4. **Closing VPX from Castcade** (§11.5) has never been done by this app, and whether a stock VPX 10.8.0 started with
+3. **Closing VPX from Castcade** (§11.5) has never been done by this app, and whether a stock VPX 10.8.0 started with
    `-Play` leaves cleanly on `WM_CLOSE` (NVRAM written, no dialog) is not known. *Recommended:* build step 3 with
-   the three rungs and run check 9 on the owner's rig and on Krobs' official build before step 8 depends on it; if
-   the second rung is not clean, stock VPX gets the third rung only (the person closes the table, Castcade opens
+   the three rungs and run check 11 on the owner's rig and on Krobs' official build before step 10 depends on it;
+   if the second rung is not clean, stock VPX gets the third rung only (the person closes the table, Castcade opens
    the next), and the fork's `quit` carries the automatic case.
-5. **Changing the table from the headset.** Not in the first version (a picker is a list). *Recommended:* later, a
-   menu line "Next table" that walks the lobby's recent tables; S once step 8 is in.
-6. **Balls per game** is the opener's choice at Open lobby and can be changed on its Match tab between matches
+4. **Changing the table from the headset.** Not in the first version (a picker is a list). *Recommended:* later, a
+   menu line "Next table" that walks the lobby's recent tables; S once step 10 is in.
+5. **Balls per game** is the opener's choice at Open lobby and can be changed on its Match tab between matches
    (`HELLO_ACK.ballsPerGame` tells the others). Whether anyone may change it, like the table, is not ruled.
    *Recommended:* leave it with the opener.
+6. **Handing the start to somebody without starting.** The starter is fixed by rule (§11.4), and anybody else
+   starts from the menu. If the owner wants "you start this one from your table" said to a friend, it is one more
+   request message and a menu line ("Let Krobs start"); S. *Recommended:* not until somebody asks: the menu's
+   Start does the same in one press.
