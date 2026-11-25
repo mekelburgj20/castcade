@@ -1346,6 +1346,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
   #head { font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
   #head.mine { color: var(--mine); }
+  #head .sub { font-size: 4vmin; letter-spacing: 0.02em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #stage { position: relative; min-height: 0; background: var(--panel); border-radius: 1vmin; overflow: hidden; }
   #video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
   #idle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
@@ -1377,7 +1378,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
      up to thirteen lines where a match's had seven: the lines past the seventh were cut off, and with them the
      question under the list and the keys (seen in the first pictures of this page, renderer/story). */
   #menuitems { display: grid; gap: 0.8vmin; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0.6vmin; margin: -0.6vmin; scroll-padding-block: 1.2vmin; }
-  .more { font-size: 2.6vmin; line-height: 1; text-align: center; color: var(--dim); visibility: hidden; }
+  .more { flex: 0 0 auto; font-size: 2.6vmin; line-height: 1; text-align: center; color: var(--dim); visibility: hidden; }
   .more.on { visibility: visible; }
   #head { grid-row: 1; } #stage { grid-row: 2; grid-column: 1; } #strip { grid-row: 3; grid-column: 1; } footer { grid-row: 4; }
   .mi { display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin; border-radius: 0.8vmin;
@@ -1385,8 +1386,9 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   .mi.sel { outline: 0.6vmin solid var(--mine); color: var(--mine); }
   .mi.off { color: var(--dim); }
   .mi .val { font-variant-numeric: tabular-nums; }
-  #menunote { font-size: 3.8vmin; color: var(--mine); min-height: 4.5vmin; }
-  #menuhint { font-size: 3vmin; font-weight: 400; color: var(--dim); }
+  /* Step 9: the question and the keys keep their own height (a question of two lines ran into the keys under it); the list gives the room. */
+  #menunote { flex: 0 0 auto; font-size: 3.8vmin; line-height: 1.15; color: var(--mine); min-height: 4.5vmin; }
+  #menuhint { flex: 0 0 auto; font-size: 3vmin; font-weight: 400; color: var(--dim); }
 </style></head>
 <body class="${opts.vr ? 'vr' : 'desktop'}">
 <div id="head">CASTCADE MATCH</div>
@@ -1559,7 +1561,18 @@ function render() {
     head.textContent = 'CASTCADE MATCH';
     head.className = '';
   } else {
-    head.textContent = headerText(panel);
+    // A17 step 9: a table change is two lines at most: CHANGING TABLE, and the table's name under it, smaller and cut
+    // when it is long (in one line of the header's size a name of four words made three lines of it).
+    const text = headerText(panel);
+    const mark = 'CHANGING TABLE · ';
+    const name = text.indexOf(mark) === 0 ? text.slice(mark.length) : '';
+    head.textContent = name ? 'CHANGING TABLE' : text;
+    if (name && head.appendChild) {
+      const sub = document.createElement('div');
+      sub.className = 'sub';
+      sub.textContent = name;
+      head.appendChild(sub);
+    }
     head.className = panel.myTurn && panel.phase === 'playing' ? 'mine' : '';
   }
   // D7.6: the bench's stage is its canvas (path direct) or the local loop's received track (path loop).

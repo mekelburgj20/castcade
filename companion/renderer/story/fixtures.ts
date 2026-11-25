@@ -14,6 +14,9 @@ export const CODE = 'JHDFEF';
 export const TABLE = 'Monster Bash (Williams 1998)';
 export const OTHER_TABLE = 'Congo (Williams 1995)';
 export const LINK = `https://arcaid.app/castcade/join/${CODE}`;
+/** The record that cannot be saved: a folder and the system's word, as `cannotSaveSentence(folder, why)` takes them (a placeholder path, nobody's). */
+export const SAVE_FOLDER = 'C:\\Users\\you\\AppData\\Roaming\\Castcade';
+export const SAVE_ERROR = 'EPERM: operation not permitted';
 
 export type Who = 'owner' | 'krobs' | 'chuck' | 'dana';
 const NAMES: Record<Who, string> = { owner: 'Owner', krobs: 'Krobs', chuck: 'Chuck', dana: 'Dana' };
@@ -96,16 +99,19 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
   }));
   const gameKey = m ? `${CODE}-1/${m.game}/${m.state}` : '';
   const between = phase === 'over' && m !== null;
-  const playSet = here.filter((w) => !watch.has(w) && !(f.flags?.[w] ?? []).some((x) => x === 'away' || x === 'no_table'));
+  // As controller.ts `wouldPlay`: set to Play, here, with a copy of the table (the lobby's PC, while it is away, is still counted: its members only know that its link is down).
+  const playSet = here.filter((w) => !watch.has(w) && !(f.flags?.[w] ?? []).some((x) => (x === 'away' && !(f.hostAway && w === 'owner')) || x === 'no_table'));
   const names = (ws: Who[]): string => {
     const n = ws.map((w) => NAMES[w]);
     return n.length <= 1 ? (n[0] ?? '') : `${n.slice(0, -1).join(', ')} and ${n[n.length - 1]}`;
   };
-  const watchers = here.filter((w) => watch.has(w));
+  const awayNow = here.filter((w) => (f.flags?.[w] ?? []).includes('away') && !playSet.includes(w));
+  // As controller.ts: whoever is here and not in the start watches (set to Watch, or with no copy of the table).
+  const watchers = here.filter((w) => !playSet.includes(w) && !awayNow.includes(w));
   const defaultLine = between
     ? `Game ${(m?.game ?? 1) + 1} of this match.${f.series ? ` ${f.series.map(([w, wins], i) => `${NAMES[w]} ${wins}${i === 0 ? (wins === 1 ? ' win' : ' wins') : ''}`).join(', ')}.` : ''}`
     : playSet.length >= 2
-      ? `${names(playSet)} play.${watchers.length > 0 ? ` ${names(watchers)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}`
+      ? `${names(playSet)} play.${watchers.length > 0 ? ` ${names(watchers)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}${awayNow.length > 0 ? ` ${names(awayNow)} ${awayNow.length === 1 ? 'is' : 'are'} away.` : ''}`
       : '';
   const off =
     f.startOff !== undefined
@@ -127,7 +133,7 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
         starter,
         members,
         match: m ? { id: `${CODE}-1`, game: m.game, state: m.state, players: m.players } : null,
-        table: { name: TABLE, pickedBy: 'owner', pickedByName: 'Owner', off: playing ? 'A game is being played: the table can be changed when it is over.' : null, endsMatch: m !== null, changing: false, ...(f.table ?? {}) },
+        table: { name: TABLE, pickedBy: 'owner', pickedByName: 'Owner', off: f.over ? 'The lobby is closed.' : f.hostAway ? "The lobby's PC is away." : playing ? 'A game is being played: the table changes after it.' : f.start ? 'A match is starting: cancel the start to change the table.' : null, endsMatch: m !== null, changing: false, ...(f.table ?? {}) },
         start: f.start ?? null,
         startButton: { label: between ? 'Next game' : 'Start match', line: f.startLine ?? defaultLine, off },
         newMatch: f.newMatch ?? null,
@@ -212,9 +218,19 @@ const four: Who[] = ['owner', 'krobs', 'chuck', 'dana'];
 const AWAY_LINE = (left: number, what = 'match'): string => `Owner's PC is away. The ${what} goes on when it is back: waiting up to 20 minutes (${left} min left). You can keep talking; Leave lobby ends the wait for you.`;
 const KEPT_LINE = (left: number): string => `Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (${left} min left). You can wait and keep talking; Leave lobby frees your table now.`;
 const GIVEN_UP_WAIT = 'The game you gave up is still on your table, which is yours meanwhile: play it out (it counts for nothing) or restart the table. The next game waits for it';
-// While tables are being changed the lobby's line is its ordinary one, with the tables that are not open yet (controller.ts `lobbyLine`).
-const CHANGING_LINE = "Owner starts the match from their table. To start it yourself: Start match in the menu · Krobs', Chuck's tables are not open yet";
 const START = (by: Who, players: Who[], o: any = {}): any => ({ by, players, newMatch: true, waitsFor: null, waitsOn: [], seconds: 4, line: '', ...o });
+
+/**
+ * A table change as one-step.ts says it on this PC (`OneStepStatus.change`, and the panel's line through
+ * `setTableChange`): `detail` is `changeWords(state, table, open, why, by)`, word for word.
+ */
+const CHANGE = (state: 'offered' | 'own_game' | 'closing' | 'close_it', why: string | null, detail: string): any => ({ state, table: OTHER_TABLE, open: TABLE, why, by: 'Krobs', detail });
+const CLOSING = CHANGE('closing', null, `Krobs changed the lobby's table to ${OTHER_TABLE}. Closing ${TABLE}; ${OTHER_TABLE} opens next.`);
+const CLOSE_IT = CHANGE('close_it', null, `Close the table on this PC: Castcade opens ${OTHER_TABLE} when it is closed.`);
+const ASKS_OFTEN = CHANGE('offered', 'often', `Krobs changed the lobby's table to ${OTHER_TABLE}. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}. The table has changed several times in a few minutes, so Castcade asks before it changes tables again.`);
+const ASKS_AWAY = CHANGE('offered', 'away', `Krobs changed the lobby's table to ${OTHER_TABLE} while this PC was away from the lobby. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}.`);
+const PICKED = { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', endsMatch: false };
+const ON_THE_WAY = { owner: ['changing'], krobs: ['changing'], chuck: ['close_table'], dana: ['asked'] };
 
 export const FIXTURES: Record<string, Fixture> = {
   // ---- no lobby
@@ -241,8 +257,8 @@ export const FIXTURES: Record<string, Fixture> = {
   'start-waits-3d': { says: 'A start waits for the 3D connections', me: 'krobs', here: ['owner', 'krobs'], start: START('krobs', ['krobs', 'owner'], { waitsFor: '3d', waitsOn: ['owner'], seconds: null, line: 'You start the match once the 3D connection to Owner is up (45 s at most; started without it, the first turn may be the 2D video)' }), startWithout: 'Start without 3D', message: 'You start the match once the 3D connection to Owner is up (45 s at most; started without it, the first turn may be the 2D video)' },
   'start-held-grace': { says: "A start's countdown ran out and is held for a player whose link dropped a moment ago", me: 'owner', here: ['owner', 'krobs', 'chuck'], countdown: 0, start: START('owner', ['owner', 'krobs', 'chuck'], { seconds: 0, line: "You start the match in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)" }), message: "You start the match in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)" },
   'member-away-lobby': { says: 'A member is away in the lobby (the row says since when)', me: 'owner', here: four, flags: { dana: ['away'] }, message: 'Everyone in? Start a game on your table (or Start match in the menu)' },
-  'no-table': { says: "A member has no copy of the lobby's table: they are not counted for a start", me: 'dana', here: four, flags: { dana: ['no_table'] }, launch: { state: 'needed', table: TABLE, detail: `The host plays ${TABLE}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the match.` }, message: "Castcade found no copy of the lobby's table on this PC: you can watch" },
-  'cannot-save': { says: "The lobby's record cannot be written on this PC", me: 'owner', here: ['owner', 'krobs'], lastError: 'Castcade cannot save this lobby (the folder C:\\Users\\you\\AppData\\Roaming\\Castcade: EPERM: operation not permitted). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.', message: 'Castcade cannot save this lobby on this PC: see the Match tab' },
+  'no-table': { says: "A member has no copy of the lobby's table: they are not counted for a start", me: 'dana', here: four, flags: { dana: ['no_table'] }, launch: { state: 'needed', table: TABLE, detail: `The lobby's table is ${TABLE}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the lobby and can watch.` }, message: "Castcade found no copy of the lobby's table on this PC: you can watch" },
+  'cannot-save': { says: "The lobby's record cannot be written on this PC", me: 'owner', here: ['owner', 'krobs'], lastError: `Castcade cannot save this lobby (the folder ${SAVE_FOLDER}: ${SAVE_ERROR}). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.`, message: 'Castcade cannot save this lobby on this PC: see the Match tab' },
   'relay-waiting': { says: "The lobby's PC started again and ArcAid does not answer yet", me: 'owner', here: four, flags: { krobs: [], chuck: [], dana: [] }, relayNote: 'ArcAid is not carrying this lobby yet (it did not answer when Castcade started again). Castcade keeps asking; the others can come back once it does', lastError: `Castcade on this PC started again: the lobby ${CODE} is open again as it was. Castcade is waiting for ArcAid to carry it again: the others can come back once it does.`, message: 'Everyone in? Start a game on your table (or Start match in the menu)' },
 
   // ---- a game
@@ -251,13 +267,13 @@ export const FIXTURES: Record<string, Fixture> = {
   'game-watcher': { says: 'A game in play, seen by a watcher', me: 'dana', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 2, scores: { owner: [1_234_560, 2], krobs: [987_650, 1], chuck: [455_000, 1] }, locked: true },
   'game-owner': { says: "A game in play, seen by the lobby's PC (Pass the turn, End match for everyone)", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 2, scores: { owner: [1_234_560, 2], krobs: [987_650, 1], chuck: [455_000, 1] }, giveUp: true, locked: true },
   'between': { says: 'Between games with the result, seen by the starter of the next game', me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'between' }, scores: { owner: [3_456_780, 3], krobs: [2_100_000, 3], chuck: [990_000, 3] }, result: [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]], series: [['owner', 1, 1], ['krobs', 0, 1], ['chuck', 0, 1]], message: 'Next game: start a game on your table (or Next game in the menu)' },
-  'between-newmatch': { says: 'Between games, somebody outside the match is set to Play: Start a new match is offered', me: 'dana', here: four, match: { players: ['owner', 'krobs', 'chuck'], game: 2, state: 'between' }, scores: { owner: [3_456_780, 3], krobs: [2_100_000, 3], chuck: [990_000, 3] }, result: [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]], series: [['owner', 2, 2], ['krobs', 0, 2], ['chuck', 0, 2]], newMatch: { line: 'Dana plays too. The match that is open ends at Owner 2, Krobs 0, Chuck 0.', warnings: [] }, message: 'You are watching this match: you are in when somebody starts a new match' },
-  'match-ended': { says: 'End match was pressed: back in the lobby with the tally', me: 'krobs', here: four, watch: ['dana'], message: 'Match over after 2 games · Owner 2 wins, Krobs 0, Chuck 0 · Owner starts the match from their table. To start it yourself: Start match in the menu' },
+  'between-newmatch': { says: 'Between games, somebody outside the match is set to Play: Start a new match is offered', me: 'dana', here: four, match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'between' }, scores: { owner: [3_456_780, 3], krobs: [2_100_000, 3], chuck: [990_000, 3] }, result: [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]], series: [['owner', 1, 1], ['krobs', 0, 1], ['chuck', 0, 1]], newMatch: { line: 'Dana plays too. The match that is open ends at Owner 1, Krobs 0, Chuck 0.', warnings: [] }, message: 'You are watching this match: you are in when somebody starts a new match' },
+  'match-ended': { says: 'End match was pressed: back in the lobby with the tally', me: 'krobs', here: four, watch: ['dana'], message: 'Match over after 1 game · Owner starts the match from their table. To start it yourself: Start match in the menu' },
 
   // ---- away
-  'waited-for': { says: "A waiting player is away at their own turn: the lobby's PC can play on without them", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: 'chuck', ball: 1, flags: { chuck: ['away'] }, awaySince: { chuck: 75 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 1], chuck: [0, 0] }, waitedFor: 'chuck', message: 'Waiting for Chuck to come back', locked: true },
-  'away-question': { says: "The player who is up is out of reach and still seen playing: the question on the lobby's PC", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: 'krobs', ball: 2, flags: { krobs: ['away'] }, awaySince: { krobs: 185 }, scores: { owner: [1_234_560, 2], krobs: [2_345_670, 1], chuck: [455_000, 1] }, waitedFor: 'krobs', awayQuestion: { who: 'krobs', score: 2_345_670 }, message: 'Waiting for Krobs to come back', locked: true },
-  'host-away': { says: "The lobby's PC is away, seen by a member who is on a ball", me: 'krobs', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 2, flags: { owner: ['away'] }, awaySince: { owner: 108 }, scores: { owner: [1_234_560, 2], krobs: [987_650, 1], chuck: [455_000, 1] }, hostAway: { minutesLeft: 18 }, message: AWAY_LINE(18) },
+  'waited-for': { says: "A waiting player is away at their own turn: the lobby's PC can play on without them", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: 'chuck', ball: 1, flags: { chuck: ['away'] }, awaySince: { chuck: 75 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 1], chuck: [0, 0] }, waitedFor: 'chuck', giveUp: true, message: 'Waiting for Chuck to come back', locked: true },
+  'away-question': { says: "The player who is up is out of reach and still seen playing: the question on the lobby's PC", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: 'krobs', ball: 2, flags: { krobs: ['away'] }, awaySince: { krobs: 185 }, scores: { owner: [1_234_560, 2], krobs: [2_345_670, 1], chuck: [455_000, 1] }, waitedFor: 'krobs', giveUp: true, awayQuestion: { who: 'krobs', score: 2_345_670 }, message: 'Waiting for Krobs to come back', locked: true },
+  'host-away': { says: "The lobby's PC is away, seen by a member who is on a ball", me: 'krobs', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 2, flags: { owner: ['away'] }, awaySince: { owner: 108 }, scores: { owner: [1_234_560, 2], krobs: [987_650, 1], chuck: [455_000, 1] }, hostAway: { minutesLeft: 18 }, giveUp: true, message: AWAY_LINE(18) },
   'host-kept-quit': { says: "The lobby's PC was quit and kept the lobby, seen by a member between games", me: 'chuck', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'between' }, flags: { owner: ['away'] }, awaySince: { owner: 240 }, scores: { owner: [3_456_780, 3], krobs: [2_100_000, 3], chuck: [990_000, 3] }, result: [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]], series: [['owner', 1, 1], ['krobs', 0, 1], ['chuck', 0, 1]], hostAway: { minutesLeft: 16 }, message: KEPT_LINE(16), locked: true },
   'lobby-closed': { says: 'The lobby was closed by its owner: what a member reads before the tab goes back to Open / Join', me: 'krobs', here: four, over: true, message: 'The lobby is closed: Owner closed the lobby' },
 
@@ -266,9 +282,12 @@ export const FIXTURES: Record<string, Fixture> = {
   'given-up-others': { says: 'Krobs gave up a game that is still on his table, seen by the other player', me: 'owner', here: ['owner', 'krobs'], match: { players: ['owner', 'krobs'], game: 1, state: 'between' }, flags: { krobs: ['own_game'] }, scores: { owner: [3_456_780, 3], krobs: [50_000, 1] }, result: [['owner', 3_456_780], ['krobs', 50_000]], series: [['owner', 1, 1], ['krobs', 0, 1]], start: START('owner', ['owner', 'krobs'], { newMatch: false, waitsFor: 'own_games', waitsOn: ['krobs'], seconds: null, line: "You start the next game once the game on Krobs' table has ended" }), startWithout: 'Start without Krobs', message: "You start the next game once the game on Krobs' table has ended" },
 
   // ---- the table changes
-  'table-changing': { says: 'The table was changed: every PC is on its way to it, each row in its own state', me: 'owner', here: four, flags: { krobs: ['changing'], chuck: ['close_table'], dana: ['no_table'] }, table: { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', changing: true, endsMatch: false }, message: "Everyone in? Start a game on your table (or Start match in the menu) · Krobs', Chuck's tables are not open yet" },
-  'table-close-it': { says: 'The table was changed and this PC has to close the table that is open on it', me: 'chuck', here: four, flags: { krobs: ['changing'], chuck: ['close_table'], dana: ['no_table'] }, table: { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', changing: true, endsMatch: false }, change: { state: 'close_it', table: OTHER_TABLE, open: TABLE, detail: `Close the table on this PC: Castcade opens ${OTHER_TABLE} when it is closed.` }, message: CHANGING_LINE },
-  'table-open-it': { says: 'The table was changed and this PC asks first (Change tables for me is off): Open it', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', changing: true, endsMatch: false }, change: { state: 'offered', table: OTHER_TABLE, open: TABLE, detail: `The lobby's table is now ${OTHER_TABLE}. Open it: Castcade closes ${TABLE} and opens ${OTHER_TABLE}.` }, message: CHANGING_LINE },
+  'table-changing': { says: "Krobs changed the table: every PC is on its way to it, each row in its own state; this PC is closing its table", me: 'owner', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: CLOSING, message: CLOSING.detail },
+  'table-close-it': { says: 'The table was changed and this PC has to close the table that is open on it', me: 'chuck', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: CLOSE_IT, message: CLOSE_IT.detail },
+  'table-open-it': { says: 'The table was changed for the fourth time in a few minutes: this PC asks before it changes tables again (Open it)', me: 'dana', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: ASKS_OFTEN, message: ASKS_OFTEN.detail },
+  'table-asked-after-away': { says: 'The table was changed while this PC was away from the lobby: it is offered, never opened by itself (Open it)', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, change: ASKS_AWAY, message: ASKS_AWAY.detail },
+  'table-one-asked': { says: 'Everybody has the new table open but one PC, which was asked: nobody is closing or opening, so the header is the lobby again', me: 'owner', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, message: 'The table is being changed: waiting for Dana. A start waits for them (start a game on your table, or Start match in the menu)' },
+  'other-table': { says: "A member has another table open than the lobby's", me: 'owner', here: four, flags: { chuck: ['other_table'] }, message: 'Everyone in? Start a game on your table (or Start match in the menu) · different table file: Chuck' },
 };
 
 /**

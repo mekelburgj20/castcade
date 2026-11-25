@@ -26,9 +26,9 @@ const tab: Shot[] = Object.entries(FIXTURES).map(([name, f]) => ({
 }));
 
 /** A state a press opens: the fixture, the buttons pressed in order, what is seen then. */
-const pressed = (name: string, state: string, press: string[], says: string): Shot => ({
+const pressed = (name: string, state: string, press: string[], says: string, extra = ''): Shot => ({
   name: `tab-${name}`,
-  page: `match.html?state=${state}&press=${encodeURIComponent(press.join('|'))}`,
+  page: `match.html?state=${state}&press=${encodeURIComponent(press.join('|'))}${extra}`,
   says: `Match tab, ${NAMES[FIXTURES[state]?.me ?? 'owner']}'s PC: ${says}`,
 });
 
@@ -45,26 +45,29 @@ export const SHEETS: Shot[] = [
   sheet('none', ['none', 'none-link', 'resume-quit']),
   sheet('resume', ['resume-crash-member', 'resume-damaged', 'resume-v1']),
   sheet('refused', ['refused-old-here', 'refused-old-there', 'refused-full']),
-  sheet('lobby-1', ['unpaired-closed', 'alone', 'four-player']),
-  sheet('lobby-2', ['four-watcher', 'four-owner-watches', 'full-direct']),
+  sheet('lobby-1', ['unpaired-closed', 'alone', 'four-starter']),
+  sheet('lobby-2', ['four-player', 'four-watcher', 'four-owner-watches']),
+  sheet('lobby-3', ['full-direct', 'member-away-lobby', 'no-table']),
   sheet('start', ['start-countdown', 'start-waits-table', 'start-waits-3d']),
-  sheet('start-2', ['start-held-grace', 'member-away-lobby', 'no-table']),
-  sheet('trouble', ['cannot-save', 'relay-waiting', 'lobby-closed'], 1000),
-  sheet('game', ['game-waiting', 'game-watcher', 'game-owner']),
+  sheet('trouble', ['start-held-grace', 'cannot-save', 'relay-waiting'], 1000),
+  sheet('game', ['game-up', 'game-waiting', 'game-watcher']),
+  sheet('game-2', ['game-owner', 'lobby-closed', 'other-table']),
   sheet('between', ['between', 'between-newmatch', 'match-ended'], 1100),
   sheet('away', ['waited-for', 'away-question', 'host-away'], 1000),
   sheet('away-2', ['host-kept-quit', 'given-up-me', 'given-up-others'], 1100),
   sheet('table', ['table-changing', 'table-close-it', 'table-open-it'], 1000),
+  sheet('table-2', ['table-asked-after-away', 'table-one-asked', 'four-player~Change table…~tables=0'], 1000),
   sheet('ask-1', ['game-waiting~Leave lobby', 'four-starter~Close lobby', 'game-waiting~Give up this game']),
   sheet('ask-2', ['game-up~End my ball', 'game-owner~End match for everyone', 'game-owner~Pass the turn']),
   sheet('ask-3', ['waited-for~Play on without Chuck', 'between-newmatch~Start a new match', 'four-player~Change table…'], 1100),
+  sheet('ask-4', ['four-player~Change table…|select:Congo', 'between~Change table…|select:Congo|Change table', 'away-question~End Krobs\' ball'], 1100),
 ];
 
 const who = (state: string): string => NAMES[FIXTURES[state]?.me ?? 'owner'] ?? 'Owner';
 const says = (state: string): string => FIXTURES[state]?.says ?? state;
 
 /** The panel page as the headset draws it (960 x 640), as the desktop panel window (480 x 720), and with the menu open. */
-const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed'];
+const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed'];
 const PANEL_DESKTOP = ['four-starter', 'start-waits-3d', 'table-changing', 'game-watcher', 'host-away', 'between'];
 const PANEL_MENU = ['four-starter', 'game-up', 'between-newmatch', 'away-question'];
 const BOARD = ['game-up', 'game-watcher', 'waited-for', 'away-question', 'host-away', 'between'];
@@ -91,7 +94,7 @@ const menus: Shot[] = MENUS.map(([name, states]) => ({ name: `menu-text-${name}`
 /** The panel pictures, six to a sheet at half size (three across). */
 const panelSheet = (name: string, states: string[], vr = true): Shot => ({
   name: `sheet-panel-${name}`,
-  page: `sheet.html?page=panel.html&states=${states.join(',')}&w=${vr ? 960 : 480}&h=${vr ? 640 : 720}&zoom=${vr ? 0.5 : 0.75}&more=${encodeURIComponent(vr ? 'vr=1' : 'vr=0')}`,
+  page: `sheet.html?page=panel.html&states=${states.map(encodeURIComponent).join(',')}&w=${vr ? 960 : 480}&h=${vr ? 640 : 720}&zoom=${vr ? 0.5 : 0.75}&more=${encodeURIComponent(vr ? 'vr=1' : 'vr=0')}`,
   says: `Panel, side by side: ${states.join(', ')}`,
   width: vr ? 3 * 486 : 4 * 366,
   height: 400,
@@ -99,9 +102,15 @@ const panelSheet = (name: string, states: string[], vr = true): Shot => ({
 SHEETS.push(
   panelSheet('lobby', PANEL_VR.slice(0, 6)),
   panelSheet('start', PANEL_VR.slice(6, 12)),
-  panelSheet('game', PANEL_VR.slice(12, 19)),
+  panelSheet('game', PANEL_VR.slice(12)),
   panelSheet('desktop', PANEL_DESKTOP.slice(0, 4), false),
+  panelSheet('desktop-2', PANEL_DESKTOP.slice(4), false),
+  panelSheet('menu', [...PANEL_MENU.map((x) => `${x}~~menu=1`), 'game-owner~~menu=1&at=closeLobby&asked=1']),
+  panelSheet('menu-desktop', ['away-question~~menu=1&at=awayEnd&asked=1'], false),
+  { name: 'sheet-scoreboard-1', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(0, 3).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
+  { name: 'sheet-scoreboard-2', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(3).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
 );
+
 
 export const SHOTS: Shot[] = [
   ...tab,
@@ -117,4 +126,7 @@ export const SHOTS: Shot[] = [
   pressed('ask-play-on', 'waited-for', ['Play on without Chuck'], 'Play on without Chuck was pressed: the question'),
   pressed('ask-new-match', 'between-newmatch', ['Start a new match'], 'Start a new match was pressed: the question'),
   pressed('picker', 'four-player', ['Change table…'], 'Change table was pressed: the picker'),
+  pressed('picker-chosen', 'four-player', ['Change table…', 'select:Congo'], 'A table was chosen in the picker: Change table can be pressed'),
+  pressed('ask-change-table', 'between', ['Change table…', 'select:Congo', 'Change table'], 'Change table was pressed between games: the question, which says that the open match ends'),
+  pressed('picker-empty', 'four-player', ['Change table…'], 'Change table was pressed on a PC that knows no table: the picker says so', '&tables=0'),
 ];

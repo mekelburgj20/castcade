@@ -80,7 +80,7 @@ export function undecodable(text: string, e: unknown): unknown {
  * built from the frame's own text (review of PR 127: `String(v)` of a long `v` broke the REFUSE schema's 500
  * characters, inside a socket handler, for anybody who reached the port).
  */
-function refusalSentence(theirs: number | null): string {
+export function refusalSentence(theirs: number | null): string {
   if (theirs !== null && theirs > PROTOCOL_VERSION) {
     return `The Castcade on the lobby's PC is older than this PC's (it speaks protocol ${PROTOCOL_VERSION}, this PC ${theirs}). It is updated there (Settings, Check for updates); then join again.`;
   }

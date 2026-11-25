@@ -23,14 +23,14 @@
       const more = q.get('more') ? `&${q.get('more')}` : '';
       const states = (q.get('states') ?? '').split(',').filter(Boolean);
       for (const state of states) {
-        const [name, press] = state.split('~');
+        const [name, press, extra] = state.split('~');
         const f = document.createElement('figure');
         const c = document.createElement('figcaption');
         c.textContent = state;
         const i = document.createElement('iframe');
         i.width = String(w);
         i.height = String(h);
-        i.src = `${page}?state=${encodeURIComponent(name)}${press ? `&press=${encodeURIComponent(press)}` : ''}${more}`;
+        i.src = `${page}?state=${encodeURIComponent(name)}${press ? `&press=${encodeURIComponent(press)}` : ''}${extra ? `&${extra}` : ''}${more}`;
         i.style.transform = `scale(${zoom})`;
         const box = document.createElement('div');
         box.className = 'frame';

@@ -372,7 +372,7 @@ describe('one step to a match over real match hosts (A14 steps 1 and 2)', () => 
     expect(co.one.status().pending).not.toBeNull();
     await H.mh.leave();
     const after = await co.one.confirm();
-    expect(after.notice).toMatch(/^That match is gone or cannot be reached: ask the host for a new link\./);
+    expect(after.notice).toMatch(/^That lobby is gone or cannot be reached: ask for a new link./);
     expect(C.mh.status().role).toBe('none');
     expect(co.launched).toEqual([]);
     ho.one.stop();

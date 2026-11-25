@@ -3493,6 +3493,16 @@ export class MatchController {
     }
     const starter = a.starter ?? null;
     const word = between ? 'Next game' : 'Start match';
+    // A17 step 9 (2026-11-27, seen in the first true picture of a table change): while PCs are on their way to the
+    // lobby's table the line says so, and for whom a start would wait. It read "Everyone in? Start a game on your
+    // table" over rows that said CHANGING TABLE. A start can still be asked for: it waits for those tables.
+    const onWay = (a.tableChange ?? []).map((x) => x.playerId).filter((id) => players.includes(id) && id !== me);
+    if (onWay.length > 0) {
+      const way = `The table is being changed: waiting for ${this.namesOf(onWay)}`;
+      if (starter === me) return `${over}${way}. A start waits for them (start a game on your table, or ${word} in the menu)${warned}`;
+      if (starter !== null) return `${over}${way}. ${this.nameOf(starter)} starts ${between ? 'the next game' : 'the match'} from their table. To start it yourself: ${word} in the menu${warned}`;
+      return `${over}${way}. ${word} in the menu starts it once they are there${warned}`;
+    }
     // A12's rule, for the starter: a game that is running on their table is their own; the next Start on it asks.
     if (starter === me && this.ownGameSaid) return `${over}${between ? 'Next game' : 'Everyone in?'}${between ? ':' : ''} Finish the game on your table, then start a game on it (or ${word} in the menu)${loads}${warned}`;
     if (starter === me) return `${over}${between ? 'Next game: start a game on your table' : 'Everyone in? Start a game on your table'} (or ${word} in the menu)${loads}${warned}`;
@@ -3517,11 +3527,14 @@ export class MatchController {
       const id = p.playerId;
       const flags: LobbyFlag[] = [];
       if (this.left.has(id) || has(a?.away, id)) flags.push('away');
-      if (has(a?.noCopy, id)) flags.push('no_table');
-      else if (has(a?.otherTable, id)) flags.push('other_table');
-      else if (this.loadingIds.includes(id)) flags.push('loading');
       // Step 10: where their PC stands on its way to the lobby's table.
       const way = (a?.tableChange ?? []).find((x) => x.playerId === id)?.state ?? null;
+      // A17 step 9 (2026-11-27, seen in the first true picture of a table change): a PC on its way to the lobby's
+      // table still has the old one open, or none, and its row read "OTHER TABLE · CHANGING TABLE". Where it stands
+      // on its way says it all: the other two words are for a PC that is not on its way.
+      if (has(a?.noCopy, id)) flags.push('no_table');
+      else if (way === null && has(a?.otherTable, id)) flags.push('other_table');
+      else if (way === null && this.loadingIds.includes(id)) flags.push('loading');
       if (has(a?.ownGame, id) || way === 'waits_game') flags.push('own_game');
       if (way === 'waits_person') flags.push('close_table');
       else if (way === 'offered') flags.push('asked');
@@ -3533,7 +3546,12 @@ export class MatchController {
     const s = a?.start ?? null;
     const players = this.wouldPlay(between);
     const everyone = this.wouldPlay(false);
-    const watchers = this.lobby.map((p) => p.playerId).filter((id) => !players.includes(id));
+    // A17 step 9 (2026-11-27, seen in the first picture of this line): somebody who is away is not said to watch
+    // ("Owner, Krobs and Chuck play. Dana watches." beside a row that read AWAY): they are said to be away.
+    const gone = new Set(members.filter((m) => m.flags.includes('away')).map((m) => m.id));
+    const outOfIt = this.lobby.map((p) => p.playerId).filter((id) => !players.includes(id));
+    const watchers = outOfIt.filter((id) => !gone.has(id));
+    const awayNow = outOfIt.filter((id) => gone.has(id));
     const outside = between && match ? everyone.filter((id) => !match.players.includes(id)) : [];
     const tally = this.tallyWords();
     // Design 11.9: the two lines under the start button name everyone, this person too ("MekelburgJ and Krobs play.
@@ -3548,7 +3566,7 @@ export class MatchController {
     else if (game) off = 'A game is being played.';
     else if (s !== null) off = 'A start is under way.';
     else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
-    const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}` : '';
+    const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}${awayNow.length > 0 ? ` ${this.namesOf(awayNow, own)} ${awayNow.length === 1 ? 'is' : 'are'} away.` : ''}` : '';
     // Step 10: the lobby's table, and why it cannot be changed now (the lobby's PC judges a pick by the same rules).
     // (While nobody has picked, `hostGame` is whatever the lobby's PC says of a table it has not open: no table.)
     const pick = a?.hostGame ?? null;
@@ -3892,6 +3910,8 @@ export class MatchController {
     for (const [id, fields] of this.mismatch) {
       // A17 step 7: a member whose table is not open has no table that could differ: their row says LOADING.
       if (this.lobbyOn && this.loadingIds.includes(id)) continue;
+      // A17 step 9: nor has a member whose PC is on its way to the lobby's table (the line says who is waited for).
+      if (this.lobbyOn && (this.ack?.tableChange ?? []).some((x) => x.playerId === id)) continue;
       const what = mismatchWords(fields).table;
       if (what) byWhat.set(what, [...(byWhat.get(what) ?? []), id === this.localId ? 'you' : this.nameOf(id)]);
     }

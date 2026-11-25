@@ -531,6 +531,11 @@ const SENTENCE_MAX = 500;
 const REASON_MAX = 200;
 /** A17: what only a player of the game being played may send; a watcher reports nothing and signs nothing. */
 const PLAYER_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'BALL_END', 'GAME_OVER', 'FORFEIT', 'PAUSE', 'RESUME', 'LOG_SIGN']);
+/** What a PC is told when it asks to join a lobby that holds as many people as it takes (shown as it is, design 11.7). */
+export function lobbyFullSentence(size: number): string {
+  return `This lobby is full (${size === 4 ? 'four' : size} people).`;
+}
+
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
 const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL', 'PARTICIPANT_UPDATE']);
 
@@ -2317,7 +2322,7 @@ export class HostMatch {
       return;
     }
     if (this.lobbyOn && this.lobby.length >= this.lobbySize) {
-      this.refuse(msg, 'match_full', `This lobby is full (${this.lobbySize === 4 ? 'four' : this.lobbySize} people).`);
+      this.refuse(msg, 'match_full', lobbyFullSentence(this.lobbySize));
       return;
     }
     if (!this.lobbyOn && this.lobby.length >= 4) {

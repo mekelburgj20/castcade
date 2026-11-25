@@ -105,8 +105,8 @@ export function linkFromArgv(argv: readonly string[]): string | null {
 
 /** The line for Discord and other chats: a web link is clickable there, a `castcade://` link is plain text. */
 export function inviteMessage(link: string, table: string | null): string {
-  if (/^https:\/\//i.test(link)) return `Castcade match${table ? ` on ${table}` : ''}: ${link}`;
-  return `Castcade match${table ? ` on ${table}` : ''}: ${link} (copy the link, then in Castcade press Match, Paste, Join)`;
+  if (/^https:\/\//i.test(link)) return `Castcade lobby${table ? ` on ${table}` : ''}: ${link}`;
+  return `Castcade lobby${table ? ` on ${table}` : ''}: ${link} (copy the link, then in Castcade press Match, Paste, Join)`;
 }
 
 // ------------------------------------------------------------------------------- registration --

@@ -153,7 +153,7 @@ function world(
   const one = createOneStep({
     match: {
       async host() {
-        if (m.role !== 'none') throw new Error('Leave the current match first');
+        if (m.role !== 'none') throw new Error('Leave the current lobby first');
         // D10.8: through ArcAid the invite is the code alone; on the listener it is the address invite.
         Object.assign(m, { role: 'host', phase: 'lobby', code: 'HOSTED', invite: o.relay ? 'HOSTED' : 'castcade:ws://203.0.113.7:27401#HOSTED' });
         hostGame = fingerprint(open ?? NO_TABLE_NAME);
@@ -448,7 +448,7 @@ describe('one step to a match: Host (A14 step 1)', () => {
     const web = world({ relay: true, arcaid: 'https://arcaid.app' });
     await web.one.host({ ...HOST, tablePath: null });
     expect(web.one.status().link).toBe('https://arcaid.app/castcade/join/HOSTED');
-    expect(web.one.status().message).toBe('Castcade match: https://arcaid.app/castcade/join/HOSTED');
+    expect(web.one.status().message).toBe('Castcade lobby: https://arcaid.app/castcade/join/HOSTED');
     expect(web.clips).toEqual(['https://arcaid.app/castcade/join/HOSTED']);
     const webDirect = world({ arcaid: 'https://arcaid.app' });
     await webDirect.one.host({ ...HOST, tablePath: null });
@@ -487,7 +487,7 @@ describe('one step to a match: Host (A14 step 1)', () => {
     expect(w.one.status()).toMatchObject({
       link,
       copied: true,
-      message: `Castcade match on ${MB.tableId}: ${link} (copy the link, then in Castcade press Match, Paste, Join)`,
+      message: `Castcade lobby on ${MB.tableId}: ${link} (copy the link, then in Castcade press Match, Paste, Join)`,
       launch: { state: 'starting', table: MB.tableId },
     });
     await w.table('Monster Bash');
@@ -499,7 +499,7 @@ describe('one step to a match: Host (A14 step 1)', () => {
     // Copy buttons: the chat line, then the link again.
     w.one.copy('message');
     w.one.copy('link');
-    expect(w.clips.slice(1)).toEqual([`Castcade match on Monster Bash: ${link} (copy the link, then in Castcade press Match, Paste, Join)`, link]);
+    expect(w.clips.slice(1)).toEqual([`Castcade lobby on Monster Bash: ${link} (copy the link, then in Castcade press Match, Paste, Join)`, link]);
   });
 
   it('a table that is already open is used: nothing is started, whatever was picked', async () => {
@@ -509,7 +509,7 @@ describe('one step to a match: Host (A14 step 1)', () => {
     expect(w.launched).toEqual([]);
     expect(w.clips).toHaveLength(1);
     expect(w.one.status().launch).toEqual({ state: 'running', table: 'Medieval Madness', detail: 'Using the table that is already open: Medieval Madness' });
-    expect(w.one.status().message).toContain('Castcade match on Medieval Madness:');
+    expect(w.one.status().message).toContain('Castcade lobby on Medieval Madness:');
   });
 
   it('no pick: hosts and copies the link, starts nothing (the player opens a table, in any order)', async () => {
@@ -533,7 +533,7 @@ describe('one step to a match: Host (A14 step 1)', () => {
     const bad = world({ launch: { ok: false, reason: 'the VPX program Castcade remembers is no longer there' } });
     const st = await bad.one.host({ ...HOST, tablePath: MB.vpxPath });
     expect(st.role).toBe('host');
-    expect(bad.one.status().launch).toMatchObject({ state: 'failed', detail: expect.stringContaining('Open it in VPX yourself; the match waits.') });
+    expect(bad.one.status().launch).toMatchObject({ state: 'failed', detail: expect.stringContaining('Open it in VPX yourself; the lobby waits.') });
 
     const slow = world();
     await slow.one.host({ ...HOST, tablePath: MB.vpxPath });
@@ -675,7 +675,7 @@ describe('a match table in the Castcade VPX build (I11.4.2, §4.4)', () => {
     await flush();
     expect(w.launches).toHaveLength(2);
     expect(w.one.status().launch).toMatchObject({ state: 'failed', table: MB.tableId });
-    expect(w.one.status().launch.detail).toContain('Open it in VPX yourself; the match waits.');
+    expect(w.one.status().launch.detail).toContain('Open it in VPX yourself; the lobby waits.');
   });
 
   it('a table that is already open is used as it is: the match host is not even asked', async () => {
@@ -701,7 +701,7 @@ describe('the invite before the table (A14.7)', () => {
     expect(w.one.status()).toMatchObject({
       link: 'https://arcaid.app/castcade/join/HOSTED',
       copied: true,
-      message: `Castcade match on ${MB.tableId}: https://arcaid.app/castcade/join/HOSTED`,
+      message: `Castcade lobby on ${MB.tableId}: https://arcaid.app/castcade/join/HOSTED`,
       tableToStart: MB.tableId,
       launch: { state: 'idle' },
     });
@@ -762,7 +762,7 @@ describe('the invite before the table (A14.7)', () => {
     const w = world({ launch: { ok: false, reason: 'the VPX program Castcade remembers is no longer there' } });
     await w.one.host({ ...LATER, tablePath: MB.vpxPath });
     const s = await w.one.startTable();
-    expect(s.launch).toMatchObject({ state: 'failed', detail: expect.stringContaining('Open it in VPX yourself; the match waits.') });
+    expect(s.launch).toMatchObject({ state: 'failed', detail: expect.stringContaining('Open it in VPX yourself; the lobby waits.') });
     expect(w.one.status().link).not.toBeNull();
   });
 });
@@ -856,7 +856,7 @@ describe('one step to a match: a link (A14 step 2)', () => {
     await w.hostTable(fingerprint('Twilight Zone'));
     await w.one.openLink(LINK, { trusted: true });
     expect(w.launched).toEqual([]);
-    expect(w.one.status().launch).toMatchObject({ state: 'needed', table: 'Twilight Zone', detail: expect.stringContaining('The host plays Twilight Zone.') });
+    expect(w.one.status().launch).toMatchObject({ state: 'needed', table: 'Twilight Zone', detail: expect.stringContaining("The lobby's table is Twilight Zone.") });
     expect(w.joins).toHaveLength(1);
     await w.table('TZ by another name');
     expect(w.one.status().launch.state).toBe('running');
@@ -981,7 +981,7 @@ describe('one step to a match: a link (A14 step 2)', () => {
     await a.w.one.openLink(LINK, { trusted: true });
     expect(a.w.joins).toHaveLength(1);
     expect(a.w.one.status().launch).toMatchObject({ state: 'waiting_host' });
-    expect(a.w.one.status().launch.detail).toBe("Looking for the host's file among 1 copy of Congo (Williams 1995) on this PC");
+    expect(a.w.one.status().launch.detail).toBe("Looking for the lobby's file among 1 copy of Congo (Williams 1995) on this PC");
     expect(a.w.signals.map((x) => x.aborted)).toEqual([false]);
     await a.w.leave();
     expect(a.w.signals[0]!.aborted).toBe(true);
@@ -1167,7 +1167,7 @@ describe('one step to a match: a link (A14 step 2)', () => {
     w.advance(600);
     await w.hostTable(CONGO_HOST);
     expect(w.launched).toEqual([]);
-    expect(w.one.status().launch).toMatchObject({ state: 'waiting_host', detail: "The host's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
+    expect(w.one.status().launch).toMatchObject({ state: 'waiting_host', detail: "The lobby's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
     expect(w.objectsRead).toEqual([]);
     w.advance(500);
     await w.hostSays(HOST_OBJECTS);
@@ -1284,7 +1284,7 @@ describe('one step to a match: a link (A14 step 2)', () => {
     await a.w.hostSays(HOST_OBJECTS);
     await a.w.one.openLink(LINK, { trusted: true });
     expect(a.w.joins).toHaveLength(1);
-    expect(a.w.one.status().launch).toMatchObject({ state: 'waiting_host', detail: "Looking at 2 copies of Congo (Williams 1995) on this PC: which holds the same table objects as the host's" });
+    expect(a.w.one.status().launch).toMatchObject({ state: 'waiting_host', detail: "Looking at 2 copies of Congo (Williams 1995) on this PC: which holds the same table objects as the lobby's" });
     expect(a.w.objectsSignals.map((x) => x.aborted)).toEqual([false]);
     await a.w.leave();
     expect(a.w.objectsSignals[0]!.aborted).toBe(true);
@@ -1350,26 +1350,26 @@ describe('one step to a match: a link (A14 step 2)', () => {
   it('a link for a match that is gone says so; a refusal says why; nothing starts', async () => {
     const gone = world({ joinError: 'Could not reach the host at 203.0.113.7:27401 (no answer in 10 s). Check the invite, and that the host forwarded the TCP port to their PC.' });
     const s = await gone.one.openLink(LINK, { trusted: true });
-    expect(s.notice).toMatch(/^That match is gone or cannot be reached: ask the host for a new link\./);
+    expect(s.notice).toMatch(/^That lobby is gone or cannot be reached: ask for a new link./);
     expect(gone.launched).toEqual([]);
-    expect(linkJoinFailure('The host refused: the match has started')).toBe('Could not join that match. The host refused: the match has started');
+    expect(linkJoinFailure('The host refused: the match has started')).toBe('Could not join that lobby. The host refused: the match has started');
     // D10.8: an answer that already says what to do is passed on as it is; a code ArcAid does not know is a match that is gone.
     const notPaired = 'This invite goes through ArcAid, and this PC is not paired with ArcAid yet: pair it in Settings, or ask the host for a direct invite (castcade:ws://…).';
     expect(linkJoinFailure(notPaired)).toBe(notPaired);
-    expect(linkJoinFailure('No match with the code JHDFEF: check the code with the host (a match that ended, or whose host has been gone for a while, is closed).')).toMatch(/^That match is gone or cannot be reached/);
+    expect(linkJoinFailure('No match with the code JHDFEF: check the code with the host (a match that ended, or whose host has been gone for a while, is closed).')).toMatch(/^That lobby is gone or cannot be reached/);
     // A refused connection is a match that is gone, not a refusal by the host; a stack never reaches the player.
     expect(linkJoinFailure('Error: connect ECONNREFUSED 203.0.113.7:27401\n    at TCPConnectWrap.afterConnect (node:net:1637:16). Check the invite.')).toBe(
-      'That match is gone or cannot be reached: ask the host for a new link. (connect ECONNREFUSED 203.0.113.7:27401)',
+      'That lobby is gone or cannot be reached: ask for a new link. (connect ECONNREFUSED 203.0.113.7:27401)',
     );
     // From the confirmation click too.
     await gone.one.openLink(LINK, { trusted: false });
-    expect((await gone.one.confirm()).notice).toMatch(/^That match is gone/);
+    expect((await gone.one.confirm()).notice).toMatch(/^That lobby is gone/);
   });
 
   it('text that is not a join link is ignored with a line; a link while in a match joins nothing', async () => {
     const w = world();
     for (const bad of ['castcade://join/JHDFEF --no-sandbox', 'castcade://run/calc', 'castcade://join/..%2F..%2Fx']) {
-      expect((await w.one.openLink(bad, { trusted: true })).notice).toBe('That link is not a Castcade match link.');
+      expect((await w.one.openLink(bad, { trusted: true })).notice).toBe('That link is not a Castcade lobby link.');
     }
     expect(w.joins).toEqual([]);
     await w.one.openLink(LINK, { trusted: true });
@@ -1391,7 +1391,7 @@ describe('one step to a match: a link (A14 step 2)', () => {
     const st = await w.one.joinLink(' castcade://join/JHDFEF ');
     expect(st.role).toBe('client');
     expect(w.launched).toEqual([MB.vpxPath]);
-    await expect(w.one.joinLink('castcade://join/nope')).rejects.toThrow(/not a Castcade match link/);
+    await expect(w.one.joinLink('castcade://join/nope')).rejects.toThrow(/not a Castcade lobby link/);
     await expect(w.one.joinLink(LINK)).rejects.toThrow('You are already in this match.');
   });
 });

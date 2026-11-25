@@ -647,7 +647,36 @@ export { LOBBY_REJOIN };
 /** A15: how long a rejoin waits for the lobby's answer (and the open match's log) before it gives up (the saved match is kept). */
 const REJOIN_TIMEOUT_MS = 20_000;
 /** A17 step 8 (the review of PR 138): the lobby PC's own note while it asks ArcAid for its room again. */
-const RELAY_WAITING = 'ArcAid is not carrying this lobby yet (it did not answer when Castcade started again). Castcade keeps asking; the others can come back once it does';
+// ---- sentences of the shell, each one function, so that what is shown of them elsewhere (the story pages of the
+// lobby's screens, renderer/story) is held against them word for word (A17 step 9, 2026-11-27).
+
+/** The lobby's record cannot be written: said on the Match tab while it lasts. */
+export function cannotSaveSentence(folder: string, why: string): string {
+  return `Castcade cannot save this lobby (the folder ${folder}: ${why}). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.`;
+}
+
+/** The lobby's PC is no longer paired with ArcAid, and its lobby was closed on it. */
+export function unpairedClosedSentence(code: string | null): string {
+  return `The lobby ${code} is closed on this PC: this PC is no longer paired with ArcAid, so the others cannot reach it. Pair it again in Settings (Pair with ArcAid), then open a new lobby and send the new code.`;
+}
+
+/** Castcade started again on the lobby's PC and opened its lobby as it was; `waiting`: ArcAid does not carry it yet. */
+export function reopenedSentence(code: string, open: 'game' | 'between' | null, waiting: boolean): string {
+  return `Castcade on this PC started again: the lobby ${code} is open again as it was${open ? `, with ${open === 'game' ? 'the game' : 'the match'} where it stood` : ''}. ${
+    waiting ? 'Castcade is waiting for ArcAid to carry it again: the others can come back once it does.' : 'The others come back by themselves.'
+  }`;
+}
+
+/**
+ * What a PC shows when a lobby did not take it in. The lobby's own sentence, as it is, where it is written to be
+ * shown so (another version; a full lobby: step 9, it stood behind "The lobby did not take this PC in:" although
+ * the sentence says it all).
+ */
+export function refusalShown(refuse: { code: string; message: string }): string {
+  return refuse.code === 'protocol_version' || refuse.code === 'match_full' ? refuse.message : `The lobby did not take this PC in: ${refuse.message}`;
+}
+
+export const RELAY_WAITING = 'ArcAid is not carrying this lobby yet (it did not answer when Castcade started again). Castcade keeps asking; the others can come back once it does';
 /** A17 step 7 (the review of PR 136): what a member is told who asks the lobby's PC for something while it is away. */
 const LOBBY_PC_AWAY = "The lobby's PC is away: this has to wait until it is back.";
 
@@ -1895,7 +1924,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const why = resumeStore.writeError() ?? 'unknown error';
       // The panel's short line first (a notice is also the tab's last word); then the tab's own, with the folder.
       a.controller.notify('Castcade cannot save this lobby on this PC: see the Match tab');
-      lastError = `Castcade cannot save this lobby (the folder ${dirname(opts.resumeFile ?? join(dirname(opts.file), RESUME_FILE))}: ${why}). The lobby goes on. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all.`;
+      lastError = cannotSaveSentence(dirname(opts.resumeFile ?? join(dirname(opts.file), RESUME_FILE)), why);
       log.warn(`match: ${lastError} It is tried again at every change.`);
     } else if (done && a.recordFailed) {
       a.recordFailed = false;
@@ -3346,7 +3375,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           // told: they meet the line of a lobby's PC that is away, and its twenty minutes.
           void closeLobby(a, unpaired ? "the lobby's PC is no longer paired with ArcAid" : 'ArcAid closed the room of this lobby and it could not be opened again').then(() => {
             lastError = unpaired
-              ? `The lobby ${a.code} is closed on this PC: this PC is no longer paired with ArcAid, so the others cannot reach it. Pair it again in Settings (Pair with ArcAid), then open a new lobby and send the new code.`
+              ? unpairedClosedSentence(a.code)
               : `The lobby ${a.code} is closed: ArcAid closed its room and it could not be opened again. Open a new lobby and send the new code.`;
             emit();
           });
@@ -3517,7 +3546,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const ballEnds = ballEndsFrom(ws).ready;
         const out = await tryJoin(parsed, me, name, rig.rig, game, ballEnds);
         // A17 step 7: the sentence is written to be shown as it is ("This lobby is full (four people).").
-        if (out.kind === 'refused') throw new Error(out.refuse.code === 'protocol_version' ? out.refuse.message : `The lobby did not take this PC in: ${out.refuse.message}`);
+        if (out.kind === 'refused') throw new Error(refusalShown(out.refuse));
         const differs = out.controller.status().tableMismatch.includes(me);
         if (differs) log.warn("match: this PC's table file differs from the lobby's table; joined anyway, flagged on every panel");
         const a = clientActive(parsed, out, rig, game, ballEnds, ws, invite.trim(), null);
@@ -3851,9 +3880,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           const waiting = a.relay !== null && a.relay.state !== 'registered';
           a.engine.runAfterRestore({ reachable: !waiting });
           const open = a.engine.openMatch();
-          const said = `Castcade on this PC started again: the lobby ${rec.code} is open again as it was${open ? `, with ${open.state === 'game' ? 'the game' : 'the match'} where it stood` : ''}. ${
-            waiting ? 'Castcade is waiting for ArcAid to carry it again: the others can come back once it does.' : 'The others come back by themselves.'
-          }`;
+          const said = reopenedSentence(rec.code, open ? open.state : null, waiting);
           a.controller.notify(said);
           log.info(`match: ${said} (${rec.log.length} log entries saved; ${a.engine.members().length - 1} place(s) kept)`);
           tryReconcile(a);

@@ -83,7 +83,7 @@ export function TablePicker({
           ? "So there is no table to pick here. To make a table the lobby's, open it in VPX yourself: this card then offers to make it the lobby's table."
           : 'Open lobby still works: open the table in VPX yourself, before or after.'}{' '}
         {others === null && (
-          <button type="button" className="small" disabled={browsing} onClick={browse}>
+          <button type="button" className="small quiet" disabled={browsing} onClick={browse}>
             Browse…
           </button>
         )}
@@ -125,7 +125,7 @@ export function TablePicker({
           : 'Pick a table and Castcade starts it in VPX for you.'}
       </small>
       {others === null ? (
-        <button type="button" className="small" disabled={browsing} onClick={browse}>
+        <button type="button" className="small quiet" disabled={browsing} onClick={browse}>
           Browse… (tables Castcade has not imported)
         </button>
       ) : (
@@ -271,12 +271,12 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
           {l.table.changing ? ' · tables are being changed' : ''}
         </span>
         {!picking && !question && (
-          <button type="button" className="small" disabled={busy || off !== null} title={off ?? undefined} onClick={() => setPicking(true)}>
+          <button type="button" className="small quiet" disabled={busy || off !== null} title={off ?? undefined} onClick={() => setPicking(true)}>
             Change table…
           </button>
         )}
         {offerOpen && !question && (
-          <button type="button" className="small" disabled={busy || off !== null} title={off ?? undefined} onClick={() => setAsking({ path: null, name: tableOpen ?? '', about: l.gameKey })}>
+          <button type="button" className="small quiet" disabled={busy || off !== null} title={off ?? undefined} onClick={() => setAsking({ path: null, name: tableOpen ?? '', about: l.gameKey })}>
             Make {tableOpen} the lobby&apos;s table
           </button>
         )}
@@ -285,31 +285,39 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
       {picking && !question && (
         <>
           <TablePicker bridge={bridge} value={choice?.path ?? null} onChange={() => undefined} onChoice={setChoice} tableOpen={tableOpen} startOnHost={false} pick />
-          <button type="button" className="small" disabled={busy || choice === null || off !== null} onClick={() => choice && setAsking({ path: choice.path, name: choice.name, about: l.gameKey })}>
-            Change table
-          </button>{' '}
-          <button
-            type="button"
-            className="small"
-            onClick={() => {
-              setPicking(false);
-              setChoice(null);
-            }}
-          >
-            Cancel
-          </button>
+          {/* A17 step 9: one filled button, the next thing to press; Cancel is the quiet one, and the two stand together. */}
+          <div className="row">
+            <span className="actions">
+              <button type="button" className="small" disabled={busy || choice === null || off !== null} onClick={() => choice && setAsking({ path: choice.path, name: choice.name, about: l.gameKey })}>
+                Change table
+              </button>
+              <button
+                type="button"
+                className="small quiet"
+                onClick={() => {
+                  setPicking(false);
+                  setChoice(null);
+                }}
+              >
+                Cancel
+              </button>
+            </span>
+          </div>
         </>
       )}
+      {/* A17 step 9: the question has the shape of every question on this tab: its words, then its answers together. */}
       {question && (
-        <p>
-          Everyone&apos;s VPX closes its table and opens {question.name}.{l.table.endsMatch ? ' The match that is open ends.' : ''}{' '}
-          <button type="button" className="primary" disabled={busy} onClick={() => go(question)}>
+        <div className="row ask">
+          <span className="warn">
+            Everyone&apos;s VPX closes its table and opens {question.name}.{l.table.endsMatch ? ' The match that is open ends.' : ''}
+          </span>
+          <button type="button" className="small" disabled={busy} onClick={() => go(question)}>
             Change table
-          </button>{' '}
-          <button type="button" className="small" disabled={busy} onClick={() => setAsking(null)}>
+          </button>
+          <button type="button" className="small quiet" disabled={busy} onClick={() => setAsking(null)}>
             Cancel
           </button>
-        </p>
+        </div>
       )}
       {error && <p className="warn">{error}</p>}
     </div>

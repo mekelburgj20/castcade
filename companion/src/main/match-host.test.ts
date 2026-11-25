@@ -2163,7 +2163,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(D.mh.status().lobby?.match?.players).toEqual([H.mh.status().localId, B.mh.status().localId]);
     // A fifth is refused with the lobby's sentence, and a refused join never opens the page at all.
     const F = lobbySeat('lobby-leave-f', { relay: () => null });
-    await expect(F.mh.join(hs.invite!, 'Fay')).rejects.toThrow('The lobby did not take this PC in: This lobby is full (four people).');
+    await expect(F.mh.join(hs.invite!, 'Fay')).rejects.toThrow('This lobby is full (four people).');
     expect(F.calls.filter((c) => c.startsWith('attach'))).toEqual([]);
     expect(F.page.added).toEqual([]);
     expect(H.held().length).toBe(3);

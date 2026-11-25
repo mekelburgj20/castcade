@@ -398,6 +398,14 @@ export function changeWords(state: ChangeState, table: string, open: string | nu
   }
 }
 
+/**
+ * What a PC says when it joined a lobby whose table it has no copy of. A17 step 9 (2026-11-27): "the lobby's table"
+ * (it read "The host plays …" and "You stay in the match", from before there was a lobby).
+ */
+export function noCopyAtJoinWords(table: string): string {
+  return `The lobby's table is ${table}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the lobby and can watch.`;
+}
+
 const IDLE: OneStepStatus['launch'] = { state: 'idle', table: null, detail: null };
 
 const describe = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -406,11 +414,11 @@ const describe = (e: unknown): string => (e instanceof Error ? e.message : Strin
 export function linkJoinFailure(raw: string): string {
   // A socket error can carry its stack: only the sentences are for the player.
   const detail = raw.replace(/\n\s+at [^\n]*/g, '').replace(/^Error: /, '');
-  if (/The host refused/.test(detail)) return `Could not join that match. ${detail}`;
+  if (/The host refused/.test(detail)) return `Could not join that lobby. ${detail}`;
   // Sentences that already say what to do (D10.8's relay answers: not paired or no longer paired, full, held back,
   // a match that has started and is locked to its players; a request under way).
-  if (/still working|Leave the current match|not paired|no longer paired|pair it (again )?(with ArcAid|in Settings)|is full\.|holding this PC back|has already started/i.test(detail)) return detail;
-  return `That match is gone or cannot be reached: ask the host for a new link. (${detail})`;
+  if (/still working|Leave the current (match|lobby)|not paired|no longer paired|pair it (again )?(with ArcAid|in Settings)|is full\.|holding this PC back|has already started/i.test(detail)) return detail;
+  return `That lobby is gone or cannot be reached: ask for a new link. (${detail})`;
 }
 
 /**
@@ -638,7 +646,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
             void o.launcher.launch(table.vpxPath).then((again) => {
               if (stopped || again.ok) return;
               log.warn(`launch: ${table.tableId} not started in your own VPX either: ${again.reason}`);
-              setLaunch({ state: 'failed', table: table.tableId, detail: `Castcade could not start ${table.tableId}: ${again.reason}. Open it in VPX yourself; the match waits.` });
+              setLaunch({ state: 'failed', table: table.tableId, detail: `Castcade could not start ${table.tableId}: ${again.reason}. Open it in VPX yourself; the lobby waits.` });
               emit();
             });
           },
@@ -956,7 +964,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (stopped) return;
     if (!r.ok) {
       log.warn(`launch: ${table.tableId} not started (${why}): ${r.reason}`);
-      setLaunch({ state: 'failed', table: table.tableId, detail: `Castcade could not start ${table.tableId}: ${r.reason}. Open it in VPX yourself; the match waits.` });
+      setLaunch({ state: 'failed', table: table.tableId, detail: `Castcade could not start ${table.tableId}: ${r.reason}. Open it in VPX yourself; the lobby waits.` });
       return;
     }
     log.info(`launch: ${table.tableId} started (${why})`);
@@ -965,7 +973,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       launchTimer = null;
       if (launch.state !== 'starting') return;
       log.warn(`launch: VPX did not show ${table.tableId} within ${Math.round(waitMs / 1000)} s`);
-      setLaunch({ state: 'failed', table: table.tableId, detail: `VPX did not open ${table.tableId} yet. Open it in VPX yourself if it does not appear; the match waits.` });
+      setLaunch({ state: 'failed', table: table.tableId, detail: `VPX did not open ${table.tableId} yet. Open it in VPX yourself if it does not appear; the lobby waits.` });
       emit();
     }, waitMs);
   };
@@ -1096,7 +1104,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       want = null;
       const t = (await pickable()).find((k) => k.vpxPath === w.path);
       if (!t) {
-        setLaunch({ state: 'failed', table: null, detail: 'That table is no longer in the list. Open it in VPX yourself; the match waits.' });
+        setLaunch({ state: 'failed', table: null, detail: 'That table is no longer in the list. Open it in VPX yourself; the lobby waits.' });
         return;
       }
       await start(t, 'the host picked it');
@@ -1106,7 +1114,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     // of the lobby's table it is the pick itself (a match that is open still names the table before).
     const game = (w.change || w.pick ? match.lobbyTable?.()?.game : null) ?? match.hostGame();
     if (!game || !isTableOpen(game)) {
-      setLaunch({ state: 'waiting_host', table: null, detail: "Waiting for the host's table to open; Castcade then starts the same table here" });
+      setLaunch({ state: 'waiting_host', table: null, detail: "Waiting for the lobby's table to open; Castcade then starts the same table here" });
       return;
     }
     // A table name from another PC is cleaned before it is logged or shown; the table is found from the name as it came.
@@ -1148,7 +1156,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       if (nameOnly === null || nameOnly.code !== w.code) nameOnly = { code: w.code, at: now() };
       const left = HOST_HASH_WAIT_MS - (now() - nameOnly.at);
       if (left > 0) {
-        setLaunch({ state: 'waiting_host', table: null, detail: "The host's table is open; waiting a moment for its file's fingerprint, to start the identical file here" });
+        setLaunch({ state: 'waiting_host', table: null, detail: "The lobby's table is open; waiting a moment for its file's fingerprint, to start the identical file here" });
         clearHashTimer();
         hashTimer = later(() => {
           hashTimer = null;
@@ -1186,7 +1194,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
         const run = { key, ctl: new AbortController(), done: false, hashes: new Map<string, string>() };
         hashRun = run;
         const hashTable = o.hashTable;
-        setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the host's file among ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of ${gameName} on this PC` });
+        setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the lobby's file among ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of ${gameName} on this PC` });
         void (async (): Promise<void> => {
           for (const t of some) {
             if (run.ctl.signal.aborted) return;
@@ -1226,7 +1234,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
         const choice = objectsCandidates(game, all).length > 1;
         const left = choice ? HOST_HASH_WAIT_MS - (now() - seenAt) : 0;
         if (left > 0) {
-          setLaunch({ state: 'waiting_host', table: null, detail: "The host's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
+          setLaunch({ state: 'waiting_host', table: null, detail: "The lobby's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
           clearHashTimer();
           hashTimer = later(() => {
             hashTimer = null;
@@ -1246,7 +1254,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
           const run = { key: okey, ctl: new AbortController(), done: false, ids: new Map<string, ForkIdentity>(), looked: 0, timer: null as unknown };
           objectsRun = run;
           const copies = (n: number): string => `${n} ${n === 1 ? 'copy' : 'copies'}`;
-          setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${gameName} on this PC: which holds the same table objects as the host's` });
+          setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${gameName} on this PC: which holds the same table objects as the lobby's` });
           /** The pick goes on with what is known: every copy was looked at, or the time for it is over. */
           const finish = (late: boolean): void => {
             if (objectsRun !== run || run.done || run.ctl.signal.aborted || stopped) return;
@@ -1301,7 +1309,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
             ? `${changedTo} Castcade found no copy of it on this PC, and ${open} stays open: you can watch, or pick another table.`
             : w.change || w.pick
               ? `${changedTo} Castcade found no copy of it on this PC: you can watch, or pick another table.`
-              : `The host plays ${gameName}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the match.`,
+              : noCopyAtJoinWords(gameName),
       });
       return;
     }
@@ -1575,7 +1583,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
     const m = match.status();
     if (m.role !== 'none') {
       if (m.code === link.code) throw new Error('You are already in this match.');
-      throw new Error('Leave the current match first, then open the link again.');
+      throw new Error('Leave the current lobby first, then open the link again.');
     }
     notice = null;
     setLaunch(IDLE);
@@ -1692,7 +1700,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       const link = parseJoinLink(text);
       if (!link) {
         log.warn('launch: a castcade:// link that is not a join link was ignored');
-        notice = 'That link is not a Castcade match link.';
+        notice = 'That link is not a Castcade lobby link.';
         emit();
         return status();
       }
@@ -1722,7 +1730,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
 
     async joinLink(text, displayName = '') {
       const link = looksLikePastedLink(text) ? parseJoinLink(text) : null;
-      if (!link) throw new Error('That is not a Castcade match link. It looks like castcade://join/ABCDEF: ask the host to copy it again.');
+      if (!link) throw new Error('That is not a Castcade lobby link. It looks like castcade://join/ABCDEF: ask for it to be copied again.');
       pending = null;
       try {
         return await join(link, displayName);

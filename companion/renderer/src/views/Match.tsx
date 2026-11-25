@@ -210,7 +210,8 @@ export function Match({ state }: { state: CastcadeState }) {
               <td>
                 <span className="who">{p.name}</span>
                 {p.id === st.localId ? ' (you)' : ''}
-                {p.id === st.hostId ? (st.lobby ? ' · opened the lobby' : ' · host') : ''}
+                {/* A17 step 9: in a lobby, who opened it is said in the lobby's first line: the row keeps to one line. */}
+                {!st.lobby && p.id === st.hostId ? ' · host' : ''}
                 {words.text}
                 {words.flags.map((f) => (
                   <span key={f} className="warn">
@@ -447,7 +448,8 @@ export function Match({ state }: { state: CastcadeState }) {
               <div className="row">
                 <strong>Lobby {st.code}</strong>
                 <span className="muted">
-                  {st.lobby.members.length} of 4 here{st.path ? ` · ${st.path}` : ''}
+                  {st.lobby.members.length} of 4 here · opened by {st.hostId === st.localId ? 'you' : nameOf(st, st.hostId)}
+                  {st.path ? ` · ${st.path}` : ''}
                 </span>
               </div>
               <LobbyInvite bridge={bridge} st={st} one={one} />
@@ -463,8 +465,9 @@ export function Match({ state }: { state: CastcadeState }) {
             {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
             {!st.lobby && st.path && <p className="muted">{st.path}</p>}
             {/* A17 step 9: a start that is announced says its own line beside its buttons (below): the same sentence is not said twice.
-                A line that sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the top. */}
-            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && (
+                A line that sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the top.
+                Nor is this PC's own table change, which the card at the top of the tab says, with its Open it. */}
+            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && panel.message !== one?.change?.detail && (
               <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') || panel.message.startsWith('The lobby is closed') || panel.message.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, panel.message, now)}</p>
             )}
             {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
@@ -782,7 +785,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
               <div className="row ask">
                 <span className="warn">
-                  End {st.pass.name}'s ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby's PC.
+                  End {possessive(st.pass.name)} ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby's PC.
                 </span>
                 <button
                   type="button"
@@ -920,7 +923,7 @@ export function Match({ state }: { state: CastcadeState }) {
 
           {panel?.result && (
             <div className="card">
-              <strong>{panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}</strong>
+              <strong>{st.lobby ? `Game ${panel.game ?? 1}` : panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}</strong>
               <table className="match-table">
                 <tbody>
                   {panel.result.map((r) => (
@@ -1508,7 +1511,8 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
             Send the code or the link{link?.startsWith('https://') ? ' (it opens this lobby with the table started)' : ''}. Everyone needs Castcade paired with ArcAid.
           </p>
           {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
-          {st.relayNote && <p className="warn">{st.relayNote}.</p>}
+          {/* Step 9: not when the sentence at the top of the tab already says it (Castcade started again and waits for ArcAid). */}
+          {st.relayNote && !(st.lastError ?? '').includes('waiting for ArcAid') && <p className="warn">{st.relayNote}.</p>}
           {st.directInvite && (
             <p className="muted">
               For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="mono">{st.directInvite}</code>
