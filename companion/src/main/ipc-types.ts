@@ -54,6 +54,8 @@ export const IPC = {
   launchBrowse: 'launch:browse',
   launchHost: 'launch:host',
   launchStartTable: 'launch:startTable',
+  /** A17 step 3: Open it: the lobby's new table on this PC, when "Change tables for me" is off. */
+  launchOpenPick: 'launch:openPick',
   launchConfirm: 'launch:confirm',
   launchDismiss: 'launch:dismiss',
   launchCopy: 'launch:copy',
@@ -368,6 +370,8 @@ export interface CastcadeApi {
     host(opts: { tablePath: string | null; startTable?: boolean; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     /** A14.7: start the table Host held back. */
     startTable(): Promise<OneStepStatus>;
+    /** A17 step 3: Open it: close the table that is open here and open the lobby's new one (`OneStepStatus.change`). */
+    openPick(): Promise<OneStepStatus>;
     /** Join the match of the link that waits (`status.pending`) and start its table here. */
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;

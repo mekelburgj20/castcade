@@ -18,6 +18,36 @@
  * - **Any order**: what is still to be started is a wish (`want`), settled by `reconcile` on every match and witness
  *   status: the host's table may open after the join (the wish waits for the host's fingerprint), a table may already
  *   be open (nothing is started), VPX may take a minute (the wish is not repeated), the match may end first (dropped).
+ * - **A table that is open and wrong** (A17 step 3, 2026-11-25, alpha-match.md section 11.5): the wish also learns
+ *   that the lobby's table can change while another table is open here. At the join nothing changes: a table that is
+ *   already open is kept. When the lobby's table then changes from one named table to another, this PC's copy of the
+ *   new one is found by the same rules as at a join, and then, in this order: no copy, nothing closes and the PC says
+ *   so; the open table is itself a copy of the new game, it is kept; "Change tables for me" is off, the Match tab
+ *   offers Open it; a table Castcade cannot follow (the witness in basic mode: no hook journal, so nobody knows
+ *   whether a game is on) is never closed by Castcade, the person is asked to; a game on the open table, its ending or
+ *   the entry of its high-score initials is waited for; otherwise the open table is asked to close
+ *   (`launch/vpx-close.ts`: never by force) and the copy is started the way a match table is. What is left of a
+ *   change while the open table stands is `swap`; `status().change` says it to the Match tab. What is followed is
+ *   the lobby's table as the engine holds it since step 6: a pick (`MatchHost.lobbyTable`), the same on every PC,
+ *   and never `hostGame()`, which is a match's own table once one has started.
+ *
+ *   The rule that decides every doubtful case (review of PR 137): **when Castcade is not sure, it asks the person and
+ *   closes nothing.** So:
+ *   - a change is only a table that somebody picked while this PC was in the lobby. Every join and every join again
+ *     (a lobby its PC opened again under the same code, a place that ran out, a reconnect, a resume) takes the
+ *     lobby's table as it finds it and keeps the table that is open (`lobbyTable().joined`). The lobby's default
+ *     table (what its PC has open, or opens first) is never a change: in the engine a pick, once made, is only
+ *     changed by `pickTable`, which a person's TABLE_PICK reaches (the shell sends one from step 10 on);
+ *   - "Castcade follows the table" means the witness has evidence that a game on it would be seen
+ *     (`WitnessStatus.gamesSeen`), not that a journal is read;
+ *   - the process that is asked is the one VPX that is open, the one the witness names the table from; with two
+ *     VPX open, or none it can name, the person is asked;
+ *   - after a game whose score cannot be compared with a list, the table is left for the initials as long as after
+ *     one whose score made the list;
+ *   - a request that is out cannot be taken back: when its table closes after the change was taken back (the
+ *     lobby's table changed again, the lobby was left), the lobby's table as it is then is opened, or, with no lobby,
+ *     the tab says what happened (`out`).
+ *   A table name that comes from another PC is cleaned before it is logged or shown.
  *
  * Everything that touches the outside (the process spawner, the clipboard, the table lists) is injected; nothing here
  * imports Electron.
@@ -27,10 +57,13 @@ import { HASH_CANDIDATES_MAX, OBJECTS_CANDIDATES_MAX, findLocalTable, hostHash, 
 import { forkIdentityText, sameForkIdentity, type ForkIdentity } from '../launch/fork-identity.js';
 import type { KnownTable } from '../launch/known-tables.js';
 import { objectsDisagreeLine } from '../launch/table-objects.js';
+import type { VpxCloser } from '../launch/vpx-close.js';
 import type { ForkLaunch, LaunchResult, VpxLauncher } from '../launch/vpx-launch.js';
 import { formatJoinLink, formatWebJoinLink, inviteMessage, looksLikePastedLink, parseJoinLink, type JoinLink } from './deep-link.js';
 import type { MatchStatus } from './match-host.js';
-import { isTableOpen } from './match-setup.js';
+import { NO_TABLE_NAME, isTableOpen } from './match-setup.js';
+import { INITIALS_HOLD_CAP_MS } from '../match/controller.js';
+import { forLog } from '../match/stream3d.js';
 
 export type LaunchState =
   /** Nothing asked. */
@@ -45,6 +78,14 @@ export type LaunchState =
   | 'needed'
   | 'failed';
 
+/**
+ * A17 step 3: what is left of a change of the lobby's table on this PC. `offered`: "Change tables for me" is off, and
+ * the Match tab has Open it. `own_game`: a game, its ending or its high-score initials on the open table: after it.
+ * `closing`: the open table was asked to close. `close_it`: the person closes it (a table Castcade cannot follow, or
+ * one that is still open 15 s after it was asked); Castcade opens the new table when it is closed.
+ */
+export type ChangeState = 'offered' | 'own_game' | 'closing' | 'close_it';
+
 export interface OneStepStatus {
   /** While hosting: the join link and the line for a chat. Null otherwise. */
   link: string | null;
@@ -56,6 +97,11 @@ export interface OneStepStatus {
   launch: { state: LaunchState; table: string | null; detail: string | null };
   /** A14.7: hosting, and the picked table waits for "Start the table" (`startTable()`): its name. Null otherwise. */
   tableToStart: string | null;
+  /**
+   * A17 step 3: the lobby's table changed and this PC has not followed yet: the new table (`table`), the table open
+   * here (`open`; null: none, and the new one waits for Open it), where it stands and the sentence for the tab.
+   */
+  change: { state: ChangeState; table: string; open: string | null; detail: string } | null;
   /** One line about the last link (gone, not a link, already in a match). */
   notice: string | null;
   /** Counts links that asked for the Match tab; the renderer switches to it when this moves. */
@@ -95,6 +141,12 @@ export interface OneStep {
   host(o: OneStepHostOptions): Promise<MatchStatus>;
   /** A14.7: start the table Host held back (`status.tableToStart`). Nothing held: nothing happens. */
   startTable(): Promise<OneStepStatus>;
+  /**
+   * A17 step 3: Open it: the person asks for the lobby's new table on this PC (`status.change`, with "Change tables
+   * for me" off). The open table is closed and the new one started by the same rules as with the setting on: not
+   * during a game, never a table Castcade cannot follow. No change waiting: nothing happens.
+   */
+  openPick(): Promise<OneStepStatus>;
   /** A link from outside the app. Never throws: what went wrong is the status's `notice`. */
   openLink(text: string, ctx: { trusted: boolean }): Promise<OneStepStatus>;
   /** A link pasted into the Match tab's Join box: joined at once; throws the sentence the tab shows. */
@@ -132,11 +184,44 @@ export interface OneStepOptions {
      * and whether that start took (`MatchHost.tableLaunch`); or null / absent: the plain A14 launch.
      */
     tableLaunch?(): Promise<ForkLaunch | null>;
+    /** A17 step 3: this PC's table is held for the high-score initials of a finished match game (`MatchHost.tableHeld`). Absent: never. */
+    tableHeld?(): boolean;
+    /**
+     * A17 step 3: the lobby's table, a pick (`MatchHost.lobbyTable`), with this PC's stay in the lobby (`joined`:
+     * another value after every join, join again, reconnect and resume). A change of its name under one `joined` is
+     * what this PC follows. Absent: nothing is followed (the table of a join is still found from `hostGame`).
+     */
+    lobbyTable?(): { game: GameFingerprint; joined: string } | null;
   };
   witness: {
-    status(): { currentTable: string | null };
+    /**
+     * A17 step 3 (`WitnessStatus`): `gamesSeen`: true when the witness has evidence that a game on the open table
+     * would be seen; anything else (false, not said) is a table Castcade cannot follow, which it never closes.
+     * `currentPid`: the VPX process the table is named from; `vpxOpen`: how many VPX processes are open. Only with
+     * exactly one, and its pid known, does Castcade know which process to ask.
+     */
+    status(): { currentTable: string | null; gamesSeen?: boolean | null; currentPid?: number | null; vpxOpen?: number };
     onStatus(cb: (s: { currentTable: string | null }) => void): () => void;
+    /** A17 step 3: the game on the open table as live mode reads it, and every change of it. Absent: no game is ever seen. */
+    liveGame?(): { inGame: boolean; scores: (number | null)[] } | null;
+    onGame?(cb: (g: { inGame: boolean; scores: (number | null)[] } | null) => void): () => void;
+    /**
+     * A17 step 3: a finished game's score against the open table's high-score list (`Witness.highScoreKnown`): true,
+     * false, or null when there is no list to compare with. Absent: never known.
+     */
+    highScoreKnown?(score: number): boolean | null;
   };
+  /**
+   * A17 step 3: asks the open table's VPX to close (`launch/vpx-close.ts`). Absent: Castcade closes nothing, and the
+   * person is asked to.
+   */
+  closer?: VpxCloser;
+  /** A17 step 3: "Change tables for me" (`match.json` `changeTablesForMe`). Absent: on. */
+  changeTablesForMe?(): boolean;
+  /** A17 step 3: `AFTER_GAME_MS`, the wait for a finished game's initials (`INITIALS_HOLD_CAP_MS`) and `LATE_CLOSE_MS` for the tests. */
+  afterGameMs?: number;
+  initialsWaitMs?: number;
+  lateCloseMs?: number;
   launcher: VpxLauncher;
   clipboard: { writeText(text: string): void };
   /** The imported tables, most recent first (`launch/known-tables.ts`). */
@@ -186,6 +271,43 @@ export const DEFAULT_LAUNCH_WAIT_MS = 120_000;
  * as "not known", and the log says how many were not.
  */
 export const DEFAULT_OBJECTS_READ_MS = 8_000;
+/**
+ * A17 step 3: how long after a game's end its table is still left alone whatever else is known: the machine's own
+ * ending, and the moment in which the match controller raises its initials hold from the same event.
+ */
+export const AFTER_GAME_MS = 3_000;
+/**
+ * A17 step 3: how long a close request that was not obeyed in time is still remembered: a VPX that closes this long
+ * after the closer gave up closed because it was asked to, and what follows is Castcade's to say.
+ */
+export const LATE_CLOSE_MS = 60_000;
+/** A table name as it is logged and shown: no control characters, no line breaks, this long at most. */
+export const TABLE_NAME_MAX = 80;
+
+/** Lower-case letters and digits only: how two names of one table file are compared. */
+const squash = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, '');
+/** A table name from another PC, for a log line or the tab: no control character or line break, one space between words, capped. */
+const tableWords = (name: string): string => forLog(name, 1000).replace(/ {2,}/g, ' ').slice(0, TABLE_NAME_MAX).trim();
+const sameName = (a: string, b: string): boolean => squash(a) === squash(b);
+/** The name of a table file as the witness names an open table (`tableNameFromPath`). */
+const fileName = (vpxPath: string): string => (vpxPath.split(/[\\/]/).pop() ?? vpxPath).replace(/\.vpx$/i, '');
+
+/** A17 step 3: what the Match tab says of a change that waits (alpha-match.md sections 11.5 and 11.9). */
+export function changeWords(state: ChangeState, table: string, open: string | null, why: 'game' | 'initials' | null = null): string {
+  const now = `The lobby's table is now ${table}.`;
+  switch (state) {
+    case 'offered':
+      return open === null ? now : `${now} Open it: Castcade closes ${open} and opens ${table}.`;
+    case 'own_game':
+      return why === 'initials'
+        ? `${now} The high-score initials of the last game can still be entered on ${open ?? 'this table'}: Castcade opens ${table} after that, or as soon as you close the table.`
+        : `${now} A game is being played on this PC's table: Castcade opens ${table} after it.`;
+    case 'closing':
+      return `${now} Closing ${open ?? 'the open table'}; ${table} opens next.`;
+    case 'close_it':
+      return `Close the table on this PC: Castcade opens ${table} when it is closed.`;
+  }
+}
 
 const IDLE: OneStepStatus['launch'] = { state: 'idle', table: null, detail: null };
 
@@ -200,6 +322,42 @@ export function linkJoinFailure(raw: string): string {
   // a match that has started and is locked to its players; a request under way).
   if (/still working|Leave the current match|not paired|no longer paired|pair it (again )?(with ArcAid|in Settings)|is full\.|holding this PC back|has already started/i.test(detail)) return detail;
   return `That match is gone or cannot be reached: ask the host for a new link. (${detail})`;
+}
+
+/**
+ * A table still to be started for the lobby with this code: the host's pick (`path`), or the lobby's table (a joined
+ * PC). A17 step 3: `change`: the wish was made because the lobby's table changed; `replace` names the table that was
+ * open (or being started) on this PC at that moment, the one a copy of the new table may take the place of.
+ */
+interface Wish {
+  code: string;
+  path: string | null;
+  change?: { replace: string | null };
+  /** A17 step 3: the table to start is the lobby's as it is now (the pick), after a close Castcade asked for. */
+  pick?: boolean;
+}
+
+/** A17 step 3: what is left of a change once this PC's copy of the new table is known (`OneStepStatus.change`). */
+interface Swap {
+  code: string;
+  /** The table open on this PC; null: none (the setting is off and the new table waits for Open it). */
+  open: string | null;
+  /** The lobby's table, as it is named. */
+  table: string;
+  state: ChangeState;
+  why: 'game' | 'initials' | null;
+  /** Open it was pressed: with the setting off, Castcade may close the open table all the same. */
+  asked: boolean;
+  /** The closer is at work. */
+  closing: boolean;
+  /** The VPX process has ended after it was asked; the witness still names its table (its close-time capture runs). */
+  gone: boolean;
+  /** A close request went out for this change (it may still be obeyed, whatever the closer answered). */
+  sent: boolean;
+  /** The third rung was reached: the person closes the table, and Castcade asks it no more. */
+  person: boolean;
+  /** The log has a line for the state it is in. */
+  said: boolean;
 }
 
 export function createOneStep(o: OneStepOptions): OneStep {
@@ -218,10 +376,31 @@ export function createOneStep(o: OneStepOptions): OneStep {
   /** The host's pick, for the chat line until the witness names the open table. */
   let hostTable: string | null = null;
   /** A table still to be started for the match with this code: the host's pick (`path`), or the host's game (a client). */
-  let want: { code: string; path: string | null } | null = null;
+  let want: Wish | null = null;
   /** A14.7: the host's pick, held until "Start the table" (it becomes the wish then). */
   let held: { code: string; path: string; name: string } | null = null;
   let launchTimer: unknown = null;
+  /**
+   * A17 step 3: the lobby's table as it was last named, for the lobby with this code and this stay in it (`joined`).
+   * Its first sighting is no change, and neither is its first sighting after this PC joined again.
+   */
+  let lobbyTable: { code: string; joined: string; name: string } | null = null;
+  /**
+   * A17 step 3 (review, finding 7): a close request that is out, for this lobby, table and process. It outlives the
+   * change that made it: a request cannot be taken back, so what happens when its table closes is still Castcade's
+   * to say. Forgotten when the table closes, when another table is seen open, or `LATE_CLOSE_MS` after the closer
+   * gave up.
+   */
+  let out: { code: string; open: string; pid: number; table: string } | null = null;
+  let outTimer: unknown = null;
+  /** A17 step 3: this PC's copy of the lobby's new table was found while another table stood open: what is left of the change. */
+  let swap: Swap | null = null;
+  let swapTimer: unknown = null;
+  /** A17 step 3: a table open on this PC that is known not to be the lobby's (no copy of the lobby's table is here): it is not taken for one. */
+  let stale: { code: string; open: string } | null = null;
+  /** A17 step 3: when the last game on this PC's table ended, with its scores; null while one is on, and before any. */
+  let gameEnded: { at: number; scores: number[]; qualifies: boolean | null | undefined; held: boolean } | null = null;
+  let gameOn = witness.liveGame?.()?.inGame ?? false;
   /** I11.4.11: the host's table was first seen named and not yet hashed, for the match with this code, at this time. */
   let nameOnly: { code: string; at: number } | null = null;
   let hashTimer: unknown = null;
@@ -276,6 +455,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       pending: pending ? { code: pending.code, address: pending.address } : null,
       launch: { ...launch },
       tableToStart: held !== null && m.role === 'host' && held.code === m.code && tableOpen() === null ? held.name : null,
+      change: swap !== null && swap.code === m.code ? { state: swap.state, table: swap.table, open: swap.open, detail: changeWords(swap.state, swap.table, swap.open, swap.why) } : null,
       notice,
       attention,
     };
@@ -315,6 +495,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (fork) {
       const r = await o.launcher.launch(table.vpxPath, fork.options);
       if (r.ok) {
+        // A17 step 3: which process this start made: `quit` only ever goes to a build that is known to be it.
+        if (r.pid !== null) fork.spawned?.(r.pid);
         const code = match.status().code;
         // I11.4.15: what this table's VPX says its objects are is kept for the file: the build's own word comes
         // before anything computed, and a file the computation gets wrong shows in the log.
@@ -349,6 +531,217 @@ export function createOneStep(o: OneStepOptions): OneStep {
     return o.launcher.launch(table.vpxPath);
   };
 
+  // ---- A17 step 3: a table that is open and wrong ----
+  /** The lobby's table (the pick) as it is now: its name for the log and the tab, the pick itself, and this PC's stay. Null with no lobby, and while no table is named. */
+  const lobbyTableNow = (m: MatchStatus): { name: string; game: GameFingerprint; joined: string } | null => {
+    if (m.role === 'none') return null;
+    const t = match.lobbyTable?.() ?? null;
+    if (!t || !isTableOpen(t.game) || t.game.tableName === NO_TABLE_NAME) return null;
+    return { name: tableWords(t.game.tableName), game: t.game, joined: t.joined };
+  };
+  /** The lobby's table has another name than the one this PC last heard, or this PC joined again. */
+  const lobbyTableMoved = (m: MatchStatus): boolean => {
+    const t = lobbyTableNow(m);
+    return t !== null && lobbyTable !== null && lobbyTable.code === m.code && (lobbyTable.joined !== t.joined || !sameName(lobbyTable.name, t.name));
+  };
+  const AFTER_GAME = o.afterGameMs ?? AFTER_GAME_MS;
+  /** One number with the controller's own hold: how long a finished game's initials are waited for. */
+  const INITIALS_WAIT = o.initialsWaitMs ?? INITIALS_HOLD_CAP_MS;
+  const LATE_CLOSE = o.lateCloseMs ?? LATE_CLOSE_MS;
+  const changeOn = (): boolean => o.changeTablesForMe?.() ?? true;
+  const clearSwapTimer = (): void => {
+    if (swapTimer !== null) cancel(swapTimer);
+    swapTimer = null;
+  };
+  const dropSwap = (): void => {
+    clearSwapTimer();
+    swap = null;
+  };
+  const dropOut = (): void => {
+    if (outTimer !== null) cancel(outTimer);
+    outTimer = null;
+    out = null;
+  };
+  /**
+   * Nothing is closed that might be a game: a game on the open table (the A16 window of a finished match game is one:
+   * the table's own game still runs), the controller's initials hold, the moment after a game's end, and the time
+   * for the initials of the last game unless its score is known not to make the machine's list. With no list to
+   * compare with (an original, a map without one) nobody can say, so the table is left as long as if it did. The
+   * controller's hold, once it was on for that game and is over, is the better word: the initials are in.
+   * `until`: when a wait ends by itself.
+   */
+  const busy = (): { why: 'game' | 'initials'; until: number | null } | null => {
+    if (witness.liveGame?.()?.inGame) return { why: 'game', until: null };
+    const e = gameEnded;
+    if (match.tableHeld?.()) {
+      if (e) e.held = true;
+      return { why: 'initials', until: null };
+    }
+    if (!e) return null;
+    const since = now() - e.at;
+    if (since < AFTER_GAME) return { why: 'game', until: e.at + AFTER_GAME };
+    if (e.held || since >= INITIALS_WAIT) return null;
+    // Asked once per game, and only when a change waits for the answer.
+    if (e.qualifies === undefined) {
+      const known = e.scores.map((score) => witness.highScoreKnown?.(score) ?? null);
+      e.qualifies = known.includes(true) ? true : known.length === 0 || known.includes(null) ? null : false;
+    }
+    return e.qualifies === false ? null : { why: 'initials', until: e.at + INITIALS_WAIT };
+  };
+  /** The witness has evidence that a game on the open table would be seen: only then can Castcade know that none is on. */
+  const follows = (): boolean => witness.status().gamesSeen === true;
+  /**
+   * The process to ask: the one VPX that is open, when the witness names the table from it. Null (the person is
+   * asked) with two VPX open, with none known, or when the table it names is not the one the change is about.
+   */
+  const processOf = (table: string): number | null => {
+    const st = witness.status();
+    if ((st.vpxOpen ?? 0) !== 1 || st.currentTable === null || !sameName(st.currentTable, table)) return null;
+    const pid = st.currentPid ?? null;
+    return pid !== null && Number.isInteger(pid) && pid > 0 ? pid : null;
+  };
+  const moveSwap = (s: Swap, state: ChangeState, why: 'game' | 'initials' | null, line: string): void => {
+    if (s.said && s.state === state && s.why === why) return;
+    s.state = state;
+    s.why = why;
+    s.said = true;
+    log.info(`launch: ${line}`);
+  };
+  /**
+   * What is left of a change, against the world as it is now. Cheap: no list is read here, so it runs on every status
+   * of a game that is waited for. Answers true when the open table is gone and the new one is to be started.
+   */
+  const settleSwap = (code: string | null, open: string | null): boolean => {
+    const s = swap;
+    if (!s) return false;
+    if (code !== s.code) {
+      dropSwap();
+      return false;
+    }
+    if (s.open === null) {
+      // Nothing was open: the new table waits for Open it. A table opened by hand meanwhile is the one that is used.
+      if (open !== null) dropSwap();
+      return false;
+    }
+    if (open === null) {
+      // The table is closed: by Castcade's request, or by the person.
+      if (!s.asked && !s.gone && !s.closing && !s.sent && !changeOn()) {
+        // The setting is off, nobody asked and Castcade asked nothing: nothing opens by itself either.
+        s.open = null;
+        moveSwap(s, 'offered', null, `${s.table} still waits for Open it (Change tables for me is off)`);
+        return false;
+      }
+      log.info(`launch: the table that was open is closed; ${s.table} is started`);
+      dropSwap();
+      return true;
+    }
+    if (!sameName(open, s.open)) {
+      log.info(`launch: ${open} was opened by hand while ${s.table} waited; it is used as it is`);
+      dropSwap();
+      return false;
+    }
+    if (s.closing) return false;
+    if (s.gone) {
+      // Its VPX has ended; the witness lets go of the table when its close-time capture is done.
+      moveSwap(s, 'closing', null, `${s.open} is closed (its VPX has ended); ${s.table} is started when the witness is done with it`);
+      return false;
+    }
+    if (s.person) {
+      moveSwap(s, 'close_it', null, `${s.open} is the person's to close; ${s.table} opens when it is closed`);
+      return false;
+    }
+    clearSwapTimer();
+    if (!s.asked && !changeOn()) {
+      moveSwap(s, 'offered', null, `Change tables for me is off: ${s.table} waits for Open it, and ${s.open} stays open`);
+      return false;
+    }
+    if (!follows() || !o.closer) {
+      moveSwap(s, 'close_it', null, `${s.open} is a table Castcade cannot follow (it has no evidence that it would see a game on it): Castcade does not close it; ${s.table} opens when the person has closed it`);
+      return false;
+    }
+    const pid = processOf(s.open);
+    if (pid === null) {
+      const n = witness.status().vpxOpen ?? 0;
+      moveSwap(s, 'close_it', null, `${n > 1 ? `${n} VPX are open on this PC, and Castcade cannot tell which one a person plays on` : `Castcade does not know which VPX process holds ${s.open}`}: nothing is asked to close; ${s.table} opens when the person has closed the table`);
+      return false;
+    }
+    const game = busy();
+    if (game) {
+      moveSwap(s, 'own_game', game.why, game.why === 'initials' ? `${s.open} is left open for the high-score initials of its last game; ${s.table} opens after that` : `a game is on ${s.open}: nothing is closed; ${s.table} opens after it`);
+      if (game.until !== null) {
+        swapTimer = later(() => {
+          swapTimer = null;
+          void reconcile();
+        }, Math.max(0, game.until - now()) + 20);
+      }
+      return false;
+    }
+    moveSwap(s, 'closing', null, `${s.open} (pid ${pid}) is asked to close: the lobby's table is now ${s.table}`);
+    s.closing = true;
+    const closing = s.open;
+    // From here a request may be out, whatever becomes of this change.
+    dropOut();
+    const mine = { code: s.code, open: closing, pid, table: s.table };
+    out = mine;
+    // Asked before every request, and again at the moment the window message is posted: the change still stands,
+    // the setting still allows it (or Open it was pressed), the table is still followed, it is still the one VPX
+    // that is open, and no game began.
+    const mayClose = (): boolean => swap === s && (s.asked || changeOn()) && follows() && processOf(closing) === pid && busy() === null;
+    void o.closer
+      .close(closing, pid, mayClose)
+      .then(
+        (r) => r,
+        (e: unknown) => ({ state: 'ask' as const, why: describe(e), asked: true }),
+      )
+      .then((r) => {
+        s.closing = false;
+        if (stopped) return;
+        if (out === mine) {
+          if (r.state !== 'closed' && !r.asked) dropOut(); // nothing was ever sent: nothing can still close it
+          else if (r.state !== 'closed') {
+            // Sent, and not obeyed in time: it may still be. Remembered a while longer.
+            if (outTimer !== null) cancel(outTimer);
+            outTimer = later(() => {
+              outTimer = null;
+              if (out === mine) out = null;
+            }, LATE_CLOSE);
+          }
+        }
+        if (r.state === 'closed' || r.asked) s.sent = true;
+        if (swap === s) {
+          if (r.state === 'closed') s.gone = true;
+          // A request that was not answered in time is not repeated: from here the person closes the table. `held`
+          // (a game began before the next request): the rules above are gone through again, and the game is waited for.
+          else if (r.state === 'ask') s.person = true;
+        }
+        void reconcile();
+      });
+    return false;
+  };
+  /**
+   * A close request is out and no change is left to follow it (review, finding 7): the lobby's table changed back,
+   * this PC joined again, the lobby was left. When that table closes: in the lobby, the lobby's table as it is now is
+   * opened; with no lobby, the tab says what happened. Never silence.
+   */
+  const settleOut = (m: MatchStatus, open: string | null): void => {
+    const r = out;
+    if (!r) return;
+    if (open !== null) {
+      // Still open (the request may yet be obeyed), or another table was opened by hand: then nothing is owed.
+      if (!sameName(open, r.open)) dropOut();
+      return;
+    }
+    dropOut();
+    if ((swap !== null && swap.code === r.code) || (want !== null && want.code === r.code)) return; // a change, or a wish, takes it from here
+    if (m.role !== 'none' && m.code === r.code) {
+      log.info(`launch: ${r.open} closed because Castcade had asked it to, for a change to ${r.table} that was taken back meanwhile: the lobby's table as it is now is started`);
+      want = { code: r.code, path: null, pick: true };
+      return;
+    }
+    log.warn(`launch: ${r.open} closed because Castcade had asked it to, for a change to ${r.table}, and this PC is no longer in that lobby: nothing is started; the tab says so`);
+    notice = `Castcade had asked ${r.open} to close, to open ${r.table} for the lobby. You have left that lobby since, and the request could not be taken back: the table is closed. Open it again in VPX if you want to go on playing.`;
+  };
+
   const start = async (table: { vpxPath: string; tableId: string }, why: string): Promise<void> => {
     setLaunch({ state: 'starting', table: table.tableId, detail: `Starting VPX on ${table.tableId}` });
     emit();
@@ -378,7 +771,12 @@ export function createOneStep(o: OneStepOptions): OneStep {
     const m = match.status();
     // A started VPX shows its table: the wait is over, whoever started it.
     const open = tableOpen();
-    if (open !== null && (launch.state === 'starting' || launch.state === 'needed' || launch.state === 'failed')) setLaunch({ state: 'running', table: open, detail: null });
+    // A17 step 3: a table that is known not to be the lobby's (no copy of the lobby's table is on this PC) is not
+    // taken for one while it stands; another table, or none, and the rule below is the old one.
+    if (stale && (open === null || !sameName(open, stale.open) || stale.code !== m.code)) stale = null;
+    // A game that ended on a table that is closed protects nothing any more.
+    if (open === null) gameEnded = null;
+    if (open !== null && (launch.state === 'starting' || launch.state === 'needed' || launch.state === 'failed') && !(stale !== null && launch.state === 'needed')) setLaunch({ state: 'running', table: open, detail: null });
     else if (open === null && launch.state === 'running') setLaunch(IDLE);
     // No match any more: nothing is waited for, and what the last match left on the tab goes with it.
     if (m.role === 'none' && m.phase !== 'connecting') {
@@ -389,6 +787,11 @@ export function createOneStep(o: OneStepOptions): OneStep {
       hostTable = null;
       nameOnly = null;
       hostSeen = null;
+      lobbyTable = null;
+      stale = null;
+      dropSwap();
+      // A request that is out is still followed to its end: the table it closes was this person's.
+      settleOut(m, open);
       clearHashTimer();
       abortHashing();
       match.setLaunchNote?.(null);
@@ -400,6 +803,46 @@ export function createOneStep(o: OneStepOptions): OneStep {
     if (link && m.code && copiedFor === null) copyNow(link, m.code, 'the join link');
     // A14.7: a held table is for this match only, and a table the player opened meanwhile is the one that is used.
     if (held && (m.code !== held.code || open !== null)) held = null;
+    // A17 step 3: the lobby's table (the pick). Its first naming is the table of the join (a table that is open here
+    // then is kept), and so is its first naming after this PC joined again (a lobby opened again under its code, a
+    // place that ran out, a reconnect, a resume): nobody changed anything while this PC was there. Only another name
+    // under the same stay is a change, and this PC follows it, whoever's PC it is.
+    const pick = lobbyTableNow(m);
+    if (pick !== null && m.code !== null) {
+      const named = pick.name;
+      if (lobbyTable === null || lobbyTable.code !== m.code) lobbyTable = { code: m.code, joined: pick.joined, name: named };
+      else if (lobbyTable.joined !== pick.joined) {
+        const other = !sameName(lobbyTable.name, named);
+        log.info(`launch: this PC joined the lobby again${other ? `; the lobby's table is ${named} (it was ${lobbyTable.name})` : ''}: as at any join, the table that is open here is kept and nothing is closed`);
+        lobbyTable = { code: m.code, joined: pick.joined, name: named };
+        // A change that was being followed belongs to the stay before: it is not gone on with.
+        if (swap || want?.change) log.info('launch: the table change that was waiting on this PC is dropped with it');
+        dropSwap();
+        if (want?.change) {
+          want = null;
+          // What that wish last said on the tab (a wait for the table's fingerprint) is over with it.
+          if (launch.state === 'waiting_host') setLaunch(open !== null ? { state: 'running', table: open, detail: null } : IDLE);
+        }
+        if (other) stale = null;
+      } else if (!sameName(lobbyTable.name, named)) {
+        const replace = open ?? (launch.state === 'starting' ? launch.table : null);
+        log.info(`launch: the lobby's table changed from ${lobbyTable.name} to ${named}${replace !== null ? `; ${replace} is ${open !== null ? 'open' : 'starting'} on this PC` : ''}`);
+        lobbyTable.name = named;
+        // What was being read, waited for or offered was for the table before.
+        nameOnly = null;
+        hostSeen = null;
+        clearHashTimer();
+        abortHashing();
+        dropSwap();
+        stale = null;
+        match.setLaunchNote?.(null);
+        want = { code: m.code, path: null, change: { replace } };
+      }
+    }
+    // A request that is out, with no change left to follow it (it was taken back): its end is still Castcade's.
+    settleOut(m, open);
+    // The open table of a change is gone: the lobby's table is found again and started, as at a join.
+    if (settleSwap(m.code, open) && m.code !== null) want = { code: m.code, path: null, pick: true };
     const w = want;
     if (!w) return;
     if (m.code !== w.code) {
@@ -407,7 +850,9 @@ export function createOneStep(o: OneStepOptions): OneStep {
       return;
     }
     if (launch.state === 'starting') return;
-    if (open !== null) {
+    /** A17 step 3: the table that is open is the one the lobby's new table may take the place of. */
+    const replacing = open !== null && w.change !== undefined && w.change.replace !== null && sameName(open, w.change.replace);
+    if (open !== null && !replacing) {
       // Any order: the table is open already (the player opened it, or it never closed). Nothing is started.
       abortHashing();
       want = null;
@@ -426,12 +871,15 @@ export function createOneStep(o: OneStepOptions): OneStep {
       await start(t, 'the host picked it');
       return;
     }
-    // A joining rig: the table is the host's game, known once the host's table is open.
-    const game = match.hostGame();
+    // A joining rig: the table is the host's game, known once the host's table is open. A17 step 3: after a change
+    // of the lobby's table it is the pick itself (a match that is open still names the table before).
+    const game = (w.change || w.pick ? match.lobbyTable?.()?.game : null) ?? match.hostGame();
     if (!game || !isTableOpen(game)) {
       setLaunch({ state: 'waiting_host', table: null, detail: "Waiting for the host's table to open; Castcade then starts the same table here" });
       return;
     }
+    // A table name from another PC is cleaned before it is logged or shown; the table is found from the name as it came.
+    const gameName = tableWords(game.tableName);
     // I11.4.15: the host's table objects are waited for from when its table was seen, or from when its file hash came
     // if that is later (the host reads both from the file at once, and either may land first).
     if (hostSeen === null || hostSeen.code !== w.code) hostSeen = { code: w.code, at: now(), hashAt: null };
@@ -451,7 +899,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
         }, left + 20);
         return;
       }
-      log.info(`launch: the host's ${game.tableName} came with no file hash in ${HOST_HASH_WAIT_MS / 1000} s; the table is looked for by name`);
+      log.info(`launch: the host's ${gameName} came with no file hash in ${HOST_HASH_WAIT_MS / 1000} s; the table is looked for by name`);
     }
     nameOnly = null;
     clearHashTimer();
@@ -477,7 +925,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
         const run = { key, ctl: new AbortController(), done: false, hashes: new Map<string, string>() };
         hashRun = run;
         const hashTable = o.hashTable;
-        setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the host's file among ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of ${game.tableName} on this PC` });
+        setLaunch({ state: 'waiting_host', table: null, detail: `Looking for the host's file among ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of ${gameName} on this PC` });
         void (async (): Promise<void> => {
           for (const t of some) {
             if (run.ctl.signal.aborted) return;
@@ -489,7 +937,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
           run.done = true;
           const found = [...run.hashes.values()].includes(want0);
           log.info(
-            `launch: hashed ${run.hashes.size} of ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of the host's ${game.tableName} that had no hash: ${found ? 'one is the identical file' : 'none is the identical file'}${!found && every.length > some.length ? `; ${every.length - some.length} more ${every.length - some.length === 1 ? 'copy was' : 'copies were'} not looked at (${HASH_CANDIDATES_MAX} at most)` : ''}`,
+            `launch: hashed ${run.hashes.size} of ${some.length} ${some.length === 1 ? 'copy' : 'copies'} of the host's ${gameName} that had no hash: ${found ? 'one is the identical file' : 'none is the identical file'}${!found && every.length > some.length ? `; ${every.length - some.length} more ${every.length - some.length === 1 ? 'copy was' : 'copies were'} not looked at (${HASH_CANDIDATES_MAX} at most)` : ''}`,
           );
           void reconcile();
         })();
@@ -497,7 +945,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
       }
     }
     // The world may have moved while the lists were read.
-    if (want !== w || tableOpen() !== null || match.status().code !== w.code) {
+    if (want !== w || tableOpen() !== open || match.status().code !== w.code) {
       settleAgain = true;
       return;
     }
@@ -525,7 +973,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
           }, left + 20);
           return;
         }
-        if (match.hostTableObjects && choice) log.info(`launch: the host's ${game.tableName} came with no table objects in ${HOST_HASH_WAIT_MS / 1000} s (an older Castcade there, or a file they cannot be told from); the table is picked by its file and name`);
+        if (match.hostTableObjects && choice) log.info(`launch: the host's ${gameName} came with no table objects in ${HOST_HASH_WAIT_MS / 1000} s (an older Castcade there, or a file they cannot be told from); the table is picked by its file and name`);
         abortObjects();
       } else {
         const okey = `${w.code}|${forkIdentityText(hostObjects)}`;
@@ -537,7 +985,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
           const run = { key: okey, ctl: new AbortController(), done: false, ids: new Map<string, ForkIdentity>(), looked: 0, timer: null as unknown };
           objectsRun = run;
           const copies = (n: number): string => `${n} ${n === 1 ? 'copy' : 'copies'}`;
-          setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${game.tableName} on this PC: which holds the same table objects as the host's` });
+          setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${gameName} on this PC: which holds the same table objects as the host's` });
           /** The pick goes on with what is known: every copy was looked at, or the time for it is over. */
           const finish = (late: boolean): void => {
             if (objectsRun !== run || run.done || run.ctl.signal.aborted || stopped) return;
@@ -547,7 +995,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
             const same = [...run.ids.values()].filter((id) => sameForkIdentity(id, hostObjects)).length;
             const unread = every.length - run.looked;
             log.info(
-              `launch: the table objects of ${copies(run.looked)} of the host's ${game.tableName} (table ${forkIdentityText(hostObjects)}): ${same} the same, ${run.ids.size - same} other, ${run.looked - run.ids.size} not to be told${
+              `launch: the table objects of ${copies(run.looked)} of the host's ${gameName} (table ${forkIdentityText(hostObjects)}): ${same} the same, ${run.ids.size - same} other, ${run.looked - run.ids.size} not to be told${
                 unread > 0 ? `; ${copies(unread)} more not looked at (${late ? `the reads took longer than ${OBJECTS_READ_MS / 1000} s` : `${OBJECTS_CANDIDATES_MAX} at most`})` : ''
               }`,
             );
@@ -576,9 +1024,46 @@ export function createOneStep(o: OneStepOptions): OneStep {
     const found = findLocalTable(game, all, evidence);
     want = null;
     if (!found) {
-      log.info(`launch: no local table for the host's ${game.tableName}`);
-      setLaunch({ state: 'needed', table: game.tableName, detail: `The host plays ${game.tableName}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the match.` });
+      log.info(`launch: no local table for the host's ${gameName}${open !== null ? `; ${open} stays open (nothing is closed)` : ''}`);
+      // A17 step 3: no copy, so nothing closes: the table that is open stays, and is not taken for the lobby's.
+      if (open !== null) stale = { code: w.code, open };
+      setLaunch({
+        state: 'needed',
+        table: gameName,
+        detail:
+          open !== null
+            ? `The lobby's table is now ${gameName}. Castcade found no copy of it on this PC: you can watch, or open it in VPX if you have it under another name. ${open} stays open.`
+            : `The host plays ${gameName}. Castcade found no copy of it on this PC: open it in VPX if you have it under another name. You stay in the match.`,
+      });
       return;
+    }
+    if (w.change) {
+      if (open !== null) {
+        // A17 step 3: another table is open. One that is itself a copy of the lobby's new game is kept, as a table
+        // open at the join is (the lobby says how it differs). Any other waits to be closed: `swap`.
+        const mine = all.filter((t) => sameName(open, t.tableId) || sameName(open, fileName(t.vpxPath)));
+        const stub: KnownTable = { tableId: open, vpxPath: '', infoName: null, rom: null, sha256: null, imported: false, lastPlayedAt: null, patchedAt: null };
+        const kept = mine.some((t) => t.vpxPath === found.table.vpxPath) || findLocalTable(game, mine.length > 0 ? mine : [stub]) !== null;
+        setLaunch({ state: 'running', table: open, detail: kept ? `Using the table that is already open: ${open}` : null });
+        if (kept) {
+          log.info(`launch: ${open} is open and is a copy of the lobby's ${gameName}; nothing is closed or started`);
+          return;
+        }
+        log.info(`launch: this PC's copy of the lobby's ${gameName} is ${found.table.tableId}; ${open} is open in its place`);
+        swap = { code: w.code, open, table: gameName, state: 'offered', why: null, asked: false, closing: false, gone: false, sent: false, person: false, said: false };
+        // (The table may have gone while the lists were read: then the copy is started in the next pass.)
+        if (settleSwap(w.code, tableOpen())) {
+          want = { code: w.code, path: null, pick: true };
+          settleAgain = true;
+        }
+        return;
+      }
+      if (!(o.changeTablesForMe?.() ?? true)) {
+        // The setting is off: nothing opens by itself either; the tab offers the table.
+        log.info(`launch: the lobby's table is now ${gameName} and Change tables for me is off: it waits for Open it`);
+        swap = { code: w.code, open: null, table: gameName, state: 'offered', why: null, asked: false, closing: false, gone: false, sent: false, person: false, said: true };
+        return;
+      }
     }
     // Not the host's file: said here for the log; the lobby says it to the player before the start.
     const theirs = evidence?.host ? forkIdentityText(evidence.host) : null;
@@ -600,14 +1085,14 @@ export function createOneStep(o: OneStepOptions): OneStep {
         `launch: ${found.table.tableId} does not hold the host's table objects (table ${mine ? forkIdentityText(mine) : 'unknown'} here, ${theirs ?? 'unknown'} on the host's PC): the 2D video, not 3D. ${
           found.sameObjects
             ? `${found.sameObjects.tableId} on this PC holds them and is not imported (${found.table.tableId} is: it reports ball ends). For 3D: import ${found.sameObjects.tableId} in Castcade and rejoin`
-            : `No copy of ${game.tableName} on this PC that Castcade looked at holds them`
+            : `No copy of ${gameName} on this PC that Castcade looked at holds them`
         }`,
       );
       if (found.sameObjects) note = sameObjectsNote(found.sameObjects.tableId);
-    } else if (found.how !== 'same_file' && hostHash(game) !== null) log.warn(`launch: no copy of ${game.tableName} on this PC is the host's file; ${found.table.tableId} is started by its name (the lobby says the files differ)`);
+    } else if (found.how !== 'same_file' && hostHash(game) !== null) log.warn(`launch: no copy of ${gameName} on this PC is the host's file; ${found.table.tableId} is started by its name (the lobby says the files differ)`);
     if (note !== null || not3d) match.setLaunchNote?.(note, not3d);
     const objectsWord = found.how === 'same_file' ? '' : found.objects === 'same' ? ', the same table objects' : not3d ? ', other table objects' : '';
-    await start(found.table, `the host plays ${game.tableName}: ${found.how.replace('_', ' ')}${objectsWord}${found.table.imported ? '' : ', not imported'}`);
+    await start(found.table, `the host plays ${gameName}: ${found.how.replace('_', ' ')}${objectsWord}${found.table.imported ? '' : ', not imported'}`);
     if (note !== null && launch.state !== 'failed') setLaunch({ ...launch, detail: `${launch.detail ?? ''}${launch.detail ? ' · ' : ''}${note}` });
   };
   const reconcile = async (): Promise<void> => {
@@ -642,11 +1127,25 @@ export function createOneStep(o: OneStepOptions): OneStep {
 
   const offs = [
     match.onStatus((s) => {
-      // A game in progress sends many statuses; none of them matters here unless a table is still to be started.
-      if ((s.phase === 'playing' || s.phase === 'paused') && !want && launch.state !== 'starting') return;
+      // A game in progress sends many statuses; none of them matters here unless a table is still to be started, a
+      // change of the lobby's table waits on this PC (A17 step 3), or the lobby's table has just changed.
+      if ((s.phase === 'playing' || s.phase === 'paused') && !want && !swap && !out && launch.state !== 'starting' && !lobbyTableMoved(s)) return;
       void reconcile();
     }),
     witness.onStatus(() => void reconcile()),
+    // A17 step 3: the game on this PC's table. Its scores come several times a second; only its start and its end
+    // are kept, and only a change that waits is settled again.
+    witness.onGame?.((g) => {
+      const on = g?.inGame ?? false;
+      if (on === gameOn) return;
+      gameOn = on;
+      // A game that is no longer read (the witness lost the table) counts as one that has just ended.
+      gameEnded = on ? null : { at: now(), scores: (g?.scores ?? []).filter((n): n is number => typeof n === 'number' && n > 0), qualifies: undefined, held: false };
+      // A request cannot be taken back. The closer asks before each one, down to the moment the message is posted; a
+      // game that begins after that is closed with its table, and the log says that this is what happened.
+      if (on && out !== null) log.warn(`launch: a game began on ${out.open} while Castcade was asking it to close: no further request is made, and one that is already out cannot be taken back (the table then closes under the game)`);
+      if (swap) void reconcile();
+    }) ?? ((): void => undefined),
   ];
 
   /** Join by a checked link; throws what the match host threw. The table is then the wish `settle` works on. */
@@ -660,6 +1159,9 @@ export function createOneStep(o: OneStepOptions): OneStep {
     }
     notice = null;
     setLaunch(IDLE);
+    lobbyTable = null;
+    stale = null;
+    dropSwap();
     // An empty name is the saved one (`MatchHost.join`).
     const st = await match.join(link.invite, displayName);
     log.info(`launch: joined ${link.code} by link`);
@@ -691,6 +1193,9 @@ export function createOneStep(o: OneStepOptions): OneStep {
       setLaunch(IDLE);
       copiedFor = null;
       held = null;
+      lobbyTable = null;
+      stale = null;
+      dropSwap();
       hostTable = pick?.tableId ?? null;
       const st = await match.host({ port: h.port, ballsPerGame: h.ballsPerGame, displayName: h.displayName });
       if (st.code && pick) {
@@ -710,6 +1215,20 @@ export function createOneStep(o: OneStepOptions): OneStep {
       if (!h || match.status().code !== h.code) return status();
       held = null;
       want = { code: h.code, path: h.path };
+      await reconcile();
+      return status();
+    },
+
+    async openPick() {
+      const s = swap;
+      if (!s || match.status().code !== s.code) return status();
+      log.info(`launch: Open it: ${s.table} is asked for on this PC${s.open !== null ? ` (${s.open} is open)` : ''}`);
+      s.asked = true;
+      if (s.open === null) {
+        // Nothing is open: the lobby's table is found and started, as at a join.
+        dropSwap();
+        want = { code: s.code, path: null, pick: true };
+      }
       await reconcile();
       return status();
     },
@@ -800,6 +1319,8 @@ export function createOneStep(o: OneStepOptions): OneStep {
       clearLaunchTimer();
       clearHashTimer();
       abortHashing();
+      dropSwap();
+      dropOut();
       for (const off of offs) off();
       listeners.clear();
     },

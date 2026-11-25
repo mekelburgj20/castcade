@@ -119,6 +119,12 @@ export interface ForkLaunch {
    * never did (it closed, did not start, or another start came first). The caller keeps it for the file it started.
    */
   objects?: Promise<{ editables: number; hash: string } | null>;
+  /**
+   * A17 step 3: the caller's word on the process this start made (`LaunchResult.pid`). With it the control connection
+   * of that VPX can be told from any other build's (its `hello` names the stream port this start asked for), which is
+   * what `quit` needs: the line only ever goes to a process that is known.
+   */
+  spawned?(pid: number): void;
 }
 
 /** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */

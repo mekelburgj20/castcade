@@ -69,9 +69,10 @@ import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
 import { createTableObjects, objectsDisagreeLine } from '../launch/table-objects.js';
+import { askVpxWindowToClose, createVpxCloser } from '../launch/vpx-close.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
-import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
+import { createStream3dHost, type ForkQuit, type Stream3dHost } from './stream3d-host.js';
 import { createTunnelEnd, freeLoopbackPort } from '../watch/tunnel-end.js';
 import { HiddenVpx } from '../witness/hidden-vpx.js';
 import type { VrOverlay } from '../media/match-media-types.js';
@@ -157,7 +158,7 @@ let oneStep: OneStep | null = null;
 /** I11.4.1: the standalone 3D watch session (the VPX fork's state stream through the companion); null when it could not be set up. */
 let watch3d: WatchHost | null = null;
 /** I11.4.2: the state stream inside a match (the control port the VPX fork connects to, the tunnel, 3D or 2D). */
-let stream3d: Stream3dHost | null = null;
+let stream3d: (Stream3dHost & ForkQuit) | null = null;
 /** I11.4.1: a PC is in one ArcAid room at a time: a match is refused while a 3D watch session is on. */
 const WATCH_BLOCKS_MATCH = 'Leave the 3D watch session first: a PC is in one ArcAid room at a time.';
 /** A14: the renderer's word on whether the Match tab is showing (`launch:viewing`). */
@@ -705,6 +706,8 @@ function registerIpc(
     });
   });
   ipcMain.handle(IPC.launchStartTable, () => os().startTable());
+  // A17 step 3: Open it (the lobby's new table, with "Change tables for me" off).
+  ipcMain.handle(IPC.launchOpenPick, () => os().openPick());
   ipcMain.handle(IPC.launchConfirm, () => {
     noWatch();
     return os().confirm();
@@ -1129,9 +1132,33 @@ async function main(): Promise<void> {
         fs: nodeFs,
         io: { read: () => (existsSync(hashesFile) ? readFileSync(hashesFile, 'utf8') : null), write: (text) => writeFileSync(hashesFile, text) },
       });
+      // A17 step 3: a table that is open and wrong is asked to close, never ended: the Castcade VPX build by `quit`
+      // on its control connection (only when that build is proven to be the process asked about), any other VPX by
+      // its window. The process is the one one-step names (the witness's, for the table); it is closed when the
+      // witness's process watch has seen it end.
+      const forkQuit = stream3d;
+      const mh = matchHost;
+      const closer = createVpxCloser({
+        quitFork: (pid) => forkQuit?.quitFork(pid) ?? false,
+        askWindow: (pid, mayClose) => askVpxWindowToClose(pid, mayClose),
+        alive: (pid) => host.vpxAlive?.(pid) ?? true,
+        onChange: (cb) => {
+          const offStatus = host.onStatus(() => cb());
+          const offExit = host.onEvent((e) => {
+            if (e.kind === 'table_exit') cb();
+          });
+          return () => {
+            offStatus();
+            offExit();
+          };
+        },
+        log: logger,
+      });
       oneStep = createOneStep({
         match: matchHost,
         witness: host,
+        closer,
+        changeTablesForMe: () => mh.status().settings.changeTablesForMe,
         launcher: createVpxLauncher({
           spawn: (command, args, options) => spawn(command, [...args], options),
           exists: async (p) => existsSync(p),

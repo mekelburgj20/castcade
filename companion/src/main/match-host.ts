@@ -466,6 +466,20 @@ export interface MatchHost {
    */
   hostTableObjects(): ForkIdentity | null;
   /**
+   * A17 step 3: this PC's table is held for the high-score initials of this player's finished game (the controller's
+   * A16.2 hold). `one-step.ts` closes no table while it is: the lobby's new table waits for the initials.
+   */
+  tableHeld(): boolean;
+  /**
+   * A17 step 3: the lobby's table, which since step 6 is a pick (`HELLO_ACK.hostGame`, its identity keys) and not a
+   * PC's open VPX: on the lobby's PC the engine's own, on a joined PC the last HELLO_ACK's. Null with no lobby. It is
+   * what `one-step.ts` follows; `hostGame()` is a match's own table once one has started. `joined` names this PC's
+   * stay in the lobby: it is another value after every join, every join again (a lobby opened again under its code, a
+   * place that ran out), every reconnect and every resume. Only a table named under the same `joined` as the one
+   * before it was changed while this PC was there.
+   */
+  lobbyTable(): { game: GameFingerprint; joined: string } | null;
+  /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
@@ -3853,6 +3867,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return status();
     });
 
+  /** A17 step 3 (`lobbyTable().joined`): a number for each engine object this PC has been in a lobby with. */
+  const stays = new WeakMap<object, number>();
+  let lastStay = 0;
+
   const api: MatchHost = {
     host,
     join: joinMatch,
@@ -4228,6 +4246,20 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const role = a.controller.currentRole;
       const o = role instanceof ClientMatch ? role.hostTableObjects() : (a.objectsSent ?? null);
       return o ? { editables: o.editables, hash: o.hash } : null;
+    },
+    tableHeld() {
+      return active?.controller.status().initialsHold ?? false;
+    },
+    lobbyTable() {
+      const role = active?.controller.currentRole;
+      if (!(role instanceof ClientMatch) && !(role instanceof HostMatch)) return null;
+      // One number per engine object (a lobby opened again, a resume and a rejoin each make a new one); a client's
+      // own count of the times it found the lobby anew beside it.
+      let stay = stays.get(role);
+      if (stay === undefined) stays.set(role, (stay = ++lastStay));
+      if (role instanceof HostMatch) return { game: role.table().game, joined: `${stay}` };
+      const t = role.lobbyTable();
+      return t ? { game: t.game, joined: `${stay}.${t.joins}` } : null;
     },
     async saveFrames() {
       const media = opts.media;

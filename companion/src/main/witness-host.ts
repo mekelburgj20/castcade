@@ -63,6 +63,13 @@ export interface WitnessHost {
   vpxPid?(): number | null;
   /** D7.3.3 (2026-11-02): that VPX's process start, epoch ms (the process watch's own query); null when unknown or none runs. */
   vpxStartedAt?(): number | null;
+  /**
+   * A17 step 3: whether the VPX process `pid` is still held by the witness: false from the moment its exit is seen,
+   * which is seconds before `status().currentTable` lets go of its table (the close-time capture comes between).
+   */
+  vpxAlive?(pid: number): boolean;
+  /** A17 step 3: a finished game's score against the machine's list, null when there is no list to compare with (`Witness.highScoreKnown`). */
+  highScoreKnown?(score: number): boolean | null;
 }
 
 /** A15: what `onEvent` says about an event beside the event itself. */
@@ -296,6 +303,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
     journalMark: () => witness.journalMark(),
     vpxPid: () => launchPid,
     vpxStartedAt: () => launchStartedAt,
+    vpxAlive: (pid) => witness.holdsVpx(pid),
+    highScoreKnown: (score) => witness.highScoreKnown(score),
     onEvent(listener) {
       eventListeners.add(listener);
       return () => {

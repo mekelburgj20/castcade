@@ -313,6 +313,9 @@ export class ClientMatch {
   private mismatchFields = '';
   /** The host's fingerprint from the last HELLO_ACK: what this client's own entry in `tableMismatches()` compares with. */
   private ackHostGame: GameFingerprint | null = null;
+  /** A17 step 3: `lobbyTable().joins`, and whether a RECONNECT of this client's was taken since the last HELLO_ACK. */
+  private lobbyJoins = 0;
+  private cameBack = false;
   /** I11.4.15: the host's table objects from the last HELLO_ACK (`hostTableObjects`); null: not said. */
   private ackHostObjects: { editables: number; hash: string } | null = null;
   /** A8 (2026-10-31): the OTHER participants the host found different, from the last HELLO_ACK (or a step-down). */
@@ -509,6 +512,21 @@ export class ClientMatch {
   hostGame(): GameFingerprint | null {
     const g = this.s.state.game ?? this.ackHostGame;
     return g ? { ...g } : null;
+  }
+
+  /**
+   * A17 step 3: the lobby's table as the last HELLO_ACK said it: in a lobby the pick (its identity keys), whatever
+   * match is being played; null before any. `hostGame()` is the match's own table once a match has started (the open
+   * table of its first player), so it is not what tells a change of the lobby's table.
+   *
+   * `joins` (review of PR 137, finding 1) counts how often this client found the lobby anew: the HELLO_ACK that
+   * answers its own HELLO (the first join, and every join again as a newcomer: a place that ran out, a lobby its PC
+   * opened again under the same code), and the first HELLO_ACK after a RECONNECT of its own was taken. The table such
+   * a HELLO_ACK names is the lobby as this PC finds it; only a HELLO_ACK that comes while `joins` stands still can
+   * say that somebody changed the table while this PC was there.
+   */
+  lobbyTable(): { game: GameFingerprint; joins: number } | null {
+    return this.ackHostGame ? { game: { ...this.ackHostGame }, joins: this.lobbyJoins } : null;
   }
 
   /**
@@ -1294,6 +1312,9 @@ export class ClientMatch {
       }
       if (msg.type === 'HELLO_ACK') {
         this.joined = true;
+        // A17 step 3: the lobby as this PC finds it, not a change in it.
+        this.lobbyJoins += 1;
+        this.cameBack = false;
         this.ackHostId = msg.payload.hostPlayerId;
         this.ackHostKey = msg.payload.hostPublicKey;
         if (this.lobbyOn) this.noteLobby(msg.payload, true);
@@ -1348,6 +1369,11 @@ export class ClientMatch {
         // roster in the log is final.
         // A17: in a lobby it is the lobby as it is now, in every phase.
         if ((this.s.state.phase !== 'lobby' && !this.lobbyOn) || msg.payload.hostPlayerId !== this.hostId) return this.drop(msg, 'unexpected');
+        // A17 step 3: the first word on the lobby after this client came back over a new link: as it finds it.
+        if (this.cameBack) {
+          this.cameBack = false;
+          this.lobbyJoins += 1;
+        }
         if (this.lobbyOn) this.noteLobby(msg.payload, false);
         this.compareTable(msg.payload);
         this.events.emit('roster', msg.payload);
@@ -1725,6 +1751,8 @@ export class ClientMatch {
       return;
     }
     this.seqRaised = false;
+    // A17 step 3: taken back over a new link. The lobby's PC says the lobby as it is right after this answer.
+    this.cameBack = true;
     if (this.lobbyOn && p.restart === true) {
       // A17 step 6: this client's log is not of the open match (it ended while this PC was away, another began, or
       // none is open): it is put away. The open match's log, when there is one, follows in MATCH_LOG from entry 0.

@@ -572,6 +572,8 @@ interface MatchSettings {
   watch3d: 'auto' | 'off';
   /** A17 step 7: this person's choice for the next start in a lobby. */
   stance: 'play' | 'watch';
+  /** A17 step 3: when the lobby's table changes, Castcade closes the table open here and opens the new one; off: the tab offers Open it. */
+  changeTablesForMe: boolean;
 }
 
 /** I11.4.2 (mirrors main/stream3d-host.ts Stream3dView): the state stream of a match on this PC. */
@@ -709,6 +711,11 @@ interface OneStepStatus {
   launch: { state: 'idle' | 'waiting_host' | 'starting' | 'running' | 'needed' | 'failed'; table: string | null; detail: string | null };
   /** A14.7: hosting, and this picked table waits for Start the table. */
   tableToStart: string | null;
+  /**
+   * A17 step 3: the lobby's table changed and this PC has not followed yet: `offered` (Change tables for me is off:
+   * Open it), `own_game` (after the game on the open table), `closing`, `close_it` (the person closes the table).
+   */
+  change: { state: 'offered' | 'own_game' | 'closing' | 'close_it'; table: string; open: string | null; detail: string } | null;
   notice: string | null;
   attention: number;
 }
@@ -839,6 +846,8 @@ interface CastcadeBridge {
     host(opts: { tablePath: string | null; startTable?: boolean; port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     /** A14.7: start the table Host held back (`OneStepStatus.tableToStart`). */
     startTable(): Promise<OneStepStatus>;
+    /** A17 step 3: Open it: the lobby's new table on this PC (`OneStepStatus.change`). */
+    openPick(): Promise<OneStepStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;

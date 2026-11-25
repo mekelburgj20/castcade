@@ -131,7 +131,9 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
   const showLaunch = launch.state !== 'idle' && launch.detail !== null;
   // A14.7: the picked table waits here until the invite is sent.
   const toStart = role === 'host' ? one.tableToStart : null;
-  if (!pending && !one.notice && !showLink && !showLaunch && !toStart && !error) return null;
+  // A17 step 3: the lobby's table changed and this PC has not followed yet.
+  const change = one.change;
+  if (!pending && !one.notice && !showLink && !showLaunch && !toStart && !change && !error) return null;
   return (
     <div className="card">
       {pending && (
@@ -185,6 +187,16 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
         </>
       )}
       {showLaunch && <p className={launch.state === 'failed' || launch.state === 'needed' ? 'warn' : 'muted'}>{launch.detail}</p>}
+      {change && (
+        <>
+          <p className={change.state === 'close_it' ? 'warn' : 'muted'}>{change.detail}</p>
+          {change.state === 'offered' && (
+            <button type="button" className="primary" onClick={() => call(bridge.launch.openPick())}>
+              Open it
+            </button>
+          )}
+        </>
+      )}
       {error && <p className="warn">{error}</p>}
     </div>
   );

@@ -131,7 +131,7 @@ export function Match({ state }: { state: CastcadeState }) {
     );
   };
   const setView = (
-    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner' | 'scoreboardAnchor' | 'watch3d'>>,
+    patch: Partial<Pick<MatchSettings, 'theaterDuringMyTurn' | 'spectate' | 'previewStereo' | 'theaterScale' | 'cameraSource' | 'tableMuteMine' | 'tableSendMine' | 'tableHearOthers' | 'preMatchPlay' | 'startTableOnHost' | 'scoreboard' | 'scoreboardCorner' | 'scoreboardAnchor' | 'watch3d' | 'changeTablesForMe'>>,
   ) => {
     void bridge.match.setSettings(patch).then(setSt, (e: unknown) => setError(describe(e)));
   };
@@ -1018,6 +1018,19 @@ export function Match({ state }: { state: CastcadeState }) {
               Auto: while another player is up you see their game on your own table, from your own seat, when both PCs run the Castcade VPX build
               (VPinballX_GL64_castcade.exe beside your VPX) on the identical table file; Castcade then starts match tables in that build. Anything else, and
               any trouble, shows the 2D video as before. Applies to tables started from now on.
+            </small>
+          </label>
+          {/* A17 step 3 (2026-11-25): the lobby's table changed: Castcade closes the open table and opens the new one, or only offers it. */}
+          <label className="field">
+            <span>When the lobby&apos;s table changes</span>
+            <select value={st.settings.changeTablesForMe ? 'on' : 'off'} onChange={(e) => setView({ changeTablesForMe: e.target.value !== 'off' })}>
+              <option value="on">Change tables for me</option>
+              <option value="off">Ask me first</option>
+            </select>
+            <small>
+              Change tables for me: Castcade closes the table that is open on this PC and opens your copy of the new one. Never during a game, and never
+              when it cannot be sure that no game is on (a table that is not imported, two VPX open): then you are asked to close the table yourself. Ask me
+              first: the Match tab shows the new table with an Open it button and nothing closes by itself.
             </small>
           </label>
           <label className="field">
