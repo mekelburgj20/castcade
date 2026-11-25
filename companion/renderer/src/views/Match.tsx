@@ -222,15 +222,9 @@ export function Match({ state }: { state: CastcadeState }) {
                     <option value={5}>5</option>
                   </select>
                 </label>
-                {/* A12 (2026-11-05): the host's table before the match (saved at once; the lobby follows it live). */}
-                <label className="field">
-                  <span>Before the match</span>
-                  <select value={st.settings.preMatchPlay} onChange={(e) => setView({ preMatchPlay: e.target.value === 'locked' ? 'locked' : 'free' })}>
-                    <option value="free">Free play until someone joins</option>
-                    <option value="locked">Table locked until someone joins</option>
-                  </select>
-                  <small>Free play: a game running when the others join must end first; your next Start on the table then starts the match.</small>
-                </label>
+                {/* A17 step 7 (2026-11-25): A12's "Before the match" choice is not offered any more. In a lobby every
+                    table is its owner's until a start counts down, and a game that runs on one is waited for; the
+                    `preMatchPlay` key stays in match.json and is read by nothing in a lobby. */}
               </div>
               <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} startOnHost={st.settings.startTableOnHost} />
               {/* A14.7 (2026-11-15): off, Host gives the invite first and the table starts from its own button. */}
