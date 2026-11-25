@@ -17,6 +17,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from '../src/App.js';
 import '../src/app.css';
 import { api, MATCH, ok } from './base.js';
+import { StoryIndex } from './shell.js';
 import { FIXTURES, OVERLAY_URL, PLAN, APPLIED, REMOVED, PREVIEW_OFF, SETTINGS, STATUS_LIVE, STATUS_UNPAIRED, STREAM_IDLE, STREAM_SETTINGS, TABLES_DEFAULTS, VERSIONS, WATCH } from './app-fixtures.js';
 
 const q = new URLSearchParams(location.search);
@@ -144,18 +145,7 @@ function Story() {
 
 function Index() {
   return (
-    <main className="shell">
-      <section className="view">
-        <h2>App stories</h2>
-        <ul>
-          {Object.entries(FIXTURES).map(([name, f]) => (
-            <li key={name}>
-              <a href={`?state=${name}`}>{name}</a>: {f.says}
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+    <StoryIndex title="App stories" items={Object.entries(FIXTURES).map(([name, f]) => ({ name, says: f.says }))} />
   );
 }
 

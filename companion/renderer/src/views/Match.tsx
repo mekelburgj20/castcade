@@ -1,4 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
+import { Field, Note, Skeleton } from '../parts/Bits.js';
+import { Button } from '../parts/Button.js';
+import { Panel, PanelGroup } from '../parts/Panel.js';
 import { describe, type CastcadeState } from '../useCastcade.js';
 import { inviteFromText } from '../invite-text.js';
 import { LobbyTable, OneStepCard, TablePicker, useOneStep } from './OneStep.js';
@@ -146,6 +149,21 @@ export function Match({ state }: { state: CastcadeState }) {
   // The step 9 last pass: the line beside Start match says the start waits for tables that are not open yet; where the
   // line above it says so already (with whose), it is not said twice.
   const startLine = st.lobby ? (shownMessage?.includes('A start waits for') ? st.lobby.startButton.line.replace(/ A start waits for the tables? that (is|are) not open yet\.$/, '') : st.lobby.startButton.line) : '';
+  // The Arcaid-look pass (2026-11-25): beside this tab's own Start match (or Next game) button, the panel's way to the
+  // same press in the menu ("To start it yourself: Start match in the menu", the starter's "(or Start match in the
+  // menu)") is not said: the menu and the headset keep it.
+  const tabMessage =
+    shownMessage !== null && st.lobby && !st.lobby.start
+      ? shownMessage.replace(/\. To start it yourself: (?:Start match|Next game) in the menu/, '').replace(/ \(or (?:Start match|Next game) in the menu\)/, '')
+      : shownMessage;
+  // The row of the game's own presses, drawn only when it holds one (it stood empty, a band of space, in a lobby).
+  const hasControls =
+    (st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume) ||
+    (st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && !!st.pass) ||
+    (st.phase === 'playing' && !!st.endBall) ||
+    !!st.lobby?.giveUp ||
+    st.lobby?.end === 'match' ||
+    st.lobby?.end === 'everyone';
 
   const copyInvite = () => {
     if (!st.invite) return;
@@ -213,7 +231,7 @@ export function Match({ state }: { state: CastcadeState }) {
   // and score come with a match (they stood there empty before one, and squeezed the names onto two lines).
   const scored = !st.lobby || st.lobby.match !== null;
   const roster = (
-    <table className="match-table roster">
+    <table className="cc-table cc-roster">
       {scored && (
         <thead>
           <tr>
@@ -231,23 +249,23 @@ export function Match({ state }: { state: CastcadeState }) {
           return (
             <tr key={p.id} className={row?.isUp ? 'up' : ''}>
               <td>
-                <span className="who">{p.name}</span>
+                <span className="cc-who">{p.name}</span>
                 {p.id === st.localId ? ' (you)' : ''}
                 {/* A17 step 9: in a lobby, who opened it is said in the lobby's first line: the row keeps to one line. */}
                 {!st.lobby && p.id === st.hostId ? ' · host' : ''}
                 {words.text}
                 {words.flags.map((f) => (
-                  <span key={f} className="warn">
+                  <span key={f} className="cc-flag">
                     {' '}
                     · {f}
                   </span>
                 ))}
-                {p.tableMatch === false && <span className="warn"> · {p.tableNote ?? 'different table file'}</span>}
-                {p.buildMatch === false && <span className="muted"> · different VPX build</span>}
-                {p.ballEnds === false && <span className="warn"> · cannot report ball ends</span>}
+                {p.tableMatch === false && <span className="cc-flag"> · {p.tableNote ?? 'different table file'}</span>}
+                {p.buildMatch === false && <span className="cc-quiet"> · different VPX build</span>}
+                {p.ballEnds === false && <span className="cc-flag"> · cannot report ball ends</span>}
                 {/* In a lobby the row says AWAY, with the time (memberWords): not a second word for the same thing. */}
-                {!st.lobby && row?.flags.includes('disconnected') && <span className="warn"> · disconnected</span>}
-                {row?.flags.includes('midnight') && <span className="warn"> · Midnight Madness ran</span>}
+                {!st.lobby && row?.flags.includes('disconnected') && <span className="cc-flag"> · disconnected</span>}
+                {row?.flags.includes('midnight') && <span className="cc-flag"> · Midnight Madness ran</span>}
               </td>
               {!st.lobby && <td>{RIG_LABEL[p.rig]}</td>}
               {/* Balls and score are a player's of the game on the panel: a member who only watches has neither. */}
@@ -263,8 +281,8 @@ export function Match({ state }: { state: CastcadeState }) {
             .map((x) => (
               <tr key={x.id} className={x.isUp ? 'up' : ''}>
                 <td>
-                  {x.name}
-                  <span className="muted"> · left the lobby</span>
+                  <span className="cc-who">{x.name}</span>
+                  <span className="cc-quiet"> · left the lobby</span>
                 </td>
                 <td>
                   {x.ballsDone}/{panel?.ballsPerGame || '—'}
@@ -276,800 +294,705 @@ export function Match({ state }: { state: CastcadeState }) {
     </table>
   );
 
+  /** A question's two answers: the press it asks about, and Cancel. `danger`: the press removes or cannot be undone. */
+  const answer = (label: string, act: () => void, danger = false) => (
+    <div className="cc-row">
+      <Button size="sm" variant={danger ? 'danger' : 'primary'} disabled={busy} onClick={act}>
+        {label}
+      </Button>
+      <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirming(null)}>
+        Cancel
+      </Button>
+    </div>
+  );
+
+  // The lobby's panel: what the lobby is (its code, how to bring somebody in, who is here, its table).
+  const lobbyPanel = st.lobby && (
+    <Panel wide title={`Lobby ${st.code ?? ''}`.trim()}>
+      <p className="cc-help">
+        {st.lobby.members.length} of 4 here · opened by {st.hostId === st.localId ? 'you' : nameOf(st, st.hostId)}
+        {st.path ? ` · ${st.path}` : ''}
+      </p>
+      <LobbyInvite bridge={bridge} st={st} one={one} />
+      {roster}
+      {/* A17 step 10: the lobby's table, and its change by anyone. */}
+      <LobbyTable bridge={bridge} st={st} tableOpen={tableOpen} />
+    </Panel>
+  );
+
   return (
-    <section className="view">
-      <h2>Match</h2>
-
-      {/* A17 step 9 (2026-11-27): what went wrong is said first, in the same place in every state (it stood below the
-          lobby, a screen further down, where nobody looked for it). */}
-      {/* The final review (finding 9): a lobby that is open again as it was is good news, and was drawn in the error
-          colour like everything that comes this way: said in the colour of what it is. */}
-      {shownError && <p className={error === null && noticeKind(shownError) !== 'error' ? noticeKind(shownError) : 'error'}>{shownError}</p>}
-
-      {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
-      <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} lobby={st.lobby !== null} />
-
-      {/* A15: Castcade closed in a lobby that is still worth going back to. A17 step 8 (2026-11-26): for everybody, with
-          a match open or none. A member goes back into the lobby and, when the match is still open, into the match
-          where it is now. The lobby's PC opens the same lobby again, with its match where it stood. Only when its
-          record did not read in full is the lobby opened again empty, and a match that was open lost: the card says
-          so before the button is pressed. */}
-      {!inMatch && st.phase !== 'connecting' && st.resume && (
-        <div className="card">
-          <strong>
-            You were in a lobby{st.resume.names.length > 0 ? ` with ${listOf(st.resume.names.map((n) => short(n)))}` : ''}
-          </strong>
-          <p>
-            Castcade closed in the lobby {st.resume.code}
-            {st.resume.match ? ' during a match' : ''}.{' '}
-            {st.resume.role === 'host'
-              ? st.resume.lost
-                ? `What Castcade saved of the lobby did not read in full: opening it again gives an empty lobby under the same code. The others come back as newcomers, if they are still waiting${st.resume.match ? ', and the match that was being played is lost' : ''}.`
-                : `Open it again and it is the lobby it was${st.resume.match ? ', with the match where it stood' : ''}: the others come back into it by themselves, if they are still waiting (they wait 20 minutes).`
-              : `Rejoin and you are back in the lobby${st.resume.match ? ', and in the match where it is now if it is still open' : ''}. Your microphone goes on again for the others.`}
-          </p>
-          <div className="row">
-            <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.rejoin())}>
-              {st.resume.role === 'host' ? 'Open it again' : 'Rejoin the lobby'}
-            </button>
-            <button type="button" className="small quiet" disabled={busy} onClick={() => void run(() => bridge.match.forgetResume())}>
-              Forget it
-            </button>
+    <>
+      <PanelGroup id="match" title="Match">
+        {/* A17 step 9 (2026-11-27): what went wrong is said first, in the same place in every state (it stood below the
+            lobby, a screen further down, where nobody looked for it). */}
+        {/* The final review (finding 9): a lobby that is open again as it was is good news, and was drawn in the error
+            colour like everything that comes this way: said in the colour of what it is. */}
+        {shownError && (
+          <div className="cc-panel--wide">
+            <Note state={NOTE_STATE[error === null && noticeKind(shownError) !== 'error' ? noticeKind(shownError) : 'error']} role={error !== null || noticeKind(shownError) === 'error' ? 'alert' : 'status'}>
+              {shownError}
+            </Note>
           </div>
-        </div>
-      )}
+        )}
 
-      {!inMatch && st.phase !== 'connecting' && (
-        <>
-          <p className="muted">
-            A lobby is joined once an evening: everyone in it can talk, play or watch, and you play as many matches as you like without leaving. A match is two to
-            four players on the same table, one ball each in turn. Pick a table and press Open lobby: Castcade copies an invite link for the others. Send it, then
-            press Start the table. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
-          </p>
-          <div className="card">
-            <label className="field">
-              <span>Your name</span>
-              <input type="text" maxLength={64} value={displayName} onChange={(e) => setName(e.target.value)} />
-            </label>
-          </div>
+        {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
+        <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} lobby={st.lobby !== null} />
 
-          {watchHoldsRoom(watch3d) && <p className="muted">Leave the 3D watch session below to open or join a lobby.</p>}
-          {!watchHoldsRoom(watch3d) && (
+        {/* A15: Castcade closed in a lobby that is still worth going back to. A17 step 8 (2026-11-26): for everybody, with
+            a match open or none. A member goes back into the lobby and, when the match is still open, into the match
+            where it is now. The lobby's PC opens the same lobby again, with its match where it stood. Only when its
+            record did not read in full is the lobby opened again empty, and a match that was open lost: the card says
+            so before the button is pressed. */}
+        {!inMatch && st.phase !== 'connecting' && st.resume && (
+          <Panel wide attention title={`You were in a lobby${st.resume.names.length > 0 ? ` with ${listOf(st.resume.names.map((n) => short(n)))}` : ''}`}>
+            <p className="cc-text">
+              Castcade closed in the lobby {st.resume.code}
+              {st.resume.match ? ' during a match' : ''}.{' '}
+              {st.resume.role === 'host'
+                ? st.resume.lost
+                  ? `What Castcade saved of the lobby did not read in full: opening it again gives an empty lobby under the same code. The others come back as newcomers, if they are still waiting${st.resume.match ? ', and the match that was being played is lost' : ''}.`
+                  : `Open it again and it is the lobby it was${st.resume.match ? ', with the match where it stood' : ''}: the others come back into it by themselves, if they are still waiting (they wait 20 minutes).`
+                : `Rejoin and you are back in the lobby${st.resume.match ? ', and in the match where it is now if it is still open' : ''}. Your microphone goes on again for the others.`}
+            </p>
+            <div className="cc-row">
+              <Button disabled={busy} onClick={() => void run(() => bridge.match.rejoin())}>
+                {st.resume.role === 'host' ? 'Open it again' : 'Rejoin the lobby'}
+              </Button>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => bridge.match.forgetResume())}>
+                Forget it
+              </Button>
+            </div>
+          </Panel>
+        )}
+
+        {!inMatch && st.phase !== 'connecting' && (
           <>
-          {/* A17 step 9 (2026-11-27): Join stands before Open. Open is the long card (the picker, the port, what it
-              does), and Join stood a screen below it, out of sight in the window as it opens. */}
-          <div className="card">
-            <strong>Join a lobby</strong>
-            <fieldset disabled={busy}>
-              <label className="field">
-                <span>Code or link</span>
-                <input type="text" value={invite} placeholder="The join link, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
-              </label>
-              {/* A17 (2026-11-24): as on the Host card. */}
-              <p className="muted">Your microphone is on for the people in the lobby from the moment you join.</p>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() =>
-                  void bridge.app.clipboardText().then((t) => {
-                    // The final review (finding 5): everything the invite's Copy buttons give (invite-text.ts).
-                    const v = inviteFromText(t);
-                    if (v !== null) {
-                      setError(null);
-                      setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade invite: the six-letter code, the join link, or the chat line with the link in it.');
-                  }, (e: unknown) => setError(describe(e)))
-                }
-              >
-                Paste
-              </button>{' '}
-              <button type="button" className="primary" disabled={!invite.trim()} onClick={() => void run(() => bridge.match.join(invite, displayName))}>
-                Join
-              </button>
-            </fieldset>
-          </div>
+            <p className="cc-text cc-quiet cc-panel--wide">
+              A lobby is joined once an evening: everyone in it can talk, play or watch, and you play as many matches as you like without leaving. A match is two to
+              four players on the same table, one ball each in turn. Pick a table and press Open lobby: Castcade copies an invite link for the others. Send it, then
+              press Start the table. Any order works: a table opened before or after is picked up.{tableOpen ? ` Open now: ${tableOpen}.` : ''}
+            </p>
+            <Panel wide title={<label htmlFor="match-name">Your name</label>}>
+              <input id="match-name" type="text" className="cc-input" maxLength={64} value={displayName} onChange={(e) => setName(e.target.value)} />
+            </Panel>
 
-          <div className="card">
-            <strong>Open a lobby</strong>
-            <fieldset disabled={busy}>
-              <div className="row">
-                <label className="field">
-                  <span>Balls per game</span>
-                  <select value={ballsPerGame} onChange={(e) => setBalls(e.target.value === '5' ? 5 : 3)}>
-                    <option value={3}>3</option>
-                    <option value={5}>5</option>
-                  </select>
-                </label>
-                {/* A17 step 7 (2026-11-25): A12's "Before the match" choice is not offered any more. In a lobby every
-                    table is its owner's until a start counts down, and a game that runs on one is waited for; the
-                    `preMatchPlay` key stays in match.json and is read by nothing in a lobby. */}
-              </div>
-              <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} startOnHost={st.settings.startTableOnHost} />
-              {/* A14.7 (2026-11-15): off, Open lobby gives the invite first and the table starts from its own button. */}
-              <label className="check">
-                <input type="checkbox" checked={st.settings.startTableOnHost} onChange={(e) => setView({ startTableOnHost: e.target.checked })} />
-                Start the table as soon as I open the lobby
-              </label>
-              <p className="muted">Off: Open lobby shows the invite first, so you can send it before VPX starts. Then press Start the table.</p>
-              {/* A17 (2026-11-24): the voice is connected at the join, not at the match's start: said before the press. */}
-              <p className="muted">
-                You get a code to send. Everyone who joins can talk, play or watch. Play as many matches as you like without leaving. Your microphone is on for the
-                others from the moment you open it.
-              </p>
-              {/* The final review (finding 9): the port was the first field of this card, with no word on when it matters. */}
-              <details className="advanced">
-                <summary>Advanced: the TCP port</summary>
-                <label className="field">
-                  <span>TCP port</span>
-                  <input type="text" inputMode="numeric" className="port" value={portText} onChange={(e) => setPort(e.target.value)} />
-                  <small>Only for a lobby that is reached at this PC&apos;s address: a PC that is not paired with ArcAid, or players on your home network. A PC paired with ArcAid needs nothing set here.</small>
-                </label>
-              </details>
-              <button
-                type="button"
-                className="primary"
-                onClick={() =>
-                  void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, startTable: st.settings.startTableOnHost, port: Number(portText), ballsPerGame, displayName }))
-                }
-              >
-                Open lobby
-              </button>
-            </fieldset>
-          </div>
-          </>
-          )}
+            {watchHoldsRoom(watch3d) && <p className="cc-help cc-panel--wide">Leave the 3D watch session below to open or join a lobby.</p>}
+            {!watchHoldsRoom(watch3d) && (
+              <>
+                {/* A17 step 9 (2026-11-27): Join stands before Open. Open is the long card (the picker, the port, what it
+                    does), and Join stood a screen below it, out of sight in the window as it opens. */}
+                <Panel title="Join a lobby">
+                  <fieldset disabled={busy}>
+                    <Field label="Code or link" htmlFor="match-invite" help="Your microphone is on for the people in the lobby from the moment you join.">
+                      <input id="match-invite" type="text" className="cc-input" value={invite} placeholder="The join link, or the code JHDFEF" onChange={(e) => setInvite(e.target.value)} />
+                    </Field>
+                    <div className="cc-row">
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          void bridge.app.clipboardText().then((t) => {
+                            // The final review (finding 5): everything the invite's Copy buttons give (invite-text.ts).
+                            const v = inviteFromText(t);
+                            if (v !== null) {
+                              setError(null);
+                              setInvite(v);
+                            } else setError('The clipboard does not hold a Castcade invite: the six-letter code, the join link, or the chat line with the link in it.');
+                          }, (e: unknown) => setError(describe(e)))
+                        }
+                      >
+                        Paste
+                      </Button>
+                      <Button disabled={!invite.trim()} onClick={() => void run(() => bridge.match.join(invite, displayName))}>
+                        Join
+                      </Button>
+                    </div>
+                  </fieldset>
+                </Panel>
 
-          {/* I11.4.1: the 3D watch session, apart from any match. */}
-          <WatchCard bridge={bridge} st={watch3d} />
-        </>
-      )}
-
-      {st.phase === 'connecting' && (
-        <div className="card">
-          <p>Connecting to the lobby…</p>
-        </div>
-      )}
-
-      {inMatch && (
-        <>
-          {/* The invite of a match with no lobby. A lobby's invite is in the lobby's own card, on every member's tab (step 9). */}
-          {!st.lobby && st.role === 'host' && st.invite && (
-            <div className="card">
-              <strong>Invite</strong>
-              <div className="row">
-                <code className="mono invite">{st.invite}</code>
-                <button type="button" className="small" onClick={copyInvite}>
-                  {copied ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy'}
-                </button>
-              </div>
-              {st.via === 'relay' ? (
-                <>
-                  <p>Send the code to the others. The lobby goes through ArcAid: nothing to set up on your router. Each person needs Castcade paired with ArcAid.</p>
-                  {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
-                  {st.relayNote && <p className="warn">{st.relayNote}.</p>}
-                  {st.directInvite && (
-                    <p className="muted">
-                      For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="mono">{st.directInvite}</code>
+                <Panel title="Open a lobby">
+                  <fieldset disabled={busy}>
+                    <Field label="Balls per game" htmlFor="match-balls">
+                      <select id="match-balls" className="cc-input cc-input--number" value={ballsPerGame} onChange={(e) => setBalls(e.target.value === '5' ? 5 : 3)}>
+                        <option value={3}>3</option>
+                        <option value={5}>5</option>
+                      </select>
+                    </Field>
+                    {/* A17 step 7 (2026-11-25): A12's "Before the match" choice is not offered any more. In a lobby every
+                        table is its owner's until a start counts down, and a game that runs on one is waited for; the
+                        `preMatchPlay` key stays in match.json and is read by nothing in a lobby. */}
+                    <TablePicker bridge={bridge} value={tablePath} onChange={setTablePath} tableOpen={tableOpen} startOnHost={st.settings.startTableOnHost} />
+                    {/* A14.7 (2026-11-15): off, Open lobby gives the invite first and the table starts from its own button. */}
+                    <div className="cc-field">
+                      <label className="cc-check">
+                        <input type="checkbox" checked={st.settings.startTableOnHost} onChange={(e) => setView({ startTableOnHost: e.target.checked })} />
+                        <span>Start the table as soon as I open the lobby</span>
+                      </label>
+                      <small className="cc-help cc-check__help">Off: Open lobby shows the invite first, so you can send it before VPX starts. Then press Start the table.</small>
+                    </div>
+                    {/* A17 (2026-11-24): the voice is connected at the join, not at the match's start: said before the press. */}
+                    <p className="cc-help">
+                      You get a code to send. Everyone who joins can talk, play or watch. Play as many matches as you like without leaving. Your microphone is on for the
+                      others from the moment you open it.
                     </p>
-                  )}
-                </>
-              ) : (
+                    {/* The final review (finding 9): the port was the first field of this card, with no word on when it matters. */}
+                    <details className="cc-more">
+                      <summary>Advanced: the TCP port</summary>
+                      <Field
+                        label="TCP port"
+                        htmlFor="match-port"
+                        help="Only for a lobby that is reached at this PC's address: a PC that is not paired with ArcAid, or players on your home network. A PC paired with ArcAid needs nothing set here."
+                      >
+                        <input id="match-port" type="text" inputMode="numeric" className="cc-input cc-input--number" value={portText} onChange={(e) => setPort(e.target.value)} />
+                      </Field>
+                    </details>
+                    <div className="cc-row">
+                      <Button
+                        onClick={() =>
+                          void run(() => bridge.launch.host({ tablePath: tableOpen ? null : tablePath, startTable: st.settings.startTableOnHost, port: Number(portText), ballsPerGame, displayName }))
+                        }
+                      >
+                        Open lobby
+                      </Button>
+                    </div>
+                  </fieldset>
+                </Panel>
+              </>
+            )}
+
+            {/* I11.4.1: the 3D watch session, apart from any match. */}
+            <WatchCard bridge={bridge} st={watch3d} />
+          </>
+        )}
+
+        {st.phase === 'connecting' && (
+          <Panel wide>
+            <div className="cc-stack" aria-busy="true">
+              <p className="cc-text">Connecting to the lobby…</p>
+              {/* Loading: the lobby's first lines, in their shape. */}
+              <Skeleton width="45%" />
+              <Skeleton width="80%" />
+              <Skeleton width="65%" />
+            </div>
+          </Panel>
+        )}
+
+        {inMatch && (
+          <>
+            {/* The invite of a match with no lobby. A lobby's invite is in the lobby's own card, on every member's tab (step 9). */}
+            {!st.lobby && st.role === 'host' && st.invite && (
+              <Panel wide title="Invite">
+                <div className="cc-field__line">
+                  <code className="cc-mono cc-grow">{st.invite}</code>
+                  <Button size="sm" variant="secondary" onClick={copyInvite}>
+                    {copied ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy'}
+                  </Button>
+                </div>
+                {st.via === 'relay' ? (
+                  <>
+                    <p className="cc-text">Send the code to the others. The lobby goes through ArcAid: nothing to set up on your router. Each person needs Castcade paired with ArcAid.</p>
+                    {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
+                    {st.relayNote && <Note state="attention">{st.relayNote}.</Note>}
+                    {st.directInvite && (
+                      <p className="cc-help">
+                        For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="cc-mono">{st.directInvite}</code>
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {st.portMapping ? (
+                      st.portMapping.state === 'failed' ? <Note state="attention">{st.portMapping.line}</Note> : <p className="cc-help">{st.portMapping.line}</p>
+                    ) : (
+                      <p className="cc-text">Forward TCP {st.port} to this PC on your router, then send the invite to the others.</p>
+                    )}
+                    {st.relayNote && <p className="cc-help">{st.relayNote}: a PC paired with ArcAid needs no port forward.</p>}
+                    {st.ipSource === 'lan' && <Note state="attention">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</Note>}
+                  </>
+                )}
+              </Panel>
+            )}
+
+            {/* The Arcaid-look pass (2026-11-25): one order on this tab, the same in every state: what is happening now and
+                what this person can do now, then what the lobby is (its code, how to bring somebody in, who is here, its
+                table), then everything else. A17 step 9 put the lobby first; at the window's opening size that put the
+                headline and its buttons below the fold (the away question on the lobby's PC, a member's turn). */}
+            <Panel wide attention={panel?.myTurn === true} className="cc-now">
+              <p className={panel?.myTurn ? 'cc-headline cc-headline--mine' : 'cc-headline'}>{turnLine(st)}</p>
+              {st.transfer && <Note state="attention">{transferLine(st.transfer)}</Note>}
+              {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
+              {!st.lobby && st.path && <p className="cc-help">{st.path}</p>}
+              {/* The panel's line, where this tab shows it (`shownMessage`; beside the tab's Start, without the menu's way to it). */}
+              {tabMessage !== null &&
+                (tabMessage.startsWith('different') || tabMessage.includes('cannot report ball ends') || tabMessage.startsWith('The lobby is closed') || tabMessage.startsWith('The lobby is over') || st.lobby?.hostAway ? (
+                  <Note state="attention">{awayClock(st, tabMessage, now)}</Note>
+                ) : (
+                  <p className="cc-text cc-quiet">{awayClock(st, tabMessage, now)}</p>
+                ))}
+              {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
+              {st.advisories.map((line) => (
+                <Note key={line} state="attention">
+                  {line}
+                </Note>
+              ))}
+              {!st.lobby && roster}
+              {/* A17 step 7: the start, asked for by anyone: what a press does, the start that is announced, and how to take it back. */}
+              {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && (
                 <>
-                  {st.portMapping ? (
-                    <p className={st.portMapping.state === 'failed' ? 'warn' : 'muted'}>{st.portMapping.line}</p>
+                  {st.lobby.start ? (
+                    <div className="cc-line">
+                      <span className="cc-text">
+                        {st.lobby.start.line}
+                        {st.lobby.start.seconds !== null && st.lobby.start.seconds > 0 ? ` · ${st.lobby.start.seconds}` : ''}
+                      </span>
+                      <span className="cc-row">
+                        {st.lobby.startWithout && (
+                          <Button size="sm" variant="secondary" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.start({ now: true, without: st.lobby?.startWithout ?? null }))}>
+                            {st.lobby.startWithout}
+                          </Button>
+                        )}
+                        <Button size="sm" variant="secondary" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.cancelStart())}>
+                          Cancel the start
+                        </Button>
+                      </span>
+                    </div>
                   ) : (
-                    <p>Forward TCP {st.port} to this PC on your router, then send the invite to the others.</p>
+                    <div className="cc-row">
+                      <Button
+                        disabled={busy || st.lobby.startButton.off !== null || (confirming?.what === 'start' && st.startWarnings.length > 0)}
+                        title={st.lobby.startButton.off ?? 'Or, for the starter, a game started on their own table'}
+                        onClick={() => (st.startWarnings.length > 0 ? setConfirming({ what: 'start' }) : void run(() => bridge.match.start()))}
+                      >
+                        {st.lobby.startButton.label}
+                      </Button>
+                      <span className="cc-help">{st.lobby.startButton.off ?? startLine}</span>
+                    </div>
                   )}
-                  {st.relayNote && <p className="muted">{st.relayNote}: a PC paired with ArcAid needs no port forward.</p>}
-                  {st.ipSource === 'lan' && (
-                    <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public IP.</p>
+                  {/* The final review (finding 9): what Start a new match does stands beside it before the press (it was said only in the question after it). */}
+                  {!st.lobby.start && st.lobby.newMatch && !(confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey) && (
+                    <div className="cc-line">
+                      <span className="cc-help">{st.lobby.newMatch.line}</span>
+                      <span className="cc-row">
+                        <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirming({ what: 'newMatch', about: st.lobby?.gameKey ?? '' })}>
+                          Start a new match
+                        </Button>
+                      </span>
+                    </div>
                   )}
                 </>
               )}
-            </div>
-          )}
-
-
-          {/* A17 step 9 (2026-11-27): one order on this tab, the same in every state: what the lobby is (its code, how
-              to bring somebody in, who is here, its table), then what is happening now, then what this person can
-              do now, then everything else. */}
-          {st.lobby && (
-            <div className="card lobby">
-              <div className="row">
-                <strong>Lobby {st.code}</strong>
-                <span className="muted">
-                  {st.lobby.members.length} of 4 here · opened by {st.hostId === st.localId ? 'you' : nameOf(st, st.hostId)}
-                  {st.path ? ` · ${st.path}` : ''}
-                </span>
-              </div>
-              <LobbyInvite bridge={bridge} st={st} one={one} />
-              {roster}
-              {/* A17 step 10: the lobby's table, and its change by anyone. */}
-              <LobbyTable bridge={bridge} st={st} tableOpen={tableOpen} />
-            </div>
-          )}
-
-          <div className="card now">
-            <p className={panel?.myTurn ? 'turn-line mine' : 'turn-line'}>{turnLine(st)}</p>
-            {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
-            {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
-            {!st.lobby && st.path && <p className="muted">{st.path}</p>}
-            {/* The panel's line, where this tab shows it (`shownMessage`). */}
-            {shownMessage !== null && (
-              <p className={shownMessage.startsWith('different') || shownMessage.includes('cannot report ball ends') || shownMessage.startsWith('The lobby is closed') || shownMessage.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, shownMessage, now)}</p>
-            )}
-            {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
-            {st.advisories.map((line) => (
-              <p key={line} className="warn">
-                {line}
-              </p>
-            ))}
-            {!st.lobby && roster}
-            {/* A17 step 7: the start, asked for by anyone: what a press does, the start that is announced, and how to take it back. */}
-            {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && (
-              <>
-                {st.lobby.start ? (
-                  <div className="row">
-                    <span>
-                      {st.lobby.start.line}
-                      {st.lobby.start.seconds !== null && st.lobby.start.seconds > 0 ? ` · ${st.lobby.start.seconds}` : ''}
-                    </span>
-                    <span className="actions">
-                    {st.lobby.startWithout && (
-                      <button type="button" className="small quiet" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.start({ now: true, without: st.lobby?.startWithout ?? null }))}>
-                        {st.lobby.startWithout}
-                      </button>
-                    )}
-                    <button type="button" className="small quiet" disabled={busy || st.lobby.hostAway !== null} title={st.lobby.hostAway ? "The lobby's PC is away: this waits until it is back" : undefined} onClick={() => void run(() => bridge.match.cancelStart())}>
-                      Cancel the start
-                    </button>
-                    </span>
-                  </div>
-                ) : (
-                  <div className="row">
-                    <button
-                      type="button"
-                      className="primary"
-                      disabled={busy || st.lobby.startButton.off !== null || (confirming?.what === 'start' && st.startWarnings.length > 0)}
-                      title={st.lobby.startButton.off ?? 'Or, for the starter, a game started on their own table'}
-                      onClick={() => (st.startWarnings.length > 0 ? setConfirming({ what: 'start' }) : void run(() => bridge.match.start()))}
-                    >
-                      {st.lobby.startButton.label}
-                    </button>
-                    <span className="muted">{st.lobby.startButton.off ?? startLine}</span>
-                  </div>
-                )}
-                {/* The final review (finding 9): what Start a new match does stands beside it before the press (it was said only in the question after it). */}
-                {!st.lobby.start && st.lobby.newMatch && !(confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey) && (
-                  <div className="row">
-                    <span className="muted">{st.lobby.newMatch.line}</span>
-                    <span className="actions">
-                      <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming({ what: 'newMatch', about: st.lobby?.gameKey ?? '' })}>
-                        Start a new match
-                      </button>
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-            {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && st.lobby.starter === st.localId && !st.lobby.start && st.lobby.startButton.off === null && !one?.change && (
-              <small className="muted">Starting a game on your table asks for the start too (it counts down 5 s in every headset).</small>
-            )}
-            {st.lobby?.newMatch && confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">
-                  {st.lobby.newMatch.line}
-                  {/* The review of PR 136: a table of the new match's players that cannot report ball ends is said here, and this press starts anyway. */}
-                  {st.lobby.newMatch.warnings.length > 0
-                    ? ` ${st.lobby.newMatch.warnings.join(' · ')}. Such a turn never ends by itself: that player ends each of those balls with End my ball, or the lobby's PC ends it with Pass the turn.`
-                    : ''}
-                </span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+              {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && st.lobby.starter === st.localId && !st.lobby.start && st.lobby.startButton.off === null && !one?.change && (
+                <small className="cc-help">Starting a game on your table asks for the start too (it counts down 5 s in every headset).</small>
+              )}
+              {st.lobby?.newMatch && confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>
+                    {st.lobby.newMatch.line}
+                    {/* The review of PR 136: a table of the new match's players that cannot report ball ends is said here, and this press starts anyway. */}
+                    {st.lobby.newMatch.warnings.length > 0
+                      ? ` ${st.lobby.newMatch.warnings.join(' · ')}. Such a turn never ends by itself: that player ends each of those balls with End my ball, or the lobby's PC ends it with Pass the turn.`
+                      : ''}
+                  </p>
+                  {answer(st.lobby.newMatch.warnings.length > 0 ? 'Start a new match anyway' : 'Start a new match', () => {
                     const anyway = (st.lobby?.newMatch?.warnings.length ?? 0) > 0;
                     setConfirming(null);
                     void run(() => bridge.match.start({ newMatch: true, anyway }));
-                  }}
-                >
-                  {st.lobby.newMatch.warnings.length > 0 ? 'Start a new match anyway' : 'Start a new match'}
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {/* A17 step 7 (design 11.8): the lobby's PC, about a player the game waits for at their own turn. */}
-            {st.lobby?.awayQuestion ? (
-              <div className="row ask">
-                <span className="warn">
-                  {short(st.lobby.awayQuestion.name)} has been out of the lobby's reach for {Math.max(1, st.lobby.awayQuestion.minutes)} minute{st.lobby.awayQuestion.minutes > 1 ? 's' : ''} and is still playing.
-                </span>
-                <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.answerAway('wait', { player: st.lobby?.awayQuestion?.player ?? null }))}>
-                  Keep waiting
-                </button>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy || (confirming?.what === 'awayEnd' && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey)}
-                  title={`Their ball ends at ${st.lobby.awayQuestion.score.toLocaleString()} and the turn passes`}
-                  onClick={() => setConfirming({ what: 'awayEnd', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
-                >
-                  End {possessive(short(st.lobby.awayQuestion.name))} ball
-                </button>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy || (confirming?.what === 'awayPlayOn' && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey)}
-                  onClick={() => setConfirming({ what: 'awayPlayOn', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
-                >
-                  Play on without {short(st.lobby.awayQuestion.name)}
-                </button>
-              </div>
-            ) : (
-              st.lobby?.waitedFor && (
-                <div className="row">
-                  <span className="muted">{panel?.message?.includes(short(st.lobby.waitedFor.name)) ? '' : `Waiting for ${short(st.lobby.waitedFor.name)} to come back.`}</span>
-                  <button
-                    type="button"
-                    className="small quiet"
-                    disabled={busy || (confirming?.what === 'playOn' && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey)}
-                    onClick={() => setConfirming({ what: 'playOn', player: st.lobby?.waitedFor?.player ?? '', about: st.lobby?.gameKey ?? '' })}
-                  >
-                    Play on without {short(st.lobby.waitedFor.name)}
-                  </button>
+                  })}
                 </div>
-              )
-            )}
-            {/* The review of PR 136: as the in-game menu asks a second choose for them. Each row is about one player, and is gone when the game no longer waits for that player. */}
-            {confirming?.what === 'awayEnd' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">
-                  End {possessive(short(st.lobby.awayQuestion.name))} ball at {st.lobby.awayQuestion.score.toLocaleString()}? The turn passes.
-                </span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+              )}
+              {/* A17 step 7 (design 11.8): the lobby's PC, about a player the game waits for at their own turn. */}
+              {st.lobby?.awayQuestion ? (
+                <div className="cc-ask">
+                  <p>
+                    {short(st.lobby.awayQuestion.name)} has been out of the lobby&apos;s reach for {Math.max(1, st.lobby.awayQuestion.minutes)} minute{st.lobby.awayQuestion.minutes > 1 ? 's' : ''} and is still playing.
+                  </p>
+                  <div className="cc-row">
+                    <Button size="sm" disabled={busy} onClick={() => void run(() => bridge.match.answerAway('wait', { player: st.lobby?.awayQuestion?.player ?? null }))}>
+                      Keep waiting
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy || (confirming?.what === 'awayEnd' && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey)}
+                      title={`Their ball ends at ${st.lobby.awayQuestion.score.toLocaleString()} and the turn passes`}
+                      onClick={() => setConfirming({ what: 'awayEnd', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
+                    >
+                      End {possessive(short(st.lobby.awayQuestion.name))} ball
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy || (confirming?.what === 'awayPlayOn' && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey)}
+                      onClick={() => setConfirming({ what: 'awayPlayOn', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
+                    >
+                      Play on without {short(st.lobby.awayQuestion.name)}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                st.lobby?.waitedFor && (
+                  <div className="cc-line">
+                    <span className="cc-help">{panel?.message?.includes(short(st.lobby.waitedFor.name)) ? '' : `Waiting for ${short(st.lobby.waitedFor.name)} to come back.`}</span>
+                    <span className="cc-row">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={busy || (confirming?.what === 'playOn' && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey)}
+                        onClick={() => setConfirming({ what: 'playOn', player: st.lobby?.waitedFor?.player ?? '', about: st.lobby?.gameKey ?? '' })}
+                      >
+                        Play on without {short(st.lobby.waitedFor.name)}
+                      </Button>
+                    </span>
+                  </div>
+                )
+              )}
+              {/* The review of PR 136: as the in-game menu asks a second choose for them. Each row is about one player, and is gone when the game no longer waits for that player. */}
+              {confirming?.what === 'awayEnd' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>
+                    End {possessive(short(st.lobby.awayQuestion.name))} ball at {st.lobby.awayQuestion.score.toLocaleString()}? The turn passes.
+                  </p>
+                  {answer(`End ${possessive(short(st.lobby.awayQuestion.name))} ball`, () => {
                     const player = confirming.player;
                     setConfirming(null);
                     void run(() => bridge.match.answerAway('end_ball', { player }));
-                  }}
-                >
-                  End {possessive(short(st.lobby.awayQuestion.name))} ball
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {confirming?.what === 'awayPlayOn' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">Play on without {short(st.lobby.awayQuestion.name)}? They are out of this game; they stay in the lobby.</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+                  })}
+                </div>
+              )}
+              {confirming?.what === 'awayPlayOn' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>Play on without {short(st.lobby.awayQuestion.name)}? They are out of this game; they stay in the lobby.</p>
+                  {answer(`Play on without ${short(st.lobby.awayQuestion.name)}`, () => {
                     const player = confirming.player;
                     setConfirming(null);
                     void run(() => bridge.match.answerAway('play_on', { player }));
-                  }}
-                >
-                  Play on without {short(st.lobby.awayQuestion.name)}
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {confirming?.what === 'playOn' && st.lobby?.waitedFor && !st.lobby.awayQuestion && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">Play on without {short(st.lobby.waitedFor.name)}? They are out of this game; they stay in the lobby.</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+                  })}
+                </div>
+              )}
+              {confirming?.what === 'playOn' && st.lobby?.waitedFor && !st.lobby.awayQuestion && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>Play on without {short(st.lobby.waitedFor.name)}? They are out of this game; they stay in the lobby.</p>
+                  {answer(`Play on without ${short(st.lobby.waitedFor.name)}`, () => {
                     const player = confirming.player;
                     setConfirming(null);
                     void run(() => bridge.match.playOnWithout({ player }));
-                  }}
-                >
-                  Play on without {short(st.lobby.waitedFor.name)}
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            <div className="row controls">
-              {/* The final review (finding 3): only a pause that a press ends. While the game waits for a member who is away,
-                  Resume did nothing, or took the turn of the player who is up: what helps then is on the row above. */}
-              {st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume && (
-                <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.resume())}>
-                  Resume
-                </button>
+                  })}
+                </div>
               )}
-              {st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && st.pass && (
-                <button
-                  type="button"
-                  className="small quiet"
-                  disabled={busy || (confirming?.what === 'pass' && confirming.turn === passTurnKey(st))}
-                  title="End the ball of the player who is up at their last known score and give the next player the turn"
-                  onClick={() => setConfirming({ what: 'pass', turn: passTurnKey(st) })}
-                >
-                  Pass the turn
-                </button>
+              {hasControls && (
+                <div className="cc-row">
+                  {/* The final review (finding 3): only a pause that a press ends. While the game waits for a member who is away,
+                      Resume did nothing, or took the turn of the player who is up: what helps then is on the row above. */}
+                  {st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume && (
+                    <Button size="sm" disabled={busy} onClick={() => void run(() => bridge.match.resume())}>
+                      Resume
+                    </Button>
+                  )}
+                  {st.role === 'host' && (st.phase === 'playing' || st.phase === 'paused') && st.pass && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy || (confirming?.what === 'pass' && confirming.turn === passTurnKey(st))}
+                      title="End the ball of the player who is up at their last known score and give the next player the turn"
+                      onClick={() => setConfirming({ what: 'pass', turn: passTurnKey(st) })}
+                    >
+                      Pass the turn
+                    </Button>
+                  )}
+                  {/* A17 step 4 (2026-11-24): the player who is up ends their own ball by hand (an unreadable table, a stuck ball). */}
+                  {st.phase === 'playing' && st.endBall && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={busy || (confirming?.what === 'endBall' && confirming.turn === endBallKey(st))}
+                      title="End your own ball now at the score as it stands; the turn passes to the next player"
+                      onClick={() => setConfirming({ what: 'endBall', turn: endBallKey(st) })}
+                    >
+                      End my ball
+                    </Button>
+                  )}
+                  {/* A17 step 7: a player gives up their own game; End match between games (anyone), or for everyone (the lobby's PC). */}
+                  {st.lobby?.giveUp && (
+                    <Button size="sm" variant="secondary" disabled={busy || (confirming?.what === 'giveUp' && confirming.about === st.lobby.gameKey)} onClick={() => setConfirming({ what: 'giveUp', about: st.lobby?.gameKey ?? '' })}>
+                      Give up this game
+                    </Button>
+                  )}
+                  {/* The review of PR 136: End match is the request "between games" and says which match it was pressed for:
+                      pressed as a countdown runs out, it is refused; it never ends the game that has just begun. */}
+                  {st.lobby?.end === 'match' && (
+                    <Button size="sm" variant="secondary" disabled={busy} onClick={() => void run(() => bridge.match.endMatch({ everyone: false, about: st.lobby?.gameKey ?? null }))}>
+                      End match
+                    </Button>
+                  )}
+                  {st.lobby?.end === 'everyone' && (
+                    <Button size="sm" variant="secondary" disabled={busy || (confirming?.what === 'endEveryone' && confirming.about === st.lobby.gameKey)} onClick={() => setConfirming({ what: 'endEveryone', about: st.lobby?.gameKey ?? '' })}>
+                      End match for everyone
+                    </Button>
+                  )}
+                </div>
               )}
-              {/* A17 step 4 (2026-11-24): the player who is up ends their own ball by hand (an unreadable table, a stuck ball). */}
-              {st.phase === 'playing' && st.endBall && (
-                <button
-                  type="button"
-                  className="small quiet"
-                  disabled={busy || (confirming?.what === 'endBall' && confirming.turn === endBallKey(st))}
-                  title="End your own ball now at the score as it stands; the turn passes to the next player"
-                  onClick={() => setConfirming({ what: 'endBall', turn: endBallKey(st) })}
-                >
-                  End my ball
-                </button>
+              {confirming?.what === 'giveUp' && st.lobby?.giveUp && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>Give up this game? The others play on; you stay in the lobby and watch.</p>
+                  {answer(
+                    'Give up this game',
+                    () => {
+                      const about = confirming.about;
+                      setConfirming(null);
+                      void run(() => bridge.match.giveUp({ about }));
+                    },
+                    true,
+                  )}
+                </div>
               )}
-              {/* A17 step 7: a player gives up their own game; End match between games (anyone), or for everyone (the lobby's PC). */}
-              {st.lobby?.giveUp && (
-                <button
-                  type="button"
-                  className="small quiet"
-                  disabled={busy || (confirming?.what === 'giveUp' && confirming.about === st.lobby.gameKey)}
-                  onClick={() => setConfirming({ what: 'giveUp', about: st.lobby?.gameKey ?? '' })}
-                >
-                  Give up this game
-                </button>
+              {confirming?.what === 'endEveryone' && st.lobby?.end === 'everyone' && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>End the match for everyone? The game being played gets no result.</p>
+                  {answer(
+                    'End match for everyone',
+                    () => {
+                      const about = confirming.about;
+                      setConfirming(null);
+                      void run(() => bridge.match.endMatch({ everyone: true, about }));
+                    },
+                    true,
+                  )}
+                </div>
               )}
-              {/* The review of PR 136: End match is the request "between games" and says which match it was pressed for:
-                  pressed as a countdown runs out, it is refused; it never ends the game that has just begun. */}
-              {st.lobby?.end === 'match' && (
-                <button
-                  type="button"
-                  className="small quiet"
-                  disabled={busy}
-                  onClick={() => void run(() => bridge.match.endMatch({ everyone: false, about: st.lobby?.gameKey ?? null }))}
-                >
-                  End match
-                </button>
-              )}
-              {st.lobby?.end === 'everyone' && (
-                <button
-                  type="button"
-                  className="small quiet"
-                  disabled={busy || (confirming?.what === 'endEveryone' && confirming.about === st.lobby.gameKey)}
-                  onClick={() => setConfirming({ what: 'endEveryone', about: st.lobby?.gameKey ?? '' })}
-                >
-                  End match for everyone
-                </button>
-              )}
-            </div>
-            {confirming?.what === 'giveUp' && st.lobby?.giveUp && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">Give up this game? The others play on; you stay in the lobby and watch.</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
-                    const about = confirming.about;
-                    setConfirming(null);
-                    void run(() => bridge.match.giveUp({ about }));
-                  }}
-                >
-                  Give up this game
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {confirming?.what === 'endEveryone' && st.lobby?.end === 'everyone' && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">End the match for everyone? The game being played gets no result.</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
-                    const about = confirming.about;
-                    setConfirming(null);
-                    void run(() => bridge.match.endMatch({ everyone: true, about }));
-                  }}
-                >
-                  End match for everyone
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {(st.phase === 'lobby' || st.phase === 'over') && confirming?.what === 'start' && st.startWarnings.length > 0 && (
-              <div className="row ask">
-                <span className="warn">
-                  {st.startWarnings.join(' · ')}. Such a turn never ends by itself: that player ends each of those balls with End my ball (the in-game menu or this tab), or the lobby's PC ends it with Pass the turn.
-                </span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+              {(st.phase === 'lobby' || st.phase === 'over') && confirming?.what === 'start' && st.startWarnings.length > 0 && (
+                <div className="cc-ask">
+                  <p>
+                    {st.startWarnings.join(' · ')}. Such a turn never ends by itself: that player ends each of those balls with End my ball (the in-game menu or this tab), or the lobby&apos;s PC ends it with Pass the turn.
+                  </p>
+                  {answer('Start anyway', () => {
                     setConfirming(null);
                     void run(() => bridge.match.start({ anyway: true }));
-                  }}
-                >
-                  Start anyway
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
-              <div className="row ask">
-                <span className="warn">
-                  End {possessive(short(st.pass.name))} ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby's PC.
-                </span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+                  })}
+                </div>
+              )}
+              {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
+                <div className="cc-ask">
+                  <p>
+                    End {possessive(short(st.pass.name))} ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby&apos;s PC.
+                  </p>
+                  {answer('Pass the turn', () => {
                     setConfirming(null);
                     void run(() => bridge.match.passTurn());
-                  }}
-                >
-                  Pass the turn
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {confirming?.what === 'endBall' && confirming.turn === endBallKey(st) && st.endBall && st.phase === 'playing' && (
-              <div className="row ask">
-                <span className="warn">
-                  End your ball now at {st.endBall.score.toLocaleString()}? The turn passes.
-                  {st.endBall.tableBall ? ' The ball on your table is not lost: you play it out first at your next turn, then your next ball.' : ''}
-                </span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
+                  })}
+                </div>
+              )}
+              {confirming?.what === 'endBall' && confirming.turn === endBallKey(st) && st.endBall && st.phase === 'playing' && (
+                <div className="cc-ask">
+                  <p>
+                    End your ball now at {st.endBall.score.toLocaleString()}? The turn passes.
+                    {st.endBall.tableBall ? ' The ball on your table is not lost: you play it out first at your next turn, then your next ball.' : ''}
+                  </p>
+                  {answer('End my ball', () => {
                     // The grant the question was about: the main process ends no other ball with it.
                     const asked = st.endBall?.grantSeq ?? -1;
                     setConfirming(null);
                     void run(() => bridge.match.endMyBall(asked));
-                  }}
-                >
-                  End my ball
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {st.phase === 'playing' && st.locked && (
-              <small className="muted">
-                {st.lobby && (!st.lobby.match?.players.includes(st.localId ?? '') || playsNoMore(st)) ? 'Your table is locked while this game is played: you are watching.' : 'Your table is locked until your ball comes up.'}
-              </small>
-            )}
-            {st.phase === 'over' && !st.series?.over && st.locked && <small className="muted">Your table is locked until the next game reaches your ball.</small>}
-            {/* The final review (finding 9): what End match does, in sight (it was a tooltip; the one press of that row with no question). */}
-            {st.lobby?.end === 'match' && <small className="muted">End match closes the tally. Everyone stays in the lobby.</small>}
-            {/* A17 step 7: this person's own choice for the next start. Step 9: the two stand side by side and do not move; the one that holds is the filled one. */}
-            {st.lobby && !st.lobby.over && (
-              <div className="row">
-                <span>In the next match I</span>
-                <span className="actions">
-                  <button type="button" className={st.lobby.stance === 'play' ? 'small' : 'small quiet'} aria-pressed={st.lobby.stance === 'play'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('play'))}>
-                    Play
-                  </button>
-                  <button type="button" className={st.lobby.stance === 'watch' ? 'small' : 'small quiet'} aria-pressed={st.lobby.stance === 'watch'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('watch'))}>
-                    Watch
-                  </button>
+                  })}
+                </div>
+              )}
+              {st.phase === 'playing' && st.locked && (
+                <small className="cc-help">
+                  {st.lobby && (!st.lobby.match?.players.includes(st.localId ?? '') || playsNoMore(st)) ? 'Your table is locked while this game is played: you are watching.' : 'Your table is locked until your ball comes up.'}
+                </small>
+              )}
+              {st.phase === 'over' && !st.series?.over && st.locked && <small className="cc-help">Your table is locked until the next game reaches your ball.</small>}
+              {/* The final review (finding 9): what End match does, in sight (it was a tooltip; the one press of that row with no question). */}
+              {st.lobby?.end === 'match' && <small className="cc-help">End match closes the tally. Everyone stays in the lobby.</small>}
+              {/* A17 step 7: this person's own choice for the next start. Step 9: the two stand side by side and do not move; the one that holds is the lit one. */}
+              {st.lobby && !st.lobby.over && (
+                <div className="cc-line">
+                  <span className="cc-text">In the next match I</span>
+                  <span className="cc-row">
+                    <Button size="sm" variant="secondary" aria-pressed={st.lobby.stance === 'play'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('play'))}>
+                      Play
+                    </Button>
+                    <Button size="sm" variant="secondary" aria-pressed={st.lobby.stance === 'watch'} disabled={busy} onClick={() => void run(() => bridge.match.setStance('watch'))}>
+                      Watch
+                    </Button>
+                  </span>
+                </div>
+              )}
+              {st.lobby?.match && st.lobby.match.state === 'game' && st.lobby.stance === 'play' && !st.lobby.match.players.includes(st.localId ?? '') && (
+                <small className="cc-help">You are watching this match. You are in when somebody starts a new match.</small>
+              )}
+              {st.lobby?.match && st.lobby.stance === 'watch' && st.lobby.match.players.includes(st.localId ?? '') && (
+                <small className="cc-help">
+                  {/* Someone who is out of the game that is being played (gave it up, or was counted out) is not told they play. */}
+                  {st.lobby.match.state === 'game' && !st.lobby.giveUp && !panel?.myTurn && playsNoMore(st) ? 'You sit out from the next game.' : 'You play this match. You sit out from the next game.'}
+                </small>
+              )}
+              {/* A17 step 9 (2026-11-27): the way out is the last line of this card in every state, and never the lit button. */}
+              <div className="cc-line cc-leave">
+                <span className="cc-help">{st.lobby?.over ? 'Castcade goes back to Open and Join by itself in a moment.' : st.role === 'host' && confirming?.what !== 'close' ? 'Close lobby ends it for everyone.' : ''}</span>
+                <span className="cc-row">
+                  {st.role === 'host' ? (
+                    <Button size="sm" variant="secondary" disabled={busy || confirming?.what === 'close'} onClick={() => setConfirming({ what: 'close' })}>
+                      Close lobby
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant={st.lobby?.over ? 'primary' : 'secondary'}
+                      disabled={busy || (confirming?.what === 'leave' && confirming.about === (st.lobby?.gameKey ?? ''))}
+                      onClick={() => {
+                        // The review of PR 136: a player who leaves during their own game gives it up first (design 11.2):
+                        // that is asked about, as Give up this game is. Anybody else leaves with one press.
+                        if (st.lobby?.giveUp) setConfirming({ what: 'leave', about: st.lobby.gameKey });
+                        else void run(() => bridge.match.leave());
+                      }}
+                    >
+                      {/* The final review (finding 9): under LOBBY CLOSED the button says where it leads. */}
+                      {st.lobby?.over ? 'Back to Open and Join' : 'Leave lobby'}
+                    </Button>
+                  )}
                 </span>
               </div>
-            )}
-            {st.lobby?.match && st.lobby.match.state === 'game' && st.lobby.stance === 'play' && !st.lobby.match.players.includes(st.localId ?? '') && (
-              <small className="muted">You are watching this match. You are in when somebody starts a new match.</small>
-            )}
-            {st.lobby?.match && st.lobby.stance === 'watch' && st.lobby.match.players.includes(st.localId ?? '') && (
-              <small className="muted">
-                {/* Someone who is out of the game that is being played (gave it up, or was counted out) is not told they play. */}
-                {st.lobby.match.state === 'game' && !st.lobby.giveUp && !panel?.myTurn && playsNoMore(st) ? 'You sit out from the next game.' : 'You play this match. You sit out from the next game.'}
-              </small>
-            )}
-            {/* A17 step 9 (2026-11-27): the way out is the last line of this card in every state, and never the filled button. */}
-            <div className="row leave">
-              <span className="muted">{st.lobby?.over ? 'Castcade goes back to Open and Join by itself in a moment.' : st.role === 'host' && confirming?.what !== 'close' ? 'Close lobby ends it for everyone.' : ''}</span>
-              <span className="actions">
-                {st.role === 'host' ? (
-                  <button type="button" className="small quiet" disabled={busy || confirming?.what === 'close'} onClick={() => setConfirming({ what: 'close' })}>
-                    Close lobby
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className={st.lobby?.over ? 'small' : 'small quiet'}
-                    disabled={busy || (confirming?.what === 'leave' && confirming.about === (st.lobby?.gameKey ?? ''))}
-                    onClick={() => {
-                      // The review of PR 136: a player who leaves during their own game gives it up first (design 11.2):
-                      // that is asked about, as Give up this game is. Anybody else leaves with one press.
-                      if (st.lobby?.giveUp) setConfirming({ what: 'leave', about: st.lobby.gameKey });
-                      else void run(() => bridge.match.leave());
-                    }}
-                  >
-                    {/* The final review (finding 9): under LOBBY CLOSED the button says where it leads. */}
-                    {st.lobby?.over ? 'Back to Open and Join' : 'Leave lobby'}
-                  </button>
-                )}
-              </span>
-            </div>
-            {confirming?.what === 'leave' && st.lobby?.giveUp && confirming.about === st.lobby.gameKey && (
-              <div className="row ask">
-                <span className="warn">Leave the lobby? You give up the game you are playing, and your microphone and your place go. Coming back is a new join.</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
-                    setConfirming(null);
-                    void run(() => bridge.match.leave());
-                  }}
-                >
-                  Leave lobby
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-            {confirming?.what === 'close' && st.role === 'host' && (
-              <div className="row ask">
-                <span className="warn">This closes the lobby for everyone.{st.phase === 'playing' || st.phase === 'paused' ? ' The game being played gets no result.' : ''}</span>
-                <button
-                  type="button"
-                  className="small"
-                  disabled={busy}
-                  onClick={() => {
-                    setConfirming(null);
-                    void run(() => bridge.match.leave());
-                  }}
-                >
-                  Close lobby
-                </button>
-                <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
-                  Cancel
-                </button>
-              </div>
-            )}
-          </div>
+              {confirming?.what === 'leave' && st.lobby?.giveUp && confirming.about === st.lobby.gameKey && (
+                <div className="cc-ask">
+                  <p>Leave the lobby? You give up the game you are playing, and your microphone and your place go. Coming back is a new join.</p>
+                  {answer(
+                    'Leave lobby',
+                    () => {
+                      setConfirming(null);
+                      void run(() => bridge.match.leave());
+                    },
+                    true,
+                  )}
+                </div>
+              )}
+              {confirming?.what === 'close' && st.role === 'host' && (
+                <div className="cc-ask">
+                  <p>This closes the lobby for everyone.{st.phase === 'playing' || st.phase === 'paused' ? ' The game being played gets no result.' : ''}</p>
+                  {answer(
+                    'Close lobby',
+                    () => {
+                      setConfirming(null);
+                      void run(() => bridge.match.leave());
+                    },
+                    true,
+                  )}
+                </div>
+              )}
+            </Panel>
 
-          {st.lobby?.lastMatch && !st.lobby.match && (
-            <div className="card">
-              <strong>
-                {st.lobby.lastMatch.abandoned !== null ? `Match ended · game ${st.lobby.lastMatch.abandoned} not finished` : `Match over after ${st.lobby.lastMatch.games} game${st.lobby.lastMatch.games === 1 ? '' : 's'}`}
-              </strong>
-              {st.lobby.lastMatch.standing.length > 0 ? (
-                <table className="match-table roster">
-                  <thead>
-                    <tr>
-                      <th>Final standing</th>
-                      <th className="num">Games won</th>
-                      <th className="num">Total score</th>
-                    </tr>
-                  </thead>
+            {lobbyPanel}
+
+            {st.lobby?.lastMatch && !st.lobby.match && (
+              <Panel title={st.lobby.lastMatch.abandoned !== null ? `Match ended · game ${st.lobby.lastMatch.abandoned} not finished` : `Match over after ${st.lobby.lastMatch.games} game${st.lobby.lastMatch.games === 1 ? '' : 's'}`}>
+                {st.lobby.lastMatch.standing.length > 0 ? (
+                  <table className="cc-table cc-roster">
+                    <thead>
+                      <tr>
+                        <th>Final standing</th>
+                        <th className="num">Games won</th>
+                        <th className="num">Total score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {st.lobby.lastMatch.standing.map((x, i) => (
+                        <tr key={x.id}>
+                          <td className={placeClass(i + 1)}>
+                            {i + 1}. <span className="cc-who">{x.name}</span>
+                          </td>
+                          <td className="num">{x.wins}</td>
+                          <td className={`num ${placeClass(i + 1)}`}>{x.total.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  // The empty state: what would stand here, and why it does not.
+                  <p className="cc-text cc-quiet">No game of it was finished.</p>
+                )}
+              </Panel>
+            )}
+            {panel?.result && (
+              <Panel title={st.lobby ? `Game ${panel.game ?? 1}` : panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}>
+                <table className="cc-table cc-roster">
                   <tbody>
-                    {st.lobby.lastMatch.standing.map((x, i) => (
-                      <tr key={x.id}>
-                        <td>
-                          {i + 1}. <span className="who">{x.name}</span>
+                    {panel.result.map((r) => (
+                      <tr key={r.id}>
+                        <td className={placeClass(r.place)}>
+                          {r.place}. <span className="cc-who">{r.name}</span>
+                          {r.flags?.includes('midnight') && <span className="cc-flag"> · Midnight Madness ran</span>}
                         </td>
-                        <td className="num">{x.wins}</td>
-                        <td className="num">{x.total.toLocaleString()}</td>
+                        <td className={`num ${placeClass(r.place)}`}>{r.score.toLocaleString()}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              ) : (
-                <p className="muted">No game of it was finished.</p>
-              )}
-            </div>
-          )}
-          {panel?.result && (
-            <div className="card">
-              <strong>{st.lobby ? `Game ${panel.game ?? 1}` : panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}</strong>
-              <table className="match-table">
-                <tbody>
-                  {panel.result.map((r) => (
-                    <tr key={r.id}>
-                      <td>{r.place}.</td>
-                      <td>
-                        {r.name}
-                        {r.flags?.includes('midnight') && <span className="warn"> · Midnight Madness ran</span>}
-                      </td>
-                      <td className="num">{r.score.toLocaleString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <small className="muted">Each game also posted to ArcAid as a normal score.</small>
-            </div>
-          )}
+                <small className="cc-help">Each game also posted to ArcAid as a normal score.</small>
+              </Panel>
+            )}
 
-          {panel?.series && panel.series.some((s) => s.games > 1) && (
-            <div className="card">
-              <strong>Series</strong>
-              <table className="match-table">
-                <thead>
-                  <tr>
-                    <th />
-                    <th>Player</th>
-                    <th className="num">Wins</th>
-                    <th className="num">Games</th>
-                    <th className="num">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {panel.series.map((s) => (
-                    <tr key={s.id}>
-                      <td>{s.place}.</td>
-                      <td>{s.name}</td>
-                      <td className="num">{s.wins}</td>
-                      <td className="num">{s.games}</td>
-                      <td className="num">{s.total.toLocaleString()}</td>
+            {panel?.series && panel.series.some((s) => s.games > 1) && (
+              <Panel title="Series">
+                <table className="cc-table cc-roster">
+                  <thead>
+                    <tr>
+                      <th>Player</th>
+                      <th className="num">Wins</th>
+                      <th className="num">Games</th>
+                      <th className="num">Total</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+                  </thead>
+                  <tbody>
+                    {panel.series.map((s) => (
+                      <tr key={s.id}>
+                        <td className={placeClass(s.place)}>
+                          {s.place}. <span className="cc-who">{s.name}</span>
+                        </td>
+                        <td className="num">{s.wins}</td>
+                        <td className="num">{s.games}</td>
+                        <td className={`num ${placeClass(s.place)}`}>{s.total.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Panel>
+            )}
+          </>
+        )}
+      </PanelGroup>
 
-          {/* A17 step 9: everything else (how the voice and the picture are doing, and the settings) under one heading, below the lobby. */}
-          <h3 className="rest">Sound, picture and keys</h3>
-          <div className="card">
-            <p className="muted">{mediaLine(st.media)}</p>
-            {st.media?.nativeVideo && <p className="muted">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
+      {/* A17 step 9: everything else (how the voice and the picture are doing, and the settings) under one heading, below the lobby. */}
+      <PanelGroup id="match-settings" tone="violet" title="Sound, picture and keys">
+        {inMatch && (
+          <Panel wide>
+            <p className="cc-help">{mediaLine(st.media)}</p>
+            {st.media?.nativeVideo && <p className="cc-help">{nativeVideoLine(st.media.nativeVideo, st.participants)}</p>}
             {st.media?.nativeVideo?.helper === 'ready' && !st.media.nativeVideo.fallback && <VideoQualityRow st={st} video={st.media.nativeVideo} apply={(r) => bridge.match.setVideoRungs(r).then(setSt, (e: unknown) => setError(describe(e)))} />}
             {/* I11.4.2: what this PC shows of each other player while they are up: 3D on its own table, or the 2D video and why. */}
             {st.stream3d?.players.map((p) => (
-              <p className="muted" key={p.id}>
+              <p className="cc-help" key={p.id}>
                 {p.line}
               </p>
             ))}
             {panelWin && (
-              <div className="row">
-                <p className="muted">{panelLine(panelWin)}</p>
-                <button type="button" className="small" onClick={togglePanel}>
-                  {panelWin.visible ? 'Hide panel' : 'Show panel'}
-                </button>
+              <div className="cc-line">
+                <p className="cc-help">{panelLine(panelWin)}</p>
+                <span className="cc-row">
+                  <Button size="sm" variant="secondary" onClick={togglePanel}>
+                    {panelWin.visible ? 'Hide panel' : 'Show panel'}
+                  </Button>
+                </span>
               </div>
             )}
-            <p className="muted" title={st.rigReason}>
-              {rigLine(st)} <small>{st.rigReason}</small>
+            <p className="cc-help" title={st.rigReason}>
+              {rigLine(st)} <span className="cc-quiet">{st.rigReason}</span>
             </p>
-            <p className="muted">{overlayLine(st.vrOverlay)}</p>
-            {st.previewAdvice && <p>{st.previewAdvice}</p>}
-          </div>
-        </>
-      )}
+            <p className="cc-help">{overlayLine(st.vrOverlay)}</p>
+            {st.previewAdvice && <p className="cc-text">{st.previewAdvice}</p>}
+          </Panel>
+        )}
 
-
-      {!inMatch && <h3 className="rest">Sound, picture and keys</h3>}
-      <div className="card">
-        <div className="row">
-          <label className="field">
-            <span>Microphone</span>
-            <select value={st.micDeviceId ?? ''} onChange={(e) => pickMic(e.target.value)}>
+        <Panel title={<label htmlFor="match-mic">Microphone</label>}>
+          <div className="cc-field__line">
+            <select id="match-mic" className="cc-input" value={st.micDeviceId ?? ''} onChange={(e) => pickMic(e.target.value)}>
               <option value="">Windows default</option>
               {savedMicMissing && <option value={st.micDeviceId ?? ''}>The microphone you picked last time</option>}
               {st.microphones.map((m) => (
@@ -1078,277 +1001,313 @@ export function Match({ state }: { state: CastcadeState }) {
                 </option>
               ))}
             </select>
-          </label>
-          <button type="button" className="small" onClick={toggleMute}>
-            {st.muted ? 'Unmute' : 'Mute'}
-          </button>
-        </div>
-        <small>
-          Pick your headset microphone: in VR the Windows default is often a virtual device.
-          {st.microphones.length === 0 ? ' No microphone listed yet: plug one in, then open this tab again.' : ''}
-        </small>
-      </div>
+            <Button size="sm" variant={st.muted ? 'primary' : 'secondary'} onClick={toggleMute}>
+              {st.muted ? 'Unmute' : 'Mute'}
+            </Button>
+          </div>
+          <small className="cc-help">
+            Pick your headset microphone: in VR the Windows default is often a virtual device.
+            {st.microphones.length === 0 ? ' No microphone listed yet: plug one in, then open this tab again.' : ''}
+          </small>
+        </Panel>
 
-      <TurnCard turn={st.turn} save={(t) => bridge.match.setTurn(t).then(setSt)} />
+        <TurnCard turn={st.turn} save={(t) => bridge.match.setTurn(t).then(setSt)} />
 
-      <div className="card">
-        <div className="row">
-          <label className="field">
-            <span>Spectator video</span>
-            <select value={st.videoPath} onChange={(e) => bridge.match.setVideoPath(e.target.value === 'electron' ? 'electron' : 'native').then(setSt, () => undefined)}>
+        <Panel title={<label htmlFor="match-video-path">Spectator video</label>}>
+          <Field
+            help={
+              <>
+                Native: the castcade-video helper encodes your eye on the GPU (H.264, up to 60 fps) and the headset draws what arrives; voice stays as it was.
+                Electron: the 0.2.36 picture through the match panel. Used from the next match.
+              </>
+            }
+          >
+            <select id="match-video-path" className="cc-input" value={st.videoPath} onChange={(e) => bridge.match.setVideoPath(e.target.value === 'electron' ? 'electron' : 'native').then(setSt, () => undefined)}>
               <option value="native">Native helper (recommended)</option>
               <option value="electron">Electron (0.2.36 path)</option>
             </select>
-            <small>
-              Native: the castcade-video helper encodes your eye on the GPU (H.264, up to 60 fps) and the headset draws what arrives; voice stays as it was.
-              Electron: the 0.2.36 picture through the match panel. Used from the next match.
-            </small>
-          </label>
-        </div>
-      </div>
+          </Field>
+        </Panel>
 
-      <div className="card">
-        <div className="row">
-          <label className="field">
-            <span>In the headset on your ball</span>
-            <select value={st.settings.theaterDuringMyTurn} onChange={(e) => setView({ theaterDuringMyTurn: e.target.value === 'panel' ? 'panel' : 'hidden' })}>
-              <option value="hidden">Nothing over your table</option>
-              <option value="panel">The match panel, low in view</option>
-            </select>
-            <small>What you see while you play your ball: just your table, or the scores panel below it.</small>
-          </label>
-          <label className="field">
-            <span>In the headset on their ball</span>
-            <select value={st.settings.spectate} onChange={(e) => setView({ spectate: e.target.value === 'panel' ? 'panel' : 'theater' })}>
-              <option value="theater">Their table where yours was (theater)</option>
-              <option value="panel">The match panel, low in view</option>
-            </select>
-            <small>Theater: their table as a flat screen in front of you, where yours was; the view around it goes dark. Needs the Castcade OpenXR layer (not SteamVR).</small>
-          </label>
-          {/* I11.4.2 (ADR 0011): the player up on this PC's own table, in 3D, when both PCs can; the 2D video otherwise. */}
-          <label className="field">
-            <span>3D watch in a match</span>
-            <select value={st.settings.watch3d} onChange={(e) => setView({ watch3d: e.target.value === 'off' ? 'off' : 'auto' })}>
-              <option value="auto">Auto: their game on your own table when both PCs can</option>
-              <option value="off">Off: always the 2D video</option>
-            </select>
-            <small>
-              Auto: while another player is up you see their game on your own table, from your own seat, when both PCs run the Castcade VPX build
-              (VPinballX_GL64_castcade.exe beside your VPX) on the identical table file; Castcade then starts match tables in that build. Anything else, and
-              any trouble, shows the 2D video as before. Applies to tables started from now on.
-            </small>
-          </label>
-          {/* A17 step 3 (2026-11-25): the lobby's table changed: Castcade closes the open table and opens the new one, or only offers it. */}
-          <label className="field">
-            <span>When the lobby&apos;s table changes</span>
-            <select value={st.settings.changeTablesForMe ? 'on' : 'off'} onChange={(e) => setView({ changeTablesForMe: e.target.value !== 'off' })}>
-              <option value="on">Change tables for me</option>
-              <option value="off">Ask me first</option>
-            </select>
-            <small>
-              Change tables for me: Castcade closes the table that is open on this PC and opens your copy of the new one. Never during a game, and never
-              when it cannot be sure that no game is on (a table that is not imported, two VPX open): then you are asked to close the table yourself. Ask me
-              first: the Match tab shows the new table with an Open it button and nothing closes by itself.
-            </small>
-          </label>
-          <label className="field">
-            <span>Theater size</span>
-            <select value={String(st.settings.theaterScale)} onChange={(e) => setView({ theaterScale: Number(e.target.value) })}>
-              <option value="1">Life size</option>
-              <option value="0.8">80 %</option>
-              <option value="0.6">60 %</option>
-            </select>
-            <small>How big the screen is. Life size is the default; smaller puts the same picture over less of your view, so it looks sharper. Takes effect at once.</small>
-          </label>
-          <label className="field">
-            <span>Scoreboard in the headset</span>
-            <select
-              value={st.settings.scoreboard ? st.settings.scoreboardCorner : 'off'}
-              onChange={(e) => setView(e.target.value === 'off' ? { scoreboard: false } : { scoreboard: true, scoreboardCorner: e.target.value === 'top-left' ? 'top-left' : 'top-right' })}
+        <Panel wide>
+          <div className="cc-fields cc-fields--settings">
+            <Field label="In the headset on your ball" htmlFor="match-my-ball" help="What you see while you play your ball: just your table, or the scores panel below it.">
+              <select id="match-my-ball" className="cc-input" value={st.settings.theaterDuringMyTurn} onChange={(e) => setView({ theaterDuringMyTurn: e.target.value === 'panel' ? 'panel' : 'hidden' })}>
+                <option value="hidden">Nothing over your table</option>
+                <option value="panel">The match panel, low in view</option>
+              </select>
+            </Field>
+            <Field
+              label="In the headset on their ball"
+              htmlFor="match-their-ball"
+              help="Theater: their table as a flat screen in front of you, where yours was; the view around it goes dark. Needs the Castcade OpenXR layer (not SteamVR)."
             >
-              <option value="top-right">Top right</option>
-              <option value="top-left">Top left</option>
-              <option value="off">Off</option>
-            </select>
-            <small>
-              A small scoreboard up and to that side while you play and while you watch: scores, ball, game, and the games played and wins this session.
-              Needs the Castcade OpenXR layer (not SteamVR); after an update, restart VPX once. Takes effect at once.
-            </small>
-          </label>
-          {/* D8.12.3: fixed in the room (the default) or on the head, as it was before. */}
-          <label className="field">
-            <span>Scoreboard stays</span>
-            <select
-              value={st.settings.scoreboardAnchor}
-              disabled={!st.settings.scoreboard}
-              onChange={(e) => setView({ scoreboardAnchor: e.target.value === 'head' ? 'head' : 'room' })}
+              <select id="match-their-ball" className="cc-input" value={st.settings.spectate} onChange={(e) => setView({ spectate: e.target.value === 'panel' ? 'panel' : 'theater' })}>
+                <option value="theater">Their table where yours was (theater)</option>
+                <option value="panel">The match panel, low in view</option>
+              </select>
+            </Field>
+            {/* I11.4.2 (ADR 0011): the player up on this PC's own table, in 3D, when both PCs can; the 2D video otherwise. */}
+            <Field
+              label="3D watch in a match"
+              htmlFor="match-watch3d"
+              help={
+                <>
+                  Auto: while another player is up you see their game on your own table, from your own seat, when both PCs run the Castcade VPX build
+                  (VPinballX_GL64_castcade.exe beside your VPX) on the identical table file; Castcade then starts match tables in that build. Anything else, and
+                  any trouble, shows the 2D video as before. Applies to tables started from now on.
+                </>
+              }
             >
-              <option value="room">Fixed in the room</option>
-              <option value="head">Follows my head</option>
-            </select>
-            <small>
-              Fixed in the room: it stays where it was put when the table opened, up and to the side of where you were facing, and you turn your head to
-              read it. To move it, look where you want it and choose "Put the scoreboard where I look" in the in-game menu. Follows my head: it sits in the
-              corner of your view and moves with it. Takes effect at once; after an update, restart VPX once (until then it follows your head).
-            </small>
-          </label>
-          <label className="field">
-            <span>Your preview</span>
-            <select
-              value={st.settings.previewStereo}
-              onChange={(e) => setView({ previewStereo: e.target.value === 'mono' ? 'mono' : e.target.value === 'sbs' ? 'sbs' : 'auto' })}
+              <select id="match-watch3d" className="cc-input" value={st.settings.watch3d} onChange={(e) => setView({ watch3d: e.target.value === 'off' ? 'off' : 'auto' })}>
+                <option value="auto">Auto: their game on your own table when both PCs can</option>
+                <option value="off">Off: always the 2D video</option>
+              </select>
+            </Field>
+            {/* A17 step 3 (2026-11-25): the lobby's table changed: Castcade closes the open table and opens the new one, or only offers it. */}
+            <Field
+              label="When the lobby's table changes"
+              htmlFor="match-change-tables"
+              help={
+                <>
+                  Change tables for me: Castcade closes the table that is open on this PC and opens your copy of the new one. Never during a game, and never
+                  when it cannot be sure that no game is on (a table that is not imported, two VPX open): then you are asked to close the table yourself. Ask me
+                  first: the Match tab shows the new table with an Open it button and nothing closes by itself.
+                </>
+              }
             >
-              <option value="auto">As VPX is set (VR preview setting)</option>
-              <option value="mono">One eye</option>
-              <option value="sbs">Both eyes</option>
-            </select>
-            <small>
-              Only used when the camera is the screen capture: what your VR preview window shows, told to the other players. One eye is right for 2D (VPX's
-              default, Left Eye); Auto reads VPX's setting and this tab says so when it is Both Eyes.
-            </small>
+              <select id="match-change-tables" className="cc-input" value={st.settings.changeTablesForMe ? 'on' : 'off'} onChange={(e) => setView({ changeTablesForMe: e.target.value !== 'off' })}>
+                <option value="on">Change tables for me</option>
+                <option value="off">Ask me first</option>
+              </select>
+            </Field>
+            <Field label="Theater size" htmlFor="match-theater-size" help="How big the screen is. Life size is the default; smaller puts the same picture over less of your view, so it looks sharper. Takes effect at once.">
+              <select id="match-theater-size" className="cc-input" value={String(st.settings.theaterScale)} onChange={(e) => setView({ theaterScale: Number(e.target.value) })}>
+                <option value="1">Life size</option>
+                <option value="0.8">80 %</option>
+                <option value="0.6">60 %</option>
+              </select>
+            </Field>
+            <Field
+              label="Scoreboard in the headset"
+              htmlFor="match-scoreboard"
+              help={
+                <>
+                  A small scoreboard up and to that side while you play and while you watch: scores, ball, game, and the games played and wins this session.
+                  Needs the Castcade OpenXR layer (not SteamVR); after an update, restart VPX once. Takes effect at once.
+                </>
+              }
+            >
+              <select
+                id="match-scoreboard"
+                className="cc-input"
+                value={st.settings.scoreboard ? st.settings.scoreboardCorner : 'off'}
+                onChange={(e) => setView(e.target.value === 'off' ? { scoreboard: false } : { scoreboard: true, scoreboardCorner: e.target.value === 'top-left' ? 'top-left' : 'top-right' })}
+              >
+                <option value="top-right">Top right</option>
+                <option value="top-left">Top left</option>
+                <option value="off">Off</option>
+              </select>
+            </Field>
+            {/* D8.12.3: fixed in the room (the default) or on the head, as it was before. */}
+            <Field
+              label="Scoreboard stays"
+              htmlFor="match-scoreboard-anchor"
+              help={
+                <>
+                  Fixed in the room: it stays where it was put when the table opened, up and to the side of where you were facing, and you turn your head to
+                  read it. To move it, look where you want it and choose &quot;Put the scoreboard where I look&quot; in the in-game menu. Follows my head: it sits in the
+                  corner of your view and moves with it. Takes effect at once; after an update, restart VPX once (until then it follows your head).
+                </>
+              }
+            >
+              <select
+                id="match-scoreboard-anchor"
+                className="cc-input"
+                value={st.settings.scoreboardAnchor}
+                disabled={!st.settings.scoreboard}
+                onChange={(e) => setView({ scoreboardAnchor: e.target.value === 'head' ? 'head' : 'room' })}
+              >
+                <option value="room">Fixed in the room</option>
+                <option value="head">Follows my head</option>
+              </select>
+            </Field>
+            <Field
+              label="Your preview"
+              htmlFor="match-preview"
+              help={
+                <>
+                  Only used when the camera is the screen capture: what your VR preview window shows, told to the other players. One eye is right for 2D (VPX&apos;s
+                  default, Left Eye); Auto reads VPX&apos;s setting and this tab says so when it is Both Eyes.
+                </>
+              }
+            >
+              <select
+                id="match-preview"
+                className="cc-input"
+                value={st.settings.previewStereo}
+                onChange={(e) => setView({ previewStereo: e.target.value === 'mono' ? 'mono' : e.target.value === 'sbs' ? 'sbs' : 'auto' })}
+              >
+                <option value="auto">As VPX is set (VR preview setting)</option>
+                <option value="mono">One eye</option>
+                <option value="sbs">Both eyes</option>
+              </select>
+            </Field>
+            <Field
+              label="Camera"
+              htmlFor="match-camera"
+              help={
+                <>
+                  VR layer: Castcade reads the picture from VPX&apos;s headset view, no preview window needed (it needs the layer from this Castcade version in VPX:
+                  restart VPX after updating; PC and SteamVR rigs fall back to the screen capture). Screen capture: VPX&apos;s preview window on your desktop (keep
+                  other windows off it).
+                </>
+              }
+            >
+              <select id="match-camera" className="cc-input" value={st.settings.cameraSource} onChange={(e) => setView({ cameraSource: e.target.value === 'layer' ? 'layer' : 'screen' })}>
+                <option value="layer">VR layer (the default: no preview window needed)</option>
+                <option value="screen">Screen capture of the VR preview window</option>
+              </select>
+            </Field>
+          </div>
+        </Panel>
+
+        <VrBenchCard bridge={bridge} onStatus={setSt} st={st} />
+
+        <Panel title="Table sound">
+          <label className="cc-check">
+            <input type="checkbox" checked={st.settings.tableMuteMine} onChange={(e) => setView({ tableMuteMine: e.target.checked })} />
+            <span>Mute my table while others play</span>
           </label>
-          <label className="field">
-            <span>Camera</span>
-            <select value={st.settings.cameraSource} onChange={(e) => setView({ cameraSource: e.target.value === 'layer' ? 'layer' : 'screen' })}>
-              <option value="layer">VR layer (the default: no preview window needed)</option>
-              <option value="screen">Screen capture of the VR preview window</option>
-            </select>
-            <small>
-              VR layer: Castcade reads the picture from VPX's headset view, no preview window needed (it needs the layer from this Castcade version in VPX:
-              restart VPX after updating; PC and SteamVR rigs fall back to the screen capture). Screen capture: VPX's preview window on your desktop (keep
-              other windows off it).
-            </small>
+          <label className="cc-check">
+            <input type="checkbox" checked={st.settings.tableSendMine} onChange={(e) => setView({ tableSendMine: e.target.checked })} />
+            <span>Send my table&apos;s sound</span>
           </label>
-        </div>
-      </div>
+          <label className="cc-check">
+            <input type="checkbox" checked={st.settings.tableHearOthers} onChange={(e) => setView({ tableHearOthers: e.target.checked })} />
+            <span>Hear the other table</span>
+          </label>
+          <small className="cc-help">
+            On your ball the others hear your table; on theirs you hear the player up, and your own VPX stays quiet (its backglass and PinUP too).
+            {tableSoundLine(st)}
+          </small>
+        </Panel>
 
-      <VrBenchCard bridge={bridge} onStatus={setSt} st={st} />
-
-      <div className="card">
-        <strong>Table sound</strong>
-        <label className="check">
-          <input type="checkbox" checked={st.settings.tableMuteMine} onChange={(e) => setView({ tableMuteMine: e.target.checked })} />
-          Mute my table while others play
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={st.settings.tableSendMine} onChange={(e) => setView({ tableSendMine: e.target.checked })} />
-          Send my table's sound
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={st.settings.tableHearOthers} onChange={(e) => setView({ tableHearOthers: e.target.checked })} />
-          Hear the other table
-        </label>
-        <small>
-          On your ball the others hear your table; on theirs you hear the player up, and your own VPX stays quiet (its backglass and PinUP too).
-          {tableSoundLine(st)}
-        </small>
-      </div>
-
-      <div className="card">
-        <strong>Voice and table sound</strong>
-        <label className="field">
-          <span>Voice volume ({voice ?? st.settings.voiceVolume} %)</span>
-          <input
-            type="range"
-            min={0}
-            max={300}
-            step={10}
-            value={voice ?? st.settings.voiceVolume}
-            onChange={(e) => setVoice(Number(e.target.value))}
-            onMouseUp={commitLevels}
-            onKeyUp={commitLevels}
-            onBlur={commitLevels}
-          />
-          <small>The other players' voices; above 100 % is a boost. Ctrl+Alt+Up / Down changes the voice volume while you play.</small>
-        </label>
-        <label className="field">
-          <span>Their table sound ({theirTable ?? st.settings.othersTableVolume} %)</span>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={10}
-            value={theirTable ?? st.settings.othersTableVolume}
-            onChange={(e) => setTheirTable(Number(e.target.value))}
-            onMouseUp={commitLevels}
-            onKeyUp={commitLevels}
-            onBlur={commitLevels}
-          />
-          <small>The player up's table as you hear it, under their voice.</small>
-        </label>
-        <label className="field">
-          <span>My table while I play ({myTable ?? st.settings.myTableWhileUp} %)</span>
-          <input
-            type="range"
-            min={10}
-            max={100}
-            step={10}
-            value={myTable ?? st.settings.myTableWhileUp}
-            onChange={(e) => setMyTable(Number(e.target.value))}
-            onMouseUp={commitLevels}
-            onKeyUp={commitLevels}
-            onBlur={commitLevels}
-          />
-          <small>Your own VPX's volume on your ball (its own volume again after it); needs the table-sound helper. Ctrl+Alt+Left / Right changes it while you play.</small>
-        </label>
-      </div>
-
-      <div className="card">
-        <strong>In-game menu</strong>
-        <small>
-          While you are in a lobby, the menu key brings up a menu on the panel (in the headset too): start a match or the next game, Play or watch, the three
-          volumes, the microphone, End match, Leave lobby. Press the menu key again to move down; the choose key, or the menu key twice quickly, chooses. The arrow keys work while it is open.
-          To use a controller button, map it to a key first (JoyToKey), then click a box and press the button.
-        </small>
-        <label className="field">
-          <span>Menu key</span>
-          <input type="text" readOnly className="port" value={keyWords(st.settings.menuKey)} onKeyDown={captureKey('menuKey')} title="Click, then press the key" />
-          {keyNote?.field === 'menuKey' && <small className="warn">{keyNote.text}</small>}
-        </label>
-        <label className="field">
-          <span>Choose key</span>
-          <span className="row">
+        <Panel title="Voice and table sound">
+          <Field label={`Voice volume (${voice ?? st.settings.voiceVolume} %)`} htmlFor="match-voice" help="The other players' voices; above 100 % is a boost. Ctrl+Alt+Up / Down changes the voice volume while you play.">
             <input
-              type="text"
-              readOnly
-              className="port"
-              value={st.settings.menuChooseKey === null ? 'none' : keyWords(st.settings.menuChooseKey)}
-              onKeyDown={captureKey('menuChooseKey')}
-              title="Click, then press the key"
+              id="match-voice"
+              type="range"
+              className="cc-range"
+              min={0}
+              max={300}
+              step={10}
+              value={voice ?? st.settings.voiceVolume}
+              onChange={(e) => setVoice(Number(e.target.value))}
+              onMouseUp={commitLevels}
+              onKeyUp={commitLevels}
+              onBlur={commitLevels}
             />
-            <button
-              type="button"
-              className="small"
-              disabled={st.settings.menuChooseKey === null}
-              onClick={() => void bridge.match.setSettings({ menuChooseKey: null }).then(setSt, (e: unknown) => setError(describe(e)))}
-            >
-              None
-            </button>
-          </span>
-          {keyNote?.field === 'menuChooseKey' && <small className="warn">{keyNote.text}</small>}
-        </label>
-        {st.menuKeyProblem && <small className="warn">{st.menuKeyProblem}</small>}
-      </div>
+          </Field>
+          <Field label={`Their table sound (${theirTable ?? st.settings.othersTableVolume} %)`} htmlFor="match-their-table" help="The player up's table as you hear it, under their voice.">
+            <input
+              id="match-their-table"
+              type="range"
+              className="cc-range"
+              min={0}
+              max={100}
+              step={10}
+              value={theirTable ?? st.settings.othersTableVolume}
+              onChange={(e) => setTheirTable(Number(e.target.value))}
+              onMouseUp={commitLevels}
+              onKeyUp={commitLevels}
+              onBlur={commitLevels}
+            />
+          </Field>
+          <Field
+            label={`My table while I play (${myTable ?? st.settings.myTableWhileUp} %)`}
+            htmlFor="match-my-table"
+            help="Your own VPX's volume on your ball (its own volume again after it); needs the table-sound helper. Ctrl+Alt+Left / Right changes it while you play."
+          >
+            <input
+              id="match-my-table"
+              type="range"
+              className="cc-range"
+              min={10}
+              max={100}
+              step={10}
+              value={myTable ?? st.settings.myTableWhileUp}
+              onChange={(e) => setMyTable(Number(e.target.value))}
+              onMouseUp={commitLevels}
+              onKeyUp={commitLevels}
+              onBlur={commitLevels}
+            />
+          </Field>
+        </Panel>
 
-      <div className="card">
-        <label className="field">
-          <span>Turn sound volume ({volume ?? st.settings.cueVolume})</span>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={volume ?? st.settings.cueVolume}
-            onChange={(e) => setVolume(Number(e.target.value))}
-            onMouseUp={commitVolume}
-            onKeyUp={commitVolume}
-            onBlur={commitVolume}
-          />
-          <small>Plays on the default sound device (the headset in VR) when your ball comes up, when another player's does, and at the end.</small>
-        </label>
-      </div>
-    </section>
+        <Panel title="In-game menu">
+          <small className="cc-help">
+            While you are in a lobby, the menu key brings up a menu on the panel (in the headset too): start a match or the next game, Play or watch, the three
+            volumes, the microphone, End match, Leave lobby. Press the menu key again to move down; the choose key, or the menu key twice quickly, chooses. The arrow keys work while it is open.
+            To use a controller button, map it to a key first (JoyToKey), then click a box and press the button.
+          </small>
+          <Field label="Menu key" htmlFor="match-menu-key">
+            <input id="match-menu-key" type="text" readOnly className="cc-input cc-input--key" value={keyWords(st.settings.menuKey)} onKeyDown={captureKey('menuKey')} title="Click, then press the key" />
+            {keyNote?.field === 'menuKey' && <Note state="attention">{keyNote.text}</Note>}
+          </Field>
+          <Field label="Choose key" htmlFor="match-choose-key">
+            <div className="cc-row">
+              <input
+                id="match-choose-key"
+                type="text"
+                readOnly
+                className="cc-input cc-input--key"
+                value={st.settings.menuChooseKey === null ? 'none' : keyWords(st.settings.menuChooseKey)}
+                onKeyDown={captureKey('menuChooseKey')}
+                title="Click, then press the key"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={st.settings.menuChooseKey === null}
+                onClick={() => void bridge.match.setSettings({ menuChooseKey: null }).then(setSt, (e: unknown) => setError(describe(e)))}
+              >
+                None
+              </Button>
+            </div>
+            {keyNote?.field === 'menuChooseKey' && <Note state="attention">{keyNote.text}</Note>}
+          </Field>
+          {st.menuKeyProblem && <Note state="attention">{st.menuKeyProblem}</Note>}
+        </Panel>
+
+        <Panel>
+          <Field label={`Turn sound volume (${volume ?? st.settings.cueVolume})`} htmlFor="match-cue" help="Plays on the default sound device (the headset in VR) when your ball comes up, when another player's does, and at the end.">
+            <input
+              id="match-cue"
+              type="range"
+              className="cc-range"
+              min={0}
+              max={100}
+              value={volume ?? st.settings.cueVolume}
+              onChange={(e) => setVolume(Number(e.target.value))}
+              onMouseUp={commitVolume}
+              onKeyUp={commitVolume}
+              onBlur={commitVolume}
+            />
+          </Field>
+        </Panel>
+      </PanelGroup>
+    </>
   );
 }
+
+/** The kit's board: first place pink, second cyan. */
+function placeClass(place: number): string {
+  return place === 1 ? 'cc-place-1' : place === 2 ? 'cc-place-2' : '';
+}
+
+/** The sentence at the top of the tab, in the colour of what it is (`noticeKind`). */
+const NOTE_STATE: Record<'ok' | 'warn' | 'error', 'ok' | 'attention' | 'problem'> = { ok: 'ok', warn: 'attention', error: 'problem' };
 
 /**
  * D7.6 (2026-11-03): the VR test bench: checks a player can run alone in the headset. D7.6.2: "Write VR report" writes
@@ -1369,27 +1328,30 @@ function VrBenchCard({ bridge, onStatus, st }: { bridge: CastcadeBridge; onStatu
       .finally(() => setBusy(false));
   };
   return (
-    <div className="card">
-      <strong>VR test bench</strong>
+    <Panel wide title="VR test bench">
       {/* D7.6: theater alone (a clip or my own table, straight to the layer or through a local WebRTC loop), Save 2 s of frames. */}
       <TestBench bridge={bridge} st={st} onStatus={onStatus} bare />
       {/* D7.6.2: the VR report. */}
-      <div className="row">
-        <button type="button" className="small" disabled={busy} onClick={writeReport}>
+      <div className="cc-row">
+        <Button size="sm" variant="secondary" disabled={busy} onClick={writeReport}>
           {busy ? 'Writing the VR report…' : 'Write VR report'}
-        </button>
+        </Button>
       </div>
-      <small>
-        Writes what the headset, the runtime and VPX say about the picture (and this app's settings and counters) to a file to send. VPX should be running in VR for
+      <small className="cc-help">
+        Writes what the headset, the runtime and VPX say about the picture (and this app&apos;s settings and counters) to a file to send. VPX should be running in VR for
         the headset part; it takes a few seconds.
       </small>
       {written && (
-        <p className="muted">
-          Written: <code>{written.md}</code> (and <code>.json</code> beside it)
+        <p className="cc-help">
+          Written: <code className="cc-mono">{written.md}</code> (and <code className="cc-mono">.json</code> beside it)
         </p>
       )}
-      {error && <p className="error">{error}</p>}
-    </div>
+      {error && (
+        <Note state="problem" role="alert">
+          {error}
+        </Note>
+      )}
+    </Panel>
   );
 }
 
@@ -1478,34 +1440,31 @@ function TurnCard({ turn, save }: { turn: MatchStatus['turn']; save: (t: { url: 
     );
   };
   return (
-    <div className="card">
-      <div className="row">
-        <label className="field">
-          <span>TURN relay</span>
-          <input type="text" value={urlText} placeholder="turn:relay.example.org:3478" onChange={(e) => setUrl(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Username</span>
-          <input type="text" value={userText} onChange={(e) => setUsername(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Credential</span>
-          <input type="password" value={credential} placeholder={turn?.credentialSet ? 'saved (blank keeps it)' : ''} onChange={(e) => setCredential(e.target.value)} />
-        </label>
-        <button type="button" className="small" disabled={!dirty} onClick={() => submit(false)}>
+    <Panel title={<label htmlFor="match-turn-url">TURN relay</label>}>
+      <input id="match-turn-url" type="text" className="cc-input" value={urlText} placeholder="turn:relay.example.org:3478" onChange={(e) => setUrl(e.target.value)} />
+      <div className="cc-fields">
+        <Field label="Username" htmlFor="match-turn-user">
+          <input id="match-turn-user" type="text" className="cc-input" value={userText} onChange={(e) => setUsername(e.target.value)} />
+        </Field>
+        <Field label="Credential" htmlFor="match-turn-credential">
+          <input id="match-turn-credential" type="password" className="cc-input" value={credential} placeholder={turn?.credentialSet ? 'saved (blank keeps it)' : ''} onChange={(e) => setCredential(e.target.value)} />
+        </Field>
+      </div>
+      <div className="cc-row">
+        <Button size="sm" disabled={!dirty} onClick={() => submit(false)}>
           Save
-        </button>
+        </Button>
         {turn && (
-          <button type="button" className="small" onClick={() => submit(true)}>
+          <Button size="sm" variant="danger" onClick={() => submit(true)}>
             Clear
-          </button>
+          </Button>
         )}
       </div>
-      <small>
+      <small className="cc-help">
         Only if video and voice never connect (&quot;no path to …&quot;): a relay carries them when both routers block a direct connection. Used from the next match.
         {note ? ` ${note}` : ''}
       </small>
-    </div>
+    </Panel>
   );
 }
 
@@ -1537,6 +1496,9 @@ function endBallKey(st: MatchStatus): string {
 function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchStatus; one: OneStepStatus | null }) {
   const [copied, setCopied] = useState<'code' | 'link' | 'message' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The Arcaid-look pass (2026-11-25): once somebody has joined, the invite is its Copy buttons (the link and how to
+  // send it open under Invite); alone, it is open. What went wrong with it is said either way.
+  const [open, setOpen] = useState<boolean | null>(null);
   if (!st.lobby || st.lobby.over) return null;
   const done = (what: 'code' | 'link' | 'message') => {
     setCopied(what);
@@ -1548,55 +1510,69 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
   const invite = st.invite;
   if (!invite) {
     const opener = st.participants.find((x) => x.id === st.hostId)?.name ?? 'the person who opened it';
-    return <p className="muted">To bring somebody in: ask {opener} for the invite (this lobby is reached at their PC&apos;s address).</p>;
+    return <p className="cc-help">To bring somebody in: ask {opener} for the invite (this lobby is reached at their PC&apos;s address).</p>;
   }
   const link = one?.link ?? null;
+  const shown = open ?? st.lobby.members.length <= 1;
   return (
-    <>
-      <div className="row">
-        <span>Invite</span>
-        <span className="actions">
-          <button type="button" className="small quiet" onClick={() => void navigator.clipboard.writeText(invite).then(() => done('code'), failed)}>
-            {copied === 'code' ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy invite'}
+    <div className="cc-stack">
+      <div className="cc-line cc-line--short">
+        <span>
+          <button type="button" className="cc-disclose" aria-expanded={shown} aria-controls="lobby-invite-more" onClick={() => setOpen(!shown)}>
+            Invite
           </button>
+        </span>
+        <span className="cc-row">
+          <Button size="sm" variant="secondary" onClick={() => void navigator.clipboard.writeText(invite).then(() => done('code'), failed)}>
+            {copied === 'code' ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy invite'}
+          </Button>
           {link && (
-            <button type="button" className="small quiet" title={link} onClick={() => copy('link')}>
+            <Button size="sm" variant="secondary" title={link} onClick={() => copy('link')}>
               {copied === 'link' ? 'Copied' : 'Copy link'}
-            </button>
+            </Button>
           )}
           {link && one?.message && (
-            <button type="button" className="small quiet" title={one.message} onClick={() => copy('message')}>
+            <Button size="sm" variant="secondary" title={one.message} onClick={() => copy('message')}>
               {copied === 'message' ? 'Copied' : 'Copy for chat'}
-            </button>
+            </Button>
           )}
         </span>
       </div>
       {st.via === 'relay' ? (
         <>
-          {link && <code className="mono invite">{link}</code>}
-          <p className="muted">
-            {/* The step 9 last pass: "with the table started" only while the lobby has a table to start. */}
-            Send the code or the link{link?.startsWith('https://') ? (st.lobby?.table.name ? ' (it opens this lobby with the table started)' : ' (it opens this lobby)') : ''}. Everyone needs Castcade paired with ArcAid.
-          </p>
+          {shown && (
+            <div id="lobby-invite-more" className="cc-stack">
+              {link && <code className="cc-mono">{link}</code>}
+              <p className="cc-help">
+                {/* The step 9 last pass: "with the table started" only while the lobby has a table to start. */}
+                Send the code or the link{link?.startsWith('https://') ? (st.lobby?.table.name ? ' (it opens this lobby with the table started)' : ' (it opens this lobby)') : ''}. Everyone needs Castcade paired with ArcAid.
+              </p>
+              {st.directInvite && (
+                <p className="cc-help">
+                  For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="cc-mono">{st.directInvite}</code>
+                </p>
+              )}
+            </div>
+          )}
           {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
           {/* Step 9: not when the sentence at the top of the tab already says it (Castcade started again and waits for ArcAid). */}
-          {st.relayNote && !(st.lastError ?? '').includes('waiting for ArcAid') && <p className="warn">{st.relayNote}.</p>}
-          {st.directInvite && (
-            <p className="muted">
-              For a player on your home network or one who is not paired (needs TCP {st.port} forwarded for players outside): <code className="mono">{st.directInvite}</code>
-            </p>
-          )}
+          {st.relayNote && !(st.lastError ?? '').includes('waiting for ArcAid') && <Note state="attention">{st.relayNote}.</Note>}
         </>
       ) : (
         <>
-          <code className="mono invite">{invite}</code>
-          {st.portMapping ? <p className={st.portMapping.state === 'failed' ? 'warn' : 'muted'}>{st.portMapping.line}</p> : <p className="muted">Forward TCP {st.port} to this PC on your router, then send the invite to the others.</p>}
-          {st.relayNote && <p className="muted">{st.relayNote}: a PC paired with ArcAid needs no port forward.</p>}
-          {st.ipSource === 'lan' && <p className="warn">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public address.</p>}
+          {shown && (
+            <div id="lobby-invite-more" className="cc-stack">
+              <code className="cc-mono">{invite}</code>
+              {st.portMapping ? st.portMapping.state !== 'failed' && <p className="cc-help">{st.portMapping.line}</p> : <p className="cc-help">Forward TCP {st.port} to this PC on your router, then send the invite to the others.</p>}
+              {st.relayNote && <p className="cc-help">{st.relayNote}: a PC paired with ArcAid needs no port forward.</p>}
+            </div>
+          )}
+          {st.portMapping?.state === 'failed' && <Note state="attention">{st.portMapping.line}</Note>}
+          {st.ipSource === 'lan' && <Note state="attention">Castcade could not look up your public address, so this is your home-network address. For a player outside your network, replace it with your public address.</Note>}
         </>
       )}
-      {error && <p className="warn">{error}</p>}
-    </>
+      {error && <Note state="attention">{error}</Note>}
+    </div>
   );
 }
 
@@ -1623,7 +1599,9 @@ function memberWords(st: MatchStatus, id: string, now: number): { text: string; 
   // PLAY and WATCH are the choice for the NEXT start. While a match is open, somebody whose choice is not what they
   // do in it is said so (`inMatch`): set to Play and not in it (they joined during it), or set to Watch and still in it.
   const inIt = st.lobby?.match ? (m.inMatch && m.stance === 'watch' ? ' · plays this match' : !m.inMatch && m.stance === 'play' ? ' · watches this match' : '') : '';
-  const text = ` · ${RIG_SHORT[m.rig]} · ${m.stance === 'play' ? 'PLAY' : 'WATCH'}${inIt}${m.starter && st.phase !== 'playing' && st.phase !== 'paused' ? ' · starts from the table' : ''}`;
+  // The Arcaid-look pass: "starts from the table" only while the lobby has a table to start from.
+  const starts = m.starter && st.phase !== 'playing' && st.phase !== 'paused' && (st.lobby?.table.name ?? null) !== null;
+  const text = ` · ${RIG_SHORT[m.rig]} · ${m.stance === 'play' ? 'PLAY' : 'WATCH'}${inIt}${starts ? ' · starts from the table' : ''}`;
   return { text, flags: m.flags.map((f) => flag[f]) };
 }
 
@@ -1751,10 +1729,13 @@ function VideoQualityRow({ st, video, apply }: { st: MatchStatus; video: NativeV
     if (Number.isFinite(n) && Math.round(n) !== st.videoMaxKbps) apply({ maxKbps: Math.round(n) });
   };
   return (
-    <div className="row">
-      <label className="field">
-        <span>Spectator video: {rungReadout(video, st.videoPin)}</span>
-        <select value={st.videoPin === null ? 'auto' : String(st.videoPin)} onChange={(e) => apply({ pin: e.target.value === 'auto' ? null : Number(e.target.value) })}>
+    <div className="cc-fields">
+      <Field
+        label={`Spectator video: ${rungReadout(video, st.videoPin)}`}
+        htmlFor="match-rung"
+        help="Auto steps down a rung after 3 s of trouble and up after 30 s clean; a pin holds one rung. Full size at 30 fps comes before a smaller picture at 60: smoothness first."
+      >
+        <select id="match-rung" className="cc-input" value={st.videoPin === null ? 'auto' : String(st.videoPin)} onChange={(e) => apply({ pin: e.target.value === 'auto' ? null : Number(e.target.value) })}>
           <option value="auto">Auto (the controller picks the rung)</option>
           {video.ladder.map((r) => (
             <option key={r.rung} value={String(r.rung)}>
@@ -1762,12 +1743,12 @@ function VideoQualityRow({ st, video, apply }: { st: MatchStatus; video: NativeV
             </option>
           ))}
         </select>
-        <small>Auto steps down a rung after 3 s of trouble and up after 30 s clean; a pin holds one rung. Full size at 30 fps comes before a smaller picture at 60: smoothness first.</small>
-      </label>
-      <label className="field">
-        <span>Ceiling (kbps)</span>
+      </Field>
+      <Field label="Ceiling (kbps)" htmlFor="match-ceiling" help="The most this rig sends (default 20000: rung 1). Saved.">
         <input
+          id="match-ceiling"
           type="number"
+          className="cc-input cc-input--number"
           min={500}
           max={50000}
           step={500}
@@ -1778,8 +1759,7 @@ function VideoQualityRow({ st, video, apply }: { st: MatchStatus; video: NativeV
             if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
           }}
         />
-        <small>The most this rig sends (default 20000: rung 1). Saved.</small>
-      </label>
+      </Field>
     </div>
   );
 }

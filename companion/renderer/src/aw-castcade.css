@@ -72,6 +72,10 @@ body {
 *::after {
   box-sizing: border-box;
 }
+/* A bare <small> is the help line's size (the browser's "smaller" is under 12 px). */
+small {
+  font-size: var(--cc-fs-help);
+}
 
 /* ---------- The ground (Arcaid's aw-screen--arcaid) ----------
    The kit canvas, a soft cyan and pink glow, and the arcade carpet in four
@@ -1172,6 +1176,245 @@ input[type="range"].cc-range {
   .cc-toast__run {
     animation-duration: var(--cc-toast-ms, 4000ms) !important;
   }
+}
+
+/* ==========================================================================
+   The Match tab (phase 2): the headline, the questions, the lobby's tables.
+   ========================================================================== */
+
+/* What is happening now, in a word or three: the line a player glances at between balls. Their own ball is the
+   kit's "next up": pink. */
+.cc-headline {
+  margin: 0;
+  font-family: var(--aw-font-display);
+  font-weight: 900;
+  font-size: calc(76 * var(--u));
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  color: var(--aw-ice);
+  overflow-wrap: anywhere;
+}
+.cc-headline--mine {
+  color: var(--cc-lead-ink);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--aw-pink) 45%, transparent);
+}
+/* The now panel keeps its blocks a little closer: it carries the most lines. */
+.cc-panel.cc-now > * + * {
+  margin-top: 10px;
+}
+
+/* A question (a press that asks first): its words, then its answers together at the right, inside one inset with
+   the attention rule. */
+.cc-ask {
+  padding: 8px 10px 8px 12px;
+  border-left: 2px solid var(--cc-attention);
+  border-radius: 0 4px 4px 0;
+  background: color-mix(in srgb, var(--aw-pink) 8%, transparent);
+}
+.cc-ask > p {
+  margin: 0;
+  font-size: var(--cc-fs-text);
+  line-height: 1.45;
+  color: var(--aw-ice);
+  overflow-wrap: anywhere;
+}
+.cc-ask > .cc-row {
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+/* A line and its buttons on one row: the words take the room, the buttons stay together at the right. */
+.cc-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cc-line > :first-child {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.cc-line > .cc-row {
+  margin-left: auto;
+}
+/* A short word and its buttons (Invite and its Copy buttons): the word takes no more room than it needs. */
+.cc-line.cc-line--short > :first-child {
+  flex: 0 0 auto;
+}
+
+/* Tables of people and scores (the kit's leaderboard rows): a line under each row, numbers in Orbitron. */
+.cc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--cc-fs-text);
+}
+.cc-table th,
+.cc-table td {
+  padding: 5px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--cc-line);
+  vertical-align: baseline;
+}
+.cc-table tr:last-child td {
+  border-bottom: 0;
+}
+.cc-table th {
+  font-weight: 600;
+  font-size: var(--cc-fs-small);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--aw-chrome);
+  white-space: nowrap;
+}
+.cc-table .num {
+  text-align: right;
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cc-table th.num {
+  font-family: var(--aw-font-ui);
+  font-weight: 600;
+}
+.cc-table td:not(:first-child) {
+  white-space: nowrap;
+}
+/* The table of who is here: the first column, the name and its words, takes what is left. */
+.cc-roster td:first-child {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+/* The player who is up: the kit's current row, in cyan, its light across the whole row. */
+.cc-table tr.up {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--aw-cyan) 14%, transparent), transparent);
+}
+.cc-table tr.up td {
+  color: var(--aw-cyan);
+}
+/* Places: first is pink, second cyan (the kit's board). */
+.cc-table .cc-place-1 {
+  color: var(--cc-lead-ink);
+}
+.cc-table .cc-place-2 {
+  color: var(--aw-cyan);
+}
+/* A name: Orbitron, and a long one is cut in its own box; its words, the balls and the score stay (the lobby's
+   final review, finding 10). */
+.cc-who {
+  display: inline-block;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: var(--aw-font-display);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.cc-flag {
+  color: var(--cc-lead-ink);
+  font-weight: 600;
+}
+
+/* The lobby's panel: its line, the invite, who is here, its table (a part of it under a line, not a box in it). */
+.cc-lobby__table {
+  padding-top: 10px;
+  border-top: 1px solid var(--cc-line);
+}
+.cc-lobby__table > * + * {
+  margin-top: 8px;
+}
+/* A toggle that opens what few need (the invite's link once somebody has joined), as the Advanced line. */
+.cc-disclose {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font-family: var(--aw-font-ui);
+  font-weight: 600;
+  font-size: var(--cc-fs-small);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--aw-chrome);
+  cursor: pointer;
+}
+.cc-disclose::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+}
+.cc-disclose[aria-expanded="true"]::before {
+  transform: rotate(45deg);
+}
+.cc-disclose:hover {
+  color: var(--aw-ice);
+}
+.cc-disclose:focus-visible {
+  outline: 2px solid var(--aw-cyan);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* A list of tables to pick from (a list box): the field's look, its rows the menu's. */
+select.cc-listbox {
+  width: 100%;
+  padding: 4px;
+  font-family: var(--aw-font-ui);
+  font-weight: 500;
+  font-size: var(--cc-fs-text);
+  color: var(--aw-ice);
+  background-color: var(--cc-field);
+  border: 1px solid var(--cc-line-strong);
+  border-radius: 4px;
+  overflow-y: auto;
+}
+select.cc-listbox option {
+  padding: 5px 8px;
+  border-radius: 3px;
+  color: var(--aw-ice);
+  background: transparent;
+}
+select.cc-listbox option:checked {
+  color: var(--aw-ice);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--aw-cyan) 30%, transparent), color-mix(in srgb, var(--aw-cyan) 10%, transparent));
+}
+select.cc-listbox:focus-visible {
+  outline: none;
+  border-color: var(--aw-cyan);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--aw-cyan) 30%, transparent);
+}
+/* The way out (Leave lobby, Close lobby): the last line of the now panel, under a line. */
+.cc-leave {
+  padding-top: 10px;
+  border-top: 1px solid var(--cc-line);
+}
+/* A key the in-game menu answers to: a field as wide as its words. */
+.cc-input--key {
+  width: 12rem;
+  cursor: pointer;
+}
+/* The headset settings: one under another in the window, two to a row once it is wide. */
+.cc-fields.cc-fields--settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px 20px;
+}
+@media (min-width: 900px) {
+  .cc-fields.cc-fields--settings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+/* A choice of two that holds (Play / Watch): the one that holds is lit. */
+.cc-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--cc-lead) 55%, transparent);
+  background: color-mix(in srgb, var(--cc-lead) 14%, transparent);
+  color: var(--cc-lead-ink);
 }
 
 /* ---------- The space between a panel's blocks ----------

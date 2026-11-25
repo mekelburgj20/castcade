@@ -19,6 +19,7 @@ import { useCastcade } from '../src/useCastcade.js';
 import '../src/app.css';
 import { installBridge, MATCH } from './base.js';
 import { FIXTURES, PICK_REFUSED, TABLE, status } from './fixtures.js';
+import { MatchWindow, StoryIndex } from './shell.js';
 
 const q = new URLSearchParams(location.search);
 const which = q.get('state');
@@ -42,7 +43,7 @@ function usePresses(): void {
         // What shoot.mjs reads to take the picture as tall as the page.
         // The picture ends under the heading of the settings (they are the same in every state), unless `&all=1`.
         setTimeout(() => {
-          const rest = q.get('all') ? null : document.querySelector('h3.rest');
+          const rest = q.get('all') ? null : document.querySelector('#match-settings-title, h3.rest');
           document.documentElement.dataset.tall = String(rest ? Math.ceil(rest.getBoundingClientRect().bottom + window.scrollY + 12) : document.documentElement.scrollHeight);
         }, 200);
         return;
@@ -74,38 +75,15 @@ function Story() {
   const state = useCastcade();
   usePresses();
   return (
-    <main className="shell">
-      <header className="top">
-        <h1>
-          <span className="dot on" aria-hidden="true" /> Castcade
-        </h1>
-        <nav className="tabs" aria-label="Views">
-          {['Pairing', 'Status', 'Stream', 'Match', 'Settings'].map((t) => (
-            <button key={t} type="button" className={t === 'Match' ? 'tab active' : 'tab'}>
-              {t}
-            </button>
-          ))}
-        </nav>
-      </header>
+    <MatchWindow>
       <Match state={state} />
-    </main>
+    </MatchWindow>
   );
 }
 
 function Index() {
   return (
-    <main className="shell">
-      <section className="view">
-        <h2>Match tab stories</h2>
-        <ul>
-          {Object.entries(FIXTURES).map(([name, f]) => (
-            <li key={name}>
-              <a href={`?state=${name}`}>{name}</a>: {f.says} (from {f.me}'s PC)
-            </li>
-          ))}
-        </ul>
-      </section>
-    </main>
+    <StoryIndex title="Match tab stories" items={Object.entries(FIXTURES).map(([name, f]) => ({ name, says: `${f.says} (from ${f.me}'s PC)` }))} />
   );
 }
 

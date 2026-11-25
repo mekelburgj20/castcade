@@ -13,6 +13,7 @@ import { createRoot } from 'react-dom/client';
 import { Match } from '../src/views/Match.js';
 import { useCastcade } from '../src/useCastcade.js';
 import '../src/app.css';
+import { MatchWindow } from './shell.js';
 
 const TABLE = 'Nudge Test and Calibration.vpx';
 const SIZE = 4_952_064;
@@ -177,21 +178,9 @@ Object.defineProperty(window, 'castcade', { value: bridge });
 function Story() {
   const state = useCastcade();
   return (
-    <main className="shell">
-      <header className="top">
-        <h1>
-          <span className="dot on" aria-hidden="true" /> Castcade
-        </h1>
-        <nav className="tabs" aria-label="Views">
-          {['Pairing', 'Status', 'Stream', 'Match', 'Settings'].map((t) => (
-            <button key={t} type="button" className={t === 'Match' ? 'tab active' : 'tab'}>
-              {t}
-            </button>
-          ))}
-        </nav>
-      </header>
+    <MatchWindow>
       <Match state={state} />
-    </main>
+    </MatchWindow>
   );
 }
 
