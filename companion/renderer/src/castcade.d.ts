@@ -779,7 +779,7 @@ interface CastcadeBridge {
     host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
     join(invite: string, displayName: string): Promise<MatchStatus>;
     /** A17 step 7: any member asks for a start (the match, or the open match's next game). A13: `anyway` confirms a start with `startWarnings`. `newMatch`: a new match with everyone set to Play; `now`: without what the announced start waits for. */
-    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
+    start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean; without?: string | null }): Promise<MatchStatus>;
     /** A17 step 7: the lobby's other calls (see main/ipc-types.ts). */
     cancelStart(): Promise<MatchStatus>;
     /**

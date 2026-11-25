@@ -163,6 +163,36 @@ function rewrite(file: string, patch: Record<string, unknown>): void {
   writeFileSync(file, JSON.stringify({ ...rec, check: resumeCheck(rec) }));
 }
 
+/**
+ * A real crash with a record that is BEHIND the engine (the review of PR 138): what was saved before `gap` is what
+ * is on disk afterwards; the process is gone without the stop that saves (its sockets close, nothing more).
+ */
+async function crashBehind(s: Seat, gap: () => Promise<void>): Promise<void> {
+  const before = readFileSync(s.record, 'utf8');
+  await gap();
+  await closes(s);
+  writeFileSync(s.record, before);
+  crashed(s);
+}
+
+/** A panel page whose closing takes time (`ms()` at that moment): what a real shutdown is made of. */
+const slowMedia = (ms: () => number) =>
+  ({
+    async attach() {},
+    addPeer: () => undefined,
+    removePeer: () => undefined,
+    setSending: () => undefined,
+    setPanelState: () => undefined,
+    setMuted: () => undefined,
+    status: () => ({ attached: true, sending: false, peers: {}, mic: 'open', captureSource: null, lastError: null }),
+    onStatus: () => () => undefined,
+    frames: () => null,
+    showPanel: () => undefined,
+    async detach() {
+      await new Promise((r) => setTimeout(r, ms()));
+    },
+  }) as never;
+
 const until = async (cond: () => boolean, ms = 8000): Promise<void> => {
   const end = Date.now() + ms;
   while (!cond()) {
@@ -908,29 +938,166 @@ describe("the lobby's PC restarted (A15; A17 step 8: it is the same lobby again)
     expect(existsSync(H2.record)).toBe(false);
   }, 40_000);
 
-  it("the lobby's PC is quit (not closed) with somebody in its lobby: the lobby is not closed for them; they read that its PC is away, and it is offered again at the next start; Close lobby, and a quit with nobody else in it, end the record", async () => {
+  it("the lobby's PC is quit with somebody present in its lobby (the review of PR 138): there is a question to ask; Keep: the others read that Castcade was closed there and that the lobby is kept, and at the next start the lobby is offered, never gone back into by itself; Close: everyone is told it is closed; with everybody else away, or alone, a quit closes it", async () => {
     const { hr, H, C } = await started();
     hr.gameStart();
-    await H.mh.stop();
-    expect(JSON.parse(readFileSync(H.record, 'utf8'))).toMatchObject({ role: 'host', restart: null });
+    expect(H.mh.quitQuestion()).toEqual({ code: H.mh.status().code, names: ['Guest'] });
+    expect(C.mh.quitQuestion()).toBeNull();
+    await H.mh.stop({ lobby: 'keep' });
+    expect(JSON.parse(readFileSync(H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit' });
+    // The others were told before the link went: not the line of a PC that is away for no known reason.
     await until(() => C.mh.status().lobby?.hostAway != null);
     expect(C.mh.status().role).toBe('client');
-    expect(C.mh.status().panel?.message ?? '').not.toMatch(/closed/);
+    expect(C.mh.status().panel?.message).toMatch(/^Host closed Castcade and kept the lobby: it goes on if Host opens Castcade again within 20 minutes \(\d+ min left\)\. You can wait and keep talking; Leave lobby frees your table now\.$/);
+    // The next start, a few seconds later: offered, not gone back into (the microphone stays off until the click).
     const H2 = castcade('host', hr.w, H.dir);
-    expect(H2.mh.status().resume).toMatchObject({ role: 'host', auto: true, lost: false });
+    expect(H2.mh.status().resume).toMatchObject({ role: 'host', auto: false, lost: false, match: true });
+    expect(H2.mh.status().role).toBe('none');
     await H2.mh.rejoin();
     await until(() => C.mh.status().lobby?.hostAway === null, 15_000);
-    // Close lobby is what ends it, for everyone and for the record.
-    await H2.mh.leave();
+    // (The line is the ordinary one again when this PC is next away for no known reason: the word was the last word of that run.)
+    expect(C.mh.status().panel?.message ?? '').not.toMatch(/closed Castcade/);
+    // Close the lobby for everyone: told at once, and the record ends.
+    expect(H2.mh.quitQuestion()).not.toBeNull();
+    await H2.mh.stop({ lobby: 'close' });
     expect(existsSync(H2.record)).toBe(false);
     await until(() => (C.mh.status().panel?.message ?? C.mh.status().lastError ?? '').includes('closed the lobby'));
-    // Alone in a lobby, a quit simply closes it.
+
+    // Everybody else is away: nothing to ask, and the quit closes the lobby as before.
+    const t = await started();
+    await t.C.mh.stop({ keepForRestart: true });
+    await until(() => t.H.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.flags.includes('away') === true);
+    expect(t.H.mh.quitQuestion()).toBeNull();
+    await t.H.mh.stop();
+    expect(existsSync(t.H.record)).toBe(false);
+    // Alone in a lobby: the same.
     const sr = rig();
     const S = castcade('solo', sr.w);
     await S.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Solo' });
-    expect(existsSync(S.record)).toBe(true);
+    expect(S.mh.quitQuestion()).toBeNull();
     await S.mh.stop();
     expect(existsSync(S.record)).toBe(false);
+  }, 60_000);
+
+  it("the review of PR 138: a ball ends in the seconds Castcade takes to close on the lobby's PC (a kept quit, or an update): the engine had stopped taking frames before the last record was written, so that ball end is in nobody's log but its player's own PC, which kept it; after the start again it is taken, once, and the turn goes on. Nothing the lobby's PC acknowledged is missing from what it came back with", async () => {
+    let slow = 0;
+    const { hr, cr, H, C } = await started({ media: slowMedia(() => slow) });
+    hr.gameStart();
+    hr.ball(1, 500);
+    await until(() => up(C.mh, 1));
+    cr.gameStart();
+    cr.score(1, 100);
+    await until(() => scoreOf(H.mh, 'Guest') === 100);
+    // Closing takes more than half a second from here on.
+    slow = 700;
+    const stopping = H.mh.stop({ keepForRestart: true });
+    await sleep(150);
+    // The guest's ball ends while the lobby PC's Castcade is still closing its panel and its connections.
+    cr.ballEnd(1);
+    cr.score(1, 260);
+    await stopping;
+    slow = 0;
+    // What the lobby's PC saved is what it had taken: the guest's ball end is not in it, and was never acknowledged.
+    const rec = JSON.parse(readFileSync(H.record, 'utf8')) as { log: { message?: { type: string; from: string } }[] };
+    expect(rec.log.filter((e) => e.message?.type === 'BALL_END').map((e) => e.message?.from)).toHaveLength(1);
+    const H2 = castcade('host', hr.w, H.dir);
+    hr.castcadeStarts();
+    await H2.mh.rejoin();
+    await until(() => up(H2.mh, 2), 15_000);
+    expect(scoreOf(H2.mh, 'Guest')).toBe(260);
+    await until(() => C.mh.status().panel?.myTurn === false && C.mh.status().locked === true);
+    // The guest was not sent back to a ball it had played, and nobody read that the match went back.
+    expect(C.logs.filter((l) => l.includes('begins:'))).toHaveLength(1);
+    expect([...C.logs, ...H2.logs].filter((l) => l.includes('earlier state'))).toEqual([]);
+    expect(C.logs.filter((l) => l.startsWith('match: BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 260']);
+  }, 60_000);
+});
+
+describe("the lobby's PC comes back from a record that is behind what it had done (a real crash; the review of PR 138)", () => {
+  const WENT_BACK_HOST = /^This PC came back with an earlier state of the match than Guest had \(Castcade closed before the last moves were saved\): the match goes on from what was saved, and what was played since does not count\.$/;
+  const WENT_BACK_MEMBER = /^Host came back with an earlier state of this match \(its Castcade closed before the last moves were saved\): the match goes on from there, and what was played since does not count\.$/;
+
+  it("a ball end in the gap: the guest's ball end was taken and the lobby's PC was up on its next ball when it crashed, with the record still at the guest's ball: the guest is given the lobby's log, is up on that ball again with its table unlocked, and both read that the match went back; the game is played on from there", async () => {
+    const { hr, cr, H, C } = await started();
+    hr.gameStart();
+    hr.ball(1, 500);
+    await until(() => up(C.mh, 1));
+    cr.gameStart();
+    cr.score(1, 100);
+    await until(() => scoreOf(H.mh, 'Guest') === 100);
+    await crashBehind(H, async () => {
+      cr.ball(1, 260);
+      await until(() => up(H.mh, 2));
+      expect(existsSync(C.lock)).toBe(true);
+    });
+    const H2 = castcade('host', hr.w, H.dir);
+    hr.castcadeStarts();
+    await H2.mh.rejoin();
+    await until(() => up(C.mh, 1) && C.mh.status().lobby?.hostAway === null, 15_000);
+    // One state on both PCs, and a sentence that is true on each.
+    expect(C.mh.status().locked).toBe(false);
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.mh.status().lastError ?? '').toMatch(WENT_BACK_MEMBER);
+    await until(() => WENT_BACK_HOST.test(H2.mh.status().lastError ?? ''));
+    expect(H2.mh.status().panel).toMatchObject({ myTurn: false, playerUp: C.mh.status().localId });
+    expect(scoreOf(H2.mh, 'Host')).toBe(500);
+    // The guest plays the ball that counts now; the turn goes on, and the two logs stay one.
+    cr.ball(2, 400);
+    await until(() => up(H2.mh, 2), 15_000);
+    expect(scoreOf(H2.mh, 'Guest')).toBe(400);
+    hr.ball(2, 900);
+    await until(() => up(C.mh, 2));
+    expect([...H2.logs, ...C.logs].filter((l) => l.includes('desync') || l.includes('FORFEIT'))).toEqual([]);
+  }, 60_000);
+
+  it("a grant in the gap: the lobby PC's own ball had ended and the guest was given the turn when it crashed, with the record still at its own ball: it comes back on its own ball, the end its table had is reported once, the guest (who was playing) is given the turn again and keeps its table, and reads that the match went back", async () => {
+    const { hr, cr, H, C } = await started();
+    hr.gameStart();
+    hr.score(1, 300);
+    await until(() => scoreOf(C.mh, 'Host') === 300);
+    await crashBehind(H, async () => {
+      hr.ball(1, 500);
+      await until(() => up(C.mh, 1));
+      cr.gameStart();
+      cr.score(1, 100);
+      await sleep(100);
+    });
+    const H2 = castcade('host', hr.w, H.dir);
+    hr.castcadeStarts();
+    await H2.mh.rejoin();
+    // Its own ball 1 ended on its table while the record knew nothing of it: reported now, for the grant issued again.
+    await until(() => WENT_BACK_MEMBER.test(C.mh.status().lastError ?? ''), 15_000);
+    await until(() => up(C.mh, 1) && C.mh.status().lobby?.hostAway === null && scoreOf(C.mh, 'Host') === 500, 15_000);
+    expect(H2.logs.filter((l) => l.startsWith('match: BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 500']);
+    expect(C.mh.status().locked).toBe(false);
+    // The guest goes on with the ball it was on; its end counts, once.
+    cr.ball(1, 250);
+    await until(() => up(H2.mh, 2), 15_000);
+    expect(scoreOf(H2.mh, 'Guest')).toBe(250);
+    expect([...H2.logs, ...C.logs].filter((l) => l.includes('desync') || l.includes('FORFEIT'))).toEqual([]);
+  }, 60_000);
+
+  it('a choice in the gap (no match open): a member set itself to Watch after the last save; the lobby comes back with the older choice, the member says its row again at its return, and the lobby holds the choice it has now; nothing is said to be lost, because nothing is', async () => {
+    const hr = rig();
+    const cr = rig();
+    const H = castcade('host', hr.w);
+    const C = castcade('guest', cr.w);
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Host' });
+    await C.mh.join(hs.invite!, 'Guest');
+    await until(() => H.mh.status().participants.length === 2);
+    await crashBehind(H, async () => {
+      C.mh.setStance('watch');
+      await until(() => H.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.stance === 'watch');
+    });
+    const H2 = castcade('host', hr.w, H.dir);
+    await H2.mh.rejoin();
+    expect(H2.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.stance).toBe('play');
+    await until(() => C.mh.status().lobby?.hostAway === null && H2.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.stance === 'watch', 15_000);
+    // (The member's own tab follows the lobby's word, which says Watch again one answer later.)
+    await until(() => C.mh.status().lobby?.stance === 'watch');
+    expect(H2.mh.status().lobby?.startButton.off).toBe('Two people have to be set to Play.');
+    expect([...H2.logs, ...C.logs].filter((l) => l.includes('earlier state'))).toEqual([]);
+    expect(H2.mh.status().lastError ?? '').toMatch(/^Castcade on this PC started again: the lobby [A-Z]{6} is open again as it was\. The others come back by themselves\.$/);
   }, 60_000);
 });
 
@@ -1017,6 +1184,37 @@ describe('a member who is not playing restarts (A17 step 8)', () => {
     expect(existsSync(A2.record)).toBe(false);
   }, 40_000);
 
+  it("the review of PR 138: a record that cannot be written is said on that PC, once, with the folder and the system's own words, and tried again at every change; the lobby goes on; when it can be written again nothing more is said", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-restart-nowrite-'));
+    dirs.push(dir);
+    // The record's folder cannot be made: a file stands where it should be.
+    writeFileSync(join(dir, 'blocked'), 'x');
+    const hr = rig();
+    const cr = rig();
+    const H = castcade('host', hr.w, dir, { resumeFile: join(dir, 'blocked', RESUME_FILE) });
+    const C = castcade('guest', cr.w);
+    const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Host' });
+    const said = H.mh.status().lastError ?? '';
+    expect(said).toMatch(/^Castcade cannot save this lobby \(the folder .*blocked: .+\)\. The lobby goes on\. If Castcade closes before it can be saved again, it comes back as it was last saved, or not at all\.$/);
+    await C.mh.join(hs.invite!, 'Guest');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => up(H.mh, 1) && C.mh.status().phase === 'playing');
+    hr.gameStart();
+    hr.ball(1, 100);
+    await until(() => up(C.mh, 1));
+    // Many changes later: said once, in the log too; the match was not touched by it.
+    expect(H.logs.filter((l) => l.includes('Castcade cannot save this lobby'))).toHaveLength(1);
+    expect(existsSync(join(dir, 'blocked', RESUME_FILE))).toBe(false);
+    // The folder can be made now: the next change is saved, and that is logged, once.
+    rmSync(join(dir, 'blocked'), { force: true });
+    cr.gameStart();
+    cr.ball(1, 50);
+    await until(() => up(H.mh, 2));
+    expect(existsSync(join(dir, 'blocked', RESUME_FILE))).toBe(true);
+    expect(H.logs.filter((l) => l.includes('is saved again'))).toHaveLength(1);
+  }, 40_000);
+
   it('a record of version 1 (a match on Castcade 0.2.50 or older): nothing is offered and nothing is tried; the Match tab and the log say what it was, and the file is removed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'castcade-restart-old-'));
     dirs.push(dir);
@@ -1062,13 +1260,13 @@ describe('Castcade restarting itself for an update during a match (A15)', () => 
 
 describe('a match through ArcAid, restarted (A15)', () => {
   /** A started relay match: both rigs paired, no direct link between them. */
-  async function relayed(hostGraceMs: number) {
+  async function relayed(hostGraceMs: number, clientExtra: Partial<Options> = {}) {
     const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c' }, hostGraceMs });
     const via = (id: string): Partial<Options> => ({ relay: () => ({ baseUrl: r.url, deviceId: `dev-${id}`, deviceToken: `tok-${id}` }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
     const hr = rig();
     const cr = rig();
     const H = castcade('relay-host', hr.w, undefined, via('h'));
-    const C = castcade('relay-guest', cr.w, undefined, via('c'));
+    const C = castcade('relay-guest', cr.w, undefined, { ...via('c'), ...clientExtra });
     const hs = await H.mh.host({ port: port(), ballsPerGame: 3, displayName: 'Host' });
     expect(hs.invite).toMatch(/^[A-Z]{6}$/);
     await C.mh.join(hs.invite!, 'Guest');
@@ -1105,6 +1303,41 @@ describe('a match through ArcAid, restarted (A15)', () => {
       await m.r.close();
     }
   }, 60_000);
+
+  it("the review of PR 138: ArcAid does not answer in the moment the lobby's PC starts again (a deploy, the network not up yet): the lobby stays ArcAid's; its PC says it is waiting for ArcAid, counts nobody as away meanwhile, takes its room back when ArcAid answers, and the member returns into the match by itself; the record says `relay` all the while", async () => {
+    const m = await relayed(300, { relayRejoin: { gapsMs: [300, 600, 2000], maxMisses: 60 } });
+    try {
+      await closes(m.H);
+      crashed(m.H);
+      await until(() => m.r.rooms().length === 0);
+      const down = m.r.restart(3000);
+      await sleep(200);
+      const H2 = castcade('relay-host', m.hr.w, m.H.dir, m.via('h'));
+      m.hr.castcadeStarts();
+      await H2.mh.rejoin();
+      // Still a lobby through ArcAid, and it says what is true: it waits for ArcAid.
+      expect(H2.mh.status()).toMatchObject({ role: 'host', code: m.code, via: 'relay' });
+      expect(H2.mh.status().lastError ?? '').toMatch(/is open again as it was, with the game where it stood\. Castcade is waiting for ArcAid to carry it again: the others can come back once it does\.$/);
+      expect(H2.mh.status().relayNote ?? '').toMatch(/^ArcAid is not carrying this lobby yet/);
+      expect(JSON.parse(readFileSync(H2.record, 'utf8'))).toMatchObject({ relay: true });
+      // Nobody is away, paused for, or on a clock while ArcAid is: this PC is the one that cannot be reached.
+      await sleep(1500);
+      expect(H2.mh.status().lobby?.members.flatMap((x) => x.flags)).not.toContain('away');
+      expect(H2.mh.status().phase).toBe('playing');
+      await down;
+      await until(() => m.r.rooms().includes(m.code), 20_000);
+      await until(() => H2.mh.status().relayNote === null);
+      await until(() => m.C.mh.status().lobby?.hostAway === null && up(m.C.mh, 1), 30_000);
+      m.cr.ball(1, 180);
+      await until(() => up(H2.mh, 2));
+      expect(scoreOf(H2.mh, 'Guest')).toBe(180);
+      expect(JSON.parse(readFileSync(H2.record, 'utf8'))).toMatchObject({ relay: true });
+      expect([...H2.logs, ...m.C.logs].filter((l) => l.includes('FORFEIT'))).toEqual([]);
+    } finally {
+      for (const h of hosts.splice(0)) await h.stop();
+      await m.r.close();
+    }
+  }, 90_000);
 
   it("the lobby's PC comes back after ArcAid closed its room: it opens the same code again, and the client's own asks find it: the same lobby, the match where it stood; the room is not locked", async () => {
     const m = await relayed(300);

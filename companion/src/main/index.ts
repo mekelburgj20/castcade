@@ -20,6 +20,7 @@ import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
 import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
+import { ArcaidClient, ArcaidError } from '../witness/arcaid-client.js';
 import { featuresFor, resolveEdition } from './edition.js';
 import { removeFullEditionLeftovers } from './edition-leftovers.js';
 import { writeVrReport } from './vr-report-host.js';
@@ -340,6 +341,27 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
 
 /** The orderly shutdown; `install` swaps the final app.quit() for the updater's quit-and-install (E6). */
 async function quit(host: WitnessHost, install = false): Promise<void> {
+  // A17 step 8 (the review of PR 138): Castcade is closed by its owner on the lobby's PC while others are present in
+  // the lobby: asked first. "Close" tells everyone the lobby is closed; "Keep" tells them Castcade was closed here
+  // and the lobby is kept for them to wait in, and it is offered again at the next start; Cancel closes nothing. An
+  // update restart is never asked (it keeps the lobby and goes back in by itself).
+  let lobby: 'close' | 'keep' | undefined;
+  const q = install ? null : (match?.quitQuestion() ?? null);
+  if (q) {
+    const who = q.names.length <= 1 ? (q.names[0] ?? '') : `${q.names.slice(0, -1).join(', ')} and ${q.names[q.names.length - 1]}`;
+    const r = await dialog.showMessageBox({
+      type: 'question',
+      title: 'Castcade',
+      message: `${who} ${q.names.length === 1 ? 'is' : 'are'} in your lobby ${q.code}.`,
+      detail: 'Close the lobby for everyone: they are told it is closed. Keep the lobby: they are told that Castcade was closed on this PC, and wait up to 20 minutes for it; Castcade offers the lobby again when it is next started.',
+      buttons: ['Close the lobby for everyone', 'Keep the lobby (the others wait up to 20 minutes for this PC)', 'Cancel'],
+      defaultId: 1,
+      cancelId: 2,
+      noLink: true,
+    });
+    if (r.response === 2) return;
+    lobby = r.response === 0 ? 'close' : 'keep';
+  }
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();
@@ -348,7 +370,7 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   await watch3d?.stop().catch(() => undefined); // I11.4.1: leaves the 3D watch session; a VPX it started stays open
   // Forfeits a match in progress and removes the turn lock. A15: not when Castcade restarts itself for an update: the
   // match is kept and rejoined at the next start.
-  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion() }).catch(() => undefined);
+  await match?.stop({ keepForRestart: install && !!updater?.pendingVersion(), ...(lobby ? { lobby } : {}) }).catch(() => undefined);
   await stream3d?.stop().catch(() => undefined); // I11.4.2: the control port closes; a fork left open goes on as plain VPX
   await matchMedia?.detach().catch(() => undefined); // the match detached it if one was running; this closes the panel window
   await matchOverlay?.stop().catch(() => undefined); // ends the helper's stdin, so it hides the overlay and exits
@@ -716,8 +738,8 @@ function registerIpc(
   });
   // A17 step 7: every member may ask for a start; what comes from the renderer is read flag by flag.
   ipcMain.handle(IPC.matchStart, (_e, o: unknown) => {
-    const x = (o ?? {}) as { anyway?: unknown; newMatch?: unknown; now?: unknown };
-    return mh().start({ anyway: x.anyway === true, newMatch: x.newMatch === true, now: x.now === true });
+    const x = (o ?? {}) as { anyway?: unknown; newMatch?: unknown; now?: unknown; without?: unknown };
+    return mh().start({ anyway: x.anyway === true, newMatch: x.newMatch === true, now: x.now === true, ...(typeof x.without === 'string' ? { without: x.without.slice(0, 200) } : {}) });
   });
   ipcMain.handle(IPC.matchCancelStart, () => mh().cancelStart());
   // The review of PR 136: a value that is not one of the choices is refused (`match-ipc.ts`), never read as one of
@@ -1084,6 +1106,19 @@ async function main(): Promise<void> {
       relay: () => {
         const cur = store.get();
         return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
+      },
+      // A17 step 8 (the review of PR 138): whether ArcAid itself still knows this device, asked on its own
+      // authenticated route (the Witness heartbeat). Only its 401 says "not paired"; a server that does not answer,
+      // or answers anything else, says nothing about the pairing.
+      pairingCheck: async () => {
+        const cur = store.get();
+        if (!cur.token) return 'unpaired';
+        try {
+          await new ArcaidClient({ baseUrl: cur.arcaidBaseUrl, timeoutMs: 8000 }).heartbeat(cur.token, cur.deviceId);
+          return 'paired';
+        } catch (e) {
+          return e instanceof ArcaidError && e.kind === 'auth' ? 'unpaired' : 'unknown';
+        }
       },
       // I11.4.18: VPX gets the foreground back when a Castcade window (this one, the desktop panel) holds it and this
       // PC's table is the one to play. This process owns those windows, so Windows lets it hand the foreground on.

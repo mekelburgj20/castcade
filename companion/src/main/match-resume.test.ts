@@ -45,6 +45,7 @@ const lobbyPart = (patch: Partial<SavedLobbyPart> = {}): SavedLobbyPart => ({
     { participant: { playerId: 'p2', displayName: 'Chuck', publicKey: 'a2V5LW9mLWNodWNr', rig: 'pc' }, stance: 'watch' },
   ],
   table: { game: { kind: 'vpx', tableName: 'Monster Bash', tableHash: 'ab'.repeat(32), romName: 'mb_106b', romHash: null, physicsHash: null, recipeVersion: '0.5.0', sidecarHash: null, emulatorVersion: '10.8.0' }, fixed: true, pickedBy: 'h' },
+  tableObjects: { editables: 412, hash: 'cd'.repeat(32) },
   nextMatch: 2,
   ballsPerGame: 3,
   match: { matchId: 'ABCDEF-1', results: [] },
@@ -83,7 +84,7 @@ describe('the saved lobby record (A15; version 2 since A17 step 8)', () => {
       );
     }
     const part = (JSON.parse(readFileSync(file, 'utf8')) as { lobby: Record<string, unknown> }).lobby;
-    expect(Object.keys(part).sort()).toEqual(['ballsPerGame', 'code', 'match', 'members', 'nextMatch', 'seq', 'table']);
+    expect(Object.keys(part).sort()).toEqual(['ballsPerGame', 'code', 'match', 'members', 'nextMatch', 'seq', 'table', 'tableObjects']);
     store.remove();
     expect(store.read()).toBeNull();
   });
@@ -152,13 +153,13 @@ describe('the saved lobby record (A15; version 2 since A17 step 8)', () => {
   it('A17 step 8: a file of version 1 (Castcade 0.2.50 or older) is no record of this version and is known for what it is: a match on protocol 6, said in a sentence', () => {
     const v1 = { version: 1, role: 'client', code: 'JHDFEF', invite: 'JHDFEF', port: null, relay: true, playerId: 'p1', displayName: 'Guest', names: ['Krobs', 'Chuck'], log: logOf(msg('MATCH_READY', 'h')), mark: null, aliveAt: 1_000_000, restart: null, owed: [] };
     expect(parseResume(JSON.stringify(v1))).toBeNull();
-    expect(oldRecordOf(JSON.stringify(v1))).toEqual({ version: 1, code: 'JHDFEF', role: 'client', names: ['Krobs', 'Chuck'] });
+    expect(oldRecordOf(JSON.stringify(v1))).toEqual({ version: 1, code: 'JHDFEF', role: 'client', names: ['Krobs', 'Chuck'], aliveAt: 1_000_000 });
     expect(oldRecordSentence(oldRecordOf(JSON.stringify(v1))!)).toBe(
       'Castcade closed during the match JHDFEF with Krobs and Chuck, which was played on an older Castcade (protocol 6). This version cannot go back into it: open a lobby, or join one, and play on from there.',
     );
     // Whatever else is in such a file, nothing of it is trusted, and nothing throws.
-    expect(oldRecordOf(JSON.stringify({ version: 1, code: 7, role: 'king', names: 'x' }))).toEqual({ version: 1, code: null, role: null, names: [] });
-    expect(oldRecordSentence({ version: 1, code: null, role: null, names: [] })).toMatch(/^Castcade closed during the match, which was played on an older Castcade \(protocol 6\)\./);
+    expect(oldRecordOf(JSON.stringify({ version: 1, code: 7, role: 'king', names: 'x' }))).toEqual({ version: 1, code: null, role: null, names: [], aliveAt: null });
+    expect(oldRecordSentence({ version: 1, code: null, role: null, names: [], aliveAt: null })).toMatch(/^Castcade closed during the match, which was played on an older Castcade \(protocol 6\)\./);
     for (const not of [null, '', '{', '[]', JSON.stringify(record()), JSON.stringify({ version: 0 })]) expect(oldRecordOf(not)).toBeNull();
     const dir = mkdtempSync(join(tmpdir(), 'castcade-resume-'));
     dirs.push(dir);
@@ -185,6 +186,12 @@ describe('the saved lobby record (A15; version 2 since A17 step 8)', () => {
     expect(resumeFreshness(h, at + HOST_WAIT_MS + 1)).toBe('stale');
     // A clock that went backwards.
     expect(resumeFreshness(c, at - 1)).toBe('stale');
+    // A17 step 8 (the review of PR 138): Castcade was closed by its owner on the lobby's PC and the lobby kept: it is
+    // offered, however fresh, and never gone back into by itself; and it goes stale like any other.
+    const quit = record({ role: 'host', aliveAt: at, restart: 'quit' });
+    expect(resumeFreshness(quit, at + 1000)).toBe('offer');
+    expect(resumeFreshness(quit, at + HOST_WAIT_MS)).toBe('offer');
+    expect(resumeFreshness(quit, at + HOST_WAIT_MS + 1)).toBe('stale');
   });
 
   it("counts this player's turn ends in the current game: its ball ends and the host's passes, from the last game start", () => {

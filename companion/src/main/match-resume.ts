@@ -99,8 +99,13 @@ export interface ResumeRecord {
   mark: JournalMark | null;
   /** Epoch ms of the last write. */
   aliveAt: number;
-  /** Castcade closed itself to install an update: rejoined without asking at the next start. */
-  restart: 'update' | null;
+  /**
+   * `update`: Castcade closed itself to install an update: gone back into without asking at the next start. `quit`
+   * (A17 step 8, the review of PR 138): Castcade was closed by its owner on the lobby's PC and the lobby kept: only
+   * ever offered at the next start, never gone back into by itself (the microphone would go on without a click).
+   * Null: the record was not written at a stop: Castcade crashed, or was ended from outside.
+   */
+  restart: 'update' | 'quit' | null;
   /**
    * A17 step 4 (the review of PR 131): the table ball ends this player's table still owes the match (a ball ended by
    * hand while it was still in play), as the grant of each such end (`MatchController.owedTableEnds`). Without it a
@@ -165,10 +170,12 @@ function parseLobbyPart(v: unknown, code: string): SavedLobbyPart | null {
     if (!isCount(n)) return null;
     taken[id] = n;
   }
+  const objects = isObj(v.tableObjects) && isCount(v.tableObjects.editables) && isStr(v.tableObjects.hash, 128) ? { editables: v.tableObjects.editables, hash: v.tableObjects.hash } : null;
   return {
     code,
     members: rows,
     table: { game: table.game as unknown as GameFingerprint, fixed: table.fixed, pickedBy: table.pickedBy as string | null },
+    tableObjects: objects,
     nextMatch,
     match: open,
     ballsPerGame,
@@ -225,7 +232,7 @@ export function parseResume(text: string | null): ResumeRecord | null {
     lobby,
     mark: parseMark(raw.mark),
     aliveAt,
-    restart: raw.restart === 'update' ? 'update' : null,
+    restart: raw.restart === 'update' ? 'update' : raw.restart === 'quit' ? 'quit' : null,
     owed: Array.isArray(raw.owed) ? raw.owed.filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0).slice(0, 16) : [],
   };
   if (!checked || (raw.role === 'host' && lobby === null)) rec.damaged = true;
@@ -238,6 +245,8 @@ export interface OldRecord {
   code: string | null;
   role: 'host' | 'client' | null;
   names: string[];
+  /** When the file was last written (ms), when it says so. */
+  aliveAt: number | null;
 }
 
 /** The file is a record of version 1: a match on protocol 6, which this build cannot go back into. Null: it is not one. */
@@ -255,6 +264,7 @@ export function oldRecordOf(text: string | null): OldRecord | null {
     code: typeof raw.code === 'string' && /^[A-Z]{6}$/.test(raw.code) ? raw.code : null,
     role: raw.role === 'host' || raw.role === 'client' ? raw.role : null,
     names: Array.isArray(raw.names) ? raw.names.filter((n): n is string => typeof n === 'string' && n.length <= 64).slice(0, 8) : [],
+    aliveAt: typeof raw.aliveAt === 'number' && Number.isFinite(raw.aliveAt) ? raw.aliveAt : null,
   };
 }
 
@@ -271,6 +281,8 @@ export function oldRecordSentence(old: OldRecord): string {
 export function resumeFreshness(rec: Pick<ResumeRecord, 'role' | 'aliveAt' | 'restart'>, now: number): 'auto' | 'offer' | 'stale' {
   const age = now - rec.aliveAt;
   if (age < 0 || age > (rec.role === 'host' ? HOST_WAIT_MS : CLIENT_RESUME_MAX_MS)) return 'stale';
+  // A deliberate quit is offered, however fresh: nobody's microphone goes on in a lobby they just closed Castcade on.
+  if (rec.restart === 'quit') return 'offer';
   return rec.restart === 'update' || age <= AUTO_RESUME_MS ? 'auto' : 'offer';
 }
 
@@ -278,13 +290,21 @@ export interface ResumeStore {
   read(): ResumeRecord | null;
   /** A17 step 8: the file is a record of version 1 (`oldRecordOf`); null when it is not, or there is none. */
   readOld(): OldRecord | null;
-  /** Never throws: a record that cannot be written only means no rejoin after a crash. Returns false then. */
+  /**
+   * Never throws. False: the record could not be written, and `writeError()` says why (the system's own words). The
+   * caller says so on that PC (A17 step 8, the review of PR 138: a record that is behind is worse than none) and
+   * tries again at the next change.
+   */
   write(rec: ResumeRecord): boolean;
+  /** The system's error text of the last write that failed; null after one that worked. */
+  writeError(): string | null;
   remove(): void;
 }
 
 export function createResumeStore(file: string, warn: (line: string) => void): ResumeStore {
+  let writeError: string | null = null;
   return {
+    writeError: () => writeError,
     read() {
       try {
         return parseResume(readFileSync(file, 'utf8'));
@@ -308,9 +328,10 @@ export function createResumeStore(file: string, warn: (line: string) => void): R
         const body = JSON.parse(JSON.stringify(plain)) as Record<string, unknown>;
         writeFileSync(tmp, JSON.stringify({ ...body, check: resumeCheck(body) }));
         renameSync(tmp, file);
+        writeError = null;
         return true;
       } catch (e) {
-        warn(`match: could not save ${file}: ${e instanceof Error ? e.message : String(e)}`);
+        writeError = e instanceof Error ? e.message : String(e);
         return false;
       }
     },
