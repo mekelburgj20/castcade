@@ -242,9 +242,11 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
   // The question stands only while the lobby is what it was when it was asked (a game that began meanwhile takes it
   // away), and one about the table that is open here only while that table is the one that is open.
   const question = asking !== null && asking.about === l.gameKey && off === null && (asking.path !== null || asking.name === tableOpen) ? asking : null;
-  // The table that is open here can be made the lobby's in one press: when it is another game than the lobby's, and
-  // while the lobby has no table at all.
-  const offerOpen = tableOpen !== null && ((me?.flags.includes('other_table') ?? false) || l.table.name === null);
+  // The table that is open here can be made the lobby's in one press: when it is another game than the lobby's (the
+  // row then says so, or says that the lobby's table is on offer here, or that this table is the person's to close),
+  // and while the lobby has no table at all.
+  const another = (me?.flags ?? []).some((f) => f === 'other_table' || f === 'asked' || f === 'close_table');
+  const offerOpen = tableOpen !== null && (another || l.table.name === null);
   const go = (q: { path: string | null; name: string; about: string }) => {
     setBusy(true);
     // The open table is picked by the name the question had: main refuses when another one is open by now.
@@ -309,7 +311,10 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
       {question && (
         <div className="row ask">
           <span className="warn">
-            Everyone&apos;s VPX closes its table and opens {question.name}.{l.table.endsMatch ? ' The match that is open ends.' : ''}
+            {l.table.name === null
+              ? `${question.name} becomes the lobby's table: Castcade opens it on this PC and on every PC with no table open; a PC with another table open is asked first.`
+              : `Everyone's VPX closes its table and opens ${question.name}.`}
+            {l.table.endsMatch ? ' The match that is open ends.' : ''}
           </span>
           <button type="button" className="small" disabled={busy} onClick={() => go(question)}>
             Change table
@@ -319,6 +324,8 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
           </button>
         </div>
       )}
+      {/* The final review: on a joined PC the pick is the lobby PC's to take: said while its answer is on the way. */}
+      {busy && st.role === 'client' && <p className="muted">Asking the lobby&apos;s PC…</p>}
       {error && <p className="warn">{error}</p>}
     </div>
   );
