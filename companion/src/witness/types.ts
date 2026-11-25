@@ -176,6 +176,12 @@ export interface WitnessStatus {
    * player's sentence, `vpxPath` is set when Patch now would fix it. Null until a close-time capture in this run.
    */
   lastClose?: { table: string; at: string; rung: string; kind: string; text: string; vpxPath: string | null } | null;
+  /**
+   * A6.3: VPX will not reach the headset on this PC (`[PlayerVR] AskToTurnOn = 1` with OpenComposite: `ask-to-turn-on.ts`),
+   * as the one sentence that says what to set and where. Null when there is nothing to say. Checked at the witness's
+   * start and at every VPX start.
+   */
+  vrSetupWarning?: string | null;
 }
 
 export interface WitnessEvents {

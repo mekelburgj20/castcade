@@ -2696,3 +2696,56 @@ describe('I11.4.1: the VPX instances of a 3D watch session', () => {
     expect(h.witness.status().vpxExe).toBe(EXE);
   });
 });
+
+describe('A6.3: AskToTurnOn = 1 with OpenComposite, said before the table starts', () => {
+  const OC_DLL = 'C:\\VPX\\openvr_api64.dll';
+  const INI = 'C:\\VPX\\VPinballX.ini';
+  const SENTENCE =
+    'VPX will show an OpenComposite error and start on the desktop: set AskToTurnOn = 0 under [PlayerVR] in VPinballX.ini (the file beside VPinballX_GL64.exe), with VPX closed.';
+
+  it('on Status from the start for the remembered exe, in the log at every VPX start, and gone once the ini says 0', async () => {
+    const logs: string[] = [];
+    const h = harness({ vpxExe: GL_EXE }, { log: (l) => logs.push(l) });
+    const said = () => logs.filter((l) => l.startsWith('witness: VR setup: '));
+    h.fs.put(OC_DLL, new TextEncoder().encode('MZ OpenComposite DLLMain ERROR: Cannot init VR: unsupported apptype %d'));
+    h.fs.put(INI, '[PlayerVR]\nAskToTurnOn = 1\n');
+    await h.witness.start();
+    await h.until(() => h.witness.status().vrSetupWarning === SENTENCE);
+    expect(h.statuses.at(-1)?.vrSetupWarning).toBe(SENTENCE);
+    expect(said()).toEqual([`witness: VR setup: ${SENTENCE} (AskToTurnOn 1 from ${INI}; ${OC_DLL} is OpenComposite's)`]);
+
+    // Each start says it again (a match table, a front end's launch: whoever started VPX).
+    await h.launch(GL_CMD, 40, { exe: GL_EXE, windowTitle: 'Visual Pinball' });
+    await h.until(() => said().length === 2);
+    await h.exit();
+    await h.settle(15_000); // the exit's close-time NVRAM wait
+
+    // Fixed with VPX closed: the next start clears it and says nothing.
+    h.fs.put(INI, '[PlayerVR]\nAskToTurnOn = 0\n');
+    await h.launch(GL_CMD, 41, { exe: GL_EXE, windowTitle: 'Visual Pinball' });
+    await h.until(() => h.witness.status().vrSetupWarning === null);
+    expect(h.statuses.at(-1)?.vrSetupWarning).toBeNull();
+    expect(said()).toHaveLength(2);
+    await h.exit();
+    await h.settle(15_000); // the exit's close-time NVRAM wait
+    await h.witness.stop();
+  });
+
+  it("says nothing on a rig with Valve's openvr dll and no VR sample, or with no openvr dll at all", async () => {
+    const logs: string[] = [];
+    const h = harness({ vpxExe: GL_EXE }, { log: (l) => logs.push(l) });
+    h.fs.put(INI, '[PlayerVR]\nAskToTurnOn = 1\n');
+    await h.witness.start();
+    await h.launch(GL_CMD, 42, { exe: GL_EXE, windowTitle: 'Visual Pinball' });
+    await h.exit();
+    await h.settle(15_000); // the exit's close-time NVRAM wait
+    h.fs.put(OC_DLL, new TextEncoder().encode('MZ VR_InitInternal2 vrclient_x64.dll'));
+    await h.launch(GL_CMD, 43, { exe: GL_EXE, windowTitle: 'Visual Pinball' });
+    await h.flush();
+    expect(h.witness.status().vrSetupWarning).toBeNull();
+    expect(logs.filter((l) => l.includes('VR setup'))).toEqual([]);
+    await h.exit();
+    await h.settle(15_000); // the exit's close-time NVRAM wait
+    await h.witness.stop();
+  });
+});
