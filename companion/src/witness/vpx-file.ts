@@ -648,18 +648,41 @@ export interface VpxPlayfieldStreams {
  * Throws `not a .vpx: ...` for a non-compound file; nothing (null, []) for a compound file without `GameStg`.
  */
 export async function readVpxPlayfieldStreams(fs: WitnessFs, path: string): Promise<VpxPlayfieldStreams> {
+  const { gameData, items } = await readGameStreams(fs, path, false);
+  return { gameData, items };
+}
+
+/** I11.4.15: what the table-objects identity reads (`launch/fork-identity.ts`): the playfield streams and every `Collection<n>` stream. */
+export interface VpxTableObjectStreams extends VpxPlayfieldStreams {
+  /** Every `GameStg/Collection<n>`, in index order: BIFF records, among them the collection's wide `NAME`. */
+  collections: Uint8Array[];
+}
+
+/**
+ * I11.4.15: `readVpxPlayfieldStreams` and the `Collection<n>` streams (a few hundred bytes each: a name and the names
+ * of its items). The same errors: `not a .vpx: ...` for a non-compound file, whatever the disk says for a file that
+ * cannot be read.
+ */
+export async function readVpxTableObjectStreams(fs: WitnessFs, path: string): Promise<VpxTableObjectStreams> {
+  return readGameStreams(fs, path, true);
+}
+
+async function readGameStreams(fs: WitnessFs, path: string, withCollections: boolean): Promise<VpxTableObjectStreams> {
   const file = await fs.open(path);
   try {
     const cfb = await CompoundFile.open(file);
     const gameStg = await cfb.find(await cfb.root(), 'GameStg');
-    if (!gameStg || gameStg.type !== STORAGE) return { gameData: null, items: [] };
+    if (!gameStg || gameStg.type !== STORAGE) return { gameData: null, items: [], collections: [] };
     let gameData: Uint8Array | null = null;
     const items: { n: number; entry: CfbEntry }[] = [];
+    const cols: { n: number; entry: CfbEntry }[] = [];
     for (const e of await cfb.children(gameStg)) {
       if (e.type !== STREAM) continue;
       if (compareEntryNames(e.name, 'GameData') === 0 && e.size <= MAX_GAME_DATA_BYTES) gameData = await cfb.readStream(e);
       const m = /^GameItem(\d+)$/i.exec(e.name);
       if (m && e.size >= 4 && e.size <= MAX_GAME_ITEM_BYTES) items.push({ n: Number(m[1]), entry: e });
+      const c = withCollections ? /^Collection(\d+)$/i.exec(e.name) : null;
+      if (c && e.size <= MAX_GAME_DATA_BYTES) cols.push({ n: Number(c[1]), entry: e });
     }
     items.sort((a, b) => a.n - b.n);
     const out: VpxGameItemStream[] = [];
@@ -667,7 +690,10 @@ export async function readVpxPlayfieldStreams(fs: WitnessFs, path: string): Prom
       const bytes = await cfb.readStream(entry);
       out.push({ stream: entry.name, type: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true), body: bytes.subarray(4) });
     }
-    return { gameData, items: out };
+    cols.sort((a, b) => a.n - b.n);
+    const collections: Uint8Array[] = [];
+    for (const { entry } of cols) collections.push(await cfb.readStream(entry));
+    return { gameData, items: out, collections };
   } finally {
     await file.close();
   }

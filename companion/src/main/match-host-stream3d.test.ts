@@ -1200,6 +1200,244 @@ describe('a table that Castcade did not start in the Castcade VPX build (I11.4.1
   });
 });
 
+describe('the table objects of the two tables, before the start (I11.4.15)', () => {
+  const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
+  const CONGO = { editables: 769, hash: 'fc87ddefd36bdd13' };
+  const STD = '769 fc87ddefd36bdd13';
+  const MOD = '766 e4b9bf66f04cfcf9';
+  const NOT_3D = (who: string): string => `Not in 3D with ${who}: the two table files do not hold the same table objects, so their turns are shown as the flat video`;
+  /** A witness whose open table is this file (another file of the same table when `sha` is another). */
+  const fileOf = (sha: string, path: string | null): WitnessHost => {
+    const w = table().w;
+    return { ...w, status: () => ({ ...w.status(), currentIdentity: { sha256: sha, tableInfo: null, filePath: path } }) } as unknown as WitnessHost;
+  };
+  const both = async (H: Seat, K: Seat): Promise<void> => {
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+    await K.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2 && K.mh.status().participants.length === 2, 8000, 'both in the lobby');
+  };
+
+  it("a host says what its table holds with its fingerprint: computed from the file while its VPX is not up, its VPX's own word once it is; the joining PC has it from HELLO_ACK; a host that cannot tell says nothing", async () => {
+    const hub = new TunnelHub();
+    const asked: string[] = [];
+    const H = seat(hub, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked.push(p), CONGO) } });
+    const K = seat(hub, 'Krobs');
+    await both(H, K);
+    await until(() => K.mh.hostTableObjects() !== null, 5000, "the host's table objects on the joining PC");
+    expect(K.mh.hostTableObjects()).toEqual(CONGO);
+    expect(H.mh.hostTableObjects()).toEqual(CONGO);
+    // Asked for this PC's own table file, once per file.
+    expect(asked).toEqual([String.raw`C:\vpx\tables\Congo.vpx`]);
+    expect(H.lines).toContain(`match: lobby update: table objects ${STD} (computed from the file); the players were told`);
+    expect(K.lines).toContain(`match: the host's table objects: ${STD}`);
+    // The host's VPX comes up in the Castcade build and names another identity (a file the computation got wrong, or
+    // another table opened since): that is what the other PC's VPX will be compared with, so that is what is said.
+    await H.mh.tableLaunch();
+    await forkOf(H, true, '738 512b43b0598d481c');
+    await until(() => K.mh.hostTableObjects()?.editables === 738, 5000, "the build's own word on the joining PC");
+    expect(K.mh.hostTableObjects()).toEqual({ editables: 738, hash: '512b43b0598d481c' });
+    expect(H.lines).toContain('match: lobby update: table objects 738 512b43b0598d481c (as the Castcade VPX build named them); the players were told');
+    expect(K.lines).toContain("match: the host's table objects: 738 512b43b0598d481c");
+    expect(asked).toHaveLength(1);
+    // The joining PC says nothing of its own (the host needs none), and a match that ended knows none.
+    await K.mh.leave();
+    expect(K.mh.hostTableObjects()).toBeNull();
+
+    // A host whose file cannot be told and whose VPX is not the build: nothing is said, and nothing breaks.
+    const hub2 = new TunnelHub();
+    const H2 = seat(hub2, 'Hosty', { fork: false, extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Odd.vpx`), tableObjects: async () => null } });
+    const K2 = seat(hub2, 'Krobs');
+    await both(H2, K2);
+    await sleep(150);
+    expect(K2.mh.hostTableObjects()).toBeNull();
+    expect(H2.lines.filter((l) => l.includes('table objects'))).toEqual([]);
+  });
+
+  it("review of PR #125 (finding 1): a host on which 3D cannot run (no Castcade VPX build beside its VPX, or 3D watch off) says nothing of its table's objects and reads none; a joining PC is never told to import a copy for 3D with a host that has no build", async () => {
+    const REMEDY = 'For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin';
+    const hub = new TunnelHub();
+    const asked: string[] = [];
+    // The host has no build. Its companion could compute its table's objects, and must not: no 3D can come of it.
+    const H = seat(hub, 'Hosty', { fork: false, extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked.push(p), CONGO) } });
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await sleep(250);
+    expect(K.mh.hostTableObjects()).toBeNull();
+    expect(H.mh.hostTableObjects()).toBeNull();
+    expect(asked).toEqual([]);
+    expect(H.lines.filter((l) => l.includes('table objects'))).toEqual([]);
+    // The joining PC has the build, an imported mod and a copy with other bytes. With nothing said by the host its
+    // one-step has no "other objects" word; a host that says its objects all the same (a build without this fix) would
+    // give it one, and the lobby must still not send the player to import a copy: the guard on this side.
+    await K.mh.tableLaunch();
+    K.mh.setLaunchNote(REMEDY, true);
+    await forkOf(K, true, MOD);
+    await until(() => lineFor(K, H) === 'Hosty: the 2D video (no Castcade VPX build runs the table on their PC)', 8000, "the joining PC to know the host has no build");
+    await sleep(200);
+    expect(message(K)).not.toContain('Not in 3D with');
+    expect(message(K)).not.toContain('For 3D:');
+    expect(message(K)).not.toContain('Import it in Castcade');
+    // I11.4.11's note about the host's identical file is a remedy for 3D too: not shown for such a host either.
+    K.mh.setLaunchNote('For 3D: the host\'s file is on this PC as "Congo", not imported. Import it in Castcade and rejoin', false);
+    await sleep(150);
+    expect(message(K)).not.toContain('For 3D:');
+    expect(K.lines.filter((l) => l.includes('do not hold the same table objects'))).toHaveLength(K.lines.filter((l) => l.includes('the lobby no longer says that the table objects differ')).length);
+
+    // The build is there and 3D watch is off on the host: nothing said, nothing read; turned on, it is said.
+    const hub2 = new TunnelHub();
+    const asked2: string[] = [];
+    const H2 = seat(hub2, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked2.push(p), CONGO) } });
+    const K2 = seat(hub2, 'Krobs');
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await both(H2, K2);
+    await sleep(250);
+    expect(K2.mh.hostTableObjects()).toBeNull();
+    expect(asked2).toEqual([]);
+    await H2.mh.setSettings({ watch3d: 'auto' });
+    await until(() => K2.mh.hostTableObjects() !== null, 5000, "the host's table objects once 3D watch is on");
+    expect(K2.mh.hostTableObjects()).toEqual(CONGO);
+    expect(asked2).toHaveLength(1);
+    // And taken back when it is turned off again.
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await until(() => K2.mh.hostTableObjects() === null, 5000, 'the word taken back');
+  });
+
+  it("over the wire, the night of 2026-11-23: the host says what its Congo holds, and the joining PC's Castcade starts its copy with those objects, not the mod that was played last; with only the mod there, its lobby says 2D before the table is up", async () => {
+    const { createOneStep } = await import('./one-step.js');
+    const { formatJoinLink } = await import('./deep-link.js');
+    type Known = Awaited<ReturnType<Parameters<typeof createOneStep>[0]['tables']>>[number];
+    const copy = (tableId: string, sha: string, lastPlayedAt: string): Known => ({ tableId, vpxPath: `C:\\vpx\\tables\\${tableId}.vpx`, infoName: null, rom: null, sha256: sha, imported: true, lastPlayedAt, patchedAt: null });
+    // Neither copy is the host's file; the mod was opened by hand a quarter of an hour ago, so it leads the list.
+    const mr = copy('Monster Bash (Williams 1998) MR mod', '6d'.repeat(32), '2026-11-23T23:55:00.000Z');
+    const std = copy('Monster Bash (Williams 1998) VPW', '34'.repeat(32), '2026-11-20T00:00:00.000Z');
+    const objects: Record<string, { editables: number; hash: string }> = { [mr.vpxPath]: { editables: 766, hash: 'e4b9bf66f04cfcf9' }, [std.vpxPath]: CONGO };
+    const join = async (tables: Known[]) => {
+      const hub = new TunnelHub();
+      const H = seat(hub, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Monster Bash.vpx`), tableObjects: async () => CONGO } });
+      const K = seat(hub, 'Krobs');
+      const launched: string[] = [];
+      // Krobs' VPX is closed (the seat's own witness has a table open for the turn tests): one-step sees none.
+      const one = createOneStep({
+        match: K.mh,
+        witness: { status: () => ({ currentTable: null }), onStatus: () => () => undefined },
+        launcher: {
+          async launch(path) {
+            launched.push(path);
+            return { ok: true, pid: 1 };
+          },
+        },
+        clipboard: { writeText: () => undefined },
+        tables: async () => tables,
+        tableObjects: async (p) => objects[p] ?? null,
+        hostHashWaitMs: 2000,
+        log: { info: (l) => void K.lines.push(l), warn: (l) => void K.lines.push(l) },
+      });
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Hosty' });
+      await one.openLink(formatJoinLink(hs.invite!), { trusted: true });
+      await until(() => launched.length === 1, 8000, 'the table started on the joining PC');
+      one.stop();
+      return { K, launched };
+    };
+    const both = await join([mr, std]);
+    expect(both.launched).toEqual([std.vpxPath]);
+    expect(both.K.lines).toContain(`launch: Monster Bash (Williams 1998) VPW is not the host's file and holds the same table objects (table ${STD}): 3D works with it`);
+    expect(message(both.K)).not.toContain('Not in 3D with');
+    // Only the mod on this PC: it is started (the match can be played), and the lobby says what that means.
+    const only = await join([mr]);
+    expect(only.launched).toEqual([mr.vpxPath]);
+    await until(() => message(only.K).includes(NOT_3D('Hosty')), 5000, 'the word on the lobby line');
+    expect(only.K.lines.some((l) => l.startsWith(`launch: Monster Bash (Williams 1998) MR mod does not hold the host's table objects (table ${MOD} here, ${STD} on the host's PC): the 2D video, not 3D.`))).toBe(true);
+  });
+
+  it('two files with other bytes and the same table objects: once both VPX are up each lobby says 3D works all the same, and nothing warns; until then nothing is said of 3D', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await K.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    // Only the host's VPX is up: the files differ, and nothing is known of 3D yet.
+    await until(() => view(H)?.fork === 'ready', 5000, "the host's fork");
+    await sleep(100);
+    expect(message(H)).toContain('same table, different file (a re-save or another download): Krobs');
+    expect(message(H)).not.toContain('3D works');
+    expect(message(H)).not.toContain('Not in 3D with');
+    await forkOf(K, true, STD);
+    await until(() => lineFor(H, K) === 'Krobs: 3D, on your own table' && lineFor(K, H) === 'Hosty: 3D, on your own table', 8000, '3D both ways');
+    await until(() => message(H).includes('3D works') && message(K).includes('3D works'), 5000, 'the word on both lobby lines');
+    expect(message(H)).toBe('same table, different file (a re-save or another download): Krobs · 3D works all the same: the files hold the same table objects');
+    expect(message(K)).toBe('same table, different file (a re-save or another download): you · 3D works all the same: the files hold the same table objects');
+    for (const s of [H, K]) expect(s.lines.filter((l) => l.includes('do not hold the same table objects'))).toEqual([]);
+  });
+
+  it('two tables that hold other objects: both lobbies say so before the start, with who it is about, once in each log; the word goes when it no longer applies', async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await K.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    const mod = await forkOf(K, true, MOD);
+    await until(() => message(H).endsWith(NOT_3D('Krobs')) && message(K).endsWith(NOT_3D('Hosty')), 8000, 'the word on both lobby lines');
+    expect(message(H)).toBe(`same table, different file (a re-save or another download): Krobs · ${NOT_3D('Krobs')}`);
+    expect(lineFor(H, K)).toBe('Krobs: the 2D video (theirs is another table file)');
+    expect(H.lines.filter((l) => l === "stream3d: this PC's table and Krobs's do not hold the same table objects (both VPX said so): the 2D video between them; the lobby says so")).toHaveLength(1);
+    expect(K.lines.filter((l) => l === "stream3d: this PC's table and Hosty's do not hold the same table objects (both VPX said so): the 2D video between them; the lobby says so")).toHaveLength(1);
+    // Krobs closes the mod and Castcade starts his other copy, which holds the host's objects.
+    mod.close();
+    await until(() => view(K)?.fork === 'none', 5000, 'the mod closed');
+    await K.mh.tableLaunch();
+    await forkOf(K, true, STD);
+    await until(() => message(H).includes('3D works') && message(K).includes('3D works'), 8000, '3D works on both lobby lines');
+    expect(message(H)).not.toContain('Not in 3D with');
+    expect(H.lines).toContain('stream3d: the lobby no longer says that the table objects differ (it does not apply any more)');
+  });
+
+  it("a joining PC whose table is still loading: the launch's word (the copy that was started holds other objects than the host said) is on its lobby line at once, with what to do when another copy would give 3D; it goes when the two VPX say 3D runs; never on a PC where 3D cannot run", async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await H.mh.tableLaunch();
+    await forkOf(H, true, STD);
+    // one-step started Krobs' copy in the build and knows it holds other objects; its VPX has not said hello yet.
+    await K.mh.tableLaunch();
+    const REMEDY = 'For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin';
+    K.mh.setLaunchNote(REMEDY, true);
+    await until(() => message(K).includes(NOT_3D('Hosty')), 5000, "the launch's word on the lobby line");
+    expect(message(K).endsWith(`${NOT_3D('Hosty')} · ${REMEDY}`)).toBe(true);
+    expect(K.lines).toContain("stream3d: this PC's table and Hosty's do not hold the same table objects (the host's word against the copy that was started here): the 2D video between them; the lobby says so");
+    // The host is not told by this (its own lobby speaks when both VPX are up).
+    expect(message(H)).not.toContain('Not in 3D with');
+    // Its VPX comes up and names the mod: the same word, now from both VPX, said once.
+    const mod = await forkOf(K, true, MOD);
+    await until(() => message(H).endsWith(NOT_3D('Krobs')), 8000, 'the word on the host');
+    expect(message(K).endsWith(`${NOT_3D('Hosty')} · ${REMEDY}`)).toBe(true);
+    expect(K.lines.filter((l) => l.includes("this PC's table and Hosty's do not hold the same table objects"))).toHaveLength(1);
+    // The player opens a copy with the host's objects after all: the launch's word no longer applies and is dropped.
+    mod.close();
+    await until(() => view(K)?.fork === 'none', 5000, 'the mod closed');
+    await K.mh.tableLaunch();
+    await forkOf(K, true, STD);
+    await until(() => message(K).includes('3D works'), 8000, '3D works');
+    expect(message(K)).not.toContain('Not in 3D with');
+    expect(message(K)).not.toContain('For 3D:');
+
+    // 3D watch off on the joining PC: the launch's word is not shown (2D is what that PC asked for).
+    const hub2 = new TunnelHub();
+    const H2 = seat(hub2, 'Hosty');
+    const K2 = seat(hub2, 'Krobs');
+    await both(H2, K2);
+    await K2.mh.setSettings({ watch3d: 'off' });
+    K2.mh.setLaunchNote(REMEDY, true);
+    await sleep(150);
+    expect(message(K2)).not.toContain('Not in 3D with');
+    expect(message(K2)).not.toContain('For 3D:');
+  });
+});
+
 describe('the turn lock and a fork that answers at once (A8)', () => {
   it('whenPlaying that answers before it returns leaves no stale wait behind: the next lock and unlock work as ever', async () => {
     // A stream whose fork is "away" when asked and back by the time the wait is registered.

@@ -113,6 +113,12 @@ export interface ForkLaunch {
    * any more, at once.
    */
   notStarted?(): void;
+  /**
+   * I11.4.15: the table objects this start's VPX reported (`hello`'s `<editables> <table hash>`), once it has said
+   * `hello` with the stream port this start asked for, so it is this table's word and no other VPX's; null when it
+   * never did (it closed, did not start, or another start came first). The caller keeps it for the file it started.
+   */
+  objects?: Promise<{ editables: number; hash: string } | null>;
 }
 
 /** `base` without the fork's own variables (case-insensitive, as Windows reads them), then `add`. Pure. */

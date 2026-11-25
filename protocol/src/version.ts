@@ -35,6 +35,10 @@
  *   `stream3dWait` (defaulted), both never logged, so still 6, by the precedent of `ballEndReady` in 5. A 0.2.46 peer
  *   strips the keys (zod objects are not strict): as the host it lists nobody and waits for nobody, which is what it
  *   did; as a client it never says it is waiting and is never waited for, and it ignores the list.
+ *   I11.4.15 (2026-11-24, the table a joining PC opens): HELLO_ACK `hostTableObjects` (defaulted to null, never
+ *   logged), so still 6, by the same precedent. A 0.2.46 to 0.2.50 client strips the key and picks its table by the
+ *   file hash and the name, as it did; a host of those builds never sends it, and a new client then ranks its copies
+ *   as before. Not a field of `GameFingerprint`: that object is also MATCH_READY's `game`, which is logged.
  */
 /*
  * A17 step 5 (2026-11-25), the lobby's schemas, and STILL 6. The lobby (alpha-match.md §11.7) will be protocol 7, in

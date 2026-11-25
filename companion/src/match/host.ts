@@ -473,6 +473,8 @@ export class HostMatch {
   /** Pre-start roster, host first. After start the roster lives in state.participants. */
   private lobby: ParticipantInfo[] = [];
   private hostGame: GameFingerprint;
+  /** I11.4.15: the table objects of this host's table as the shell last said them (HELLO_ACK `hostTableObjects`); null: not known. */
+  private hostTableObjects: { editables: number; hash: string } | null = null;
   private readonly fingerprintPolicy: 'refuse' | 'advise';
   /** Players accepted with a differing fingerprint (`advise` only), with what differed. */
   private readonly mismatched = new Map<PlayerId, PayloadOf<'REFUSE'>['mismatches']>();
@@ -817,6 +819,22 @@ export class HostMatch {
       for (const [id, g] of this.lobbyGames) this.setMismatch(id, compareFingerprints(this.hostGame, g, this.localId));
     }
     this.events.emit('participantUpdated', { ...this.lobby[0]! });
+    this.resendAck();
+    return true;
+  }
+
+  /**
+   * I11.4.15 (2026-11-24): the table objects of this host's own table (what the Castcade VPX build names in its
+   * `hello`, or what the companion computed from the file before that), for every client in a re-sent HELLO_ACK
+   * (`hostTableObjects`): a joining PC picks its copy of the table by it. Lobby only, never logged. False (nothing
+   * sent) when it is what was said last, or after MATCH_READY.
+   */
+  setHostTableObjects(objects: { editables: number; hash: string } | null): boolean {
+    this.assertActive();
+    if (this.s.state.phase !== 'lobby') return false;
+    const was = this.hostTableObjects;
+    if (objects === null ? was === null : was !== null && was.editables === objects.editables && was.hash === objects.hash) return false;
+    this.hostTableObjects = objects ? { editables: objects.editables, hash: objects.hash } : null;
     this.resendAck();
     return true;
   }
@@ -3041,6 +3059,7 @@ export class HostMatch {
         ballEndReady: [...this.ballEndReady].map(([playerId, ready]) => ({ playerId, ready })),
         midnightModes: [...this.midnightModeOf].map(([playerId, m]) => ({ playerId, enabled: m.enabled, adjustment: m.adjustment })),
         stream3dWait: this.stream3dWaiting(),
+        hostTableObjects: this.hostTableObjects ? { ...this.hostTableObjects } : null,
       },
       null,
     );

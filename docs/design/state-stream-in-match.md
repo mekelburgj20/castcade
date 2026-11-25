@@ -5,10 +5,11 @@ Status: design, 2026-11-18. ADR 0011 is the ruling; `WORK.md` I11 is the tracker
 
 ## 1. What changes for a player
 
-In a match, while another player is up, a PC that has the Castcade VPX build and the identical table file shows
+In a match, while another player is up, a PC that has the Castcade VPX build and the same table (the same table
+objects: the identical file, or a re-save or another download of it; §4.5, I11.4.15) shows
 that player's game **on its own table, from its own head**, instead of the flat video on a screen. At its own
-turn its own game is back exactly as it left it. A PC without the build, or with another table file, keeps the
-2D video (ADR 0009), with nothing to set up. Voice, the scoreboard panel, the turn lock, scoring and the
+turn its own game is back exactly as it left it. A PC without the build, or with a table that holds other objects
+(a mod), keeps the 2D video (ADR 0009), with nothing to set up. Voice, the scoreboard panel, the turn lock, scoring and the
 witness do not change.
 
 Today a VPX is a player or a watcher for as long as the table is open (`CASTCADE_STREAM=play|watch`, read once).
@@ -288,20 +289,44 @@ open, and never longer than 45 s in all.
 Never: a PC with the setting off, with no fork, or whose fork speaks another control version. Only the lobby
 before game 1: a next game and a rejoin never wait.
 
-**What the lobby says besides** (I11.4.11, I11.4.12), on the Match tab and the panel, before the start:
+**What the lobby says besides** (I11.4.11, I11.4.12, I11.4.15), on the Match tab and the panel, before the start:
 
 - the two PCs have different files of the table (the table advisory that was there: "same table, different file",
-  "different table file"), and, where the identical file would give 3D (this PC's VPX ready in the fork, the other
-  PC not known to have none), what that costs: `the other player's turns are shown as the flat video, not in 3D:
-  use the identical table file on both PCs`.
+  "different table file"). Other bytes alone say nothing of 3D (I11.4.15; I11.4.11 said `not in 3D: use the
+  identical table file on both PCs` here whenever the bytes differed, and on 2026-11-23 that was wrong for two
+  tables of two): what §4.2 compares is the table identity the two forks name, the count of the table's objects
+  and a hash of their types and names, and a re-save or another download of a table has the same one. So the line
+  follows what is known of that:
+  - this PC shows every other player in 3D (both VPX are up in the fork and name the same identity): the table
+    advisory adds `3D works all the same: the files hold the same table objects`;
+  - a player's table is known to hold other objects (both VPX are up and name different identities; or, on a
+    joining PC whose table is still loading, the host said its table's identity and the copy that was started has
+    another): `Not in 3D with <names>: the two table files do not hold the same table objects, so their turns are
+    shown as the flat video`, on both PCs, gone when it no longer applies;
+  - nothing is known yet: nothing is said of 3D.
 - which table a joining PC starts: one that can report ball ends is never displaced by one that cannot (a match
-  that takes turns comes before 3D). Among imported tables the host's identical file wins; a file that is not
-  imported is started only when no imported copy of the game exists. To know the identical file, the copies of
-  that title that nothing has hashed are hashed (eight at most, one at a time, kept by path, size and time, given
-  up at once when the match ends or the player opens a table), only on a PC where 3D can run. When an imported
-  copy is started although the host's file is on this PC, not imported, the launch state and the lobby line say:
-  `For 3D: the host's file is on this PC as "<file>", not imported. Import it in Castcade and rejoin`. Importing
-  it automatically is not built.
+  that takes turns comes before 3D). Among the copies that may be picked the order is: the host's identical file;
+  then a copy with the host's table objects; then one whose objects are not known; last one known to hold others;
+  only then the name (whole before title) and which was played last. A file that is not imported is started only
+  when no imported copy of the game exists.
+  - To know the identical file, the copies of that title that nothing has hashed are hashed (eight at most, one at
+    a time, kept by path, size and time, given up at once when the match ends or the player opens a table), only
+    on a PC where 3D can run.
+  - To know the table objects (I11.4.15): the host says its table's in `HELLO_ACK.hostTableObjects` (never
+    logged, protocol 6 unchanged), only when 3D can run on it (the fork beside its VPX and `watch3d` on): its own
+    VPX's `hello` once that is up, and before that what its companion computes from the file
+    (`launch/fork-identity.ts`), so a joiner does not wait for the host's table to load. The joining PC computes
+    the same for its copies of that title (eight at most, one at a time, 8 s in all; a copy not read in time counts
+    as not known), kept by path, size and time in `<userData>/table-objects.json` with the version of the
+    computation; what a fork itself reported for a file Castcade started in it is kept over anything computed. A
+    host that says nothing (0.2.46 to 0.2.50, or a file it cannot tell) is waited for 3 s when this PC has more
+    than one copy to choose from, and the copies then rank as before I11.4.15.
+  - When an imported copy is started although the host's file is on this PC, not imported, the launch state and
+    the lobby line say: `For 3D: the host's file is on this PC as "<file>", not imported. Import it in Castcade and
+    rejoin`; when the imported copy holds other objects and a copy that is not imported holds the host's: `For 3D:
+    "<file>" on this PC holds the same table objects as the host's file and is not imported. Import it in Castcade
+    and rejoin`. Neither is said when the copy that was started already holds the host's objects, nor for a host
+    whose PC said that no fork runs its table. Importing it automatically is not built.
 - this PC has the fork beside its VPX and `watch3d` on, and the table that is open is not on the control
   connection (opened by hand, open before the match, left from a 3D watch session, started while `watch3d` was
   off): `Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by
