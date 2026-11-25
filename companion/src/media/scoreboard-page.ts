@@ -17,6 +17,7 @@
  * self-contained (no imports, no closures over this module).
  */
 import type { PanelState, ScoreboardCorner } from './match-media-types.js';
+import { kitCss } from './aw-kit.js';
 
 export type { ScoreboardCorner };
 
@@ -127,24 +128,30 @@ export function scoreboardPageHtml(): string {
   const helpers = HELPERS.map((f) => f.toString()).join('\n');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Castcade scoreboard</title>
+<style>${kitCss()}</style>
 <style>
-  :root { --card: rgba(8, 10, 14, 0.78); --text: #fff; --dim: #b8c0cc; --up: #4fd1ff; }
+  /* The Arcaid look (2026-11-25): the kit's panel (its edge and top light bar) over the game; the kit's board (the
+     name in the UI face, the score in Orbitron; the player who is up in cyan). Every size is what it was before. The
+     card is a little darker than before (the kit's panel, 0.86 of the canvas) so its text keeps 4.5:1 over a bright table. */
+  :root { --card: color-mix(in srgb, var(--aw-canvas) 86%, transparent); --text: var(--aw-ice); --dim: var(--aw-chrome); --up: var(--aw-cyan); }
   * { box-sizing: border-box; margin: 0; }
   html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; color: var(--text);
-    font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
+    font-family: var(--aw-font-ui); font-weight: 700; -webkit-font-smoothing: antialiased; }
   body { display: flex; flex-direction: column; justify-content: flex-end; }
-  #card { background: var(--card); border-radius: 14px; padding: 12px 16px 12px; display: grid; gap: 6px; }
+  #card { position: relative; background: var(--card); border: 2px solid var(--aw-panel-border); border-radius: 14px; padding: 12px 16px 12px; display: grid; gap: 6px; }
+  #card::before { content: ""; position: absolute; left: 24px; right: 24px; top: -2px; height: 3px; border-radius: 3px;
+    background: linear-gradient(90deg, var(--aw-pink), var(--aw-cyan)); box-shadow: 0 0 12px color-mix(in srgb, var(--aw-cyan) 60%, transparent); }
   #card.off { display: none; }
-  #title { font-size: 21px; letter-spacing: 0.06em; color: var(--dim); }
+  #title { font-size: 21px; letter-spacing: 0.1em; color: var(--dim); }
   #rows { display: grid; gap: 4px; }
   .row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
   .row .mark { color: var(--up); font-size: 22px; }
-  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row .score { font-variant-numeric: tabular-nums; }
+  .row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .score { font-family: var(--aw-font-display); font-weight: 700; font-variant-numeric: tabular-nums; }
   .row.up .name, .row.up .score { color: var(--up); }
   .row.away .name, .row.away .score { color: var(--dim); }
-  .row .name small { font-size: 16px; letter-spacing: 0.08em; margin-left: 8px; color: var(--dim); }
-  #tally { font-size: 20px; line-height: 1.3; color: var(--dim); border-top: 2px solid rgba(255, 255, 255, 0.18); padding-top: 6px; }
+  .row .name small { font-size: 16px; letter-spacing: 0.14em; margin-left: 8px; color: var(--dim); }
+  #tally { font-size: 20px; line-height: 1.3; color: var(--dim); border-top: 2px solid var(--aw-divider); padding-top: 6px; }
 </style></head>
 <body>
 <div id="card" class="off"><div id="title"></div><div id="rows"></div><div id="tally"></div></div>

@@ -16,8 +16,9 @@ files:
   - package.json
   - build/icon.png
   - build/tray.ico
-  # The Arcaid look: the three fonts the window draws with are SIL OFL 1.1, whose licence travels with them.
-  - renderer/src/aw-theme/fonts/LICENSE-*.txt
+  # The Arcaid look: the kit (its style sheets, its SIL OFL 1.1 fonts and their licences), which the headset's pages
+  # put inside themselves when the main process writes them (src/media/aw-kit.ts).
+  - renderer/src/aw-theme/**
   - "!dist/.tsbuildinfo"
   - "!dist/**/*.map"
   - "!dist/**/*.d.ts"

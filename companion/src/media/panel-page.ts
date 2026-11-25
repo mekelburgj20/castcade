@@ -14,6 +14,7 @@ import type { LayerCameraEyeGeometry, MatchPlayerId, MediaStatus, PanelState } f
 import type { IceServer } from './media-settings.js';
 import type { PanelVolume } from './match-media-types.js';
 import { tallyText } from './scoreboard-page.js';
+import { kitCss } from './aw-kit.js';
 import { IN_JPEG_QUALITY } from './frame-clip.js';
 import { negotiationSource } from './rtc-signaling.js';
 
@@ -1355,37 +1356,53 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   const helpers = HELPERS.map((f) => f.toString()).join('\n');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Castcade match</title>
+<style>${kitCss()}</style>
 <style>
-  :root { --bg: #000; --panel: #11141b; --text: #fff; --dim: #b8c0cc; --mine: #ffd400; --up: #4fd1ff; --bad: #ff6b6b; }
+  /* The Arcaid look (2026-11-25): the kit's tokens and faces (the style above, src/media/aw-kit.ts). Cyan = fine and
+     the player who is up, pink = attention and this player's own ball (the kit's "next up"), red = a problem. Every
+     size is what it was before or larger; the layout is the lobby's (the column, the wrapped line, the menu's window). */
+  :root { --bg: var(--aw-canvas); --panel: var(--aw-panel); --text: var(--aw-ice); --dim: var(--aw-chrome); --mine: var(--aw-pink);
+    --up: var(--aw-cyan); --bad: var(--aw-red); --attn: color-mix(in srgb, var(--aw-pink) 80%, var(--aw-ice)); --line: color-mix(in srgb, var(--aw-cyan) 28%, transparent); }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
-    font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 700; }
+    font-family: var(--aw-font-ui); font-weight: 700; -webkit-font-smoothing: antialiased; }
+  html { background-image: radial-gradient(ellipse 70% 60% at 10% 0%, color-mix(in srgb, var(--aw-cyan) 10%, transparent), transparent),
+    radial-gradient(ellipse 70% 60% at 90% 100%, color-mix(in srgb, var(--aw-pink) 10%, transparent), transparent); }
+  html, body { background-color: var(--bg); }
+  body { background: transparent; }
   /* A17 step 9 (2026-11-27): the one column is as wide as the page and no wider. Without this a long line in the
      footer (the lobby's sentences are long) made the column as wide as the sentence: the header slid off centre and
      the scores off the right edge. Seen in the first pictures ever taken of this page (renderer/story). */
   body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
-  #head { font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
+  #head { font-family: var(--aw-font-display); font-weight: 900; font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
   #head { overflow: hidden; overflow-wrap: anywhere; }
-  #head.mine { color: var(--mine); }
-  #head .sub { font-size: 4vmin; letter-spacing: 0.02em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #stage { position: relative; min-height: 0; background: var(--panel); border-radius: 1vmin; overflow: hidden; }
-  #video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  /* The desktop window is 480 wide: there the header is the kit's UI face, which takes no more lines than before
+     (Orbitron, wider, made a long name three lines and took the menu's room). The headset keeps Orbitron. */
+  body.desktop #head { font-family: var(--aw-font-ui); font-weight: 700; letter-spacing: 0.02em; }
+  #head.mine { color: var(--attn); text-shadow: 0 0 2vmin color-mix(in srgb, var(--aw-pink) 45%, transparent); }
+  #head .sub { font-family: var(--aw-font-ui); font-weight: 700; font-size: 4vmin; letter-spacing: 0.02em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The stage is the kit's panel: its edge and its top light bar. */
+  #stage { position: relative; min-height: 0; background: var(--panel); border: 0.25vmin solid var(--aw-panel-border); border-radius: 1vmin; overflow: hidden; }
+  #stage::before { content: ""; position: absolute; left: 4vmin; right: 4vmin; top: 0; height: 0.4vmin; border-radius: 0.4vmin; z-index: 1;
+    background: linear-gradient(90deg, var(--aw-pink), var(--aw-cyan)); box-shadow: 0 0 1.6vmin color-mix(in srgb, var(--aw-cyan) 60%, transparent); }
+  #video { width: 100%; height: 100%; object-fit: contain; display: block; background: var(--aw-canvas); }
   #idle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
-    padding: 4vmin; font-size: 4.5vmin; color: var(--dim); }
+    padding: 4vmin; font-size: 4.5vmin; letter-spacing: 0.04em; color: var(--dim); }
   #strip { display: grid; gap: 0.6vmin; }
   .row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2vmin; align-items: baseline; padding: 0.6vmin 1.5vmin;
-    background: var(--panel); border-radius: 0.8vmin; font-size: 4.8vmin; }
-  .row.up { outline: 0.5vmin solid var(--up); }
+    background: var(--panel); border: 0.2vmin solid var(--line); border-radius: 0.8vmin; font-size: 4.8vmin; }
+  /* The player who is up: the kit's current row, its light across the row, and an outline that reads in a headset. */
+  .row.up { outline: 0.5vmin solid var(--up); color: var(--up); background: linear-gradient(90deg, color-mix(in srgb, var(--aw-cyan) 16%, var(--aw-canvas)), var(--aw-canvas)); }
   .row .name { display: flex; align-items: baseline; min-width: 0; white-space: nowrap; }
   .row .name .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .row .name .flag, .row .name .note { flex: none; }
   .row .detail { color: var(--dim); font-size: 3.6vmin; }
-  .row .score { font-variant-numeric: tabular-nums; }
-  .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
-  .row .note { color: var(--dim); font-size: 3vmin; font-weight: 400; margin-left: 1.5vmin; }
+  .row .score { font-family: var(--aw-font-display); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .row .flag { color: var(--attn); font-size: 3vmin; letter-spacing: 0.06em; margin-left: 1.5vmin; }
+  .row .note { color: var(--dim); font-size: 3vmin; font-weight: 500; margin-left: 1.5vmin; }
   .tally { padding: 0.2vmin 1.5vmin; color: var(--dim); font-size: 3.4vmin; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer { display: flex; gap: 2vmin; align-items: baseline; font-size: 3.8vmin; min-height: 4.5vmin; min-width: 0; }
-  #mic { color: var(--dim); white-space: nowrap; }
+  #mic { color: var(--dim); white-space: nowrap; letter-spacing: 0.04em; }
   #mic.muted, #mic.none { color: var(--bad); }
   /* Step 9: the line is read to its end: it wraps (the stage gives the room; the longest lobby sentence is three
      lines in the headset and six in the desktop window), and is cut only past that. It was one line cut with "…",
@@ -1393,27 +1410,40 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   #msg { flex: 1; min-width: 0; overflow: hidden; line-height: 1.15; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; }
   #vid { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #vid:empty { display: none; }
-  /* D8.10: the in-game menu covers the stage and the score strip; the header and the footer stay. */
-  #menu { display: none; grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 2; background: var(--panel);
+  /* D8.10: the in-game menu covers the stage and the score strip; the header and the footer stay. The Arcaid menu
+     (Arcaid's "The Arcaid menu", G26): dark glass, a double neon edge, the panel's top light bar, and a chrome pinball
+     at the chosen line. */
+  #menu { display: none; grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 2;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--aw-cyan) 7%, var(--aw-canvas)), var(--aw-canvas));
+    border: 0.2vmin solid color-mix(in srgb, var(--aw-cyan) 70%, transparent);
+    box-shadow: inset 0 0 0 0.5vmin color-mix(in srgb, var(--aw-canvas) 90%, transparent), inset 0 0 0 0.7vmin color-mix(in srgb, var(--aw-cyan) 30%, transparent), 0 0 2vmin color-mix(in srgb, var(--aw-cyan) 40%, transparent);
     border-radius: 1vmin; padding: 2vmin; flex-direction: column; gap: 0.8vmin; min-height: 0; overflow: hidden; }
+  #menu::before { content: ""; position: absolute; left: 4vmin; right: 4vmin; top: -0.2vmin; height: 0.4vmin; border-radius: 0.4vmin;
+    background: linear-gradient(90deg, var(--aw-cyan), color-mix(in srgb, var(--aw-cyan) 10%, transparent)); box-shadow: 0 0 2vmin color-mix(in srgb, var(--aw-cyan) 70%, transparent); }
   #menu.open { display: flex; }
   /* A17 step 9 (2026-11-27): the list is a window onto the lines, and keeps the chosen one in it. A lobby's menu has
      up to thirteen lines where a match's had seven: the lines past the seventh were cut off, and with them the
      question under the list and the keys (seen in the first pictures of this page, renderer/story). */
   #menuitems { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.8vmin; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0.6vmin; margin: -0.6vmin; scroll-padding-block: 1.2vmin; }
-  .more { flex: 0 0 auto; font-size: 2.6vmin; line-height: 1; text-align: center; color: var(--dim); visibility: hidden; }
+  .more { flex: 0 0 auto; font-size: 2.6vmin; line-height: 1; letter-spacing: 0.16em; text-align: center; color: var(--dim); visibility: hidden; }
   .more.on { visibility: visible; }
   #head { grid-row: 1; } #stage { grid-row: 2; grid-column: 1; } #strip { grid-row: 3; grid-column: 1; } footer { grid-row: 4; }
   .mi > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .mi .val { flex: none; }
-  .mi { display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin; border-radius: 0.8vmin;
-    font-size: 5vmin; background: #1b2029; }
-  .mi.sel { outline: 0.6vmin solid var(--mine); color: var(--mine); }
+  .mi { position: relative; display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin 1vmin 4vmin; border-radius: 0.8vmin;
+    font-size: 5vmin; background: color-mix(in srgb, var(--aw-chrome) 7%, transparent); }
+  /* The chosen line: lit in the menu's cyan, outlined so it reads in a headset, and the chrome pinball beside it. */
+  .mi.sel { outline: 0.6vmin solid var(--up); color: var(--text);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--aw-cyan) 26%, transparent), color-mix(in srgb, var(--aw-cyan) 6%, transparent) 70%, transparent); }
+  .mi.sel::before { content: ""; position: absolute; left: 1vmin; top: 50%; width: 2.2vmin; height: 2.2vmin; margin-top: -1.1vmin; border-radius: 50%;
+    background: radial-gradient(circle at 34% 30%, var(--aw-ice), var(--aw-chrome) 30%, var(--aw-gunmetal) 68%, var(--aw-canvas));
+    box-shadow: 0 0 1vmin color-mix(in srgb, var(--aw-cyan) 60%, transparent); }
   .mi.off { color: var(--dim); }
-  .mi .val { font-variant-numeric: tabular-nums; }
+  .mi .val { font-family: var(--aw-font-display); font-weight: 700; font-variant-numeric: tabular-nums; color: var(--up); }
+  .mi.off .val { color: var(--dim); }
   /* Step 9: the question and the keys keep their own height (a question of two lines ran into the keys under it); the list gives the room. */
-  #menunote { flex: 0 0 auto; font-size: 3.8vmin; line-height: 1.15; color: var(--mine); min-height: 4.5vmin; }
-  #menuhint { flex: 0 0 auto; font-size: 3vmin; font-weight: 400; color: var(--dim); }
+  #menunote { flex: 0 0 auto; font-size: 3.8vmin; line-height: 1.15; color: var(--attn); min-height: 4.5vmin; }
+  #menuhint { flex: 0 0 auto; font-size: 3vmin; font-weight: 500; color: var(--dim); }
 </style></head>
 <body class="${opts.vr ? 'vr' : 'desktop'}">
 <div id="head">CASTCADE MATCH</div>
