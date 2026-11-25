@@ -20,6 +20,7 @@ import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { isAllowedExternalUrl } from './allowlist.js';
 import { IPC, type AppVersions, type LoginItemState, type TablesPatchNowResult } from './ipc-types.js';
 import { createLogger, describeError, type Logger } from './log.js';
+import { kitLoad, kitSmokeLine, setKitLog } from '../media/aw-kit.js';
 import { ArcaidClient, ArcaidError } from '../witness/arcaid-client.js';
 import { featuresFor, resolveEdition } from './edition.js';
 import { removeFullEditionLeftovers } from './edition-leftovers.js';
@@ -175,6 +176,10 @@ if (argv.includes('--smoke')) {
   // D1.6: which ffmpeg this build would stream with (`bundled <build>` from the installer, else `path`).
   const ff = resolveFfmpeg({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, companionDir });
   process.stdout.write(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} ffmpeg ${ff.source === 'bundled' ? `bundled ${ff.build ?? '?'}` : 'path'} edition ${edition}\n`);
+  // The Arcaid look: the kit the headset's pages carry inside themselves (media/aw-kit.ts), read as this build reads it
+  // (inside the asar when packaged). `kit ok`, or `kit fallback <file>: <why>` and the smoke fails (exit 1).
+  const kit = kitSmokeLine(kitLoad());
+  process.stdout.write(`${kit.line}\n`);
   // C16.2: the journal pipe's worker starts from this build (inside the asar when packaged) and writes a line it is sent;
   // on a pipe and in a folder of its own, never the hooks' pipe or the player's journals. A failure, a throw or no
   // answer within 30 s fails the smoke (exit 1); it never keeps running.
@@ -184,7 +189,7 @@ if (argv.includes('--smoke')) {
     smokeEnded = true;
     clearTimeout(smokeGiveUp);
     process.stdout.write(`journal-pipe ${ok ? 'ok' : 'FAILED'} ${detail}\n`);
-    app.exit(ok ? 0 : 1);
+    app.exit(ok && kit.ok ? 0 : 1);
   };
   const smokeGiveUp = setTimeout(() => smokeDone(false, '(no answer within 30 s)'), 30_000);
   void smokeJournalPipe().then(
@@ -841,6 +846,8 @@ async function main(): Promise<void> {
     mirrorToStderr: !app.isPackaged,
   });
   log = logger;
+  // The Arcaid look: a kit the headset's pages cannot read is said once, in this log (media/aw-kit.ts).
+  setKitLog((line) => logger.warn(line));
   logger.info(`castcade ${appVersion} protocol ${PROTOCOL_VERSION} electron ${process.versions.electron} packaged=${app.isPackaged} edition ${edition}`);
   if (editionPick.ignored !== null) logger.warn(`edition: '${editionPick.ignored}' (${editionPick.source === 'env' ? 'CASTCADE_EDITION' : 'package.json castcadeEdition'}) is not an edition; running the full app`);
 

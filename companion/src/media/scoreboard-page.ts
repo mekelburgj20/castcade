@@ -131,7 +131,7 @@ export function scoreboardPageHtml(): string {
 <style>${kitCss()}</style>
 <style>
   /* The Arcaid look (2026-11-25): the kit's panel (its edge and top light bar) over the game; the kit's board (the
-     name in the UI face, the score in Orbitron; the player who is up in cyan). Every size is what it was before. The
+     name in the UI face at 700, as before, the score in Orbitron; the player who is up in cyan). Every size is what it was before. The
      card is a little darker than before (the kit's panel, 0.86 of the canvas) so its text keeps 4.5:1 over a bright table. */
   :root { --card: color-mix(in srgb, var(--aw-canvas) 86%, transparent); --text: var(--aw-ice); --dim: var(--aw-chrome); --up: var(--aw-cyan); }
   * { box-sizing: border-box; margin: 0; }
@@ -146,7 +146,7 @@ export function scoreboardPageHtml(): string {
   #rows { display: grid; gap: 4px; }
   .row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
   .row .mark { color: var(--up); font-size: 22px; }
-  .row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .score { font-family: var(--aw-font-display); font-weight: 700; font-variant-numeric: tabular-nums; }
   .row.up .name, .row.up .score { color: var(--up); }
   .row.away .name, .row.away .score { color: var(--dim); }

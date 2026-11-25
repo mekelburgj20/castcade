@@ -88,7 +88,7 @@ jobs:
       # anything is published: a build whose worker does not load fails here and reaches nobody (a release created and left
       # without its installer would break every installed app's update check). Castcade.exe is a GUI-subsystem program:
       # Start-Process -Wait is what makes the step wait for it and get its exit code and output. Fails on a non-zero exit
-      # or without `journal-pipe ok`. The Package step below builds the app folder again with the installer.
+      # or without `journal-pipe ok` and `kit ok`. The Package step below builds the app folder again with the installer.
       - name: Package the app folder only (not published)
         working-directory: companion
         run: npx electron-builder --win --dir --publish never
@@ -104,6 +104,8 @@ jobs:
           Get-Content -Raw $err
           if ($p.ExitCode -ne 0) { throw "Castcade.exe --smoke exited with $($p.ExitCode)" }
           if ($text -notmatch 'journal-pipe ok') { throw 'Castcade.exe --smoke did not print journal-pipe ok' }
+          # The Arcaid look: the kit the headset's pages carry inside themselves, read from inside the asar (media/aw-kit.ts).
+          if ($text -notmatch 'kit ok') { throw 'Castcade.exe --smoke did not print kit ok (the headset pages would draw without the Arcaid kit)' }
       - name: Create the pre-release first (electron-builder's parallel uploads race to create it otherwise)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -169,6 +171,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "Castcade.exe --smoke exited with $($p.ExitCode)" }
           if ($text -notmatch 'journal-pipe ok') { throw 'Castcade.exe --smoke did not print journal-pipe ok' }
           if ($text -notmatch 'edition witness') { throw 'Castcade.exe --smoke did not print edition witness' }
+          if ($text -notmatch 'kit ok') { throw 'Castcade.exe --smoke did not print kit ok (the Arcaid kit is missing from this build)' }
       # Built with --publish never and uploaded by name below: the three files go up, and nothing else (never a latest.yml,
       # which would turn every full install into a Witness edition at its next update check).
       - name: Package

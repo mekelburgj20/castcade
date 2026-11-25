@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { shortName, bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, watchingText, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { shortName, bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, coverLookOf, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, watchingText, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
 import { shortName as shortNameOfMatch } from '../match/short-name.js';
 import { scoreboardPageHtml, scoreboardView, shortName as shortNameOfScoreboard, tallyText } from './scoreboard-page.js';
 
@@ -295,20 +295,26 @@ describe('match video crop (D2.5)', () => {
 
   it('paints the crop at the output size; covered, a dark frame saying "Paused: back in a moment"; no frame yet, nothing', () => {
     const ctx = fakeCtx();
-    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, false)).toBe('crop');
+    // The Arcaid look (the review of PR 144, finding 6): the kit's canvas, ice and UI face, as the page reads them.
+    const look = coverLookOf({ getPropertyValue: (n: string) => ({ '--aw-canvas': ' #07090F', '--aw-ice': ' #EAF6FF', '--aw-font-ui': ' "Chakra Petch", sans-serif' })[n] ?? '' });
+    expect(look).toEqual({ bg: '#07090F', ink: '#EAF6FF', face: '"Chakra Petch", sans-serif' });
+    expect(coverLookOf({ getPropertyValue: () => '' })).toEqual({ bg: 'black', ink: 'white', face: 'sans-serif' });
+    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, false, look)).toBe('crop');
     expect(ctx.calls).toEqual([['drawImage', 100, 200, 1280, 720, 0, 0, 1280, 720]]);
     ctx.calls.length = 0;
-    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, true)).toBe('cover');
+    expect(paintFrame(ctx, { videoWidth: 2560, videoHeight: 1440 }, CAP, true, look)).toBe('cover');
     expect(ctx.calls).toEqual([
       ['fillRect', 0, 0, 1280, 720],
       ['fillText', 'Paused: back in a moment', 640, 360],
     ]);
-    expect(ctx.font).toMatch(/^700 60px /);
+    // The same size as before (60 px on a 1280 x 720 frame), in the kit's face, its words in ice.
+    expect(ctx.font).toBe('700 60px "Chakra Petch", sans-serif');
+    expect(ctx.fillStyle).toBe('#EAF6FF');
     // A portrait crop: the text is sized by the width so it fits.
-    paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, { ...CAP, out: { width: 404, height: 720 } }, true);
+    paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, { ...CAP, out: { width: 404, height: 720 } }, true, look);
     expect(ctx.font).toMatch(/^700 25px /);
     ctx.calls.length = 0;
-    expect(paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, CAP, false)).toBe('blank');
+    expect(paintFrame(ctx, { videoWidth: 0, videoHeight: 0 }, CAP, false, look)).toBe('blank');
     expect(ctx.calls).toEqual([]);
   });
 });

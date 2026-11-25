@@ -430,20 +430,36 @@ export interface Paint2D {
   drawImage(src: unknown, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
 }
 
+/** The Arcaid look: the cover frame's ground, its words' colour and their face (the kit's canvas, ice and UI face). */
+export interface CoverLook {
+  bg: string;
+  ink: string;
+  face: string;
+}
+
+/**
+ * The Arcaid look (the review of PR 144, finding 6): the cover frame's look, read from the kit's tokens of the page it
+ * is drawn on (the kit is inside the page: aw-kit.ts). A page without them gets plain black and white.
+ */
+export function coverLookOf(style: { getPropertyValue(name: string): string }): CoverLook {
+  const token = (name: string, otherwise: string): string => style.getPropertyValue(name).trim() || otherwise;
+  return { bg: token('--aw-canvas', 'black'), ink: token('--aw-ice', 'white'), face: token('--aw-font-ui', 'sans-serif') };
+}
+
 /**
  * D2.5: one frame of the match video. Covered (D1.9: VPX is not in front, so the screen shows something else): a flat
- * dark frame saying so. Else the window's crop of the screen, scaled to the output. `blank` (no video frame yet) leaves
- * the canvas as it was.
+ * dark frame saying so, in the kit's canvas, ice and UI face (`look`). Else the window's crop of the screen, scaled to
+ * the output. `blank` (no video frame yet) leaves the canvas as it was.
  */
-export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeight: number }, cap: Pick<PanelCapture, 'screen' | 'crop' | 'out'>, covered: boolean): 'cover' | 'crop' | 'blank' {
+export function paintFrame(ctx: Paint2D, video: { videoWidth: number; videoHeight: number }, cap: Pick<PanelCapture, 'screen' | 'crop' | 'out'>, covered: boolean, look: CoverLook): 'cover' | 'crop' | 'blank' {
   const w = cap.out.width;
   const h = cap.out.height;
   if (covered) {
-    ctx.fillStyle = '#11141b';
+    ctx.fillStyle = look.bg;
     ctx.fillRect(0, 0, w, h);
-    // 24 characters at about 0.55 em each fit in 90 % of a portrait crop's width too.
-    ctx.font = '700 ' + Math.max(12, Math.round(Math.min(h / 12, w / 16))) + 'px "Segoe UI", system-ui, sans-serif';
-    ctx.fillStyle = '#ffffff';
+    // 24 characters at about 0.55 em each fit in 90 % of a portrait crop's width too (Chakra Petch is no wider).
+    ctx.font = '700 ' + Math.max(12, Math.round(Math.min(h / 12, w / 16))) + 'px ' + look.face;
+    ctx.fillStyle = look.ink;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('Paused: back in a moment', w / 2, h / 2);
@@ -1349,7 +1365,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, shortName, headerText, scoreText, stripRows, watchingText, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, shortName, headerText, scoreText, stripRows, watchingText, tallyText, micText, videoPeer, stageText, videoCropRect, coverLookOf, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1362,7 +1378,10 @@ export function panelPageHtml(opts: { vr: boolean }): string {
      the player who is up, pink = attention and this player's own ball (the kit's "next up"), red = a problem. Every
      size is what it was before or larger; the layout is the lobby's (the column, the wrapped line, the menu's window). */
   :root { --bg: var(--aw-canvas); --panel: var(--aw-panel); --text: var(--aw-ice); --dim: var(--aw-chrome); --mine: var(--aw-pink);
-    --up: var(--aw-cyan); --bad: var(--aw-red); --attn: color-mix(in srgb, var(--aw-pink) 80%, var(--aw-ice)); --line: color-mix(in srgb, var(--aw-cyan) 28%, transparent); }
+    --up: var(--aw-cyan); --bad: var(--aw-red); --attn: color-mix(in srgb, var(--aw-pink) 80%, var(--aw-ice));
+    /* This player's own ball in the header: the kit's pink pulled toward ice to 7:1 or better on the canvas (the review
+       of PR 144, finding 8; aw-kit.test.ts measures it), with no glow behind the letters. */
+    --mine-ink: color-mix(in srgb, var(--aw-pink) 65%, var(--aw-ice)); --line: color-mix(in srgb, var(--aw-cyan) 28%, transparent); }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
     font-family: var(--aw-font-ui); font-weight: 700; -webkit-font-smoothing: antialiased; }
@@ -1379,7 +1398,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   /* The desktop window is 480 wide: there the header is the kit's UI face, which takes no more lines than before
      (Orbitron, wider, made a long name three lines and took the menu's room). The headset keeps Orbitron. */
   body.desktop #head { font-family: var(--aw-font-ui); font-weight: 700; letter-spacing: 0.02em; }
-  #head.mine { color: var(--attn); text-shadow: 0 0 2vmin color-mix(in srgb, var(--aw-pink) 45%, transparent); }
+  #head.mine { color: var(--mine-ink); }
   #head .sub { font-family: var(--aw-font-ui); font-weight: 700; font-size: 4vmin; letter-spacing: 0.02em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* The stage is the kit's panel: its edge and its top light bar. */
   #stage { position: relative; min-height: 0; background: var(--panel); border: 0.25vmin solid var(--aw-panel-border); border-radius: 1vmin; overflow: hidden; }
@@ -1782,8 +1801,21 @@ async function openMic(deviceId) {
 /** D2.5: one frame of the match video onto the canvas (the crop, or the cover). D7.5.1: the camera draws per frame. */
 function paint() {
   if (!cap || !ctx || camMode) return;
-  try { paintFrame(ctx, $('src'), cap, covered); } catch (e) { /* a frame lost; the next tick draws again */ }
+  try { paintFrame(ctx, $('src'), cap, covered, coverLook()); } catch (e) { /* a frame lost; the next tick draws again */ }
 }
+
+// The Arcaid look: the cover frame in the kit's canvas, ice and UI face, read once from the page's own tokens; the
+// face is asked for at once, so the first cover frame is not drawn in a fallback face.
+let cover = null;
+function coverLook() {
+  if (!cover) {
+    // (Never a lost frame for the look: without the page's style, plain black and white.)
+    const root = typeof getComputedStyle === 'function' && document.documentElement ? getComputedStyle(document.documentElement) : null;
+    cover = coverLookOf(root || { getPropertyValue: () => '' });
+  }
+  return cover;
+}
+if (typeof document !== 'undefined' && document.fonts && document.fonts.load) document.fonts.load('700 24px "Chakra Petch"').catch(() => undefined);
 
 /** A new crop for the live capture: the canvas takes the output size (a new size resets it, so it is drawn at once). */
 function setCrop(c) {
