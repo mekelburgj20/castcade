@@ -1212,6 +1212,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     if (!a.backlog.take(ev, meta)) return;
     if (a.hold) return;
+    // 2026-11-24: the mark is taken when the log grows, and the witness has none before it delivered a first game
+    // event. So through a player's whole first ball (the log last grew at the grant, when the table had said nothing
+    // yet) the saved record named no table load, and a table closed and opened again while Castcade was closed could
+    // not be told from the same table: the fresh game on it was taken for the match's. The first event after such a
+    // log entry now names its table load, with nothing of it delivered (`offset` at the end of its `table_loaded`
+    // line), and the record is saved at once; the next log entry sets the mark as ever.
+    if (a.mark === null && meta?.mark) {
+      a.mark = { ...meta.mark, offset: meta.mark.loaded };
+      saveResume(a);
+    }
     if (a.backlog.tableReopened()) a.controller.feed({ kind: 'table_exit' });
     a.controller.feed(ev);
   });

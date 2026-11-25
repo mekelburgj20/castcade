@@ -435,7 +435,10 @@ describe.skipIf(!haveCscript)('hook 0.6.0: the journal through the companion pip
 
   it('the exit drain with the real hook: its process is gone while its last lines wait for the disk; drain() resolves once they are in the file', async () => {
     const { local, journals } = localAppData('exit-drain');
-    const w = pipeFor(journals, 'exit-drain', { entry: './journal-pipe-test-worker.test-support.ts', workerData: { stallMs: 1_500, stallWrites: 1 } });
+    // The first write is stuck until this test asks for the drain, and 150 ms more (2026-11-24). It was stuck for 1.5 s
+    // from the write, which was also the time cscript had to start, run the script and exit: on a busy PC it can take
+    // longer, and the file then already held `table_exit` when the test looked.
+    const w = pipeFor(journals, 'exit-drain', { entry: './journal-pipe-test-worker.test-support.ts', workerData: { stallMs: 150, stallWrites: 1, stallUntilDrains: 1 } });
     expect(await w.pipe.ready(15_000)).toBe(true);
     const script = harness('exit-drain', w.pipe.pipeName, [
       'Castcade_Init "exit drain", "A", "0.3.2", ""',

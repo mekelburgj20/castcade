@@ -285,6 +285,8 @@ export class WatchRelayClient extends RelayBase {
     const code = this.code;
     if (code === null || this.closed || this.ended !== null || this.joined) return;
     this.rejoining = true;
+    /** How long until the next ask; null: no next ask from here (in the room, over for good, or socket.io's turn). */
+    let againIn: number | null = null;
     try {
       await this.join(code);
       this.misses = 0;
@@ -301,10 +303,14 @@ export class WatchRelayClient extends RelayBase {
       // A dropped socket is socket.io's to fix (it reconnects and `onSocketUp` asks again); a miss waits a little longer
       // each time; a device held back waits out the server's minute.
       const gap = word === 'rate_limited' ? 15_000 : (this.gaps[Math.max(0, Math.min(this.misses, this.gaps.length) - 1)] ?? 2_000);
-      if (word !== 'unreachable' || this.socket?.connected) this.scheduleRejoin(gap);
+      if (word !== 'unreachable' || this.socket?.connected) againIn = gap;
     } finally {
       this.rejoining = false;
     }
+    // Only now, with `rejoining` down again (2026-11-24): `scheduleRejoin` refuses while an ask is running, so the
+    // next ask scheduled from inside the catch above was never scheduled, and a client told `no_such_match` once (it
+    // asked for the room before its host had opened it again, after an ArcAid restart) stayed out of the session.
+    if (againIn !== null) this.scheduleRejoin(againIn);
   }
 
   close(): void {
