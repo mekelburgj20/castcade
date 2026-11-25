@@ -157,10 +157,12 @@ describe('envelope', () => {
     expect(() => buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0', channel: 'audio' as never }, { matchId: 'TD-1', seq: 8, from: 'p1' })).toThrow(ProtocolError);
   });
 
-  it('protocol 6 (I11.4.2): MEDIA_SIGNAL channel `stream` round-trips for every kind the tunnel sends; the version is 6 and a frame stamped 5 does not decode', () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+  it('protocol 6 (I11.4.2): MEDIA_SIGNAL channel `stream` round-trips for every kind the tunnel sends; the version is 7 now (A17 step 7) and a frame stamped 5 or 6 does not decode', () => {
+    expect(PROTOCOL_VERSION).toBe(7);
     const offer = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'offer', sdp: 'v=0\r\n', channel: 'stream' }, { matchId: 'TD-1', seq: 7, from: 'p1', ts: 1 });
-    expect(offer.v).toBe(6);
+    expect(offer.v).toBe(7);
+    // A17 step 7: the frame of a 0.2.46 to 0.2.50 PC (protocol 6) does not decode either: the two refuse each other at HELLO.
+    expect(() => decodeFrame(JSON.stringify({ ...offer, v: 6 }))).toThrow(ProtocolError);
     expect(offer.payload.channel).toBe('stream');
     expect(decodeFrame(encodeFrame(offer))).toEqual(offer);
     const ice = buildMessage('MEDIA_SIGNAL', { to: 'p2', kind: 'ice', candidate: { candidate: 'candidate:1 1 udp 1 192.0.2.1 9 typ host', sdpMid: '0', sdpMLineIndex: 0 }, channel: 'stream' }, { matchId: 'TD-1', seq: 8, from: 'p1', ts: 1 });

@@ -1020,12 +1020,17 @@ export class ClientMatch {
         { matchId: this.throwdownCode, seq, from: this.localId, ts: this.s.clock.now() },
       );
     }
+    // A17 step 7 (protocol 7): the same signed body without a lobby: the match's id where the lobby's code stands,
+    // and, under the signature, the envelope's own `seq` and the id of the host this frame is for (the match's
+    // host, or the new one after a transfer). A host takes it once, and no other PC takes it at all.
     const head = this.s.log.head();
     const matchId = this.matchIdForWire();
-    const signature = signCanonical(reconnectSignBody(matchId, this.localId, head.hash, head.length), this.s.keys.privateKey);
+    const seq = this.s.nextSeq();
+    const to = this.reconnecting?.host ?? this.hostId ?? this.localId;
+    const signature = signCanonical(reconnectSignBody(matchId, to, this.localId, matchId, head.hash, head.length, seq), this.s.keys.privateKey);
     // A18: `resends`: this client sends its unanswered reports again after the answer (`resendUnanswered`), so a host
     // need not pause and issue the grant again to hear of a ball that ended while the link was away.
-    return this.s.build('RECONNECT', { player: this.localId, logHash: head.hash, logLength: head.length, signature, resends: true }, matchId);
+    return buildMessage('RECONNECT', { player: this.localId, logHash: head.hash, logLength: head.length, signature, resends: true }, { matchId, seq, from: this.localId, ts: this.s.clock.now() });
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1256,7 +1261,8 @@ export class ClientMatch {
     const p = msg.payload;
     const who = st.participants.find((x) => x.playerId === msg.from);
     if (!who || !st.matchId || p.player !== msg.from || msg.from === this.localId) return false;
-    return verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey);
+    // Protocol 7: the body names the host the frame was written for, which is this PC (the host to be), and its `seq`.
+    return verifyCanonical(reconnectSignBody(st.matchId, this.localId, p.player, st.matchId, p.logHash, p.logLength, msg.seq), p.signature, who.publicKey);
   }
 
   // ------------------------------------------------------------------------------------------

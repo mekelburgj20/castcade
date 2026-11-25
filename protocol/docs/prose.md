@@ -19,7 +19,8 @@ participants are **clients**; the turn token is a **grant**.
   and (A17, the build after 0.2.50) writes its answer **with the asker's `v`** on the envelope, so that the
   asker can decode it: a `HELLO` gets `REFUSE` (`protocol_version`) whose `message` is a sentence for the
   player, naming which PC has to update; a `RECONNECT` gets a `RECONNECT_ACK` that does not accept, with
-  the code `unknown_player` (the nearest every version knows) and a `seq` above anything the host can
+  the code `protocol_version` when the asker is on protocol 7 or later and `unknown_player` when it is on an
+  older one (the nearest code every version knows), and a `seq` above anything the host can
   have sent that participant before (the wall clock, as a restarted sender uses). `REFUSE` and
   `RECONNECT_ACK` have had the same shape since protocol 2. A host up to 0.2.50 answered a `HELLO` in its
   own version, which the asker could not decode, and a `RECONNECT` not at all; a client that is sent a
@@ -28,6 +29,14 @@ participants are **clients**; the turn token is a **grant**.
   number (the sentence says "another version" otherwise) and, for a `RECONNECT`, a match id of letters,
   digits, `_`, `.`, `:` and `-`: a frame from a socket that has not joined may hold anything, and no such
   frame may make the host fail.
+- **Protocol 7 (A17 step 7, 2026-11-25) is the lobby** (see The lobby, below): the companion's shell turns the
+  lobby on, so every host it makes is a lobby. A PC on protocol 6 (Castcade 0.2.46 to 0.2.50) and a PC on 7
+  refuse each other at the first frame, in both directions, each with a sentence. A PC on 6 that joins a lobby
+  is shown "This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent 6). Update Castcade on this PC
+  (Settings, Check for updates) and join again." (0.2.51 stands for the release that first carries protocol 7.)
+  A PC on 7 whose host is still on 6 cannot decode the host's answer and says "The lobby's PC runs another
+  version of Castcade (protocol 6; this PC has 7). Both need the same: Castcade is updated on the lobby's PC
+  (Settings, Check for updates), then join again."
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
 - A link belongs to a player once the host has accepted the link's first frame (no change on the wire): a
   `HELLO` it takes into the lobby, or a `RECONNECT` whose signature verifies and that it accepts. Until then the
@@ -279,8 +288,13 @@ to confirm the start); the host still may start, and such a match is played with
 
 - A client that lost its socket reconnects to the current host, at the endpoint it last reached it on,
   and sends `RECONNECT` as the first frame: its player id, the hash and length of the last log entry it
-  holds, and its signature over `{matchId, player, logHash, logLength}` with its roster key. It never
-  sends a fresh `HELLO` to resume.
+  holds, and its signature with its roster key. **Protocol 7 has one signed body for every `RECONNECT`**:
+  `{lobby, host, player, match, logHash, logLength, seq}`, `host` being the player id of the host the frame
+  is sent to (the match's host, or the new host after a transfer) and `seq` the envelope's own; in a match
+  without a lobby `lobby` and `match` are both the match's id. So a `RECONNECT` is good for one use at one
+  PC: its payload under another `seq` does not verify, and neither does the frame at a host it was not
+  written for (`bad_signature`). (Up to protocol 6 the body was `{matchId, player, logHash, logLength}`; a
+  protocol 7 host does not take it.) It never sends a fresh `HELLO` to resume.
 - The host answers `RECONNECT_ACK`. When it holds an entry with that hash at that position, the answer
   carries every entry after it, in order, verbatim (nothing when the client is already current). The
   client checks each entry's `prevHash` and `hash` before appending it, so its log is the host's log.
@@ -394,11 +408,11 @@ to confirm the start); the host still may start, and such a match is played with
 
 ## The lobby (A17)
 
-**Status, 2026-11-25.** The shapes below are in the schemas and both engines know the rules, behind an option
-that is off (`HostOptions.lobby`, `ClientOptions.lobby`). The protocol is still 6: a build with the option off
-sends none of the new messages and none of the new keys, so its frames are byte for byte those of 0.2.46 to
-0.2.50, and it plays with them. The version becomes 7 in the build that turns the lobby on; from then on a host
-is a lobby.
+**Status, 2026-11-25: protocol 7.** The companion's shell turns the lobby on (A17 step 7): every match the app
+hosts or joins is a match in a lobby, and the version is 7 because of it. The engines still have the lobby as
+an option (`HostOptions.lobby`, `ClientOptions.lobby`): the companion always sets it; an engine with it off
+(the fakeclient, the engines' own tests) runs one match as before, sends none of the lobby's messages and
+none of its keys, and speaks the same version 7. A PC on protocol 6 is refused at `HELLO` (Transport, above).
 
 A **lobby** is one connection per PC for an evening: one code, the people in it (**members**), what each has
 chosen (`Stance`: `play` or `watch`), a table, and any number of matches, one after the other. The host is the

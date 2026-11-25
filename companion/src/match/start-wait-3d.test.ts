@@ -154,7 +154,8 @@ describe('the host engine: who is still making a 3D connection (I11.4.9)', () =>
   });
 
   it("the new keys are optional and bounded, and this build's parser drops a key it does not know (what a 0.2.46 peer does with these two: its schemas are not strict either)", () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+    // A17 step 7: the version is 7 now; these two keys came in on 6 and did not change it.
+    expect(PROTOCOL_VERSION).toBe(7);
     // What a 0.2.46 peer sends: no key at all.
     const key = generateKeys().publicKeyB64;
     const ack = HelloAck.safeParse({ hostPlayerId: 'h', hostPublicKey: key, participants: [] });

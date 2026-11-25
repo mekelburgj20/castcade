@@ -116,8 +116,8 @@ export const Hello = z
       .boolean()
       .optional()
       .describe("A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13)."),
-    // A17 (2026-11-25): optional and never logged. Sent only to a lobby (the lobby is off until the build that makes
-    // the protocol 7); a host that does not know it strips it.
+    // A17 (2026-11-25): optional and never logged. Sent only to a lobby (protocol 7, the build whose shell turns
+    // the lobby on); a host whose lobby is off strips it.
     stance: Stance.optional().describe('A17: Play or Watch at the next start. Absent: play.'),
     // A17 step 6, the review of 2026-11-25: optional, sent only to a lobby: a HELLO that says whose it is. A member
     // whose Castcade started again says HELLO afresh while its place is still kept, and is taken back by it.
@@ -561,7 +561,7 @@ export const Reconnect = z
     logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
     logLength: z.number().int().min(0),
     signature: Signature.describe(
-      "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, host, player, match, logHash, logLength, seq}): the lobby's code, the player id of the lobby's PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for.",
+      "The participant's signature over canonicalJson({lobby, host, player, match, logHash, logLength, seq}) with its key as the host holds it: the lobby's code, the player id of the PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for. Protocol 7 has this one body. Without a lobby (`match` is absent from the payload) `lobby` and `match` are both the match's id, as the envelope carries it. Up to protocol 6 a match without a lobby signed canonicalJson({matchId, player, logHash, logLength}); a protocol 7 host does not take that.",
     ),
     // A18 (2026-11-24): optional, never logged, not in the signed body; a peer that does not know it strips it, and
     // absent reads as "does not" (a companion up to 0.2.50).
@@ -579,7 +579,9 @@ export const ReconnectAck = z
   .object({
     accept: z.boolean(),
     code: z
-      // A17 step 6 (2026-11-25): two more values, sent by a lobby only (a peer up to 0.2.50 never meets them).
+      // A17 step 6 (2026-11-25): two more values, sent by a lobby only (a peer up to 0.2.50 never meets them). Step 7
+      // (protocol 7): `protocol_version` is also what a host answers a RECONNECT of another version with, when the
+      // sender is on 7 or later (an older sender does not know the code and gets `unknown_player`).
       .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started', 'protocol_version', 'stale_seq'])
       .nullable()
       .describe(

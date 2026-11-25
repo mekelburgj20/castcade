@@ -49,7 +49,7 @@ const checkAnswer = (text: string, want: 'REFUSE' | 'RECONNECT_ACK'): void => {
   expect(f.type).toBe(want);
   expect(Number.isSafeInteger(f.v)).toBe(true);
   expect(f.matchId).toBeNull();
-  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This match needs Castcade 0\.2\.46 or newer \(protocol 6; this PC sent (another version|\d+)\)\. /);
+  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This lobby needs Castcade 0\.2\.51 or newer \(protocol 7; this PC sent (another version|\d+)\)\. /);
 };
 
 describe('WebSocket loopback', () => {
@@ -100,7 +100,7 @@ describe('WebSocket loopback', () => {
       expect(msg.type).toBe('REFUSE');
       if (msg.type === 'REFUSE') {
         expect(msg.payload.code).toBe('protocol_version');
-        expect(msg.payload.message).toBe("The host's Castcade is older than this PC's (it speaks protocol 6, this PC 99). The host updates Castcade (Settings, Check for updates); then join again.");
+        expect(msg.payload.message).toBe("The Castcade on the lobby's PC is older than this PC's (it speaks protocol 7, this PC 99). It is updated there (Settings, Check for updates); then join again.");
       }
       expect(errors.length).toBe(1);
     } finally {
@@ -109,8 +109,8 @@ describe('WebSocket loopback', () => {
     }
   });
 
-  it('protocol 6 (I11.4.2): a HELLO from a protocol 5 build (0.2.40 to 0.2.45) is refused with protocol_version, as 4 refused 3', async () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+  it('protocol 6 (I11.4.2): a HELLO from a protocol 5 build (0.2.40 to 0.2.45) is refused with protocol_version, as 4 refused 3 (and as 7 refuses 6: A17 step 7)', async () => {
+    expect(PROTOCOL_VERSION).toBe(7);
     const hostTransport = new WsHostTransport({ localId: 'p1', port: 0 });
     const port = await hostTransport.listen();
     hostTransport.onError(() => undefined);
@@ -133,7 +133,7 @@ describe('WebSocket loopback', () => {
       expect(msg.type).toBe('REFUSE');
       if (msg.type === 'REFUSE') {
         expect(msg.payload.code).toBe('protocol_version');
-        expect(msg.payload.message).toBe('This match needs Castcade 0.2.46 or newer (protocol 6; this PC sent 5). Update Castcade on this PC (Settings, Check for updates) and join again.');
+        expect(msg.payload.message).toBe('This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent 5). Update Castcade on this PC (Settings, Check for updates) and join again.');
       }
       await closed;
     } finally {
@@ -170,26 +170,31 @@ describe('WebSocket loopback', () => {
   };
 
   it('A17 step 1 (2026-11-24): a HELLO, and a RECONNECT, of another version are answered in that version', async () => {
-    expect(PROTOCOL_VERSION).toBe(6);
-    // A HELLO from 0.2.45 (protocol 5), and one from a build that is newer than this host.
-    const older = await ask({ v: 5, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'p9', payload: { protocolVersion: 5, companionVersion: '0.2.45', throwdownCode: 'ABCDEF' } });
-    expect(older.answer).toMatchObject({ v: 5, type: 'REFUSE', matchId: null, from: 'p1', payload: { code: 'protocol_version' } });
-    expect(older.answer.payload.message).toMatch(/^This match needs Castcade 0\.2\.46 or newer .* Update Castcade on this PC \(Settings, Check for updates\) and join again\.$/);
-    const newer = await ask({ v: 7, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'p9', payload: { protocolVersion: 7 } });
-    expect(newer.answer).toMatchObject({ v: 7, type: 'REFUSE', payload: { code: 'protocol_version' } });
-    expect(newer.answer.payload.message).toMatch(/^The host's Castcade is older than this PC's .* The host updates Castcade/);
+    // A17 step 7 (2026-11-25): this host speaks protocol 7 (the lobby).
+    expect(PROTOCOL_VERSION).toBe(7);
+    // A HELLO from 0.2.50 (protocol 6), and one from a build that is newer than this host.
+    const older = await ask({ v: 6, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'p9', payload: { protocolVersion: 6, companionVersion: '0.2.50', throwdownCode: 'ABCDEF' } });
+    expect(older.answer).toMatchObject({ v: 6, type: 'REFUSE', matchId: null, from: 'p1', payload: { code: 'protocol_version' } });
+    // The sentence a 0.2.50 PC shows as "The host refused: ...": the design's wording, with both versions in it.
+    expect(older.answer.payload.message).toBe('This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent 6). Update Castcade on this PC (Settings, Check for updates) and join again.');
+    const newer = await ask({ v: 8, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'p9', payload: { protocolVersion: 8 } });
+    expect(newer.answer).toMatchObject({ v: 8, type: 'REFUSE', payload: { code: 'protocol_version' } });
+    expect(newer.answer.payload.message).toMatch(/^The Castcade on the lobby's PC is older than this PC's .* It is updated there/);
 
     // A RECONNECT: the PC was in the match, and this host restarted into another version (the evening an update
     // arrives). Until 0.2.50 it got no answer and waited out the whole host wait. Now it is told at once, with the one
     // code every version knows, and a `seq` that PC will not drop (above anything an earlier run of this host sent it).
     const before = Date.now();
-    const back = await ask({ v: 7, type: 'RECONNECT', matchId: 'ABCDEF', seq: 4711, ts: 1, from: 'p9', payload: { player: 'p9', logHash: '0'.repeat(64), logLength: 0, signature: 'c2ln' } });
-    expect(back.answer).toMatchObject({ v: 7, type: 'RECONNECT_ACK', matchId: 'ABCDEF', from: 'p1', payload: { accept: false, code: 'unknown_player', entries: [], logLength: 0 } });
+    const back = await ask({ v: 6, type: 'RECONNECT', matchId: 'ABCDEF', seq: 4711, ts: 1, from: 'p9', payload: { player: 'p9', logHash: '0'.repeat(64), logLength: 0, signature: 'c2ln' } });
+    expect(back.answer).toMatchObject({ v: 6, type: 'RECONNECT_ACK', matchId: 'ABCDEF', from: 'p1', payload: { accept: false, code: 'unknown_player', entries: [], logLength: 0 } });
     expect(back.answer.seq as number).toBeGreaterThanOrEqual(before);
+    // A17 step 7: a PC on protocol 7 or later knows the code that says why; a 0.2.50 PC got the nearest it has.
+    const ahead = await ask({ v: 8, type: 'RECONNECT', matchId: 'ABCDEF', seq: 4712, ts: 1, from: 'p9', payload: { player: 'p9', logHash: '0'.repeat(64), logLength: 0, signature: 'c2ln' } });
+    expect(ahead.answer).toMatchObject({ v: 8, type: 'RECONNECT_ACK', payload: { accept: false, code: 'protocol_version' } });
     // In its own version it is a RECONNECT_ACK as every version since protocol 2 writes one.
     expect(decodeFrame(JSON.stringify({ ...back.answer, v: PROTOCOL_VERSION })).type).toBe('RECONNECT_ACK');
     // Nothing of another version reaches the engine; each undecodable frame is reported once.
-    for (const x of [older, newer, back]) {
+    for (const x of [older, newer, back, ahead]) {
       expect(x.delivered).toEqual([]);
       expect(x.errors).toHaveLength(1);
     }
@@ -259,7 +264,7 @@ describe('WebSocket loopback', () => {
     await new Promise<void>((resolve) => server.once('listening', () => resolve()));
     server.on('connection', (socket) => {
       socket.on('message', () => {
-        socket.send(JSON.stringify({ v: 5, type: 'REFUSE', matchId: null, seq: 1, ts: 1, from: 'p1', payload: { code: 'protocol_version', message: 'host speaks protocol 5, client sent 6', mismatches: [] } }), () => socket.close());
+        socket.send(JSON.stringify({ v: 6, type: 'REFUSE', matchId: null, seq: 1, ts: 1, from: 'p1', payload: { code: 'protocol_version', message: 'host speaks protocol 6, client sent 7', mismatches: [] } }), () => socket.close());
       });
     });
     const port = (server.address() as { port: number }).port;
@@ -275,7 +280,8 @@ describe('WebSocket loopback', () => {
       const end = Date.now() + 4000;
       while (errors.length === 0 && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
       expect(errors.map((e) => e.name)).toEqual(['ForeignVersionError']);
-      expect(errors[0]?.message).toBe("The host's PC runs another version of Castcade (protocol 5; this PC has 6). Both need the same: the host updates Castcade (Settings, Check for updates), then join again.");
+      // A17 step 7: what a PC of this build shows when the lobby's PC is still on 0.2.50 (the other direction).
+      expect(errors[0]?.message).toBe("The lobby's PC runs another version of Castcade (protocol 6; this PC has 7). Both need the same: Castcade is updated on the lobby's PC (Settings, Check for updates), then join again.");
       expect(delivered).toEqual([]);
     } finally {
       client.close();

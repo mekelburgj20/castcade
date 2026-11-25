@@ -11,15 +11,16 @@
  * - a refused opening frame in every state the named player can be in, on the composite host, around a relay room
  *   that is opened again, and with a candidate that is waiting when the relay's side changes;
  * - what the host's log is told, and how often;
- * - the frames a 0.2.50 client sends, written out, are taken by this host.
+ * - the frames a client that does not say `resends` sends, written out, are taken by this host (until protocol 7
+ *   these were the frames of 0.2.50, which this host now refuses by their version, with a sentence).
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
 import { buildMessage, PROTOCOL_VERSION, type AnyMessage, type Message } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { HostMatch } from './host.js';
 import { generateKeys, signCanonical, type KeyPair } from './keys.js';
-import { reconnectSignBody } from './result.js';
 import { startFakeRelay } from './relay-fake.test-support.js';
 import { MemoryBus, openCandidate, ReportGate, type LinkCandidate } from './transport.js';
 import { CompositeTransport, RelayHostTransport } from './transport-relay.js';
@@ -38,6 +39,7 @@ import {
   optsFor,
   participant,
   rawSocket,
+  signedReconnect,
   reconnectAs,
   relayRig,
   relaySeat,
@@ -94,8 +96,7 @@ for (const [transport, makeRig] of TRANSPORTS) {
 
       // The head with the grant in it is what a client holds whose ball end went into a link that had dropped.
       const same = await rig.second();
-      const sig = signCanonical(reconnectSignBody(CODE, 'a', atGrant.hash, atGrant.length), rig.ak.privateKey);
-      same.send(rig.a.session.build('RECONNECT', { player: 'a', logHash: atGrant.hash, logLength: atGrant.length, signature: sig, resends: true }, CODE));
+      same.send(signedReconnect(CODE, 'h', 'a', atGrant, rig.ak, rig.a.session.nextSeq()));
       await until(() => same.frames().length >= 1);
       expect(same.frames()[0]).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: true, logHash: head.hash, logLength: head.length } });
       expect(rig.seen).toEqual(['h:reconnectRejected:unknown_log_hash', 'h:reconnected:a']);
@@ -107,8 +108,7 @@ for (const [transport, makeRig] of TRANSPORTS) {
       const entries = rig.host.log.entries();
       const now = rig.host.log.head();
       const shorter = { hash: entries[entries.length - 2]!.hash, length: entries.length - 1 };
-      const own = (head: { hash: string; length: number }): AnyMessage =>
-        rig.a.session.build('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature: signCanonical(reconnectSignBody(CODE, 'a', head.hash, head.length), rig.ak.privateKey), resends: true }, CODE);
+      const own = (head: { hash: string; length: number }): AnyMessage => signedReconnect(CODE, 'h', 'a', head, rig.ak, rig.a.session.nextSeq());
 
       const first = await rig.second();
       first.send(own(now));
@@ -291,7 +291,7 @@ describe('the composite host: a refused opening frame on one part, the named pla
     // The player's own RECONNECT through the relay: that part holds its link from the accept on.
     const now = host.log.head();
     const own = await relaySeat(r, 'c');
-    own.send(a.session.build('RECONNECT', { player: 'a', logHash: now.hash, logLength: now.length, signature: signCanonical(reconnectSignBody(CODE, 'a', now.hash, now.length), ak.privateKey), resends: true }, CODE));
+    own.send(signedReconnect(CODE, 'h', 'a', now, ak, a.session.nextSeq()));
     await until(() => own.frames().length >= 1);
     expect(own.frames()[0]).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: true } });
     expect(rh.peers()).toEqual(['a']);
@@ -385,8 +385,8 @@ describe('a host transfer: what a pending new host holds', () => {
     const bt = clients['b']!.session.transport;
     const toB: AnyMessage[] = [];
     bt.onMessage((_f, m) => toB.push(m));
-    const reconnect = (seq: number, key: KeyPair = keys['b'] as KeyPair): Message<'RECONNECT'> =>
-      buildMessage('RECONNECT', { player: 'b', logHash: before.hash, logLength: before.length, signature: signCanonical(reconnectSignBody('M', 'b', before.hash, before.length), key.privateKey) }, { matchId: 'M', seq, from: 'b' });
+    // Protocol 7: written for the host to be (`a`), which is who holds it and who judges it at the commit.
+    const reconnect = (seq: number, key: KeyPair = keys['b'] as KeyPair): Message<'RECONNECT'> => signedReconnect('M', 'a', 'b', before, key, seq, false);
     const ackOfB = (seq: number): AnyMessage => buildMessage('HOST_TRANSFER_ACK', { proposer: 'h', accept: true, logHash: before.hash }, { matchId: 'M', seq, from: 'b' });
     return { host, a, bt, toB, reconnect, ackOfB };
   }
@@ -473,7 +473,55 @@ describe('what the host\'s log is told, and how often', () => {
   }
 });
 
-describe('the frames a 0.2.50 client sends, written out as that build writes them', () => {
+// A17 step 7 (2026-11-25): until protocol 7 this was "the frames a 0.2.50 client sends": written out with `"v":6` and
+// the four-key signed body, and taken by this host. A protocol 7 host refuses a frame of version 6 before any engine
+// sees it (the first test), so what is left to pin is the other thing these frames were: the frames of a client that
+// does not say `resends`, which the engine still answers with the pause (A18), now in protocol 7's envelope and under
+// protocol 7's signed body (the second test).
+describe('the frames of a client that does not say `resends`, written out; and what a 0.2.50 client is told', () => {
+  it('a 0.2.50 client (protocol 6): its HELLO is refused in its own version with the sentence, its RECONNECT with a RECONNECT_ACK that does not accept; no engine sees either', async () => {
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const ht = new WsPeerTransport({ localId: 'h' });
+    const endpoint = await ht.listen(0, '127.0.0.1');
+    ht.onError(() => undefined);
+    const host = new HostMatch({ transport: ht, keys: hk, matchId: CODE, ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game });
+    world.open.push(ht, host);
+    const raised: string[] = [];
+    host.on('refused', () => raised.push('refused'));
+    host.on('reconnectRejected', () => raised.push('rejected'));
+    host.on('joined', () => raised.push('joined'));
+    // v0.2.50 `ClientMatch.join()` and `buildReconnect()`, as that build writes them.
+    const hello =
+      `{"v":6,"type":"HELLO","matchId":null,"seq":1,"ts":1763900000000,"from":"c","payload":{"protocolVersion":6,"companionVersion":"0.2.50","throwdownCode":"${CODE}",` +
+      `"participant":{"playerId":"c","displayName":"Player C","publicKey":"${ck.publicKeyB64}","rig":"pc"},` +
+      `"game":{"kind":"vpx","tableName":"Test Table","tableHash":"${'ab'.repeat(32)}","romName":null,"romHash":null,"physicsHash":null,"recipeVersion":"0.5.0","sidecarHash":null,"emulatorVersion":"10.8.0"},"ballEndReady":true}}`;
+    const head = host.log.head();
+    const reconnect =
+      `{"v":6,"type":"RECONNECT","matchId":"${CODE}","seq":2,"ts":1763900005000,"from":"c","payload":{"player":"c","logHash":"${head.hash}","logLength":${head.length},` +
+      `"signature":"${signCanonical({ matchId: CODE, player: 'c', logHash: head.hash, logLength: head.length }, ck.privateKey)}"}}`;
+    const answerTo = async (text: string): Promise<{ v: number; type: string; payload: Record<string, unknown> }> => {
+      const s = new WebSocket(endpoint);
+      await new Promise<void>((resolve, reject) => {
+        s.once('open', () => resolve());
+        s.once('error', reject);
+      });
+      const reply = new Promise<string>((resolve) => s.once('message', (d) => resolve(String(d))));
+      s.send(text);
+      const got = JSON.parse(await reply) as { v: number; type: string; payload: Record<string, unknown> };
+      s.close();
+      return got;
+    };
+    expect(await answerTo(hello)).toMatchObject({
+      v: 6,
+      type: 'REFUSE',
+      payload: { code: 'protocol_version', message: 'This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent 6). Update Castcade on this PC (Settings, Check for updates) and join again.' },
+    });
+    expect(await answerTo(reconnect)).toMatchObject({ v: 6, type: 'RECONNECT_ACK', payload: { accept: false, code: 'unknown_player' } });
+    expect(raised).toEqual([]);
+    expect(host.roster().map((p) => p.playerId)).toEqual(['h']);
+  });
+
   it('its HELLO is taken into the lobby and its RECONNECT (no `resends`) brings it back; when it holds the grant the pause comes with the answer', async () => {
     const hk = generateKeys();
     const ck = generateKeys();
@@ -486,15 +534,16 @@ describe('the frames a 0.2.50 client sends, written out as that build writes the
     host.on('reconnectRejected', (x) => raised.push(`rejected:${x.code}`));
     host.on('refused', (x) => raised.push(`refused:${x.refuse.code}`));
 
-    // v0.2.50 `ClientMatch.join()`: the envelope keys in `buildMessage`'s order, the payload in the schema's.
+    // `ClientMatch.join()` without a lobby: the envelope keys in `buildMessage`'s order, the payload in the schema's.
     const hello =
-      `{"v":6,"type":"HELLO","matchId":null,"seq":1,"ts":1763900000000,"from":"c","payload":{"protocolVersion":6,"companionVersion":"0.2.50","throwdownCode":"${CODE}",` +
+      `{"v":${PROTOCOL_VERSION},"type":"HELLO","matchId":null,"seq":1,"ts":1763900000000,"from":"c","payload":{"protocolVersion":${PROTOCOL_VERSION},"companionVersion":"0.2.51","throwdownCode":"${CODE}",` +
       `"participant":{"playerId":"c","displayName":"Player C","publicKey":"${ck.publicKeyB64}","rig":"pc"},` +
       `"game":{"kind":"vpx","tableName":"Test Table","tableHash":"${'ab'.repeat(32)}","romName":null,"romHash":null,"physicsHash":null,"recipeVersion":"0.5.0","sidecarHash":null,"emulatorVersion":"10.8.0"},"ballEndReady":true}}`;
-    // v0.2.50 `ClientMatch.buildReconnect()`: four payload keys, the signature over {matchId, player, logHash, logLength}.
+    // A RECONNECT with four payload keys (no `resends`), the signature over protocol 7's one body, written out:
+    // {lobby, host, player, match, logHash, logLength, seq}, the match's id standing for both `lobby` and `match`.
     const reconnect = (seq: number, head: { hash: string; length: number }): string =>
-      `{"v":6,"type":"RECONNECT","matchId":"${CODE}","seq":${seq},"ts":1763900005000,"from":"c","payload":{"player":"c","logHash":"${head.hash}","logLength":${head.length},` +
-      `"signature":"${signCanonical({ matchId: CODE, player: 'c', logHash: head.hash, logLength: head.length }, ck.privateKey)}"}}`;
+      `{"v":${PROTOCOL_VERSION},"type":"RECONNECT","matchId":"${CODE}","seq":${seq},"ts":1763900005000,"from":"c","payload":{"player":"c","logHash":"${head.hash}","logLength":${head.length},` +
+      `"signature":"${signCanonical({ lobby: CODE, host: 'h', player: 'c', match: CODE, logHash: head.hash, logLength: head.length, seq }, ck.privateKey)}"}}`;
 
     const first = await rawSocket(endpoint);
     first.sendText(hello);

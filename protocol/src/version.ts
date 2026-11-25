@@ -41,24 +41,28 @@
  *   as before. Not a field of `GameFingerprint`: that object is also MATCH_READY's `game`, which is logged.
  */
 /*
- * A17 step 5 (2026-11-25), the lobby's schemas, and STILL 6. The lobby (alpha-match.md §11.7) will be protocol 7, in
- * the build whose shell turns it on; until then the engine's lobby sits behind an option that is off
- * (`HostOptions.lobby`, `ClientOptions.lobby`), and what is added here is never on the wire of a match:
- * - six new message types (START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LOBBY_CLOSED, MATCH_LOG): only a
- *   lobby sends them. A peer up to 0.2.50 could not decode one (the envelope's `type` is a closed list there), so
- *   none may be sent to it, and none is;
- * - new keys on HELLO (`stance`), PARTICIPANT_UPDATE (`stance`, `noCopy`, `ownGame`), HELLO_ACK (the lobby as it is),
- *   MATCH_END (`abandoned`), RECONNECT (`match`) and RECONNECT_ACK (`match`, `restart`, `more`): every one optional,
- *   with no default, so a frame built without a lobby is byte for byte the frame 0.2.50 builds
- *   (`companion/src/match/lobby-off.test.ts` compares a whole match against frames recorded before this step);
- * - MATCH_END `games` may be 0 (it was 1 or more): the message is never logged, and no match without a lobby sends 0.
- * So every build before the one that says 7 plays with 0.2.46 to 0.2.50, and a fix can still be released on 6.
- * Step 6 (same day): the engines answer the requests, keep members who are away, and take RECONNECT in every phase,
- * all behind the same option. On the wire it adds HELLO_ACK `startOff` (optional) and two RECONNECT_ACK codes
- * (`protocol_version`, `stale_seq`) that only a lobby sends; a lobby's RECONNECT signs another body (with the
- * lobby's code and the envelope's `seq`), which a host without a lobby is never sent. Still 6.
- * The review of steps 5 and 6 (same day): LEAVE_LOBBY (a lobby's client only); HELLO `proof` (optional, a lobby's
- * client only); RECONNECT_ACK `closed` and `seqAbove` (optional, a lobby's host only); HELLO_ACK `startOff` up to
- * 500 characters. None of them is in a frame of a match without a lobby. Still 6.
+ * 7 (2026-11-25, A17 step 7: the companion's shell turns the lobby on; docs/design/alpha-match.md section 11.7). A
+ *   host is a lobby from here on: one connection for an evening, any number of matches in it, people who watch. Each
+ *   key and message of it alone would have stayed 6 by the precedent of `ballEndReady` (all are optional and never
+ *   logged, and they came into the schemas in steps 5 and 6 behind an option that was off). Together they change what
+ *   a peer must do, and a lobby of mixed builds half works: a 0.2.50 client cannot decode the seven new message types
+ *   (START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LEAVE_LOBBY, MATCH_LOG, LOBBY_CLOSED), reads MATCH_END as
+ *   the end of the evening and leaves, and comes back with a RECONNECT the lobby does not take; a 0.2.50 host refuses
+ *   a join after the first game and answers none of what a member asks. So they refuse each other at HELLO, each
+ *   with a sentence that names the PC that has to update (`transport-ws.ts`).
+ *   What a lobby does on the wire, against 6: HELLO (`stance`, `proof`) is taken in every phase and HELLO_ACK is the
+ *   lobby as it is now, in every phase; PARTICIPANT_UPDATE (`stance`, `noCopy`, `ownGame`) counts in every phase;
+ *   MATCH_READY's id is `<lobby code>-<n>` and its roster the players only (the host need not be one); MATCH_END
+ *   means "back to the lobby", may say `games: 0` and may name a game that was ended for everyone (`abandoned`);
+ *   the logged stream goes only to members who hold the log (MATCH_LOG brings it, in pages); no host transfer.
+ *   **RECONNECT has one signed body in protocol 7**, with or without a lobby: `{lobby, host, player, match, logHash,
+ *   logLength, seq}`: the PC the frame is addressed to and the envelope's own `seq` are under the signature, so a
+ *   RECONNECT is good for one use at one PC, and a protocol 7 host takes no other body. (Up to 6 the body was
+ *   `{matchId, player, logHash, logLength}`.) RECONNECT_ACK gains `match`, `restart`, `more`, `closed`, `seqAbove`
+ *   and the codes `stale_seq` and `protocol_version` (the last one is what a RECONNECT of another version is
+ *   answered with when the asker is on 7 or later; an asker up to 6 does not know it and gets `unknown_player`).
+ *   No logged message changes shape, so a protocol 6 log and a protocol 7 match's log fold the same way. The engines
+ *   still have the lobby as an option (`HostOptions.lobby`, `ClientOptions.lobby`): the companion always sets it; with
+ *   it off an engine runs one match as before (the fakeclient, the engine's own tests), on the same version 7.
  */
-export const PROTOCOL_VERSION = 6 as const;
+export const PROTOCOL_VERSION = 7 as const;

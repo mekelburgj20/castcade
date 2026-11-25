@@ -1,5 +1,5 @@
 {
-  "$id": "https://castcade.dev/protocol/v6/RESUME.schema.json",
+  "$id": "https://castcade.dev/protocol/v7/RESUME.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {},

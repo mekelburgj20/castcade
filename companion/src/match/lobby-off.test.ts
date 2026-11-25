@@ -7,7 +7,17 @@
  * the same script on the tree as it is and compares the text of every frame. A new key that is sent without a lobby,
  * a default that is filled in, a frame more or less, a different order: any of them fails it.
  *
- * So a build with the lobby off still plays with 0.2.46 to 0.2.50, which is why the protocol version did not change.
+ * So a build with the lobby off still played with 0.2.46 to 0.2.50, which is why the protocol version did not change
+ * in steps 5 and 6.
+ *
+ * A17 step 7 (2026-11-25): the protocol is 7 (the shell turns the lobby on), and the recording was made again, once
+ * and on purpose, on the commit that says so. It still proves what it proved: an engine with the option off sends
+ * what it always sent. What differs from the recording of 55ff0a0 was measured before it was replaced: with the
+ * version constant put back to 6 the script sent the recorded frames in 106 of 108 cases, and the other two, the two
+ * RECONNECTs, differed in `payload.signature` alone (protocol 7 has one signed body for a RECONNECT, with the host it
+ * is addressed to and the envelope's `seq` under the signature: `result.ts` `reconnectSignBody`). With the constant
+ * at 7 every frame carries the new `v`, a HELLO the new `protocolVersion`, and every log hash and signature over a
+ * frame follows from those. Nothing else: no key more or less, no frame more or less, no other order.
  *
  * Step 6 changed one string of the script and of the recording together: the made-up ICE candidate of its one `ice`
  * signal named a reserved documentation address, and now names none. A MEDIA_SIGNAL is passed on as it is and is in
@@ -77,7 +87,8 @@ describe('A17 step 5: with the lobby off, every frame is the frame it was', () =
     const before = MESSAGE_TYPES.filter((t) => !LOBBY_TYPES.includes(t));
     // HOST_TRANSFER and its ack need a transfer, which the four-player transfer scenarios play (untouched by this step).
     expect(before.filter((t) => !seen.has(t)).sort()).toEqual(['HOST_TRANSFER', 'HOST_TRANSFER_ACK']);
-    expect(PROTOCOL_VERSION).toBe(6);
+    // A17 step 7: the recording is of protocol 7 (made again when the constant changed; the header says what differs).
+    expect(PROTOCOL_VERSION).toBe(7);
   });
 
   it('none of the new message types and none of the new keys is in it, and none appears when it is played now', async () => {

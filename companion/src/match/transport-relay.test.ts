@@ -160,7 +160,7 @@ const checkAnswer = (text: string, want: 'REFUSE' | 'RECONNECT_ACK'): void => {
   expect(f.type).toBe(want);
   expect(Number.isSafeInteger(f.v)).toBe(true);
   expect(f.matchId).toBeNull();
-  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This match needs Castcade 0\.2\.46 or newer \(protocol 6; this PC sent (another version|\d+)\)\. /);
+  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This lobby needs Castcade 0\.2\.51 or newer \(protocol 7; this PC sent (another version|\d+)\)\. /);
 };
 
 describe('relay transports (D10.8)', () => {
@@ -416,7 +416,8 @@ describe('relay transports (D10.8)', () => {
 
   it('A17 step 1 (2026-11-24): a HELLO, and a RECONNECT, of another version are answered in that version; the PC that asked is told in a sentence, not left to time out', async () => {
     // The sentence names the first release of the protocol: the two change together.
-    expect([PROTOCOL_VERSION, PROTOCOL_SINCE_RELEASE]).toEqual([6, '0.2.46']);
+    // A17 step 7 (2026-11-25): protocol 7, the lobby; 0.2.51 is the release the design names for it.
+    expect([PROTOCOL_VERSION, PROTOCOL_SINCE_RELEASE]).toEqual([7, '0.2.51']);
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
     const h = hostOn(r);
     const hErrors: string[] = [];
@@ -435,13 +436,14 @@ describe('relay transports (D10.8)', () => {
     });
     const ofType = (type: string) => frames.filter((f) => f.type === type);
 
-    // A PC on an older version (what a 0.2.45 client sends: the envelope and the HELLO both say 5).
+    // A PC on an older version (what a 0.2.46 to 0.2.50 client sends: the envelope and the HELLO both say 6).
     const older = PROTOCOL_VERSION - 1;
     raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: older }) });
     await until(() => ofType('REFUSE').length === 1);
     const refuse = ofType('REFUSE')[0]!;
     expect(refuse).toMatchObject({ v: older, type: 'REFUSE', matchId: null, from: 'h', payload: { code: 'protocol_version', mismatches: [] } });
-    expect(refuse.payload.message).toBe(`This match needs Castcade 0.2.46 or newer (protocol 6; this PC sent ${older}). Update Castcade on this PC (Settings, Check for updates) and join again.`);
+    expect(refuse.payload.message).toBe(`This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent ${older}). Update Castcade on this PC (Settings, Check for updates) and join again.`);
+    expect(older).toBe(6);
     // Apart from its `v` it is a REFUSE as this version writes one: the asker's own decoder takes it.
     expect(decodeFrame(JSON.stringify({ ...refuse, v: PROTOCOL_VERSION })).type).toBe('REFUSE');
 
@@ -449,7 +451,7 @@ describe('relay transports (D10.8)', () => {
     const newer = PROTOCOL_VERSION + 1;
     raw.socket.emit('match:relay', { data: JSON.stringify({ ...JSON.parse(JSON.stringify(hello('a'))), v: newer }) });
     await until(() => ofType('REFUSE').length === 2);
-    expect(ofType('REFUSE')[1]).toMatchObject({ v: newer, payload: { code: 'protocol_version', message: `The host's Castcade is older than this PC's (it speaks protocol 6, this PC ${newer}). The host updates Castcade (Settings, Check for updates); then join again.` } });
+    expect(ofType('REFUSE')[1]).toMatchObject({ v: newer, payload: { code: 'protocol_version', message: `The Castcade on the lobby's PC is older than this PC's (it speaks protocol 7, this PC ${newer}). It is updated there (Settings, Check for updates); then join again.` } });
 
     // A RECONNECT of another version got no answer at all until 0.2.50: now a RECONNECT_ACK that does not accept, in
     // the asker's version, with a `seq` above anything this host can have sent that PC before (it drops a lower one).
@@ -461,17 +463,22 @@ describe('relay transports (D10.8)', () => {
     expect(ack).toMatchObject({ v: older, type: 'RECONNECT_ACK', matchId: 'RELAYA', from: 'h', payload: { accept: false, code: 'unknown_player', entries: [], logHash: ZERO, logLength: 0 } });
     expect(ack.seq).toBeGreaterThanOrEqual(before);
     expect(decodeFrame(JSON.stringify({ ...ack, v: PROTOCOL_VERSION })).type).toBe('RECONNECT_ACK');
+    // A17 step 7: a PC on protocol 7 or later knows the code that says why (`protocol_version`); one on 6 or
+    // older does not, and got `unknown_player` above, the nearest it has.
+    raw.socket.emit('match:relay', { data: JSON.stringify({ ...reconnect, v: newer, seq: 78 }) });
+    await until(() => ofType('RECONNECT_ACK').length === 2);
+    expect(ofType('RECONNECT_ACK')[1]).toMatchObject({ v: newer, matchId: 'RELAYA', payload: { accept: false, code: 'protocol_version', entries: [] } });
 
     // Nothing of it reached an engine on either side, and the host said what it could not decode: one line for the
-    // first of the three (2026-11-25: at most one in ten seconds per relay peer; the others are counted for the next).
+    // first of the four (2026-11-25: at most one in ten seconds per relay peer; the others are counted for the next).
     expect(aSeen).toEqual([]);
     expect(hErrors).toHaveLength(1);
     // The asking side of the same thing, with a host that answers in ITS OWN version (every host up to 0.2.50): this
     // PC cannot decode the answer, and says which versions the two PCs have in place of "The host did not answer".
     const foreign = errors.filter((e): e is ForeignVersionError => e instanceof ForeignVersionError);
-    expect(foreign.map((e) => e.theirs)).toEqual([older, newer, older]);
-    expect(foreign[0]?.message).toBe(`The host's PC runs another version of Castcade (protocol ${older}; this PC has 6). Both need the same: the host updates Castcade (Settings, Check for updates), then join again.`);
-    expect(foreign[1]?.message).toBe(`The host's PC runs another version of Castcade (protocol ${newer}; this PC has 6). Both need the same: update Castcade on this PC (Settings, Check for updates), then join again.`);
+    expect(foreign.map((e) => e.theirs)).toEqual([older, newer, older, newer]);
+    expect(foreign[0]?.message).toBe(`The lobby's PC runs another version of Castcade (protocol ${older}; this PC has 7). Both need the same: Castcade is updated on the lobby's PC (Settings, Check for updates), then join again.`);
+    expect(foreign[1]?.message).toBe(`The lobby's PC runs another version of Castcade (protocol ${newer}; this PC has 7). Both need the same: update Castcade on this PC (Settings, Check for updates), then join again.`);
   });
 
   it('review of PR 127: no frame of any shape from a relay peer that has not joined throws in the host\'s process; only a HELLO or a RECONNECT of another version is answered, and an answer is never answered', async () => {
@@ -545,7 +552,7 @@ describe('relay transports (D10.8)', () => {
     expect(JSON.parse(foreignVersionRefusal(frame({ v: 'six' }), 'h', 1) ?? '{}')).toMatchObject({
       v: PROTOCOL_VERSION,
       type: 'REFUSE',
-      payload: { message: 'This match needs Castcade 0.2.46 or newer (protocol 6; this PC sent another version). Update Castcade on this PC (Settings, Check for updates) and join again.' },
+      payload: { message: 'This lobby needs Castcade 0.2.51 or newer (protocol 7; this PC sent another version). Update Castcade on this PC (Settings, Check for updates) and join again.' },
     });
     // Review of PR 127: a `v` of any length or kind makes no answer the schema refuses (it threw in the socket's handler).
     for (const v of ['x'.repeat(600), 'x'.repeat(100_000), { a: 1 }, [1], -1, 1.5, null, true]) {

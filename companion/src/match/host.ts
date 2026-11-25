@@ -3535,7 +3535,10 @@ export class HostMatch {
     if (msg.from === this.localId) return no('unknown_player');
     const who = st.participants.find((x) => x.playerId === msg.from);
     if (!who || p.player !== msg.from) return no('unknown_player');
-    if (!verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey)) return no('bad_signature');
+    // A17 step 7 (protocol 7): one signed body for every RECONNECT (`reconnectSignBody`): this host's own id and the
+    // envelope's `seq` are under the signature, so a frame written for another PC, or the same payload under another
+    // `seq`, does not verify. The body of protocol 2 to 6 is not taken.
+    if (!verifyCanonical(reconnectSignBody(st.matchId, this.localId, p.player, st.matchId, p.logHash, p.logLength, msg.seq), p.signature, who.publicKey)) return no('bad_signature');
     // A head the player is past is not where the player is: refused like a head this log does not hold, and it says
     // nothing about the player now.
     if (p.logLength < Math.max(this.headFloor(msg.from), this.lastHead.get(msg.from) ?? 0)) return no('unknown_log_hash');

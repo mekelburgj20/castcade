@@ -5,7 +5,7 @@
  */
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { WebSocket } from 'ws';
-import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type GameFingerprint, type GrantBody, type ParticipantInfo } from '@castcade/protocol';
+import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type GameFingerprint, type GrantBody, type ParticipantInfo, type Message } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import type { Clock } from './clock.js';
 import { HostMatch } from './host.js';
@@ -226,12 +226,18 @@ export async function aIsUp(rig: Pick<Rig, 'host' | 'a'>): Promise<GrantBody> {
   return rig.a.myGrant as GrantBody;
 }
 
-/** A RECONNECT that names `player` and the head `head` (default: `a`'s own log head), signed with `key`, under the number `seq`. */
-export function reconnectAs(rig: Pick<Rig, 'a'>, key: KeyPair, seq: number, o: { player?: string; head?: { hash: string; length: number }; resends?: boolean } = {}): AnyMessage {
-  const player = o.player ?? 'a';
-  const head = o.head ?? rig.a.log.head();
-  const signature = signCanonical(reconnectSignBody(CODE, player, head.hash, head.length), key.privateKey);
-  return buildMessage('RECONNECT', { player, logHash: head.hash, logLength: head.length, signature, ...(o.resends === false ? {} : { resends: true }) }, { matchId: CODE, seq, from: player });
+/**
+ * A RECONNECT that names `player` and the head `head` (default: `a`'s own log head), signed with `key`, under the number `seq`.
+ * A17 step 7 (protocol 7): the signed body names the host the frame is for (`h` here; `o.host` for another) and the
+ * envelope's own `seq` (`result.ts` `reconnectSignBody`).
+ */
+export function reconnectAs(rig: Pick<Rig, 'a'>, key: KeyPair, seq: number, o: { player?: string; head?: { hash: string; length: number }; resends?: boolean; host?: string; match?: string } = {}): AnyMessage {
+  return signedReconnect(o.match ?? CODE, o.host ?? 'h', o.player ?? 'a', o.head ?? rig.a.log.head(), key, seq, o.resends !== false);
+}
+/** A17 step 7: a RECONNECT of a match without a lobby, as protocol 7 signs it: `match` stands where the lobby's code would, twice. */
+export function signedReconnect(match: string, host: string, player: string, head: { hash: string; length: number }, key: KeyPair, seq: number, resends = true): Message<'RECONNECT'> {
+  const signature = signCanonical(reconnectSignBody(match, host, player, match, head.hash, head.length, seq), key.privateKey);
+  return buildMessage('RECONNECT', { player, logHash: head.hash, logLength: head.length, signature, ...(resends ? { resends: true } : {}) }, { matchId: match, seq, from: player });
 }
 export function helloAs(id: string, seq: number): AnyMessage {
   return buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: 'test', throwdownCode: CODE, participant: participant(id, generateKeys()), game }, { matchId: null, seq, from: id });

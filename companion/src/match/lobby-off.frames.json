@@ -3,14 +3,14 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO",
    "matchId": null,
    "seq": 1,
    "ts": 1795000000000,
    "from": "a",
    "payload": {
-    "protocolVersion": 6,
+    "protocolVersion": 7,
     "companionVersion": "0.2.50",
     "throwdownCode": "GOLDEN",
     "participant": {
@@ -38,7 +38,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 1,
@@ -112,14 +112,14 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO",
    "matchId": null,
    "seq": 1,
    "ts": 1795000000100,
    "from": "b",
    "payload": {
-    "protocolVersion": 6,
+    "protocolVersion": 7,
     "companionVersion": "0.2.50",
     "throwdownCode": "GOLDEN",
     "participant": {
@@ -147,7 +147,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 2,
@@ -231,7 +231,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 2,
@@ -315,14 +315,14 @@
   "by": "x",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO",
    "matchId": null,
    "seq": 1,
    "ts": 1795000000200,
    "from": "x",
    "payload": {
-    "protocolVersion": 6,
+    "protocolVersion": 7,
     "companionVersion": "0.2.50",
     "throwdownCode": "ELSEWHERE",
     "participant": {
@@ -349,7 +349,7 @@
   "by": "h",
   "to": "x",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "REFUSE",
    "matchId": null,
    "seq": 3,
@@ -366,7 +366,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 2,
@@ -394,7 +394,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 4,
@@ -465,7 +465,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 4,
@@ -536,7 +536,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 3,
@@ -551,7 +551,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 5,
@@ -617,7 +617,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 5,
@@ -683,7 +683,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 2,
@@ -701,7 +701,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 6,
@@ -773,7 +773,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 6,
@@ -845,7 +845,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 7,
@@ -917,7 +917,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 7,
@@ -989,7 +989,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 8,
@@ -1066,7 +1066,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 8,
@@ -1143,7 +1143,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MEDIA_SIGNAL",
    "matchId": "GOLDEN",
    "seq": 4,
@@ -1161,7 +1161,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MEDIA_SIGNAL",
    "matchId": "GOLDEN",
    "seq": 9,
@@ -1183,7 +1183,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MEDIA_SIGNAL",
    "matchId": "GOLDEN",
    "seq": 3,
@@ -1201,7 +1201,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MEDIA_SIGNAL",
    "matchId": "GOLDEN",
    "seq": 4,
@@ -1219,7 +1219,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 10,
@@ -1296,7 +1296,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO_ACK",
    "matchId": null,
    "seq": 10,
@@ -1373,7 +1373,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MATCH_READY",
    "matchId": "GOLDEN",
    "seq": 11,
@@ -1429,7 +1429,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 12,
@@ -1442,10 +1442,10 @@
      "ballNumber": 1,
      "grantSeq": 1,
      "issuedAt": 1795000003800,
-     "logHash": "0e8f33277b29cf184724e475a17937c65c1231ba5942f8ffa1b4bc70262bbfca",
+     "logHash": "19f3995164e511eafe5dd2d96d08c6fe0cae1db2a41237bceb6f5473cddd2943",
      "game": 1
     },
-    "grantSig": "GTvkZNmiUta9rMk7KWQ5RZ49dTJlNmyijaqUuSjYKm/M2Kf9EFSwMa7WAYn6xPlFnxOQIGDH1vN2vKOo+LqKBA=="
+    "grantSig": "/0mUk10FQCT1/UHXzsFzI+GtFzk2jT8PAjqsePlkUgIr0CwFtgmj3MdOc9tC7oU90Nb3JwGjRzXK6hgf3wngCg=="
    }
   }
  },
@@ -1453,7 +1453,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 13,
@@ -1472,7 +1472,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 13,
@@ -1491,7 +1491,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 14,
@@ -1510,7 +1510,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 15,
@@ -1523,10 +1523,10 @@
      "ballNumber": 1,
      "grantSeq": 2,
      "issuedAt": 1795000004300,
-     "logHash": "316caac5c1f0ebc2228bf4fa82f1efd18c709da5caa8460d60987aebad8a01c0",
+     "logHash": "2703ae3dce5a5572936e3533ca57dfd6e249c1021d834025b981cd1334e6ffb0",
      "game": 1
     },
-    "grantSig": "tkWGjKmxsZzwug8MaiMEFVXeDleZzPED7a/ZzJNZECKf+GgUcfEy1CXKbv5w2Od+wUzZGEyAaUOaFMQF5qD+Ag=="
+    "grantSig": "ovc8kK/dq+/qzUuIxk6Q/V/8b4Q7x350ucUHEqA0zp+/rB9sOPBr12lZcB7HWq5PhtV1VNMISLcLRIIkDpzHDQ=="
    }
   }
  },
@@ -1534,7 +1534,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 5,
@@ -1553,7 +1553,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "DMD_FRAME",
    "matchId": "GOLDEN",
    "seq": 6,
@@ -1572,7 +1572,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 5,
@@ -1591,7 +1591,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "DMD_FRAME",
    "matchId": "GOLDEN",
    "seq": 6,
@@ -1610,7 +1610,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 7,
@@ -1629,7 +1629,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 7,
@@ -1648,7 +1648,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 16,
@@ -1661,10 +1661,10 @@
      "ballNumber": 1,
      "grantSeq": 3,
      "issuedAt": 1795000005800,
-     "logHash": "bf7739a06fd1bee5c59920ec7bc71b37e730766b4a3183616820cb0de4489f36",
+     "logHash": "c9e6503f328b7c8c026110301318c7a3bfa21718953e2470f805f8be7508a3aa",
      "game": 1
     },
-    "grantSig": "xg2DPAbIRzGauC5Hsh7A8gJa+UwQI/m5XeW1HuUC9L+M3FkaiciKz3bdL7DNcraR6g8zhyj8ZJP+BqcB1U52CA=="
+    "grantSig": "Y7jCxbMn2nZdP+Ntvk7UbJoWVGRUtqb82gE9sw8RPy9Eq6ro9REMDqMJNBiJSIP1DMRFTkvSbFN3ay9bK7/MDA=="
    }
   }
  },
@@ -1672,7 +1672,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 8,
@@ -1691,7 +1691,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 8,
@@ -1710,7 +1710,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 17,
@@ -1723,10 +1723,10 @@
      "ballNumber": 1,
      "grantSeq": 4,
      "issuedAt": 1795000006300,
-     "logHash": "b540d3905cd565f7a837a5dbacdda353f6482fffc0a1363170c180c086084c4a",
+     "logHash": "7b3ca9855580ceb1845bf3d6b633ad151feb976345e084a6704c6f6673436120",
      "game": 1
     },
-    "grantSig": "FdgunMfBEP4d+L/BqxZeihTrrMHu+omLiI78dMD59PkSbFurI5TBWmhst4p3yRaikhaHEjL+HCTcTKBhNhfhBA=="
+    "grantSig": "dC46aMi9j4AdbZPdhrWEnojH5HhQRWed4gaSST60yhQG39fAgQWGr0uioGSXFaQuNLshsjGt2HHD51At1LFDDQ=="
    }
   }
  },
@@ -1734,7 +1734,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PAUSE",
    "matchId": "GOLDEN",
    "seq": 4,
@@ -1750,7 +1750,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PAUSE",
    "matchId": "GOLDEN",
    "seq": 4,
@@ -1766,7 +1766,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESUME",
    "matchId": "GOLDEN",
    "seq": 5,
@@ -1779,7 +1779,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESUME",
    "matchId": "GOLDEN",
    "seq": 5,
@@ -1792,7 +1792,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 18,
@@ -1805,10 +1805,10 @@
      "ballNumber": 1,
      "grantSeq": 5,
      "issuedAt": 1795000007300,
-     "logHash": "a8e3ca0bcb724146fc565fcc958658d11e70d880ddd182d5ca96c19e9ed558b9",
+     "logHash": "fd6963cad41e626da6a5da7a82e0e99ba7a359c932f0c711b667665f914d2668",
      "game": 1
     },
-    "grantSig": "C31rSSsEJG7MREo2q8MtfEdXtoFNFtmnSsvvAA0HVvT+i7/d/o5XV7DtnndLwIEmu6b3NwdqoNCvaTvmsPEiCA=="
+    "grantSig": "PpvmZtIuEWyYXZKq6Ih6KDGfaFkGId0GbNY6wNKNDbewe+oGzLQ2bEYLFbKgaVWHv8cFpUHoZdpHbxQQnX3xDA=="
    }
   }
  },
@@ -1816,7 +1816,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 6,
@@ -1835,7 +1835,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "STATE",
    "matchId": "GOLDEN",
    "seq": 6,
@@ -1854,7 +1854,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_PASS",
    "matchId": "GOLDEN",
    "seq": 19,
@@ -1872,7 +1872,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 20,
@@ -1885,10 +1885,10 @@
      "ballNumber": 2,
      "grantSeq": 6,
      "issuedAt": 1795000007800,
-     "logHash": "0daba2cee4db7d0f2258ef1abf890e424e68846ea99a5a562f660f8de125a27d",
+     "logHash": "20153ffa1547483200328ae41ba4c81164a4cb5ad2c7b3fdca5c01e54506e848",
      "game": 1
     },
-    "grantSig": "Nc3wh5CCYDwVgTtFsmkvuufBnPaXn6W1Mwnp+cZyuD4rCc50kbtfafLFCg9zpV091d2y9xWlHV2RR0FzI/SADQ=="
+    "grantSig": "W8+1TiF+aigkLWVoGPE3xViJewt7ZOt0utZwRyGlbgM8gDG1OJORGXBwOyfhGUWOSsJ7BnunMdCxg4w9oiQ7DQ=="
    }
   }
  },
@@ -1896,7 +1896,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 9,
@@ -1911,7 +1911,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 10,
@@ -1930,7 +1930,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 21,
@@ -1949,7 +1949,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 21,
@@ -1968,7 +1968,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 7,
@@ -1986,7 +1986,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 22,
@@ -2001,7 +2001,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 22,
@@ -2016,7 +2016,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 9,
@@ -2031,7 +2031,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 10,
@@ -2050,7 +2050,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PARTICIPANT_UPDATE",
    "matchId": "GOLDEN",
    "seq": 7,
@@ -2068,14 +2068,14 @@
   "by": "late",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "HELLO",
    "matchId": null,
    "seq": 1,
    "ts": 1795000008400,
    "from": "late",
    "payload": {
-    "protocolVersion": 6,
+    "protocolVersion": 7,
     "companionVersion": "0.2.50",
     "throwdownCode": "GOLDEN",
     "participant": {
@@ -2102,7 +2102,7 @@
   "by": "h",
   "to": "late",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "REFUSE",
    "matchId": null,
    "seq": 23,
@@ -2119,7 +2119,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 24,
@@ -2138,7 +2138,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 25,
@@ -2151,10 +2151,10 @@
      "ballNumber": 2,
      "grantSeq": 7,
      "issuedAt": 1795000008500,
-     "logHash": "abcb949989ee5e190f5b63c8bf91a0b31c0872992b94fd1d04828bde27a1790d",
+     "logHash": "fac856d348c7cfa6234e5fbdf2b487ceef07da3f0e158ccefcd65cb56f480867",
      "game": 1
     },
-    "grantSig": "yoYhzKaNQWiByUOWyIfUuKtDeWiKJhIHrjitMTBLAn0jxn+GYtwW7wx9polOovbKt3zgXX3poyLtCIRtt9SYBQ=="
+    "grantSig": "kbVHcKe8CjU7+xi5ZtcVyt7zBoeUpFLPqqdTtxp9mcuWGCVPgYwcsuPvX99Vfoz9KsqMwyyujml2MwgEXGBfAw=="
    }
   }
  },
@@ -2162,7 +2162,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 11,
@@ -2181,7 +2181,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 8,
@@ -2200,7 +2200,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "REJECT",
    "matchId": "GOLDEN",
    "seq": 26,
@@ -2218,7 +2218,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "REJECT",
    "matchId": "GOLDEN",
    "seq": 27,
@@ -2236,7 +2236,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "GAME_OVER",
    "matchId": "GOLDEN",
    "seq": 12,
@@ -2252,7 +2252,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "GAME_OVER",
    "matchId": "GOLDEN",
    "seq": 12,
@@ -2268,7 +2268,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 28,
@@ -2281,10 +2281,10 @@
      "ballNumber": 2,
      "grantSeq": 8,
      "issuedAt": 1795000010000,
-     "logHash": "367b3a05ad2fac30547c7fa4d4c0631845ef476a888905937940151008ec2f15",
+     "logHash": "381554fcfb8aac9c125192648c30daacce3c3bfa3404831583c82beb47b33e68",
      "game": 1
     },
-    "grantSig": "Ux1K6An9PqLHeZkk0tfaOxXpDoHgt/8AFLxktA5QWKPXE529PRa4vubdODrCj2abQ+1EcHmWBZa6tSmg6/pXCA=="
+    "grantSig": "f5uDznZ1uIOKiGQ5jI9F9v1tmM5CgaCzE+GX74vuYPjx+u8G65J3zD0w0PvIByZVJRgwxHumKdjmLt55tlDhDQ=="
    }
   }
  },
@@ -2292,7 +2292,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "FORFEIT",
    "matchId": "GOLDEN",
    "seq": 9,
@@ -2308,7 +2308,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "FORFEIT",
    "matchId": "GOLDEN",
    "seq": 9,
@@ -2324,16 +2324,16 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "LOG_SIGN",
    "matchId": "GOLDEN",
    "seq": 13,
    "ts": 1795000010500,
    "from": "a",
    "payload": {
-    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
     "logLength": 18,
-    "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA=="
+    "signature": "9YHDCypRcGYCrJ6vy/UrkknNhXhR/knbKci18caMl3NM/21QzPl8MFQRrizLqGpf/p2RYqJGkYSM+ujFSWs8BA=="
    }
   }
  },
@@ -2341,16 +2341,16 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "LOG_SIGN",
    "matchId": "GOLDEN",
    "seq": 10,
    "ts": 1795000010500,
    "from": "b",
    "payload": {
-    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
     "logLength": 18,
-    "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA=="
+    "signature": "Zvdhn7hfxw3k6/fHUZ0uapZk8uNHH2ZYVtN1GSBboPgD5vMR+Mz+fXH9IbNJlVTSjiuvvPJ7vGXwtEfsLiAyBg=="
    }
   }
  },
@@ -2358,7 +2358,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESULT",
    "matchId": "GOLDEN",
    "seq": 29,
@@ -2390,20 +2390,20 @@
      }
     ],
     "winner": "a",
-    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
     "logLength": 18,
-    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "hostSignature": "vNj1KvWQ4LGd7f6FWlzL2yi4WZ8wCWXDJ6LBHFZ5L/4rRq3HvpyADAnT6uvhKfZDMftYV9m7Zo10JQrTgchPCw==",
     "signatures": [
      {
       "playerId": "a",
-      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "9YHDCypRcGYCrJ6vy/UrkknNhXhR/knbKci18caMl3NM/21QzPl8MFQRrizLqGpf/p2RYqJGkYSM+ujFSWs8BA==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      },
      {
       "playerId": "b",
-      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "Zvdhn7hfxw3k6/fHUZ0uapZk8uNHH2ZYVtN1GSBboPgD5vMR+Mz+fXH9IbNJlVTSjiuvvPJ7vGXwtEfsLiAyBg==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      }
     ],
@@ -2441,7 +2441,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "NEXT_GAME",
    "matchId": "GOLDEN",
    "seq": 30,
@@ -2461,7 +2461,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 31,
@@ -2474,10 +2474,10 @@
      "ballNumber": 1,
      "grantSeq": 9,
      "issuedAt": 1795000011000,
-     "logHash": "a510fbdf6e05aefb9c21b285b34495d7c6150b1bcf024862b0e42d69ce389c3e",
+     "logHash": "b281938e50fcd8246bf9c74cc690580378dbc72e30c720665e34d2e593190627",
      "game": 2
     },
-    "grantSig": "ti9KG8hqQS7+4uWVUxjHs8bjubSEqRtFvaVI6JZkGRtBUJiM9aQupxPYEplPqCZN/BrCdKN1uwZhvoF/x744Dg=="
+    "grantSig": "oyYDr+Gh12WsHLPO/t7xhVzi4cl3YLauo13eG7Vvb6HgJ5Qpp+C4Mnm+JnBa/EPU07x5whSHJJeJB/3GCGj1Dg=="
    }
   }
  },
@@ -2485,7 +2485,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RECONNECT",
    "matchId": "GOLDEN",
    "seq": 14,
@@ -2493,9 +2493,9 @@
    "from": "a",
    "payload": {
     "player": "a",
-    "logHash": "14f762899f70a3d22a17bd69fbc4fde950ba3f140e17bc927ff295f08d4b7b1c",
+    "logHash": "77d75434567a15cfa952a962ac71ac03bf50fabe28b8d94a12d3a8007163b69d",
     "logLength": 20,
-    "signature": "+9fdxn39FH6F/gVgWZ049NGobim1JvMDMcBqbjczbRoSfC8eKTM2DSGouhS7FCcztm+2HPuK5Zc6ESfhbwf3AA==",
+    "signature": "abGW77CbA3ec/rKu/dcwb/T84OOUCZDe0HL207BoJvRfunrmTl1o3PJCkeOsty+LNxgwiqIRfgh/99hXHDcNCg==",
     "resends": true
    }
   }
@@ -2504,7 +2504,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RECONNECT_ACK",
    "matchId": "GOLDEN",
    "seq": 32,
@@ -2514,7 +2514,7 @@
     "accept": true,
     "code": null,
     "entries": [],
-    "logHash": "14f762899f70a3d22a17bd69fbc4fde950ba3f140e17bc927ff295f08d4b7b1c",
+    "logHash": "77d75434567a15cfa952a962ac71ac03bf50fabe28b8d94a12d3a8007163b69d",
     "logLength": 20
    }
   }
@@ -2523,7 +2523,7 @@
   "by": "h",
   "to": "a",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESULT",
    "matchId": "GOLDEN",
    "seq": 33,
@@ -2555,20 +2555,20 @@
      }
     ],
     "winner": "a",
-    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
     "logLength": 18,
-    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "hostSignature": "vNj1KvWQ4LGd7f6FWlzL2yi4WZ8wCWXDJ6LBHFZ5L/4rRq3HvpyADAnT6uvhKfZDMftYV9m7Zo10JQrTgchPCw==",
     "signatures": [
      {
       "playerId": "a",
-      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "9YHDCypRcGYCrJ6vy/UrkknNhXhR/knbKci18caMl3NM/21QzPl8MFQRrizLqGpf/p2RYqJGkYSM+ujFSWs8BA==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      },
      {
       "playerId": "b",
-      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "Zvdhn7hfxw3k6/fHUZ0uapZk8uNHH2ZYVtN1GSBboPgD5vMR+Mz+fXH9IbNJlVTSjiuvvPJ7vGXwtEfsLiAyBg==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      }
     ],
@@ -2606,7 +2606,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 34,
@@ -2625,7 +2625,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 35,
@@ -2638,10 +2638,10 @@
      "ballNumber": 1,
      "grantSeq": 10,
      "issuedAt": 1795000013000,
-     "logHash": "3f2ed06216a85ef125447bf373e528fe316df714cb82f7c51f634050a01a7987",
+     "logHash": "9cff9a36ff519bab7776e0b20084b9d7aa6044446083c078075fe1f0990d4e72",
      "game": 2
     },
-    "grantSig": "0KOE8W7vMkk3U+1A6mdkYBZMW4Ki2t3btRLO4Rn2GG5bLlzu9ojp5FI7FHhw5VcSrI0NAQtNF3uO7ck9NKSHAg=="
+    "grantSig": "8GaOkDtVMZ9RmcEwU6X3Eqq0/ni25kgYwG4Sk3p+VrtysXmVpM+UHtY6DwgO4YPApoAGT6rweC0vIAfnL2MmAA=="
    }
   }
  },
@@ -2649,7 +2649,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 15,
@@ -2668,7 +2668,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 15,
@@ -2687,7 +2687,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 36,
@@ -2700,10 +2700,10 @@
      "ballNumber": 1,
      "grantSeq": 11,
      "issuedAt": 1795000014000,
-     "logHash": "399819f3e30afd6266597530c07fa93685265a4c1027b9443a4414f95fd70e6b",
+     "logHash": "7bc203c500c372ca2fd411314e40dd50052be55a5e38ada7661ec07d9dc5a194",
      "game": 2
     },
-    "grantSig": "bNd0t2LLNn54FC4ykvZhifuda+J0ygDoSWrzt68cgheWKo8GNhaabXtBcj0N6KTgt+ivENmGoU5mV+82vWUbBQ=="
+    "grantSig": "5adgep/Q2JbIHcjNWGKKik7dSNrjsFdTfAYvGV5TsK3koo86Mi/hrMbQtszLtuy5gw4qU5lF+GA0Vb6md4+RDg=="
    }
   }
  },
@@ -2711,7 +2711,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "PAUSE",
    "matchId": "GOLDEN",
    "seq": 37,
@@ -2727,7 +2727,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RECONNECT",
    "matchId": "GOLDEN",
    "seq": 11,
@@ -2735,9 +2735,9 @@
    "from": "b",
    "payload": {
     "player": "b",
-    "logHash": "3467bc97b76746c6dcff884551437da3e568aec169597cb7c57ff83b5ccfb3e8",
+    "logHash": "3f885af9bb0d174ac47bc200c3c9e77271a0b08ccdefaf89980fca4ec214e330",
     "logLength": 24,
-    "signature": "jA2Q3H6PQAqk4BQohj0NeEl4Ou7JJCE4tYCKH+iJ8ix3SydNXDjBm78e90IVvOfBOAuN31tunDoHXafOaB6gAA==",
+    "signature": "0VubXwB09gRKnGF8ayHlTXDaj/0e9ZHqsGiTcDojmL47ewvPwhykVJtndrymiicd4WyEagRd5sgqloSDzpsAAw==",
     "resends": true
    }
   }
@@ -2746,7 +2746,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RECONNECT_ACK",
    "matchId": "GOLDEN",
    "seq": 38,
@@ -2758,12 +2758,12 @@
     "entries": [
      {
       "index": 24,
-      "prevHash": "3467bc97b76746c6dcff884551437da3e568aec169597cb7c57ff83b5ccfb3e8",
+      "prevHash": "3f885af9bb0d174ac47bc200c3c9e77271a0b08ccdefaf89980fca4ec214e330",
       "ts": 1795000019000,
       "kind": "msg",
       "from": "h",
       "message": {
-       "v": 6,
+       "v": 7,
        "type": "PAUSE",
        "matchId": "GOLDEN",
        "seq": 37,
@@ -2774,10 +2774,10 @@
         "player": "b"
        }
       },
-      "hash": "9d714a057d58b8412c1b5a208fe3e3403c2ad5ea824c61a9b79e1c2a8d715de1"
+      "hash": "964aa5ffa92cb0982d5b21e724997006e6fcf290990a1f067d2abcceb3d8b7d0"
      }
     ],
-    "logHash": "9d714a057d58b8412c1b5a208fe3e3403c2ad5ea824c61a9b79e1c2a8d715de1",
+    "logHash": "964aa5ffa92cb0982d5b21e724997006e6fcf290990a1f067d2abcceb3d8b7d0",
     "logLength": 25
    }
   }
@@ -2786,7 +2786,7 @@
   "by": "h",
   "to": "b",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESULT",
    "matchId": "GOLDEN",
    "seq": 39,
@@ -2818,20 +2818,20 @@
      }
     ],
     "winner": "a",
-    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
     "logLength": 18,
-    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "hostSignature": "vNj1KvWQ4LGd7f6FWlzL2yi4WZ8wCWXDJ6LBHFZ5L/4rRq3HvpyADAnT6uvhKfZDMftYV9m7Zo10JQrTgchPCw==",
     "signatures": [
      {
       "playerId": "a",
-      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "9YHDCypRcGYCrJ6vy/UrkknNhXhR/knbKci18caMl3NM/21QzPl8MFQRrizLqGpf/p2RYqJGkYSM+ujFSWs8BA==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      },
      {
       "playerId": "b",
-      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
-      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "signature": "Zvdhn7hfxw3k6/fHUZ0uapZk8uNHH2ZYVtN1GSBboPgD5vMR+Mz+fXH9IbNJlVTSjiuvvPJ7vGXwtEfsLiAyBg==",
+      "logHash": "38c568d5959956a9d9bf261fff811e72f928cf4193c6a25b840024f8c3cd8c7e",
       "logLength": 18
      }
     ],
@@ -2869,7 +2869,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESUME",
    "matchId": "GOLDEN",
    "seq": 12,
@@ -2882,7 +2882,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESUME",
    "matchId": "GOLDEN",
    "seq": 12,
@@ -2895,7 +2895,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 40,
@@ -2908,10 +2908,10 @@
      "ballNumber": 1,
      "grantSeq": 12,
      "issuedAt": 1795000021000,
-     "logHash": "d9df774edb5626e9c8ea8e92e236721688452e283031c1e2f147833b5886dfeb",
+     "logHash": "c0aaf6e2e631868d3f8ea91e4663aabd792500250f1b40854d01a68b8fc36527",
      "game": 2
     },
-    "grantSig": "w1I5MGssVFEmBSCgvLHRNpvJOyhiaRk6JEM7QIiiBW+zTxc0latDSDc10L2OwaA+gRz25cHaIulH/pZf5xyeAw=="
+    "grantSig": "7HHN6a7ksnX2AopRCbITLtCjLHZ8t3wBRIVitrmbR5TSMuWYrerj2W1cA4yaPWk/PAtHHwoh/38BLLMfcRRJAQ=="
    }
   }
  },
@@ -2919,7 +2919,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 13,
@@ -2938,7 +2938,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 13,
@@ -2957,7 +2957,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 41,
@@ -2970,10 +2970,10 @@
      "ballNumber": 2,
      "grantSeq": 13,
      "issuedAt": 1795000021500,
-     "logHash": "9681476e44bc35317156a30e18f79669fe897c85d6f25b05fadaf6419dabde90",
+     "logHash": "0df65d5c9d0b248859f064ec9705ef67d266088f3c26548de5a20e3895922810",
      "game": 2
     },
-    "grantSig": "S/hhCQqeiv5ZIfq5ECGzdyjGNeGvb3v5KMKbLZOAxttE7v09NmU+lE9rGzaa40fWPa3SxHywfvt7Q3vEPHOFBg=="
+    "grantSig": "DvGr3kTmG16LTqMbghtMEKYEO812nXZForUFZTraQ7K5IqqQZuQdF4XwQWW37m68SdqGwaOxFyuleBJkn0wzBg=="
    }
   }
  },
@@ -2981,7 +2981,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 42,
@@ -3000,7 +3000,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 43,
@@ -3013,10 +3013,10 @@
      "ballNumber": 2,
      "grantSeq": 14,
      "issuedAt": 1795000021500,
-     "logHash": "c2af5917b8815bdad9695ee5a81480fe995d2a87b3ad846cb90c206fe6328634",
+     "logHash": "8c72d6336697217bd093180e619ec3ba80c614db6991fb1567f243a4d762928e",
      "game": 2
     },
-    "grantSig": "IwqoCqL9D2RjjkUKLXmTDntDDQcXFLiIUgqvU/KfxSFXyJwU7QrCsTzTPP7SWX79TIfZC/7fP4vqOmKAjD9gDg=="
+    "grantSig": "OjuG3YzzVRUDgZI2LcRbdHhTR7xIN/CXhwAvtvo5zc2dgnMT3vC5wT7mSCd+Ab8hpOi1X6GnutIzUbJpF2FVDg=="
    }
   }
  },
@@ -3024,7 +3024,7 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 16,
@@ -3043,7 +3043,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 16,
@@ -3062,7 +3062,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "TURN_GRANT",
    "matchId": "GOLDEN",
    "seq": 44,
@@ -3075,10 +3075,10 @@
      "ballNumber": 2,
      "grantSeq": 15,
      "issuedAt": 1795000022500,
-     "logHash": "35a2a3e908ac9afc0cfd981f95f5c7e11f4136ea275f3eba147b94bba2e0778b",
+     "logHash": "f8a67f929a8e16e2865d84091e38a5ecd2cc6f3bb03bf550b2b35f5d57d1761a",
      "game": 2
     },
-    "grantSig": "jp27QsemusJgPT0PinkxwESRjy+W4JfIwMjCPKEQZJaU/+u4fdU7sHXmbvFLFDwgYtdlHLgfUtB9tlt+2RWlAQ=="
+    "grantSig": "c0g8UVpCxbEBAafwV1P61T78HA6P05ipkr3hrFY2B4tvMxfKmPUgRx4OSlMm/jTfmncs1RtMLzw3ta3TiUz8BA=="
    }
   }
  },
@@ -3086,7 +3086,7 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 14,
@@ -3105,7 +3105,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "BALL_END",
    "matchId": "GOLDEN",
    "seq": 14,
@@ -3124,16 +3124,16 @@
   "by": "a",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "LOG_SIGN",
    "matchId": "GOLDEN",
    "seq": 17,
    "ts": 1795000023000,
    "from": "a",
    "payload": {
-    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logHash": "ed756c4c23986c620a1517efdb359f5ba7ff3d370b0e317a6b6899165d01a893",
     "logLength": 34,
-    "signature": "spV98XoqGxuHj1CuY3Qc111fa4q6glISSGFkf4YpDGUIWl99adbyml/CRHFAZdXD0Lz2KM/GaCZibJI6yHWwAg=="
+    "signature": "UuaDKzHLxA6MJ9FtwaEjBsggVPgVMpwY31za4unytUNNpwQZJJn+PuPVWPhVIF98Gwuo92qUFbsWYJPqWwOsAw=="
    }
   }
  },
@@ -3141,16 +3141,16 @@
   "by": "b",
   "to": "h",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "LOG_SIGN",
    "matchId": "GOLDEN",
    "seq": 15,
    "ts": 1795000023000,
    "from": "b",
    "payload": {
-    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logHash": "ed756c4c23986c620a1517efdb359f5ba7ff3d370b0e317a6b6899165d01a893",
     "logLength": 34,
-    "signature": "oC7wo7SIq9wqJZ7OrLV2pvOJuPAeJjXwII0JJ/qhBgWwY9K12Ahd47DhiT/gPB98NrNFrtjezg1UYGwSnkHABw=="
+    "signature": "oFcVK840zwzBGA+d2lhOm01ksGB9FFblxROSuO3tVVOIhkXDDcM6zwdJPFn+aFR6DsvGAeQVy0hBLq7Dy7hlDA=="
    }
   }
  },
@@ -3158,7 +3158,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "RESULT",
    "matchId": "GOLDEN",
    "seq": 45,
@@ -3190,20 +3190,20 @@
      }
     ],
     "winner": "b",
-    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logHash": "ed756c4c23986c620a1517efdb359f5ba7ff3d370b0e317a6b6899165d01a893",
     "logLength": 34,
-    "hostSignature": "2G9bn2tlDvt2b1gr4Zn0DeAJYn/wTAs4qLVSzq6HKlvtp/KuuVCFtAOT41wUPPn6bV9hvBsxcYXwCeZGZnzGCQ==",
+    "hostSignature": "2Z/57JPnSR85mdKoYu0JIGFnPnAb5PNX9u7EIgfmr/GO7Q7zRI7IpLqd4YA7pd9HZQkgc91OH2nndiW+T0OvAg==",
     "signatures": [
      {
       "playerId": "a",
-      "signature": "spV98XoqGxuHj1CuY3Qc111fa4q6glISSGFkf4YpDGUIWl99adbyml/CRHFAZdXD0Lz2KM/GaCZibJI6yHWwAg==",
-      "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+      "signature": "UuaDKzHLxA6MJ9FtwaEjBsggVPgVMpwY31za4unytUNNpwQZJJn+PuPVWPhVIF98Gwuo92qUFbsWYJPqWwOsAw==",
+      "logHash": "ed756c4c23986c620a1517efdb359f5ba7ff3d370b0e317a6b6899165d01a893",
       "logLength": 34
      },
      {
       "playerId": "b",
-      "signature": "oC7wo7SIq9wqJZ7OrLV2pvOJuPAeJjXwII0JJ/qhBgWwY9K12Ahd47DhiT/gPB98NrNFrtjezg1UYGwSnkHABw==",
-      "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+      "signature": "oFcVK840zwzBGA+d2lhOm01ksGB9FFblxROSuO3tVVOIhkXDDcM6zwdJPFn+aFR6DsvGAeQVy0hBLq7Dy7hlDA==",
+      "logHash": "ed756c4c23986c620a1517efdb359f5ba7ff3d370b0e317a6b6899165d01a893",
       "logLength": 34
      }
     ],
@@ -3241,7 +3241,7 @@
   "by": "h",
   "to": "all",
   "msg": {
-   "v": 6,
+   "v": 7,
    "type": "MATCH_END",
    "matchId": "GOLDEN",
    "seq": 46,

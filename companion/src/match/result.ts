@@ -65,15 +65,6 @@ export function logSignBody(matchId: string, logHash: string, logLength: number)
   return { matchId, logHash, logLength };
 }
 
-/** The object a RECONNECT signs with the participant's roster key (A2, 2026-10-30). */
-export function reconnectSignBody(
-  matchId: string,
-  player: PlayerId,
-  logHash: string,
-  logLength: number,
-): { matchId: string; player: PlayerId; logHash: string; logLength: number } {
-  return { matchId, player, logHash, logLength };
-}
 
 /**
  * A17 step 6 (the review of 2026-11-25): what `HELLO.proof` signs. A HELLO carries no log, so there is less to sign
@@ -85,14 +76,20 @@ export function helloProofBody(lobby: string, player: PlayerId, seq: number): { 
 }
 
 /**
- * A17 step 6 (2026-11-25): the object a RECONNECT signs in a lobby, with the member's key as the lobby holds it. The
- * lobby's code and not a match's id (a member comes back in every phase, a watcher is in no match); the id of the
- * lobby's PC the frame is addressed to (`host`); the match it holds a log of; and the envelope's own `seq`, which the
- * host takes only when it is above the last it took from that member. So a RECONNECT is good for one use at one PC:
- * the same frame a second time is stale, its payload under another `seq` does not verify, and neither does the
+ * The object a RECONNECT signs. A17 step 6 (2026-11-25) made it for the lobby, with the member's key as the lobby
+ * holds it: the lobby's code and not a match's id (a member comes back in every phase, a watcher is in no match); the
+ * id of the PC the frame is addressed to (`host`); the match it holds a log of; and the envelope's own `seq`, which
+ * the host takes only when it is above the last it took from that member. So a RECONNECT is good for one use at one
+ * PC: the same frame a second time is stale, its payload under another `seq` does not verify, and neither does the
  * frame at a PC it was not written for.
+ *
+ * A17 step 7 (2026-11-25, protocol 7): it is the ONE body, also for a match without a lobby (the engines with the
+ * option off: a participant comes back to the match's host, or to the new host after a transfer). There `lobby` and
+ * `match` are both the match's id, which is what the envelope carries. The body of protocol 2 to 6, `{matchId,
+ * player, logHash, logLength}` (A2, 2026-10-30), covered neither the `seq` nor the PC it was sent to; a protocol 7
+ * host takes no RECONNECT signed over it.
  */
-export function lobbyReconnectSignBody(
+export function reconnectSignBody(
   lobby: string,
   host: PlayerId,
   player: PlayerId,
@@ -103,3 +100,6 @@ export function lobbyReconnectSignBody(
 ): { lobby: string; host: PlayerId; player: PlayerId; match: string | null; logHash: string; logLength: number; seq: number } {
   return { lobby, host, player, match, logHash, logLength, seq };
 }
+
+/** The name step 6 gave the body while only a lobby signed it (`reconnectSignBody` is the one body since protocol 7). */
+export const lobbyReconnectSignBody = reconnectSignBody;

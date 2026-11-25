@@ -12,7 +12,6 @@ import { buildMessage, PROTOCOL_VERSION, type AnyMessage } from '@castcade/proto
 import { ClientMatch } from './client.js';
 import { HostMatch } from './host.js';
 import { generateKeys, signCanonical, type KeyPair } from './keys.js';
-import { reconnectSignBody } from './result.js';
 import { startFakeRelay } from './relay-fake.test-support.js';
 import { MemoryBus, openCandidate, type LinkCandidate, type Transport } from './transport.js';
 import { RelayClientTransport, RelayHostTransport } from './transport-relay.js';
@@ -31,6 +30,7 @@ import {
   DEVICES,
   participant,
   rawSocket,
+  signedReconnect,
   reconnectAs,
   relayRig,
   sleep,
@@ -149,9 +149,7 @@ for (const [transport, makeRig] of TRANSPORTS) {
       const head = rig.host.log.head();
       const second = await rig.second();
       // The same player on another link: its own key, its own log head, its own next number.
-      const s = rig.a.session;
-      const sig = signCanonical(reconnectSignBody(CODE, 'a', head.hash, head.length), rig.ak.privateKey);
-      second.send(s.build('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature: sig, resends: true }, CODE));
+      second.send(signedReconnect(CODE, 'h', 'a', head, rig.ak, rig.a.session.nextSeq()));
       await until(() => second.frames().length >= 1);
       expect(second.frames()[0]).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: true, logHash: head.hash } });
       expect(rig.seen).toEqual(['h:reconnected:a']);
@@ -185,8 +183,7 @@ describe('the relay: a player whose link was replaced is told to open it again, 
     await aIsUp(rig);
     const head = rig.host.log.head();
     const second = await rig.second();
-    const sig = signCanonical(reconnectSignBody(CODE, 'a', head.hash, head.length), rig.ak.privateKey);
-    second.send(rig.a.session.build('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature: sig, resends: true }, CODE));
+    second.send(signedReconnect(CODE, 'h', 'a', head, rig.ak, rig.a.session.nextSeq()));
     await until(() => second.frames().length >= 1);
     // The engine's own transport is on no link now; its next frame is answered with RELINK and it comes back.
     rig.a.reportState({ ballNumber: 1, score: 10, ballInPlay: true, tilt: false });
@@ -416,8 +413,7 @@ describe('the engines: the number of a frame that opens a link is recorded only 
     m.host.on('reconnected', () => raised.push('reconnected'));
     m.host.on('reconnectRejected', () => raised.push('rejected'));
     const head = m.a.log.head();
-    const sig = signCanonical(reconnectSignBody('M', 'a', head.hash, head.length), (m.keys['a'] as KeyPair).privateKey);
-    const frame = buildMessage('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature: sig, resends: true }, { matchId: 'M', seq: HIGH, from: 'a' });
+    const frame = signedReconnect('M', 'h', 'a', head, m.keys['a'] as KeyPair, HIGH);
     const sent: AnyMessage[] = [];
     let bound = false;
     const gone = openCandidate('a', { send: (x) => sent.push(x), bind: () => (bound = true), close: () => undefined });

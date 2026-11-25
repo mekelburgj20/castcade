@@ -28,9 +28,9 @@ const participant: ParticipantInfo = { playerId: 'p1', displayName: 'Player One'
 const at = { matchId: 'JHDFEF', seq: 1, from: 'p1', ts: 1 };
 const entry = (index: number) => ({ index, prevHash: hex64, ts: 5, kind: 'msg' as const, from: 'p1', message: buildMessage('RESUME', {}, { ...at, matchId: 'JHDFEF-1' }) as unknown as Record<string, unknown>, hash: hex64 });
 
-describe('A17: the lobby in the schemas, on protocol 6', () => {
-  it('the version did not change, and the six new types have a direction', () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+describe('A17: the lobby in the schemas (protocol 7 since step 7, when the shell turned the lobby on)', () => {
+  it('the version is 7, and the seven new types have a direction', () => {
+    expect(PROTOCOL_VERSION).toBe(7);
     const added = ['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LOBBY_CLOSED', 'MATCH_LOG', 'LEAVE_LOBBY'] as const;
     for (const t of added) expect(MESSAGE_TYPES).toContain(t);
     expect(added.map((t) => MESSAGE_DIRECTION[t])).toEqual(['client->host', 'client->host', 'client->host', 'client->host', 'host->all', 'host->client', 'client->host']);

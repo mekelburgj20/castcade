@@ -28,8 +28,13 @@ function rawToString(data: RawData): string {
 /**
  * A17 (2026-11-24): the first Castcade release that speaks `PROTOCOL_VERSION`, for the sentence a PC on an older
  * version is shown. Changed together with the version (`transport-relay.test.ts` holds the two side by side).
+ * A17 step 7 (2026-11-25): protocol 7, the lobby. The design names 0.2.51 as the release that first carries it
+ * (alpha-match.md section 11.7: "0.2.51 stands for whichever release first carries protocol 7"); the number is the
+ * owner's to confirm when that release is cut.
  */
-export const PROTOCOL_SINCE_RELEASE = '0.2.46';
+export const PROTOCOL_SINCE_RELEASE = '0.2.51';
+/** A17 step 7: from this version on a peer knows RECONNECT_ACK's code `protocol_version`; an older asker gets `unknown_player`. */
+const RECONNECT_CODE_SINCE = 7;
 
 const ZERO_HASH = '0'.repeat(64);
 
@@ -50,12 +55,13 @@ export function foreignVersionOf(text: string): number | null {
  * A17 (2026-11-24): what a joining PC shows when the host's answer does not decode because the host speaks another
  * protocol version (a host up to 0.2.50 answers in its own version, see `foreignVersionRefusal`): the sentence in
  * place of "The host did not answer" ten seconds later. Raised through a client transport's `onError`.
+ * A17 step 7: the host is "the lobby's PC" in what a player is shown (design section 11.7).
  */
 export class ForeignVersionError extends Error {
   constructor(readonly theirs: number) {
     super(
-      `The host's PC runs another version of Castcade (protocol ${theirs}; this PC has ${PROTOCOL_VERSION}). Both need the same: ${
-        theirs > PROTOCOL_VERSION ? 'update Castcade on this PC (Settings, Check for updates)' : 'the host updates Castcade (Settings, Check for updates)'
+      `The lobby's PC runs another version of Castcade (protocol ${theirs}; this PC has ${PROTOCOL_VERSION}). Both need the same: ${
+        theirs > PROTOCOL_VERSION ? 'update Castcade on this PC (Settings, Check for updates)' : "Castcade is updated on the lobby's PC (Settings, Check for updates)"
       }, then join again.`,
     );
     this.name = 'ForeignVersionError';
@@ -76,9 +82,11 @@ export function undecodable(text: string, e: unknown): unknown {
  */
 function refusalSentence(theirs: number | null): string {
   if (theirs !== null && theirs > PROTOCOL_VERSION) {
-    return `The host's Castcade is older than this PC's (it speaks protocol ${PROTOCOL_VERSION}, this PC ${theirs}). The host updates Castcade (Settings, Check for updates); then join again.`;
+    return `The Castcade on the lobby's PC is older than this PC's (it speaks protocol ${PROTOCOL_VERSION}, this PC ${theirs}). It is updated there (Settings, Check for updates); then join again.`;
   }
-  return `This match needs Castcade ${PROTOCOL_SINCE_RELEASE} or newer (protocol ${PROTOCOL_VERSION}; this PC sent ${theirs === null ? 'another version' : theirs}). Update Castcade on this PC (Settings, Check for updates) and join again.`;
+  // A17 step 7: the design's sentence for a PC on protocol 6 or older ("This lobby needs Castcade 0.2.51 or newer.
+  // Update Castcade on this PC ..."), with both versions in it for whoever reads a log.
+  return `This lobby needs Castcade ${PROTOCOL_SINCE_RELEASE} or newer (protocol ${PROTOCOL_VERSION}; this PC sent ${theirs === null ? 'another version' : theirs}). Update Castcade on this PC (Settings, Check for updates) and join again.`;
 }
 
 /**
@@ -90,7 +98,8 @@ function refusalSentence(theirs: number | null): string {
  * host that did not answer. `REFUSE` and `RECONNECT_ACK` have had the same shape since protocol 2, so the asker reads
  * the frame and shows the sentence. And a RECONNECT is answered too (it got nothing: its sender waited out the whole
  * host wait): with a `RECONNECT_ACK` that does not accept, `unknown_player` being the nearest code every version
- * knows; the asker then says at once that the host did not take it back. Its `seq` is the wall clock, because the
+ * knows; the asker then says at once that the host did not take it back. A17 step 7: an asker on protocol 7 or later
+ * knows the code that says why, `protocol_version`, and gets that. Its `seq` is the wall clock, because the
  * asker drops a frame whose `seq` is not above the last it took from this host, in an earlier run or version (A15's
  * rule for a restarted sender); a HELLO opens a new connection, so its REFUSE keeps the caller's counter.
  *
@@ -112,7 +121,8 @@ export function foreignVersionRefusal(text: string, from: PlayerId, seq: number)
     } else {
       const asked = (value as { matchId?: unknown }).matchId;
       const matchId = typeof asked === 'string' && /^[\w.:-]{1,64}$/.test(asked) ? asked : null;
-      answer = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_player', entries: [], logHash: ZERO_HASH, logLength: 0 }, { matchId, seq: Math.max(seq, Date.now()), from });
+      const code = theirs !== null && theirs >= RECONNECT_CODE_SINCE ? 'protocol_version' : 'unknown_player';
+      answer = buildMessage('RECONNECT_ACK', { accept: false, code, entries: [], logHash: ZERO_HASH, logLength: 0 }, { matchId, seq: Math.max(seq, Date.now()), from });
     }
     // A version that is not a whole number is nobody's: the answer stays in ours.
     return JSON.stringify({ ...answer, v: theirs ?? PROTOCOL_VERSION });
