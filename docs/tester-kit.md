@@ -53,7 +53,7 @@ changed; step 5 adds one script file beside each table and one in VPX's `scripts
 ## Send back
 
 - A screenshot of **Status** after the game (and of anything red).
-- The log: in Castcade (a build after 0.2.49), **Settings → Send logs to Arcaid support**, one press. On an older
+- The log: in Castcade 0.2.50 or later, **Settings → Send logs to Arcaid support**, one press. On an older
   build, or if that fails, the file `%APPDATA%\Castcade\logs\companion.log` (no token in it).
 - Which table and ROM you played, your VPX build (`VPinballX64.exe`, `VPinballX_GL64.exe`, VR...) and
   frontend, and what ArcAid showed.

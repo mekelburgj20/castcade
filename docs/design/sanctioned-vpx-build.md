@@ -14,7 +14,7 @@
    the player's stock VPX beside it (§2.1).
 3. Tournament-tunable bounds (tilt sensitivity, accelerometer gain, nudge filter) come in a **Sanctioned profile** the
    companion fetches from ArcAid; the build clamps to it and signs its hash (§2.3, §4.5).
-4. What the build cannot stop (a VPinMAME cheat flag already set, non-factory adjustments, a missing profile) it does
+4. What the build cannot stop (non-factory adjustments, a missing profile) it does
    not hide either: the game plays, the signed report says `ok: false` with reasons, and an on-screen line says so
    before ball one (§2.2).
 5. The build **keeps the script hook** (`castcade.vbs` + table import) for game events and the turn lock, and becomes
@@ -95,7 +95,7 @@ Field names on the right are the wire names the companion already sends (`compan
 | Script debugger console, ball control / throw balls, live object editing, frame step or slow motion | locked | disabled | Each lets the player act on the game directly. The exact features in 10.8.0: **to be confirmed in the fork** | none today |
 | Play from the editor after editing (in-process edits) | locked | only `-Play <file>` is a Sanctioned session; an edited-then-played table is `ok: false` | The ball must see the file whose hash is reported | `table_sha256` (file only) |
 | Pause (ESC menu) | reported | count and total time per game | Real machines cannot pause; harmless solo, relevant in a match | none today |
-| VPinMAME per-ROM `cheat` (`HKCU\Software\Freeware\Visual PinMame\<rom>\cheat`, else `default`) | reported, gates `ok` | read inside the process at `game_start`; `true` ⇒ `ok: false` | VPinMAME owns it and reads it at ROM start (exact timing **to be confirmed in the fork**); the build can refuse to sign the session clean, not change the ROM's behaviour mid-run | `build.cheat` |
+| VPinMAME per-ROM `cheat` (`HKCU\Software\Freeware\Visual PinMame\<rom>\cheat`, else `default`) | reported | read inside the process at `game_start`; **never gates `ok`** (owner ruling 2026-11-24, WORK B27.1) | It is the checkbox VPinMAME calls "Skip Pinball Startup Test": on a WPC machine it skips the boot checksum and nothing else, and MAME's cheat engine, which it also arms, needs a `cheat.dat` the player supplies (fairness §5). A boot shortcut holds no player out of any tournament; a score poked in RAM is judged by its pattern (B6.1), whatever tool did it | `build.cheat` |
 | VPinMAME DLL that is actually loaded | reported | path + SHA-256 of the loaded module | The companion hashes the COM-registered DLL, which need not be the one loaded | `build.vpinmame` |
 | Machine adjustments (NVRAM, operator menu) | reported | unchanged; companion reads the `.nv` through the maps corpus | They live in VPinMAME's NVRAM, decoded only by the corpus; ArcAid's `require_factory_adjustments` with its whitelist (default `['Free Play']`) already rules them. A factory reset before play is §8 Q5 | `adjustments` |
 | ROM | reported | the ROM the hook names | Pinned by ArcAid's `required_rom` | `rom` |
@@ -134,7 +134,7 @@ hook library goes to 0.5.0 (it gains the native route, §3.2) and a fork-recorde
 | `table_loaded`, `nvram_hook`, `nvram_full`, `nvram_delta`, `game_start`, `current_scores`, `ball_end`, `game_end`, `lock`, `key_blocked`, `warn`, `embedded_patch`, `table_exit` | hook, through the build's native append | exactly as today (`vpx-hook/castcade.vbs` header) |
 | `engine` | build (replaces the hook's sampler) | the same fields as hook 0.4.0 (`EngineSample`), written at the setter on every change instead of at key presses |
 | `include` (new) | build | name + SHA-256 of each file a script loads through VPX's `GetTextFile` (`core.vbs`, `controller.vbs`, `castcade.vbs`): what B5.4 wanted, measured where it happens. Whether every include path goes through it: **to be confirmed in the fork** |
-| `sanctioned` (new) | build | a refusal or clamp that fired (`NudgeSetCalibration` ignored, tweak-menu write refused, cheat flag on, editor play), pause totals at `game_end`, the module list at `game_start` and `game_end` |
+| `sanctioned` (new) | build | a refusal or clamp that fired (`NudgeSetCalibration` ignored, tweak-menu write refused, editor play), pause totals at `game_end`, the module list at `game_start` and `game_end` |
 | `attest` (new, at `game_end` and `table_exit`) | build | the signed report (§4.5) |
 
 **Single writer, hash-chained.** The build opens the journal itself with write sharing denied (read sharing allowed, so
@@ -228,10 +228,11 @@ The `attest` line, and the `trusted` param the companion carries on the score (c
 ```json
 {"v":1,"build_id":"csv-10.8.0-2051-s1","key_id":"k2026-11","session":"…","nonce":"…",
  "profile_sha256":"…","table_sha256":"…","script_sha256":"…","chain_head":"…","lines":1834,
- "game":2,"ok":false,"reasons":["vpm_cheat_on"],"sig":"<ed25519 over the canonical JSON without sig>"}
+ "game":2,"ok":false,"reasons":["no_profile"],"sig":"<ed25519 over the canonical JSON without sig>"}
 ```
 
-`ok` and `reasons` are the build's own verdict on §2.3 (cheat flag, editor play, no profile, self-check failed).
+`ok` and `reasons` are the build's own verdict on §2.3 (editor play, no profile, self-check failed; never the
+VPinMAME `cheat` option, which is reported and nothing more: owner ruling 2026-11-24).
 ArcAid's verdict stays ArcAid's: it verifies `sig` with the listed key, checks the nonce, the profile hash and the
 window, and then applies its existing Sanctioned rules to the evidence as today. Badge, never gate, everywhere outside
 a tournament that turned the rule on.

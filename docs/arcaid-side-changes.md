@@ -399,7 +399,13 @@ As shipped by companion 0.2.5–0.2.8 (JSON strings, URL-encoded as query params
   (**owner ruling 2026-10-19: the Panasony VR mod of VPX is allowed even in Sanctioned play**), `nightly` passes
   by default behind a runner toggle, and `unknown` passes only when the runner has blessed that hash for the
   tournament (their own, or one several devices report). Never "official only". `cheat` is VPinMAME's per-ROM
-  cheat option; Sanctioned refuses `true`. `VpxScoreIngestService`: match candidates by `vps_game` against
+  cheat option. **Owner ruling 2026-11-24 (Castcade B27.1): it matters in no kind of tournament.** It is the
+  checkbox VPinMAME calls "Skip Pinball Startup Test" (a boot shortcut; fairness §5), so it is evidence a reviewer
+  may read and never a reason to refuse. As built, ArcAid still refuses `true` in every Sanctioned tournament and flags it in Open play, with
+  no runner toggle (`src/utils/sanctionedRules.ts`, the `cheat` rule), and the admin panel labels the value
+  "VPinMAME cheat: ON" (`admin-ui/src/components/IntegrityPanel.tsx`). **Asked of ArcAid (Castcade F30, ArcAid W127):** drop the
+  `cheat` rule from the verdict in both modes (keep parsing and storing `build.cheat`), and where the value is shown,
+  say "startup test skipped: yes / no". `VpxScoreIngestService`: match candidates by `vps_game` against
 `global_games.vps_id` **first**, falling back to today's name keys (so every v0.2.x companion keeps
 working); in a Sanctioned tournament apply the per-game rules the way `engineExcluded` already refuses a
 score, returning a new wire status `not_sanctioned` with `reasons: string[]` (the companion maps it to
@@ -723,11 +729,11 @@ catalogue game the score resolved to, with the ROM family as the fallback (`cong
 **The counter in the rule (proposed 2026-11-22, when the owner asked for the mode itself to be detected on both
 producers; confirmed by the owner 2026-11-24).** `midnight.ran` `true` makes a game a midnight game whatever the clock says: it
 covers a cabinet whose time zone is wrong and a score with no `utc_offset`. `ran_span` and an absent `ran` decide
-nothing: the clock rule above stands. `ran` `false` clears a game the clock rule caught only on a ROM whose counter
-has been seen to go up with the mode, which is the owner's end state by a second road. Seen so far on `congo_21`
-only (B26.1: a live match on 2026-11-23, "Midnight Madness ran on Krobs' ball 3" fifteen seconds after his midnight;
-his audit B.4 31 read 02 on 2026-11-24). On the other four titles the audit is taken by its name, so there `ran`
-`false` clears nothing yet.
+nothing: the clock rule above stands. `ran` `false` clears a game the clock rule caught, on all five titles that
+send `midnight` (owner 2026-11-25; Junk Yard sends none, so the clock alone decides there). The counter has been
+seen going up with the mode on `congo_21` only (B26.1: a live match on 2026-11-23, "Midnight Madness ran on Krobs'
+ball 3" fifteen seconds after his midnight; his audit B.4 31 read 02 on 2026-11-24); on the other four the audit is
+taken by its name.
 
 **Later, the owner's end state.** `midnight.setting` `off` permits a midnight game. The companion sends it now so the
 switch is one line when the owner wants it. Store `midnight` whole and show it on the Integrity panel.

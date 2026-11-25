@@ -113,7 +113,7 @@ Answer these even when everything worked:
 
 And send:
 
-- **The log.** In Castcade (a build after 0.2.49): **Settings → Send logs to Arcaid support**, one press. On
+- **The log.** In Castcade 0.2.50 or later: **Settings → Send logs to Arcaid support**, one press. On
   0.2.49 or older, on arcaid.app: **Account Settings → Arcaid Witness →** your PC **→ Get logs**, then
   **Send to Arcaid support**. If neither works, send the file `%APPDATA%\Castcade\logs\companion.log`
   (it holds no token).

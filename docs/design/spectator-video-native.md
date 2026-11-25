@@ -15,8 +15,9 @@ WORK D10.
 - Receiver: the decoded frame → canvas → RGBA (7.8 MB a frame) over Electron IPC, one frame in flight → main →
   pipe → the layer: a ceiling of about 22 fps measured, 60–245 frames per 10 s reached the layer in the two games.
 - Result: sharper than 0.2.35 and "really choppy and almost unwatchable"; the ball cannot be followed.
-- Chuck's rig (AMD GPU, Quest 3, Virtual Desktop + OpenComposite, VPinballX_GL64): the layer camera on OpenGL ran at
-  exactly 10 fps once idle in panel mode (cause unverified, D8.1.2). First AMD tester.
+- Chuck's rig (NVIDIA GeForce RTX 5070 Ti, Quest 3, Virtual Desktop + OpenComposite, VPinballX_GL64): the layer camera
+  on OpenGL ran at exactly 10 fps once idle in panel mode (cause unverified, D8.1.2). This line first said AMD; his
+  `vr-layer.log` says GeForce (found 2026-11-24), so no tester has an AMD GPU yet.
 - An Electron probe (`RTCPeerConnection` loopback, profile orders 42e01f / 640032 / …) read every GPU feature as
   software, but ran under a sandbox: unverified for the installed app (D8.3.2 logs `app.getGPUFeatureStatus()`).
 
@@ -93,7 +94,7 @@ quirks already ironed out; its D10 change is the NV12 readback and the shared-me
 | D10.4 | Receiver decode in the helper → texture → the theater quad; desktop fallback | 60 fps on the screen, no Electron copy |
 | D10.5 | Controller, readout, manual pin, host ceiling (absorbs D8.2) | the owner dials in by hand, then lets it run |
 | D10.6 | Non-VR sender: Windows Graphics Capture of the VPX window in the helper | a desktop rig sends at rung 3 |
-| D10.7 | Rig gates on NVIDIA x2 + AMD; the Electron video path removed | the owner follows the ball |
+| D10.7 | Rig gates on NVIDIA x2 + an AMD rig (none among the testers yet); the Electron video path removed | the owner follows the ball |
 
 ## 5. Risks
 
