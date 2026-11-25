@@ -29,7 +29,9 @@ export interface PanelState {
      * `table_mismatch`: their table differs from the host's (advisory, alpha-match.md §3); `build_mismatch` (D2.5,
      * 2026-10-31): their VPX build does (`emulatorVersion`), shown muted: the table may still be the same. `midnight`
      * (B26, 2026-11-16): Midnight Madness ran on one of their balls of this game (B26.4: the ROM's own audit of the
-     * mode went up on their table); a flag only.
+     * mode went up on their table); a flag only. `disconnected` (A18, 2026-11-24): the player is away from the match's
+     * control link (their link to the host dropped for longer than the engine's grace, or the match paused for them
+     * at their own turn); shown as AWAY. It says nothing about voice or video, which are connections of their own.
      */
     flags: Array<'table_mismatch' | 'build_mismatch' | 'disconnected' | 'loading' | 'midnight'>;
     /**

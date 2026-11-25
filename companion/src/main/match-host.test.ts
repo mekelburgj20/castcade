@@ -61,6 +61,8 @@ function make(name: string, sha: string, extra: Partial<Parameters<typeof create
     witness: witness(sha),
     device: () => ({ deviceId: `dev-${name}`, deviceLabel: name }),
     appVersion: '0.2.21',
+    // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts (it has its own).
+    disconnectGraceMs: 0,
     log: logger,
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
@@ -1437,11 +1439,21 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(C.mh.status().panel).toMatchObject({ myTurn: false, ball: 1 });
 
     // The host's socket to ArcAid drops: the relay player is out for a moment, resumes by itself, and the match goes on.
+    // A18: it is the host's ball, so nothing pauses for the player who is away (with no grace here, the host does
+    // show that player as away until it is back).
+    const krobsAway = (): boolean => (H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).includes('disconnected');
+    const phases: string[] = [];
+    const off = H.mh.onStatus((s) => phases.push(s.phase));
     r.dropDevice('dev-h');
     await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => krobsAway());
     await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
-    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 8000);
-    expect(H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).not.toContain('disconnected');
+    await until(() => !krobsAway() && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 8000);
+    off();
+    expect(phases).not.toContain('paused');
+    expect(H.mh.status()).toMatchObject({ phase: 'playing', locked: false });
+    // Why the socket closed is in the log (socket.io's reason; no address).
+    expect(hl.lines.filter((l) => l.includes('the connection to ArcAid closed (')).length).toBeGreaterThan(0);
     // The token never reaches the log.
     expect(hl.lines.join('\n')).not.toContain('tok-h');
 
@@ -1450,7 +1462,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(H.mh.status()).toMatchObject({ via: null, path: null, invite: null, directInvite: null });
   }, 30_000);
 
-  it('two players through ArcAid drop at once (the host lost ArcAid): each resumes its own pause, the match plays on without the host pressing Resume', async () => {
+  it("A18: two players through ArcAid drop at once in the host's ball (the host lost ArcAid): nobody is paused for, both come back by themselves, and the turn moves on to each", async () => {
     const r = await startFakeRelay({ devices: { 'dev-h': 'tok-h', 'dev-c': 'tok-c', 'dev-d': 'tok-d' } });
     relays.push(r);
     const H = mk('relay3-host', paired(r, 'h'));
@@ -1462,10 +1474,15 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await until(() => H.mh.status().participants.length === 3);
     await H.mh.start();
     await until(() => C.mh.status().phase === 'playing' && D.mh.status().phase === 'playing');
+    const away = (): string[] => (H.mh.status().panel?.players ?? []).filter((p) => p.flags.includes('disconnected')).map((p) => p.name);
+    const phases: string[] = [];
+    const off = H.mh.onStatus((s) => phases.push(s.phase));
     r.dropDevice('dev-h');
-    await until(() => H.mh.status().phase === 'paused');
-    // Both come back by RECONNECT; the pause that names the other one is resumed by that one.
-    await until(() => [H, C, D].every((x) => x.mh.status().phase === 'playing'), 10_000);
+    await until(() => away().length === 2);
+    // Both come back by RECONNECT. The host's ball went on meanwhile: there was no pause to resume.
+    await until(() => away().length === 0 && [H, C, D].every((x) => x.mh.status().phase === 'playing'), 10_000);
+    off();
+    expect(phases).not.toContain('paused');
     // The turn moves on to each of them: nobody is left "disconnected" in the log.
     await H.mh.passTurn();
     await until(() => C.mh.status().panel?.myTurn === true || D.mh.status().panel?.myTurn === true, 6000);
@@ -1474,6 +1491,118 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await until(() => [H, C, D].every((x) => x.mh.status().phase === 'playing'), 6000);
     expect(H.mh.status().panel?.players.flatMap((p) => p.flags)).not.toContain('disconnected');
   }, 40_000);
+
+  /**
+   * A18: a seat whose fakes record what a drop could disturb: the page's peers (its connections are up as long as the
+   * page holds them, whatever the match's control link does), the table sound and the native video sender.
+   */
+  const a18Seat = (name: string, id: 'h' | 'c', r: { url: string }, pid: number, graceMs: number) => {
+    const withPid = (sha: string): WitnessHost => ({ ...witness(sha), vpxPid: () => pid }) as unknown as WitnessHost;
+    const page = { added: [] as string[], removed: [] as string[] };
+    const base = fakeMedia().media as unknown as Record<string, unknown> & { status(): Record<string, unknown> };
+    const media = {
+      ...base,
+      addPeer: (p: string) => void page.added.push(p),
+      removePeer: (p: string) => void page.removed.push(p),
+      status: () => ({ ...base.status(), peers: Object.fromEntries(page.added.filter((p) => !page.removed.includes(p)).map((p) => [p, { ice: 'connected', receivingVideo: false, receivingAudio: true }])) }),
+    };
+    const audio = fakeAudio();
+    const video = stubHelper();
+    const log = collect();
+    const signalling = (role: Parameters<typeof matchSignalling>[0], me: string) => matchSignalling(role, me);
+    const seat = mk(name, {
+      ...paired(r, id),
+      witness: withPid('ab'.repeat(32)),
+      media: media as never,
+      tableAudio: audio.ta,
+      signalling,
+      nativeVideo: { helper: video.helper as never, sendRing: `${name}-send-ABCDEFG`, recvRing: `${name}-recv-ABCDEFG` },
+      log: log.log,
+      disconnectGraceMs: graceMs,
+    });
+    // Every status this seat raised: the phase, whether its table is locked, the panel's line and who it shows as away.
+    const seen: Array<{ phase: string; locked: boolean; message: string | null; away: string[] }> = [];
+    seat.mh.onStatus((s) => seen.push({ phase: s.phase, locked: s.locked, message: s.panel?.message ?? null, away: (s.panel?.players ?? []).filter((p) => p.flags.includes('disconnected')).map((p) => p.name) }));
+    return { ...seat, page, audio, video, lines: log.lines, seen };
+  };
+
+  it("A18 (match ECVYGP, 2026-11-23): ArcAid drops the match for a moment in the host's ball: no pause on either PC, nobody shown as away, the table sound and the picture as they were, and the voice connection is not made again", async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a18-host', 'h', r, 111, 4000);
+    const C = a18Seat('a18-client', 'c', r, 222, 4000);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    // The host has ball 1: it sends its table's sound and its picture; the client's VPX is muted.
+    await until(() => C.mh.status().phase === 'playing' && H.audio.last()?.tapPid === 111 && C.audio.last()?.mutePid === 222 && H.video.of('send').at(-1)?.on === true);
+    await until(() => H.page.added.length === 1 && C.page.added.length === 1);
+    const before = { hAudio: H.audio.wants.length, cAudio: C.audio.wants.length, hSend: H.video.of('send').length, cSend: C.video.of('send').length, hSeen: H.seen.length, cSeen: C.seen.length };
+
+    r.dropDevice('dev-h');
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => H.lines.some((l) => l.includes(`ArcAid carries ${hs.invite} again`)), 6000);
+    // The client is back on the link by itself: the host can pass its turn and the client's grant arrives. (A grant
+    // that came due before the client was back would have waited for it: `match/host.ts`.)
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
+
+    // Up to the pass, nothing either player could see: every status says playing, nobody away, no line about a link;
+    // the host's table never locked and the client's stayed locked.
+    const during = (s: typeof H): typeof H.seen => s.seen.slice(s === H ? before.hSeen : before.cSeen).filter((x) => x.phase !== 'playing' || x.away.length > 0 || (x.message ?? '').includes('link'));
+    expect(during(H)).toEqual([]);
+    expect(during(C)).toEqual([]);
+    expect(H.lines.concat(C.lines).filter((l) => l.includes('the link to the host dropped') || l.includes('Paused'))).toEqual([]);
+    // The voice connection was not closed and not made again, on either PC.
+    expect(H.page).toEqual({ added: [C.mh.status().localId], removed: [] });
+    expect(C.page).toEqual({ added: [H.mh.status().localId], removed: [] });
+    // The table sound, as the helpers were told it from the drop on (each change once): the host sent its table until
+    // the pass and is muted from then on; the client was muted until its grant and sends from then on. Nothing else.
+    const sound = (s: typeof H, from: number): string =>
+      s.audio.wants
+        .slice(from)
+        .map((w) => (w.tapPid !== null ? 'send' : w.mutePid !== null ? 'mute' : 'off'))
+        .filter((x, i, all) => x !== all[i - 1])
+        .join(' > ');
+    expect(['mute', 'send > mute']).toContain(sound(H, before.hAudio));
+    expect(['send', 'mute > send']).toContain(sound(C, before.cAudio));
+    // The picture: the host's sender went off once, at the pass, and the client's on once, at its grant.
+    expect(H.video.of('send').slice(before.hSend).map((s) => s.on)).toEqual([false]);
+    expect(C.video.of('send').slice(before.cSend).map((s) => s.on)).toEqual([true]);
+    // Why the socket closed is in the host's log, and one line each for a drop that nobody saw.
+    expect(H.lines.some((l) => l.includes('the connection to ArcAid closed ('))).toBe(true);
+    expect(H.lines).toContain("match: Krobs's link to this host was away for a moment and is back; nothing was paused or shown");
+    expect(C.lines.some((l) => l.startsWith('match: the link to the host was away for a moment and is back ('))).toBe(true);
+  }, 30_000);
+
+  it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a18b-host', 'h', r, 111, 0);
+    const C = a18Seat('a18b-client', 'c', r, 222, 0);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    // The client is up: its table is unlocked, it sends its sound and its picture.
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false && C.audio.last()?.tapPid === 222 && C.video.of('send').at(-1)?.on === true, 8000);
+    const before = { cAudio: C.audio.wants.length, cSend: C.video.of('send').length, cSeen: C.seen.length };
+
+    r.dropDevice('dev-h');
+    // The host cannot reach the player who holds the grant: the others (here the host itself) wait for it.
+    await until(() => H.mh.status().phase === 'paused', 8000);
+    expect(H.mh.status().panel?.message).toBe('Paused: waiting for Krobs to reconnect');
+    // The client finds that pause in what it missed, resumes it itself, and the match plays on.
+    await until(() => C.seen.slice(before.cSeen).some((x) => x.phase === 'paused'), 8000);
+    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && C.mh.status().panel?.myTurn === true, 8000);
+    // On the client's own PC, all the while: never locked, the table's sound always sent, the sender never off.
+    expect(C.seen.slice(before.cSeen).filter((x) => x.locked)).toEqual([]);
+    expect(existsSync(C.lock)).toBe(false);
+    expect(C.audio.wants.slice(before.cAudio).filter((w) => w.tapPid !== 222 || w.mutePid !== null)).toEqual([]);
+    expect(C.video.of('send').slice(before.cSend)).toEqual([]);
+    expect(C.lines.some((l) => l.includes('back after a drop; resuming the match'))).toBe(true);
+  }, 30_000);
 
   it('a join by code says what went wrong: not paired, no such match, ArcAid refusing the device, ArcAid unreachable', async () => {
     const r = await fakeRelay();
@@ -1512,10 +1641,11 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     await expect(late.mh.join(code, 'Late')).rejects.toThrow(/^That match has already started/);
 
     await r.restart(400);
-    await until(() => H.mh.status().phase === 'paused' || hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    await until(() => hl.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
     await until(() => hl.lines.some((l) => l.includes(`ArcAid carries ${code} again`)), 10_000);
-    await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 20_000);
-    expect(H.mh.status().panel?.players.flatMap((p) => p.flags)).not.toContain('disconnected');
+    // A18: the host's ball was never paused for the player a deploy took away; that player is back by itself.
+    await until(() => H.mh.status().panel?.players.some((p) => p.flags.includes('disconnected')) === false && C.mh.status().phase === 'playing' && H.mh.status().path === 'Through ArcAid', 20_000);
+    expect(H.mh.status().phase).toBe('playing');
     expect(r.rooms()).toEqual([code]);
     // Locked again once its player was back, and never while the player was still on the way.
     await until(() => r.locked(code), 5000);

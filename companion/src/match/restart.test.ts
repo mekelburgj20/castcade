@@ -37,10 +37,10 @@ async function match(clientOpts: Partial<ConstructorParameters<typeof ClientMatc
   const ck = generateKeys();
   const ht = new WsPeerTransport({ localId: 'h' });
   const endpoint = await ht.listen(0, '127.0.0.1');
-  const host = new HostMatch({ transport: ht, keys: hk, matchId: 'ABCDEF', ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game });
+  const host = new HostMatch({ disconnectGraceMs: 0, transport: ht, keys: hk, matchId: 'ABCDEF', ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game });
   const ct = new WsPeerTransport({ localId: 'a' });
   await ct.connect(endpoint);
-  const client = new ClientMatch({ transport: ct, keys: ck, participant: participant('a', ck), game, throwdownCode: 'ABCDEF', ...clientOpts });
+  const client = new ClientMatch({ disconnectGraceMs: 0, transport: ct, keys: ck, participant: participant('a', ck), game, throwdownCode: 'ABCDEF', ...clientOpts });
   open.push(ht, ct, host, client);
   client.join();
   await until(() => client.isJoined && host.roster().length === 2);

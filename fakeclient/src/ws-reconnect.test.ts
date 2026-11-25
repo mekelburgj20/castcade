@@ -4,6 +4,12 @@
  * entries it missed, RESUMEs the pause its drop caused, and the match runs to a RESULT with the
  * same hash chain everywhere. A client whose log head the host does not hold is rejected, and its
  * fresh HELLO is then refused because the roster is final.
+ *
+ * A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
+ * up session"): the same drop, a waiting player's while another one's ball is live, under the two rules of
+ * `companion/src/match/host.ts`. With no grace: the player who is up is sent nothing for it and finishes its ball,
+ * and the match waits for the absent player only when that player's own grant comes due. With a grace longer than
+ * the drop: nobody sees anything at all, and the grant that came due meanwhile goes out when the player is back.
  */
 import { describe, expect, it } from 'vitest';
 import { ClientMatch, generateKeys, HostMatch, WsPeerTransport } from '@castcade/companion';
@@ -12,7 +18,7 @@ import { collapseReissues, expectedRotation, runWsScenario, type FakePlayer } fr
 import { defaultFingerprint, generateScenario } from './scenario.js';
 
 describe('A3: client reconnect after a drop', () => {
-  it('p3 loses its socket while p2 plays ball 2, resumes from its log head, gets the missed entries, the match finishes', async () => {
+  it("A18: p3 loses its socket while p2 plays ball 2: p2's turn is untouched, the match waits for p3 at p3's own grant, p3 resumes from its log head and the match finishes", async () => {
     const started = Date.now();
     const scenario = generateScenario({ players: 3, ballsPerGame: 3, matchId: 'WS-RECON-1' });
     scenario.hostPolicy = { onDisconnect: 'wait' };
@@ -23,6 +29,8 @@ describe('A3: client reconnect after a drop', () => {
     try {
       const run = await runWsScenario(scenario, transports, {
         reconnect: { delayMs: 100, attempts: 20 },
+        // No grace: p3 is away from the moment its socket dies (the grace has its own test below).
+        disconnectGraceMs: 0,
         hooks: {
           onEvent: (player, event, payload) => seen.push({ player, event, payload }),
           onGrant: (grant) => {
@@ -44,12 +52,24 @@ describe('A3: client reconnect after a drop', () => {
       expect(seen.filter((e) => e.player === 'p1' && e.event === 'reconnected').map((e) => (e.payload as { playerId: string }).playerId)).toEqual(['p3']);
       expect(seen.filter((e) => e.event === 'desync')).toEqual([]);
 
-      // The drop paused the match; p3 resumed it itself.
+      // The drop paused nothing while p2 played: p2's grant for ball 2 was issued once, and the one pause of the match
+      // comes after p2's ball end, when the grant that is due is p3's and p3 is not there. p3 resumed it itself.
       const types = (outcomes['p1']?.log.entries() ?? []).map((e) => (e.message ? `${e.message.type}:${e.message.from}` : e.event?.type));
-      expect(types).toContain('PAUSE:p1');
-      expect(types).toContain('RESUME:p3');
+      expect(types.filter((t) => t === 'PAUSE:p1')).toHaveLength(1);
+      const at = types.indexOf('PAUSE:p1');
+      expect(types.slice(at - 1, at + 3)).toEqual(['BALL_END:p2', 'PAUSE:p1', 'RESUME:p3', 'TURN_GRANT:p1']);
       const pause = outcomes['p1']?.log.entries().find((e) => e.message?.type === 'PAUSE')?.message;
       expect(pause?.payload).toEqual({ reason: 'disconnect', player: 'p3' });
+      expect((outcomes['p1']?.issuedGrants ?? []).filter((g) => g.player === 'p2' && g.ballNumber === 2)).toHaveLength(1);
+      // What p2 saw between its grant for ball 2 and its own ball end: no pause, no leave, no second grant.
+      const p2 = seen.filter((e) => e.player === 'p2');
+      const from = p2.findIndex((e) => e.event === 'myTurn' && (e.payload as { ballNumber: number }).ballNumber === 2);
+      const to = p2.findIndex((e) => e.event === 'pause');
+      expect(from).toBeGreaterThan(-1);
+      expect(to).toBeGreaterThan(from);
+      // (`grant` is the same grant as `myTurn`: the engine raises both for the holder.)
+      expect(p2.slice(from, to).map((e) => e.event).filter((e) => e !== 'state' && e !== 'grant')).toEqual(['myTurn', 'ballEnd']);
+      expect(outcomes['p2']?.rejects).toEqual([]);
 
       // Same chain everywhere, same RESULT, everyone finished, rotation unchanged.
       const result = outcomes['p1']?.result;
@@ -66,6 +86,59 @@ describe('A3: client reconnect after a drop', () => {
       expect(collapseReissues(outcomes['p1']?.issuedGrants ?? [])).toEqual(expectedRotation(ids, 3));
       expect([...new Set(transports.get('p1')?.inboundPeers())].sort()).toEqual(['p2', 'p3']);
       expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      for (const t of transports.values()) t.close();
+    }
+  });
+
+  it('A18: the same drop, shorter than the grace: nobody sees it; no PAUSE, no leave, and the grant that came due for p3 meanwhile goes out when it is back', async () => {
+    const scenario = generateScenario({ players: 3, ballsPerGame: 3, matchId: 'WS-RECON-3' });
+    scenario.hostPolicy = { onDisconnect: 'wait' };
+    const ids = scenario.players.map((p) => p.playerId);
+    const transports = new Map(ids.map((id) => [id, new WsPeerTransport({ localId: id })]));
+    const seen: { player: string; event: string; payload: unknown }[] = [];
+    let dropped = false;
+    try {
+      const run = await runWsScenario(scenario, transports, {
+        // p3 is back about 60 ms after its socket died; p2's ball (5 ms) ends inside that, so p3's grant comes due
+        // while p3 is away.
+        reconnect: { delayMs: 60, attempts: 20 },
+        disconnectGraceMs: 3000,
+        hooks: {
+          onEvent: (player, event, payload) => seen.push({ player, event, payload }),
+          onGrant: (grant) => {
+            if (dropped || grant.player !== 'p2' || grant.ballNumber !== 2) return;
+            dropped = true;
+            transports.get('p3')?.dropLinks('p1');
+          },
+        },
+      });
+      const { outcomes } = run;
+      expect(dropped).toBe(true);
+      // p3 did reconnect, and both ends say it was inside the grace.
+      expect(outcomes['p3']?.reconnects).toHaveLength(1);
+      expect(seen.filter((e) => e.event === 'reconnected').map((e) => [e.player, (e.payload as { quiet: boolean }).quiet])).toEqual([
+        ['p1', true],
+        ['p3', true],
+      ]);
+      // Nothing else: no player was told of a leave or a pause, the log holds neither PAUSE nor RESUME, no grant was
+      // issued twice, nobody was rejected.
+      expect(seen.filter((e) => ['peerLeft', 'pause', 'resume', 'reject', 'desync', 'reconnectFailed'].includes(e.event))).toEqual([]);
+      const types = (outcomes['p1']?.log.entries() ?? []).map((e) => e.message?.type ?? e.event?.type);
+      expect(types).not.toContain('PAUSE');
+      expect(types).not.toContain('RESUME');
+      const grants = outcomes['p1']?.issuedGrants ?? [];
+      expect(grants).toHaveLength(9);
+      expect(collapseReissues(grants)).toEqual(expectedRotation(ids, 3));
+      const result = outcomes['p1']?.result;
+      if (!result) throw new Error('no RESULT');
+      for (const id of ids) {
+        expect(outcomes[id]?.result).toEqual(result);
+        expect(outcomes[id]?.logHead).toEqual({ hash: result.logHash, length: result.logLength });
+        expect(outcomes[id]?.pauses).toEqual([]);
+      }
+      expect(result.entries.map((e) => e.status)).toEqual(['finished', 'finished', 'finished']);
+      expect(result.signatures.map((s) => s.playerId).sort()).toEqual(['p2', 'p3']);
     } finally {
       for (const t of transports.values()) t.close();
     }

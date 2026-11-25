@@ -26,12 +26,20 @@
  * checks a RESULT that arrives late (after a reconnect, game 1's RESULT during game 2) against the log entry at that
  * game's end, not the head. MATCH_END ends the series (`matchEnded`); after it a dropped host is not reconnected to.
  * The host dropping between games and not coming back is `hostGone` (no transfer: no game is running).
+ *
+ * A18 (2026-11-24, match ECVYGP: one second without ArcAid was a disconnect on both PCs): a dropped link to the host
+ * that is back within `disconnectGraceMs` (5 s, the host's number) is nothing anyone sees: the reconnect starts at
+ * once as before, `peerLeft` is raised only when the grace runs out first, and `reconnected` says `quiet` when it did
+ * not. What this player reported into the dead link is not lost: a BALL_END, GAME_OVER or FORFEIT of its own that the
+ * host has not answered (no echo in the log, no REJECT) is sent again after an accepted RECONNECT, before
+ * `reconnected` is raised (so before the RESUME a listener sends for a pause the drop caused: a BALL_END is taken
+ * during a pause, and the RESUME then moves on instead of granting a finished ball again).
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
 import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
-import { compareFingerprints, HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
+import { compareFingerprints, DEFAULT_DISCONNECT_GRACE_MS, HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
 import { logSignBody, reconnectSignBody } from './result.js';
@@ -65,6 +73,8 @@ export interface ClientOptions {
    * reach, so a client that took over was a host nobody could come back to. Default true (a full mesh).
    */
   hostLeftTransfer?: boolean;
+  /** A18: how long a dropped link to the host is not yet told to anyone (`peerLeft`). Default 5 s; 0: at once. */
+  disconnectGraceMs?: number;
 }
 
 export interface AdoptOptions {
@@ -78,6 +88,7 @@ export interface AdoptOptions {
   hostTimeouts?: { ballEndTimeoutMs?: number; logSignTimeoutMs?: number };
   reconnect?: { attempts?: number; delayMs?: number; maxMs?: number };
   hostLeftTransfer?: boolean;
+  disconnectGraceMs?: number;
 }
 
 export interface DroppedInfo {
@@ -132,9 +143,13 @@ export interface ClientEvents extends Record<string, unknown> {
   hostLost: PlayerId;
   logSigned: PayloadOf<'LOG_SIGN'>;
   result: ResultInfo;
+  /**
+   * A peer's link dropped. A18: for the host on a transport that reconnects, only once the link has been down for the
+   * grace; a drop that is over sooner raises nothing but `reconnected` (`quiet`).
+   */
   peerLeft: PlayerId;
-  /** RECONNECT accepted by `host`; `entries` were appended to the log (A2/A3). */
-  reconnected: { host: PlayerId; entries: number };
+  /** RECONNECT accepted by `host`; `entries` were appended to the log (A2/A3). A18: `quiet`: no `peerLeft` came before it. */
+  reconnected: { host: PlayerId; entries: number; quiet: boolean };
   /** RECONNECT rejected: re-join with a fresh HELLO, which after MATCH_READY is refused. */
   reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
   /** One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. */
@@ -219,6 +234,17 @@ export class ClientMatch {
   private readonly hostLeftTransfer: boolean;
   /** The reconnect under way, if any: who must answer RECONNECT, and the retry budget. */
   private reconnecting: Reconnecting | null = null;
+  private readonly graceMs: number;
+  /**
+   * A18: the link to `peer` is down and a reconnect is under way. `timer`: the grace still runs and nobody has been
+   * told; `told`: it ran out and `peerLeft` was raised.
+   */
+  private down: { peer: PlayerId; timer: TimerHandle | null; told: boolean } | null = null;
+  /**
+   * A18: this player's own reports the host has not answered yet (the echo in the log, or a REJECT), kept so that one
+   * sent into a link that had just dropped goes out again after the reconnect.
+   */
+  private unanswered: { ballEnd: PayloadOf<'BALL_END'> | null; gameOver: PayloadOf<'GAME_OVER'> | null; forfeit: PayloadOf<'FORFEIT'> | null } = { ballEnd: null, gameOver: null, forfeit: null };
   /** A10: the games whose RESULT arrived (each raises `result` once). */
   private readonly resultsReceived = new Set<number>();
   /** A10: MATCH_END arrived. */
@@ -242,6 +268,7 @@ export class ClientMatch {
     this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.reconnectMaxMs = opts.reconnect?.maxMs ?? null;
     this.hostLeftTransfer = opts.hostLeftTransfer ?? true;
+    this.graceMs = Math.max(0, opts.disconnectGraceMs ?? DEFAULT_DISCONNECT_GRACE_MS);
     this.attach();
   }
 
@@ -258,6 +285,7 @@ export class ClientMatch {
         hostTimeouts: opts.hostTimeouts,
         reconnect: opts.reconnect,
         hostLeftTransfer: opts.hostLeftTransfer,
+        disconnectGraceMs: opts.disconnectGraceMs,
       },
       session,
     );
@@ -452,6 +480,7 @@ export class ClientMatch {
     if (override.grantSeq === undefined) {
       this._inputUnlocked = false;
       this._myGrant = null;
+      this.unanswered.ballEnd = msg.payload;
     }
     this.sendToHost(msg);
     return msg;
@@ -488,12 +517,16 @@ export class ClientMatch {
     this.assertActive();
     this._inputUnlocked = false;
     this._myGrant = null;
-    this.sendToHost(this.s.build('GAME_OVER', { finalScore, ballsPlayed }, this.matchIdForWire()));
+    const msg = this.s.build('GAME_OVER', { finalScore, ballsPlayed }, this.matchIdForWire());
+    this.unanswered.gameOver = msg.payload;
+    this.sendToHost(msg);
   }
 
   forfeit(reason: string): void {
     this.assertActive();
-    this.sendToHost(this.s.build('FORFEIT', { player: this.localId, reason }, this.matchIdForWire()));
+    const msg = this.s.build('FORFEIT', { player: this.localId, reason }, this.matchIdForWire());
+    this.unanswered.forfeit = msg.payload;
+    this.sendToHost(msg);
   }
 
   pause(reason: PayloadOf<'PAUSE'>['reason'] = 'requested'): void {
@@ -560,7 +593,48 @@ export class ClientMatch {
     }
     // Out of attempts: the host counts as gone, as it always did on a mesh (host_left).
     this.reconnecting = null;
+    // A18: a budget that ran out inside the grace: the drop is told before what follows from it.
+    this.tellDown();
+    this.down = null;
     if (r.host === this.hostId) this.onHostGone(r.host);
+  }
+
+  /**
+   * A18: the link to `peer` dropped and a reconnect is (or stays) under way. Nobody is told for the grace: a link that
+   * is back inside it was never a disconnect. With no grace, `peerLeft` is raised for every drop, as it was before.
+   */
+  private noteDown(peer: PlayerId): void {
+    if (this.graceMs <= 0) {
+      this.events.emit('peerLeft', peer);
+      return;
+    }
+    if (this.down?.peer === peer) return;
+    this.clearDown();
+    const d = { peer, timer: null as TimerHandle | null, told: false };
+    d.timer = this.s.clock.setTimeout(() => {
+      d.timer = null;
+      if (this.down === d) this.tellDown();
+    }, this.graceMs);
+    this.down = d;
+  }
+
+  /** A18: the grace is over (or what follows cannot wait for it): the drop is told, once. */
+  private tellDown(): void {
+    const d = this.down;
+    if (!d || d.told || this.detached) return;
+    if (d.timer !== null) this.s.clock.clearTimeout(d.timer);
+    d.timer = null;
+    d.told = true;
+    this.events.emit('peerLeft', d.peer);
+  }
+
+  /** A18: the link is back (or the match is over for this player). True when nobody had been told of the drop. */
+  private clearDown(): boolean {
+    const d = this.down;
+    this.down = null;
+    if (!d) return this.graceMs > 0;
+    if (d.timer !== null) this.s.clock.clearTimeout(d.timer);
+    return !d.told;
   }
 
   private cancelReconnect(): void {
@@ -591,6 +665,7 @@ export class ClientMatch {
     for (const off of this.unsubscribe) off();
     this.unsubscribe.length = 0;
     this.cancelReconnect();
+    this.clearDown();
   }
 
   private assertActive(): void {
@@ -682,6 +757,7 @@ export class ClientMatch {
         return;
       case 'BALL_END':
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this.noteAnswered(msg);
         if (msg.from === this.localId) {
           this._myGrant = null;
           this._inputUnlocked = false;
@@ -695,6 +771,7 @@ export class ClientMatch {
         if (msg.from !== this.hostId) return this.drop(msg, 'not_host');
         if (!g || g.grantSeq !== msg.payload.grantSeq || g.player !== msg.payload.player) return this.drop(msg, 'unexpected');
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this.noteAnswered(msg);
         if (msg.payload.player === this.localId) {
           this._myGrant = null;
           this._inputUnlocked = false;
@@ -705,11 +782,13 @@ export class ClientMatch {
       }
       case 'GAME_OVER':
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this.noteAnswered(msg);
         this.events.emit('gameOver', msg);
         this.maybeSignLog();
         return;
       case 'FORFEIT':
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this.noteAnswered(msg);
         if (msg.payload.player === this.localId) {
           this._myGrant = null;
           this._inputUnlocked = false;
@@ -738,6 +817,7 @@ export class ClientMatch {
         this.events.emit('mediaSignal', { from: msg.from, signal: msg.payload });
         return;
       case 'REJECT':
+        this.noteAnswered(msg);
         this.events.emit('reject', msg.payload);
         return;
       case 'NEXT_GAME': {
@@ -746,6 +826,7 @@ export class ClientMatch {
         if (msg.from !== this.hostId) return this.drop(msg, 'not_host');
         if (st.phase !== 'ended' || msg.payload.game !== st.gameNumber + 1) return this.drop(msg, 'unexpected');
         this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+        this.noteAnswered(msg);
         this._myGrant = null;
         this._inputUnlocked = false;
         this.events.emit('nextGame', msg.payload);
@@ -856,19 +937,22 @@ export class ClientMatch {
 
   private onPeerLeave(peer: PlayerId): void {
     if (this.detached) return;
-    this.events.emit('peerLeft', peer);
     const r = this.reconnecting;
     if (r && r.host === peer && r.inFlight) {
       // The new socket closed before RECONNECT_ACK: one failed attempt.
+      this.noteDown(peer);
       this.reconnectAttemptFailed(r, new Error(`link to ${peer} closed before RECONNECT_ACK`));
       return;
     }
     if (peer === this.hostId && this.mayReconnect()) {
       // On a star a dropped host link looks the same whether we or the host went away: try to
       // resume first; the host counts as gone only when the attempts run out (A3, 2026-10-30).
+      // A18: and nobody is told of it while the grace runs.
+      this.noteDown(peer);
       this.relinkTo(peer, { delayFirst: true });
       return;
     }
+    this.events.emit('peerLeft', peer);
     if (peer === this.hostId) {
       this.onHostGone(peer);
       return;
@@ -965,6 +1049,7 @@ export class ClientMatch {
     this.cancelReconnect();
     const p = msg.payload;
     if (!p.accept) {
+      this.clearDown();
       this.events.emit('reconnectRejected', { host: want.host, code: p.code });
       return;
     }
@@ -974,8 +1059,52 @@ export class ClientMatch {
       this.events.emit('desync', { context: 'reconnect.entries', expected: p.logHash, actual: head.hash });
     }
     if (want.closeListener) this.s.transport.closeListener?.();
-    this.events.emit('reconnected', { host: want.host, entries: appended ?? 0 });
+    // A18: what was reported into the dead link first, then the news (a listener may answer it with a RESUME).
+    this.resendUnanswered();
+    const quiet = this.clearDown();
+    this.events.emit('reconnected', { host: want.host, entries: appended ?? 0, quiet });
     this.maybeSignLog();
+  }
+
+  /**
+   * A18: the host answered one of this player's reports: its echo is in the log (live or from a RECONNECT_ACK), the
+   * host passed that turn or forfeited this player, a new game began, or it said REJECT. Nothing is sent again for it.
+   */
+  private noteAnswered(msg: AnyMessage): void {
+    const u = this.unanswered;
+    const me = this.localId;
+    if (msg.type === 'BALL_END' && msg.from === me) u.ballEnd = null;
+    else if (msg.type === 'TURN_PASS' && msg.payload.player === me) u.ballEnd = null;
+    else if (msg.type === 'GAME_OVER' && msg.from === me) u.ballEnd = u.gameOver = null;
+    else if (msg.type === 'FORFEIT' && msg.payload.player === me) u.ballEnd = u.gameOver = u.forfeit = null;
+    else if (msg.type === 'NEXT_GAME') u.ballEnd = u.gameOver = u.forfeit = null;
+    else if (msg.type === 'REJECT') {
+      if (msg.payload.refType === 'BALL_END') u.ballEnd = null;
+      else if (msg.payload.refType === 'GAME_OVER') u.gameOver = null;
+      else if (msg.payload.refType === 'FORFEIT') u.forfeit = null;
+    }
+  }
+
+  /**
+   * A18: after an accepted RECONNECT, with the log merged: each of this player's reports the host never answered goes
+   * out again in a new envelope, when the log still has a place for it: a BALL_END while the grant it answers is the
+   * outstanding one (the host takes it during a pause too), a GAME_OVER or FORFEIT while this player's game is still
+   * on. One that has no place any more is dropped (a grant issued again under a new number is answered by whoever
+   * plays it: the companion reports the table's ball end again, `main/match-host.ts` `tryReconcile`).
+   */
+  private resendUnanswered(): void {
+    const u = this.unanswered;
+    const st = this.s.state;
+    const me = this.localId;
+    if (st.pendingTransfer) return;
+    const g = st.phase === 'running' ? st.currentGrant?.grant : undefined;
+    if (u.ballEnd && g && g.player === me && g.grantSeq === u.ballEnd.grantSeq) this.sendToHost(this.s.build('BALL_END', u.ballEnd, this.matchIdForWire()));
+    else u.ballEnd = null;
+    const playing = st.phase === 'running' && st.players[me]?.status === 'playing';
+    if (u.gameOver && playing) this.sendToHost(this.s.build('GAME_OVER', u.gameOver, this.matchIdForWire()));
+    else u.gameOver = null;
+    if (u.forfeit && playing) this.sendToHost(this.s.build('FORFEIT', u.forfeit, this.matchIdForWire()));
+    else u.forfeit = null;
   }
 
   /**
@@ -1034,6 +1163,7 @@ export class ClientMatch {
     }
     const msg = entry.message;
     if (!msg) return;
+    this.noteAnswered(msg);
     switch (msg.type) {
       case 'MATCH_READY':
         this.events.emit('ready', msg.payload);

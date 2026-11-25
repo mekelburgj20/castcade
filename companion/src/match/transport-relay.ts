@@ -55,6 +55,13 @@
  * bucket per `to` (amended 2026-11-12: the first contract counted the host's socket as a whole, which a host that is
  * the player up reached with three clients). STATE at 10 Hz is half a bucket, so nothing is shed in a normal match
  * at any size; the pacer is there for a burst of signalling.
+ *
+ * A18 (2026-11-24): a dropped socket is still what it was here (every link closes, the engine sees a leave for each);
+ * that a short one is no disconnect is the engines' rule (`host.ts` / `client.ts`, a grace of 5 s), so it holds for the
+ * WebSocket transport too. Two things here: every drop says why (`dropWords`: socket.io's reason, the WebSocket close
+ * code, how long the connection had been up and when ArcAid's last ping came), because on 2026-11-23 three drops of
+ * one PC's socket left nothing in either log to tell a network cut from a proxy closing the connection; and the first
+ * reconnect is tried after about a quarter of a second, not half a second (`RECONNECT_FIRST_MS`).
  */
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
@@ -67,6 +74,8 @@ export const RELINK = 'castcade-relay:relink';
 export const RELAY_MAX_BYTES = 256 * 1024;
 /** The server's rate limit: messages per window per socket. */
 export const RELAY_RATE = { limit: 200, windowMs: 10_000 } as const;
+
+const seconds = (ms: number): number => Math.round(ms / 100) / 10;
 
 export type RelayErrorCode =
   /** No connection to ArcAid (network, DNS, the server down, or a server without the relay: no ack). */
@@ -154,6 +163,31 @@ const FINAL_FOR_CLIENT: ReadonlySet<string> = new Set(['host_left', 'replaced'])
 export const RELAY_UNPAIRED = 'This PC is no longer paired with ArcAid';
 /** A second RELINK to the same peer waits this long (its frames keep arriving until it acts on the first). */
 const RELINK_GAP_MS = 2_000;
+/**
+ * A18: socket.io's first reconnect after a drop, before its jitter (half to one and a half times this) and doubling:
+ * what crosses while the socket is away is lost and must be resumed, so the gap is kept short. The later tries back
+ * off as before, up to 5 s (an ArcAid restart takes about 8 s).
+ */
+const RECONNECT_FIRST_MS = 250;
+
+/**
+ * A18: why socket.io says the connection closed, for the log. `transport close`: the WebSocket was closed under it (the
+ * network, a proxy on the way, ArcAid going down); `ping timeout`: nothing came from ArcAid for its ping interval and
+ * timeout; `transport error`: the socket failed; `io server disconnect`: ArcAid closed it on purpose. No address and no
+ * error text of the system's is taken, only socket.io's own words and the close code.
+ */
+export function dropWords(reason: string, details: unknown, upMs: number | null, pingAgoMs: number | null): string {
+  const d = typeof details === 'object' && details !== null ? (details as { description?: unknown; context?: unknown }) : {};
+  const ctx = typeof d.context === 'object' && d.context !== null ? (d.context as { code?: unknown }) : {};
+  const parts = [reason.replace(/[^A-Za-z ]/g, '').slice(0, 40)];
+  // Letters and spaces only ("websocket connection closed", "websocket error"): an error text with a number or a
+  // slash in it could be an address or a path.
+  if (typeof d.description === 'string' && /^[A-Za-z ]{1,60}$/.test(d.description)) parts.push(d.description);
+  if (typeof ctx.code === 'number') parts.push(`close code ${ctx.code}`);
+  const up = upMs === null ? '' : ` after ${seconds(upMs)} s`;
+  const ping = pingAgoMs === null ? 'no ping from ArcAid on this connection yet' : `ArcAid's last ping came ${seconds(pingAgoMs)} s before`;
+  return `the connection to ArcAid closed (${parts.join('; ')})${up}; ${ping}`;
+}
 
 // ------------------------------------------------------------------------------------------ pacer --
 
@@ -240,8 +274,6 @@ export class RelayPacer<T> {
 
 // ------------------------------------------------------------------------------------------- base --
 
-const seconds = (ms: number): number => Math.round(ms / 100) / 10;
-
 type RelayEvent = 'match:host' | 'match:join' | 'match:lock';
 type Ack = { ok: true; peer?: unknown; peers?: unknown } | { ok: false; error?: unknown };
 
@@ -304,6 +336,9 @@ export abstract class RelayBase {
    */
   private refusal: RelayError | null = null;
   private readonly reportedAt = new Map<string, number>();
+  /** A18: when the connection came up and when ArcAid last pinged it, for the line a drop leaves in the log. */
+  private upAt: number | null = null;
+  private pingAt: number | null = null;
 
   constructor(protected readonly opts: RelayOptions) {
     this.localId = opts.localId;
@@ -327,16 +362,27 @@ export abstract class RelayBase {
       forceNew: true,
       autoConnect: false,
       reconnection: true,
-      reconnectionDelay: 500,
+      reconnectionDelay: RECONNECT_FIRST_MS,
       reconnectionDelayMax: 5_000,
       timeout: this.connectTimeoutMs,
     });
     this.socket = socket;
     socket.on('connect', () => {
       this.refusal = null;
+      this.upAt = Date.now();
+      this.pingAt = null;
       this.onSocketUp(socket);
     });
-    socket.on('disconnect', (reason) => {
+    socket.io.on('ping', () => {
+      this.pingAt = Date.now();
+    });
+    socket.on('disconnect', (reason, details) => {
+      // A18: why, for the log (not for a close of our own).
+      if (!this.closed && reason !== 'io client disconnect') {
+        const now = Date.now();
+        this.fail(new RelayError('unreachable', dropWords(reason, details, this.upAt === null ? null : now - this.upAt, this.pingAt === null ? null : now - this.pingAt)), null);
+      }
+      this.upAt = null;
       this.onSocketDown(reason);
       // The server closed it (a restart, a kick): socket.io leaves that one to us.
       if (reason === 'io server disconnect' && !this.closed) socket.connect();

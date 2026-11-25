@@ -17,7 +17,12 @@
  * - The bookkeeping (lock, `setSending(false)`) happens before the engine call: a HostMatch answers its own
  *   BALL_END synchronously, so the next grant (a shoot-again one for this player) arrives inside that call.
  * - Media: attached at `open()` (host / join time) with no peers so the panel can show before the match; peers are
- *   added at MATCH_READY, removed when they leave, re-added when they reconnect. Video only from the player up.
+ *   added at MATCH_READY. Video only from the player up. A18 (2026-11-24): the match's control link and the media are
+ *   different connections (the first goes through the host, and for most matches through ArcAid; voice and video go
+ *   straight between the two PCs), so a peer whose control link drops keeps its media connection for as long as that
+ *   connection is itself up, and a peer that comes back gets a new one only when the old one is not connected any
+ *   more. (Until 0.2.50 the connection was closed at the drop and made again at the return: one second without
+ *   ArcAid cost the voice for one to ten seconds, match ECVYGP 2026-11-23.)
  * - A8 (2026-10-31): a client whose RECONNECT is accepted while the match is paused for ITS OWN drop sends RESUME
  *   (what the fake client does; the host never resumes on its own, A3). A pause nobody resumes is the host's Match
  *   tab's Resume button (`main/match-host.ts`). A host transfer under way is shown (`status().transfer`); the engine
@@ -73,6 +78,12 @@
  *   table whose patch journals those bytes; an entry with this score and no initials yet keeps it on), at a new
  *   `game_start` on the table (handled as ever), when the table closes or the match ends, and at the latest after
  *   `INITIALS_HOLD_CAP_MS`. A16's window runs beside it unchanged on a machine whose game ends after the initials.
+ * - A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
+ *   up session"): the engine no longer pauses for a player who is not up (`host.ts`), and tells of no drop that is over
+ *   within its grace. What is left for this controller: a player who is away is flagged on its row (`disconnected`) on
+ *   the PCs that know it (the host at once; the others when the match pauses for that player at its own turn), and a
+ *   pause never locks, covers or silences the table of the player whose ball is live (the lock was never touched;
+ *   D8.14 for the headset; the shell keeps the picture and the table sound going, `main/match-host.ts`).
  * - B26 (2026-11-16, the owner: "a midnight madness happened for Krobs which is a really unfair advantage"; B26.4: "I'd
  *   rather not guess based on clock time. I'd rather check the actual setting where it is enabled and check for the
  *   signal during live play that it actually occurred"): some WPC ROMs start a bonus multiball when the machine's
@@ -396,6 +407,8 @@ export class MatchController {
   private readonly scores = new Map<PlayerId, number>();
   private readonly mismatch = new Map<PlayerId, string[]>();
   private readonly left = new Set<PlayerId>();
+  /** A18: players in `left` whose media connection was closed too, because it was not up any more: made again at their return. */
+  private readonly mediaClosed = new Set<PlayerId>();
   private result: PanelState['result'] = null;
   private message: string | null = null;
   private lastStateAt = Number.NEGATIVE_INFINITY;
@@ -885,8 +898,10 @@ export class MatchController {
     this.push();
   }
 
-  /** Re-push the panel (the media layer's mic state changed). */
+  /** Re-push the panel (the media layer's mic state changed). A18: and look again at the media of the players who are away. */
   refresh(): void {
+    if (this.closed) return;
+    for (const id of this.left) this.closeDeadMedia(id);
     this.push();
   }
 
@@ -1279,7 +1294,7 @@ export class MatchController {
         if (h.state.phase === 'lobby') this.onHostLobby(h);
       }),
     );
-    offs.push(h.on('reconnected', (r) => this.onPeerBack(r.playerId)));
+    offs.push(h.on('reconnected', (r) => this.onPeerBack(r.playerId, r.quiet)));
     offs.push(h.on('result', (r) => this.onResult(r.result)));
     offs.push(h.on('transferProposed', () => this.push()));
     offs.push(
@@ -1357,7 +1372,7 @@ export class MatchController {
     offs.push(
       c.on('reconnected', (r) => {
         this.resumeSent = false;
-        this.onPeerBack(r.host);
+        this.onPeerBack(r.host, r.quiet);
         // A15: a match picked up after a restart left the table as it was for a grant the log said was this player's;
         // the host's answer is in now, and without that grant the table locks.
         if (!this.holding && (this.phase === 'playing' || this.phase === 'paused')) this.setLocked(true);
@@ -1476,6 +1491,7 @@ export class MatchController {
     this.hostId = p.hostPlayerId;
     this.lobby = p.participants.map((x) => ({ ...x }));
     this.message = null;
+    this.mediaClosed.clear();
     // Locked from the start: each player begins their own game when their first grant arrives (§1 step 4).
     this.setLocked(true);
     const peers = p.playerOrder.filter((id) => id !== this.localId);
@@ -1546,14 +1562,37 @@ export class MatchController {
 
   private onPeerLeft(id: PlayerId): void {
     this.left.add(id);
-    this.opts.media?.removePeer(id);
+    if (this.phase === 'lobby') this.opts.media?.removePeer(id);
+    else this.closeDeadMedia(id);
     if (isHostRole(this.role)) this.lobby = this.role.state.phase === 'lobby' ? this.role.roster() : this.lobby;
     this.push();
   }
 
-  private onPeerBack(id: PlayerId): void {
-    this.left.delete(id);
-    if (this.phase !== 'lobby') this.opts.media?.addPeer(id);
+  /** A18: the media layer's own word on its connection to `id`: up, whatever the match's control link says. */
+  private mediaUp(id: PlayerId): boolean {
+    const ice = this.opts.media?.status().peers?.[id]?.ice;
+    return ice === 'connected' || ice === 'completed';
+  }
+
+  /**
+   * A18: a player who is away keeps the media connection while that connection is up (ArcAid dropped the match's
+   * control link; the two PCs still reach each other). One that is not up belongs to a player who is really gone: it is
+   * closed, as every dropped player's was before, and made again when that player is back.
+   */
+  private closeDeadMedia(id: PlayerId): void {
+    if (this.phase === 'lobby' || this.mediaClosed.has(id) || this.mediaUp(id)) return;
+    this.mediaClosed.add(id);
+    this.opts.media?.removePeer(id);
+  }
+
+  /** `quiet` (A18): the link was back inside the engine's grace and nobody was told it had dropped: nothing to undo. */
+  private onPeerBack(id: PlayerId, quiet = false): void {
+    const was = this.left.delete(id);
+    if (this.phase !== 'lobby' && (was || !quiet)) {
+      // A18: a connection that is still up is left alone: making it again is what the other players heard as a glitch.
+      if (this.mediaClosed.delete(id) || !this.mediaUp(id)) this.opts.media?.addPeer(id);
+      else if (was) this.opts.log(`match: ${this.nameOf(id)} is back on the match's control link; the voice and video connection to them never dropped and is kept`);
+    }
     this.push();
   }
 

@@ -51,6 +51,15 @@
  * (`syncVrMode`), the 2D video keeps flowing underneath and comes back the moment 3D does not work. At the grant the
  * turn lock is lifted once the fork is back on its own table (`lock.unlock`, 2 s at most). `tableLaunch()` is how a
  * match table is started (`one-step.ts`): in the fork when it is there and `watch3d` is `auto`.
+ *
+ * A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
+ * up session"; match ECVYGP, 2026-11-23: ArcAid dropped the match for one second in the owner's ball; the match paused
+ * for 2.3 s, the native video stopped and its encoder started again, the other player's 3D watch closed and opened
+ * again, and the voice connection was closed and made again). The engines do most of it (`match/host.ts`: a grace
+ * before a dropped link is a disconnect, and no pause for a player who is not up; `match/client.ts`; the controller
+ * keeps a media connection that never dropped). Here: the native video of the player whose ball is live goes on
+ * through a pause (`syncNativeVideo`: the others may be told to wait, the picture is not cut), and a client says its
+ * link to the host is down only once the engine does, after the grace (`watchHost`).
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -437,6 +446,8 @@ export interface MatchHostOptions {
   rejoinTimeoutMs?: number;
   /** A15 test seam: how a relay client asks again for a room that is gone. Default `HOST_WAIT_REJOIN`. */
   relayRejoin?: Partial<RejoinPolicy>;
+  /** A18 test seam: the engines' grace before a dropped link is a disconnect (ms). Default: theirs (5 s). */
+  disconnectGraceMs?: number;
 }
 
 /**
@@ -1336,13 +1347,17 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.offs.push(
       engine.on('peerLeft', (peer) => {
         if (active !== a || peer !== engine.hostId || engine.state.phase === 'lobby' || engine.matchEnded) return;
+        // A18: said only once the engine's grace is over (a link that is back sooner raises nothing). A ball in play on
+        // this PC goes on: the table stays as it is, and its end is reported when the link is back.
         log.warn(`match: the link to the host dropped; waiting up to ${waitWords} for it`);
-        a.controller.setMessage(`The host's Castcade closed or lost its connection. The match is paused: waiting up to ${waitWords} for it to come back.`);
+        a.controller.setMessage(`The link to the host's Castcade is down: waiting up to ${waitWords} for it to come back. A ball in play goes on.`);
       }),
     );
     a.offs.push(
-      engine.on('reconnected', () => {
+      engine.on('reconnected', (r) => {
         if (active !== a) return;
+        // A18: a drop the player never saw still leaves one line here, for whoever reads the log afterwards.
+        if (r.quiet) log.info(`match: the link to the host was away for a moment and is back (${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} of the match log missed and caught up); nothing was shown`);
         a.controller.setMessage(null);
         a.reconcileDue = true;
         tryReconcile(a);
@@ -1351,8 +1366,28 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.offs.push(engine.on('hostLost', () => void endMatch(a, `The host did not come back within ${waitWords}: the match is over.`)));
     a.offs.push(engine.on('reconnectRejected', (r) => void endMatch(a, `The host did not take this PC back into the match ${a.code}${r.code ? ` (${r.code.replace(/_/g, ' ')})` : ''}: the match is over for this PC.`)));
   };
+  /**
+   * A18: a host and its players' links: the log's lines for a player who is away and one who is back. What follows
+   * from either is the engine's and the controller's; these lines are for whoever reads the log afterwards.
+   */
+  const watchPlayers = (a: Active, engine: HostMatch): void => {
+    const name = (id: string): string => nameIn(a.controller.status(), id);
+    a.offs.push(
+      engine.on('peerLeft', (id) => {
+        if (active !== a || engine.state.phase === 'lobby') return;
+        const up = engine.state.currentGrant?.grant.player ?? null;
+        log.warn(`match: ${name(id)} is away (its link to this host dropped and did not come back within the grace); ${up === id ? 'it holds the turn, so the match waits for it' : 'nothing is paused for it: the match waits for it when its own turn comes'}`);
+      }),
+    );
+    a.offs.push(
+      engine.on('reconnected', (r) => {
+        if (active !== a) return;
+        log.info(r.quiet ? `match: ${name(r.playerId)}'s link to this host was away for a moment and is back; nothing was paused or shown` : `match: ${name(r.playerId)} is back on the match (${r.entries} entr${r.entries === 1 ? 'y' : 'ies'} of the match log sent)`);
+      }),
+    );
+  };
   /** A15: a client's reconnect budget: by the clock, and never a take-over. */
-  const clientLink = { reconnect: { attempts: 1_000_000, delayMs: 1000, maxMs: hostWaitMs }, hostLeftTransfer: false } as const;
+  const clientLink = { reconnect: { attempts: 1_000_000, delayMs: 1000, maxMs: hostWaitMs }, hostLeftTransfer: false, disconnectGraceMs: opts.disconnectGraceMs } as const;
   // A6 (2026-10-31): the witness samples VR when a table opens and again when its player starts (`table_loaded`). A
   // player who hosted on the monitor reading (before opening the table, or before the player started) is switched
   // to the headset then: the panel moves offscreen and the overlay starts. The reverse is logged and ignored. D7.3
@@ -1540,7 +1575,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const c = a.controller.status();
     mesh.setPeers(c.participants.map((p) => p.playerId).filter((id) => id !== a.engine.localId));
     const panel = a.controller.panel();
-    mesh.setSending(panel.phase === 'playing' && panel.myTurn);
+    // A18: a pause does not stop the picture of a ball that is live (`ball`: the grant's, until its end is logged), as
+    // it does not put the panel over that player's table (D8.14): on 2026-11-23 a pause of 2.3 s for the other player
+    // stopped the sender and started the encoder again in the owner's ball.
+    mesh.setSending(panel.myTurn && (panel.phase === 'playing' || (panel.phase === 'paused' && panel.ball !== null)));
     // I11.4.2: a rig whose picture is the helper's own window (a desktop PC, a SteamVR rig) gets no window while its
     // VPX shows the player up in 3D: it would sit over the table. The window is back the moment 3D is not shown.
     const where = videoSink(a);
@@ -2095,6 +2133,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         tableOpen: isTableOpen,
         // A13: whether this host's own table can report ball ends, when a table is open.
         ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
+        disconnectGraceMs: opts.disconnectGraceMs,
       });
       const controller = makeController(engine, ballsPerGame);
       const a: Active = {
@@ -2132,6 +2171,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         ...tracking(null, null),
       };
       a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
+      watchPlayers(a, engine);
       if (relay) {
         a.offs.push(
           relay.onState((st) => {
@@ -2462,7 +2502,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     let engine: HostMatch;
     try {
       // Nobody is on a link yet: each player comes back with RECONNECT, as after any drop.
-      engine = HostMatch.resumeFromLog(saved, { transport, keys: session.keys, session, gone: others });
+      engine = HostMatch.resumeFromLog(saved, { transport, keys: session.keys, session, gone: others, disconnectGraceMs: opts.disconnectGraceMs });
     } catch (e) {
       transport.close();
       throw e;
@@ -2505,6 +2545,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       ...tracking(null, rec),
     };
     a.offs.push(transport.onError((err, peer) => log.warn(`match: socket ${peer ?? '(new)'}: ${err.message}`)));
+    watchPlayers(a, engine);
     if (relay) {
       const room = relay;
       a.offs.push(room.onState(() => (active === a ? emit() : undefined)));

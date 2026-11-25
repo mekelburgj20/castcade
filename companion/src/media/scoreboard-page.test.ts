@@ -41,11 +41,19 @@ describe('the corner scoreboard (D8.12)', () => {
     expect(scoreboardView(state({ game: 19, series }))).toEqual({
       title: 'GAME 19 · BALL 2 OF 3',
       rows: [
-        { name: 'MekelburgJ', score: '1,234,560', up: false },
-        { name: 'Krobs', score: '990,000', up: true },
+        { name: 'MekelburgJ', score: '1,234,560', up: false, away: false },
+        { name: 'Krobs', score: '990,000', up: true, away: false },
       ],
       tally: '18 GAMES PLAYED · MekelburgJ 8 · Krobs 10',
     });
+    // A18: a player who is away from the match (the panel's `disconnected` flag) is marked on their row: this card is
+    // what the player who is up sees of the match, and the match no longer pauses to say it.
+    const away = state({ myTurn: true, playerUp: 'owner', ball: 2, players: [
+      { id: 'owner', name: 'MekelburgJ', score: 5, ballsDone: 1, isUp: true, flags: [] },
+      { id: 'krobs', name: 'Krobs', score: 7, ballsDone: 1, isUp: false, flags: ['disconnected'] },
+    ] });
+    expect(scoreboardView(away)?.rows).toEqual([{ name: 'MekelburgJ', score: '5', up: true, away: false }, { name: 'Krobs', score: '7', up: false, away: true }]);
+    expect(scoreboardView(away)?.title).toBe('GAME 1 · BALL 2 OF 3');
     // My own ball: the same card, my row marked; a player with no score yet shows a dash.
     const mine = state({ myTurn: true, playerUp: 'owner', ball: 1, players: [
       { id: 'owner', name: 'MekelburgJ', score: null, ballsDone: 0, isUp: true, flags: [] },

@@ -47,14 +47,14 @@ async function rig(ids: string[], balls = 1, clientGames: Record<string, GameFin
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
-  const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'S', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+  const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'S', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
   const hostResults: PayloadOf<'RESULT'>[] = [];
   host.on('result', (r) => hostResults.push(r.result));
   const clients: Record<string, ClientMatch> = {};
   const clientResults: Record<string, ResultInfo[]> = {};
   for (const id of ids) {
     const k = generateKeys();
-    const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game: clientGames[id] ?? game, throwdownCode: 'S', hostId: 'h', clock });
+    const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: participant(id, k), game: clientGames[id] ?? game, throwdownCode: 'S', hostId: 'h', clock });
     clients[id] = c;
     clientResults[id] = [];
     c.on('result', (r) => clientResults[id]?.push(r));
@@ -282,13 +282,14 @@ describe('A10: reconnect mid-series over WebSockets', () => {
     try {
       const keys = new Map(ids.map((id) => [id, generateKeys()]));
       const endpoint = await transports.get('h')!.listen();
-      const host = new HostMatch({ transport: transports.get('h')!, keys: keys.get('h')!, matchId: 'WS-S', ballsPerGame: 1, hostParticipant: participant('h', keys.get('h')!), hostGame: game });
+      const host = new HostMatch({ disconnectGraceMs: 0, transport: transports.get('h')!, keys: keys.get('h')!, matchId: 'WS-S', ballsPerGame: 1, hostParticipant: participant('h', keys.get('h')!), hostGame: game });
       const hostResults: PayloadOf<'RESULT'>[] = [];
       const clients = new Map<string, ClientMatch>();
       const results = new Map<string, ResultInfo[]>();
       for (const id of ['a', 'b']) {
         await transports.get(id)!.connect(endpoint);
         const c = new ClientMatch({
+          disconnectGraceMs: 0,
           transport: transports.get(id)!,
           keys: keys.get(id)!,
           participant: participant(id, keys.get(id)!),

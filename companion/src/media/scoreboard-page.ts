@@ -36,6 +36,12 @@ export interface ScoreboardRow {
   score: string;
   /** This player's ball now. */
   up: boolean;
+  /**
+   * A18 (2026-11-24): this player is not on the match's control link right now (the panel's `disconnected` flag). The
+   * match goes on without a pause while it is somebody else's ball, so this card, which is all the player who is up
+   * sees of the match, is where it shows: the row is dimmed and says AWAY.
+   */
+  away: boolean;
 }
 
 export interface ScoreboardView {
@@ -78,6 +84,7 @@ export function scoreboardView(s: PanelState | null): ScoreboardView | null {
     name: p.name,
     score: p.score === null ? '–' : p.score.toLocaleString('en-US'),
     up: s.phase !== 'over' && p.isUp,
+    away: s.phase !== 'over' && (p.flags || []).indexOf('disconnected') >= 0,
   }));
   return { title, rows, tally: tallyText(s) };
 }
@@ -112,6 +119,8 @@ export function scoreboardPageHtml(): string {
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .score { font-variant-numeric: tabular-nums; }
   .row.up .name, .row.up .score { color: var(--up); }
+  .row.away .name, .row.away .score { color: var(--dim); }
+  .row .name small { font-size: 16px; letter-spacing: 0.08em; margin-left: 8px; color: var(--dim); }
   #tally { font-size: 20px; line-height: 1.3; color: var(--dim); border-top: 2px solid rgba(255, 255, 255, 0.18); padding-top: 6px; }
 </style></head>
 <body>
@@ -140,13 +149,18 @@ function render(state) {
   rows.replaceChildren();
   for (const r of view ? view.rows : []) {
     const el = document.createElement('div');
-    el.className = r.up ? 'row up' : 'row';
+    el.className = 'row' + (r.up ? ' up' : '') + (r.away ? ' away' : '');
     const mark = document.createElement('span');
     mark.className = 'mark';
     mark.textContent = r.up ? '▶' : '';
     const name = document.createElement('span');
     name.className = 'name';
     name.textContent = r.name;
+    if (r.away) {
+      const tag = document.createElement('small');
+      tag.textContent = 'AWAY';
+      name.appendChild(tag);
+    }
     const score = document.createElement('span');
     score.className = 'score';
     score.textContent = r.score;

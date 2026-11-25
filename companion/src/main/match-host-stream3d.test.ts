@@ -245,6 +245,8 @@ function seat(hub: Hub, name: string, o: SeatOptions = {}): Seat {
     witness: t.w,
     device: () => ({ deviceId: `dev-${name}`, deviceLabel: name }),
     appVersion: '0.2.46',
+    // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts.
+    disconnectGraceMs: 0,
     log,
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
@@ -561,7 +563,7 @@ describe('the state stream inside a match (I11.4.2)', () => {
     await until(() => up(H, 2) && watching(C2) === H.id(), 8000, 'the restarted PC to watch the host');
   }, 60_000);
 
-  it('a client that loses the match for a moment (ArcAid drops the host) and reconnects by itself: called back for the pause, watching again after it', async () => {
+  it("A18: a client that loses the match for a moment in the host's ball (ArcAid drops the host) and reconnects by itself: it watches the host in 3D all the while; no pause, and its fork is never called back", async () => {
     const r = await startFakeRelay({ devices: { 'dev-Hosty': 'tok-h', 'dev-Krobs': 'tok-k' } });
     relays.push(r);
     const paired = (name: string, token: string): Partial<Opts> => ({ relay: () => ({ baseUrl: r.url, deviceId: `dev-${name}`, deviceToken: token }), relayTimeouts: { connectMs: 1500, ackMs: 1500 } });
@@ -576,11 +578,20 @@ describe('the state stream inside a match (I11.4.2)', () => {
     expect(K.mh.status().via).toBe('relay');
     await H.mh.start();
     await until(() => sees(K, fk, H));
+    const before = { play: fk!.count('play'), watch: fk!.count('watch') };
+    const krobsAway = (): boolean => (H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.flags ?? []).includes('disconnected');
+    const phases: string[] = [];
+    const offs = [H.mh.onStatus((s) => phases.push(s.phase)), K.mh.onStatus((s) => phases.push(s.phase))];
     r.dropDevice('dev-Hosty');
-    await until(() => K.mh.status().phase === 'paused' || fk!.count('play') === 1, 8000, 'the drop to be seen');
-    // Back by itself (RECONNECT, then its own RESUME): the grant is issued again and Krobs watches the host again.
-    await until(() => H.mh.status().phase === 'playing' && K.mh.status().phase === 'playing' && sees(K, fk, H) && fk!.count('watch') >= 2, 12_000, 'Krobs to watch again after the reconnect');
-    expect(fk!.count('play')).toBeGreaterThanOrEqual(1);
+    // With no grace in this harness the host does show Krobs as away for the moment; then Krobs is back by itself
+    // (RECONNECT). The host's ball was live throughout: nothing was paused and no grant was issued again.
+    await until(() => krobsAway(), 8000, 'the drop to be seen');
+    await until(() => !krobsAway() && !(K.mh.status().panel?.message ?? '').startsWith('The link to the host'), 12_000, 'Krobs to be back');
+    for (const off of offs) off();
+    expect(phases).not.toContain('paused');
+    // The 3D watch runs over the two companions' own connection: it never stopped.
+    expect(sees(K, fk, H)).toBe(true);
+    expect({ play: fk!.count('play'), watch: fk!.count('watch') }).toEqual(before);
     expect(K.modes.at(-1)).toBe('hidden');
     expect(existsSync(K.lock)).toBe(true);
     // The data connection between the companions never went through ArcAid: it is the same one.
@@ -705,7 +716,7 @@ describe('the state stream inside a match (I11.4.2)', () => {
     await crash(H);
     // The host's tunnel closed with it: nothing is known of its VPX any more, so there is no 3D to show.
     await until(() => fk!.count('play') === 1 && watching(K) === null, 8000, "Krobs's fork to be called back");
-    await until(() => (K.mh.status().panel?.message ?? '').startsWith("The host's Castcade closed or lost its connection."));
+    await until(() => (K.mh.status().panel?.message ?? '').startsWith("The link to the host's Castcade is down"));
     expect(K.modes.at(-1)).not.toBe('hidden');
     expect(existsSync(K.lock)).toBe(true);
     // The wait runs out: the match is over for this PC, its table unlocked, its stream closed, its fork still connected.
@@ -1116,6 +1127,8 @@ describe('the turn lock and a fork that answers at once (A8)', () => {
       witness: table().w,
       device: () => ({ deviceId: 'dev-a8', deviceLabel: 'a8' }),
       appVersion: '0.2.46',
+      // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts.
+      disconnectGraceMs: 0,
       log: { info: push, warn: push, error: push, file: '' } as unknown as Logger,
       publicIp: () => Promise.resolve('127.0.0.1'),
       lockFile: lock,

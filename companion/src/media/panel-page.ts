@@ -298,9 +298,11 @@ export function stripRows(s: PanelState): StripRow[] {
   }
   return s.players.map((p) => {
     const detail = p.isUp && s.ball !== null ? 'BALL ' + s.ball : p.ballsDone >= s.ballsPerGame ? 'DONE' : p.ballsDone + '/' + s.ballsPerGame;
+    // A18 (2026-11-24): `disconnected` reads AWAY (it read OFFLINE until 0.2.50): the player is not on the match's
+    // control link, which says nothing about the voice and the picture: those go straight between the PCs and stay.
     const flags = p.flags
       .filter((f) => f !== 'build_mismatch')
-      .map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'OFFLINE' : f === 'loading' ? 'LOADING' : f === 'midnight' ? 'MIDNIGHT MADNESS' : String(f).toUpperCase()));
+      .map((f) => (f === 'table_mismatch' ? 'DIFFERENT TABLE' : f === 'disconnected' ? 'AWAY' : f === 'loading' ? 'LOADING' : f === 'midnight' ? 'MIDNIGHT MADNESS' : String(f).toUpperCase()));
     const notes = p.flags.includes('build_mismatch') ? ['DIFFERENT VPX BUILD'] : [];
     const sr = series.find((x) => x.id === p.id);
     if (sr && (s.game || 1) > 1) notes.push(wins(sr.wins));

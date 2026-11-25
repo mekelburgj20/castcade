@@ -35,6 +35,8 @@ class FakeMedia implements MatchMedia {
   panels: PanelState[] = [];
   detached = false;
   lastError: string | null = null;
+  /** A18: the ICE state the page reports for a peer (none: the page knows no connection to it). */
+  ice: Record<string, string> = {};
   attach(_s: MediaSignalling, peers: string[]): Promise<void> {
     this.attachedWith = [...peers];
     return Promise.resolve();
@@ -53,7 +55,8 @@ class FakeMedia implements MatchMedia {
   }
   setMuted(): void {}
   status(): MediaStatus {
-    return { attached: this.attachedWith !== null, sending: this.sending[this.sending.length - 1] ?? false, peers: {}, mic: 'open', captureSource: null, lastError: this.lastError };
+    const peers = Object.fromEntries(Object.entries(this.ice).map(([id, ice]) => [id, { ice, receivingVideo: false, receivingAudio: true }]));
+    return { attached: this.attachedWith !== null, sending: this.sending[this.sending.length - 1] ?? false, peers, mic: 'open', captureSource: null, lastError: this.lastError };
   }
   onStatus(): () => void {
     return () => undefined;
@@ -107,8 +110,8 @@ async function rig(balls = 3, clientGame: GameFingerprint = game, fingerprintPol
   const clock = new ManualClock();
   const hk = generateKeys();
   const ck = generateKeys();
-  const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy, clock });
-  const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'ABCDEF', hostId: 'h', clock });
+  const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy, clock });
+  const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'ABCDEF', hostId: 'h', clock });
   const H = seat(host, clock, balls, extra);
   const C = seat(client, clock, undefined, extra);
   await H.ctl.open();
@@ -126,8 +129,8 @@ describe('MatchController', () => {
   it('picks the role methods by shape', () => {
     const bus = new MemoryBus();
     const k = generateKeys();
-    const h = new HostMatch({ transport: bus.transport('h'), keys: k, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', k), hostGame: game });
-    const c = new ClientMatch({ transport: bus.transport('c'), keys: k, participant: participant('c', k), game, throwdownCode: 'M' });
+    const h = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: k, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', k), hostGame: game });
+    const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: k, participant: participant('c', k), game, throwdownCode: 'M' });
     expect(isHostRole(h)).toBe(true);
     expect(isHostRole(c)).toBe(false);
   });
@@ -423,13 +426,13 @@ describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
     const bus = new MemoryBus();
     const clock = new ManualClock();
     const hk = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
     const H = seat(host, clock, 3);
     await H.ctl.open();
     const mk = (id: string, g: GameFingerprint): Seat => {
       const k = generateKeys();
       const p = { ...participant(id, k), displayName: id };
-      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: p, game: g, throwdownCode: 'M', hostId: 'h', clock });
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: p, game: g, throwdownCode: 'M', hostId: 'h', clock });
       const s = seat(c, clock);
       c.join();
       return s;
@@ -455,13 +458,13 @@ describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
     const bus = new MemoryBus();
     const clock = new ManualClock();
     const hk = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
     const H = seat(host, clock, 3);
     const seats: Seat[] = [];
     const statuses: Array<ReturnType<MatchController['status']>['transfer']> = [];
     for (const id of ['a', 'b']) {
       const k = generateKeys();
-      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
       const s = seat(c, clock);
       seats.push(s);
       c.join();
@@ -478,16 +481,16 @@ describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
     expect(statuses.at(-1)).toBeNull();
   });
 
-  it('a client whose link dropped mid-match sends RESUME itself once its RECONNECT is accepted (real WebSockets)', async () => {
+  it("A18: a client whose link drops in the host's ball changes nothing for the host; the match waits for it at its own turn, and it sends RESUME itself once its RECONNECT is accepted (real WebSockets)", async () => {
     const clock = new ManualClock();
     const hk = generateKeys();
     const ck = generateKeys();
     const ht = new WsPeerTransport({ localId: 'h' });
     const url = await ht.listen(0, '127.0.0.1');
-    const host = new HostMatch({ transport: ht, keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: ht, keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game });
     const H = seat(host, clock, 3);
     const ct = new WsPeerTransport({ localId: 'c' });
-    const client = new ClientMatch({ transport: ct, keys: ck, participant: participant('c', ck), game, throwdownCode: 'M', reconnect: { delayMs: 50, attempts: 20 } });
+    const client = new ClientMatch({ disconnectGraceMs: 0, transport: ct, keys: ck, participant: participant('c', ck), game, throwdownCode: 'M', reconnect: { delayMs: 400, attempts: 20 } });
     const C = seat(client, clock);
     const until = async (cond: () => boolean, ms = 5000): Promise<void> => {
       const end = Date.now() + ms;
@@ -502,16 +505,28 @@ describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
       await until(() => host.roster().length === 2);
       host.start();
       await until(() => client.state.phase === 'running' && C.ctl.status().phase === 'playing');
-      // The host plays ball 1; the client's socket dies.
+      // The host plays ball 1; the client's socket dies. Nothing changes for the host: no pause, the same grant, the
+      // table as it was; the client is shown as away.
+      const grant = host.state.currentGrant?.grant.grantSeq;
+      const locks = H.locks.length;
+      const before = host.log.length;
       ct.dropLinks('h');
-      await until(() => host.state.paused !== null);
+      await until(() => H.ctl.status().panel.players.find((p) => p.id === 'c')?.flags.includes('disconnected') === true);
+      expect(host.state.paused).toBeNull();
+      expect(H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+      expect(host.state.currentGrant?.grant.grantSeq).toBe(grant);
+      expect(H.locks.length).toBe(locks);
+      expect(host.log.length).toBe(before);
+      // The host's ball ends while the client is still away: its turn is next, so now the match waits for it.
+      host.localBallEnd(100, 'nvram');
       expect(host.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
       expect(H.ctl.status().phase).toBe('paused');
       await until(() => host.state.paused === null);
       const types = host.log.entries().map((e) => (e.message ? `${e.message.type}:${e.message.from}` : e.event?.type));
-      // The pause, the client's own RESUME right after it, then the re-issued grant.
+      // The host's ball end, the pause for the client at its turn, the client's own RESUME, then its grant.
       const at = types.indexOf('PAUSE:h');
-      expect(types.slice(at, at + 3)).toEqual(['PAUSE:h', 'RESUME:c', 'TURN_GRANT:h']);
+      expect(types.slice(at - 1, at + 3)).toEqual(['BALL_END:h', 'PAUSE:h', 'RESUME:c', 'TURN_GRANT:h']);
+      expect(host.state.currentGrant?.grant).toMatchObject({ player: 'c', ballNumber: 1 });
       await until(() => C.ctl.status().phase === 'playing' && H.ctl.status().phase === 'playing');
       expect(C.logs).toContain('match: back after a drop; resuming the match');
       expect(client.log.head()).toEqual(host.log.head());
@@ -521,6 +536,77 @@ describe('A8 (2026-10-31): the alpha build\'s gaps', () => {
       ct.close();
       ht.close();
     }
+  });
+});
+
+describe('A18 (2026-11-24): a control link that drops is not the media connection', () => {
+  /** A started match on the bus; the host's page says its connection to the client is `ice`. */
+  async function started(ice: string | null) {
+    const s = await rig();
+    s.host.start();
+    await flush();
+    expect(s.H.media.added).toEqual(['c']);
+    if (ice !== null) s.H.media.ice.c = ice;
+    return s;
+  }
+  /** The engine's word that the client is back on its link (a MemoryBus peer cannot come back by itself). */
+  const back = (s: Awaited<ReturnType<typeof rig>>, quiet = false): void => s.host.events.emit('reconnected', { playerId: 'c', entries: 0, quiet });
+  const away = (s: Awaited<ReturnType<typeof rig>>): boolean => s.H.ctl.panel().players.find((p) => p.id === 'c')?.flags.includes('disconnected') === true;
+
+  it('the voice connection is up when the link drops: it is kept, the player is shown as away, and nothing is made again at the return', async () => {
+    const s = await started('connected');
+    s.bus.disconnect('c');
+    await flush();
+    expect(away(s)).toBe(true);
+    expect(s.H.media.removed).toEqual([]);
+    // The host is up: its turn is as it was.
+    expect(s.H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+    expect(s.H.media.sending).toEqual([true]);
+    back(s);
+    expect(away(s)).toBe(false);
+    expect(s.H.media.added).toEqual(['c']);
+    expect(s.H.media.removed).toEqual([]);
+    expect(s.H.logs.some((l) => l.includes('never dropped and is kept'))).toBe(true);
+  });
+
+  it('the connection is not up when the link drops (the player is really gone): closed as before, and made again at the return', async () => {
+    const s = await started('disconnected');
+    s.bus.disconnect('c');
+    await flush();
+    expect(s.H.media.removed).toEqual(['c']);
+    back(s);
+    expect(s.H.media.added).toEqual(['c', 'c']);
+  });
+
+  it('kept at the drop, then the connection itself goes while the player is away: closed at the next word from the page, made again at the return', async () => {
+    const s = await started('completed');
+    s.bus.disconnect('c');
+    await flush();
+    expect(s.H.media.removed).toEqual([]);
+    s.H.media.ice.c = 'failed';
+    s.H.ctl.refresh();
+    expect(s.H.media.removed).toEqual(['c']);
+    s.H.ctl.refresh();
+    expect(s.H.media.removed).toEqual(['c']);
+    s.H.media.ice.c = 'new';
+    back(s);
+    expect(s.H.media.added).toEqual(['c', 'c']);
+  });
+
+  it('kept, and the connection is gone by the time the player is back: made again', async () => {
+    const s = await started('connected');
+    s.bus.disconnect('c');
+    await flush();
+    s.H.media.ice.c = 'disconnected';
+    back(s);
+    expect(s.H.media.added).toEqual(['c', 'c']);
+  });
+
+  it('a return inside the engine\'s grace (nobody was told of a drop) touches no media, whatever the page says', async () => {
+    const s = await started('checking');
+    back(s, true);
+    expect(s.H.media.added).toEqual(['c']);
+    expect(s.H.media.removed).toEqual([]);
   });
 });
 
@@ -1188,8 +1274,8 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     const clock = new ManualClock();
     const hk = generateKeys();
     const ck = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
-    const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'ABCDEF', hostId: 'h', clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'ABCDEF', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'ABCDEF', hostId: 'h', clock });
     const H = seat(host, clock, 1);
     const C = seat(client, clock);
     await H.ctl.open();
@@ -1260,13 +1346,13 @@ describe('A10 + A11 (2026-11-02): the series and the start from the host table',
     const clock = new ManualClock();
     const hk = generateKeys();
     const ck = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'L', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'L', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
     const H = seat(host, clock, 1);
     await H.ctl.open();
     H.ctl.feed(gameStart);
     expect(host.countdownRemaining()).toBeNull();
     expect(H.media.panel.message).toBe('Waiting for players');
-    const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: noTable, throwdownCode: 'L', hostId: 'h', clock });
+    const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: noTable, throwdownCode: 'L', hostId: 'h', clock });
     const C = seat(client, clock);
     await C.ctl.open();
     client.join();
@@ -1308,10 +1394,10 @@ describe('A12 (2026-11-05): no game before the match', () => {
     const clock = new ManualClock();
     const hk = generateKeys();
     const ck = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
     const H = seat(host, clock, 1, { preMatchPlay });
     const join = async (clientGame: GameFingerprint = game) => {
-      const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'A', hostId: 'h', clock });
+      const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game: clientGame, throwdownCode: 'A', hostId: 'h', clock });
       const C = seat(client, clock, undefined, { preMatchPlay });
       await C.ctl.open();
       client.join();
@@ -1385,10 +1471,10 @@ describe('A12 (2026-11-05): no game before the match', () => {
     const clock = new ManualClock();
     const hk = generateKeys();
     const ck = generateKeys();
-    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'A', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
     const H = seat(host, clock, 1, { tableGameRunning: true });
     await H.ctl.open();
-    const client = new ClientMatch({ transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'A', hostId: 'h', clock });
+    const client = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c'), keys: ck, participant: participant('c', ck), game, throwdownCode: 'A', hostId: 'h', clock });
     const C = seat(client, clock);
     await C.ctl.open();
     client.join();
@@ -1420,7 +1506,7 @@ describe('A12 (2026-11-05): no game before the match', () => {
     expect(H.media.panel.message).toBe('Waiting for players — the table unlocks when someone joins');
     // A second client joins; the Start press starts the countdown as in A11; MATCH_READY locks as always, grant 1 unlocks.
     const k2 = generateKeys();
-    const c2 = new ClientMatch({ transport: bus.transport('c2'), keys: k2, participant: { ...participant('c2', k2), displayName: 'Bea' }, game, throwdownCode: 'A', hostId: 'h', clock });
+    const c2 = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport('c2'), keys: k2, participant: { ...participant('c2', k2), displayName: 'Bea' }, game, throwdownCode: 'A', hostId: 'h', clock });
     const C2 = seat(c2, clock, undefined, { preMatchPlay: 'locked' });
     await C2.ctl.open();
     c2.join();

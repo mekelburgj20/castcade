@@ -119,6 +119,8 @@ function castcade(name: string, w: WitnessHost, dir?: string, extra: Partial<Opt
     witness: w,
     device: () => ({ deviceId: `dev-${name}`, deviceLabel: name }),
     appVersion: '0.2.40',
+    // A18: no grace: these tests are about what follows a dropped link, not the wait before it counts.
+    disconnectGraceMs: 0,
     log: logger,
     publicIp: () => Promise.resolve('127.0.0.1'),
     lockFile: lock,
@@ -148,7 +150,9 @@ const until = async (cond: () => boolean, ms = 8000): Promise<void> => {
   }
 };
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-const port = (): number => 51000 + Math.floor(Math.random() * 2000);
+// Below Windows' dynamic range (49152 and up), where a PC with Hyper-V has blocks of a hundred ports reserved: a port
+// picked in 51000-52999 failed with EACCES on the dev PC (51947-52046 reserved there), five tests in one run (A18).
+const port = (): number => 39000 + Math.floor(Math.random() * 2000);
 const scoreOf = (mh: MatchHost, name: string): number | null | undefined => mh.status().panel?.players.find((p) => p.name === name)?.score;
 const up = (mh: MatchHost, ball: number): boolean => mh.status().panel?.myTurn === true && mh.status().panel?.ball === ball;
 
@@ -285,7 +289,9 @@ describe('a client restarted in the middle of a match (A15)', () => {
     crashed(C);
     // The lock a closing Castcade takes off is the crash's to keep: put it back as a crash leaves it.
     writeFileSync(C.lock, '');
-    await until(() => H.mh.status().phase === 'paused');
+    // A18: it is the host's ball: the guest is shown as away and nothing pauses for it.
+    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Guest')?.flags.includes('disconnected') === true);
+    expect(H.mh.status()).toMatchObject({ phase: 'playing', locked: false });
     const C2 = castcade('guest', cr.w, C.dir);
     expect(existsSync(C2.lock)).toBe(true);
     expect(C2.mh.status().locked).toBe(true);
@@ -417,7 +423,7 @@ describe('the host restarted in the middle of a match (A15)', () => {
 
     await closes(H);
     crashed(H);
-    await until(() => C.mh.status().panel?.message === "The host's Castcade closed or lost its connection. The match is paused: waiting up to 3 minutes for it to come back.");
+    await until(() => C.mh.status().panel?.message === "The link to the host's Castcade is down: waiting up to 3 minutes for it to come back. A ball in play goes on.");
     // The client's ball drains meanwhile: its BALL_END goes nowhere.
     cr.score(1, 220);
     cr.ballEnd(1);
@@ -500,7 +506,7 @@ describe('the host restarted in the middle of a match (A15)', () => {
     await until(() => scoreOf(C.mh, 'Host') === 200);
     expect(existsSync(C.lock)).toBe(true);
     await closes(H);
-    await until(() => (C.mh.status().panel?.message ?? '').startsWith("The host's Castcade closed or lost its connection."));
+    await until(() => (C.mh.status().panel?.message ?? '').startsWith("The link to the host's Castcade is down"));
     await until(() => C.mh.status().role === 'none', 15_000);
     expect(C.mh.status().lastError).toBe('The host did not come back within 1 minute: the match is over.');
     expect(existsSync(C.lock)).toBe(false);
@@ -527,8 +533,9 @@ describe('Castcade restarting itself for an update during a match (A15)', () => 
     await until(() => scoreOf(C.mh, 'Host') === 200);
     await C.mh.stop({ keepForRestart: true });
     expect(JSON.parse(readFileSync(C.record, 'utf8'))).toMatchObject({ restart: 'update' });
-    // Not a forfeit: the host waits for the player.
-    await until(() => H.mh.status().phase === 'paused');
+    // Not a forfeit: the player is away, and (A18) the host's own ball goes on meanwhile.
+    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Guest')?.flags.includes('disconnected') === true);
+    expect(H.mh.status().phase).toBe('playing');
     expect(H.logs.some((l) => l.includes('FORFEIT'))).toBe(false);
     const rec = JSON.parse(readFileSync(C.record, 'utf8')) as { aliveAt: number };
     rec.aliveAt = Date.now() - 4 * 60_000;
@@ -599,7 +606,7 @@ describe('a match through ArcAid, restarted (A15)', () => {
     try {
       await closes(m.H);
       crashed(m.H);
-      await until(() => (m.C.mh.status().panel?.message ?? '').startsWith("The host's Castcade closed or lost its connection."));
+      await until(() => (m.C.mh.status().panel?.message ?? '').startsWith("The link to the host's Castcade is down"));
       // The room outlived its host by 300 ms here (30 s on ArcAid): it is gone when the host is back.
       await until(() => m.r.rooms().length === 0);
       await sleep(500);

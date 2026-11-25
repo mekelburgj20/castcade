@@ -46,6 +46,17 @@
  *   its own wait (`stream3dWaiting()`); a PC that says nothing more is dropped from the list a grace after its time ran
  *   out. The engine only keeps and passes the list: `startIn()` and `start()` do not look at it (the controller holds a
  *   start for it; `start()` is the host's "start now"). Lobby only: NEXT_GAME and a rejoin never wait.
+ * - A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
+ *   up session"; match ECVYGP, 2026-11-23: one second without ArcAid paused the match in the owner's ball). Two rules
+ *   for a peer whose link drops after MATCH_READY:
+ *   - a grace (`disconnectGraceMs`, 5 s): the peer counts as not reachable at once (nothing is sent to it), but nobody
+ *     is told and nothing is paused until the grace is over. A RECONNECT inside it is answered as ever (the entries the
+ *     peer missed) and that is all that happened; a grant that came due for that peer meanwhile waits for it.
+ *   - after the grace, only the player who is up is paused for (`PAUSE(disconnect)`: the others wait for it, as
+ *     before). A player who is not up changes nothing: no PAUSE, no entry in the log, the outstanding grant and its
+ *     ball-end timer untouched. Its absence counts when its own grant comes due: the rotation then pauses for it
+ *     (`advance`, as it always did for a player known to be gone) and waits for its RESUME or the host's forfeit.
+ *   Simultaneous mode has no player up, so a drop there pauses as before (after the grace).
  */
 import {
   PROTOCOL_VERSION,
@@ -109,6 +120,8 @@ export interface HostOptions {
   tableOpen?: (game: GameFingerprint) => boolean;
   /** A13: whether this host's own table can report ball ends (`HELLO_ACK.ballEndReady`); omitted = unknown. */
   ballEndReady?: boolean;
+  /** A18: how long a dropped link is not yet a disconnect (the file header). Default 5 s; 0: at once. */
+  disconnectGraceMs?: number;
 }
 
 export interface ResumeOptions {
@@ -119,6 +132,8 @@ export interface ResumeOptions {
   session?: Session;
   ballEndTimeoutMs?: number;
   logSignTimeoutMs?: number;
+  /** A18: see `HostOptions.disconnectGraceMs`. */
+  disconnectGraceMs?: number;
   /** Peers already known to have dropped (the departed host, for one). */
   gone?: Iterable<PlayerId>;
   /**
@@ -184,9 +199,13 @@ export interface HostEvents extends Record<string, unknown> {
   /** This host stepped down; `client` continues the match on the same session. */
   hostTransfer: { from: PlayerId; to: PlayerId; client: ClientMatch };
   result: { result: PayloadOf<'RESULT'>; signatures: LogSignRecord[] };
+  /** A peer's link dropped and it did not come back inside the grace (A18); in the lobby, at once. */
   peerLeft: PlayerId;
-  /** A RECONNECT was accepted; `entries` is how many log entries it was sent. */
-  reconnected: { playerId: PlayerId; entries: number };
+  /**
+   * A RECONNECT was accepted; `entries` is how many log entries it was sent. A18: `quiet` when it came inside the
+   * grace: `peerLeft` was never raised for this drop and nothing was paused for it.
+   */
+  reconnected: { playerId: PlayerId; entries: number; quiet: boolean };
   reconnectRejected: { playerId: PlayerId; code: ReconnectCode };
   /** A MEDIA_SIGNAL addressed to this host's own player (D2); signals for anyone else are only forwarded. */
   mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
@@ -208,6 +227,14 @@ export type OutgoingMediaSignal = Omit<PayloadInput<'MEDIA_SIGNAL'>, 'to'>;
 
 const DEFAULT_BALL_END_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_LOG_SIGN_TIMEOUT_MS = 10_000;
+/**
+ * A18: a link that drops and is back within this long was never a disconnect. Five seconds: the three short drops of
+ * 2026-11-23 took the host 1.0 to 1.6 s to be back on ArcAid, and a client then needs its own retry delay (1 s) and one
+ * round trip for its RECONNECT, so 2 to 3 s as the host sees that client; five leaves room for one failed attempt of
+ * either. It is also about when a path that is really gone shows on the direct connections (ICE `disconnected`), and
+ * short enough that players who wait for somebody who did leave are told almost at once.
+ */
+export const DEFAULT_DISCONNECT_GRACE_MS = 5_000;
 /** I11.4.9: a PC whose own 3D wait ran out and that said nothing more is waited for this much longer, then let go. */
 export const STREAM3D_WAIT_GRACE_MS = 2_000;
 /** I11.4.9: the longest a PC can ask to be waited for in one PARTICIPANT_UPDATE (the schema's limit). */
@@ -261,6 +288,9 @@ export class HostMatch {
   private readonly signatures = new Map<PlayerId, LogSignRecord>();
   /** Players whose link dropped, by the transport's account (independent of the log). */
   private readonly gone = new Set<PlayerId>();
+  /** A18: of those, the ones still inside the grace (the timer that ends it): not yet a disconnect for anyone. */
+  private readonly grace = new Map<PlayerId, TimerHandle>();
+  private readonly graceMs: number;
   private transferAccepts = new Set<PlayerId>();
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
@@ -270,6 +300,7 @@ export class HostMatch {
     this.matchId = opts.matchId;
     this.ballEndTimeoutMs = opts.ballEndTimeoutMs ?? DEFAULT_BALL_END_TIMEOUT_MS;
     this.logSignTimeoutMs = opts.logSignTimeoutMs ?? DEFAULT_LOG_SIGN_TIMEOUT_MS;
+    this.graceMs = Math.max(0, opts.disconnectGraceMs ?? DEFAULT_DISCONNECT_GRACE_MS);
     this.companionVersion = opts.companionVersion ?? '0.1.0';
     this.hostGame = { ...opts.hostGame };
     this.fingerprintPolicy = opts.fingerprintPolicy ?? 'refuse';
@@ -313,6 +344,7 @@ export class HostMatch {
         clock: session.clock,
         ballEndTimeoutMs: opts.ballEndTimeoutMs,
         logSignTimeoutMs: opts.logSignTimeoutMs,
+        disconnectGraceMs: opts.disconnectGraceMs,
       },
       session,
     );
@@ -601,9 +633,14 @@ export class HostMatch {
     return null;
   }
 
+  /** A18: gone for longer than the grace (a player inside it may be back before anyone notices). */
+  private away(id: PlayerId): boolean {
+    return this.gone.has(id) && !this.grace.has(id);
+  }
+
   /** The next game's players: the roster still connected, in roster order, this host first. */
   private nextGameOrder(): PlayerId[] {
-    const ids = this.s.state.participants.map((p) => p.playerId).filter((id) => id !== this.localId && !this.gone.has(id));
+    const ids = this.s.state.participants.map((p) => p.playerId).filter((id) => id !== this.localId && !this.away(id));
     return [this.localId, ...ids];
   }
 
@@ -843,6 +880,8 @@ export class HostMatch {
     this.clearStream3dWait();
     this.clearBallEndTimer();
     this.clearStartTimer();
+    for (const t of this.grace.values()) this.s.clock.clearTimeout(t);
+    this.grace.clear();
     if (this.logSignTimer !== null) {
       this.s.clock.clearTimeout(this.logSignTimer);
       this.logSignTimer = null;
@@ -996,7 +1035,8 @@ export class HostMatch {
     return this.s.state.phase === 'lobby' ? this.lobby.some((p) => p.playerId === id) : this.s.state.participants.some((p) => p.playerId === id);
   }
 
-  private onPeerLeave(peer: PlayerId): void {
+  /** `final` (A18): the peer cannot come back (its RECONNECT was refused): a disconnect at once, grace or not. */
+  private onPeerLeave(peer: PlayerId, final = false): void {
     if (this.detached) return;
     const st = this.s.state;
     if (st.phase === 'lobby') {
@@ -1013,15 +1053,50 @@ export class HostMatch {
       return;
     }
     const p = st.players[peer];
-    if (!p || this.gone.has(peer)) return;
+    if (!p) return;
+    if (this.gone.has(peer)) {
+      const timer = this.grace.get(peer);
+      if (!final || timer === undefined) return;
+      this.s.clock.clearTimeout(timer);
+      this.grace.delete(peer);
+      this.confirmLeave(peer);
+      return;
+    }
     this.gone.add(peer);
+    // A game that has ended does not wait for the signature of a player it cannot reach, as before.
+    if (st.phase === 'ended') this.maybeSendResult();
+    // A18: not a disconnect yet. Nothing is sent to the peer from here on; what it misses is in its RECONNECT_ACK.
+    if (final || this.graceMs <= 0) {
+      this.confirmLeave(peer);
+      return;
+    }
+    this.grace.set(
+      peer,
+      this.s.clock.setTimeout(() => {
+        this.grace.delete(peer);
+        this.confirmLeave(peer);
+      }, this.graceMs),
+    );
+  }
+
+  /**
+   * A18: the grace is over and the peer is not back: now it is a disconnect. The match waits for it only when the
+   * waiting cannot be avoided: it holds the outstanding grant (the others see the pause; that player's own table plays
+   * on), or its grant is the next to go out (`advance`). A player who is not up changes nothing for the one who is.
+   */
+  private confirmLeave(peer: PlayerId): void {
+    if (this.detached || !this.gone.has(peer)) return;
     this.events.emit('peerLeft', peer);
-    if (st.phase === 'running' && p.status === 'playing' && !st.pendingTransfer) {
+    const st = this.s.state;
+    const p = st.players[peer];
+    if (st.phase !== 'running' || !p || p.status !== 'playing' || st.pendingTransfer) return;
+    if (st.turnMode === 'simultaneous' || st.currentGrant?.grant.player === peer) {
       this.clearBallEndTimer();
       this.pause('disconnect', peer);
-    } else if (st.phase === 'ended') {
-      this.maybeSendResult();
+      return;
     }
+    // A grant that came due for this player during the grace was held: the rotation pauses for it now.
+    this.advance();
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1179,6 +1254,9 @@ export class HostMatch {
     if (st.turnMode === 'simultaneous') return; // no grants in simultaneous mode; games end on GAME_OVER
     const target = st.pendingReissue ?? nextGrantTarget(st);
     if (!target) return;
+    // A18: its link dropped a moment ago and it may be back before anyone notices: the grant waits for the grace to
+    // end one way (its RECONNECT: `onReconnect` comes back here) or the other (`confirmLeave`: the pause below).
+    if (this.grace.has(target.player)) return;
     const p = st.players[target.player];
     if (!p || !p.connected || this.gone.has(target.player)) {
       this.pause('disconnect', target.player);
@@ -1475,8 +1553,9 @@ export class HostMatch {
       this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId));
       this.events.emit('reconnectRejected', { playerId: msg.from, code });
       this.s.transport.closePeer?.(linkFrom);
-      // A participant that cannot resume is disconnected: the usual pause rules apply (A3).
-      if (this.isParticipant(linkFrom)) this.onPeerLeave(linkFrom);
+      // A participant that cannot resume is disconnected: the usual pause rules apply (A3). A18: with no grace: it
+      // will not be back on this log.
+      if (this.isParticipant(linkFrom)) this.onPeerLeave(linkFrom, true);
       return;
     }
     const entries = this.s.log.entries().slice(msg.payload.logLength);
@@ -1486,11 +1565,20 @@ export class HostMatch {
     );
     // Back on a link (A3). Its log still says disconnected until a RESUME clears the disconnect
     // pause; until then the rotation pauses again rather than grant to it.
+    // A18: back inside the grace: nobody was told it had left, and nothing was paused for it.
+    const timer = this.grace.get(msg.from);
+    const quiet = timer !== undefined;
+    if (quiet) {
+      this.s.clock.clearTimeout(timer);
+      this.grace.delete(msg.from);
+    }
     this.gone.delete(msg.from);
-    this.events.emit('reconnected', { playerId: msg.from, entries: entries.length });
+    this.events.emit('reconnected', { playerId: msg.from, entries: entries.length, quiet });
     // A fresh envelope for each: the receiver drops a frame whose seq is not above the last it took from this host,
     // and the RECONNECT_ACK just went out with a newer one (A10: the payload, signatures and all, is the same).
     for (const r of this.resultMsgs) this.s.transport.send(linkFrom, this.s.build('RESULT', r.payload, matchId));
+    // A18: a grant that waited for this player's grace goes out now, after the RECONNECT_ACK it follows in the log.
+    if (quiet) this.advance();
   }
 
   private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {

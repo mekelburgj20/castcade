@@ -53,7 +53,7 @@ describe('panel text (D2)', () => {
     const both = state({ players: [{ id: 'krobs', name: 'Krobs', score: null, ballsDone: 0, isUp: false, flags: ['table_mismatch', 'build_mismatch'] }] });
     expect(stripRows(both)[0]).toMatchObject({ flags: ['DIFFERENT TABLE'], notes: ['DIFFERENT VPX BUILD'] });
     const done = state({ players: [{ id: 'owner', name: 'Owner', score: null, ballsDone: 3, isUp: false, flags: ['disconnected'] }] });
-    expect(stripRows(done)[0]).toMatchObject({ score: '–', detail: 'DONE', flags: ['OFFLINE'] });
+    expect(stripRows(done)[0]).toMatchObject({ score: '–', detail: 'DONE', flags: ['AWAY'] });
     const over = state({
       phase: 'over',
       result: [

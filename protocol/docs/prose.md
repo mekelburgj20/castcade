@@ -102,7 +102,9 @@ the three fields is logged.
   `GAME_OVER` for a game that has already ended is answered with `REJECT` (`unexpected_state`).
 - If the next grant would go to a player the host knows to be disconnected, the host sends
   `PAUSE(disconnect, player)` instead of the grant. Whether to `FORFEIT` that player and `RESUME` is a
-  policy decision above the protocol (the host UI, or the fake client's scenario).
+  policy decision above the protocol (the host UI, or the fake client's scenario). A player whose link dropped
+  less than the disconnect grace ago (see Pauses and timeouts) is not yet known to be disconnected: its grant is
+  held until it is back (the grant then goes out after its `RECONNECT_ACK`) or the grace is over (the pause).
 
 ## The match log
 
@@ -135,11 +137,29 @@ the three fields is logged.
 
 ## Pauses and timeouts
 
-- A dropped connection, or no `BALL_END` within 20 minutes of a grant, moves the match to paused
-  (`PAUSE` from the host). Any participant may `RESUME`; the host then re-issues the outstanding grant with
-  a new `grantSeq`. Any participant may `FORFEIT` themselves; the host may forfeit a participant who does
-  not return. A `BALL_END` for the outstanding grant is still accepted while paused. A client `PAUSE`
-  while already paused, or a `RESUME` while not paused, gets `REJECT` (`unexpected_state`).
+- No `BALL_END` within 20 minutes of a grant moves the match to paused (`PAUSE` from the host). Any participant
+  may `RESUME`; the host then re-issues the outstanding grant with a new `grantSeq`. Any participant may `FORFEIT`
+  themselves; the host may forfeit a participant who does not return. A `BALL_END` for the outstanding grant is
+  still accepted while paused. A client `PAUSE` while already paused, or a `RESUME` while not paused, gets `REJECT`
+  (`unexpected_state`).
+- A dropped connection (A18, 2026-11-24; no change on the wire, so every protocol 6 build plays with every other):
+  - **The disconnect grace.** A link that drops is not a disconnect for 5 seconds. The host sends that peer nothing
+    meanwhile, logs nothing and pauses nothing; a client whose link to the host dropped starts its reconnect at once
+    and tells its player nothing. A `RECONNECT` inside the grace is answered as any other, and that is all that
+    happened. A peer whose `RECONNECT` the host rejects is disconnected at once.
+  - **Only the grant holder is paused for.** When the grace is over and the peer holds the outstanding grant, the
+    host sends `PAUSE(disconnect, player)`: the others wait, as before. (That player's own companion keeps its table
+    as it is: it locks only on what the host says, never on a silence.) A peer that does not hold the grant changes
+    nothing: no `PAUSE`, no log entry, the outstanding grant and its 20 minutes untouched, nothing sent to the
+    player who is up. Its absence counts when its own grant comes due (Turn rotation, the last rule). Simultaneous
+    mode has no grant holder: there the drop pauses once the grace is over.
+  - A host from before A18 pauses at the drop itself, for any player; a client must take either (it does: a `PAUSE`
+    is a `PAUSE`).
+- What a player reported into a link that had just dropped is not lost: after an accepted `RECONNECT` a client
+  sends again, each in a new envelope, its own `BALL_END` when the grant it answers is still the outstanding one
+  and no `BALL_END` or `TURN_PASS` for it is in the log, and its own `GAME_OVER` or `FORFEIT` when the log still has
+  its game as being played; before any `RESUME` it sends for a pause its drop caused, so the host takes the ball end
+  inside the pause and the `RESUME` moves the rotation on. A report the host answered with `REJECT` is not sent again.
 - In `RESULT`, a forfeited player whose connection was still up has status `forfeit`; one whose
   connection was gone has status `disconnected`.
 
@@ -198,10 +218,11 @@ the three fields is logged.
   answer is a rejection with a `code` and no entries, and the host closes the socket.
 - A rejected client must re-join with a fresh `HELLO`. It is a new participant only if the match allows
   it, which after `MATCH_READY` it does not (`match_started`).
-- The existing pause and timeout rules apply while a player is disconnected: the drop pauses the match
-  (`PAUSE(disconnect, player)`), the host may forfeit a player who does not return, and any participant
-  may `RESUME`. A `RESUME` that clears a `disconnect` pause for a player who is still playing marks that
-  player connected again; if it is still gone, the host pauses again at its next grant.
+- The existing pause and timeout rules apply while a player is disconnected (Pauses and timeouts: the grace, and
+  a pause only for the grant holder or at the absent player's own grant, `PAUSE(disconnect, player)`), the host may
+  forfeit a player who does not return, and any participant may `RESUME`. A `RESUME` that clears a `disconnect`
+  pause for a player who is still playing marks that player connected again; if it is still gone, the host pauses
+  again at its next grant. A reconnect that finds no pause for its own player sends no `RESUME`.
 - After an accepted `RECONNECT` the client unlocks input only for an outstanding grant that names it
   and verifies, signs the log if the current game has ended and it played in it, and receives again every
   `RESULT` the host has sent, oldest first, each in a new envelope (a frame resent with its old `seq` would fall
@@ -230,6 +251,10 @@ the three fields is logged.
   the player up: each rig keeps one video sender per connection and enables it only while it holds the
   grant, so a new grant or a host transfer needs no renegotiation. Who is up comes from `TURN_GRANT`,
   never from the media.
+- A dropped match link is not a dropped media connection (A18): the two are different paths, and a participant
+  keeps every media connection that is itself still connected through a drop and a reconnect of the match link.
+  Only a connection that is not connected any more is closed, and made again when its peer is back (the peer
+  that rebuilt its side offers anew; a side that kept its own takes that offer on a fresh connection, D2.7).
 - `channel` says which connection of the pair a signal sets up: `rtc` (the default: voice, and the Electron
   video), `video` (protocol 4: the native video helper's connection) or `stream` (protocol 6, I11.4.2: a
   data-only connection between the two companions that carries the VPX state stream, so a waiting player

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { buildMessage, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
-import { CompositeTransport, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
+import { CompositeTransport, dropWords, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
 import { WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
@@ -319,6 +319,32 @@ describe('relay transports (D10.8)', () => {
     await until(() => aSeen.includes('leave h'));
     expect(errors.join()).toMatch(/ArcAid closed the match \(host_gone\)/);
     await expect(a.connectTo('h', () => hello('a'))).rejects.toMatchObject({ code: 'no_such_match' });
+  });
+
+  it("A18: a dropped socket says why: socket.io's reason, the close code, how long the connection was up and when ArcAid last pinged it; never an address", async () => {
+    expect(dropWords('transport close', { description: 'websocket connection closed', context: { code: 1006, reason: '' } }, 802_040, 3_210)).toBe(
+      "the connection to ArcAid closed (transport close; websocket connection closed; close code 1006) after 802 s; ArcAid's last ping came 3.2 s before",
+    );
+    expect(dropWords('ping timeout', undefined, 46_000, 45_900)).toBe("the connection to ArcAid closed (ping timeout) after 46 s; ArcAid's last ping came 45.9 s before");
+    // A description that could carry an address or a path is left out.
+    expect(dropWords('transport error', { description: 'connect ECONNREFUSED 203.0.113.7:443' }, null, null)).toBe('the connection to ArcAid closed (transport error); no ping from ArcAid on this connection yet');
+
+    // The server closes the host's socket: one line with the reason, then the room is taken back as before.
+    const r = (relay = await startFakeRelay({ devices: DEVICES }));
+    const h = hostOn(r);
+    const errors: string[] = [];
+    h.onError((e) => errors.push(e.message));
+    const states: string[] = [];
+    h.onState((s) => states.push(s));
+    await h.host('RELAYA');
+    r.dropDevice('dev-h');
+    await until(() => states.includes('reconnecting') && states.at(-1) === 'registered');
+    expect(errors.filter((e) => e.startsWith('the connection to ArcAid closed ('))).toHaveLength(1);
+    // A close of our own is not a drop: nothing is said.
+    errors.length = 0;
+    h.close();
+    await sleep(50);
+    expect(errors).toEqual([]);
   });
 
   it('a frame over 256 KB is not sent and is reported; a HELLO of another protocol version is refused by name', async () => {
