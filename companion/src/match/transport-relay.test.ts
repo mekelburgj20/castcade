@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { buildMessage, decodeFrame, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
-import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
+import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
 import { ForeignVersionError, foreignVersionOf, foreignVersionRefusal, PROTOCOL_SINCE_RELEASE, WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
@@ -569,35 +569,62 @@ describe('relay transports (D10.8)', () => {
     expect(foreignVersionOf('nope')).toBeNull();
   });
 
-  it("A17 step 7: the asks of a lobby's member for a room that is gone (`LOBBY_REJOIN`): at once, 2 s and 8 s later, then every 150 s; never more than six in any ten minutes, under ArcAid's eight, and never stopping in the twenty minutes a member waits", () => {
+  it("A17 step 7: the asks of a lobby's member for a room that is gone (`LOBBY_REJOIN`): at once, 5 s and 30 s later, then every 150 s; never more than six in any ten minutes, two under ArcAid's eight, and never stopping in the twenty minutes a member waits", () => {
     // Every ask misses (the lobby's PC is gone for the whole wait). The arithmetic is the transport's own: the misses
     // inside the window, the cap, and the gap after the n-th miss (`rejoinGapAfter`, which `join` uses).
-    const p = LOBBY_REJOIN;
-    const wait = 20 * 60_000;
-    const asks: number[] = [];
-    let misses: number[] = [];
-    let t = 0;
-    let capped = false;
-    while (t <= wait) {
-      misses = misses.filter((m) => t - m < p.windowMs);
-      if (misses.length >= p.maxMisses) {
-        capped = true;
-        break;
+    const simulate = (earlier: number[]): { asks: number[]; heldBack: number[] } => {
+      const p = LOBBY_REJOIN;
+      const log = [...earlier];
+      const asks: number[] = [];
+      const heldBack: number[] = [];
+      let own = 0;
+      let t = 0;
+      while (t <= 20 * 60_000) {
+        if (log.filter((m) => t - m < p.windowMs).length >= p.maxMisses) {
+          // Refused by the transport itself; the engine tries again after its own longest gap (30 s).
+          heldBack.push(t);
+          t += 30_000;
+          continue;
+        }
+        asks.push(t);
+        log.push(t);
+        own += 1;
+        t += rejoinGapAfter(p, own);
       }
-      asks.push(t);
-      misses.push(t);
-      t += rejoinGapAfter(p, misses.length);
-    }
-    expect(asks.slice(0, 6)).toEqual([0, 2_000, 8_000, 158_000, 308_000, 458_000]);
-    expect(capped).toBe(false);
-    // In any ten minutes: six at the most (the first ten), four once the first three have left the window.
-    const inWindow = (end: number): number => asks.filter((a) => a > end - 600_000 && a <= end).length;
-    expect(Math.max(...asks.map(inWindow))).toBe(6);
-    expect(inWindow(asks.at(-1)!)).toBe(4);
+      return { asks, heldBack };
+    };
+    const { asks, heldBack } = simulate([]);
+    expect(asks.slice(0, 6)).toEqual([0, 5_000, 30_000, 180_000, 330_000, 480_000]);
+    expect(heldBack).toEqual([]);
+    // ArcAid counts in a window that is fixed from a device's first miss; this cap slides, which is never less strict.
+    const inWindow = (list: number[], end: number): number => list.filter((a) => a > end - 600_000 && a <= end).length;
+    expect(Math.max(...asks.map((a) => inWindow(asks, a)))).toBe(6);
+    expect(inWindow(asks, asks.at(-1)!)).toBe(4);
     // A lobby's PC that is back is asked for within two and a half minutes, whenever it comes back.
     expect(Math.max(...asks.slice(1).map((a, i) => a - asks[i]!))).toBe(150_000);
     // The policy of a match before the lobby gave up after five asks, 18 s in: a member would not ask again for ten minutes.
     expect(DEFAULT_REJOIN.maxMisses).toBe(5);
+
+    // The review of PR 136: two codes this device got wrong a minute before count at ArcAid as two misses of the
+    // device. With the device's own list (`missLog`) they hold the asks back: the sixth scheduled ask, which would
+    // have been ArcAid's eighth miss in its window, is not made; the asks go on when those two have left the window.
+    const mistyped = [-60_000, -50_000];
+    const after = simulate(mistyped);
+    const everything = [...mistyped, ...after.asks];
+    expect(Math.max(...everything.map((a) => inWindow(everything, a)))).toBeLessThanOrEqual(7);
+    expect(after.asks.slice(0, 5)).toEqual([0, 5_000, 30_000, 180_000, 330_000]);
+    expect(after.heldBack[0]).toBe(480_000);
+    expect(after.asks[5]).toBeGreaterThanOrEqual(540_000);
+    expect(after.asks.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it('A17 step 7 (the review of PR 136): the time the lobby\'s PC gives a member to be back after its own return covers the schedule: the longest gap between two asks, one ask that fails, and the engine\'s own longest gap before the next', () => {
+    const longestGap = Math.max(...LOBBY_REJOIN.gapsMs);
+    // The socket's and the acknowledgement's default timeouts (5 s, 4 s), and the 30 s the engine waits at the most
+    // between two attempts in a lobby (`LOBBY_RECONNECT_GAP_MAX_MS`, client.ts).
+    expect(LOBBY_RETURN_ALLOW_MS).toBeGreaterThanOrEqual(longestGap + 5_000 + 4_000 + 30_000 + 5_000);
+    // And not so long that a member who never returns holds a game for much more than twice the turn clock.
+    expect(LOBBY_RETURN_ALLOW_MS).toBeLessThanOrEqual(4 * 60_000);
   });
 
   it('relayEndpoint: the origin, and a path in the base URL as the socket.io path prefix', () => {
@@ -761,6 +788,36 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(r.misses.get('dev-a')).toBe(3);
     // The second ask waited 80 ms after the first miss, the third 160 ms after the second.
     expect(Date.now() - t0).toBeGreaterThanOrEqual(230);
+  });
+
+  it("A17 step 7 (the review of PR 136): a transport that is given the device's list of misses writes its own into it, a first join's too, and holds its asks back by all of them", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    const missLog: number[] = [];
+    // A code that names no room: a miss of the device, written down by the transport that asked.
+    const wrong = clientOn(r, 'a', { missLog });
+    await expect(wrong.connect('NOROOM')).rejects.toThrow(/no match with the code NOROOM/);
+    wrong.close();
+    expect(missLog).toHaveLength(1);
+    expect(r.misses.get('dev-a')).toBe(1);
+    // The same device then joins a room whose host goes away for good: with a cap of three, two asks are left.
+    const { h, clients } = await matchOf(r, ['a'], { client: { missLog, rejoin: { gapsMs: [40], maxMisses: 3 } } });
+    const a = clients['a']!;
+    (h as unknown as { socket: { disconnect(): void } }).socket.disconnect();
+    await until(() => a.seen.includes('leave h') && r.rooms().length === 0);
+    const said: string[] = [];
+    for (let k = 0; k < 5; k++) {
+      said.push(
+        await a.t.connectTo('h', () => hello('a')).then(
+          () => 'ok',
+          (e: Error) => e.message,
+        ),
+      );
+    }
+    expect(said.slice(0, 2)).toEqual(Array(2).fill('no match with the code RELAYA'));
+    expect(said.slice(2)).toEqual(Array(3).fill('no match with the code RELAYA (ArcAid said so 3 times; not asking again)'));
+    expect(missLog).toHaveLength(3);
+    // ArcAid was asked three times by this device in all, the wrong code included: not once more.
+    expect(r.misses.get('dev-a')).toBe(3);
   });
 
   it('a pairing revoked mid-match: the client is told once, in plain words, and never asks ArcAid again; the host sees a leave; a revoked host is closed for good', async () => {

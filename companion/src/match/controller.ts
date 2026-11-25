@@ -163,15 +163,21 @@ export interface LobbyStatus {
   /** The one member whose Start on their own table asks for a game; null: nobody can. */
   starter: PlayerId | null;
   /** Every member, the lobby's PC first, then in the order they joined. */
-  members: Array<{ id: PlayerId; name: string; rig: ParticipantInfo['rig']; stance: Stance; opener: boolean; me: boolean; starter: boolean; inMatch: boolean; flags: LobbyFlag[] }>;
+  members: Array<{ id: PlayerId; name: string; rig: ParticipantInfo['rig']; stance: Stance; opener: boolean; me: boolean; starter: boolean; inMatch: boolean; flags: LobbyFlag[]; awaySince: number | null }>;
   /** The match that is open: its id, the game, whether one is being played, and its players. Null: none. */
   match: { id: string; game: number; state: 'game' | 'between'; players: PlayerId[] } | null;
+  /**
+   * The review of PR 136: what a press about the match is made against: the open match, its game and whether that
+   * game is being played ("JHDFEF-2/3/game"; empty: no match). A press carries it, and the main process refuses a
+   * press whose subject is not this any more (End match as a game begins must not end that game for everyone).
+   */
+  gameKey: string;
   /** The start that is announced: counting down (`seconds`) or waiting (`waitsFor`), in one line. Null: none. */
   start: { by: PlayerId; players: PlayerId[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: PlayerId[]; seconds: number | null; line: string } | null;
   /** The start button: its words, the line that says what a press does, and why it cannot be pressed now (null: it can). */
   startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
   /** "Start a new match": there while a match is open between games and somebody outside it is set to Play. */
-  newMatch: { line: string } | null;
+  newMatch: { line: string; warnings: string[] } | null;
   /** While a start waits for people or for 3D: the words of the second press ("Start without Dana"). Null: none. */
   startWithout: string | null;
   /** What End match would end: the open match between games (anyone), or the game being played, for everyone (the lobby's PC only). */
@@ -185,6 +191,12 @@ export interface LobbyStatus {
 }
 
 /** A HostMatch plays through `local*`; a ClientMatch through `report*` (host.ts / client.ts). */
+/**
+ * A17 step 7: how long after a start's countdown ran out, with the start still announced, the line says it is held.
+ * A start that is on its way reaches a member within this (the lobby PC's own timer and one frame).
+ */
+export const COUNTDOWN_HELD_MS = 1000;
+
 export function isHostRole(role: MatchRole): role is HostRole {
   return typeof (role as Partial<HostRole>).localBallEnd === 'function';
 }
@@ -541,6 +553,8 @@ export class MatchController {
   private readonly scores = new Map<PlayerId, number>();
   private readonly mismatch = new Map<PlayerId, string[]>();
   private readonly left = new Set<PlayerId>();
+  /** A17 step 7 (design 11.9, "AWAY 0:42"): since when this PC has known each member who is away to be away (its own clock). */
+  private readonly awayAt = new Map<PlayerId, number>();
   /** A18: players in `left` whose media connection was closed too, because it was not up any more: made again at their return. */
   private readonly mediaClosed = new Set<PlayerId>();
   /**
@@ -1048,11 +1062,16 @@ export class MatchController {
   private unreadableIds(): PlayerId[] {
     // A17 step 7: in a lobby a start is checked for the people who would play it; a watcher's table holds nothing up.
     const ids = this.lobbyOn ? this.wouldPlay(this.ack?.match?.state === 'between') : this.participants().map((p) => p.playerId);
+    return this.unreadableAmong(ids);
+  }
+
+  private unreadableAmong(ids: readonly PlayerId[]): PlayerId[] {
     return ids.filter((id) => this.readyOf(id) === false && !((this.phase === 'lobby' || this.lobbyOn) && this.loadingIds.includes(id)));
   }
 
-  private unreadableLines(): string[] {
-    return this.unreadableIds().map((id) =>
+  /** `ids`: the review of PR 136: the players of a start other than the next game's (a new match: everyone set to Play). */
+  private unreadableLines(ids: readonly PlayerId[] = this.unreadableIds()): string[] {
+    return ids.map((id) =>
       id === this.localId
         ? `Your table cannot report ball ends: ${this.localBallEndsReason ?? 'Castcade is not reading its score (not patched, or an original table)'}`
         : `${this.nameOf(id)}'s table cannot report ball ends: it is not patched, an original table, or a machine whose ball ends cannot be read`,
@@ -1424,7 +1443,10 @@ export class MatchController {
     this.midnightTimer = null;
     if (this.midnightSettingTimer !== null) this.opts.clearTimeout(this.midnightSettingTimer);
     this.midnightSettingTimer = null;
-    this.setLocked(false);
+    // A17 step 7 (the review of PR 136): in a lobby that goes on, the table is what the lobby's rule says at this
+    // moment (a start may be counting down already when the shell's match half runs), never unlocked in between.
+    const want = this.lobbyOn && !this.closed ? this.lobbyLockWanted() : null;
+    this.setLocked(want ?? false);
     if (this.opts.media && this.attached && !this.sendingOffSaid) {
       this.sendingOffSaid = true;
       this.opts.media.setSending(false);
@@ -1654,6 +1676,8 @@ export class MatchController {
     const end = this.opts.now() + ms;
     // A re-sent HELLO_ACK during the countdown carries what is left; keep the earlier deadline (it only drifts by latency).
     if (this.countdownEnd !== null && Math.abs(this.countdownEnd - end) < 1000) return;
+    // A countdown that ran out and is held: the lobby's word says "nothing left" again and again; when it ran out stays.
+    if (ms <= 0 && this.countdownEnd !== null && this.countdownEnd <= this.opts.now()) return;
     this.clearCountdown();
     this.countdownEnd = end;
     this.tickCountdown();
@@ -1664,7 +1688,11 @@ export class MatchController {
     if (this.closed || this.countdownEnd === null) return;
     this.push();
     const left = this.countdownEnd - this.opts.now();
-    if (left <= 0) return;
+    // One more look a second after it ran out: a start that is still announced then is being held (`countdownHeld`).
+    if (left <= 0) {
+      if (this.lobbyOn && left > -COUNTDOWN_HELD_MS) this.countdownTimer = this.opts.setTimeout(() => this.tickCountdown(), COUNTDOWN_HELD_MS + left);
+      return;
+    }
     const step = left % 1000 || 1000;
     this.countdownTimer = this.opts.setTimeout(() => this.tickCountdown(), step);
   }
@@ -1673,6 +1701,11 @@ export class MatchController {
     if (this.countdownTimer !== null) this.opts.clearTimeout(this.countdownTimer);
     this.countdownTimer = null;
     this.countdownEnd = null;
+  }
+
+  /** A start's countdown ran out a second ago or more and no game has begun: it is held (a player's grace). */
+  private countdownHeld(): boolean {
+    return this.lobbyOn && this.countdownEnd !== null && this.opts.now() >= this.countdownEnd + COUNTDOWN_HELD_MS;
   }
 
   private countdownSeconds(): number | null {
@@ -1755,7 +1788,7 @@ export class MatchController {
     offs.push(h.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
     offs.push(h.on('turnPassed', (m) => this.onTurnPassed(m.payload)));
     offs.push(h.on('gameOver', (m) => this.onScoreMsg(m.from, m.payload.finalScore)));
-    offs.push(h.on('forfeit', () => this.push()));
+    offs.push(h.on('forfeit', (m) => this.onForfeitMsg(m.payload.player)));
     offs.push(h.on('state', (m) => this.onScoreMsg(m.from, m.payload.score)));
     offs.push(h.on('pause', () => this.onPause()));
     offs.push(h.on('resume', () => this.onResume()));
@@ -1834,7 +1867,7 @@ export class MatchController {
     offs.push(c.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
     offs.push(c.on('turnPassed', (m) => this.onTurnPassed(m.payload)));
     offs.push(c.on('gameOver', (m) => this.onScoreMsg(m.from, m.payload.finalScore)));
-    offs.push(c.on('forfeit', () => this.push()));
+    offs.push(c.on('forfeit', (m) => this.onForfeitMsg(m.payload.player)));
     offs.push(c.on('state', (m) => this.onScoreMsg(m.from, m.payload.score)));
     offs.push(
       c.on('pause', () => {
@@ -2382,8 +2415,15 @@ export class MatchController {
     this.push();
   }
 
+  /** A FORFEIT in the log. This player's own, when it was not their press (Play on without them, a clock): their table game is spent. */
+  private onForfeitMsg(player: PlayerId): void {
+    if (player === this.localId && !this.replaying()) this.spendForfeitedGame();
+    this.push();
+  }
+
   private forfeit(reason: string): void {
     this.myGameOver = true;
+    this.spendForfeitedGame();
     this.clearOwed();
     this.unansweredEnd = null;
     this.holding = null;
@@ -2442,6 +2482,20 @@ export class MatchController {
   private clearStateTimer(): void {
     if (this.stateTimer !== null) this.opts.clearTimeout(this.stateTimer);
     this.stateTimer = null;
+  }
+
+  /**
+   * A17 step 7 (2026-11-25, the review of PR 136): this player's game of the match ended otherwise than by its last
+   * ball (Give up this game; counted out by the lobby's PC or by a clock) while the game on the table, which was the
+   * match's, is still running. That table game is spent, as A16 has it for a finished one: nothing it says is
+   * reported, it is never a game of this player's own (the lobby is not told `ownGame`, so no start waits for a game
+   * on a table that is locked), and it ends with its own end or with a new game on the table. No unlock window (A16's
+   * is for a bonus count and initials): the table of someone who is out of the game follows the lock rule.
+   */
+  private spendForfeitedGame(): void {
+    if (!this.lobbyOn || this.spentTableGame || !this.tableGameRunning) return;
+    this.spentTableGame = true;
+    this.opts.log("match: my game of the match is over and the table's own game is still on: nothing it says is reported, and it is not a game of my own");
   }
 
   /**
@@ -2739,10 +2793,12 @@ export class MatchController {
     const away = new Set((ack.away ?? []).filter((id) => id !== me));
     if (this.hostIsAway && this.hostId !== null) away.add(this.hostId);
     for (const id of away) {
+      if (!this.awayAt.has(id)) this.awayAt.set(id, this.opts.now());
       if (this.left.has(id)) continue;
       this.left.add(id);
       this.closeDeadMedia(id);
     }
+    for (const id of [...this.awayAt.keys()]) if (!away.has(id)) this.awayAt.delete(id);
     for (const id of [...this.left]) {
       if (away.has(id)) continue;
       this.left.delete(id);
@@ -2829,6 +2885,9 @@ export class MatchController {
     this.result = null;
     this.series = null;
     this.resultGame = 0;
+    // A match that begins while another is open (Start a new match) is told by MATCH_END first; a member who joined in
+    // the middle of things may hear only this. Either way nothing flagged in an earlier match is this one's.
+    this.clearMidnightFlags();
     // The game this table asked the start with is the match's first: it is running already (as A10's next game).
     this.tableStarted = this.heldTableStart;
     this.heldTableStart = false;
@@ -2880,8 +2939,20 @@ export class MatchController {
     this.scores.clear();
     this.result = null;
     this.message = null;
+    this.clearMidnightFlags();
     // The match's share (a ball end waiting for its bonus, an initials hold, the lock, "this rig sends").
     this.releaseMatch();
+  }
+
+  /**
+   * A17 step 7 (the review of PR 136): the balls Midnight Madness ran on are a match's (they are keyed by game and
+   * ball, and every match counts its games from 1): they go with the match, and so does the line that says one.
+   */
+  private clearMidnightFlags(): void {
+    this.midnight = [];
+    this.midnightShown = null;
+    if (this.midnightTimer !== null) this.opts.clearTimeout(this.midnightTimer);
+    this.midnightTimer = null;
   }
 
   /**
@@ -2952,6 +3023,9 @@ export class MatchController {
       this.myBallsDone = Math.max(this.myBallsDone, me.ballsPlayed);
       if (this.myScore === null && (me.score > 0 || me.ballsPlayed > 0)) this.myScore = me.score;
       if (me.status !== 'playing') this.myGameOver = true;
+      // Out of the game it came back into (counted out while away, or its last ball reported): what still runs on the
+      // table is that game's rest, never a game of this player's own.
+      if (me.status !== 'playing' && this.inThisGame()) this.spendForfeitedGame();
       if (me.ballsPlayed > 0 || this.tableGameRunning) this.tableStarted = true;
     }
     for (const x of Object.values(st.players)) if (!this.scores.has(x.playerId) && (x.score > 0 || x.ballsPlayed > 0)) this.scores.set(x.playerId, x.score);
@@ -2964,6 +3038,7 @@ export class MatchController {
   private onHostAway(id: PlayerId): void {
     if (id !== this.hostId || this.seriesOver || this.hostIsAway) return;
     this.hostIsAway = true;
+    if (!this.awayAt.has(id)) this.awayAt.set(id, this.opts.now());
     if (!this.left.has(id)) {
       this.left.add(id);
       this.closeDeadMedia(id);
@@ -2990,6 +3065,7 @@ export class MatchController {
     this.hostAwayTimer = null;
     if (this.hostIsAway) this.opts.log("match: the lobby's PC is back");
     this.hostIsAway = false;
+    if (id !== null) this.awayAt.delete(id);
     if (id !== null && this.left.delete(id)) this.mediaBack(id);
     this.push();
   }
@@ -3027,9 +3103,24 @@ export class MatchController {
     const me = this.localId;
     const ownRunning = this.tableGameRunning && !this.spentTableGame;
     if (this.phase === 'playing' || this.phase === 'paused') return this.inThisGame() ? null : !ownRunning;
+    // Before the countdown's rule: this table stays locked through a countdown too, whatever runs on it.
+    if (this.tableKept()) return true;
     const s = a?.start ?? null;
     if (s !== null && s.waitsFor === null && s.players.includes(me)) return !ownRunning;
-    if (this.phase === 'over' && a?.match?.players.includes(me)) return (a.starter ?? null) !== me;
+    return false;
+  }
+
+  /**
+   * The review of PR 136: the lobby's rule keeps this table locked whatever runs on it: between games, a player of
+   * the open match who does not start the next game; during a game, a player of it whose own game is over. A game
+   * on such a table is never said to the lobby as a game of its owner's (they cannot play it out, so no start may
+   * wait for it), and one answer serves the lock and that word, so that the two cannot push each other back and forth.
+   */
+  private tableKept(): boolean {
+    if (this.seriesOver) return false;
+    const me = this.localId;
+    if (this.phase === 'over') return this.ack?.match?.players.includes(me) === true && (this.ack.starter ?? null) !== me;
+    if (this.phase === 'playing' || this.phase === 'paused') return this.inThisGame() && this.myGameDone();
     return false;
   }
 
@@ -3139,7 +3230,10 @@ export class MatchController {
     if (!this.lobbyOn || this.closed) return;
     const r = this.role;
     const playing = (this.phase === 'playing' || this.phase === 'paused') && !this.myGameOver;
-    const own = this.tableGameRunning && !this.spentTableGame && this.tableAsk === 'none' && !playing && !this.seriesOver;
+    // The review of PR 136: nor a game on a table the lobby's own rule keeps locked whatever runs on it (a player of
+    // the open match between games who does not start the next one; a player of this game whose game is over). Its
+    // owner cannot play it out, so a start must not wait for it; the next game takes the table as it finds it.
+    const own = this.tableGameRunning && !this.spentTableGame && this.tableAsk === 'none' && !playing && !this.seriesOver && !this.tableKept();
     if (own === this.ownGameSaid) return;
     try {
       if (isHostRole(r)) (r as LobbyHostRole).updateLocal({ ownGame: own });
@@ -3203,12 +3297,12 @@ export class MatchController {
   }
 
   /** "MekelburgJ 1 win, Krobs 1": the open match's tally, or '' before its first result. */
-  private tallyWords(): string {
+  private tallyWords(plain = false): string {
     const s = this.series;
     if (!s || s.length === 0) return '';
     return [...s]
       .sort((a, b) => a.rank - b.rank || b.wins - a.wins)
-      .map((x, i) => `${this.nameOf(x.playerId)} ${x.wins}${i === 0 ? (x.wins === 1 ? ' win' : ' wins') : ''}`)
+      .map((x, i) => `${this.nameOf(x.playerId)} ${x.wins}${i === 0 && !plain ? (x.wins === 1 ? ' win' : ' wins') : ''}`)
       .join(', ');
   }
 
@@ -3219,6 +3313,10 @@ export class MatchController {
     const me = this.localId;
     const by = s.by === me ? 'You start' : `${this.nameOf(s.by)} starts`;
     const what = s.newMatch ? 'the match' : 'the next game';
+    // The review of PR 136: the countdown has run out and the start is still announced: the lobby's PC holds it while
+    // a player of it is inside the grace of a dropped link (A18). Said, as it was before the lobby, so that nobody
+    // looks at a countdown standing at 0.
+    if (s.waitsFor === null && this.countdownHeld()) return `${by} ${what} in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)`;
     if (s.waitsFor === null) return `${by} ${what}: ${s.players.map((id) => (id === me ? 'you' : this.nameOf(id))).join(', ')}`;
     const on = s.waitsOn;
     const whose = on.map((id) => (id === me ? 'your' : possessive(this.nameOf(id)))).join(', ');
@@ -3228,8 +3326,14 @@ export class MatchController {
         return `${by} ${what} once the last game's result is out`;
       case 'tables':
         return `${by} ${what} once ${whose} table${many ? 's are' : ' is'} open`;
-      case 'other_tables':
+      case 'other_tables': {
+        // Design 11.4: "…once Krobs has Monster Bash open (he has Congo open)": by name where this PC was told both
+        // names (one person, and the lobby said which table differs); never a guess at "he" or "she".
+        const wanted = this.ack?.hostGame?.tableName ?? null;
+        const open = !many && on[0] !== undefined ? (this.ack?.tableMismatches.find((x) => x.playerId === on[0])?.mismatches.find((x) => x.field === 'tableName')?.received ?? null) : null;
+        if (wanted !== null && open !== null && open !== wanted) return `${by} ${what} once ${this.namesOf(on)} ${on[0] === me ? 'have' : 'has'} ${wanted} open (${open} is open there)`;
         return `${by} ${what} once ${this.namesOf(on)} ${many || on[0] === me ? 'have' : 'has'} the lobby's table open (another table is open there)`;
+      }
       case 'own_games':
         return `${by} ${what} once the game on ${whose} table${many ? 's' : ''} has ended`;
       default:
@@ -3291,7 +3395,7 @@ export class MatchController {
       else if (has(a?.otherTable, id)) flags.push('other_table');
       else if (this.loadingIds.includes(id)) flags.push('loading');
       if (has(a?.ownGame, id)) flags.push('own_game');
-      return { id, name: p.displayName, rig: p.rig, stance: id === me ? this.myStance : (stanceOf.get(id) ?? 'play'), opener: id === this.hostId, me: id === me, starter: starter === id, inMatch: match?.players.includes(id) ?? false, flags };
+      return { id, name: p.displayName, rig: p.rig, stance: id === me ? this.myStance : (stanceOf.get(id) ?? 'play'), opener: id === this.hostId, me: id === me, starter: starter === id, inMatch: match?.players.includes(id) ?? false, flags, awaySince: flags.includes('away') ? (this.awayAt.get(id) ?? null) : null };
     });
     const game = this.phase === 'playing' || this.phase === 'paused';
     const between = this.phase === 'over' && match !== null;
@@ -3301,6 +3405,11 @@ export class MatchController {
     const watchers = this.lobby.map((p) => p.playerId).filter((id) => !players.includes(id));
     const outside = between && match ? everyone.filter((id) => !match.players.includes(id)) : [];
     const tally = this.tallyWords();
+    // Design 11.9: the two lines under the start button name everyone, this person too ("MekelburgJ and Krobs play.
+    // ChuckRibbits watches.", "Dana plays too."): they stand beside the roster, which says who "(you)" is.
+    const own = this.nameOf(me);
+    // Design 11.9: "The match that is open ends at MekelburgJ 2, Krobs 1." (the numbers alone).
+    const endsAt = this.tallyWords(true);
     let off: string | null = null;
     if (this.seriesOver) off = 'The lobby is closed.';
     else if (this.hostIsAway) off = "The lobby's PC is away.";
@@ -3308,15 +3417,19 @@ export class MatchController {
     else if (game) off = 'A game is being played.';
     else if (s !== null) off = 'A start is under way.';
     else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
-    const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, 'You')} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, 'You')} ${watchers.length === 1 && watchers[0] !== me ? 'watches' : 'watch'}.` : ''}` : '';
+    const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}` : '';
     return {
       stance: this.myStance,
       starter,
       members,
       match: match ? { id: match.matchId, game: match.game, state: match.state, players: [...match.players] } : null,
+      gameKey: match ? `${match.matchId}/${match.game}/${match.state}` : '',
       start: s ? { by: s.by, players: [...s.players], newMatch: s.newMatch, waitsFor: s.waitsFor, waitsOn: [...s.waitsOn], seconds: s.waitsFor === null ? this.countdownSeconds() : null, line: this.startLine() ?? '' } : null,
       startButton: { label: between ? 'Next game' : 'Start match', line, off },
-      newMatch: outside.length > 0 && everyone.length >= 2 && s === null && !this.seriesOver && !this.hostIsAway ? { line: `${this.namesOf(outside, 'You')} ${outside.length === 1 && outside[0] !== me ? 'plays' : 'play'} too. The match that is open ends${tally ? ` at ${tally}` : ''}.` } : null,
+      newMatch:
+        outside.length > 0 && everyone.length >= 2 && s === null && !this.seriesOver && !this.hostIsAway
+          ? { line: `${this.namesOf(outside, own)} ${outside.length === 1 ? 'plays' : 'play'} too. The match that is open ends${endsAt ? ` at ${endsAt}` : ''}.`, warnings: this.unreadableLines(this.unreadableAmong(everyone)) }
+          : null,
       startWithout: s !== null && s.waitsFor !== null && s.waitsFor !== 'result' ? (s.waitsFor === '3d' ? 'Start without 3D' : `Start without ${this.namesOf(s.waitsOn)}`) : null,
       end: this.seriesOver || this.hostIsAway ? null : between ? 'match' : game && isHostRole(r) ? 'everyone' : null,
       giveUp: game && this.inPlay() && !this.myGameDone(),

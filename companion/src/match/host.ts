@@ -210,6 +210,17 @@ export interface LobbyOptions {
   placeMs?: number;
   /** Step 6: how long a player is waited for, from the pause at their own turn. Default 3 minutes. */
   turnMs?: number;
+  /**
+   * Step 7 (2026-11-25, the review of PR 136): after this PC itself was cut off and is back (`setCutOff(false)`), how
+   * long a member whose link was down at that moment has to find the lobby again before either clock counts against
+   * them. The shell knows how its members ask for the room (the relay's `LOBBY_REJOIN`: the next ask can be two and
+   * a half minutes after this PC's return) and names the longest that can take. Such a member is away, and the game
+   * is paused for them, as soon as the grace is over, so every panel says so; but their place clock and their turn
+   * clock run for this long in addition, counted from the return. So a member who comes back at the latest moment
+   * its own schedule allows has lost nothing of the three minutes, and neither has one whose ask failed once.
+   * Default 0: the clocks run from the end of the grace, as in step 6.
+   */
+  returnAllowMs?: number;
   /** Step 6: the longest a start waits for its players' 3D connections, from the first time it was held for them. Default 45 s. */
   start3dMaxMs?: number;
   /**
@@ -557,6 +568,10 @@ export class HostMatch {
   private readonly countdownMs: number;
   private readonly placeMs: number;
   private readonly turnMs: number;
+  /** Step 7: `LobbyOptions.returnAllowMs`; when this PC was last back from being cut off; the members who were gone then and have not been back since. */
+  private readonly returnAllowMs: number;
+  private returnedAt: number | null = null;
+  private readonly returning = new Set<PlayerId>();
   private readonly start3dMaxMs: number;
   private readonly stillSeen: (player: PlayerId) => boolean;
   /** A17 step 6: this PC is itself cut off from the relay (`setCutOff`): the drops it sees are its own, not the members'. */
@@ -583,6 +598,7 @@ export class HostMatch {
     this.countdownMs = Math.max(0, Math.min(60_000, Math.round(lobby?.countdownMs ?? DEFAULT_START_COUNTDOWN_MS)));
     this.placeMs = Math.max(0, lobby?.placeMs ?? DEFAULT_AWAY_MS);
     this.turnMs = Math.max(0, lobby?.turnMs ?? DEFAULT_AWAY_MS);
+    this.returnAllowMs = Math.max(0, lobby?.returnAllowMs ?? 0);
     this.start3dMaxMs = Math.max(0, lobby?.start3dMaxMs ?? DEFAULT_START_3D_MAX_MS);
     this.stillSeen = lobby?.stillSeen ?? (() => false);
     this.fingerprintPolicy = opts.fingerprintPolicy ?? 'refuse';
@@ -2573,6 +2589,8 @@ export class HostMatch {
     if (!this.lobbyOn || this.detached) return;
     const st = this.s.state;
     if (this.ended || this.cutOff) return this.clearClocks();
+    // Step 7: a member who has been back since this PC's return is as any other from then on.
+    for (const id of [...this.returning]) if (!this.gone.has(id)) this.returning.delete(id);
     const needs = (id: PlayerId): boolean => st.phase === 'running' && st.players[id]?.status === 'playing';
     for (const p of this.lobby) {
       const id = p.playerId;
@@ -2586,7 +2604,7 @@ export class HostMatch {
               if (this.detached || !this.away(id)) return;
               this.events.emit('memberRemoved', id);
               this.dropMember(id, true);
-            }), this.placeMs),
+            }), this.placeMs + this.returnLeft(id)),
           );
         }
       } else if (running !== undefined) {
@@ -2626,7 +2644,17 @@ export class HostMatch {
         return;
       }
       this.playOnWithout(t.player);
-    }), this.turnMs);
+    }), this.turnMs + this.returnLeft(t.player));
+  }
+
+  /**
+   * Step 7: what is left of the time a member has to find the lobby again after this PC's own return
+   * (`returnAllowMs`): added to a clock that is armed for them meanwhile. 0 for anybody who was here at the return,
+   * or has been back since.
+   */
+  private returnLeft(id: PlayerId): number {
+    if (this.returnedAt === null || !this.returning.has(id)) return 0;
+    return Math.max(0, this.returnedAt + this.returnAllowMs - this.s.clock.now());
   }
 
   private clearClocks(): void {
@@ -2694,13 +2722,19 @@ export class HostMatch {
         this.grace.set(id, null);
       }
       this.clearClocks();
+      this.returning.clear();
+      this.returnedAt = null;
       // The two timeouts that count against a player stand still as well: nobody can hear the player now.
       this.clearBallEndTimer();
       if (this.logSignTimer !== null) this.s.clock.clearTimeout(this.logSignTimer);
       this.logSignTimer = null;
       return;
     }
-    // Back. Every member whose link is down and whose leave was told to nobody gets the grace from zero.
+    // Back. Step 7: whoever is gone at this moment has `returnAllowMs` from now to find the lobby again before a
+    // clock counts against them (`returnLeft`).
+    this.returnedAt = this.s.clock.now();
+    for (const id of this.gone) this.returning.add(id);
+    // Every member whose link is down and whose leave was told to nobody gets the grace from zero.
     for (const id of [...this.grace.keys()]) {
       if (!this.gone.has(id)) {
         this.grace.delete(id);

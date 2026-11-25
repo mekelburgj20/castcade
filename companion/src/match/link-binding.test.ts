@@ -32,6 +32,7 @@ import {
   rawSocket,
   signedReconnect,
   reconnectAs,
+  reconnectSignedAsProtocol6,
   relayRig,
   sleep,
   TRANSPORTS,
@@ -50,6 +51,29 @@ const REFUSED: { name: string; firsts: (rig: Rig) => AnyMessage[]; answer: (m: A
   {
     name: 'a RECONNECT refused as `bad_signature`, under two numbers',
     firsts: (rig) => [reconnectAs(rig, generateKeys(), 1), reconnectAs(rig, generateKeys(), HIGH)],
+    answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
+    raised: 'h:reconnectRejected:bad_signature',
+    line: 'an opening frame was refused (RECONNECT for a: bad_signature)',
+  },
+  // A17 step 7 (the review of PR 136): the plain path's one signed body, with the player's OWN key: what the
+  // signature covers is checked, not only whose it is. (The lobby's path has the same cases in its own file.)
+  {
+    name: "a RECONNECT signed with the player's own key, whose signature names another PC as the one it is for",
+    firsts: (rig) => [reconnectAs(rig, rig.ak, HIGH, { host: 'another-pc' })],
+    answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
+    raised: 'h:reconnectRejected:bad_signature',
+    line: 'an opening frame was refused (RECONNECT for a: bad_signature)',
+  },
+  {
+    name: "a RECONNECT signed with the player's own key, in an envelope with another number than the one that was signed",
+    firsts: (rig) => [{ ...reconnectAs(rig, rig.ak, HIGH), seq: HIGH + 5 } as AnyMessage],
+    answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
+    raised: 'h:reconnectRejected:bad_signature',
+    line: 'an opening frame was refused (RECONNECT for a: bad_signature)',
+  },
+  {
+    name: "a RECONNECT signed with the player's own key over the body of protocol 6, in a protocol 7 envelope",
+    firsts: (rig) => [reconnectSignedAsProtocol6(rig, rig.ak, HIGH)],
     answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
     raised: 'h:reconnectRejected:bad_signature',
     line: 'an opening frame was refused (RECONNECT for a: bad_signature)',

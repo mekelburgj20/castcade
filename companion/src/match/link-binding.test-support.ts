@@ -239,6 +239,15 @@ export function signedReconnect(match: string, host: string, player: string, hea
   const signature = signCanonical(reconnectSignBody(match, host, player, match, head.hash, head.length, seq), key.privateKey);
   return buildMessage('RECONNECT', { player, logHash: head.hash, logLength: head.length, signature, ...(resends ? { resends: true } : {}) }, { matchId: match, seq, from: player });
 }
+/**
+ * A17 step 7 (the review of PR 136): a RECONNECT in a protocol 7 envelope whose signature is over the body of
+ * protocol 2 to 6 (the match, the player and the log's head; neither the PC it is for nor the envelope's number).
+ */
+export function reconnectSignedAsProtocol6(rig: Pick<Rig, 'a'>, key: KeyPair, seq: number): Message<'RECONNECT'> {
+  const head = rig.a.log.head();
+  const signature = signCanonical({ matchId: CODE, player: 'a', logHash: head.hash, logLength: head.length }, key.privateKey);
+  return buildMessage('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature, resends: true }, { matchId: CODE, seq, from: 'a' });
+}
 export function helloAs(id: string, seq: number): AnyMessage {
   return buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: 'test', throwdownCode: CODE, participant: participant(id, generateKeys()), game }, { matchId: null, seq, from: id });
 }

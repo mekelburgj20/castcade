@@ -363,6 +363,93 @@ describe('A17 step 6: the lobby`s PC itself is cut off (design 11.8a)', () => {
     expect(r.host.state.currentGrant?.grant.player).toBe('b');
   });
 
+  it('step 7 (the review of PR 136): with a time to return named (`returnAllowMs`), a member who was away at the lobby PC`s return is away and paused for after the grace as ever, but neither clock counts against them until that time has passed: back at the latest moment their schedule allows, even after one failed ask, they have lost nothing', async () => {
+    const ALLOW = 200_000;
+    const r = await starLobby(['a', 'b'], { stances: { b: 'watch' }, lobby: { returnAllowMs: ALLOW } });
+    const left: string[] = [];
+    const removed: string[] = [];
+    const asked: string[] = [];
+    r.host.on('peerLeft', (p) => left.push(p));
+    r.host.on('memberRemoved', (p) => removed.push(p));
+    r.host.on('awayQuestion', (q) => asked.push(q.player));
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    expect(r.host.state.currentGrant?.grant.player).toBe('a');
+    // The lobby's PC is cut off for a minute; A (who is up) and B (who watches) lose their links with it.
+    r.host.setCutOff(true);
+    await r.cut('a');
+    await r.cut('b');
+    await r.tick(MIN);
+    r.host.setCutOff(false);
+    // The grace from zero, then both are away, and the game is paused for A at A's own turn: every panel says so.
+    await r.tick(5000);
+    expect(left.sort()).toEqual(['a', 'b']);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    expect(r.host.waitedFor()).toMatchObject({ player: 'a', asked: false });
+    // 150 s after the return (the longest gap between two asks), plus an ask that failed and the engine's own 30 s
+    // before the next: 189 s. Step 6's clock, from the end of the grace, would have 4 s of its 180 left here.
+    await r.tick(189_000 - 5000);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+    expect(removed).toEqual([]);
+    expect(asked).toEqual([]);
+    // Past the three minutes of both clocks, counted from the end of the grace: nothing was done to either.
+    await r.tick(ALLOW - 189_000);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    // A is back at that moment: the game goes on with A, who is still up (the pause was for A: A's own RESUME ends it).
+    await r.relink('a');
+    client(r, 'a').resume();
+    await flush();
+    expect(r.host.state.paused).toBeNull();
+    expect(r.host.state.currentGrant?.grant.player).toBe('a');
+    expect(r.host.waitedFor()).toBeNull();
+    // A drops again, by itself this time: from here the turn clock is the three minutes it always was, in full.
+    await r.cut('a');
+    await r.tick(5000);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    await r.tick(3 * MIN - 1);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+    await r.tick(1);
+    expect(r.host.state.players['a']?.status).toBe('forfeit');
+    // B never came back: the place went three minutes after the time to return had passed, not before.
+    expect(removed).toEqual(['b']);
+  });
+
+  it('step 7 (the review of PR 136): a member who does not return at all is counted out when the time to return and then the clock have both passed, to the millisecond; the owner can play on without them at any time before', async () => {
+    const ALLOW = 200_000;
+    const r = await starLobby(['a', 'b'], { lobby: { returnAllowMs: ALLOW } });
+    r.host.startMatch(['a', 'h', 'b']);
+    await flush();
+    r.host.setCutOff(true);
+    await r.cut('a');
+    await r.cut('b');
+    await r.tick(MIN);
+    r.host.setCutOff(false);
+    // (B's return takes a second of the clock in this rig.)
+    await r.relink('b');
+    await r.tick(4000);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    // The return was 5 s ago: what is left of the time to return, then three minutes.
+    await r.tick(ALLOW - 5000 + 3 * MIN - 1);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+    await r.tick(1);
+    expect(r.host.state.players['a']?.status).toBe('forfeit');
+    expect(r.host.state.currentGrant?.grant.player).toBe('h');
+
+    // The owner need not wait for any of it: Play on without them is there as soon as the game waits.
+    const q = await starLobby(['a', 'b'], { lobby: { returnAllowMs: ALLOW } });
+    q.host.startMatch(['a', 'h', 'b']);
+    await flush();
+    q.host.setCutOff(true);
+    await q.cut('a');
+    await q.cut('b');
+    q.host.setCutOff(false);
+    await q.relink('b');
+    await q.tick(5000);
+    expect(q.host.playOnWithout('a')).toBe(true);
+    expect(q.host.state.players['a']?.status).toBe('forfeit');
+  });
+
   it('a member waits 20 minutes for the lobby`s PC, not thirty attempts; then the lobby is gone for it', async () => {
     const r = await starLobby(['a', 'b'], { stances: { b: 'watch' } });
     r.host.startMatch(['h', 'a']);

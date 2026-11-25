@@ -123,6 +123,13 @@ export interface RelayOptions {
   pace?: Partial<PacerOptions>;
   /** Test seam: how a client asks again for a room that is not there (`DEFAULT_REJOIN`). */
   rejoin?: Partial<RejoinPolicy>;
+  /**
+   * A17 step 7 (the review of PR 136): the times ArcAid answered this DEVICE `no_such_match`, whichever transport
+   * asked (a mistyped code is a miss of the device as much as an ask for a room that is gone). A client transport
+   * that is given the list writes its own misses into it, a first join's too, and holds its asks back by all of
+   * them (`RejoinPolicy.maxMisses`), not only by its own. The shell keeps one list for all the transports it makes.
+   */
+  missLog?: number[];
   /** Test seam: how long a host that had to open its room again waits for its players before it locks it again. Default 60 s. */
   relockWaitMs?: number;
   /** Test seam: how long a relay peer's opening frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
@@ -147,13 +154,26 @@ export const DEFAULT_REJOIN: RejoinPolicy = { gapsMs: [1_500, 3_000, 5_000, 8_00
 /**
  * A17 step 7 (2026-11-25, alpha-match.md section 11.8a; it replaces the shell's `HOST_WAIT_REJOIN` of A15, five asks
  * in 88 s and then none): how a member of a lobby asks for a room that is gone, while it waits for the lobby's PC
- * (twenty minutes, `LOBBY_HOST_WAIT_MS` in client.ts): at once, 2 s after the first miss, 6 s after the second, and
- * then every 150 s for as long as the engine goes on trying. That is six asks in the first ten minutes and four in
- * every ten after, under the server's lockout (eight misses in ten minutes); `maxMisses` is the cap that keeps it
- * under whatever happens to the clock. So a lobby's PC that comes back is found within two and a half minutes at
- * the worst, before its turn clock (three minutes from its return) can forfeit anyone.
+ * (twenty minutes, `LOBBY_HOST_WAIT_MS` in client.ts): at once, 5 s after the first miss, 25 s after the second
+ * (half a minute in: a lobby's PC whose connection blinked, or an ArcAid that restarted, is back by then more often
+ * than not), and then every 150 s for as long as the engine goes on trying. That is six asks in the first ten
+ * minutes and four in every ten after, two under the server's lockout (eight misses in ten minutes); `maxMisses`
+ * is the cap that keeps it under whatever else this device was answered (`RelayOptions.missLog`). A lobby's PC
+ * that comes back is found within two and a half minutes at the worst; that this costs a member nothing of the
+ * three minutes of a clock is the lobby PC's doing (`LOBBY_RETURN_ALLOW_MS`).
  */
-export const LOBBY_REJOIN: RejoinPolicy = { gapsMs: [2_000, 6_000, 150_000], maxMisses: 7, windowMs: 10 * 60_000 };
+export const LOBBY_REJOIN: RejoinPolicy = { gapsMs: [5_000, 25_000, 150_000], maxMisses: 7, windowMs: 10 * 60_000 };
+
+/**
+ * A17 step 7 (the review of PR 136): the longest a member who follows `LOBBY_REJOIN` can take to be back after the
+ * lobby's PC has registered its room again, one failed ask included: the longest gap between two asks (150 s: the
+ * ask before may have missed a moment before the return), then an ask that fails for another reason (the socket,
+ * 5 s; the acknowledgement, 4 s), then the engine's own longest gap before it tries again (30 s,
+ * `LOBBY_RECONNECT_GAP_MAX_MS` in client.ts), then an ask that is answered. The lobby's PC is given this number
+ * (`LobbyOptions.returnAllowMs`): until it has passed since its return, neither clock counts against a member who
+ * was away at that moment. `transport-relay.test.ts` holds the two numbers together.
+ */
+export const LOBBY_RETURN_ALLOW_MS = 200_000;
 
 /**
  * How long the next ask for a room waits after a miss, when `misses` of them (this one included) fall inside the
@@ -1003,6 +1023,8 @@ export class RelayClientTransport extends RelayBase implements Transport {
   private readonly rejoin: RejoinPolicy;
   /** When this transport was answered `no_such_match` (inside the policy's window). */
   private misses: number[] = [];
+  /** `RelayOptions.missLog`: every miss of this device the shell knows of; null: this transport counts its own alone. */
+  private readonly missLog: number[] | null;
   /** No `match:join` before this (the gap after a miss). */
   private nextJoinAt = 0;
   /** Why the room is not asked for again: a final `match:closed` reason, `unauthorized` (the pairing was revoked), or a resume answered `locked`. */
@@ -1012,6 +1034,7 @@ export class RelayClientTransport extends RelayBase implements Transport {
   constructor(opts: RelayOptions) {
     super(opts);
     this.rejoin = { ...DEFAULT_REJOIN, ...opts.rejoin };
+    this.missLog = opts.missLog ?? null;
     this.pacer = new RelayPacer((p) => {
       if (this.socket?.connected && this.joined) this.socket.emit('match:relay', p);
     }, opts.pace);
@@ -1035,6 +1058,11 @@ export class RelayClientTransport extends RelayBase implements Transport {
     try {
       ack = await this.request(socket, 'match:join', code);
     } catch (e) {
+      // Every miss of the device is written down where the shell keeps them, a first join's (a mistyped code) too.
+      if (e instanceof RelayError && e.code === 'no_such_match' && this.missLog) {
+        this.missLog.push(Date.now());
+        if (this.missLog.length > 64) this.missLog.splice(0, this.missLog.length - 64);
+      }
       if (again && e instanceof RelayError && e.code === 'no_such_match') {
         const now = Date.now();
         this.misses.push(now);
@@ -1063,8 +1091,10 @@ export class RelayClientTransport extends RelayBase implements Transport {
     if (this.ended !== null) throw new RelayError('closed', `the match ${code} was closed (${this.ended})`);
     const now = Date.now();
     this.misses = this.misses.filter((t) => now - t < this.rejoin.windowMs);
-    if (this.misses.length >= this.rejoin.maxMisses) {
-      throw new RelayError('no_such_match', `no match with the code ${code} (ArcAid said so ${this.misses.length} times; not asking again)`);
+    // The device's misses, not this transport's alone, where the shell keeps them: ArcAid counts the device.
+    const counted = this.missLog ? this.missLog.filter((t) => now - t < this.rejoin.windowMs).length : this.misses.length;
+    if (counted >= this.rejoin.maxMisses) {
+      throw new RelayError('no_such_match', `no match with the code ${code} (ArcAid said so ${counted} times; not asking again)`);
     }
     const wait = this.nextJoinAt - now;
     if (wait > 0) {
