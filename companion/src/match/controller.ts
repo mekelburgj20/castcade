@@ -133,7 +133,7 @@ import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode }
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
 import { midnightLine, midnightSettingLine, possessive } from '../witness/midnight.js';
 import type { ClientMatch } from './client.js';
-import type { HostMatch, StartAsk } from './host.js';
+import { NO_TABLE_START, type HostMatch, type StartAsk } from './host.js';
 import type { MatchState } from './state.js';
 import { START_WAIT_MS } from './stream3d.js';
 
@@ -3647,7 +3647,7 @@ export class MatchController {
     else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
     // The step 9 last pass: with no table yet a start would wait for tables nobody is opening, and hold the pick
     // back while it waits ("A match is starting: cancel the start to change the table").
-    else if (!between && this.lobbyTableName() === null) off = "Pick the lobby's table first.";
+    else if (!between && this.lobbyTableName() === null) off = NO_TABLE_START;
     const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}${awayNow.length > 0 ? ` ${this.namesOf(awayNow, own)} ${awayNow.length === 1 ? 'is' : 'are'} away.` : ''}` : '';
     // The final review (finding 9): Start match read "Owner, Krobs, Chuck and Dana play." with no word that it would
     // wait for three tables. While PCs of the people who would play are on their way to the lobby's table, it says so.

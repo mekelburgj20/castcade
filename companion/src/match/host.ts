@@ -530,6 +530,11 @@ export const PICK_GAP_MS = 10_000;
 export const PICK_MEMBER_GAP_MS = 30_000;
 const UNHASHED = /^0{64}$/;
 
+/**
+ * Why a start is refused while the lobby has no table yet: the one sentence of the Match tab, the in-game menu
+ * (controller.ts `startButton.off`) and the lobby's PC itself (`requestStart`).
+ */
+export const NO_TABLE_START = "Pick the lobby's table first.";
 const LOBBY_TYPES: ReadonlySet<MessageType> = new Set(['PARTICIPANT_UPDATE', 'MEDIA_SIGNAL', 'START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LEAVE_LOBBY']);
 /** The longest sentence REJECT, REFUSE and HELLO_ACK `startOff` take (the schemas' limit); a sentence with names in it is cut to this where it is built. */
 const SENTENCE_MAX = 500;
@@ -2612,6 +2617,10 @@ export class HostMatch {
     const few = this.tooFew(players, newMatch);
     if (few !== null) return few;
     if (players.length > 4) return `A match has at most four players: ${players.length} are set to Play.`;
+    // The Arcaid-look pass (2026-11-25): a lobby with no table yet starts nothing, here as on the Match tab and in
+    // the menu (controller.ts `startButton.off`, the same sentence). A start would wait for tables nobody is opening
+    // and hold every pick back while it waits.
+    if (this.noTableYet()) return NO_TABLE_START;
     this.pending = {
       by,
       byName: this.nameOf(by),
@@ -2781,6 +2790,14 @@ export class HostMatch {
   }
 
   /** The sentence for a start that fewer than two would play, or null. */
+  /**
+   * The lobby has no table yet: nobody picked one, and its PC has opened none since it was opened with "No table: I
+   * open it myself" (the controller's `lobbyTableName` is null by the same two facts: `tablePickedBy`, the name).
+   */
+  private noTableYet(): boolean {
+    return this.pickedBy === null || this.hostGame.tableName.trim() === '';
+  }
+
   private tooFew(players: readonly PlayerId[], newMatch: boolean): string | null {
     if (players.length >= 2) return null;
     const who = players.length === 1 ? `Only ${this.nameOf(players[0] as PlayerId)}` : 'Nobody';

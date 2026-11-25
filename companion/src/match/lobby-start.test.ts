@@ -6,9 +6,10 @@
  * member and for everyone; the table as a pick. Names are the ids in capitals (`lobby.test-support.ts`).
  */
 import { describe, expect, it } from 'vitest';
-import type { PayloadOf } from '@castcade/protocol';
+import type { GameFingerprint, PayloadOf } from '@castcade/protocol';
 import type { ClientMatch } from './client.js';
 import { countDown, flush, NO_TABLE, OTHER_GAME, playGame, SAME_GAME, starLobby, TABLE, type StarRig } from './lobby.test-support.js';
+import { NO_TABLE_START } from './host.js';
 import { pickOf } from './table-identity.js';
 
 const start = (r: StarRig, id = 'a'): PayloadOf<'HELLO_ACK'>['start'] => r.lobby(id).start;
@@ -793,5 +794,29 @@ describe('A17 step 6, the review of 2026-11-25: starts', () => {
     await r.tick(1);
     expect(start(r, 'b')).toBeNull();
     expect(r.lobby('b').startOff).toBe('C is away: the start is off.');
+  });
+});
+
+describe('The Arcaid-look pass (2026-11-25): a lobby with no table yet', () => {
+  /** The shell counts a named table as open (`isTableOpen`); the lobby's PC here has none open. */
+  const named = (g: GameFingerprint): boolean => g.tableHash !== NO_TABLE.tableHash || g.tableName !== NO_TABLE.tableName;
+
+  it("starts nothing: the lobby's PC refuses a start from anyone with the Match tab's sentence, until a table is picked", async () => {
+    const r = await starLobby(['a', 'b'], { tables: { h: NO_TABLE }, lobby: { pickGapMs: 0, pickMemberGapMs: 0 }, tableOpen: named });
+    expect(r.host.table().pickedBy).toBeNull();
+    // The lobby's PC itself (the menu's Start on that PC comes here) and a member's request: the same sentence, nothing announced.
+    expect(r.host.requestStart()).toBe(NO_TABLE_START);
+    client(r, 'a').requestStart();
+    await flush();
+    expect(r.said['a']).toEqual([NO_TABLE_START]);
+    expect(r.host.announcedStart()).toBeNull();
+    expect(start(r, 'b')).toBeNull();
+    // A member picks the table: the same press is a start (it waits for the lobby PC's table, which is not open).
+    client(r, 'a').pickTable(TABLE);
+    await flush();
+    expect(r.host.table().pickedBy).toBe('a');
+    expect(r.host.requestStart()).toBeNull();
+    await flush();
+    expect(start(r, 'b')).toMatchObject({ by: 'h', newMatch: true });
   });
 });
