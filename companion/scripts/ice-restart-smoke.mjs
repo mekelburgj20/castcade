@@ -4,8 +4,9 @@
 // them, host candidates only (no STUN server, nothing leaves the machine):
 //
 //   1. a restart led by the POLITE side (`PeerNegotiator.restartIce()` on the side that did not make the first
-//      offer): its offer is answered, the ICE credentials of BOTH local descriptions are new, ICE is connected again,
-//      and the pair in use belongs to the new credentials;
+//      offer): its offer is answered, the ICE credentials of BOTH local descriptions are new, ICE is connected, and
+//      on both sides a candidate pair of the new credentials has succeeded (which pair is then in use is printed, not
+//      required: on one machine the pair of the generation before still works, and Chromium may keep it);
 //   2. the same while the impolite side waits for the answer to an offer of its own (one that is no restart, lost on
 //      the way): the polite side's restart offer is ignored, the impolite side's offer is delivered and answered (the
 //      polite side rolls its own back), and the polite side's restart goes out AGAIN BY ITSELF: nothing here calls
@@ -61,18 +62,29 @@ const ufrag = (d) => { const m = /a=ice-ufrag:(\S+)/.exec((d && d.sdp) || ''); r
 const up = (pc) => pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed';
 
 /**
- * The ICE username fragment of the local candidate of the pair in use: null while no pair is selected, undefined where
- * the stats of this Chromium do not carry it.
+ * What the stats say of the ICE generation the local description names (its ufrag): the candidate pairs whose local
+ * candidate is of it, how many of those have succeeded, and whether the pair in use is one of them. read: false where
+ * the stats of this Chromium do not carry a candidate's usernameFragment. Counts and words only.
  */
-async function selectedUfrag(pc) {
+async function generation(pc) {
+  const now = ufrag(pc.localDescription);
   const rep = await pc.getStats();
   let selected = null;
+  const out = { read: true, pairs: 0, fresh: 0, succeeded: 0, inUse: 'none' };
   for (const s of rep.values()) if (s.type === 'transport' && s.selectedCandidatePairId) selected = s.selectedCandidatePairId;
-  const pair = selected ? rep.get(selected) : null;
-  const local = pair ? rep.get(pair.localCandidateId) : null;
-  if (!local) return null;
-  return typeof local.usernameFragment === 'string' ? local.usernameFragment : undefined;
+  for (const s of rep.values()) {
+    if (s.type !== 'candidate-pair') continue;
+    out.pairs++;
+    const local = rep.get(s.localCandidateId);
+    if (!local || typeof local.usernameFragment !== 'string') { out.read = false; continue; }
+    const fresh = local.usernameFragment === now;
+    if (fresh) out.fresh++;
+    if (fresh && s.state === 'succeeded') out.succeeded++;
+    if (s.id === selected) out.inUse = fresh ? 'new' : 'old';
+  }
+  return out;
 }
+const words = (g) => g.pairs + ' pairs, ' + g.fresh + ' of the new credentials, ' + g.succeeded + ' of those succeeded, in use: ' + g.inUse + (g.read ? '' : ' (no usernameFragment in the stats)');
 
 /** Two connections, 'a' (polite) and 'b' (impolite: it makes the first offer), each behind the pages' own mesh. */
 function pair() {
@@ -108,24 +120,28 @@ async function connect(p) {
   if (p.pcs.b.localDescription.type !== 'offer' || p.pcs.a.localDescription.type !== 'answer') throw new Error('the impolite side did not make the first offer');
 }
 
-/** Both sides' credentials are new, signalling is stable, ICE is up, and the pair in use is of the new credentials. */
+/**
+ * Both sides' credentials are new, signalling is stable, ICE is up, and on both sides a candidate pair of the new
+ * credentials has succeeded: the new generation connected. (Which pair is in use is said, not required: the pair of
+ * the generation before still works here, on one machine, and Chromium may keep it; between two routers where the
+ * round before failed there is no such pair to keep.)
+ */
 async function restarted(p, before, what) {
   await until(what + ': both local ufrags new, stable, ICE connected', () =>
     p.pcs.a.signalingState === 'stable' && p.pcs.b.signalingState === 'stable' &&
     ufrag(p.pcs.a.localDescription) !== before.a && ufrag(p.pcs.b.localDescription) !== before.b && up(p.pcs.a) && up(p.pcs.b));
   if (ufrag(p.pcs.a.remoteDescription) !== ufrag(p.pcs.b.localDescription) || ufrag(p.pcs.b.remoteDescription) !== ufrag(p.pcs.a.localDescription)) throw new Error(what + ': the two sides do not hold each other\'s new credentials');
   if (p.pcs.a.localDescription.type !== 'offer' || p.pcs.b.localDescription.type !== 'answer') throw new Error(what + ': the restart in force is not the polite side\'s offer');
-  let unread = false;
-  await until(what + ': the pair in use is of the new credentials', async () => {
-    const a = await selectedUfrag(p.pcs.a);
-    const b = await selectedUfrag(p.pcs.b);
-    if (a === undefined || b === undefined) {
-      unread = true;
-      return true;
-    }
-    return a === ufrag(p.pcs.a.localDescription) && b === ufrag(p.pcs.b.localDescription);
-  });
-  return unread ? 'not read: no usernameFragment in the stats' : 'yes';
+  let a = await generation(p.pcs.a);
+  let b = await generation(p.pcs.b);
+  const end = Date.now() + 15000;
+  while (a.read && b.read && (a.succeeded === 0 || b.succeeded === 0)) {
+    if (Date.now() > end) throw new Error(what + ': no pair of the new credentials succeeded in 15 s; polite side: ' + words(a) + '; impolite side: ' + words(b));
+    await sleep(50);
+    a = await generation(p.pcs.a);
+    b = await generation(p.pcs.b);
+  }
+  return 'polite side: ' + words(a) + '; impolite side: ' + words(b);
 }
 
 async function main() {
@@ -139,7 +155,7 @@ async function main() {
   const pair1 = await restarted(one, before, '1');
   if (one.offers('a') !== offersA + 1) throw new Error('1: the polite side made ' + (one.offers('a') - offersA) + ' offers for one restart');
   if (one.errors.length) throw new Error('1: ' + one.errors.join('; '));
-  say('1: the polite side\'s restart took (new pair in use: ' + pair1 + ')');
+  say('1: the polite side\'s restart took (' + pair1 + ')');
   one.close();
 
   // 2. The same while the impolite side waits for the answer to an offer of its own, which is no restart.
@@ -161,9 +177,9 @@ async function main() {
   const pair2 = await restarted(two, before, '2');
   if (two.offers('a') !== sentA + 2) throw new Error('2: the polite side made ' + (two.offers('a') - sentA) + ' restart offers, not 2 (the one that was rolled back, and the one Chromium asked for again)');
   if (two.errors.length) throw new Error('2: ' + two.errors.join('; '));
-  say('2: after the rollback the restart went out again by itself and took (new pair in use: ' + pair2 + ')');
+  say('2: after the rollback the restart went out again by itself and took (' + pair2 + ')');
   two.close();
-  finish(true, '(a polite-led restart: both ufrags new, ICE connected; after a rollback it is offered again without being asked)');
+  finish(true, '(a polite-led restart: both ufrags new and a pair of them connected; after a rollback it is offered again without being asked)');
 }
 main().catch((e) => finish(false, '(' + (e && e.message ? e.message : e) + ')'));
 `;
