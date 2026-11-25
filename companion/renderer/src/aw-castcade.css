@@ -317,11 +317,11 @@ body {
   font-size: var(--cc-fs-text);
   color: var(--aw-chrome);
 }
+/* Two in a row are the same height (Arcaid's PanelGroup). */
 .cc-group__panels {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--cc-gap);
-  align-items: start;
 }
 @media (min-width: 900px) {
   .cc-group__panels {
@@ -364,16 +364,8 @@ body {
 :where(.cc-panel) p {
   margin: 0;
 }
-.cc-stack > * + *,
-.cc-panel > * + *,
-.cc-panel > fieldset > * + * {
-  margin-top: 12px;
-}
-.cc-panel > .aw-label + * {
-  margin-top: 0;
-}
 /* A fieldset only disables what is in it (Stream, while a capture runs): no box of its own. */
-.cc-panel fieldset {
+:where(.cc-panel) fieldset {
   border: 0;
   margin: 0;
   padding: 0;
@@ -582,7 +574,7 @@ a:focus-visible,
 }
 /* In the window's own width the field takes the row and its button goes under it, so a path or a placeholder is not cut. */
 .cc-field__line > .cc-input {
-  flex: 1 1 16rem;
+  flex: 1 1 18rem;
   min-width: 0;
 }
 .cc-fields {
@@ -609,7 +601,7 @@ a:focus-visible,
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .cc-input::placeholder {
-  color: color-mix(in srgb, var(--aw-chrome) 80%, transparent);
+  color: color-mix(in srgb, var(--aw-chrome) 62%, transparent);
   opacity: 1;
 }
 .cc-input:hover:not(:disabled) {
@@ -746,7 +738,6 @@ input[type="range"].cc-range {
    One inset row (a rule down its left side): the limit of nesting inside a panel. */
 .cc-note {
   --cc-note: var(--aw-chrome);
-  margin: 0;
   padding: 7px 10px 7px 12px;
   border-left: 2px solid var(--cc-note);
   border-radius: 0 4px 4px 0;
@@ -1181,6 +1172,21 @@ input[type="range"].cc-range {
   .cc-toast__run {
     animation-duration: var(--cc-toast-ms, 4000ms) !important;
   }
+}
+
+/* ---------- The space between a panel's blocks ----------
+   Last in the file, so a part's own reset (a note's, a field's) never takes it away.
+   A note is a <p>: its own margins are the panel's, below. */
+:where(.cc-note) {
+  margin: 0;
+}
+.cc-stack > * + *,
+.cc-panel > * + *,
+.cc-panel > fieldset > * + * {
+  margin-top: 12px;
+}
+.cc-panel > .aw-label + * {
+  margin-top: 0;
 }
 
 /* Read by a screen reader, not drawn. */

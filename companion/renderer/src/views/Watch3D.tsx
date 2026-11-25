@@ -86,13 +86,14 @@ export function WatchCard({ bridge, st }: { bridge: CastcadeBridge; st: WatchSta
           <div className="cc-row">
             <Button onClick={() => void run(() => bridge.watch.host())}>Host a session</Button>
           </div>
-          <Field label="Or join one: the code from the host" htmlFor="watch-join-code" line>
+          <Field label="Or join one: the code from the host" htmlFor="watch-join-code">
             <input id="watch-join-code" type="text" className="cc-input" maxLength={16} value={code} placeholder="The six letters, like JHDFEF" onChange={(e) => setCode(e.target.value.toUpperCase())} />
-            <Button variant="secondary" size="sm" onClick={paste}>
+          </Field>
+          {/* As on Pairing: Paste, then the press it leads to. */}
+          <div className="cc-row">
+            <Button variant="secondary" onClick={paste}>
               Paste
             </Button>
-          </Field>
-          <div className="cc-row">
             <Button disabled={!code.trim()} onClick={() => void run(() => bridge.watch.join(code))}>
               Join
             </Button>

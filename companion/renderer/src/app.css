@@ -181,7 +181,7 @@
   margin-top: 0.3rem;
 }
 /* Fields: the layer's field (.cc-input), restated for the bare elements of the Match tab. */
-:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], select) {
+:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], input[type='search'], select) {
   min-height: 34px;
   background-color: var(--cc-field);
   color: var(--aw-ice);
@@ -195,7 +195,7 @@
 :where(input[type='text'], input[type='url']) {
   width: 100%;
 }
-:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], select):focus {
+:where(input[type='text'], input[type='url'], input[type='password'], input[type='number'], input[type='search'], select):focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--aw-cyan) 30%, transparent);
@@ -215,8 +215,9 @@ input.code {
   text-transform: uppercase;
   text-align: center;
 }
-/* A bare button is the primary one, a .quiet one the secondary (the layer's .cc-btn--primary / --secondary). */
-:where(button) {
+/* A bare button is the primary one, a .quiet one the secondary (the layer's .cc-btn--primary / --secondary). Only a
+   button that is not one of the parts' (.cc-btn, .cc-tab, .cc-link, the toast's): theirs is the layer's. */
+:where(button:not([class*="cc-"])) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -233,15 +234,15 @@ input.code {
   cursor: pointer;
   transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
-:where(button):hover:not(:disabled) {
+:where(button:not([class*="cc-"])):hover:not(:disabled) {
   background: color-mix(in srgb, var(--cc-lead) 24%, transparent);
   border-color: var(--cc-lead);
 }
-:where(button):focus-visible {
+:where(button:not([class*="cc-"])):focus-visible {
   outline: 2px solid var(--aw-cyan);
   outline-offset: 2px;
 }
-:where(button):disabled {
+:where(button:not([class*="cc-"])):disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
