@@ -95,6 +95,7 @@ ArcAid's desktop-Witness evidence (research findings, the staged T7 probe, clone
 | Tournaments have an **integrity mode**: *Open play* (default, any table of the game) or *Sanctioned play* (named table + fairness rules). Evidence is measured on the companion and sent with every score; rules gate only the auto-ingest into an opted-in tournament; room boards stay badge-never-gate. Mode names provisional. | 2026-10-18 | 0005 |
 | **Spectating is 2D.** The player who is up is shown to everyone else as flat video (one eye, or the desktop window) on a screen in the headset, the desktop panel, or a cabinet's playfield display; never a stereo or head-tracked view. The stereo window of 0.2.27–0.2.35 stays in the code untouched; no further work on it. The VPinMAME shared machine is separate research (I10). | 2026-11-04 | 0009 |
 | **State streaming is reopened** (it was shelved by 0009 §7): a watcher's own VPX may render the player's table from the watcher's own viewpoint and head, in our VPX fork, built on **Panasony's 10.8.0 branch**. Additive: the 2D video path is untouched and stays the default; both players need the fork and the identical table file. The DMD through VPinMAME is the owner's stated next iteration. | 2026-11-15 | 0011 |
+| **VPinMAME's `cheat` option matters in no kind of tournament**, Sanctioned play included. It is the "Skip Pinball Startup Test" checkbox (a boot shortcut). Measured and sent as `build.cheat`, never shown to the player as "cheat", never a reason to refuse or flag a score. | 2026-11-24 | 0008 (amended) |
 
 ## Repo layout
 
