@@ -112,10 +112,10 @@ import { START_WAIT_MS } from './stream3d.js';
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<
   HostMatch,
-  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'nextGamePending' | 'endMatch' | 'startIn' | 'loading' | 'stream3dWaiting' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
+  'localId' | 'state' | 'log' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'nextGamePending' | 'endMatch' | 'startIn' | 'loading' | 'stream3dWaiting' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
 >;
 /** What a client-side role must offer (structurally a ClientMatch). */
-export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory' | 'reportMidnightMode'>;
+export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'log' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory' | 'reportMidnightMode'>;
 export type MatchRole = HostRole | ClientRole;
 
 /** A HostMatch plays through `local*`; a ClientMatch through `report*` (host.ts / client.ts). */
@@ -173,8 +173,17 @@ export interface ControllerStatus {
   /**
    * A17 step 4 (2026-11-24): for the player who is up, while their ball can be ended by hand (End my ball): the ball
    * and the score it would end at (the last one this table reported, else what the log has for this player). Else null.
+   * `grantSeq` (the review of PR 131): the grant the question is about; a confirmation is good for that grant only.
+   * `tableBall`: the ball on this table would still be in play (a table Castcade reads the ball ends of, its game
+   * running, not this game's last ball): the table then owes that ball's end, see `owedTableEnds`.
    */
-  endBall: { ball: number; score: number } | null;
+  endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
+  /**
+   * A17 step 4 (the review of PR 131): the table ball ends this player's table still owes the match, as the grant of
+   * each ball that was ended by hand (End my ball, or the host's Pass the turn) while the table's ball was in play.
+   * The shell saves it with the match (`match-resume.json`), so a restart of Castcade does not forget it.
+   */
+  owedTableEnds: number[];
   /**
    * I11.4.9: in the lobby, the players a start waits for: their PC is still making its 3D connection (the host's
    * list) and their table is open. `armed`: this host's start is held for them (`table`: a game started on its table,
@@ -229,6 +238,8 @@ export interface MatchControllerOptions {
    * the phase, the roster, the scores and who is up from the role's state instead of waiting for MATCH_READY.
    */
   resumed?: boolean;
+  /** A17 step 4 (the review of PR 131): with `resumed`: `owedTableEnds` as the saved match had it. */
+  owedTableEnds?: readonly number[];
   /**
    * A16.2: does this final score have a place on the high-score list of the machine on this player's table (the
    * witness: the ROM's map over the journal's NVRAM)? Asked once, when this player's last ball of a game is reported.
@@ -359,6 +370,14 @@ export function pausedForPlayerUp(p: Pick<PanelState, 'phase' | 'myTurn' | 'play
   return p.phase === 'paused' && !p.myTurn && p.playerUp !== null && p.pausedFor === p.playerUp && p.ball !== null;
 }
 
+/**
+ * A17 step 4 (the review of PR 131): the panel's line at this player's turn while a ball they ended by hand (or the
+ * host passed) is still on their table: it is played out first, its points count, and its end reports nothing.
+ */
+export function owedBallLine(owed: number, ball: number): string {
+  return owed === 1 ? `Your last ball is still on the table: play it out, then ball ${ball} begins` : `Your last ${owed} balls are still on the table: play them out, then ball ${ball} begins`;
+}
+
 interface PendingBallEnd {
   grant: GrantBody;
   shootAgain: boolean;
@@ -434,6 +453,31 @@ export class MatchController {
    * was told to open. Only the difference is ever sent (`syncVoice`), so naming a player again at MATCH_READY, at the
    * next game or at a reconnect opens and closes nothing.
    */
+  /**
+   * A17 step 4 (the review of PR 131; the lead's rule: the table's game and the match stay in step, and the player
+   * plays every table ball exactly once). A ball ended by hand while the table's ball is still in play leaves the
+   * table one ball end behind the match. Each such end is noted here by its grant; the table's next ball end is that
+   * old ball's and is swallowed (nothing reported, whenever it comes: during another player's turn or after this
+   * player's next grant), and only the one after it ends the player's next ball. Two ends by hand with no drain
+   * between owe two. An old ball that ends with an extra ball is still the old ball: swallowed, and still owed.
+   * Nothing is owed on a table whose ball ends Castcade cannot read (none will ever come: the witness's word,
+   * `localBallEnds`), with no game running on the table, or on the game's last ball (A16: the rest of that table
+   * game is not the match's). Cleared with the table's game (`game_start`, `game_end`, `game_abandoned`,
+   * `table_exit`) and at the next game.
+   */
+  private owedSeqs: number[] = [];
+  /** `owedSeqs` came from a saved match and has not been checked against the log yet (`settleOwed`). */
+  private owedFromRecord = false;
+  /**
+   * The review of PR 131: the ball end this client reported and the host has not answered yet (no echo in the log,
+   * no pass, no refusal). Two things hang on it. Finding 5: when it was made by hand and the grant for that same ball
+   * comes again under a new number (the report went into a dead link and the host issued the grant again), it is sent
+   * for the new grant, once; a table-made end is recovered by the table's own events, one made by hand has none
+   * behind it. And a Pass the turn for that ball owes nothing new: this PC had ended the ball already.
+   */
+  private unansweredEnd: { grantSeq: number; game: number; ball: number; score: number; byHand: boolean } | null = null;
+  /** `feed`'s answer for the event being fed: a ball end the match will never take (see `feed`). */
+  private droppedEnd = false;
   private voiceWanted = new Set<PlayerId>();
   private readonly voiceHeld = new Set<PlayerId>();
   /** A17: the media layer has attached (or failed to): peers can be given to it. */
@@ -555,6 +599,10 @@ export class MatchController {
     // Forced either way: the lock file is whatever the last run left.
     this.locked = mine;
     this.setLocked(!mine && !(st.phase === 'ended' && isHostRole(this.role)));
+    // The review of PR 131: what the table still owed when Castcade closed; checked against the log at its first use,
+    // which is after the host's answer has been merged (`settleOwed`).
+    this.owedSeqs = [...(this.opts.owedTableEnds ?? [])].filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, 16);
+    this.owedFromRecord = this.owedSeqs.length > 0;
     // A17: this process is new, so every connection is (the others take its offer on a fresh one, D2.7).
     this.wantVoice(st.participants.map((p) => p.playerId));
     void this.ensureAttached();
@@ -617,6 +665,7 @@ export class MatchController {
       startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
       pass: this.passInfo(),
       endBall: this.endBallInfo(),
+      owedTableEnds: [...this.owedSeqs],
       wait3d: this.wait3dStatus(),
       initialsHold: this.initialsHold,
       advisories: this.advisoryLines(),
@@ -830,6 +879,8 @@ export class MatchController {
     if (this.closed || (this.localBallEnds === ready && this.localBallEndsReason === reason)) return;
     this.localBallEnds = ready;
     this.localBallEndsReason = reason;
+    // The review of PR 131: a table whose ball ends are not read owes none: none will ever come.
+    if (ready === false) this.clearOwed();
     this.push();
   }
 
@@ -901,7 +952,48 @@ export class MatchController {
   private endBallInfo(): ControllerStatus['endBall'] {
     const g = this.holding;
     if (this.closed || !g || this.phase !== 'playing' || this.role.state.pendingTransfer) return null;
-    return { ball: g.ballNumber, score: this.myScore ?? this.role.state.players[this.localId]?.score ?? 0 };
+    return { grantSeq: g.grantSeq, ball: g.ballNumber, score: this.myScore ?? this.role.state.players[this.localId]?.score ?? 0, tableBall: !this.pending && this.tableOwesAfter(g.ballNumber) };
+  }
+
+  /**
+   * The review of PR 131: would the table still have this ball in play after it is ended by hand, and its end still
+   * to come? Only on a table whose ball ends Castcade reads (the witness's word: on any other none will ever come), with
+   * a game running on it, and not for the game's last ball (after it the table's game is spent, A16).
+   */
+  private tableOwesAfter(ballNumber: number): boolean {
+    const balls = this.role.state.ballsPerGame;
+    return this.tableGameRunning && this.localBallEnds !== false && !(balls > 0 && ballNumber >= balls);
+  }
+
+  /** A saved owed mark counts only for a ball end that is in the log (a press that never reached the host is no end). */
+  private settleOwed(): void {
+    if (!this.owedFromRecord) return;
+    this.owedFromRecord = false;
+    const mine = new Set<number>();
+    for (const e of this.role.log.entries()) {
+      const m = e.message;
+      if (!m) continue;
+      if (m.type === 'MATCH_READY' || m.type === 'NEXT_GAME') mine.clear();
+      else if (m.type === 'BALL_END' && m.from === this.localId) mine.add(m.payload.grantSeq);
+      else if (m.type === 'TURN_PASS' && m.payload.player === this.localId) mine.add(m.payload.grantSeq);
+    }
+    const kept = this.owedSeqs.filter((seq) => mine.has(seq));
+    if (kept.length !== this.owedSeqs.length) this.opts.log(`match: ${this.owedSeqs.length - kept.length} ball end(s) made by hand before Castcade closed never reached the host: the table owes nothing for them`);
+    this.owedSeqs = kept;
+  }
+
+  /**
+   * The table ball ends still owed, checked against the log (for the shell after a restart, `tryReconcile`: it must
+   * know which of the turn ends the host made while Castcade was closed the controller takes care of).
+   */
+  settledOwed(): number[] {
+    this.settleOwed();
+    return [...this.owedSeqs];
+  }
+
+  private clearOwed(): void {
+    this.owedSeqs = [];
+    this.owedFromRecord = false;
   }
 
   /**
@@ -911,17 +1003,31 @@ export class MatchController {
    * cannot read and for a ball that is stuck: until now only the host could move such a turn on (Pass the turn). A
    * ball the table has already ended (its bonus score is being waited for) is reported now, as the table said it.
    * False, with the reason in the log, when this player has no ball to end.
+   *
+   * The review of PR 131: `grantSeq` is the grant the player was asked about (the menu's first choose, the Match
+   * tab's question). Another grant by now (the table ended the ball with an extra ball meanwhile, the turn went
+   * round) is another ball at another score: refused, and the question is asked again. And when the table's ball is
+   * still in play, the table owes its end (`owedSeqs`): the player plays it out at the next turn.
    */
-  endMyBall(): boolean {
+  endMyBall(grantSeq?: number): boolean {
     const g = this.holding;
     if (!g || this.endBallInfo() === null) {
       this.opts.log(`match: End my ball: nothing to end (${!g ? 'this player does not hold the turn' : this.phase === 'paused' ? 'the match is paused' : 'a host transfer is under way'})`);
+      return false;
+    }
+    if (grantSeq !== undefined && grantSeq !== g.grantSeq) {
+      this.opts.log(`match: End my ball: the question was about another grant (${grantSeq}; this ball is played under ${g.grantSeq}): nothing ended`);
       return false;
     }
     if (this.pending) {
       this.opts.log('match: End my ball: the table has ended this ball already; reported now, without waiting for the bonus score');
       this.flushBallEnd();
       return true;
+    }
+    if (this.tableOwesAfter(g.ballNumber)) {
+      this.settleOwed();
+      this.owedSeqs.push(g.grantSeq);
+      this.opts.log(`match: End my ball with the table's ball still in play: the table owes the match ${this.owedSeqs.length === 1 ? 'that ball end' : `${this.owedSeqs.length} ball ends`}; the ball is played out at this player's next turn, and its end reports nothing`);
     }
     this.sendBallEnd(g, false, 'manual');
     return true;
@@ -934,12 +1040,28 @@ export class MatchController {
    */
   private onTurnPassed(p: PayloadOf<'TURN_PASS'>): void {
     if (p.player === this.localId) {
+      // The review of PR 131: a pass is an end by hand too (since 0.2.40), and on a table whose ball was still in
+      // play its drain was taken for the end of this player's next ball. The same rule as End my ball, on this PC
+      // alone (nothing on the wire): unless the table had already ended the ball (its bonus was being waited for).
+      // Nor for a ball this PC had already ended itself (its report went into a link that had dropped): the table's
+      // own end of it has been seen, or what it owes is noted already, and is owed under the pass's grant from now on.
+      this.settleOwed();
+      const sent = this.unansweredEnd;
+      if (sent && sent.ball === p.ballNumber && sent.game === this.gameNumber()) {
+        this.owedSeqs = this.owedSeqs.map((seq) => (seq === sent.grantSeq ? p.grantSeq : seq));
+      } else if (!this.pending && !this.owedSeqs.includes(p.grantSeq) && this.tableOwesAfter(p.ballNumber)) {
+        this.owedSeqs.push(p.grantSeq);
+        this.opts.log("match: the turn was passed with this table's ball still in play: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
+      }
+      this.unansweredEnd = null;
       this.clearPending();
       this.clearStateTimer();
       this.holding = null;
       this.myBallsDone = Math.max(this.myBallsDone, p.ballNumber);
       this.opts.media?.setSending(false);
       this.noteMyGameDone();
+      // This player's game is over with this ball: the rest of the table's game is not the match's (A16).
+      if (this.myGameDone()) this.clearOwed();
       this.setLocked(true);
     }
     const who = p.player === this.localId ? 'my' : `${this.nameOf(p.player)}'s`;
@@ -982,7 +1104,23 @@ export class MatchController {
     this.push();
   }
 
-  feed(ev: ControllerFeed): void {
+  /**
+   * One event of this player's table (the witness's). True (the review of PR 131, finding 2): the event is a ball end
+   * the match will never take: swallowed as owed, or arrived with no grant held, or of a table game this player has
+   * already finished. The shell must not keep such an end for a later replay (after a reconnect or a restart it would
+   * end the ball the player is on by then).
+   *
+   * `replay`: the event is not news of this moment: the shell feeds it again after a reconnect, or reads it from the
+   * journal after a restart of Castcade. It is handled as ever, with one exception: a `game_start` that is fed again
+   * is the start of the game the table has been in all along, and does not clear what the table owes.
+   */
+  feed(ev: ControllerFeed, replay = false): boolean {
+    this.droppedEnd = false;
+    this.take(ev, replay);
+    return this.droppedEnd;
+  }
+
+  private take(ev: ControllerFeed, replay = false): void {
     if (this.closed) return;
     // A16.2: the machine wrote its high-score list; it only matters to an initials hold.
     if (ev.kind === 'high_scores_changed') {
@@ -997,6 +1135,9 @@ export class MatchController {
     // A12: this player's own table game, any phase (the lobby rules read it).
     if (ev.kind === 'game_start') this.tableGameRunning = true;
     else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.tableGameRunning = false;
+    // The review of PR 131: what the table owed was a ball of the game that has just begun anew, ended or gone. Not
+    // at a `game_start` that is fed again: the ball was ended by hand after it, in that same game.
+    if ((ev.kind === 'game_start' && !replay) || ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.clearOwed();
     // A16.2: an initials hold ends with a new game on the table and with the table; the event itself is then handled
     // as ever. Not with a `game_end`: where that falls (before or after the initials) differs by machine.
     if (this.initialsHold) {
@@ -1005,6 +1146,7 @@ export class MatchController {
     }
     // A16: the table game this player already finished: its scores, ball ends and end are not this turn's.
     if (this.spentTableGame) {
+      if (ev.kind === 'ball_end') this.droppedEnd = true;
       if (ev.kind === 'current_scores' || ev.kind === 'ball_end') return;
       if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') {
         this.endSpentGame("the table's finished game ended; nothing reported for it");
@@ -1048,7 +1190,30 @@ export class MatchController {
         return;
       }
       case 'ball_end': {
-        if (!this.holding || this.pending) return;
+        // The same end twice while the first waits for its bonus score.
+        if (this.holding && this.pending) return;
+        // The review of PR 131: the end of a ball that was ended by hand. It reports nothing, with or without a grant
+        // held. With an extra ball the old ball goes on (the machine serves it again): still owed, and nothing is
+        // granted for it.
+        this.settleOwed();
+        if (this.owedSeqs.length > 0) {
+          const again = (ev.extraBalls ?? 0) > 0;
+          if (!again) this.owedSeqs.shift();
+          const left = this.owedSeqs.length;
+          this.opts.log(
+            again
+              ? 'match: the ball that was ended by hand has ended on the table with an extra ball: it is still that ball, nothing is reported and nothing granted for it'
+              : `match: the ball that was ended by hand has ended on the table: nothing is reported for it${left > 0 ? ` (${left} more still to be played out)` : this.holding ? `; ball ${this.holding.ballNumber} begins now` : ''}`,
+          );
+          this.droppedEnd = true;
+          this.push();
+          return;
+        }
+        // No grant held: an end of nothing the match knows (free play in the lobby, a ball the host passed long ago).
+        if (!this.holding) {
+          this.droppedEnd = true;
+          return;
+        }
         const grant = this.holding;
         const shootAgain = (ev.extraBalls ?? 0) > 0;
         this.pending = { grant, shootAgain, timer: this.opts.setTimeout(() => this.flushBallEnd(), this.settleMs) };
@@ -1591,6 +1756,8 @@ export class MatchController {
     this.myBallsDone = 0;
     this.myScore = null;
     this.myGameOver = false;
+    this.clearOwed();
+    this.unansweredEnd = null;
     this.tableStarted = this.heldTableStart;
     this.heldTableStart = false;
     this.scores.clear();
@@ -1655,6 +1822,8 @@ export class MatchController {
     this.hostId = p.hostPlayerId;
     this.lobby = p.participants.map((x) => ({ ...x }));
     this.message = null;
+    this.clearOwed();
+    this.unansweredEnd = null;
     // A18: MATCH_READY's roster is who is here now: nobody in it is away, whatever the lobby saw come and go.
     this.left.clear();
     this.mediaClosed.clear();
@@ -1675,6 +1844,25 @@ export class MatchController {
     this.upBall = g.ballNumber;
     if (this.phase === 'lobby' || this.phase === 'paused') this.phase = 'playing';
     if (mine) {
+      // The review of PR 131, finding 5: this ball was ended by hand and the host never answered: the grant is here
+      // again under a new number (the report went into a dead link, and the host issued the grant again). The ball
+      // end goes out for the new grant, once; the table stays locked.
+      const lost = this.unansweredEnd;
+      if (lost && lost.byHand && lost.grantSeq !== g.grantSeq && lost.ball === g.ballNumber && lost.game === (g.game ?? this.gameNumber())) {
+        this.unansweredEnd = null;
+        // What the table owes for that ball is owed for this grant now (the one the log will have the ball end under).
+        this.owedSeqs = this.owedSeqs.map((seq) => (seq === lost.grantSeq ? g.grantSeq : seq));
+        this.opts.log(`match: grant ${g.grantSeq}: ball ${g.ballNumber} again, which this player had ended by hand (that report never reached the host): sent for this grant`);
+        this.holding = g;
+        // Not from inside this call: a grant merged from a reconnect's answer is raised before the engine sends its own
+        // unanswered reports again (`ClientMatch.resendUnanswered`), and that would send this one a second time.
+        this.opts.setTimeout(() => {
+          if (this.closed || this.holding !== g) return;
+          this.sendBallEnd(g, false, 'manual', lost.score);
+        }, 0);
+        this.push();
+        return;
+      }
       const was = this.holding;
       this.holding = g;
       this.setLocked(false);
@@ -1682,7 +1870,8 @@ export class MatchController {
         this.opts.cue.play('your_turn');
         this.sendingOffSaid = false;
         this.opts.media?.setSending(true);
-        this.opts.log(`match: grant ${g.grantSeq}: my ball ${g.ballNumber}`);
+        this.settleOwed();
+        this.opts.log(`match: grant ${g.grantSeq}: my ball ${g.ballNumber}${this.owedSeqs.length > 0 ? ` (the table still has ${this.owedSeqs.length === 1 ? 'the ball' : `${this.owedSeqs.length} balls`} this player ended by hand: played out first, reporting nothing)` : ''}`);
       }
     } else {
       if (this.holding) {
@@ -1699,11 +1888,13 @@ export class MatchController {
     if (mine && this.heldFeed.length > 0) {
       const kept = this.heldFeed.splice(0);
       this.opts.log(`match: ${kept.length} table event(s) from the seconds the game's start was held go to the match now (${kept.filter((e) => e.kind === 'ball_end').length} ball end(s))`);
-      for (const ev of kept) this.feed(ev);
+      for (const ev of kept) this.take(ev);
     }
   }
 
   private onBallEndMsg(from: PlayerId, finalScore: number): void {
+    // The host answered this player's ball end (its echo is in the log): nothing is left to send again.
+    if (from === this.localId) this.unansweredEnd = null;
     this.scores.set(from, finalScore);
     if (this.upPlayer === from && this.role.state.currentGrant === null) this.upBall = null;
     this.push();
@@ -1728,6 +1919,13 @@ export class MatchController {
   }
 
   private onReject(r: PayloadOf<'REJECT'>): void {
+    // The review of PR 131: a ball end made by hand that the host refused ended nothing: the table owes nothing for it,
+    // and it is not sent again.
+    const lost = this.unansweredEnd;
+    if (r.refType === 'BALL_END' && lost) {
+      if (lost.byHand) this.owedSeqs = this.owedSeqs.filter((seq) => seq !== lost.grantSeq);
+      this.unansweredEnd = null;
+    }
     this.message = `The host rejected ${r.refType}: ${r.message}`;
     this.opts.log(`match: ${this.message} (${r.code})`);
     this.push();
@@ -1910,16 +2108,20 @@ export class MatchController {
    * This player's ball is over: the table said so (`nvram`), or the player did (A17 step 4: `manual`, End my ball; the
    * score is then the last one the table reported, else what the log has for this player).
    */
-  private sendBallEnd(grant: GrantBody, shootAgain: boolean, reason: 'nvram' | 'manual'): void {
+  private sendBallEnd(grant: GrantBody, shootAgain: boolean, reason: 'nvram' | 'manual', score?: number): void {
     this.clearPending();
     this.clearStateTimer();
-    const finalScore = this.myScore ?? (reason === 'manual' ? (this.role.state.players[this.localId]?.score ?? 0) : 0);
+    const finalScore = score ?? this.myScore ?? (reason === 'manual' ? (this.role.state.players[this.localId]?.score ?? 0) : 0);
+    // The review of PR 131: a client remembers it until the host's echo (a host's own end is in its log at once).
+    this.unansweredEnd = isHostRole(this.role) ? null : { grantSeq: grant.grantSeq, game: grant.game ?? this.gameNumber(), ball: grant.ballNumber, score: finalScore, byHand: reason === 'manual' };
     if (!shootAgain) this.myBallsDone = Math.max(this.myBallsDone, grant.ballNumber);
     this.scores.set(this.localId, finalScore);
     // Bookkeeping first: a HostMatch issues the next grant inside localBallEnd.
     this.holding = null;
     this.opts.media?.setSending(false);
     this.noteMyGameDone();
+    // This player's game is over with this ball: the rest of the table's game is not the match's (A16).
+    if (this.myGameDone()) this.clearOwed();
     this.noteInitialsHold(finalScore);
     this.setLocked(true);
     this.opts.log(`match: BALL_END ball ${grant.ballNumber} score ${finalScore}${shootAgain ? ' (shoot again)' : ''}${reason === 'manual' ? ' (ended by hand: End my ball)' : ''}`);
@@ -1935,6 +2137,8 @@ export class MatchController {
     const finalScore = this.myScore ?? 0;
     const balls = Math.max(this.myBallsDone, this.holding?.ballNumber ?? 0);
     this.myGameOver = true;
+    this.clearOwed();
+    this.unansweredEnd = null;
     this.holding = null;
     this.clearStateTimer();
     this.opts.media?.setSending(false);
@@ -1951,6 +2155,8 @@ export class MatchController {
 
   private forfeit(reason: string): void {
     this.myGameOver = true;
+    this.clearOwed();
+    this.unansweredEnd = null;
     this.holding = null;
     this.clearPending();
     this.clearStateTimer();
@@ -2353,6 +2559,8 @@ export class MatchController {
     if (this.message) return this.message;
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
+    // The review of PR 131: this player's turn, and the ball they ended by hand is still on the table.
+    if (this.phase === 'playing' && this.holding && this.owedSeqs.length > 0 && !this.owedFromRecord) return owedBallLine(this.owedSeqs.length, this.holding.ballNumber);
     // B26: a ball just flagged for Midnight Madness, for a while (over the table note, which stays all match).
     if (this.midnightShown && this.opts.now() < this.midnightShown.until && this.phase !== 'lobby') return this.midnightShown.line;
     // B26.4: at a game's start, for a while: the mode is ON on a table. Beside the prompt of the player who starts, never over it.
@@ -2432,7 +2640,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus(), this.endBallInfo()]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus(), this.endBallInfo(), this.owedSeqs]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

@@ -11,7 +11,7 @@ import { scoreboardView } from '../media/scoreboard-page.js';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { midnightLine } from '../witness/midnight.js';
-import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, MIDNIGHT_LINE_MS, mismatchWords, pausedForPlayerUp, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
+import { DEFAULT_VR_VIEW, INITIALS_HOLD_CAP_MS, INITIALS_HOLD_MESSAGE, INITIALS_QUIET_MS, isHostRole, MatchController, MIDNIGHT_LINE_MS, mismatchWords, owedBallLine, pausedForPlayerUp, SPENT_UNLOCK_MS, vrViewMode, type ControllerFeed, type CueKind, type MatchControllerOptions } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { MemoryBus } from './transport.js';
@@ -1179,11 +1179,12 @@ describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who i
     expect(H.ctl.status().endBall).toBeNull();
     expect(H.ctl.endMyBall()).toBe(false);
     expect(H.logs.at(-1)).toBe('match: End my ball: nothing to end (this player does not hold the turn)');
-    // Nothing reported from the table yet: the score is what the log has for this player.
-    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    // Nothing reported from the table yet: the score is what the log has for this player. No game runs on the table:
+    // nothing would be left on it.
+    expect(C.ctl.status().endBall).toEqual({ grantSeq: host.state.currentGrant?.grant.grantSeq, ball: 1, score: 0, tableBall: false });
     C.ctl.feed(gameStart);
     C.ctl.feed(scores(12_345_670));
-    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 12_345_670 });
+    expect(C.ctl.status().endBall).toMatchObject({ ball: 1, score: 12_345_670 });
     const grant = host.state.currentGrant?.grant;
     const locks = C.locks.length;
 
@@ -1214,11 +1215,11 @@ describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who i
     const { host, H, C } = s;
     host.start();
     await flush();
-    expect(H.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    expect(H.ctl.status().endBall).toMatchObject({ ball: 1, score: 0 });
     expect(H.ctl.endMyBall()).toBe(true);
     await flush();
     expect(lastBallEnd(host)).toMatchObject({ from: 'h', payload: { ballNumber: 1, finalScore: 0, detectorReason: 'manual', shootAgain: false } });
-    expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+    expect(C.ctl.status().endBall).toMatchObject({ ball: 1, score: 0 });
     expect(C.ctl.endMyBall()).toBe(true);
     await flush();
     expect(headerText(C.media.panel)).toBe('GAME 1 OVER');
@@ -1260,7 +1261,7 @@ describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who i
       // The host's own ball, as its table reports it; then the client ends its ball by hand.
       host.localBallEnd(500, 'nvram');
       await flush();
-      expect(C.ctl.status().endBall).toEqual({ ball: 1, score: 0 });
+      expect(C.ctl.status().endBall).toMatchObject({ ball: 1, score: 0 });
       C.ctl.feed(scores(800));
       expect(C.ctl.endMyBall()).toBe(true);
       await flush();
@@ -1313,6 +1314,411 @@ describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who i
         ['c', 3000],
       ]);
     }
+  });
+
+  // ---- the review of PR 131, finding 1: the table owes a ball end ----
+  const seqOf = (x: Seat): number => x.ctl.status().endBall?.grantSeq ?? -1;
+  /** This player's ball ends in the host's log: `ball:how:score`, with `:again` for a shoot-again. */
+  const endsOf = (host: HostMatch, from: string): string[] =>
+    host.log.entries().flatMap((e) => (e.message?.type === 'BALL_END' && e.message.from === from ? [`${e.message.payload.ballNumber}:${e.message.payload.detectorReason}:${e.message.payload.finalScore}${e.message.payload.shootAgain ? ':again' : ''}`] : []));
+  /** The host's ball `ball` ends on its table at `score`. */
+  const hostBall = async (s: Awaited<ReturnType<typeof rig>>, ball: number, score: number): Promise<void> => {
+    s.H.ctl.feed(scores(score));
+    s.H.ctl.feed(ballEnd(ball));
+    s.H.ctl.feed(scores(score));
+    await flush();
+  };
+  /** The client is up on ball 1 with a game running on its table at 1200, and ends the ball by hand. */
+  async function endedByHand(balls = 3) {
+    const s = await clientUp(balls);
+    s.C.ctl.feed(gameStart);
+    s.C.ctl.feed(scores(1200));
+    const seq = seqOf(s.C);
+    expect(s.C.ctl.status().endBall).toEqual({ grantSeq: seq, ball: 1, score: 1200, tableBall: balls > 1 });
+    expect(s.C.ctl.endMyBall(seq)).toBe(true);
+    await flush();
+    return { ...s, seq };
+  }
+
+  it("the table owes a ball end: a ball ended by hand drains during the other player's turn: nothing is reported for it, and the table's next ball end is the end of ball 2", async () => {
+    const s = await endedByHand();
+    const { host, H, C, seq } = s;
+    expect(C.ctl.status().owedTableEnds).toEqual([seq]);
+    expect(C.logs).toContain("match: End my ball with the table's ball still in play: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
+    // The ball drains while the host plays its ball 2 (the table is locked). `feed` says the match will never take it.
+    expect(C.ctl.feed(ballEnd(1))).toBe(true);
+    expect(C.ctl.feed(scores(1250))).toBe(false);
+    expect(C.ctl.status().owedTableEnds).toEqual([]);
+    expect(C.logs).toContain('match: the ball that was ended by hand has ended on the table: nothing is reported for it');
+    await hostBall(s, 2, 900);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false, endBall: { ball: 2, tableBall: true } });
+    expect(C.media.panel.message ?? '').not.toContain('still on the table');
+    // The table's ball 2 is ball 2 of the match.
+    C.ctl.feed(scores(3000));
+    expect(C.ctl.feed(ballEnd(2))).toBe(false);
+    C.ctl.feed(scores(3100));
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200', '2:nvram:3100']);
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 3 } });
+  });
+
+  it('the ball ended by hand is still on the table at the next grant: the panel says to play it out, its points count as they come, its end reports nothing, and the ball after it is ball 2', async () => {
+    const s = await endedByHand();
+    const { host, C, seq } = s;
+    await hostBall(s, 2, 900);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false, owedTableEnds: [seq] });
+    expect(owedBallLine(1, 2)).toBe('Your last ball is still on the table: play it out, then ball 2 begins');
+    expect(C.media.panel.message).toBe(owedBallLine(1, 2));
+    expect(C.logs.some((l) => l.endsWith('my ball 2 (the table still has the ball this player ended by hand: played out first, reporting nothing)'))).toBe(true);
+    // The old ball's points are real: the others see them as they come.
+    C.ctl.feed(scores(1800));
+    s.clock.advance(2000);
+    await flush();
+    expect(s.H.media.panel.players.find((x) => x.id === 'c')?.score).toBe(1800);
+    // It drains: no ball end for it, the turn stays, and the line goes.
+    expect(C.ctl.feed(ballEnd(1))).toBe(true);
+    C.ctl.feed(scores(1900));
+    s.clock.advance(5000);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200']);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false, owedTableEnds: [] });
+    expect(C.media.panel.message ?? '').not.toContain('still on the table');
+    expect(C.logs).toContain('match: the ball that was ended by hand has ended on the table: nothing is reported for it; ball 2 begins now');
+    // The next ball of the table is ball 2.
+    C.ctl.feed(scores(2500));
+    expect(C.ctl.feed(ballEnd(2))).toBe(false);
+    C.ctl.feed(scores(2600));
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200', '2:nvram:2600']);
+  });
+
+  it('the same player is granted again at once (the last one with balls left): the ball ended by hand is played out under the new grant, and only the ball end after its drain ends ball 2', async () => {
+    const s = await rig(3);
+    const { host, H } = s;
+    host.start();
+    await flush();
+    host.forfeit('c', 'left');
+    await flush();
+    H.ctl.feed(gameStart);
+    H.ctl.feed(scores(400));
+    const seq = seqOf(H);
+    const locks = H.locks.length;
+    expect(H.ctl.endMyBall(seq)).toBe(true);
+    await flush();
+    // Ball 2 was granted inside the ball end itself: the table locked and unlocked, and the old ball is on it.
+    expect(H.locks.slice(locks)).toEqual(['lock', 'unlock']);
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, locked: false, endBall: { ball: 2, score: 400 }, owedTableEnds: [seq] });
+    expect(H.media.panel.message).toBe(owedBallLine(1, 2));
+    H.ctl.feed(scores(650));
+    expect(H.ctl.feed(ballEnd(1))).toBe(true);
+    H.ctl.feed(scores(700));
+    s.clock.advance(5000);
+    await flush();
+    expect(endsOf(host, 'h')).toEqual(['1:manual:400']);
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, owedTableEnds: [], endBall: { ball: 2, score: 700 } });
+    H.ctl.feed(scores(1500));
+    H.ctl.feed(ballEnd(2));
+    H.ctl.feed(scores(1500));
+    await flush();
+    expect(endsOf(host, 'h')).toEqual(['1:manual:400', '2:nvram:1500']);
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 3 } });
+  });
+
+  it('an extra ball on the ball that was ended by hand grants nothing: the machine serves the same ball again, it is still owed, and its real end is swallowed too', async () => {
+    const s = await endedByHand();
+    const { host, H, C, seq } = s;
+    const entries = host.log.length;
+    // The old ball drains with an extra ball lit, in the host's turn.
+    expect(C.ctl.feed(ballEnd(1, 1))).toBe(true);
+    await flush();
+    expect(host.log.length).toBe(entries);
+    expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [seq] });
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 2 } });
+    expect(C.logs).toContain('match: the ball that was ended by hand has ended on the table with an extra ball: it is still that ball, nothing is reported and nothing granted for it');
+    // The client's next turn: the same table ball is still to be played out; a second extra ball changes nothing.
+    await hostBall(s, 2, 900);
+    expect(C.media.panel.message).toBe(owedBallLine(1, 2));
+    expect(C.ctl.feed(ballEnd(1, 1))).toBe(true);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, owedTableEnds: [seq] });
+    expect(C.ctl.feed(ballEnd(1))).toBe(true);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, owedTableEnds: [] });
+    s.clock.advance(5000);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200']);
+    // Ball 2 itself may still earn its own extra ball: that one is the match's.
+    C.ctl.feed(scores(2000));
+    C.ctl.feed(ballEnd(2, 1));
+    C.ctl.feed(scores(2000));
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200', '2:nvram:2000:again']);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 2 } });
+  });
+
+  it('two balls ended by hand with no drain between owe two: both are played out at the next turn before ball 3, whose end is the third of the table', async () => {
+    const s = await endedByHand();
+    const { host, C, seq } = s;
+    await hostBall(s, 2, 900);
+    expect(C.media.panel.message).toBe(owedBallLine(1, 2));
+    // The same ball is still on the table (stuck, say), and the player ends ball 2 by hand as well.
+    const seq2 = seqOf(C);
+    expect(C.ctl.status().endBall).toMatchObject({ ball: 2, score: 1200, tableBall: true });
+    expect(C.ctl.endMyBall(seq2)).toBe(true);
+    await flush();
+    expect(C.ctl.status().owedTableEnds).toEqual([seq, seq2]);
+    expect(C.logs).toContain("match: End my ball with the table's ball still in play: the table owes the match 2 ball ends; the ball is played out at this player's next turn, and its end reports nothing");
+    await hostBall(s, 3, 1100);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 3, tableBall: false } });
+    expect(owedBallLine(2, 3)).toBe('Your last 2 balls are still on the table: play them out, then ball 3 begins');
+    expect(C.media.panel.message).toBe(owedBallLine(2, 3));
+    expect(C.ctl.feed(ballEnd(1))).toBe(true);
+    expect(C.media.panel.message).toBe(owedBallLine(1, 3));
+    expect(C.ctl.feed(ballEnd(2))).toBe(true);
+    expect(C.media.panel.message ?? '').not.toContain('still on the table');
+    s.clock.advance(5000);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200', '2:manual:1200']);
+    C.ctl.feed(scores(5000));
+    expect(C.ctl.feed(ballEnd(3))).toBe(false);
+    C.ctl.feed(scores(5000));
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200', '2:manual:1200', '3:nvram:5000']);
+    expect(host.state.phase).toBe('ended');
+  });
+
+  it('nothing is owed where no ball end will come: a table whose ball ends Castcade cannot read (the witness says so), no game running on the table, and the last ball of the game', async () => {
+    // ---- the witness says this table reports no ball ends ----
+    {
+      const s = await clientUp();
+      const { C } = s;
+      C.ctl.setLocalBallEnds(false, 'This machine does not report its ball ends');
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      const seq = seqOf(C);
+      expect(C.ctl.status().endBall).toEqual({ grantSeq: seq, ball: 1, score: 700, tableBall: false });
+      expect(C.ctl.endMyBall(seq)).toBe(true);
+      await flush();
+      expect(C.ctl.status().owedTableEnds).toEqual([]);
+      await hostBall(s, 2, 900);
+      expect(C.ctl.status()).toMatchObject({ myTurn: true, endBall: { ball: 2, tableBall: false } });
+      expect(C.media.panel.message ?? '').not.toContain('still on the table');
+    }
+    // ---- the witness learns it only after the ball was ended by hand: what was noted is dropped ----
+    {
+      const s = await endedByHand();
+      expect(s.C.ctl.status().owedTableEnds).toEqual([s.seq]);
+      s.C.ctl.setLocalBallEnds(false, null);
+      expect(s.C.ctl.status().owedTableEnds).toEqual([]);
+    }
+    // ---- no game running on the table ----
+    {
+      const s = await clientUp();
+      const seq = seqOf(s.C);
+      expect(s.C.ctl.status().endBall).toMatchObject({ tableBall: false });
+      expect(s.C.ctl.endMyBall(seq)).toBe(true);
+      await flush();
+      expect(s.C.ctl.status().owedTableEnds).toEqual([]);
+    }
+    // ---- the last ball of the game: the rest of the table's game is not the match's (A16) ----
+    {
+      const s = await endedByHand(1);
+      expect(s.C.ctl.status().owedTableEnds).toEqual([]);
+      expect(s.host.state.phase).toBe('ended');
+      // What the table says of that game afterwards is nothing to the match.
+      expect(s.C.ctl.feed(ballEnd(1))).toBe(true);
+    }
+  });
+
+  it("the owed ball end goes with the table's game: its end, its abandonment, the table closing, a new game on the table", async () => {
+    const over: ControllerFeed[] = [gameEnd(1300), { kind: 'game_abandoned', t: 0, scores: [1300], player: 1, ball: 1 }, { kind: 'table_exit' }, gameStart];
+    for (const ev of over) {
+      const s = await endedByHand();
+      expect(s.C.ctl.status().owedTableEnds).toEqual([s.seq]);
+      s.C.ctl.feed(ev);
+      expect([ev.kind, s.C.ctl.status().owedTableEnds]).toEqual([ev.kind, []]);
+    }
+    // A game start that is fed again (after a reconnect, or read from the journal after a restart) is the start of
+    // the game the ball was ended in: what the table owes stays.
+    const s = await endedByHand();
+    s.C.ctl.feed(gameStart, true);
+    s.C.ctl.feed(scores(1200), true);
+    expect(s.C.ctl.status().owedTableEnds).toEqual([s.seq]);
+    expect(s.C.ctl.feed(ballEnd(1), true)).toBe(true);
+    expect(s.C.ctl.status().owedTableEnds).toEqual([]);
+  });
+
+  it("Pass the turn is an end by hand too: on the passed player's PC the ball still in play is owed and played out at the next turn; a ball the table had already ended, or a table that reports no ball ends, owes nothing", async () => {
+    // ---- the ball is in play when the host passes the client's turn ----
+    {
+      const s = await clientUp();
+      const { host, H, C } = s;
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      const seq = seqOf(C);
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [seq] });
+      expect(C.logs).toContain("match: the turn was passed with this table's ball still in play: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
+      await hostBall(s, 2, 900);
+      expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false });
+      expect(C.media.panel.message).toBe(owedBallLine(1, 2));
+      expect(C.ctl.feed(ballEnd(1))).toBe(true);
+      s.clock.advance(5000);
+      await flush();
+      expect(endsOf(host, 'c')).toEqual([]);
+      expect(C.ctl.status()).toMatchObject({ myTurn: true, owedTableEnds: [] });
+      C.ctl.feed(scores(2000));
+      C.ctl.feed(ballEnd(2));
+      C.ctl.feed(scores(2000));
+      await flush();
+      expect(endsOf(host, 'c')).toEqual(['2:nvram:2000']);
+    }
+    // ---- the table had ended the ball (its bonus was being waited for) ----
+    {
+      const s = await clientUp();
+      const { H, C } = s;
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      C.ctl.feed(ballEnd(1));
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      expect(C.ctl.status()).toMatchObject({ myTurn: false, owedTableEnds: [] });
+    }
+    // ---- a table that reports no ball ends: the pass is the only end there is ----
+    {
+      const s = await clientUp();
+      const { H, C } = s;
+      C.ctl.setLocalBallEnds(false, null);
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      expect(C.ctl.status()).toMatchObject({ myTurn: false, owedTableEnds: [] });
+    }
+    // ---- the table had ended the ball and this PC had reported it, into a link that lost the report: the host passes ----
+    {
+      const s = await clientUp();
+      const { bus, host, H, C } = s;
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      const route = bus.route.bind(bus);
+      bus.route = (from, to, msg) => {
+        if (from === 'c' && msg.type === 'BALL_END') return;
+        route(from, to, msg);
+      };
+      C.ctl.feed(ballEnd(1));
+      C.ctl.feed(scores(750));
+      await flush();
+      expect(C.logs).toContain('match: BALL_END ball 1 score 750');
+      expect(endsOf(host, 'c')).toEqual([]);
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      // The table's ball 1 is over, as this PC knows: nothing is owed, and ball 2's end will be ball 2's.
+      expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [] });
+    }
+    // ---- the host's own ball, passed by the host with its ball in play ----
+    {
+      const s = await rig(3);
+      const { host, H } = s;
+      host.start();
+      await flush();
+      H.ctl.feed(gameStart);
+      H.ctl.feed(scores(300));
+      const seq = seqOf(H);
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      expect(H.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [seq] });
+      expect(H.ctl.feed(ballEnd(1))).toBe(true);
+      expect(H.ctl.status().owedTableEnds).toEqual([]);
+    }
+  });
+
+  it('a ball end of the table that comes with no grant held and nothing owed is one the match will never take: `feed` says so, for the shell to forget it', async () => {
+    const s = await clientUp();
+    const { H, C } = s;
+    // The host's ball 1 is reported and over: its table says "ball end" once more (the client is up).
+    expect(H.ctl.feed(ballEnd(1))).toBe(true);
+    // An end the match takes is not one of those, nor is any other event.
+    C.ctl.feed(gameStart);
+    expect(C.ctl.feed(scores(100))).toBe(false);
+    expect(C.ctl.feed(ballEnd(1))).toBe(false);
+    expect(C.ctl.feed(ballEnd(1))).toBe(false);
+  });
+
+  // ---- finding 3: a confirmation is for one grant ----
+  it('End my ball names the grant it was asked about: after the table ended that ball with an extra ball, the same ball number under a new grant is not ended by the old answer', async () => {
+    const s = await clientUp();
+    const { host, C } = s;
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(1_000_000));
+    const asked = seqOf(C);
+    // The table ends the ball with an extra ball before the player answers: ball 1 is granted again.
+    C.ctl.feed(ballEnd(1, 1));
+    C.ctl.feed(scores(1_050_000));
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:nvram:1050000:again']);
+    const now = seqOf(C);
+    expect(now).not.toBe(asked);
+    expect(C.ctl.status().endBall).toMatchObject({ grantSeq: now, ball: 1, score: 1_050_000 });
+    expect(C.ctl.endMyBall(asked)).toBe(false);
+    await flush();
+    expect(C.logs.at(-1)).toBe(`match: End my ball: the question was about another grant (${asked}; this ball is played under ${now}): nothing ended`);
+    expect(endsOf(host, 'c')).toEqual(['1:nvram:1050000:again']);
+    expect(C.ctl.status()).toMatchObject({ myTurn: true, locked: false, owedTableEnds: [] });
+    // Asked again for this grant, it ends.
+    expect(C.ctl.endMyBall(now)).toBe(true);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:nvram:1050000:again', '1:manual:1050000']);
+  });
+
+  // ---- finding 5: a manual end that never reached the host ----
+  it('a ball ended by hand whose report never reached the host is sent again, once, when the grant for that ball comes back under a new number; the table stays locked and what it owes follows the new grant', async () => {
+    const s = await clientUp();
+    const { bus, host, C } = s;
+    const rejects: string[] = [];
+    host.on('reject', (r) => rejects.push(`${r.refType}:${r.code}`));
+    C.ctl.feed(gameStart);
+    C.ctl.feed(scores(1200));
+    const seq = seqOf(C);
+    // The report goes into a dead link: the bus loses this one frame.
+    const route = bus.route.bind(bus);
+    let lost = 0;
+    bus.route = (from, to, msg) => {
+      if (from === 'c' && msg.type === 'BALL_END' && lost === 0) {
+        lost += 1;
+        return;
+      }
+      route(from, to, msg);
+    };
+    const locks = C.locks.length;
+    expect(C.ctl.endMyBall(seq)).toBe(true);
+    await flush();
+    expect(lost).toBe(1);
+    expect(endsOf(host, 'c')).toEqual([]);
+    expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [seq] });
+    // The host pauses and resumes (its owner pressed Resume; a restarted host does the same): the grant for the
+    // client's ball 1 is issued again under a new number.
+    host.pause('requested', null);
+    host.resume();
+    await flush();
+    const again = host.state.currentGrant?.grant;
+    expect(again).toMatchObject({ player: 'c', ballNumber: 1 });
+    expect(again?.grantSeq).not.toBe(seq);
+    expect(C.logs).toContain(`match: grant ${again?.grantSeq}: ball 1 again, which this player had ended by hand (that report never reached the host): sent for this grant`);
+    // Not inside the grant itself (the engine's own resend after a reconnect comes first), a moment later.
+    expect(endsOf(host, 'c')).toEqual([]);
+    s.clock.advance(0);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200']);
+    expect(host.log.entries().flatMap((e) => (e.message?.type === 'BALL_END' && e.message.from === 'c' ? [e.message.payload.grantSeq] : []))).toEqual([again?.grantSeq]);
+    expect(rejects).toEqual([]);
+    // The table never unlocked for the grant that came back, and the "your turn" cue did not sound for it.
+    expect(C.locks.slice(locks).filter((l) => l === 'unlock')).toEqual([]);
+    expect(C.ctl.status()).toMatchObject({ myTurn: false, locked: true, owedTableEnds: [again?.grantSeq] });
+    // The host is up on ball 2; nothing more is sent for ball 1.
+    expect(host.state.currentGrant?.grant).toMatchObject({ player: 'h', ballNumber: 2 });
+    s.clock.advance(5000);
+    await flush();
+    expect(endsOf(host, 'c')).toEqual(['1:manual:1200']);
   });
 
   it('paused for the player up with the picture arriving: spectate; and not during the pause itself is a ball ended by hand', async () => {

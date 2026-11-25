@@ -98,6 +98,9 @@ function table(o: { qualifies?: boolean } = {}) {
     w,
     gameStart: () => say({ kind: 'game_start', t: 0, players: 1 } as Feed),
     gameEnd: (score: number) => say({ kind: 'game_end', t: 0, scores: [score], players: 1 } as Feed),
+    /** The table's score while a ball is in play, and a ball draining with nothing else said (A17 step 4). */
+    score: (ball: number, score: number) => say({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed),
+    drain: (ball: number) => say({ kind: 'ball_end', t: 0, player: 1, ball, extraBalls: 0 } as Feed),
     /** One ball played to its end at `score`; `again`: the machine has an extra ball pending (shoot again). */
     ball(ball: number, score: number, again = false) {
       say({ kind: 'current_scores', t: 0, scores: [score], player: 1, ball } as Feed);
@@ -661,6 +664,49 @@ describe('the state stream inside a match (I11.4.2)', () => {
     expect(existsSync(H.lock)).toBe(true);
     off();
   }, 60_000);
+
+  it("A17 step 4 (the review of PR 131): a ball ended by hand in a 3D match: the fork holds that ball while the other player is watched and puts it back at the next grant; it is played out first under that grant, its drain reports nothing, and the ball after it is ball 2", async () => {
+    const hub = new TunnelHub();
+    const {
+      seats: [H, K],
+      forks: { Hosty: fh, Krobs: fk },
+    } = (await lobby(hub, [['Hosty'], ['Krobs']])) as { seats: [Seat, Seat]; forks: Record<string, Fork> };
+    const krobs = (): { score: number | null; ballsDone: number } | undefined => H.mh.status().panel?.players.find((p) => p.name === 'Krobs');
+    await H.mh.start();
+    await endBall(H, 1, 1000);
+    await until(() => up(K, 1) && sees(H, fh, K), 8000, 'the host to watch Krobs in 3D');
+    // Krobs plays his own table, and ends the ball by hand with it still in play.
+    K.t.gameStart();
+    K.t.score(1, 1200);
+    await until(() => K.mh.status().endBall?.score === 1200, 8000, "Krobs' score");
+    expect(K.mh.status().endBall).toMatchObject({ ball: 1, score: 1200, tableBall: true });
+    await K.mh.endMyBall(K.mh.status().endBall!.grantSeq);
+    // The host is up: Krobs' fork pauses his own game (the ball with it) and shows the host's table. Nothing drains.
+    await until(() => up(H, 2) && sees(K, fk, H), 8000, 'Krobs to watch the host in 3D');
+    await endBall(H, 2, 2000);
+    // Krobs' grant for ball 2: the fork puts his own game back, the old ball where it was.
+    await until(() => up(K, 2) && watching(K) === null && fk!.got.at(-1) === 'play', 8000, "Krobs' own game back for his ball 2");
+    expect(K.mh.status().panel?.message).toBe('Your last ball is still on the table: play it out, then ball 2 begins');
+    await until(() => sees(H, fh, K), 8000, 'the host to watch Krobs again');
+    // He plays it out: the points count as they come, and its drain is the end of nothing in the match.
+    K.t.score(1, 1700);
+    await until(() => krobs()?.score === 1700, 8000, 'the old ball\'s points');
+    K.t.drain(1);
+    K.t.score(1, 1750);
+    await until(() => K.lines.some((l) => l.startsWith('match: the ball that was ended by hand has ended on the table: nothing is reported for it')), 8000, 'the drain to be swallowed');
+    await sleep(300);
+    expect(up(K, 2)).toBe(true);
+    expect(existsSync(K.lock)).toBe(false);
+    expect(sees(H, fh, K)).toBe(true);
+    expect(krobs()).toMatchObject({ ballsDone: 1 });
+    expect(K.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    expect(K.lines.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 1200 (ended by hand: End my ball)']);
+    // The table's next ball is ball 2 of the match.
+    await endBall(K, 2, 2600);
+    await until(() => up(H, 3), 8000, "the host's ball 3");
+    expect(krobs()).toMatchObject({ score: 2600, ballsDone: 2 });
+    expect(K.lines.filter((l) => l.includes('BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 1200 (ended by hand: End my ball)', 'match: BALL_END ball 2 score 2600']);
+  }, 40_000);
 
   it('the initials hold (A16.2): a player whose finished game is on the high-score list keeps their own table; their fork is not sent to watch', async () => {
     const hub = new TunnelHub();

@@ -714,7 +714,8 @@ function registerIpc(
   });
   ipcMain.handle(IPC.matchStart, (_e, o: unknown) => mh().start({ anyway: (o as { anyway?: unknown } | null | undefined)?.anyway === true }));
   ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
-  ipcMain.handle(IPC.matchEndMyBall, () => mh().endMyBall());
+  // The review of PR 131: the grant the Match tab's question was about; anything else names no grant and ends nothing.
+  ipcMain.handle(IPC.matchEndMyBall, (_e, grantSeq: unknown) => mh().endMyBall(typeof grantSeq === 'number' && Number.isSafeInteger(grantSeq) ? grantSeq : -1));
   ipcMain.handle(IPC.matchResume, () => mh().resume());
   ipcMain.handle(IPC.matchSaveFrames, () => mh().saveFrames());
   ipcMain.handle(IPC.matchBenchStart, (_e, req: unknown) => mh().startBench(req));

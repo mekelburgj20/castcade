@@ -57,6 +57,13 @@ export interface ResumeRecord {
   aliveAt: number;
   /** Castcade closed itself to install an update: rejoined without asking at the next start. */
   restart: 'update' | null;
+  /**
+   * A17 step 4 (the review of PR 131): the table ball ends this player's table still owes the match (a ball ended by
+   * hand while it was still in play), as the grant of each such end (`MatchController.owedTableEnds`). Without it a
+   * restart of Castcade would take the old ball's drain for the end of the ball the player is on by then. Absent in a
+   * record from before: nothing owed.
+   */
+  owed?: number[];
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -106,6 +113,7 @@ export function parseResume(text: string | null): ResumeRecord | null {
     mark: parseMark(raw.mark),
     aliveAt,
     restart: raw.restart === 'update' ? 'update' : null,
+    owed: Array.isArray(raw.owed) ? raw.owed.filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0).slice(0, 16) : [],
   };
 }
 
@@ -169,6 +177,19 @@ export function turnEndsOf(log: readonly LogEntry[], player: string): number {
     else if (m.type === 'TURN_PASS' && m.payload.player === player) n += 1;
   }
   return n;
+}
+
+/** A17 step 4 (the review of PR 131): the grants of this player's turns that ended in the log's current game (as `turnEndsOf` counts them). */
+export function turnEndSeqsOf(log: readonly LogEntry[], player: string): number[] {
+  let seqs: number[] = [];
+  for (const e of log) {
+    const m = e.message;
+    if (!m) continue;
+    if (m.type === 'MATCH_READY' || m.type === 'NEXT_GAME') seqs = [];
+    else if (m.type === 'BALL_END' && m.from === player) seqs.push(m.payload.grantSeq);
+    else if (m.type === 'TURN_PASS' && m.payload.player === player) seqs.push(m.payload.grantSeq);
+  }
+  return seqs;
 }
 
 export type TableEvent = { kind: string; ball?: number | null };
@@ -241,6 +262,16 @@ export class TableBacklog<E extends TableEvent> {
   /** The log grew: what the table said before is answered. */
   clear(): void {
     this.held = [];
+  }
+
+  /**
+   * A17 step 4 (the review of PR 131): the match will never take this event (a ball end the controller swallowed as
+   * owed, or one that came with no grant held): it is not kept for a replay. Until then it stayed here as "an end the
+   * log has not taken", and the next reconnect or restart fed it again, into the ball the player was on by then.
+   */
+  forget(ev: E): void {
+    const i = this.held.lastIndexOf(ev);
+    if (i >= 0) this.held.splice(i, 1);
   }
 
   /** A ball or game end is held that the log has not answered. */
