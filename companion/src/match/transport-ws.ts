@@ -67,12 +67,17 @@ export function undecodable(text: string, e: unknown): unknown {
   return theirs !== null ? new ForeignVersionError(theirs) : e;
 }
 
-/** The sentence the PC that asked is shown ("The host refused: …"); it names what that PC, or the host, has to do. */
-function refusalSentence(theirs: unknown): string {
-  if (typeof theirs === 'number' && theirs > PROTOCOL_VERSION) {
+/**
+ * The sentence the PC that asked is shown ("The host refused: …"); it names what that PC, or the host, has to do.
+ * `theirs` is the asker's version as a whole number, or null when its `v` is anything else: the sentence is never
+ * built from the frame's own text (review of PR 127: `String(v)` of a long `v` broke the REFUSE schema's 500
+ * characters, inside a socket handler, for anybody who reached the port).
+ */
+function refusalSentence(theirs: number | null): string {
+  if (theirs !== null && theirs > PROTOCOL_VERSION) {
     return `The host's Castcade is older than this PC's (it speaks protocol ${PROTOCOL_VERSION}, this PC ${theirs}). The host updates Castcade (Settings, Check for updates); then join again.`;
   }
-  return `This match needs Castcade ${PROTOCOL_SINCE_RELEASE} or newer (protocol ${PROTOCOL_VERSION}; this PC sent ${String(theirs)}). Update Castcade on this PC (Settings, Check for updates) and join again.`;
+  return `This match needs Castcade ${PROTOCOL_SINCE_RELEASE} or newer (protocol ${PROTOCOL_VERSION}; this PC sent ${theirs === null ? 'another version' : theirs}). Update Castcade on this PC (Settings, Check for updates) and join again.`;
 }
 
 /**
@@ -87,36 +92,64 @@ function refusalSentence(theirs: unknown): string {
  * knows; the asker then says at once that the host did not take it back. Its `seq` is the wall clock, because the
  * asker drops a frame whose `seq` is not above the last it took from this host, in an earlier run or version (A15's
  * rule for a restarted sender); a HELLO opens a new connection, so its REFUSE keeps the caller's counter.
+ *
+ * It never throws, whatever the text is (review of PR 127): it runs in the `message` handler of a socket nobody has
+ * vouched for, where a throw is an uncaught error in the main process. Nothing of the frame goes into the answer but
+ * its whole-number version and, for a RECONNECT, a match id of the plain kind; anything it cannot answer is null.
  */
 export function foreignVersionRefusal(text: string, from: PlayerId, seq: number): string | null {
-  let value: unknown;
   try {
-    value = JSON.parse(text);
+    const value: unknown = JSON.parse(text);
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    const v = (value as { v?: unknown }).v;
+    const type = (value as { type?: unknown }).type;
+    if ((type !== 'HELLO' && type !== 'RECONNECT') || v === PROTOCOL_VERSION) return null;
+    const theirs = foreignVersionOf(text);
+    let answer: AnyMessage;
+    if (type === 'HELLO') {
+      answer = buildMessage('REFUSE', { code: 'protocol_version', message: refusalSentence(theirs) }, { matchId: null, seq, from });
+    } else {
+      const asked = (value as { matchId?: unknown }).matchId;
+      const matchId = typeof asked === 'string' && /^[\w.:-]{1,64}$/.test(asked) ? asked : null;
+      answer = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_player', entries: [], logHash: ZERO_HASH, logLength: 0 }, { matchId, seq: Math.max(seq, Date.now()), from });
+    }
+    // A version that is not a whole number is nobody's: the answer stays in ours.
+    return JSON.stringify({ ...answer, v: theirs ?? PROTOCOL_VERSION });
   } catch {
     return null;
   }
-  if (typeof value !== 'object' || value === null) return null;
-  const v = (value as { v?: unknown }).v;
-  const type = (value as { type?: unknown }).type;
-  if ((type !== 'HELLO' && type !== 'RECONNECT') || v === PROTOCOL_VERSION) return null;
-  let answer: AnyMessage;
-  if (type === 'HELLO') {
-    answer = buildMessage('REFUSE', { code: 'protocol_version', message: refusalSentence(v) }, { matchId: null, seq, from });
-  } else {
-    const asked = (value as { matchId?: unknown }).matchId;
-    const matchId = typeof asked === 'string' && asked.length > 0 && asked.length <= 64 ? asked : null;
-    answer = buildMessage('RECONNECT_ACK', { accept: false, code: 'unknown_player', entries: [], logHash: ZERO_HASH, logLength: 0 }, { matchId, seq: Math.max(seq, Date.now()), from });
-  }
-  // A version that is not a whole number is nobody's: the answer stays in ours.
-  return JSON.stringify({ ...answer, v: foreignVersionOf(text) ?? PROTOCOL_VERSION });
 }
 
-/** Answer a foreign-version HELLO or RECONNECT and close. True when it answered. */
+/** Answer a foreign-version HELLO or RECONNECT and close. True when it answered. Never throws (a socket that is closing). */
 function refuseForeignVersion(socket: WebSocket, text: string, from: PlayerId, seq: number): boolean {
   const refuse = foreignVersionRefusal(text, from, seq);
   if (!refuse) return false;
-  socket.send(refuse, () => socket.close());
+  try {
+    socket.send(refuse, () => socket.close());
+  } catch {
+    return false;
+  }
   return true;
+}
+
+/**
+ * Review of PR 127: a frame from a socket that is not linked yet (nobody has said HELLO or RECONNECT on it: anybody
+ * who reaches the port) must never throw out of the `message` handler, where a throw is an uncaught error in the main
+ * process and Electron's error box over the host's game. Whatever goes wrong while such a frame is handled is
+ * reported through `onError` and the socket is closed. A linked peer's frame is handled as it always was.
+ */
+function guardUnlinked(unlinked: boolean, run: () => void, report: (e: unknown) => void, socket: WebSocket): void {
+  if (!unlinked) return run();
+  try {
+    run();
+  } catch (e) {
+    try {
+      report(e);
+      socket.close();
+    } catch {
+      /* nothing more to do for a socket nobody knows */
+    }
+  }
 }
 
 export interface WsHostOptions {
@@ -156,7 +189,7 @@ export class WsHostTransport implements Transport {
 
   private attach(socket: WebSocket): void {
     let peer: PlayerId | null = null;
-    socket.on('message', (data: RawData) => {
+    const onFrame = (data: RawData): void => {
       const text = rawToString(data);
       let msg: AnyMessage;
       try {
@@ -179,7 +212,8 @@ export class WsHostTransport implements Transport {
         for (const cb of [...this.joinHandlers]) cb(peer);
       }
       for (const cb of [...this.messageHandlers]) cb(peer, msg);
-    });
+    };
+    socket.on('message', (data: RawData) => guardUnlinked(peer === null, () => onFrame(data), (e) => this.fail(e, null), socket));
     socket.on('close', () => {
       if (peer === null) return;
       if (this.sockets.get(peer) === socket) {
@@ -444,7 +478,7 @@ export class WsPeerTransport implements Transport {
   private attachInbound(socket: WebSocket): void {
     const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false };
     this.links.push(link);
-    socket.on('message', (data: RawData) => {
+    const onFrame = (data: RawData): void => {
       const text = rawToString(data);
       let msg: AnyMessage;
       try {
@@ -465,7 +499,8 @@ export class WsPeerTransport implements Transport {
         this.noteJoin(link);
       }
       this.dispatch(link.peer, msg);
-    });
+    };
+    socket.on('message', (data: RawData) => guardUnlinked(link.peer === null, () => onFrame(data), (e) => this.fail(e, null), socket));
     socket.on('close', () => this.onLinkClosed(link));
     socket.on('error', (err) => this.fail(err, link.peer));
   }

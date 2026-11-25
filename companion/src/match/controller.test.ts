@@ -804,7 +804,7 @@ describe('A17 step 1 (2026-11-24): the voice from the join on', () => {
     expect(H.locks).toEqual([]);
   });
 
-  it('MATCH_READY, NEXT_GAME and a reconnect make no addPeer / removePeer call; nor do a RESULT and the end of the match', async () => {
+  it('MATCH_READY, NEXT_GAME, a RESULT and a reconnect make no addPeer / removePeer call; the end of the match, which is the end of the lobby too, lets everyone go at once', async () => {
     const s = await rig(1);
     const { host, client, H, C } = s;
     const lobby = { h: calls(H), c: calls(C) };
@@ -850,10 +850,140 @@ describe('A17 step 1 (2026-11-24): the voice from the join on', () => {
     C.ctl.feed(gameStart);
     await ball(C, 300);
     expect(headerText(C.media.panel)).toBe('GAME 2 OVER');
+    unchanged();
+    // The host ends the match: nothing follows in this lobby, on either PC. Nobody's microphone is sent to anybody
+    // through the seconds the panel lingers (the review of PR 127): the connection is let go at once, and nothing
+    // that names the player afterwards makes it again.
     expect(H.ctl.endMatch()).toBe(true);
     await flush();
     expect(headerText(C.media.panel)).toBe('MATCH OVER');
-    unchanged();
+    expect({ h: calls(H), c: calls(C) }).toEqual({ h: ['add c', 'remove c'], c: ['add h', 'remove h'] });
+    host.events.emit('reconnected', { playerId: 'c', entries: 0, quiet: false });
+    client.events.emit('reconnected', { host: 'h', entries: 0, quiet: false });
+    await flush();
+    expect({ h: calls(H), c: calls(C) }).toEqual({ h: ['add c', 'remove c'], c: ['add h', 'remove h'] });
+  });
+
+  /** Three in a lobby on one bus: the host and two clients, each with its controller and its media fake. */
+  async function lobbyOfThree() {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    // The engines' own grace, as the app runs them: a drop in the lobby is a leave at once all the same.
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const H = seat(host, clock, 3);
+    await H.ctl.open();
+    const mk = async (id: string): Promise<Seat & { client: ClientMatch; dropLink(): void }> => {
+      const k = generateKeys();
+      const t = bus.transport(id);
+      const client = new ClientMatch({ transport: t, keys: k, participant: { ...participant(id, k), displayName: id }, game, throwdownCode: 'M', hostId: 'h', clock });
+      const x = seat(client, clock);
+      await x.ctl.open();
+      client.join();
+      await flush();
+      /** This PC's own link to the host drops: the others see it leave (the bus), and its transport reports the host gone, as a socket does. */
+      const dropLink = (): void => {
+        bus.disconnect(id);
+        for (const cb of [...(t as unknown as { leaveHandlers: Set<(peer: string) => void> }).leaveHandlers]) cb('h');
+      };
+      return { ...x, client, dropLink };
+    };
+    const A = await mk('a');
+    const B = await mk('b');
+    expect([calls(H), calls(A), calls(B)]).toEqual([
+      ['add a', 'add b'],
+      ['add h', 'add b'],
+      ['add h', 'add a'],
+    ]);
+    return { bus, clock, host, H, A, B };
+  }
+  const LOBBY_OVER = "The lobby is over: the link to Hosty's Castcade is gone (they left or closed Castcade, or the connection dropped). Nobody hears your microphone any more. Join again to play.";
+
+  it("the host of a lobby of three goes away (it left, its Castcade closed, the room was closed): each client lets go of everybody at once, the other client too, and says that the lobby is over (the review of PR 127)", async () => {
+    const { bus, clock, A, B } = await lobbyOfThree();
+    bus.disconnect('h');
+    await flush();
+    // At once, with no clock: the host, and the other client, whom no roster will ever take off.
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove h', 'remove b']);
+    expect(calls(B)).toEqual(['add h', 'add a', 'remove h', 'remove a']);
+    for (const x of [A, B]) {
+      expect(x.ctl.status()).toMatchObject({ phase: 'lobby', series: { over: true }, locked: false });
+      expect(x.media.panel).toMatchObject({ phase: 'idle', seriesOver: true, message: LOBBY_OVER });
+      expect(headerText(x.media.panel)).toBe('LOBBY OVER');
+      expect(x.logs).toContain(`match: ${LOBBY_OVER}`);
+      expect(x.media.detached).toBe(false); // the shell closes the page after its linger
+    }
+    // Until 0.2.50 this dead lobby was silent, and with the voice from the join on the two went on hearing each other
+    // in it for as long as neither pressed Leave. Ten minutes on: nothing was made again.
+    clock.advance(10 * 60_000);
+    await flush();
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove h', 'remove b']);
+    expect(calls(B)).toEqual(['add h', 'add a', 'remove h', 'remove a']);
+    // Nothing that still names a player brings a connection back in a lobby that is over.
+    A.client.events.emit('roster', { ...A.client.state, participants: A.ctl.status().participants, loading: [], stream3dWait: [], ballEndReady: [], midnightModes: [], startsInMs: null } as never);
+    A.client.events.emit('reconnected', { host: 'h', entries: 0, quiet: false });
+    await flush();
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove h', 'remove b']);
+  });
+
+  it("only this client's own link to the host drops: it lets go of everybody at once and says so; the host lets it go, and tells the other client to", async () => {
+    const { H, A, B } = await lobbyOfThree();
+    A.dropLink();
+    await flush();
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove h', 'remove b']);
+    expect(headerText(A.media.panel)).toBe('LOBBY OVER');
+    expect(A.media.panel.message).toBe(LOBBY_OVER);
+    // The lobby goes on for the two who are in it, without the one who is not.
+    expect(calls(H)).toEqual(['add a', 'add b', 'remove a']);
+    expect(calls(B)).toEqual(['add h', 'add a', 'remove a']);
+    expect(headerText(B.media.panel)).toBe('WAITING FOR THE START');
+    expect(B.ctl.status().series.over).toBe(false);
+  });
+
+  it('the host of a lobby is never the one whose lobby is lost: a client that goes is let go, and the lobby waits for players', async () => {
+    const { bus, H } = await lobbyOfThree();
+    bus.disconnect('a');
+    bus.disconnect('b');
+    await flush();
+    expect(calls(H)).toEqual(['add a', 'add b', 'remove a', 'remove b']);
+    expect(H.ctl.status()).toMatchObject({ phase: 'lobby', series: { over: false } });
+    expect(headerText(H.media.panel)).toBe('WAITING FOR THE START');
+  });
+
+  it('the host is gone between two games (three players): the series is over, and the two clients let go of each other at once, not when their panels close', async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const H = seat(host, clock, 1);
+    await H.ctl.open();
+    const mk = async (id: string): Promise<Seat> => {
+      const k = generateKeys();
+      const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: { ...participant(id, k), displayName: id }, game, throwdownCode: 'M', hostId: 'h', clock });
+      const x = seat(c, clock);
+      await x.ctl.open();
+      c.join();
+      await flush();
+      return x;
+    };
+    const A = await mk('a');
+    const B = await mk('b');
+    host.start();
+    await flush();
+    for (const x of [H, A, B]) {
+      x.ctl.feed(gameStart);
+      x.ctl.feed(scores(100));
+      x.ctl.feed(ballEnd(1));
+      x.ctl.feed(scores(100));
+      await flush();
+    }
+    expect(headerText(A.media.panel)).toBe('GAME 1 OVER');
+    expect(calls(A)).toEqual(['add h', 'add b']);
+    bus.disconnect('h');
+    await flush();
+    expect(A.media.panel.message).toBe('The host left; the match is over');
+    expect(calls(A)).toEqual(['add h', 'add b', 'remove h', 'remove b']);
+    expect(calls(B)).toEqual(['add h', 'add a', 'remove h', 'remove a']);
   });
 
   it('three in the lobby: everyone is connected to everyone at the join; a player who leaves is let go by the host at once and by the other client from the roster it is sent', async () => {

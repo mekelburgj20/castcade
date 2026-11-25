@@ -325,7 +325,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {/* D10.8: which path the match control takes. */}
             {st.path && <p className="muted">{st.path}</p>}
             {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && (
-              <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') ? 'warn' : 'muted'}>{panel.message}</p>
+              <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') || panel.message.startsWith('The lobby is over') ? 'warn' : 'muted'}>{panel.message}</p>
             )}
             {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
             {st.advisories.map((line) => (
@@ -907,6 +907,8 @@ function turnLine(st: MatchStatus): string {
   const panel = st.panel;
   switch (st.phase) {
     case 'lobby':
+      // A17 step 1: a client that lost its host in the lobby: the lobby is over (the line under this one says why).
+      if (st.series?.over) return 'LOBBY OVER';
       if (typeof panel?.countdown === 'number') return `STARTING IN ${panel.countdown}`;
       return st.role === 'host' ? (st.participants.length < 2 ? 'Waiting for players' : 'Everyone in? Start the match') : `Waiting for ${nameOf(st, st.hostId)} to start`;
     case 'playing': {

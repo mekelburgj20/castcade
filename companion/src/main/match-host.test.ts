@@ -1842,6 +1842,131 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(existsSync(H.lock)).toBe(true);
   }, 30_000);
 
+  /**
+   * The review of PR 127: every way a lobby ends for a client while its page still holds a voice peer. A seat whose
+   * page records its peers and its detach; the linger after "the lobby is over" is short here (20 s in the app).
+   */
+  const lobbySeat = (name: string, extra: Partial<Parameters<typeof createMatchHost>[0]> = {}) => {
+    const page = { added: [] as string[], removed: [] as string[] };
+    const m = fakeMedia();
+    const media = { ...(m.media as unknown as Record<string, unknown>), addPeer: (p: string) => void page.added.push(p), removePeer: (p: string) => void page.removed.push(p) };
+    const log = collect();
+    const s = mk(name, { media: media as never, signalling: (role: Parameters<typeof matchSignalling>[0], me: string) => matchSignalling(role, me), log: log.log, seriesOverLingerMs: 400, ...extra });
+    /** The peers the page holds now. */
+    const held = (): string[] => [...new Set(page.added)].filter((p) => page.added.filter((x) => x === p).length > page.removed.filter((x) => x === p).length);
+    return { ...s, page, held, calls: m.calls, lines: log.lines };
+  };
+  const OVER = /^The lobby is over: the link to Owner's Castcade is gone \(they left or closed Castcade, or the connection dropped\)\. Nobody hears your microphone any more\. Join again to play\.$/;
+  /** What a client shows and holds once its lobby is lost, and that the match is closed by itself after the linger. */
+  const lobbyLostOn = async (C: ReturnType<typeof lobbySeat>): Promise<void> => {
+    // At once: nobody is held any more, and the Match tab and the panel say why.
+    await until(() => C.held().length === 0, 8000);
+    await until(() => C.mh.status().series?.over === true);
+    expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'lobby' });
+    expect(C.mh.status().panel?.message).toMatch(OVER);
+    expect(C.mh.status().panel).toMatchObject({ phase: 'idle', seriesOver: true });
+    expect(C.calls).not.toContain('detach');
+    // After the linger the lobby is closed on this PC: the page (and its microphone) is gone, the reason stays.
+    await until(() => C.mh.status().role === 'none', 4000);
+    expect(C.calls.filter((c) => c === 'detach')).toHaveLength(1);
+    expect(C.mh.status().lastError).toMatch(OVER);
+    expect(C.lines.some((l) => l.startsWith('match: the lobby is over on this PC (the host is gone); closing it in'))).toBe(true);
+    expect(C.lines.some((l) => /^match: closed the lobby [A-Z]{6}: its host is gone$/.test(l))).toBe(true);
+  };
+
+  it('the review of PR 127: the host leaves a lobby of three (over its own listener): each client lets go of the host and of the other client at once, says the lobby is over, and closes it by itself', async () => {
+    const H = lobbySeat('lobby-end-host', { relay: () => null });
+    const A = lobbySeat('lobby-end-a', { relay: () => null });
+    const B = lobbySeat('lobby-end-b', { relay: () => null });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await B.mh.join(hs.invite!, 'Chuck');
+    await until(() => H.held().length === 2 && A.held().length === 2 && B.held().length === 2);
+    const ids = { h: H.mh.status().localId as string, a: A.mh.status().localId as string, b: B.mh.status().localId as string };
+    expect(A.held().sort()).toEqual([ids.h, ids.b].sort());
+
+    // The host presses Leave in the lobby: its own page is gone at once.
+    await H.mh.leave();
+    expect(H.calls.filter((c) => c === 'detach')).toHaveLength(1);
+    await Promise.all([lobbyLostOn(A), lobbyLostOn(B)]);
+    // Each let go of BOTH: until this fix the two clients kept each other, in a lobby that could never start.
+    expect(A.page.removed.sort()).toEqual([ids.h, ids.b].sort());
+    expect(B.page.removed.sort()).toEqual([ids.h, ids.a].sort());
+  }, 30_000);
+
+  it("the review of PR 127: the host's Castcade quits, ArcAid closes the room, and this PC's own link drops: each ends the lobby for the client the same way", async () => {
+    // (1) The host quits Castcade (the tray's Quit: a leave; a crash is the same to a client: the link is gone).
+    {
+      const r = await fakeRelay();
+      const H = lobbySeat('lobby-quit-host', paired(r, 'h'));
+      const C = lobbySeat('lobby-quit-client', paired(r, 'c'));
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+      await C.mh.join(hs.invite!, 'Krobs');
+      await until(() => C.held().length === 1 && H.held().length === 1);
+      await H.mh.stop();
+      await lobbyLostOn(C);
+    }
+    // (2) ArcAid closes the room under both (`expired`; a deploy loses it the same way). The host opens the code
+    // again by itself, with nobody in it: it has let the client go, and the client has let it go.
+    {
+      const r = await fakeRelay();
+      const H = lobbySeat('lobby-room-host', paired(r, 'h'));
+      const C = lobbySeat('lobby-room-client', paired(r, 'c'));
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+      await C.mh.join(hs.invite!, 'Krobs');
+      await until(() => C.held().length === 1 && H.held().length === 1);
+      r.closeRooms('expired');
+      await lobbyLostOn(C);
+      await until(() => H.held().length === 0 && H.mh.status().participants.length === 1, 8000);
+      expect(H.mh.status()).toMatchObject({ role: 'host', phase: 'lobby' });
+    }
+    // (3) Only the client's own connection to ArcAid drops. It is back in a second, but a drop in the lobby is a
+    // leave: the host has taken it off the roster, so its lobby is over, and nobody hears it meanwhile.
+    {
+      const r = await fakeRelay();
+      const H = lobbySeat('lobby-drop-host', paired(r, 'h'));
+      const C = lobbySeat('lobby-drop-client', paired(r, 'c'));
+      const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+      await C.mh.join(hs.invite!, 'Krobs');
+      await until(() => C.held().length === 1 && H.held().length === 1);
+      r.dropDevice('dev-c');
+      await lobbyLostOn(C);
+      await until(() => H.held().length === 0 && H.mh.status().participants.length === 1, 8000);
+      // The code is still good: the player joins again and both hold each other anew.
+      await C.mh.join(hs.invite!, 'Krobs');
+      await until(() => C.held().length === 1 && H.held().length === 1, 8000);
+      expect(C.mh.status()).toMatchObject({ role: 'client', phase: 'lobby', lastError: null });
+      expect(C.mh.status().series?.over).toBe(false);
+    }
+  }, 60_000);
+
+  it('the review of PR 127: a client that leaves the lobby, and one whose join is refused: the first is let go by everyone at once and its page is gone; the second never had a page', async () => {
+    const H = lobbySeat('lobby-leave-host', { relay: () => null });
+    const A = lobbySeat('lobby-leave-a', { relay: () => null });
+    const B = lobbySeat('lobby-leave-b', { relay: () => null });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await B.mh.join(hs.invite!, 'Chuck');
+    await until(() => H.held().length === 2 && A.held().length === 2 && B.held().length === 2);
+    const a = A.mh.status().localId as string;
+    await A.mh.leave();
+    // The leaver's page is closed with the leave; the host lets it go at the leave, the other client by the roster.
+    expect(A.calls.filter((c) => c === 'detach')).toHaveLength(1);
+    expect(A.mh.status().role).toBe('none');
+    await until(() => !H.held().includes(a) && !B.held().includes(a), 8000);
+    expect(H.held()).toEqual([B.mh.status().localId]);
+    expect(B.held()).toEqual([H.mh.status().localId]);
+    expect(B.mh.status().series?.over).toBe(false);
+    // The match starts: a player who would join now is refused, and a refused join never opens the page at all.
+    await H.mh.start();
+    await until(() => B.mh.status().phase === 'playing');
+    const D = lobbySeat('lobby-leave-d', { relay: () => null });
+    await expect(D.mh.join(hs.invite!, 'Dana')).rejects.toThrow(/The host refused/);
+    expect(D.calls.filter((c) => c.startsWith('attach'))).toEqual([]);
+    expect(D.page.added).toEqual([]);
+    expect(H.held()).toEqual([B.mh.status().localId]);
+  }, 30_000);
+
   it("A18: the player who is up loses the host for longer than the grace: the others wait, and on that player's own PC the table is never locked, its sound and its picture are never cut, through the pause it finds at its return", async () => {
     const r = await fakeRelay();
     const H = a18Seat('a18b-host', 'h', r, 111, 0);
