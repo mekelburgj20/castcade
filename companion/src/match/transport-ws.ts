@@ -1,6 +1,7 @@
 /**
  * WebSocket transports: `WsHostTransport` (one `ws` server, one socket per client, socket ->
- * playerId learned from the first HELLO) and `WsClientTransport` (one socket to the host), the
+ * playerId once the engine has accepted the socket's first HELLO: 2026-11-25, `LinkCandidate` in
+ * transport.ts, for the inbound sockets of `WsPeerTransport` too) and `WsClientTransport` (one socket to the host), the
  * fixed-role pair from Phase 1; and `WsPeerTransport` (A2, 2026-10-30), one participant that can
  * hold either role and change it mid-match: an optional listener plus outbound links, so a client
  * can become host, the old host can become its client, and a dropped client can reconnect.
@@ -10,7 +11,7 @@
  */
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type PlayerId } from '@castcade/protocol';
-import type { MessageHandler, PeerHandler, Transport } from './transport.js';
+import { openCandidate, type LinkCandidate, type MessageHandler, type PeerHandler, type Transport } from './transport.js';
 
 export type ErrorHandler = (err: Error, peer: PlayerId | null) => void;
 
@@ -58,6 +59,8 @@ export interface WsHostOptions {
   /** 0 picks an ephemeral port; read it back from `listen()`. */
   port: number;
   host?: string;
+  /** Test seam: how long a socket's first frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 export class WsHostTransport implements Transport {
@@ -89,6 +92,9 @@ export class WsHostTransport implements Transport {
   }
 
   private attach(socket: WebSocket): void {
+    // 2026-11-25: `peer` stays null until the engine has accepted this socket's first frame (`LinkCandidate`).
+    // `judged`: the first frame was handed over (a verdict is awaited, or it was refused): nothing more is read.
+    let judged: LinkCandidate | null = null;
     let peer: PlayerId | null = null;
     socket.on('message', (data: RawData) => {
       const text = rawToString(data);
@@ -101,21 +107,38 @@ export class WsHostTransport implements Transport {
         return;
       }
       if (peer === null) {
+        if (judged !== null) return;
         if (msg.type !== 'HELLO') {
           this.fail(new Error(`first frame from a new socket was ${msg.type}, not HELLO`), null);
           socket.close();
           return;
         }
-        peer = msg.from;
-        const previous = this.sockets.get(peer);
-        if (previous && previous !== socket) previous.close();
-        this.sockets.set(peer, socket);
-        for (const cb of [...this.joinHandlers]) cb(peer);
+        const player = msg.from;
+        judged = openCandidate(
+          player,
+          {
+            send: (m) => {
+              if (socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(m));
+            },
+            bind: () => {
+              peer = player;
+              const previous = this.sockets.get(player);
+              if (previous && previous !== socket) previous.close();
+              this.sockets.set(player, socket);
+              for (const cb of [...this.joinHandlers]) cb(player);
+            },
+            close: () => socket.close(),
+          },
+          this.opts.verdictMs,
+        );
+        for (const cb of [...this.messageHandlers]) cb(player, msg, judged);
+        return;
       }
       for (const cb of [...this.messageHandlers]) cb(peer, msg);
     });
     socket.on('close', () => {
-      if (peer === null) return;
+      // A socket that closes before its verdict was never anybody's: no leave, and no verdict can bind it any more.
+      if (peer === null) return void judged?.refuse();
       if (this.sockets.get(peer) === socket) {
         this.sockets.delete(peer);
         for (const cb of [...this.leaveHandlers]) cb(peer);
@@ -267,6 +290,8 @@ export class WsClientTransport implements Transport {
 
 export interface WsPeerOptions {
   localId: PlayerId;
+  /** Test seam: how long an inbound socket's first frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 interface PeerLink {
@@ -278,6 +303,11 @@ interface PeerLink {
   ready: boolean;
   /** Closing this link is deliberate (a move to a new host, a refusal): never reported as a leave. */
   silent: boolean;
+  /**
+   * 2026-11-25, inbound only: the first frame was handed to the engine. While `peer` is null the link is a candidate
+   * (a verdict is awaited, or it was refused and the socket is closing); it is `peer`'s link from the accept on.
+   */
+  judged: LinkCandidate | null;
 }
 
 /**
@@ -300,9 +330,11 @@ export class WsPeerTransport implements Transport {
   private readonly leaveHandlers = new Set<PeerHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private seqForRefuse = 0;
+  private readonly verdictMs: number | undefined;
 
   constructor(opts: WsPeerOptions) {
     this.localId = opts.localId;
+    this.verdictMs = opts.verdictMs;
   }
 
   /** This participant's listener once `listen()` resolved: what goes in HOST_TRANSFER.newHostEndpoint. */
@@ -341,7 +373,7 @@ export class WsPeerTransport implements Transport {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       // A link to a not-yet-known host is usable at once: HELLO goes out on it through send('all').
-      const link: PeerLink = { socket, dir: 'out', peer, ready: first === null, silent: false };
+      const link: PeerLink = { socket, dir: 'out', peer, ready: first === null, silent: false, judged: null };
       this.links.push(link);
       socket.once('error', reject);
       socket.once('open', () => {
@@ -374,7 +406,7 @@ export class WsPeerTransport implements Transport {
   }
 
   private attachInbound(socket: WebSocket): void {
-    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false };
+    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false, judged: null };
     this.links.push(link);
     socket.on('message', (data: RawData) => {
       const text = rawToString(data);
@@ -387,14 +419,33 @@ export class WsPeerTransport implements Transport {
         return;
       }
       if (link.peer === null) {
+        // 2026-11-25: once the first frame was handed over nothing more is read until, and unless, it is accepted.
+        if (link.judged !== null) return;
         if (msg.type !== 'HELLO' && msg.type !== 'RECONNECT') {
           this.fail(new Error(`first frame from a new socket was ${msg.type}, not HELLO or RECONNECT`), null);
           socket.close();
           return;
         }
-        link.peer = msg.from;
-        link.ready = true;
-        this.noteJoin(link);
+        const player = msg.from;
+        link.judged = openCandidate(
+          player,
+          {
+            send: (m) => {
+              if (socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(m));
+            },
+            // The player's other links, if any, stay as they are: frames go on the newest (the class comment).
+            bind: () => {
+              link.peer = player;
+              link.ready = true;
+              this.noteJoin(link);
+            },
+            // Never anybody's link: its close is not a leave (`peer` is still null).
+            close: () => socket.close(),
+          },
+          this.verdictMs,
+        );
+        for (const cb of [...this.messageHandlers]) cb(player, msg, link.judged);
+        return;
       }
       this.dispatch(link.peer, msg);
     });
@@ -415,6 +466,8 @@ export class WsPeerTransport implements Transport {
 
   private onLinkClosed(link: PeerLink): void {
     this.links = this.links.filter((l) => l !== link);
+    // A socket that closes before its verdict was never anybody's: no verdict can bind it any more.
+    link.judged?.refuse();
     const peer = link.peer;
     if (link.silent || !link.ready || peer === null) return;
     if (this.links.some((l) => l.peer === peer && l.ready)) return;

@@ -21,6 +21,13 @@ participants are **clients**; the turn token is a **grant**.
 - `v` must equal the receiver's protocol version or the receiver answers `REFUSE` (`protocol_version`)
   and closes.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
+- A link belongs to a player once the host has accepted the link's first frame (2026-11-25; no change on the
+  wire): a `HELLO` it takes into the lobby, or a `RECONNECT` whose signature verifies and that it accepts. Until
+  then the link is a candidate: the host reads nothing more from it and answers it on that link only, and the
+  link the named player already has, if any, stays theirs. A first frame that is refused changes nothing about
+  the player it names (their link, their `seq` count, whether they count as connected) and its link is closed; a
+  candidate that gets no verdict is closed after a short time. The `seq` of a `HELLO` or a `RECONNECT` is
+  looked at and recorded only when the frame is accepted, for a `RECONNECT` after its signature has verified.
 
 ## Canonical JSON
 
@@ -150,7 +157,8 @@ the three fields is logged.
   - **The disconnect grace.** A link that drops is not a disconnect for 5 seconds. The host sends that peer nothing
     meanwhile, logs nothing and pauses nothing; a client whose link to the host dropped starts its reconnect at once
     and tells its player nothing. A `RECONNECT` inside the grace is answered as any other, and that is all that
-    happened. A peer whose `RECONNECT` the host rejects is disconnected at once.
+    happened. A peer whose `RECONNECT`, sent on the link that is already its own, the host rejects is disconnected
+    at once; one that is rejected as the first frame of a new link changes nothing (Transport and framing).
   - **Only the grant holder is paused for.** When the grace is over and the peer holds the outstanding grant, the
     host sends `PAUSE(disconnect, player)`: the others wait, as before. (That player's own companion keeps its table
     as it is: it locks only on what the host says, never on a silence.) A peer that does not hold the grant changes
@@ -232,7 +240,10 @@ the three fields is logged.
   carries every entry after it, in order, verbatim (nothing when the client is already current). The
   client checks each entry's `prevHash` and `hash` before appending it, so its log is the host's log.
   When the hash is unknown, the signature does not verify, or the player is not in the roster, the
-  answer is a rejection with a `code` and no entries, and the host closes the socket.
+  answer is a rejection with a `code` and no entries, and the host closes the socket it came on. An
+  accepted `RECONNECT` makes the link it came on the player's link, in place of the one they had; its
+  `seq` must be above the last the host took from that player, or the frame gets `REJECT`
+  (`unexpected_state`) and its link is closed.
 - A rejected client must re-join with a fresh `HELLO`. It is a new participant only if the match allows
   it, which after `MATCH_READY` it does not (`match_started`).
 - The existing pause and timeout rules apply while a player is disconnected (Pauses and timeouts: the grace, and
@@ -250,7 +261,7 @@ the three fields is logged.
 - A participant whose process restarted resumes the same way, from the log it saved: a client sends
   `RECONNECT` from its saved head; a host rebuilds its state from its saved log, serves the same
   endpoint again and issues the outstanding grant again under a new `grantSeq`. `seq` is per sender
-  and strictly increasing across that sender's connections (only a `HELLO` starts it over), so a
+  and strictly increasing across that sender's connections (only an accepted `HELLO` starts it over), so a
   restarted participant starts its `seq` above anything its earlier run can have used.
 
 ## Media signalling

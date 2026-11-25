@@ -46,6 +46,11 @@
  *   its own wait (`stream3dWaiting()`); a PC that says nothing more is dropped from the list a grace after its time ran
  *   out. The engine only keeps and passes the list: `startIn()` and `start()` do not look at it (the controller holds a
  *   start for it; `start()` is the host's "start now"). Lobby only: NEXT_GAME and a rejoin never wait.
+ * - 2026-11-25: a link belongs to a player once this engine has accepted the link's first frame (`LinkCandidate` in
+ *   transport.ts; `judge`, `admit`). A HELLO or a RECONNECT that is refused changes nothing about the player it names:
+ *   the answer goes to the link it came on, a link that was nobody's yet is closed, and the frame's `seq` is not
+ *   recorded (a RECONNECT's signature is verified before its `seq` is looked at). An accepted RECONNECT makes the
+ *   link it came on the player's, in place of the one they had.
  * - A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
  *   up session"; match ECVYGP, 2026-11-23: one second without ArcAid paused the match in the owner's ball). Two rules
  *   for a peer whose link drops after MATCH_READY:
@@ -95,7 +100,7 @@ import {
   type GrantTarget,
   type MatchState,
 } from './state.js';
-import type { Transport } from './transport.js';
+import type { LinkCandidate, Transport } from './transport.js';
 
 export type RejectCode = PayloadOf<'REJECT'>['code'];
 export type RefuseCode = PayloadOf<'REFUSE'>['code'];
@@ -908,7 +913,8 @@ export class HostMatch {
 
   private attach(): void {
     const t = this.s.transport;
-    this.unsubscribe.push(t.onMessage((from, msg) => this.handle(from, msg)));
+    // 2026-11-25: a candidate is nobody's link, so its first frame is read under the name the frame itself gives.
+    this.unsubscribe.push(t.onMessage((from, msg, candidate) => (candidate ? this.handle(msg.from, msg, { candidate }) : this.handle(from, msg))));
     this.unsubscribe.push(t.onPeerLeave((peer) => this.onPeerLeave(peer)));
   }
 
@@ -968,23 +974,82 @@ export class HostMatch {
 
   private reject(ref: AnyMessage, code: RejectCode, message: string): void {
     const payload: PayloadOf<'REJECT'> = { refSeq: ref.seq, refType: ref.type, code, message };
+    // 2026-11-25: the answer to a frame goes to the link the frame came on. For the first frame of a link that is
+    // nobody's yet that is the candidate (which is closed with it), never the link of the player the frame names.
+    const candidate = this.candidateOf(ref);
+    if (candidate) candidate.refuse(this.s.build('REJECT', payload, this.matchId));
     this.events.emit('reject', { to: ref.from, ...payload });
-    if (ref.from !== this.localId) this.s.transport.send(ref.from, this.s.build('REJECT', payload, this.matchId));
+    if (!candidate && ref.from !== this.localId) this.s.transport.send(ref.from, this.s.build('REJECT', payload, this.matchId));
   }
 
   private refuse(hello: Message<'HELLO'>, code: RefuseCode, message: string, mismatches: PayloadOf<'REFUSE'>['mismatches'] = []): void {
     const msg = this.s.build('REFUSE', { code, message, mismatches }, null);
-    this.s.transport.send(hello.from, msg);
+    // 2026-11-25: a HELLO that is refused changes nothing about the player it names. On a link that is nobody's yet
+    // the answer goes to that link, which is then closed. On a link that is a participant's already the answer is
+    // all; only the link of somebody who is in nothing is closed, as before.
+    const candidate = this.candidateOf(hello);
+    const known = this.isParticipant(hello.from);
+    if (candidate) candidate.refuse(msg);
+    else this.s.transport.send(hello.from, msg);
     this.events.emit('refused', { playerId: hello.from, refuse: msg.payload });
-    this.s.transport.closePeer?.(hello.from);
+    if (!candidate && !known) this.s.transport.closePeer?.(hello.from);
+  }
+
+  /**
+   * 2026-11-25: the first frame of a link that is nobody's yet, while it is being read (`judge`), with that link.
+   * Null for every frame that comes from a link that is a player's.
+   */
+  private first: { candidate: LinkCandidate; msg: AnyMessage } | null = null;
+
+  /**
+   * 2026-11-25: the candidate `msg` came on, when `msg` is the first frame being judged (whatever its verdict by
+   * now: an answer to that frame never goes to another link); null for any other frame.
+   */
+  private candidateOf(msg: AnyMessage): LinkCandidate | null {
+    return this.first !== null && this.first.msg === msg ? this.first.candidate : null;
+  }
+
+  /**
+   * 2026-11-25: read the first frame of a link that is nobody's yet. Whatever `run` does, the candidate leaves here
+   * with a verdict: accepted where the frame was taken (`admit`), and otherwise refused, so no path through the
+   * engine, present or added later, can leave such a link open or make it a player's by saying nothing.
+   */
+  private judge(candidate: LinkCandidate, msg: AnyMessage, run: () => void): void {
+    const outer = this.first;
+    this.first = { candidate, msg };
+    try {
+      // The link would become the player the transport named: a frame that names another is not read at all.
+      if (candidate.player === msg.from) run();
+    } finally {
+      this.first = outer;
+      candidate.refuse();
+    }
+  }
+
+  /**
+   * 2026-11-25: the frame that opens a link is taken. Only here does a candidate become its player's link, and only
+   * here is the frame's `seq` recorded: a HELLO opens a connection, so the count starts over with it (A3: a client
+   * that joins again starts a fresh session); a RECONNECT continues the count and must be above it. False, with
+   * nothing changed, when the candidate is gone by now or the `seq` is not above the last taken.
+   */
+  private admit(msg: Message<'HELLO'> | Message<'RECONNECT'>): boolean {
+    const candidate = this.candidateOf(msg);
+    if (candidate && candidate.state !== 'open') return false;
+    if (msg.type === 'HELLO') this.s.resetSeq(msg.from);
+    if (!this.s.checkSeq(msg.from, msg.seq)) return false;
+    candidate?.accept();
+    return true;
   }
 
   // ------------------------------------------------------------------------------------------
   // Inbound dispatch
   // ------------------------------------------------------------------------------------------
 
-  /** Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). */
-  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
+  /**
+   * Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). `candidate` (2026-11-25):
+   * `msg` is the first frame of a link that is nobody's yet; it leaves here accepted or refused (`judge`).
+   */
+  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean; candidate?: LinkCandidate } = {}): void {
     if (this.detached) return;
     if (msg.from !== linkFrom) {
       // On a star the old host relays acks and mirrors frames until it steps down; one that
@@ -995,8 +1060,14 @@ export class HostMatch {
     }
     // `seq` is strictly increasing within a connection, and a HELLO opens one: a client that must
     // re-join after a rejected RECONNECT starts a fresh session, so its counter starts over (A3).
-    if (msg.type === 'HELLO') this.s.resetSeq(msg.from);
-    if (!opts.seqChecked && !this.s.checkSeq(msg.from, msg.seq)) {
+    // 2026-11-25: a frame that opens a link (HELLO, RECONNECT) has its `seq` looked at and recorded where the frame
+    // itself is taken (`admit`), after every check that can refuse it, a RECONNECT's signature among them: a frame
+    // that is refused leaves the count of the player it names where it was. And the first frame of a link that is
+    // nobody's yet is read under `judge`; nothing but an opening frame is read from such a link.
+    if (opts.candidate && this.candidateOf(msg) !== opts.candidate) return this.judge(opts.candidate, msg, () => this.handle(linkFrom, msg, opts));
+    const opening = msg.type === 'HELLO' || msg.type === 'RECONNECT';
+    if (opts.candidate && !opening) return;
+    if (!opts.seqChecked && !opening && !this.s.checkSeq(msg.from, msg.seq)) {
       this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
       return;
     }
@@ -1182,6 +1253,8 @@ export class HostMatch {
       this.refuse(msg, 'fingerprint_mismatch', `game fingerprint differs in: ${fields}`, mismatches);
       return;
     }
+    // 2026-11-25: taken. Its link is this player's from here on, and its `seq` is the first of a new count.
+    if (!this.admit(msg)) return;
     const participant: ParticipantInfo = { ...p.participant };
     this.lobby.push(participant);
     this.lobbyGames.set(participant.playerId, { ...p.game });
@@ -1598,12 +1671,31 @@ export class HostMatch {
     const matchId = this.s.state.matchId ?? this.matchId;
     if (code !== null) {
       const head = this.s.log.head();
-      this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId));
+      const no = this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId);
+      // 2026-11-25: a RECONNECT that is refused on a link that is nobody's yet changes nothing about the player it
+      // names: the answer goes to that link, the link is closed, and the player keeps the link, the count and the
+      // state they have (one whose own link did drop is told so by the transport, and the grace runs as for any drop).
+      const candidate = this.candidateOf(msg);
+      if (candidate) {
+        candidate.refuse(no);
+        this.events.emit('reconnectRejected', { playerId: msg.from, code });
+        return;
+      }
+      this.s.transport.send(linkFrom, no);
       this.events.emit('reconnectRejected', { playerId: msg.from, code });
       this.s.transport.closePeer?.(linkFrom);
       // A participant that cannot resume is disconnected: the usual pause rules apply (A3). A18: with no grace: it
       // will not be back on this log.
       if (this.isParticipant(linkFrom)) this.onPeerLeave(linkFrom, true);
+      return;
+    }
+    // 2026-11-25: the signature is the player's and the head is one this log holds. Only now is the frame's `seq`
+    // looked at, and recorded when it is above the last taken from this player; and only now is the link it came on
+    // this player's link, in place of the one they had.
+    if (!this.admit(msg)) {
+      // A candidate that is gone by now gets no answer and changed nothing; a `seq` that is not above the count is
+      // answered as for any frame (and a candidate it came on is closed).
+      if (this.candidateOf(msg)?.state !== 'refused') this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
       return;
     }
     // A18: a client that does not send a lost ball end again (up to 0.2.50: no `resends`) and holds the grant gets the

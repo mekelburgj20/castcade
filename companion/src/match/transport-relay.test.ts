@@ -57,8 +57,17 @@ const optsFor = (r: FakeRelay, id: string, extra: Partial<RelayOptions> = {}): R
   ackTimeoutMs: 1500,
   ...extra,
 });
+/**
+ * 2026-11-25: a link is a player's only once the engine has accepted its first frame (`LinkCandidate`). These tests
+ * run the transports with no engine, so this stands in for one that takes every opening frame; the verdicts
+ * themselves (a frame that is refused, one that gets no verdict) are tested in `link-binding.test.ts`.
+ */
+const takesAll = <T extends { onMessage: RelayHostTransport['onMessage'] }>(t: T): T => {
+  t.onMessage((_from, _msg, candidate) => void candidate?.accept());
+  return t;
+};
 const hostOn = (r: FakeRelay, extra: Partial<RelayOptions> = {}): RelayHostTransport => {
-  const t = new RelayHostTransport(optsFor(r, 'h', extra));
+  const t = takesAll(new RelayHostTransport(optsFor(r, 'h', extra)));
   open.push(t);
   return t;
 };
@@ -848,7 +857,7 @@ describe('RelayPacer (D10.8): under the relay rate limit', () => {
 describe('CompositeTransport (D10.8): a host on its listener and its relay room at once', () => {
   it('a WebSocket client and a relay client are both peers; each gets its own frames and all; leaves come from the part that holds the peer', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
-    const ws = new WsPeerTransport({ localId: 'h' });
+    const ws = takesAll(new WsPeerTransport({ localId: 'h' }));
     const rh = hostOn(r);
     const host = new CompositeTransport([ws, rh]);
     open.push(host);

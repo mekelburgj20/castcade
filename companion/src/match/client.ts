@@ -47,7 +47,7 @@ import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLo
 import { logSignBody, reconnectSignBody } from './result.js';
 import { Session } from './session.js';
 import { cloneState, isStrictMajority, remainingParticipants, type MatchState } from './state.js';
-import type { Transport } from './transport.js';
+import type { LinkCandidate, Transport } from './transport.js';
 
 export interface ClientOptions {
   transport: Transport;
@@ -254,7 +254,7 @@ export class ClientMatch {
   /** A10: MATCH_END arrived. */
   private ended = false;
   /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
-  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'> }[] = [];
+  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'>; candidate: LinkCandidate | null }[] = [];
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
 
@@ -665,7 +665,7 @@ export class ClientMatch {
 
   private attach(): void {
     const t = this.s.transport;
-    this.unsubscribe.push(t.onMessage((from, msg) => this.handle(from, msg)));
+    this.unsubscribe.push(t.onMessage((from, msg, candidate) => this.handle(from, msg, candidate ? { candidate } : {})));
     this.unsubscribe.push(t.onPeerLeave((peer) => this.onPeerLeave(peer)));
   }
 
@@ -694,13 +694,39 @@ export class ClientMatch {
     this.events.emit('dropped', { from: msg.from, type: msg.type, seq: msg.seq, reason });
   }
 
+  /**
+   * 2026-11-25: a frame that opens a link (a RECONNECT, or the first frame of an inbound link that is nobody's yet).
+   * A client answers none and binds none. One is kept: over WebSocket a client can reach the new host's listener
+   * before the new host has its majority; that RECONNECT is held, unread, with the link it came on, and the host
+   * engine this client becomes verifies it and gives the verdict at the commit, before the re-issued grant (A2,
+   * 2026-10-30). A held link that the transfer never reaches is closed by the transport when its time is up. Any
+   * other first frame is refused: its link is closed and was never anybody's.
+   */
+  private onOpeningFrame(linkFrom: PlayerId, msg: AnyMessage, candidate: LinkCandidate | null): void {
+    if (msg.type === 'RECONNECT' && this.joined && this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
+      this.heldReconnects.push({ linkFrom, msg, candidate });
+      return;
+    }
+    candidate?.refuse();
+    if (this.joined) this.drop(msg, 'not_host');
+  }
+
   // ------------------------------------------------------------------------------------------
   // Inbound dispatch
   // ------------------------------------------------------------------------------------------
 
-  /** Public so a stepping-down HostMatch can hand the triggering frame to its successor client. */
-  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
+  /**
+   * Public so a stepping-down HostMatch can hand the triggering frame to its successor client. `candidate`
+   * (2026-11-25): `msg` is the first frame of a link that is nobody's yet (an inbound socket of this PC's listener).
+   */
+  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean; candidate?: LinkCandidate } = {}): void {
     if (this.detached) return;
+    // 2026-11-25: a frame that opens a link is read before anything of it is recorded: a client takes none, so the
+    // `seq` of a RECONNECT, or of any first frame, never moves the count of the player it names.
+    if (opts.candidate || msg.type === 'RECONNECT') return this.onOpeningFrame(linkFrom, msg, opts.candidate ?? null);
+    // 2026-11-25: and a frame in somebody else's name is taken from the host's link only (the host passes frames on
+    // with `from` kept); from any other link it is dropped before its `seq` is looked at.
+    if (msg.from !== linkFrom && linkFrom !== this.hostId) return this.drop(msg, 'not_host');
     if (!opts.seqChecked && !this.s.checkSeq(msg.from, msg.seq)) {
       this.drop(msg, 'seq');
       return;
@@ -733,16 +759,6 @@ export class ClientMatch {
     }
     if (msg.type === 'RECONNECT_ACK') {
       this.onReconnectAck(linkFrom, msg);
-      return;
-    }
-    if (msg.type === 'RECONNECT') {
-      // Over WebSocket a client can reach the new host's listener before the new host has its
-      // majority; hold it and answer at the commit, before the re-issued grant (A2, 2026-10-30).
-      if (this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
-        this.heldReconnects.push({ linkFrom, msg });
-        return;
-      }
-      this.drop(msg, 'not_host');
       return;
     }
     if (linkFrom !== this.hostId) {
@@ -1287,7 +1303,8 @@ export class ClientMatch {
     this.events.emit('hostChanged', { from: done.oldHost, to: done.newHost });
     this.events.emit('becameHost', host);
     // Answer the held RECONNECTs first, so those clients get the commit event before the re-issued grant.
-    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, { seqChecked: true });
+    // 2026-11-25: each is read whole by the host engine (signature, then `seq`, then the link it came on).
+    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, h.candidate ? { candidate: h.candidate } : {});
     host.run();
   }
 }

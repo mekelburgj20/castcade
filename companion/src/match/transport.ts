@@ -5,14 +5,94 @@
  */
 import type { AnyMessage, PlayerId } from '@castcade/protocol';
 
-export type MessageHandler = (from: PlayerId, msg: AnyMessage) => void;
+/**
+ * 2026-11-25: a link whose first frame has not been judged yet. A link belongs to a player only once the engine has
+ * accepted that link's first frame (a HELLO taken into the lobby, a RECONNECT that verified). Until then the link is a
+ * candidate: the transport hands its first frame to the message handlers together with this object, reads nothing
+ * more from it, sends it nothing but what is sent through `send`, and leaves the link the named player already has,
+ * if any, exactly as it is. Every transport with per-peer links makes its candidates with `openCandidate`, so the
+ * rule is one piece of code.
+ */
+export interface LinkCandidate {
+  /** The player the first frame names. A claim and nothing more until `accept`. */
+  readonly player: PlayerId;
+  /** `open` until a verdict; `refused` also when no verdict came in time, or the link closed by itself. */
+  readonly state: 'open' | 'accepted' | 'refused';
+  /** One frame to this link only (the answer to its first frame). Nothing is sent once a verdict is in. */
+  send(msg: AnyMessage): void;
+  /**
+   * The first frame is taken: from here on this link is `player`'s, in place of the one that player had. False, with
+   * nothing done, when the candidate is no longer open.
+   */
+  accept(): boolean;
+  /** The first frame is not taken: `answer`, when given, goes to this link, which is then closed. It was never anybody's. */
+  refuse(answer?: AnyMessage): void;
+}
+
+/**
+ * `candidate` is given with the first frame of a link that is nobody's yet (`from` is then the player that frame
+ * names); every other frame comes from a link that is `from`'s.
+ */
+export type MessageHandler = (from: PlayerId, msg: AnyMessage, candidate?: LinkCandidate) => void;
 export type PeerHandler = (peer: PlayerId) => void;
+
+/** How long a candidate may wait for its verdict before the transport closes it. */
+export const CANDIDATE_VERDICT_MS = 10_000;
+
+/** What a transport gives `openCandidate`: how to reach the link, how to make it the player's, how to close it. */
+export interface CandidateLink {
+  send(msg: AnyMessage): void;
+  bind(): void;
+  close(): void;
+}
+
+/**
+ * 2026-11-25: the one place a candidate's verdict is kept. `accept` binds, `refuse` answers and closes, and a
+ * candidate nobody judged within `verdictMs` is closed: an engine cannot leave a link half-open by forgetting it.
+ * The first verdict stands; whatever is asked of the candidate after it does nothing.
+ */
+export function openCandidate(player: PlayerId, link: CandidateLink, verdictMs: number = CANDIDATE_VERDICT_MS): LinkCandidate {
+  let state: LinkCandidate['state'] = 'open';
+  const timer = setTimeout(() => {
+    if (state !== 'open') return;
+    state = 'refused';
+    link.close();
+  }, verdictMs);
+  // A candidate waiting for its verdict never keeps the process alive.
+  (timer as { unref?: () => void }).unref?.();
+  return {
+    player,
+    get state() {
+      return state;
+    },
+    send(msg) {
+      if (state === 'open') link.send(msg);
+    },
+    accept() {
+      if (state !== 'open') return false;
+      clearTimeout(timer);
+      state = 'accepted';
+      link.bind();
+      return true;
+    },
+    refuse(answer) {
+      if (state !== 'open') return;
+      clearTimeout(timer);
+      state = 'refused';
+      if (answer !== undefined) link.send(answer);
+      link.close();
+    },
+  };
+}
 
 export interface Transport {
   readonly localId: PlayerId;
   /** `to: 'all'` delivers to every connected peer except the sender. */
   send(to: PlayerId | 'all', msg: AnyMessage): void;
-  /** `from` is the link peer that delivered the frame; `msg.from` is the original sender. */
+  /**
+   * `from` is the link peer that delivered the frame; `msg.from` is the original sender. The first frame of a link
+   * that is nobody's yet comes with a `LinkCandidate` (2026-11-25), on the transports that have per-peer links.
+   */
   onMessage(cb: MessageHandler): () => void;
   onPeerJoin(cb: PeerHandler): () => void;
   onPeerLeave(cb: PeerHandler): () => void;
