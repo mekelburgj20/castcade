@@ -64,10 +64,10 @@
  * - **the lobby's table is a pick**: HELLO_ACK `hostGame` holds its identity keys only, and this client compares
  *   its own table with those (`compareTable`), not with every key;
  * - **RECONNECT in every phase**: a member comes back in the lobby and between games as it does in a game. The
- *   envelope and the signed body carry the lobby's code, the body also the match this client holds a log of and
- *   the envelope's own `seq` (so the frame is good for one use). `restart` in the answer: this client's log is of
+ *   envelope and the signed body carry the lobby's code, the body also the match this client holds a log of, the
+ *   id of the lobby's PC it is for and the envelope's own `seq` (so the frame is good for one use, at that PC). `restart` in the answer: this client's log is of
  *   another match, or of none: it is put away (`matchEnded`, when a match was held) and the open match's log
- *   follows in MATCH_LOG. `unknown_player`: the place is gone: this client says HELLO again on the same link and is
+ *   follows in MATCH_LOG. `unknown_player`: the place is gone: this client says HELLO again on a link of its own and is
  *   a newcomer (`rejoining`, then `joined`). Every answer, and every MATCH_LOG page, names the head of the log it
  *   carries, and each is checked;
  * - **the lobby's PC away** (11.8a): this client goes on trying for 20 minutes (`reconnect.maxMs`), not for thirty
@@ -102,7 +102,7 @@ import { helloProofBody, lobbyReconnectSignBody, logSignBody, reconnectSignBody 
 import { compareWithPick, identityOnly } from './table-identity.js';
 import { Session } from './session.js';
 import { cloneState, isStrictMajority, remainingParticipants, type MatchState } from './state.js';
-import type { Transport } from './transport.js';
+import type { LinkCandidate, Transport } from './transport.js';
 
 export interface ClientOptions {
   transport: Transport;
@@ -269,6 +269,8 @@ export interface ClientEvents extends Record<string, unknown> {
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'TURN_PASS', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 /** A17: the messages of a match (the logged stream, and its RESULT): a lobby's member takes them only into a log it holds. */
 const MATCH_STREAM_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'BALL_END', 'TURN_PASS', 'GAME_OVER', 'FORFEIT', 'PAUSE', 'RESUME', 'NEXT_GAME', 'RESULT']);
+/** 2026-11-25: how many RECONNECTs a pending new host keeps for the commit (a match has four players at most). */
+const MAX_HELD_RECONNECTS = 16;
 const DEFAULT_RECONNECT_ATTEMPTS = 30;
 /** A17 step 6 (review): the longest gap between two attempts to get back to the lobby's PC. */
 const LOBBY_RECONNECT_GAP_MAX_MS = 30_000;
@@ -290,6 +292,11 @@ interface Reconnecting {
   timer: TimerHandle | null;
   /** A15: no attempt is scheduled after this (the session's clock); null = the attempts alone bound it. */
   deadline: number | null;
+  /**
+   * A17 step 6 (2026-11-25): the frame that opens the link is a HELLO and not a RECONNECT: this PC's place in the
+   * lobby was gone, and it joins again as a newcomer. The answer waited for is then HELLO_ACK (or REFUSE).
+   */
+  hello: boolean;
 }
 
 export class ClientMatch {
@@ -346,7 +353,7 @@ export class ClientMatch {
   /** A10: MATCH_END arrived. */
   private ended = false;
   /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
-  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'> }[] = [];
+  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'>; candidate: LinkCandidate | null; count: number | null }[] = [];
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
   /** A17: the host is a lobby (`ClientOptions.lobby`). Everything the lobby adds is behind this flag. */
@@ -630,30 +637,35 @@ export class ClientMatch {
     return { since: this.downSince, until: this.reconnecting?.deadline ?? null };
   }
 
+  /**
+   * A17 step 6 (review): a lobby's HELLO is signed (`proof`: the lobby, this player, the envelope's own `seq`, with
+   * this player's key). A lobby that still holds this player's place takes it as their return (a Castcade that
+   * started again has nothing to RECONNECT with); for a newcomer it is not looked at.
+   */
+  private buildLobbyHello(): Message<'HELLO'> {
+    const seq = this.s.nextSeq();
+    const proof = signCanonical(helloProofBody(this.throwdownCode, this.localId, seq), this.s.keys.privateKey);
+    return buildMessage(
+      'HELLO',
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        companionVersion: this.companionVersion,
+        throwdownCode: this.throwdownCode,
+        participant: this.participant,
+        game: this.game,
+        ...(this.ballEndReady !== undefined ? { ballEndReady: this.ballEndReady } : {}),
+        stance: this.myStance,
+        proof,
+      },
+      { matchId: null, seq, from: this.localId, ts: this.s.clock.now() },
+    );
+  }
+
   join(): void {
     this.assertActive();
     if (this.joined) throw new Error('already joined');
     if (this.lobbyOn) {
-      // A17 step 6 (review): a lobby's HELLO is signed (`proof`: the lobby, this player, the envelope's own `seq`,
-      // with this player's key). A lobby that still holds this player's place takes it as their return (a Castcade
-      // that started again has nothing to RECONNECT with); for a newcomer it is not looked at.
-      const seq = this.s.nextSeq();
-      const proof = signCanonical(helloProofBody(this.throwdownCode, this.localId, seq), this.s.keys.privateKey);
-      const hello = buildMessage(
-        'HELLO',
-        {
-          protocolVersion: PROTOCOL_VERSION,
-          companionVersion: this.companionVersion,
-          throwdownCode: this.throwdownCode,
-          participant: this.participant,
-          game: this.game,
-          ...(this.ballEndReady !== undefined ? { ballEndReady: this.ballEndReady } : {}),
-          stance: this.myStance,
-          proof,
-        },
-        { matchId: null, seq, from: this.localId, ts: this.s.clock.now() },
-      );
-      this.s.transport.send(this.explicitHostId ?? 'all', hello);
+      this.s.transport.send(this.explicitHostId ?? 'all', this.buildLobbyHello());
       return;
     }
     const msg = this.s.build(
@@ -855,6 +867,11 @@ export class ClientMatch {
    * delay before the first attempt (after a drop, so the host has seen it too).
    */
   relinkTo(host: PlayerId, opts: { endpoint?: string; replacing?: PlayerId; closeListenerOnAccept?: boolean; delayFirst?: boolean } = {}): void {
+    this.openLinkTo(host, opts, false);
+  }
+
+  /** `hello` (A17 step 6): the link is opened with a lobby's HELLO (a place that was gone), within the same budget. */
+  private openLinkTo(host: PlayerId, opts: { endpoint?: string; replacing?: PlayerId; closeListenerOnAccept?: boolean; delayFirst?: boolean }, hello: boolean): void {
     if (!this.s.transport.connectTo || this.detached) return;
     this.cancelReconnect();
     this.reconnecting = {
@@ -867,6 +884,7 @@ export class ClientMatch {
       inFlight: false,
       timer: null,
       deadline: this.reconnectMaxMs === null ? null : this.s.clock.now() + this.reconnectMaxMs,
+      hello,
     };
     if (opts.delayFirst) this.scheduleReconnect(this.reconnecting);
     else this.attemptReconnect(this.reconnecting);
@@ -878,7 +896,7 @@ export class ClientMatch {
     r.timer = null;
     r.attemptsLeft -= 1;
     r.inFlight = true;
-    connectTo(r.host, () => this.buildReconnect(), { endpoint: r.endpoint, replacing: r.replacing }).catch((e: unknown) =>
+    connectTo(r.host, () => (r.hello ? this.buildLobbyHello() : this.buildReconnect()), { endpoint: r.endpoint, replacing: r.replacing }).catch((e: unknown) =>
       this.reconnectAttemptFailed(r, e instanceof Error ? e : new Error(String(e))),
     );
   }
@@ -976,12 +994,13 @@ export class ClientMatch {
   private buildReconnect(): Message<'RECONNECT'> {
     if (this.lobbyOn) {
       // A17 step 6: the lobby's form, in every phase. The lobby's code in the envelope and in what is signed; the
-      // match this client holds a log of (null: none); and the envelope's own `seq` under the signature, so the
-      // host takes this frame once and no copy of it in another envelope.
+      // match this client holds a log of (null: none); and, under the signature, the envelope's own `seq` and the
+      // id of the lobby's PC this frame is for, so that PC takes this frame once and no other PC takes it at all.
       const held = this.s.state.matchId;
       const at = this.s.log.head();
       const seq = this.s.nextSeq();
-      const sig = signCanonical(lobbyReconnectSignBody(this.throwdownCode, this.localId, held, at.hash, at.length, seq), this.s.keys.privateKey);
+      const to = this.reconnecting?.host ?? this.hostId ?? this.localId;
+      const sig = signCanonical(lobbyReconnectSignBody(this.throwdownCode, to, this.localId, held, at.hash, at.length, seq), this.s.keys.privateKey);
       return buildMessage(
         'RECONNECT',
         { player: this.localId, logHash: at.hash, logLength: at.length, signature: sig, resends: true, match: held },
@@ -1002,7 +1021,7 @@ export class ClientMatch {
 
   private attach(): void {
     const t = this.s.transport;
-    this.unsubscribe.push(t.onMessage((from, msg) => this.guard(`a ${msg.type}`, () => this.handle(from, msg))));
+    this.unsubscribe.push(t.onMessage((from, msg, candidate) => this.guard(`a ${msg.type}`, () => this.handle(from, msg, candidate ? { candidate } : {}))));
     this.unsubscribe.push(t.onPeerLeave((peer) => this.guard('a dropped link', () => this.onPeerLeave(peer))));
   }
 
@@ -1184,18 +1203,76 @@ export class ClientMatch {
     this.events.emit('dropped', { from: msg.from, type: msg.type, seq: msg.seq, reason });
   }
 
+  /**
+   * 2026-11-25: a frame that opens a link (a RECONNECT, or the first frame of an inbound link that is nobody's yet).
+   * A client answers none and binds none. One is kept: over WebSocket a client can reach the new host's listener
+   * before the new host has its majority; that RECONNECT is held with the link it came on, when it carries the
+   * signature of the roster player it names, and the host engine this client becomes reads it whole and gives the
+   * verdict at the commit, before the re-issued grant (A2, 2026-10-30). A held link that the transfer never reaches
+   * is closed by the transport when its time is up, and its entry is let go. Any other first frame is refused: its
+   * link is closed and was never anybody's.
+   */
+  private onOpeningFrame(linkFrom: PlayerId, msg: AnyMessage, candidate: LinkCandidate | null): void {
+    if (msg.type === 'RECONNECT' && this.joined && this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
+      // Only what carries the signature of the roster player it names is kept, and no more than sixteen of them:
+      // entries whose link is closed by now are let go first.
+      const held = this.heldReconnects;
+      for (let i = held.length - 1; i >= 0; i--) {
+        const c = held[i]!.candidate;
+        if (c !== null && c.state !== 'open') held.splice(i, 1);
+      }
+      if (!this.signedByItsPlayer(msg)) {
+        candidate?.refuse();
+        this.drop(msg, 'bad_signature');
+        return;
+      }
+      if (held.length < MAX_HELD_RECONNECTS) {
+        // The count of that player as it stands now is what the frame's `seq` is judged against at the commit: what
+        // the old host passes on from the same player meanwhile does not make the frame late.
+        held.push({ linkFrom, msg, candidate, count: this.s.lastSeqFrom(msg.from) });
+        return;
+      }
+    }
+    candidate?.refuse();
+    if (this.joined) this.drop(msg, 'not_host');
+  }
+
+  /** A RECONNECT that names a roster player other than this one and verifies against that player's key. */
+  private signedByItsPlayer(msg: Message<'RECONNECT'>): boolean {
+    const st = this.s.state;
+    const p = msg.payload;
+    const who = st.participants.find((x) => x.playerId === msg.from);
+    if (!who || !st.matchId || p.player !== msg.from || msg.from === this.localId) return false;
+    return verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey);
+  }
+
   // ------------------------------------------------------------------------------------------
   // Inbound dispatch
   // ------------------------------------------------------------------------------------------
 
-  /** Public so a stepping-down HostMatch can hand the triggering frame to its successor client. */
-  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
+  /**
+   * Public so a stepping-down HostMatch can hand the triggering frame to its successor client. `candidate`
+   * (2026-11-25): `msg` is the first frame of a link that is nobody's yet (an inbound socket of this PC's listener).
+   */
+  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean; candidate?: LinkCandidate } = {}): void {
     if (this.detached) return;
+    // 2026-11-25: a frame that opens a link is read before anything of it is recorded: a client takes none, so the
+    // `seq` of a RECONNECT, or of any first frame, never moves the count of the player it names.
+    if (opts.candidate || msg.type === 'RECONNECT') return this.onOpeningFrame(linkFrom, msg, opts.candidate ?? null);
+    // 2026-11-25: and a frame in somebody else's name is taken from the host's link only (the host passes frames on
+    // with `from` kept); from any other link it is dropped before its `seq` is looked at.
+    if (msg.from !== linkFrom && linkFrom !== this.hostId) return this.drop(msg, 'not_host');
     if (!opts.seqChecked && !this.s.checkSeq(msg.from, msg.seq)) {
       this.drop(msg, 'seq');
       return;
     }
     if (!this.joined) {
+      // A17 step 6 (2026-11-25): the answer to a HELLO that opened a link of its own (a place that was gone): the
+      // attempts are over either way, and a link that was down is up.
+      if ((msg.type === 'HELLO_ACK' || msg.type === 'REFUSE') && this.reconnecting?.hello === true && linkFrom === this.reconnecting.host) {
+        this.cancelReconnect();
+        this.clearDown();
+      }
       if (msg.type === 'HELLO_ACK') {
         this.joined = true;
         this.ackHostId = msg.payload.hostPlayerId;
@@ -1231,16 +1308,6 @@ export class ClientMatch {
     }
     if (msg.type === 'RECONNECT_ACK') {
       this.onReconnectAck(linkFrom, msg);
-      return;
-    }
-    if (msg.type === 'RECONNECT') {
-      // Over WebSocket a client can reach the new host's listener before the new host has its
-      // majority; hold it and answer at the commit, before the re-issued grant (A2, 2026-10-30).
-      if (this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
-        this.heldReconnects.push({ linkFrom, msg });
-        return;
-      }
-      this.drop(msg, 'not_host');
       return;
     }
     if (linkFrom !== this.hostId) {
@@ -1606,7 +1673,9 @@ export class ClientMatch {
       this.clearDown();
       this.events.emit('reconnectRejected', { host: want.host, code: p.code });
       // A17 step 6: the place in the lobby is gone (it ran out while this PC was away): a newcomer again, with a
-      // fresh HELLO on the link the RECONNECT opened, which a lobby takes while there is room.
+      // fresh HELLO, which a lobby takes while there is room. 2026-11-25: that HELLO is the opening frame of a link
+      // of its own (the link a refused RECONNECT came on is closed by the lobby's PC, and that close is not the
+      // lobby's PC going away: `replacing`), tried again within the same budget when the link does not come up.
       if (this.lobbyOn && p.code === 'unknown_player' && !this.ended) {
         this.putMatchAway();
         this.joined = false;
@@ -1616,7 +1685,8 @@ export class ClientMatch {
         this.saidNoCopy = undefined;
         this.saidOwnGame = undefined;
         this.events.emit('rejoining', want.host);
-        this.join();
+        if (this.s.transport.connectTo) this.openLinkTo(want.host, { endpoint: want.endpoint, replacing: want.host }, true);
+        else this.join();
       }
       // A17 step 6 (review): the counter fell behind what the lobby last took from this member (a Castcade that
       // started again without its counter). The lobby says where it stands; this client goes on above it and comes
@@ -1906,7 +1976,8 @@ export class ClientMatch {
     this.events.emit('hostChanged', { from: done.oldHost, to: done.newHost });
     this.events.emit('becameHost', host);
     // Answer the held RECONNECTs first, so those clients get the commit event before the re-issued grant.
-    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, { seqChecked: true });
+    // 2026-11-25: each is read whole by the host engine (signature, then `seq`, then the link it came on).
+    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, h.candidate ? { candidate: h.candidate, heldAtCount: h.count } : { heldAtCount: h.count });
     host.run();
   }
 }

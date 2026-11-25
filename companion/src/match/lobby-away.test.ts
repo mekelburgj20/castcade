@@ -58,7 +58,7 @@ describe('A17 step 6: a member who is away keeps their place, for a while', () =
     expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a']);
     expect(r.lobby('a').participants.map((p) => p.playerId)).toEqual(['h', 'a']);
     expect(logged(r).filter((t) => t.startsWith('PAUSE'))).toEqual([]);
-    // A later return: the RECONNECT finds no place, and the same link takes a fresh HELLO: a newcomer, with the log.
+    // A later return: the RECONNECT finds no place, and a fresh HELLO on a link of its own follows: a newcomer, with the log.
     const at = r.events['b']?.length ?? 0;
     await r.mend('b');
     expect(r.events['b']?.slice(at)).toEqual(['reconnectRejected unknown_player', 'rejoining', 'joined', 'ready JHDFEF-1', `caughtUp JHDFEF-1 ${r.host.log.length}`]);

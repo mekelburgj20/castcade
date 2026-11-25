@@ -33,6 +33,20 @@ participants are **clients**; the turn token is a **grant**.
   digits, `_`, `.`, `:` and `-`: a frame from a socket that has not joined may hold anything, and no such
   frame may make the host fail.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
+- A link belongs to a player once the host has accepted the link's first frame (no change on the wire): a
+  `HELLO` it takes into the lobby, or a `RECONNECT` whose signature verifies and that it accepts. Until then the
+  link is a candidate: the host reads nothing more from it and answers it on that link only, and the link the
+  named player already has, if any, stays theirs. A first frame that is refused changes nothing about the player
+  it names (their link, their `seq` count, whether they count as connected) and its link is closed; a link that
+  has brought no first frame to a verdict within a short time of connecting is closed. The `seq` of a `HELLO`
+  or a `RECONNECT` is looked at and recorded only when the frame is accepted, for a `RECONNECT` after its
+  signature has verified. (One thing follows from a `RECONNECT` that carried the player's own signature and
+  was refused: see Reconnect.)
+- The host answers a frame on the link it came on. A frame whose `from` is another participant gets its
+  `REJECT` (`unknown_player`) on the link that sent it; the participant it names is sent nothing. (The types
+  a host passes on with `from` kept, `STATE`, `DMD_FRAME`, `HOST_TRANSFER_ACK`, `MEDIA_SIGNAL` and
+  `PARTICIPANT_UPDATE`, are dropped without an answer when they arrive in another name: after a host transfer
+  they are late, not wrong.)
 
 ## Canonical JSON
 
@@ -185,7 +199,8 @@ to confirm the start); the host still may start, and such a match is played with
   - **The disconnect grace.** A link that drops is not a disconnect for 5 seconds. The host sends that peer nothing
     meanwhile, logs nothing and pauses nothing; a client whose link to the host dropped starts its reconnect at once
     and tells its player nothing. A `RECONNECT` inside the grace is answered as any other, and that is all that
-    happened. A peer whose `RECONNECT` the host rejects is disconnected at once.
+    happened. A peer whose `RECONNECT`, sent on the link that is already its own, the host rejects is disconnected
+    at once; one that is rejected as the first frame of a new link changes nothing (Transport and framing).
   - **Only the grant holder is paused for.** When the grace is over and the peer holds the outstanding grant, the
     host sends `PAUSE(disconnect, player)`: the others wait, as before. (That player's own companion keeps its table
     as it is: it locks only on what the host says, never on a silence.) A peer that does not hold the grant changes
@@ -274,7 +289,22 @@ to confirm the start); the host still may start, and such a match is played with
   carries every entry after it, in order, verbatim (nothing when the client is already current). The
   client checks each entry's `prevHash` and `hash` before appending it, so its log is the host's log.
   When the hash is unknown, the signature does not verify, or the player is not in the roster, the
-  answer is a rejection with a `code` and no entries, and the host closes the socket.
+  answer is a rejection with a `code` and no entries, and the host closes the socket it came on. An
+  accepted `RECONNECT` makes the link it came on the player's link, in place of the one they had; its
+  `seq` must be above the last the host took from that player, or the frame gets `REJECT`
+  (`unexpected_state`) and its link is closed.
+- Where a `RECONNECT` may point. It never names the host (`unknown_player`: a host is not a client of
+  itself). A participant's log only grows, and it is saved at every entry, so the head a `RECONNECT` names is
+  never shorter than one its player has been at: the log entry of the `TURN_GRANT` of the last `BALL_END` that
+  player reported (a client reports a ball end only for a grant it holds), and the head of that player's last
+  `RECONNECT` this host accepted. A shorter head is rejected (`unknown_log_hash`); the same head again is
+  taken, since nothing may have been logged between two drops.
+- A `RECONNECT` that carried the player's own signature and is rejected as the first frame of a new link,
+  because the host does not hold the head it names or because its `seq` is not above the count, is that
+  player's own word that it is no longer on the link the host holds for it: the ordinary disconnect grace
+  starts for that player, as for a link that dropped (Pauses and timeouts). A frame from that player's own
+  link under its next `seq` ends it: the player is there. A `RECONNECT` that did not verify, or that names a
+  head the player is past, starts nothing.
 - A rejected client must re-join with a fresh `HELLO`. It is a new participant only if the match allows
   it, which after `MATCH_READY` it does not (`match_started`).
 - The existing pause and timeout rules apply while a player is disconnected (Pauses and timeouts: the grace, and
@@ -292,7 +322,7 @@ to confirm the start); the host still may start, and such a match is played with
 - A participant whose process restarted resumes the same way, from the log it saved: a client sends
   `RECONNECT` from its saved head; a host rebuilds its state from its saved log, serves the same
   endpoint again and issues the outstanding grant again under a new `grantSeq`. `seq` is per sender
-  and strictly increasing across that sender's connections (only a `HELLO` starts it over), so a
+  and strictly increasing across that sender's connections (only an accepted `HELLO` starts it over), so a
   restarted participant starts its `seq` above anything its earlier run can have used.
 
 ## Media signalling
@@ -391,8 +421,10 @@ is in the match being played; a **watcher** is a member who is not.
   envelope's own, with the key in `participant.publicKey`). A `HELLO` in the name of somebody the lobby holds a
   place for is that member's own return (a Castcade that started again has nothing to `RECONNECT` with) when
   the proof verifies against the key of that row and the `seq` is above the last taken from them: the row stays
-  theirs, with what the `HELLO` says, and an open match's log follows whole. Any other `HELLO` in a member's
-  name is refused (`duplicate_player`), also while that member is away.
+  theirs, with what the `HELLO` says, the link the `HELLO` came on is theirs, their `seq` count goes on from it
+  (it is not started over, as it is for a newcomer's `HELLO`), and an open match's log follows whole. Any other
+  `HELLO` in a member's name is refused (`duplicate_player`), also while that member is away, and changes nothing
+  about that member (Transport: a first frame that is refused).
 - **`HELLO_ACK` is the lobby as it is now**, sent to every member on every change, in every phase, also while a
   match is played: `participants` is the members (the host first, then in the order they joined), with
   `stances`, `away`, `noCopy`, `ownGame`, `otherTable`, `tablePickedBy`, `ballsPerGame`, `starter`, `match` (the
@@ -499,14 +531,18 @@ is in the match being played; a **watcher** is a member who is not.
     start from zero.
 - **`RECONNECT` is how a member comes back in every phase**, the lobby with no match open included. The
   envelope's `matchId` is the lobby's code; `match` is the match the member holds a log of (null: none), and
-  `logHash` / `logLength` its head. The signature is over `{lobby, player, match, logHash, logLength, seq}`,
-  `seq` being the envelope's own, with the member's key as the lobby holds it (a watcher is in no match's
-  roster). The host checks the signature first and then takes the `seq` only when it is above the last it
-  took from that member: the same frame sent a second time is refused (`stale_seq`), and in a new envelope its
-  signature does not verify (`bad_signature`). A `RECONNECT` that is refused is not taken: what the lobby holds
-  about the member it names (the row, the place, the counter) stays as it was. `stale_seq` carries `seqAbove`,
-  the last `seq` the lobby took from that member: a member whose counter fell behind goes on above it and sends
-  a new `RECONNECT`, signed over the new `seq`; the counter itself is never moved back. The answer:
+  `logHash` / `logLength` its head. The signature is over `{lobby, host, player, match, logHash, logLength, seq}`,
+  `host` being the player id of the lobby's PC the frame is sent to and `seq` the envelope's own, with the
+  member's key as the lobby holds it (a watcher is in no match's roster). The host checks the signature first,
+  with its own id as `host`, and then takes the `seq` only when it is above the last it took from that member:
+  the same frame sent a second time is refused (`stale_seq`), in a new envelope its signature does not verify
+  (`bad_signature`), and neither does it at a PC it was not written for. A `RECONNECT` never names the lobby's
+  PC itself (`unknown_player`). Only an accepted `RECONNECT` makes the link it came on the member's. One that is
+  refused is not taken: what the lobby holds about the member it names (the row, the place, the counter, the
+  stance, the link) stays as it was, the answer goes to the link the frame came on, and when that was the first
+  frame of a new link, that link is closed, whatever the code. `stale_seq` carries `seqAbove`, the last `seq`
+  the lobby took from that member: a member whose counter fell behind goes on above it and sends a new
+  `RECONNECT` on a new link, signed over the new `seq`; the counter itself is never moved back. The answer:
   - the same match is open and the head is known: the entries after it. More than 100: the first 100, `more`,
     and the rest in `MATCH_LOG` (`restart: false`);
   - the match the member holds was closed while it was away, and is the last one the lobby closed: `closed`.
@@ -516,8 +552,8 @@ is in the match being played; a **watcher** is a member who is not.
     signs nothing into the closed match;
   - another match is open, or none, or the head is not in the host's log: `restart`: the member puts its log
     away, and the open match's whole log follows in `MATCH_LOG` (nothing follows when none is open);
-  - the member's place is gone: `unknown_player`. The link stays open, and the member says `HELLO` on it: a
-    newcomer, which a lobby takes while there is room.
+  - the member's place is gone: `unknown_player`. The member opens a link again with a `HELLO` as its first
+    frame: a newcomer, which a lobby takes while there is room.
   **Every `RECONNECT_ACK` names the head of the log it carries**: with entries, the hash and the place of the
   last one; a `restart` or a refusal, which carry no log, 64 zeros and 0. After the answer and what it carries
   the host sends the `RESULT`s and the lobby as it is now (`HELLO_ACK`). The member then sends again what the
@@ -539,8 +575,9 @@ is in the match being played; a **watcher** is a member who is not.
   `matchId` inside it, which is signed, and forgets the last `grantSeq` it saw when a match ends.
 - **`LOBBY_CLOSED`** (host -> all, never logged): the lobby is over. An open match is ended first (`MATCH_END`;
   a game that is being played is ended for everyone). Every member tears down, and nobody reconnects
-  afterwards. A member who was away then and sends `RECONNECT` later is answered with `LOBBY_CLOSED` on that
-  link.
+  afterwards. A member who was away then and sends `RECONNECT` later is answered with `LOBBY_CLOSED` on the
+  link that `RECONNECT` came on, and nowhere else; as the answer to the first frame of a new link it closes
+  that link.
 - **No host transfer in a lobby**: the host never proposes one, and a client drops a `HOST_TRANSFER` and never
   proposes itself. (The transfer of a match without a lobby is unchanged.)
 
@@ -883,7 +920,7 @@ client -> host. First frame on a new socket to the current host, after a drop or
 | `player` | string (`^[A-Za-z0-9_.:-]+$`) | yes | Who is resuming; must equal the envelope from. |
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | Hash of the last log entry this participant holds; 64 zeros when it holds none. |
 | `logLength` | integer | yes |  |
-| `signature` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, player, match, logHash, logLength, seq}): the lobby's code, the same `match` as below, and the envelope's own `seq`, so that a captured RECONNECT cannot be sent again in a new envelope. |
+| `signature` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, host, player, match, logHash, logLength, seq}): the lobby's code, the player id of the lobby's PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for. |
 | `resends` | boolean | no | A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME). |
 | `match` | string \| null | no | A17: the match the sender holds a log of; null: none. Absent: a RECONNECT from before the lobby, whose envelope names the match. |
 
@@ -896,7 +933,7 @@ host -> client. Answers RECONNECT. A rejected client must re-join with a fresh H
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `accept` | boolean | yes |  |
-| `code` | `"unknown_log_hash"` \| `"unknown_player"` \| `"bad_signature"` \| `"match_not_started"` \| `"protocol_version"` \| `"stale_seq"` \| null | yes | Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO on the same link. |
+| `code` | `"unknown_log_hash"` \| `"unknown_player"` \| `"bad_signature"` \| `"match_not_started"` \| `"protocol_version"` \| `"stale_seq"` \| null | yes | Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO, the first frame of a new link. |
 | `entries` | array of object | yes | Every log entry after the one the client named, in order; empty when it is current or rejected. |
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0). |
 | `logLength` | integer | yes |  |

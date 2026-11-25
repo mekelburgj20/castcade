@@ -545,7 +545,7 @@ export const Reconnect = z
     logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
     logLength: z.number().int().min(0),
     signature: Signature.describe(
-      "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, player, match, logHash, logLength, seq}): the lobby's code, the same `match` as below, and the envelope's own `seq`, so that a captured RECONNECT cannot be sent again in a new envelope.",
+      "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, host, player, match, logHash, logLength, seq}): the lobby's code, the player id of the lobby's PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for.",
     ),
     // A18 (2026-11-24): optional, never logged, not in the signed body; a peer that does not know it strips it, and
     // absent reads as "does not" (a companion up to 0.2.50).
@@ -567,7 +567,7 @@ export const ReconnectAck = z
       .enum(['unknown_log_hash', 'unknown_player', 'bad_signature', 'match_not_started', 'protocol_version', 'stale_seq'])
       .nullable()
       .describe(
-        "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO on the same link.",
+        "Why the RECONNECT was rejected; null when accepted. A17: `protocol_version`: the sender speaks another version; `stale_seq`: the envelope's `seq` is not above the last this host took from that member (a RECONNECT sent a second time). In a lobby `unknown_player` means the member's place is gone: it joins again with a fresh HELLO, the first frame of a new link.",
       ),
     entries: z.array(LogEntry).describe('Every log entry after the one the client named, in order; empty when it is current or rejected.'),
     logHash: Sha256Hex.describe("The host's log head after these entries. In a lobby's answer: the head of the log the answer carries (with `more`, at the end of this first page; for a `restart` or a refusal, which carry no log, 64 zeros and length 0)."),

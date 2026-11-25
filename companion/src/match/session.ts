@@ -68,11 +68,6 @@ export class Session {
     if (Number.isSafeInteger(floor) && floor > this.seq) this.seq = floor;
   }
 
-  /** A17 step 6: the last `seq` taken from `from`, or null when none was. */
-  lastSeqFrom(from: PlayerId): number | null {
-    return this.lastSeq.get(from) ?? null;
-  }
-
   /** Per-sender strictly increasing `seq`. Records the seq when it is acceptable. */
   checkSeq(from: PlayerId, seq: number): boolean {
     const last = this.lastSeq.get(from);
@@ -84,6 +79,20 @@ export class Session {
   /** Forget the last seq from `from`: a HELLO opens a new connection with a fresh counter (A3). */
   resetSeq(from: PlayerId): void {
     this.lastSeq.delete(from);
+  }
+
+  /** 2026-11-25: the last `seq` taken from `from`, or null when none was. Reads only. */
+  lastSeqFrom(from: PlayerId): number | null {
+    return this.lastSeq.get(from) ?? null;
+  }
+
+  /**
+   * 2026-11-25: record a `seq` that was judged against the count as it stood earlier (an opening frame that was
+   * held before it was read). The count moves up to it and never down.
+   */
+  noteSeq(from: PlayerId, seq: number): void {
+    const last = this.lastSeq.get(from);
+    if (last === undefined || seq > last) this.lastSeq.set(from, seq);
   }
 
   build<T extends MessageType>(type: T, payload: PayloadInput<T>, matchId: string | null): Message<T> {

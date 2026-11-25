@@ -30,9 +30,10 @@
  *             (`peers`, and `match:peer joined` again for each)
  *
  * A link here behaves like a socket of `WsPeerTransport`:
- * - host: a relay peer becomes a link with its first frame, which must be HELLO or RECONNECT (`match:peer joined`,
- *   also the one re-sent after a host resume, is not needed: a socket in the room is not yet a player);
- *   `match:peer left` closes it (a leave).
+ * - host: a relay peer becomes a link once the engine has accepted its first frame, which must be HELLO or RECONNECT
+ *   (2026-11-25, `LinkCandidate` in transport.ts: until that verdict the peer is nobody's link, and the player its
+ *   frame names keeps the link they have; `match:peer joined`, also the one re-sent after a host resume, is not
+ *   needed: a socket in the room is not yet a player); `match:peer left` closes it (a leave).
  * - client: the host's id is learned from its first frame; the link closes (a leave) when this socket drops, on
  *   `match:closed`, and when the host says so (below). `connectTo` re-joins the room if the socket changed and sends
  *   RECONNECT as the opening frame, so the engine resumes from the log head as it does over WebSocket.
@@ -65,6 +66,7 @@
  */
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
+import { openCandidate, refusedOpening, ReportGate, undecodedFrames, type OpenedCandidate } from './transport.js';
 import type { MessageHandler, PeerHandler, Transport } from './transport.js';
 import { foreignVersionRefusal, undecodable, type ErrorHandler } from './transport-ws.js';
 
@@ -123,6 +125,8 @@ export interface RelayOptions {
   rejoin?: Partial<RejoinPolicy>;
   /** Test seam: how long a host that had to open its room again waits for its players before it locks it again. Default 60 s. */
   relockWaitMs?: number;
+  /** Test seam: how long a relay peer's opening frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 /**
@@ -518,6 +522,13 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private readonly links = new Map<string, HostLink>();
   /** The newest relay peer of each player (a player that re-joined has a new one). */
   private readonly byPlayer = new Map<PlayerId, string>();
+  /** 2026-11-25: relay peers whose opening frame is with the engine and has no verdict yet. Not links. */
+  private readonly candidates = new Map<string, OpenedCandidate>();
+  /**
+   * 2026-11-25: what is reported about one relay peer at most once in ten seconds: an opening frame of its that was
+   * refused, and frames of its that did not decode. Kept while the peer has a seat (`forgetPeer`).
+   */
+  private readonly gates = new Map<string, { refused: ReportGate; undecoded: ReportGate }>();
   /** Relay peers that had a link when the socket dropped: told to RELINK once the room is ours again. */
   private stale = new Set<string>();
   private readonly relinkAt = new Map<string, number>();
@@ -634,6 +645,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
       // room is a link only from its first frame.
       if (typeof p?.peer !== 'string' || p.state !== 'left') return;
       this.stale.delete(p.peer);
+      this.dropCandidate(p.peer);
       this.closeLink(p.peer, true);
       this.forgetPeer(p.peer);
     });
@@ -663,6 +675,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
 
   /** That peer id is gone for good (a client that comes back has a new one): its pacer goes with it. */
   private forgetPeer(relayPeer: string): void {
+    this.gates.delete(relayPeer);
     const pacer = this.pacers.get(relayPeer);
     if (!pacer) return;
     this.shedGone += pacer.shed;
@@ -675,6 +688,11 @@ export class RelayHostTransport extends RelayBase implements Transport {
     for (const [peer, link] of this.links) {
       this.stale.add(peer);
       if (this.wantLocked) this.awaited.add(link.player);
+    }
+    // A peer whose opening frame had no verdict yet is told to relink like the others: its answer may be lost.
+    for (const peer of [...this.candidates.keys()]) {
+      this.stale.add(peer);
+      this.dropCandidate(peer);
     }
     this.clearPacers();
     for (const peer of [...this.links.keys()]) this.closeLink(peer, true);
@@ -717,8 +735,9 @@ export class RelayHostTransport extends RelayBase implements Transport {
       (ack) => {
         const present = peerList(ack.peers);
         if (!present || this.closed || this.socket !== socket || this.current !== 'registered') return;
-        for (const peer of [...this.links.keys()]) {
+        for (const peer of [...this.links.keys(), ...this.candidates.keys()]) {
           if (present.includes(peer)) continue;
+          this.dropCandidate(peer);
           this.closeLink(peer, true);
           this.forgetPeer(peer);
         }
@@ -796,7 +815,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
   }
 
   private takeFrame(relayPeer: string, text: string): void {
-    let link = this.links.get(relayPeer) ?? null;
+    const link = this.links.get(relayPeer) ?? null;
     let msg: AnyMessage;
     try {
       msg = decodeFrame(text);
@@ -810,25 +829,72 @@ export class RelayHostTransport extends RelayBase implements Transport {
           this.emitTo(relayPeer, refuse, false);
         }
       }
-      this.fail(e, link?.player ?? null);
+      // 2026-11-25: one line for the first, then at most one in ten seconds per relay peer, with how many there were.
+      const times = this.gateOf(relayPeer).undecoded.pass();
+      if (times !== null) this.fail(undecodedFrames(e, times), link?.player ?? null);
       return;
     }
     if (!link) {
+      // 2026-11-25: its opening frame is with the engine: nothing more is read from this peer until the verdict.
+      if (this.candidates.has(relayPeer)) return;
       if (msg.type !== 'HELLO' && msg.type !== 'RECONNECT') {
         // A client that does not know its link closed (this socket dropped and came back): it must resume.
         this.relink(relayPeer);
         return;
       }
-      link = { relayPeer, player: msg.from };
-      this.links.set(relayPeer, link);
-      const previous = this.byPlayer.get(link.player);
-      this.byPlayer.set(link.player, relayPeer);
-      if (previous !== undefined && previous !== relayPeer) this.links.delete(previous);
-      else for (const cb of [...this.joinHandlers]) cb(link.player);
-      // The last of the players a re-opened room was waiting for: it is locked again now.
-      if (this.awaited.delete(link.player) && this.awaited.size === 0 && this.relockTimer) this.relock();
+      // 2026-11-25: a relay peer is a player's link only once the engine has accepted its opening frame
+      // (`LinkCandidate`). Until then the player it names keeps the link it has, and the answer goes to this peer.
+      const player = msg.from;
+      const candidate = openCandidate(
+        player,
+        {
+          send: (m) => {
+            const frame = this.frameOf(m, player);
+            if (frame !== null) this.emitTo(relayPeer, frame, false);
+          },
+          bind: () => this.bind(relayPeer, player),
+          // The relay has no kick: a peer that was refused is simply nobody's link. What it sends next is read as
+          // any unlinked peer's is: an opening frame is judged on its own, anything else is answered with RELINK.
+          close: () => void this.candidates.delete(relayPeer),
+          // The peer keeps its seat and may open again: at most one line in ten seconds, with how many there were.
+          refused: (code) => {
+            const times = this.gateOf(relayPeer).refused.pass();
+            if (times !== null) this.fail(refusedOpening(msg.type, player, code, times), null);
+          },
+        },
+        this.opts.verdictMs,
+      );
+      this.candidates.set(relayPeer, candidate);
+      for (const cb of [...this.messageHandlers]) cb(player, msg, candidate);
+      return;
     }
     for (const cb of [...this.messageHandlers]) cb(link.player, msg);
+  }
+
+  /** The engine accepted `relayPeer`'s opening frame: it is `player`'s link now, in place of the one that player had. */
+  private bind(relayPeer: string, player: PlayerId): void {
+    this.candidates.delete(relayPeer);
+    this.links.set(relayPeer, { relayPeer, player });
+    const previous = this.byPlayer.get(player);
+    this.byPlayer.set(player, relayPeer);
+    if (previous !== undefined && previous !== relayPeer) this.links.delete(previous);
+    else for (const cb of [...this.joinHandlers]) cb(player);
+    // The last of the players a re-opened room was waiting for: it is locked again now.
+    if (this.awaited.delete(player) && this.awaited.size === 0 && this.relockTimer) this.relock();
+  }
+
+  /** A relay peer that is gone, or whose room is: a verdict that comes later binds nothing. */
+  private dropCandidate(relayPeer: string): void {
+    this.candidates.get(relayPeer)?.gone();
+  }
+
+  private gateOf(relayPeer: string): { refused: ReportGate; undecoded: ReportGate } {
+    let g = this.gates.get(relayPeer);
+    if (!g) {
+      g = { refused: new ReportGate(), undecoded: new ReportGate() };
+      this.gates.set(relayPeer, g);
+    }
+    return g;
   }
 
   private closeLink(relayPeer: string, report: boolean): void {
@@ -883,6 +949,8 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.rehostTimer = null;
     if (this.relockTimer) clearTimeout(this.relockTimer);
     this.relockTimer = null;
+    for (const peer of [...this.candidates.keys()]) this.dropCandidate(peer);
+    this.gates.clear();
     this.clearPacers();
     this.pacers.clear();
     this.links.clear();

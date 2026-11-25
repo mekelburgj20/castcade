@@ -76,27 +76,30 @@ export function reconnectSignBody(
 }
 
 /**
- * A17 step 6 (2026-11-25): the object a RECONNECT signs in a lobby, with the member's key as the lobby holds it. The
- * lobby's code and not a match's id (a member comes back in every phase, a watcher is in no match); the match it
- * holds a log of; and the envelope's own `seq`, which the host takes only when it is above the last it took from
- * that member. So a RECONNECT is good for one use: the same frame a second time is stale, and its payload under
- * another `seq` does not verify.
- */
-/**
  * A17 step 6 (the review of 2026-11-25): what `HELLO.proof` signs. A HELLO carries no log, so there is less to sign
  * than in a RECONNECT: the lobby, who says it, and the envelope's own `seq`, which makes the frame good for one use.
+ * (Not the id of the lobby's PC: a PC that joins by a code may not know it before the answer.)
  */
 export function helloProofBody(lobby: string, player: PlayerId, seq: number): { hello: true; lobby: string; player: PlayerId; seq: number } {
   return { hello: true, lobby, player, seq };
 }
 
+/**
+ * A17 step 6 (2026-11-25): the object a RECONNECT signs in a lobby, with the member's key as the lobby holds it. The
+ * lobby's code and not a match's id (a member comes back in every phase, a watcher is in no match); the id of the
+ * lobby's PC the frame is addressed to (`host`); the match it holds a log of; and the envelope's own `seq`, which the
+ * host takes only when it is above the last it took from that member. So a RECONNECT is good for one use at one PC:
+ * the same frame a second time is stale, its payload under another `seq` does not verify, and neither does the
+ * frame at a PC it was not written for.
+ */
 export function lobbyReconnectSignBody(
   lobby: string,
+  host: PlayerId,
   player: PlayerId,
   match: string | null,
   logHash: string,
   logLength: number,
   seq: number,
-): { lobby: string; player: PlayerId; match: string | null; logHash: string; logLength: number; seq: number } {
-  return { lobby, player, match, logHash, logLength, seq };
+): { lobby: string; host: PlayerId; player: PlayerId; match: string | null; logHash: string; logLength: number; seq: number } {
+  return { lobby, host, player, match, logHash, logLength, seq };
 }

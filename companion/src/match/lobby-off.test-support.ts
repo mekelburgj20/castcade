@@ -74,8 +74,9 @@ export class TapTransport implements Transport {
   }
 
   onMessage(cb: MessageHandler): () => void {
-    return this.inner.onMessage((from, msg) => {
-      if (!this.down.has(from)) cb(from, msg);
+    // 2026-11-25: the candidate, when the inner transport has per-peer links, goes on to the engine as it came.
+    return this.inner.onMessage((from, msg, candidate) => {
+      if (!this.down.has(from)) cb(from, msg, candidate);
     });
   }
 

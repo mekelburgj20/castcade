@@ -23,7 +23,7 @@
     "signature": {
       "type": "string",
       "pattern": "^[A-Za-z0-9+/]+={0,2}$",
-      "description": "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, player, match, logHash, logLength, seq}): the lobby's code, the same `match` as below, and the envelope's own `seq`, so that a captured RECONNECT cannot be sent again in a new envelope."
+      "description": "The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. In a lobby (A17; `match` is present) it is over canonicalJson({lobby, host, player, match, logHash, logLength, seq}): the lobby's code, the player id of the lobby's PC the frame is sent to, the same `match` as below, and the envelope's own `seq`: the frame is good for one use, at the PC it was written for."
     },
     "resends": {
       "description": "A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME).",

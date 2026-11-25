@@ -57,8 +57,17 @@ const optsFor = (r: FakeRelay, id: string, extra: Partial<RelayOptions> = {}): R
   ackTimeoutMs: 1500,
   ...extra,
 });
+/**
+ * 2026-11-25: a link is a player's only once the engine has accepted its first frame (`LinkCandidate`). These tests
+ * run the transports with no engine, so this stands in for one that takes every opening frame; the verdicts
+ * themselves (a frame that is refused, one that gets no verdict) are tested in `link-binding.test.ts`.
+ */
+const takesAll = <T extends { onMessage: RelayHostTransport['onMessage'] }>(t: T): T => {
+  t.onMessage((_from, _msg, candidate) => void candidate?.accept());
+  return t;
+};
 const hostOn = (r: FakeRelay, extra: Partial<RelayOptions> = {}): RelayHostTransport => {
-  const t = new RelayHostTransport(optsFor(r, 'h', extra));
+  const t = takesAll(new RelayHostTransport(optsFor(r, 'h', extra)));
   open.push(t);
   return t;
 };
@@ -453,9 +462,10 @@ describe('relay transports (D10.8)', () => {
     expect(ack.seq).toBeGreaterThanOrEqual(before);
     expect(decodeFrame(JSON.stringify({ ...ack, v: PROTOCOL_VERSION })).type).toBe('RECONNECT_ACK');
 
-    // Nothing of it reached an engine on either side, and the host said what it could not decode.
+    // Nothing of it reached an engine on either side, and the host said what it could not decode: one line for the
+    // first of the three (2026-11-25: at most one in ten seconds per relay peer; the others are counted for the next).
     expect(aSeen).toEqual([]);
-    expect(hErrors).toHaveLength(3);
+    expect(hErrors).toHaveLength(1);
     // The asking side of the same thing, with a host that answers in ITS OWN version (every host up to 0.2.50): this
     // PC cannot decode the answer, and says which versions the two PCs have in place of "The host did not answer".
     const foreign = errors.filter((e): e is ForeignVersionError => e instanceof ForeignVersionError);
@@ -481,11 +491,23 @@ describe('relay transports (D10.8)', () => {
       const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void; on(ev: string, cb: (p: { data?: unknown }) => void): void } };
       const got: string[] = [];
       raw.socket.on('match:relay', (p) => void (typeof p.data === 'string' && p.data.startsWith('{') && got.push(p.data)));
+      // How many frames the host has been through (2026-11-25: it no longer writes a line for each, so the lines
+      // do not say that).
+      const inner = h as unknown as { takeFrame(relayPeer: string, text: string): void };
+      const take = inner.takeFrame.bind(h);
+      let taken = 0;
+      inner.takeFrame = (relayPeer, text) => {
+        try {
+          take(relayPeer, text);
+        } finally {
+          taken += 1;
+        }
+      };
       for (const g of GARBAGE) {
-        const before = { got: got.length, errors: hErrors };
+        const before = { got: got.length, taken };
         raw.socket.emit('match:relay', { data: g.text });
-        // The host has handled the frame once it has reported it; an answer, if one is due, is on its way then.
-        await until(() => hErrors === before.errors + 1, 4000);
+        // The host has handled the frame; an answer, if one is due, is on its way then.
+        await until(() => taken === before.taken + 1, 4000);
         if (g.answer !== null) await until(() => got.length === before.got + 1, 4000);
         else await sleep(30);
         expect([g.what, got.length - before.got]).toEqual([g.what, g.answer === null ? 0 : 1]);
@@ -493,6 +515,9 @@ describe('relay transports (D10.8)', () => {
       }
       expect(hSeen).toEqual([]);
       expect(uncaught).toEqual([]);
+      // Reported, and not once per frame: one line for the first, the rest counted for the next line.
+      expect(hErrors).toBeGreaterThanOrEqual(1);
+      expect(hErrors).toBeLessThan(GARBAGE.length);
       // A first frame that does decode, on which a listener of ours throws: reported, not thrown out of the socket.
       const seen: string[] = [];
       h.onError((e) => void seen.push(e.message));
@@ -1015,7 +1040,7 @@ describe('RelayPacer (D10.8): under the relay rate limit', () => {
 describe('CompositeTransport (D10.8): a host on its listener and its relay room at once', () => {
   it('a WebSocket client and a relay client are both peers; each gets its own frames and all; leaves come from the part that holds the peer', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
-    const ws = new WsPeerTransport({ localId: 'h' });
+    const ws = takesAll(new WsPeerTransport({ localId: 'h' }));
     const rh = hostOn(r);
     const host = new CompositeTransport([ws, rh]);
     open.push(host);

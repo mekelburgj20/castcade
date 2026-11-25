@@ -1,6 +1,7 @@
 /**
  * WebSocket transports: `WsHostTransport` (one `ws` server, one socket per client, socket ->
- * playerId learned from the first HELLO) and `WsClientTransport` (one socket to the host), the
+ * playerId once the engine has accepted the socket's first HELLO: 2026-11-25, `LinkCandidate` in
+ * transport.ts, for the inbound sockets of `WsPeerTransport` too) and `WsClientTransport` (one socket to the host), the
  * fixed-role pair from Phase 1; and `WsPeerTransport` (A2, 2026-10-30), one participant that can
  * hold either role and change it mid-match: an optional listener plus outbound links, so a client
  * can become host, the old host can become its client, and a dropped client can reconnect.
@@ -11,7 +12,7 @@
  */
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type PlayerId } from '@castcade/protocol';
-import type { MessageHandler, PeerHandler, Transport } from './transport.js';
+import { openCandidate, refusedOpening, ReportGate, undecodedFrames, verdictClock, type MessageHandler, type OpenedCandidate, type PeerHandler, type Transport } from './transport.js';
 
 export type ErrorHandler = (err: Error, peer: PlayerId | null) => void;
 
@@ -157,12 +158,16 @@ export interface WsHostOptions {
   /** 0 picks an ephemeral port; read it back from `listen()`. */
   port: number;
   host?: string;
+  /** Test seam: how long a socket's first frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 export class WsHostTransport implements Transport {
   readonly localId: PlayerId;
   private server: WebSocketServer | null = null;
   private readonly sockets = new Map<PlayerId, WebSocket>();
+  /** 2026-11-25: the sockets that are nobody's yet, so that `close()` ends them too. */
+  private readonly waiting = new Set<WebSocket>();
   private readonly messageHandlers = new Set<MessageHandler>();
   private readonly joinHandlers = new Set<PeerHandler>();
   private readonly leaveHandlers = new Set<PeerHandler>();
@@ -188,6 +193,22 @@ export class WsHostTransport implements Transport {
   }
 
   private attach(socket: WebSocket): void {
+    // 2026-11-25: `peer` stays null until the engine has accepted this socket's first frame (`LinkCandidate`).
+    // `judged`: the first frame was handed over (a verdict is awaited, or it was refused): nothing more is read.
+    let judged: OpenedCandidate | null = null;
+    // The time for a verdict runs from the connection: a socket that says nothing is closed as well.
+    const clock = verdictClock(() => {
+      this.fail(new Error('a connection that sent no opening frame in time was closed'), null);
+      socket.close();
+    }, this.opts.verdictMs);
+    const undecoded = new ReportGate();
+    this.waiting.add(socket);
+    /** The socket closed while it was nobody's: no leave, and no verdict can bind it any more. */
+    const closedUnbound = (): void => {
+      this.waiting.delete(socket);
+      clock.stop();
+      judged?.gone();
+    };
     let peer: PlayerId | null = null;
     const onFrame = (data: RawData): void => {
       const text = rawToString(data);
@@ -196,26 +217,47 @@ export class WsHostTransport implements Transport {
         msg = decodeFrame(text);
       } catch (e) {
         this.refuseForeignVersion(socket, text);
-        this.fail(e, peer);
+        // 2026-11-25: one line for the first, then at most one in ten seconds with how many there were.
+        const times = undecoded.pass();
+        if (times !== null) this.fail(undecodedFrames(e, times), peer);
         return;
       }
       if (peer === null) {
+        if (judged !== null) return;
         if (msg.type !== 'HELLO') {
           this.fail(new Error(`first frame from a new socket was ${msg.type}, not HELLO`), null);
           socket.close();
           return;
         }
-        peer = msg.from;
-        const previous = this.sockets.get(peer);
-        if (previous && previous !== socket) previous.close();
-        this.sockets.set(peer, socket);
-        for (const cb of [...this.joinHandlers]) cb(peer);
+        const player = msg.from;
+        judged = openCandidate(
+          player,
+          {
+            send: (m) => {
+              if (socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(m));
+            },
+            bind: () => {
+              peer = player;
+              this.waiting.delete(socket);
+              const previous = this.sockets.get(player);
+              if (previous && previous !== socket) previous.close();
+              this.sockets.set(player, socket);
+              for (const cb of [...this.joinHandlers]) cb(player);
+            },
+            close: () => socket.close(),
+            // One line per connection: a refused socket is closed and reads nothing more.
+            refused: (code) => this.fail(refusedOpening(msg.type, player, code, 1), null),
+          },
+          clock.spoke(),
+        );
+        for (const cb of [...this.messageHandlers]) cb(player, msg, judged);
+        return;
       }
       for (const cb of [...this.messageHandlers]) cb(peer, msg);
     };
     socket.on('message', (data: RawData) => guardUnlinked(peer === null, () => onFrame(data), (e) => this.fail(e, null), socket));
     socket.on('close', () => {
-      if (peer === null) return;
+      if (peer === null) return closedUnbound();
       if (this.sockets.get(peer) === socket) {
         this.sockets.delete(peer);
         for (const cb of [...this.leaveHandlers]) cb(peer);
@@ -275,6 +317,9 @@ export class WsHostTransport implements Transport {
   close(): void {
     for (const s of this.sockets.values()) s.terminate();
     this.sockets.clear();
+    // 2026-11-25: and the sockets that are nobody's yet (no first frame, or no verdict on it).
+    for (const s of [...this.waiting]) s.terminate();
+    this.waiting.clear();
     this.server?.close();
     this.server = null;
   }
@@ -368,6 +413,8 @@ export class WsClientTransport implements Transport {
 
 export interface WsPeerOptions {
   localId: PlayerId;
+  /** Test seam: how long an inbound socket's first frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
+  verdictMs?: number;
 }
 
 interface PeerLink {
@@ -379,6 +426,15 @@ interface PeerLink {
   ready: boolean;
   /** Closing this link is deliberate (a move to a new host, a refusal): never reported as a leave. */
   silent: boolean;
+  /**
+   * 2026-11-25, inbound only: the first frame was handed to the engine. While `peer` is null the link is a candidate
+   * (a verdict is awaited, or it was refused and the socket is closing); it is `peer`'s link from the accept on.
+   */
+  judged: OpenedCandidate | null;
+  /** 2026-11-25, inbound only: the time for a verdict, which runs from the connection (`verdictClock`). */
+  clock?: { spoke(): number; stop(): void };
+  /** 2026-11-25, inbound only: frames that did not decode are reported at most once in ten seconds, with a count. */
+  undecoded?: ReportGate;
 }
 
 /**
@@ -401,9 +457,11 @@ export class WsPeerTransport implements Transport {
   private readonly leaveHandlers = new Set<PeerHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private seqForRefuse = 0;
+  private readonly verdictMs: number | undefined;
 
   constructor(opts: WsPeerOptions) {
     this.localId = opts.localId;
+    this.verdictMs = opts.verdictMs;
   }
 
   /** This participant's listener once `listen()` resolved: what goes in HOST_TRANSFER.newHostEndpoint. */
@@ -442,7 +500,7 @@ export class WsPeerTransport implements Transport {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       // A link to a not-yet-known host is usable at once: HELLO goes out on it through send('all').
-      const link: PeerLink = { socket, dir: 'out', peer, ready: first === null, silent: false };
+      const link: PeerLink = { socket, dir: 'out', peer, ready: first === null, silent: false, judged: null };
       this.links.push(link);
       socket.once('error', reject);
       socket.once('open', () => {
@@ -476,7 +534,12 @@ export class WsPeerTransport implements Transport {
   }
 
   private attachInbound(socket: WebSocket): void {
-    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false };
+    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false, judged: null, undecoded: new ReportGate() };
+    // 2026-11-25: the time for a verdict runs from the connection: a socket that says nothing is closed as well.
+    link.clock = verdictClock(() => {
+      this.fail(new Error('a connection that sent no opening frame in time was closed'), null);
+      socket.close();
+    }, this.verdictMs);
     this.links.push(link);
     const onFrame = (data: RawData): void => {
       const text = rawToString(data);
@@ -485,18 +548,41 @@ export class WsPeerTransport implements Transport {
         msg = decodeFrame(text);
       } catch (e) {
         if (link.peer === null && refuseForeignVersion(socket, text, this.localId, this.seqForRefuse + 1)) this.seqForRefuse += 1;
-        this.fail(e, link.peer);
+        // 2026-11-25: one line for the first, then at most one in ten seconds with how many there were.
+        const times = link.undecoded ? link.undecoded.pass() : 1;
+        if (times !== null) this.fail(undecodedFrames(e, times), link.peer);
         return;
       }
       if (link.peer === null) {
+        // 2026-11-25: once the first frame was handed over nothing more is read until, and unless, it is accepted.
+        if (link.judged !== null) return;
         if (msg.type !== 'HELLO' && msg.type !== 'RECONNECT') {
           this.fail(new Error(`first frame from a new socket was ${msg.type}, not HELLO or RECONNECT`), null);
           socket.close();
           return;
         }
-        link.peer = msg.from;
-        link.ready = true;
-        this.noteJoin(link);
+        const player = msg.from;
+        link.judged = openCandidate(
+          player,
+          {
+            send: (m) => {
+              if (socket.readyState === WebSocket.OPEN) socket.send(encodeFrame(m));
+            },
+            // The player's other links, if any, stay as they are: frames go on the newest (the class comment).
+            bind: () => {
+              link.peer = player;
+              link.ready = true;
+              this.noteJoin(link);
+            },
+            // Never anybody's link: its close is not a leave (`peer` is still null).
+            close: () => socket.close(),
+            // One line per connection: a refused socket is closed and reads nothing more.
+            refused: (code) => this.fail(refusedOpening(msg.type, player, code, 1), null),
+          },
+          link.clock?.spoke(),
+        );
+        for (const cb of [...this.messageHandlers]) cb(player, msg, link.judged);
+        return;
       }
       this.dispatch(link.peer, msg);
     };
@@ -518,6 +604,9 @@ export class WsPeerTransport implements Transport {
 
   private onLinkClosed(link: PeerLink): void {
     this.links = this.links.filter((l) => l !== link);
+    // A socket that closes before its verdict was never anybody's: no verdict can bind it any more.
+    link.clock?.stop();
+    link.judged?.gone();
     const peer = link.peer;
     if (link.silent || !link.ready || peer === null) return;
     if (this.links.some((l) => l.peer === peer && l.ready)) return;
