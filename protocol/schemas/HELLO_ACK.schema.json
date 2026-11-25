@@ -611,6 +611,22 @@
         "additionalProperties": false
       }
     },
+    "hostQuit": {
+      "description": "A17 step 8: the last word of a lobby's PC whose Castcade is being closed while the lobby is kept: its owner quit and may be back. The members then say that, in place of the line of a PC that is away for no known reason. Absent in every other HELLO_ACK, the first one after its return included.",
+      "type": "object",
+      "properties": {
+        "keptMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600000,
+          "description": "For how long the lobby is kept for its PC to come back (ms)."
+        }
+      },
+      "required": [
+        "keptMs"
+      ],
+      "additionalProperties": false
+    },
     "hostTableObjects": {
       "default": null,
       "description": "I11.4.15: the identity the Castcade VPX build gives the host's table (its `hello`'s `<editables> <table hash>`): what two PCs must have in common for the 3D view, where `hostGame.tableHash` only says whether the bytes are the same. As the host's VPX said it, or, before that, as the host's companion computed it from the file. A joining PC uses it to pick, among its copies of the table, one the 3D view works with. null: not known (no table open, a file it cannot be told from, a companion from before I11.4.15). Compared only, never a gate. Defaulted and never logged.",

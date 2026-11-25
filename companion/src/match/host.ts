@@ -246,6 +246,8 @@ export interface SavedLobby {
   nextMatch: number;
   /** The balls per game the lobby was opened with. */
   ballsPerGame: number;
+  /** I11.4.15: what this PC said its table's objects are (`HELLO_ACK.hostTableObjects`); it cannot be said again while a match is open. */
+  tableObjects?: { editables: number; hash: string } | null;
   /**
    * The match that is open: its id, and the RESULT of every game of it that has one (a RESULT is not in the log).
    * The log itself is the session's, and is saved beside this. Null: no match is open.
@@ -427,6 +429,12 @@ export interface HostEvents extends Record<string, unknown> {
    * it live from here on.
    */
   caughtUp: { playerId: PlayerId; entries: number; pages: number; during: number };
+  /**
+   * A17 step 8 (the review of PR 138): a member came back holding a log of the OPEN match that this PC's log does
+   * not contain (this PC was restored from a record that was behind). The member is sent this PC's log in its place
+   * (`restart`); the shell says on this PC that the match went back.
+   */
+  memberAhead: { playerId: PlayerId; entries: number };
   /** A17: LOBBY_CLOSED went out (`closeLobby`). */
   lobbyClosed: PayloadOf<'LOBBY_CLOSED'>;
   /** A17 step 6: an announced start was taken away without anything starting; `reason` is the sentence every panel shows. */
@@ -595,6 +603,10 @@ export class HostMatch {
   private readonly returnAllowMs: number;
   private returnedAt: number | null = null;
   private readonly returning = new Set<PlayerId>();
+  /** The review of PR 138: who was away by themselves already when this PC was cut off: the time to return is not theirs. */
+  private readonly awayBefore = new Set<PlayerId>();
+  /** A17 step 8: this PC's Castcade is being closed and the lobby kept (`sayKept`): for how long, said in the next HELLO_ACK. */
+  private keptMs: number | null = null;
   private readonly start3dMaxMs: number;
   private readonly stillSeen: (player: PlayerId) => boolean;
   /** A17 step 6: this PC is itself cut off from the relay (`setCutOff`): the drops it sees are its own, not the members'. */
@@ -701,6 +713,7 @@ export class HostMatch {
       table: { game: { ...this.hostGame }, fixed: this.pickFixed, pickedBy: this.pickedBy },
       nextMatch: this.matchNumber,
       ballsPerGame: this.ballsPerGameInit,
+      tableObjects: this.hostTableObjects ? { ...this.hostTableObjects } : null,
       match: open ? { matchId: st.matchId as string, results: this.resultMsgs.map((r) => ({ ...r.payload })) } : null,
     };
   }
@@ -758,6 +771,9 @@ export class HostMatch {
       host.grace.set(id, null as unknown as TimerHandle);
     }
     host.cutOff = true;
+    if (saved.tableObjects && Number.isSafeInteger(saved.tableObjects.editables) && typeof saved.tableObjects.hash === 'string') {
+      host.hostTableObjects = { editables: saved.tableObjects.editables, hash: saved.tableObjects.hash };
+    }
     if (open && saved.match) {
       host.matchId = saved.match.matchId;
       for (const r of saved.match.results) {
@@ -782,7 +798,7 @@ export class HostMatch {
    * absence ends as any absence of this PC does: every member has the grace from zero and the time to return
    * (`returnAllowMs`) before a clock counts.
    */
-  runAfterRestore(): void {
+  runAfterRestore(o: { reachable?: boolean } = {}): void {
     this.assertActive();
     if (!this.lobbyOn) throw new Error('runAfterRestore: this match has no lobby');
     const st = this.s.state;
@@ -795,6 +811,13 @@ export class HostMatch {
     // gets it at its return).
     const last = st.phase === 'ended' && this.resultSent ? this.resultMsgs[this.resultMsgs.length - 1] : undefined;
     if (last) this.events.emit('result', { result: last.payload, signatures: [] });
+    // The review of PR 138: `reachable: false`: this PC's room at ArcAid is not held yet. It stays a PC that is
+    // away (nobody's grace or time to return runs from a moment at which they could not have come back); the caller
+    // ends that with `setCutOff(false)` when the room is held. This PC's own grant is issued all the same.
+    if (o.reachable === false) {
+      this.advance();
+      return;
+    }
     if (this.cutOff) this.setCutOff(false);
     else this.advance();
   }
@@ -1621,6 +1644,10 @@ export class HostMatch {
 
   pause(reason: PayloadOf<'PAUSE'>['reason'], player: PlayerId | null): void {
     this.assertActive();
+    // A17 step 8 (the review of PR 138): the game is paused already for this player's disconnect (the PAUSE is in
+    // the log, also after a restore): it is not logged a second time.
+    const paused = this.s.state.paused;
+    if (this.lobbyOn && reason === 'disconnect' && player !== null && paused?.reason === 'disconnect' && paused.player === player) return;
     this.acceptPause(this.s.build('PAUSE', { reason, player }, this.matchId));
   }
 
@@ -2371,6 +2398,7 @@ export class HostMatch {
       match: this.openMatch(),
       start: this.announcedStart(),
       ...(off !== null ? { startOff: off } : {}),
+      ...(this.keptMs !== null ? { hostQuit: { keptMs: this.keptMs } } : {}),
     };
   }
 
@@ -2803,6 +2831,19 @@ export class HostMatch {
     this.stopTurnClock();
   }
 
+  /**
+   * A17 step 8 (the review of PR 138): this PC's Castcade is being closed by its owner and the lobby is kept for
+   * `keptMs`: said to every member that can be reached, as the lobby's last word (`HELLO_ACK.hostQuit`), so that
+   * they read what happened and not the line of a PC that is away for no known reason. The caller closes the engine
+   * right after. False when there is no lobby, or it is over.
+   */
+  sayKept(keptMs: number): boolean {
+    if (!this.lobbyOn || this.detached || this.ended) return false;
+    this.keptMs = Math.max(0, Math.min(3_600_000, Math.round(keptMs)));
+    this.resendAck();
+    return true;
+  }
+
   /** A17 step 6: the player the game is paused for at their own turn, and since when (this PC's clock); null: nobody is waited for. */
   waitedFor(): { player: PlayerId; since: number; asked: boolean } | null {
     const t = this.turnClock;
@@ -2852,10 +2893,12 @@ export class HostMatch {
    * confirmed, nobody is paused for, both clocks stand still, and a ball that ends finds the game waiting. When it
    * is back the members get A18's grace again from zero, then whoever is still gone is away and the clocks start.
    */
-  setCutOff(cutOff: boolean): void {
+  setCutOff(cutOff: boolean, o: { returning?: boolean } = {}): void {
     if (!this.lobbyOn || this.detached || this.ended || this.cutOff === cutOff) return;
     this.cutOff = cutOff;
     if (cutOff) {
+      this.awayBefore.clear();
+      for (const id of this.gone) if (!this.grace.has(id)) this.awayBefore.add(id);
       // Every grace that is running is held where it is, with no timer: what it counted was this PC's own absence.
       for (const [id, t] of [...this.grace]) {
         if (t != null) this.s.clock.clearTimeout(t);
@@ -2872,8 +2915,12 @@ export class HostMatch {
     }
     // Back. Step 7: whoever is gone at this moment has `returnAllowMs` from now to find the lobby again before a
     // clock counts against them (`returnLeft`).
+    // The review of PR 138: not for a member who was away by themselves before this PC went (their clocks go on as
+    // they would have), and for nobody when the caller says none of them can come back (`returning: false`: the room
+    // they came through is closed for good).
     this.returnedAt = this.s.clock.now();
-    for (const id of this.gone) this.returning.add(id);
+    if (o.returning !== false) for (const id of this.gone) if (!this.awayBefore.has(id)) this.returning.add(id);
+    this.awayBefore.clear();
     // Every member whose link is down and whose leave was told to nobody gets the grace from zero.
     for (const id of [...this.grace.keys()]) {
       if (!this.gone.has(id)) {
@@ -2981,6 +3028,7 @@ export class HostMatch {
         this.events.emit('reconnected', { playerId: msg.from, entries: entries.length, quiet });
       } else {
         this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: GENESIS_HASH, logLength: 0, match: open, restart: true }, this.code));
+        if (open !== null && held === open && p.logLength > 0) this.events.emit('memberAhead', { playerId: msg.from, entries: p.logLength });
         this.events.emit('reconnected', { playerId: msg.from, entries: 0, quiet });
       }
       if (open !== null) this.sendLog(msg.from, 0, true);

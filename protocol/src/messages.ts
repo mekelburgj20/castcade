@@ -234,6 +234,12 @@ export const HelloAck = z
     // I11.4.15 (2026-11-24): defaulted and never logged, like `stream3dWait`, so still protocol 6. On HELLO_ACK and not
     // in `GameFingerprint` on purpose: the fingerprint is also MATCH_READY's `game`, which is logged, and a peer that
     // strips an unknown key there would hash a different log.
+    hostQuit: z
+      .object({ keptMs: z.number().int().min(0).max(3_600_000).describe('For how long the lobby is kept for its PC to come back (ms).') })
+      .optional()
+      .describe(
+        "A17 step 8: the last word of a lobby's PC whose Castcade is being closed while the lobby is kept: its owner quit and may be back. The members then say that, in place of the line of a PC that is away for no known reason. Absent in every other HELLO_ACK, the first one after its return included.",
+      ),
     hostTableObjects: z
       .object({
         editables: z.number().int().min(0).max(0xffffffff).describe("How many table objects (editables) the host's table has once loaded."),

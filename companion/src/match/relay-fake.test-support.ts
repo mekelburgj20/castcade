@@ -117,6 +117,8 @@ export interface FakeRelay {
   dropDevice(deviceId: string): void;
   /** The device's pairing is revoked: it no longer verifies. */
   revoke(deviceId: string): void;
+  /** The device verifies (again): after `revoke`, the server "could not read the device" only for a while. */
+  accept(deviceId: string, token: string): void;
   /** Close every room as the server does, the sockets staying up (`expired`, `server_restart`). */
   closeRooms(reason: string): void;
   /**
@@ -471,6 +473,9 @@ export async function startFakeRelay(opts: FakeRelayOptions): Promise<FakeRelay>
     },
     revoke(deviceId) {
       delete devices[deviceId];
+    },
+    accept(deviceId, token) {
+      devices[deviceId] = token;
     },
     closeRooms(reason) {
       for (const room of [...rooms.values()]) closeRoom(room, reason);

@@ -130,6 +130,14 @@ export interface RelayOptions {
    * them (`RejoinPolicy.maxMisses`), not only by its own. The shell keeps one list for all the transports it makes.
    */
   missLog?: number[];
+  /**
+   * A17 step 8 (the review of PR 138): a host that is answered `unauthorized` does not know from that alone that
+   * its device is no longer paired: the relay answers the same when it could not read the device just then. This is
+   * the second, independent question (the shell asks ArcAid's own authenticated pairing check): true only when that
+   * also says the device is not paired. False, a throw, or no such option: the room is asked for again, as after
+   * any absence of ArcAid.
+   */
+  confirmUnpaired?: () => Promise<boolean>;
   /** Test seam: how long a host that had to open its room again waits for its players before it locks it again. Default 60 s. */
   relockWaitMs?: number;
   /** Test seam: how long a relay peer's opening frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
@@ -190,10 +198,12 @@ const DEFAULT_ACK_TIMEOUT_MS = 4_000;
 /** After a reconnect, `match:host` is tried again until it is accepted: after this long, then twice as long each time. */
 const REHOST_RETRY_MS = 3_000;
 /**
- * A17 step 8 (2026-11-26): how often in a row a host is answered that its device is not accepted (`unauthorized`)
- * before it stops asking for its room. One such answer can be the server failing to read the device just then, so
- * it is asked again; three in a row, over about ten seconds (the first at once, then 3 s and 6 s later), is a
- * pairing that is gone. Until this step it asked for ever, and a lobby whose PC was unpaired never ended.
+ * A17 step 8 (2026-11-26; the review of PR 138): how often in a row a host is answered that its device is not
+ * accepted (`unauthorized`) before it asks the second question (`RelayOptions.confirmUnpaired`). The relay's answer
+ * alone is never final: it is also what the relay says when its own read of the device failed. Three in a row, over
+ * about ten seconds (the first at once, then 3 s and 6 s later), and then, only when the pairing check says so too,
+ * the room is given up as `unauthorized`. Anything else is ArcAid being away: asked again, every half minute at the
+ * most, and the second question again after every three such answers.
  */
 export const REHOST_UNAUTHORIZED_MAX = 3;
 /** ... up to this (the server allows a device 20 `match:host` / `match:join` a minute). */
@@ -587,6 +597,14 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private unauthorizedAsks = 0;
   /** A17 step 8: why this transport gave its room up for good (`closedWhy`); null while it has not. */
   private gaveUpFor: string | null = null;
+  private readonly confirmUnpaired: (() => Promise<boolean>) | null;
+  /** The second question is being asked (one at a time). */
+  private confirming = false;
+
+  constructor(opts: RelayOptions) {
+    super(opts);
+    this.confirmUnpaired = opts.confirmUnpaired ?? null;
+  }
   private seqForRefuse = 0;
   /** `lock()` was called: the room is locked again whenever it had to be opened anew. */
   private wantLocked = false;
@@ -629,6 +647,21 @@ export class RelayHostTransport extends RelayBase implements Transport {
     await this.request(socket, 'match:host', code);
     this.code = code;
     this.setState('registered');
+  }
+
+  /**
+   * A17 step 8 (the review of PR 138): take back the room of `code`, which this device held before this process
+   * started, without waiting for it and without giving up because ArcAid does not answer in this moment. The state
+   * is `reconnecting` until the room is held (`registered`), exactly as for a host that lost its room while
+   * running: the socket is opened, and opened again, by itself, and the room is asked for each time it is up and
+   * every few seconds while it is refused for a reason that can pass.
+   */
+  reclaim(code: string): void {
+    if (this.closed || this.current === 'closed') return;
+    this.code = code;
+    this.setState('reconnecting');
+    const socket = this.ensureSocket();
+    if (socket.connected) this.rehost(socket);
   }
 
   /**
@@ -716,10 +749,13 @@ export class RelayHostTransport extends RelayBase implements Transport {
     socket.on('match:error', (p: { error?: unknown }) => {
       const word = typeof p?.error === 'string' ? p.error : 'unknown';
       if (word === 'unauthorized' && this.code !== null && this.current === 'registered') {
-        // This device's pairing was revoked mid-match: ArcAid closes the room (`host_gone` follows). Not opened again.
-        this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
+        // The relay could not confirm this device during the match. A pairing that was revoked, or the relay's own
+        // read of the device failing once (the review of PR 138): the word is the same. The room is asked for
+        // again, as after any loss of it; `rehost` asks the second question before anything is given up.
+        this.fail(new RelayError('unauthorized', 'ArcAid did not accept this device'), null);
         this.dropLinks();
-        return this.giveUp('unauthorized');
+        this.setState('reconnecting');
+        return this.rehost(socket);
       }
       this.reportDropped(word, null);
       if (this.code === null || this.current !== 'registered') return;
@@ -767,7 +803,10 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private onRoomClosed(socket: Socket, reason: string): void {
     if (this.code === null || this.closed || this.current === 'closed') return;
     this.dropLinks();
-    if (REOPENABLE.has(reason)) {
+    // `host_gone` to a host that is here (the review of PR 138): the server gave this host's room up because it could
+    // not confirm the device (a pairing that was revoked, or its own read failing). Asked for again like the others;
+    // `rehost` is where "not paired" is decided, and never from the relay's word alone.
+    if (REOPENABLE.has(reason) || reason === 'host_gone') {
       this.fail(new RelayError('closed', `ArcAid closed the room (${reason}); opening it again`), null);
       this.setState('reconnecting');
       if (socket.connected) this.rehost(socket);
@@ -848,13 +887,34 @@ export class RelayHostTransport extends RelayBase implements Transport {
         if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) return this.giveUp(e.code);
         if (e instanceof RelayError && e.code === 'unauthorized') {
           this.unauthorizedAsks += 1;
-          if (this.unauthorizedAsks >= REHOST_UNAUTHORIZED_MAX) return this.giveUp('unauthorized');
+          if (this.unauthorizedAsks >= REHOST_UNAUTHORIZED_MAX) {
+            this.unauthorizedAsks = 0;
+            this.askWhetherUnpaired();
+          }
         } else this.unauthorizedAsks = 0;
         if (!socket.connected) return;
         this.rehostTimer = setTimeout(() => this.rehost(socket), this.rehostDelayMs);
         this.rehostDelayMs = Math.min(this.rehostDelayMs * 2, REHOST_RETRY_MAX_MS);
       },
     );
+  }
+
+  /**
+   * The second question (`confirmUnpaired`), asked while the room goes on being asked for. Only its own "yes, this
+   * device is not paired" ends the asking; anything else leaves this host a host whose ArcAid is away.
+   */
+  private askWhetherUnpaired(): void {
+    const ask = this.confirmUnpaired;
+    if (!ask || this.confirming) return;
+    this.confirming = true;
+    void ask()
+      .catch(() => false)
+      .then((unpaired) => {
+        this.confirming = false;
+        if (!unpaired || this.closed || this.current !== 'reconnecting') return;
+        this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
+        this.giveUp('unauthorized');
+      });
   }
 
   private relink(relayPeer: string): void {

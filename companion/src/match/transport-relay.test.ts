@@ -820,7 +820,7 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(r.misses.get('dev-a')).toBe(3);
   });
 
-  it('a pairing revoked mid-match: the client is told once, in plain words, and never asks ArcAid again; the host sees a leave; a revoked host is closed for good', async () => {
+  it('a pairing revoked mid-match: the client is told once, in plain words, and never asks ArcAid again; the host sees a leave; a host the relay does not accept for a moment asks for its room again and has it back', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES, reverifyMs: 0 }));
     const { h, hSeen, states, hErrors, clients } = await matchOf(r, ['a', 'b']);
     const a = clients['a']!;
@@ -839,33 +839,77 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(r.errors).toEqual(['unauthorized']);
     expect(h.peers()).toEqual(['b']);
 
+    // The review of PR 138: the host's side of the same word. The relay's `unauthorized` alone is not "unpaired"
+    // (it is also what the relay says when it could not read the device): the host's links drop, it asks for its
+    // room again, and when the device reads again it has it back.
     r.revoke('dev-h');
     h.send('b', resume('h', 40));
-    await until(() => states.at(-1) === 'closed' && b.seen.includes('leave h'));
-    expect(hErrors).toEqual(['This PC is no longer paired with ArcAid']);
-    expect(b.errors).toEqual(['ArcAid closed the match (host_gone)']);
-    await sleep(150);
-    expect(r.rooms()).toEqual([]);
-    expect(h.state).toBe('closed');
-  });
-
-  it('A17 step 8: a host whose device ArcAid no longer accepts asks for its room a bounded number of times (three, a few seconds apart), then gives it up for good and says why; until this step it asked for ever', async () => {
-    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
-    const { h, states, hErrors } = await matchOf(r, ['a']);
+    await until(() => states.at(-1) === 'reconnecting' && b.seen.includes('leave h'));
+    expect(hErrors).toContain('ArcAid did not accept this device');
     expect(h.closedWhy).toBeNull();
-    // The pairing is revoked and the socket drops: the room cannot be taken back.
+    r.accept('dev-h', DEVICES['dev-h']);
+    await until(() => states.at(-1) === 'registered', 15_000);
+    expect(h.state).toBe('registered');
+    expect(states).not.toContain('closed');
+  }, 30_000);
+
+  it("A17 step 8 (the review of PR 138): the relay's `unauthorized` alone never ends a host's room. After three such answers the second question is asked: when ArcAid's own pairing check says the device is not paired, the room is given up as `unauthorized`", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    const { h, states, hErrors } = await matchOf(r, ['a'], { host: { confirmUnpaired: async () => (asked++, true) } });
+    expect(h.closedWhy).toBeNull();
     r.revoke('dev-h');
     r.dropDevice('dev-h');
     await until(() => states.at(-1) === 'closed', 25_000);
-    expect(h.state).toBe('closed');
     expect(h.closedWhy).toBe('unauthorized');
+    expect(asked).toBe(1);
     expect(hErrors.filter((e) => e === 'ArcAid did not accept this device')).toHaveLength(REHOST_UNAUTHORIZED_MAX);
-    expect(REHOST_UNAUTHORIZED_MAX).toBe(3);
-    // And it stays so: nothing more is asked.
-    const asked = hErrors.length;
-    await new Promise((res) => setTimeout(res, 300));
-    expect(hErrors).toHaveLength(asked);
-    expect(states.filter((s) => s === 'closed')).toHaveLength(1);
+    expect(hErrors.at(-1)).toBe('This PC is no longer paired with ArcAid');
+  }, 40_000);
+
+  it("A17 step 8 (the review of PR 138): the relay could not read the device for a while (two answers `unauthorized`, then it reads again): the host has its room back, nothing was given up and the second question was never asked; and when that question's answer is \"cannot tell\", the host goes on asking for its room", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    let answer = false;
+    const { h, states, hErrors } = await matchOf(r, ['a'], { host: { confirmUnpaired: async () => (asked++, answer) } });
+    const refused = (): number => hErrors.filter((e) => e === 'ArcAid did not accept this device').length;
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    await until(() => refused() === 2, 15_000);
+    r.accept('dev-h', DEVICES['dev-h']);
+    await until(() => states.at(-1) === 'registered', 20_000);
+    expect(asked).toBe(0);
+    expect(states).not.toContain('closed');
+    expect(h.closedWhy).toBeNull();
+    // Again, and this time for longer: after the third answer ArcAid's own check is asked, and it cannot tell
+    // (it is down too): the host is still a host whose ArcAid is away, asking.
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    const before = refused();
+    await until(() => refused() >= before + 3 && asked === 1, 25_000);
+    expect(h.state).toBe('reconnecting');
+    expect(h.closedWhy).toBeNull();
+    answer = true;
+    void answer;
+  }, 70_000);
+
+  it('A17 step 8 (the review of PR 138): a host that starts again while ArcAid does not answer takes its room back when ArcAid does (`reclaim`): it is `reconnecting` meanwhile, never closed, and a client that waited finds the room', async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    const down = r.restart(1500);
+    await sleep(100);
+    const h = hostOn(r, { connectTimeoutMs: 300 });
+    const states: string[] = [];
+    h.onState((s) => states.push(s));
+    await expect(h.connect().then(() => h.host('RELAYA'))).rejects.toThrow();
+    h.reclaim('RELAYA');
+    expect(h.state).toBe('reconnecting');
+    await down;
+    await until(() => h.state === 'registered', 20_000);
+    expect(states).toEqual(['reconnecting', 'registered']);
+    expect(r.rooms()).toEqual(['RELAYA']);
+    const a = clientOn(r, 'a');
+    await a.connect('RELAYA');
+    expect(r.peers('RELAYA')).toHaveLength(1);
   }, 40_000);
 
   it('match:leave: a host that closes ends the room at once (the clients are told host_left and do not ask again); a client that closes is a leave at the host', async () => {

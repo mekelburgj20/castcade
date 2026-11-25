@@ -10,7 +10,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AnyMessage, PlayerId } from '@castcade/protocol';
-import type { ClientMatch } from './client.js';
+import { ClientMatch } from './client.js';
 import { HostMatch, type LobbyOptions, type SavedLobby } from './host.js';
 import { MatchLog, type LogEntry } from './log.js';
 import { flush, playGame, starLobby, TABLE, type StarOptions, type StarRig } from './lobby.test-support.js';
@@ -401,13 +401,159 @@ describe("A17 step 8: the counters of the lobby's PC across a restart", () => {
     expect(disk.seqWrites - writes).toBeLessThan(8);
   });
 
-  it("a member's Castcade that started again while the lobby's PC was restarting comes back by its own signed HELLO, numbered from the clock, far above the ceiling", async () => {
-    const { r, disk, watch } = await saved(['a']);
+  it("a member's Castcade that started again while the lobby's PC was restarting comes back by its own signed HELLO: a new engine with the member's key, numbered from the clock, is taken as that member against the restored count (its place, and its row); the same HELLO sent again is not", async () => {
+    const { r, disk, watch } = await saved(['a', 'b']);
+    r.host.startMatch(['h', 'a']);
+    await flush();
     const host = await restart(r, disk, watch);
     host.runAfterRestore();
+    const back: string[] = [];
+    const refused: string[] = [];
+    host.on('reconnected', (x) => back.push(`${x.playerId} ${x.entries}`));
+    host.on('refused', (x) => refused.push(x.code));
+    // A's Castcade is a new process: nothing of the old engine is left but the key file. Its numbers start at the clock.
+    const tap = r.taps.get('a');
+    const keys = r.keys['a'];
+    if (!tap || !keys) throw new Error('no member a');
+    client(r, 'a').close();
     const ceiling = disk.seq.taken['a'] ?? 0;
-    // The clock a new process starts its numbers from is milliseconds since 1970: no ceiling a step above a count is near it.
-    expect(r.clock.now()).toBeGreaterThan(ceiling * 1000);
-    expect(host.members().map((m) => m.playerId)).toEqual(['h', 'a']);
+    expect(ceiling).toBeGreaterThan(0);
+    r.clock.advance(Math.max(0, ceiling + 5000 - r.clock.now()));
+    const again = new ClientMatch(
+      { disconnectGraceMs: 5000, transport: tap, keys, participant: { playerId: 'a', displayName: 'A', publicKey: keys.publicKeyB64, rig: 'pc' }, game: TABLE, throwdownCode: 'JHDFEF', hostId: 'h', clock: r.clock, lobby: { stance: 'play' } },
+      new Session({ transport: tap, keys, clock: r.clock, seqStart: r.clock.now() }),
+    );
+    const events: string[] = [];
+    again.on('joined', () => events.push('joined'));
+    again.on('refused', (x) => events.push(`refused ${x.code}`));
+    again.on('caughtUp', (x) => events.push(`caughtUp ${x.match}`));
+    // The link is made again (the rig's own switch), and the HELLO goes out with its proof.
+    tap.unreachable = false;
+    const lift = (): void => {
+      (tap as unknown as { down: Set<PlayerId> }).down.delete('h');
+      (r.taps.get('h') as unknown as { down: Set<PlayerId> }).down.delete('a');
+    };
+    lift();
+    const before = r.frames.length;
+    again.join();
+    await flush();
+    const hello = r.frames.slice(before).map((f) => JSON.parse(f.frame) as AnyMessage).find((m) => m.type === 'HELLO');
+    expect(hello?.type === 'HELLO' && typeof hello.payload.proof).toBe('string');
+    expect(hello?.seq).toBeGreaterThan(ceiling);
+    // Taken as that member: the same row, the open match's whole log sent, nobody refused.
+    expect(back).toEqual(['a 0']);
+    expect(refused).toEqual([]);
+    expect(events).toEqual(['joined', 'caughtUp JHDFEF-1']);
+    expect(host.members().map((m) => m.playerId)).toEqual(['h', 'a', 'b']);
+    expect(again.log.head()).toEqual(host.log.head());
+    // The same HELLO once more, as it was: its number is not above the count any more.
+    r.bus.route('a', 'h', hello as AnyMessage);
+    await flush();
+    expect(back).toEqual(['a 0']);
+    expect(host.members().map((m) => m.playerId)).toEqual(['h', 'a', 'b']);
+  });
+
+  it("two restarts in a row (the review of PR 138): the member's return was taken, and the lobby's PC started again before its answer arrived: told where the lobby stands a second time, the member goes above that too and is back; it is never left outside", async () => {
+    const { r, disk, watch } = await saved(['a']);
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    let host = await restart(r, disk, watch);
+    host.runAfterRestore();
+    // The member's first return after the restart: `stale_seq`, then its second RECONNECT, which the lobby's PC
+    // takes... and then is gone again before the member has the answer (the answer is lost with the link).
+    const tapH = r.taps.get('h') as unknown as { down: Set<PlayerId> };
+    const seen: string[] = [];
+    client(r, 'a').on('reconnectRejected', (x) => seen.push(`${x.code}${x.willRetry ? ' retry' : ''}`));
+    let taken = 0;
+    host.on('reconnected', () => {
+      taken += 1;
+      // The answer does not reach the member: this end's link to it is down from here.
+      tapH.down.add('a');
+    });
+    await r.mend('a').catch(() => undefined);
+    for (let i = 0; i < 40 && taken === 0; i++) await r.tick(1000);
+    expect(taken).toBe(1);
+    expect(seen).toEqual(['stale_seq retry']);
+    host = await restart(r, disk, watch);
+    host.runAfterRestore();
+    await r.mend('a');
+    // A second `stale_seq` (the new ceiling is above the number the member went to), and again it goes above.
+    expect(seen).toEqual(['stale_seq retry', 'stale_seq retry']);
+    expect(client(r, 'a').hostAway()).toBeNull();
+    expect(r.events['a']?.at(-1)).toMatch(/^reconnected/);
+    expect(host.snapshot().gone).toEqual([]);
+  });
+
+  it('a restart while the game is paused for a member who is away: the PAUSE of the log stands, and no second one is logged when the grace after the restart runs out', async () => {
+    const { r, disk, watch } = await saved(['a']);
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    await r.cut('a');
+    await r.tick(5000);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    const host = await restart(r, disk, watch);
+    expect(host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    host.runAfterRestore();
+    await r.tick(6000);
+    expect(logged(host).filter((t) => t === 'PAUSE')).toHaveLength(1);
+    expect(host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+  });
+
+  it("the review of PR 138: an engine that is closed takes nothing and sends nothing (what a shell relies on when it closes the engine BEFORE it writes the last record): a ball end that arrives after it is neither logged nor echoed, the next player is not granted, and after the restart from that record the kept ball end is taken once and the grant goes out then", async () => {
+    const { r, disk, watch } = await saved(['a', 'b']);
+    r.host.startMatch(['a', 'b', 'h']);
+    await flush();
+    const head = r.host.log.head();
+    const sent = r.frames.filter((f) => f.by === 'h').length;
+    // Castcade is closing on the lobby's PC: the engine is closed, and then the record is written (it is the disk as it stands).
+    r.host.close();
+    const frozen = JSON.parse(JSON.stringify(disk)) as typeof disk;
+    // A's ball ends in the seconds the rest of Castcade takes to close.
+    client(r, 'a').reportBallEnd(77, 'script');
+    await flush();
+    expect(r.host.log.head()).toEqual(head);
+    expect(r.frames.filter((f) => f.by === 'h')).toHaveLength(sent);
+    expect(client(r, 'b').myGrant).toBeNull();
+    expect(client(r, 'b').inputUnlocked).toBe(false);
+    // The start again, from the record as it was written.
+    Object.assign(disk, frozen);
+    const host = await restart(r, disk, watch, {}, 60_000);
+    host.runAfterRestore();
+    await r.mend('a');
+    await r.mend('b');
+    expect(logged(host).filter((t) => t.startsWith('BALL_END'))).toEqual(['BALL_END(a 77)']);
+    expect(host.state.currentGrant?.grant.player).toBe('b');
+    expect(client(r, 'b').myGrant).toMatchObject({ player: 'b', ballNumber: 1 });
+    expect(client(r, 'a').log.head()).toEqual(host.log.head());
+    expect(r.events['a']?.filter((e) => e.startsWith('desync'))).toEqual([]);
+  });
+
+  it("a record that is behind the engine (the process was gone before the last moves were saved): the member who holds more of the match is given the lobby's log in its place and both engines say that the match went back; nobody is left locked in the middle of a ball", async () => {
+    const { r, disk, watch } = await saved(['a', 'b']);
+    r.host.startMatch(['a', 'b', 'h']);
+    await flush();
+    const frozen = JSON.parse(JSON.stringify(disk)) as typeof disk;
+    // After the last good write: A's ball ends, it is taken and echoed, and B is granted and plays.
+    client(r, 'a').reportBallEnd(77, 'script');
+    await flush();
+    expect(client(r, 'b').myGrant).toMatchObject({ player: 'b' });
+    Object.assign(disk, frozen);
+    const host = await restart(r, disk, watch, {}, 60_000);
+    const ahead: string[] = [];
+    const back: string[] = [];
+    host.on('memberAhead', (x) => ahead.push(`${x.playerId} ${x.entries}`));
+    for (const id of ['a', 'b']) client(r, id).on('wentBack', (x) => back.push(`${id} ${x.match} ${x.had}`));
+    host.runAfterRestore();
+    await r.mend('a');
+    await r.mend('b');
+    expect(ahead.sort()).toEqual(['a 4', 'b 4']);
+    expect(back.sort()).toEqual(['a JHDFEF-1 4', 'b JHDFEF-1 4']);
+    // One state everywhere: A is up on ball 1 again, B is not; every log is the lobby's.
+    expect(host.state.currentGrant?.grant).toMatchObject({ player: 'a', ballNumber: 1 });
+    expect(client(r, 'a').myGrant).toMatchObject({ player: 'a', ballNumber: 1 });
+    expect(client(r, 'a').inputUnlocked).toBe(true);
+    expect(client(r, 'b').myGrant).toBeNull();
+    for (const id of ['a', 'b']) expect(client(r, id).log.head()).toEqual(host.log.head());
+    expect([...(r.events['a'] ?? []), ...(r.events['b'] ?? [])].filter((e) => e.startsWith('desync'))).toEqual([]);
   });
 });

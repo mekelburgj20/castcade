@@ -327,7 +327,7 @@ export type MenuKey = 'menu' | 'choose' | 'up' | 'down' | 'left' | 'right';
 
 export type MenuEffect =
   /** `now` (A17 step 7): the second choose while a start waits: start without what it waits for. */
-  | { kind: 'start'; anyway: boolean; now?: boolean }
+  | { kind: 'start'; anyway: boolean; now?: boolean; without?: string }
   /** A17 step 7: the lobby's choices. */
   | { kind: 'cancelStart' }
   /** `anyway`: the question named a table that cannot report ball ends, and the choose answered it. */
@@ -426,7 +426,9 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
     case 'start':
       return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
     case 'startNow':
-      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: false, now: true } };
+      // The review of PR 138: the press says what it was about (the line's own words): the shell does nothing when
+      // the start waits for something else by then.
+      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: false, now: true, without: item.label } };
     case 'cancelStart':
       return { state: MENU_CLOSED, effect: { kind: 'cancelStart' } };
     case 'newMatch':
