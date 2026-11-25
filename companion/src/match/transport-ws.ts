@@ -11,7 +11,7 @@
  */
 import { WebSocket, WebSocketServer } from 'ws';
 import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type PlayerId } from '@castcade/protocol';
-import { openCandidate, type LinkCandidate, type MessageHandler, type PeerHandler, type Transport } from './transport.js';
+import { openCandidate, refusedOpening, ReportGate, undecodedFrames, verdictClock, type MessageHandler, type OpenedCandidate, type PeerHandler, type Transport } from './transport.js';
 
 export type ErrorHandler = (err: Error, peer: PlayerId | null) => void;
 
@@ -67,6 +67,8 @@ export class WsHostTransport implements Transport {
   readonly localId: PlayerId;
   private server: WebSocketServer | null = null;
   private readonly sockets = new Map<PlayerId, WebSocket>();
+  /** 2026-11-25: the sockets that are nobody's yet, so that `close()` ends them too. */
+  private readonly waiting = new Set<WebSocket>();
   private readonly messageHandlers = new Set<MessageHandler>();
   private readonly joinHandlers = new Set<PeerHandler>();
   private readonly leaveHandlers = new Set<PeerHandler>();
@@ -94,7 +96,20 @@ export class WsHostTransport implements Transport {
   private attach(socket: WebSocket): void {
     // 2026-11-25: `peer` stays null until the engine has accepted this socket's first frame (`LinkCandidate`).
     // `judged`: the first frame was handed over (a verdict is awaited, or it was refused): nothing more is read.
-    let judged: LinkCandidate | null = null;
+    let judged: OpenedCandidate | null = null;
+    // The time for a verdict runs from the connection: a socket that says nothing is closed as well.
+    const clock = verdictClock(() => {
+      this.fail(new Error('a connection that sent no opening frame in time was closed'), null);
+      socket.close();
+    }, this.opts.verdictMs);
+    const undecoded = new ReportGate();
+    this.waiting.add(socket);
+    /** The socket closed while it was nobody's: no leave, and no verdict can bind it any more. */
+    const closedUnbound = (): void => {
+      this.waiting.delete(socket);
+      clock.stop();
+      judged?.gone();
+    };
     let peer: PlayerId | null = null;
     socket.on('message', (data: RawData) => {
       const text = rawToString(data);
@@ -103,7 +118,9 @@ export class WsHostTransport implements Transport {
         msg = decodeFrame(text);
       } catch (e) {
         this.refuseForeignVersion(socket, text);
-        this.fail(e, peer);
+        // 2026-11-25: one line for the first, then at most one in ten seconds with how many there were.
+        const times = undecoded.pass();
+        if (times !== null) this.fail(undecodedFrames(e, times), peer);
         return;
       }
       if (peer === null) {
@@ -122,14 +139,17 @@ export class WsHostTransport implements Transport {
             },
             bind: () => {
               peer = player;
+              this.waiting.delete(socket);
               const previous = this.sockets.get(player);
               if (previous && previous !== socket) previous.close();
               this.sockets.set(player, socket);
               for (const cb of [...this.joinHandlers]) cb(player);
             },
             close: () => socket.close(),
+            // One line per connection: a refused socket is closed and reads nothing more.
+            refused: (code) => this.fail(refusedOpening(msg.type, player, code, 1), null),
           },
-          this.opts.verdictMs,
+          clock.spoke(),
         );
         for (const cb of [...this.messageHandlers]) cb(player, msg, judged);
         return;
@@ -137,8 +157,7 @@ export class WsHostTransport implements Transport {
       for (const cb of [...this.messageHandlers]) cb(peer, msg);
     });
     socket.on('close', () => {
-      // A socket that closes before its verdict was never anybody's: no leave, and no verdict can bind it any more.
-      if (peer === null) return void judged?.refuse();
+      if (peer === null) return closedUnbound();
       if (this.sockets.get(peer) === socket) {
         this.sockets.delete(peer);
         for (const cb of [...this.leaveHandlers]) cb(peer);
@@ -198,6 +217,9 @@ export class WsHostTransport implements Transport {
   close(): void {
     for (const s of this.sockets.values()) s.terminate();
     this.sockets.clear();
+    // 2026-11-25: and the sockets that are nobody's yet (no first frame, or no verdict on it).
+    for (const s of [...this.waiting]) s.terminate();
+    this.waiting.clear();
     this.server?.close();
     this.server = null;
   }
@@ -307,7 +329,11 @@ interface PeerLink {
    * 2026-11-25, inbound only: the first frame was handed to the engine. While `peer` is null the link is a candidate
    * (a verdict is awaited, or it was refused and the socket is closing); it is `peer`'s link from the accept on.
    */
-  judged: LinkCandidate | null;
+  judged: OpenedCandidate | null;
+  /** 2026-11-25, inbound only: the time for a verdict, which runs from the connection (`verdictClock`). */
+  clock?: { spoke(): number; stop(): void };
+  /** 2026-11-25, inbound only: frames that did not decode are reported at most once in ten seconds, with a count. */
+  undecoded?: ReportGate;
 }
 
 /**
@@ -406,7 +432,12 @@ export class WsPeerTransport implements Transport {
   }
 
   private attachInbound(socket: WebSocket): void {
-    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false, judged: null };
+    const link: PeerLink = { socket, dir: 'in', peer: null, ready: false, silent: false, judged: null, undecoded: new ReportGate() };
+    // 2026-11-25: the time for a verdict runs from the connection: a socket that says nothing is closed as well.
+    link.clock = verdictClock(() => {
+      this.fail(new Error('a connection that sent no opening frame in time was closed'), null);
+      socket.close();
+    }, this.verdictMs);
     this.links.push(link);
     socket.on('message', (data: RawData) => {
       const text = rawToString(data);
@@ -415,7 +446,9 @@ export class WsPeerTransport implements Transport {
         msg = decodeFrame(text);
       } catch (e) {
         if (link.peer === null && refuseForeignVersion(socket, text, this.localId, this.seqForRefuse + 1)) this.seqForRefuse += 1;
-        this.fail(e, link.peer);
+        // 2026-11-25: one line for the first, then at most one in ten seconds with how many there were.
+        const times = link.undecoded ? link.undecoded.pass() : 1;
+        if (times !== null) this.fail(undecodedFrames(e, times), link.peer);
         return;
       }
       if (link.peer === null) {
@@ -441,8 +474,10 @@ export class WsPeerTransport implements Transport {
             },
             // Never anybody's link: its close is not a leave (`peer` is still null).
             close: () => socket.close(),
+            // One line per connection: a refused socket is closed and reads nothing more.
+            refused: (code) => this.fail(refusedOpening(msg.type, player, code, 1), null),
           },
-          this.verdictMs,
+          link.clock?.spoke(),
         );
         for (const cb of [...this.messageHandlers]) cb(player, msg, link.judged);
         return;
@@ -467,7 +502,8 @@ export class WsPeerTransport implements Transport {
   private onLinkClosed(link: PeerLink): void {
     this.links = this.links.filter((l) => l !== link);
     // A socket that closes before its verdict was never anybody's: no verdict can bind it any more.
-    link.judged?.refuse();
+    link.clock?.stop();
+    link.judged?.gone();
     const peer = link.peer;
     if (link.silent || !link.ready || peer === null) return;
     if (this.links.some((l) => l.peer === peer && l.ready)) return;

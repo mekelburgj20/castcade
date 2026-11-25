@@ -5,239 +5,93 @@
  * through the relay double (relay-fake.test-support.ts) and over real WebSockets, from both sides (what the host
  * holds, and what each link is sent). Then the paths that bind a link as before: a player's own RECONNECT on a new
  * link, with the old one gone or still held; and the transports' own rule for a first frame nobody judged.
+ * The rules a RECONNECT that verifies is held to are in link-binding-rules.test.ts.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
-import { WebSocket } from 'ws';
-import { buildMessage, decodeFrame, encodeFrame, PROTOCOL_VERSION, type AnyMessage, type GameFingerprint, type GrantBody, type ParticipantInfo } from '@castcade/protocol';
+import { buildMessage, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { HostMatch } from './host.js';
 import { generateKeys, signCanonical, type KeyPair } from './keys.js';
 import { reconnectSignBody } from './result.js';
-import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
+import { startFakeRelay } from './relay-fake.test-support.js';
 import { MemoryBus, openCandidate, type LinkCandidate, type Transport } from './transport.js';
-import { RelayClientTransport, RelayHostTransport, RELINK, type RelayOptions } from './transport-relay.js';
+import { RelayClientTransport, RelayHostTransport } from './transport-relay.js';
 import { WsClientTransport, WsHostTransport, WsPeerTransport } from './transport-ws.js';
+import {
+  aIsUp,
+  ballEndAs,
+  cleanup,
+  CODE,
+  flush,
+  game,
+  helloAs,
+  HIGH,
+  note,
+  optsFor,
+  DEVICES,
+  participant,
+  rawSocket,
+  reconnectAs,
+  relayRig,
+  sleep,
+  TRANSPORTS,
+  types,
+  until,
+  world,
+  wsRig,
+  type Rig,
+  type Second,
+} from './link-binding.test-support.js';
 
-const CODE = 'RELAYA';
-const game: GameFingerprint = { kind: 'vpx', tableName: 'Test Table', tableHash: 'ab'.repeat(32), romName: null, romHash: null, physicsHash: null, recipeVersion: '0.5.0', sidecarHash: null, emulatorVersion: '10.8.0' };
-const participant = (id: string, keys: KeyPair): ParticipantInfo => ({ playerId: id, displayName: id, publicKey: keys.publicKeyB64, rig: 'pc' });
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-const until = async (cond: () => boolean, ms = 5000): Promise<void> => {
-  const end = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > end) throw new Error('timed out');
-    await sleep(5);
-  }
-};
-const flush = async (n = 6): Promise<void> => {
-  for (let i = 0; i < n; i++) await new Promise<void>((r) => setTimeout(r, 0));
-};
-const types = (m: HostMatch | ClientMatch): string[] => m.log.entries().map((e) => (e.message ? `${e.message.type}:${e.message.from}` : (e.event?.type ?? '?')));
+afterEach(cleanup);
 
-const DEVICES = { 'dev-h': 'tok-h', 'dev-a': 'tok-a', 'dev-b': 'tok-b' };
-let relay: FakeRelay | null = null;
-const open: { close(): void }[] = [];
-afterEach(async () => {
-  for (const x of open.splice(0)) x.close();
-  await relay?.close();
-  relay = null;
-});
-const optsFor = (r: FakeRelay, id: string, extra: Partial<RelayOptions> = {}): RelayOptions => ({
-  localId: id,
-  baseUrl: r.url,
-  auth: { deviceId: `dev-${id}`, deviceToken: `tok-${id}` },
-  connectTimeoutMs: 1500,
-  ackTimeoutMs: 1500,
-  ...extra,
-});
-
-/** Another link to the host that has said nothing yet: a seat in the relay room, or a socket on the listener. */
-interface Second {
-  send(...msgs: AnyMessage[]): void;
-  /** The protocol frames this link was sent, in order. */
-  frames(): AnyMessage[];
-  /** Over the relay (which has no kick): this link was told it is on no link. Over WebSocket: the socket was closed. */
-  shut(): boolean;
-}
-
-/** h hosts, a is in; both engines with no grace, so a leave that was wrongly noted would pause at once. */
-interface Rig {
-  host: HostMatch;
-  a: ClientMatch;
-  ak: KeyPair;
-  /** What both engines raised that is not the plain course of a match. */
-  seen: string[];
-  /** The players the host's transport holds a link for. */
-  linked(): string[];
-  second(): Promise<Second>;
-}
-
-function note(host: HostMatch, a: ClientMatch): string[] {
-  const seen: string[] = [];
-  host.on('pause', (p) => seen.push(`h:pause:${String(p.player)}`));
-  host.on('peerLeft', (id) => seen.push(`h:peerLeft:${id}`));
-  host.on('reconnected', (x) => seen.push(`h:reconnected:${x.playerId}`));
-  host.on('reconnectRejected', (x) => seen.push(`h:reconnectRejected:${x.code}`));
-  host.on('refused', (x) => seen.push(`h:refused:${x.refuse.code}`));
-  host.on('reject', (x) => seen.push(`h:reject:${x.refType}:${x.code}`));
-  a.on('pause', (p) => seen.push(`a:pause:${String(p.player)}`));
-  a.on('peerLeft', (id) => seen.push(`a:peerLeft:${id}`));
-  a.on('reject', (x) => seen.push(`a:reject:${x.refType}`));
-  a.on('reconnected', () => seen.push('a:reconnected'));
-  a.on('reconnectFailed', () => seen.push('a:reconnectFailed'));
-  a.on('reconnectRejected', () => seen.push('a:reconnectRejected'));
-  a.on('refused', (x) => seen.push(`a:refused:${x.code}`));
-  return seen;
-}
-
-async function relayRig(graceMs = 0): Promise<Rig> {
-  const r = (relay = await startFakeRelay({ devices: DEVICES }));
-  const hk = generateKeys();
-  const ak = generateKeys();
-  const rh = new RelayHostTransport(optsFor(r, 'h'));
-  await rh.host(CODE);
-  const host = new HostMatch({ transport: rh, keys: hk, matchId: CODE, ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game, disconnectGraceMs: graceMs });
-  const at = new RelayClientTransport(optsFor(r, 'a'));
-  await at.connect(CODE);
-  const a = new ClientMatch({ transport: at, keys: ak, participant: participant('a', ak), game, throwdownCode: CODE, reconnect: { delayMs: 40, attempts: 40 }, disconnectGraceMs: graceMs });
-  open.push(rh, at, host, a);
-  const seen = note(host, a);
-  a.join();
-  await until(() => a.isJoined && host.roster().length === 2);
-  return {
-    host,
-    a,
-    ak,
-    seen,
-    linked: () => rh.peers(),
-    second: async () => {
-      const s: ClientSocket = ioClient(r.url, { auth: { deviceId: 'dev-b', deviceToken: 'tok-b' }, transports: ['websocket'], forceNew: true, reconnection: false });
-      open.push({ close: () => s.disconnect() });
-      await new Promise<void>((res, rej) => {
-        s.once('connect', () => res());
-        s.once('connect_error', rej);
-      });
-      const raw: string[] = [];
-      s.on('match:relay', (p: { data: string }) => raw.push(p.data));
-      const ack = await new Promise<{ ok?: boolean }>((res, rej) => s.timeout(1500).emit('match:join', { code: CODE }, (err: Error | null, x: { ok?: boolean }) => (err ? rej(err) : res(x))));
-      expect(ack.ok).toBe(true);
-      return {
-        send: (...msgs) => msgs.forEach((m) => s.emit('match:relay', { data: encodeFrame(m) })),
-        frames: () => raw.filter((d) => d !== RELINK).map((d) => decodeFrame(d)),
-        shut: () => raw.includes(RELINK),
-      };
-    },
-  };
-}
-
-async function wsRig(graceMs = 0): Promise<Rig> {
-  const hk = generateKeys();
-  const ak = generateKeys();
-  const ht = new WsPeerTransport({ localId: 'h' });
-  const endpoint = await ht.listen(0, '127.0.0.1');
-  const host = new HostMatch({ transport: ht, keys: hk, matchId: CODE, ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game, disconnectGraceMs: graceMs });
-  const at = new WsPeerTransport({ localId: 'a' });
-  await at.connect(endpoint);
-  const a = new ClientMatch({ transport: at, keys: ak, participant: participant('a', ak), game, throwdownCode: CODE, reconnect: { delayMs: 40, attempts: 40 }, disconnectGraceMs: graceMs });
-  open.push(ht, at, host, a);
-  const seen = note(host, a);
-  a.join();
-  await until(() => a.isJoined && host.roster().length === 2);
-  return { host, a, ak, seen, linked: () => ht.inboundPeers(), second: () => rawSocket(endpoint) };
-}
-
-async function rawSocket(endpoint: string): Promise<Second & { socket: WebSocket }> {
-  const socket = new WebSocket(endpoint);
-  open.push({ close: () => socket.terminate() });
-  const raw: string[] = [];
-  let closed = false;
-  socket.on('message', (d) => raw.push(d.toString()));
-  socket.on('close', () => (closed = true));
-  await new Promise<void>((res, rej) => {
-    socket.once('open', () => res());
-    socket.once('error', rej);
-  });
-  return { socket, send: (...msgs) => msgs.forEach((m) => socket.send(encodeFrame(m))), frames: () => raw.map((d) => decodeFrame(d)), shut: () => closed };
-}
-
-/** The match is running and `a` holds the grant for its first ball. */
-async function aIsUp(rig: Rig): Promise<GrantBody> {
-  rig.host.start();
-  await until(() => rig.a.state.currentGrant?.grant.player === 'h');
-  rig.host.localBallEnd(100, 'nvram');
-  await until(() => rig.a.myGrant !== null);
-  return rig.a.myGrant as GrantBody;
-}
-
-/** A RECONNECT that names `a` and `a`'s own log head, signed with `key`, under the number `seq`. */
-function reconnectAs(rig: Rig, key: KeyPair, seq: number): AnyMessage {
-  const head = rig.a.log.head();
-  const signature = signCanonical(reconnectSignBody(CODE, 'a', head.hash, head.length), key.privateKey);
-  return buildMessage('RECONNECT', { player: 'a', logHash: head.hash, logLength: head.length, signature, resends: true }, { matchId: CODE, seq, from: 'a' });
-}
-function helloAs(id: string, seq: number): AnyMessage {
-  return buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: 'test', throwdownCode: CODE, participant: participant(id, generateKeys()), game }, { matchId: null, seq, from: id });
-}
-function ballEndAs(id: string, g: GrantBody, seq: number): AnyMessage {
-  return buildMessage('BALL_END', { grantSeq: g.grantSeq, ballNumber: g.ballNumber, finalScore: 999_999, detectorReason: 'nvram', shootAgain: false }, { matchId: CODE, seq, from: id });
-}
-
-const HIGH = 1_000_000_000_000_000;
-
-/** The refusals of a first frame that names the seated player `a`, one case for each way the host refuses one. */
-const REFUSED: { name: string; first: (rig: Rig) => AnyMessage; answer: (m: AnyMessage) => void; raised: string }[] = [
+/** The refusals of a first frame that names the seated player `a`: what is sent, the answer, what the host raises. */
+const REFUSED: { name: string; firsts: (rig: Rig) => AnyMessage[]; answer: (m: AnyMessage) => void; raised: string; line: string }[] = [
   {
-    name: 'a RECONNECT refused as `bad_signature`, its number below the count',
-    first: (rig) => reconnectAs(rig, generateKeys(), 1),
+    name: 'a RECONNECT refused as `bad_signature`, under two numbers',
+    firsts: (rig) => [reconnectAs(rig, generateKeys(), 1), reconnectAs(rig, generateKeys(), HIGH)],
     answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
     raised: 'h:reconnectRejected:bad_signature',
-  },
-  {
-    name: 'a RECONNECT refused as `bad_signature`, its number above the count',
-    first: (rig) => reconnectAs(rig, generateKeys(), HIGH),
-    answer: (m) => expect(m).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: false, code: 'bad_signature' } }),
-    raised: 'h:reconnectRejected:bad_signature',
-  },
-  {
-    name: 'a RECONNECT refused for its number (REJECT `unexpected_state`)',
-    first: (rig) => reconnectAs(rig, rig.ak, 1),
-    answer: (m) => expect(m).toMatchObject({ type: 'REJECT', payload: { refType: 'RECONNECT', code: 'unexpected_state' } }),
-    raised: 'h:reject:RECONNECT:unexpected_state',
+    line: 'an opening frame was refused (RECONNECT for a: bad_signature)',
   },
   {
     name: 'a HELLO refused as `match_started`',
-    first: () => helloAs('a', HIGH),
+    firsts: () => [helloAs('a', HIGH)],
     answer: (m) => expect(m).toMatchObject({ type: 'REFUSE', payload: { code: 'match_started' } }),
     raised: 'h:refused:match_started',
+    line: 'an opening frame was refused (HELLO for a: match_started)',
   },
 ];
 
-for (const [transport, makeRig] of [
-  ['through the relay', relayRig],
-  ['over WebSocket', wsRig],
-] as const) {
+for (const [transport, makeRig] of TRANSPORTS) {
   describe(`a first frame that is refused changes nothing about the player it names (${transport})`, () => {
     for (const c of REFUSED) {
       it(`${c.name}: the player's link, count and state are as they were, the link the frame came on is closed and nothing more is read from it, and the player's next frame is taken`, async () => {
         const rig = await makeRig();
         const grant = await aIsUp(rig);
         const head = rig.host.log.head();
-        const second = await rig.second();
-        // The first frame and one more behind it: only a first frame is ever read from a link that is nobody's.
-        second.send(c.first(rig), ballEndAs('a', grant, HIGH + 1));
-        await until(() => second.frames().length >= 1 && second.shut());
+        const firsts = c.firsts(rig);
+        const seconds: Second[] = [];
+        for (const first of firsts) {
+          const second = await rig.second();
+          seconds.push(second);
+          // The first frame and one more behind it: only a first frame is ever read from a link that is nobody's.
+          second.send(first, ballEndAs('a', grant, HIGH + 1));
+          await until(() => second.frames().length >= 1 && second.shut());
+          c.answer(second.frames()[0] as AnyMessage);
+        }
         await sleep(60);
 
         // The host: the link it holds for `a` is the one it held, the log has not moved, the grant stands, nobody
-        // counts as away and nothing is paused. It raised the refusal and nothing else.
-        c.answer(second.frames()[0] as AnyMessage);
+        // counts as away and nothing is paused. It raised the refusal and nothing else, and reported one line for each.
+        const raised = firsts.map(() => c.raised);
         expect(rig.linked()).toEqual(['a']);
         expect(rig.host.log.head()).toEqual(head);
         expect(rig.host.state.currentGrant?.grant.grantSeq).toBe(grant.grantSeq);
         expect(rig.host.state.paused).toBeNull();
         expect(rig.host.snapshot().gone).toEqual([]);
-        expect(rig.seen).toEqual([c.raised]);
+        expect(rig.seen).toEqual(raised);
+        expect(rig.errors).toEqual(firsts.map(() => c.line));
 
         // The player: still on its link, and its own next frame, under its own next number, is taken.
         rig.a.reportBallEnd(4321, 'nvram');
@@ -246,10 +100,10 @@ for (const [transport, makeRig] of [
         expect(last).toMatchObject({ from: 'a', payload: { finalScore: 4321, grantSeq: grant.grantSeq } });
         expect(rig.a.state.currentGrant?.grant.player).toBe('h');
 
-        // The second link: it was sent its answer and nothing of the match, before or after.
+        // The other links: each was sent its answer and nothing of the match, before or after.
         await sleep(60);
-        expect(second.frames()).toHaveLength(1);
-        expect(rig.seen).toEqual([c.raised]);
+        for (const second of seconds) expect(second.frames()).toHaveLength(1);
+        expect(rig.seen).toEqual(raised);
         expect(rig.linked()).toEqual(['a']);
       });
     }
@@ -301,6 +155,7 @@ for (const [transport, makeRig] of [
       await until(() => second.frames().length >= 1);
       expect(second.frames()[0]).toMatchObject({ type: 'RECONNECT_ACK', payload: { accept: true, logHash: head.hash } });
       expect(rig.seen).toEqual(['h:reconnected:a']);
+      expect(rig.errors).toEqual([]);
       expect([...new Set(rig.linked())]).toEqual(['a']);
       // What the host sends that player now goes to the new link.
       rig.host.pause('requested', null);
@@ -309,11 +164,10 @@ for (const [transport, makeRig] of [
     });
 
     it('after their link dropped: they are back on a new link by RECONNECT, inside the grace, and nobody was paused', async () => {
-      const rig = await makeRig(3000);
+      const rig = await makeRig({ graceMs: 3000 });
       await aIsUp(rig);
       const head = rig.host.log.head();
-      if (transport === 'through the relay') relay?.dropDevice('dev-a');
-      else (rig.a.session.transport as WsPeerTransport).dropLinks('h');
+      rig.dropA();
       await until(() => rig.seen.includes('a:reconnected') && rig.seen.includes('h:reconnected:a'));
       expect(rig.seen.sort()).toEqual(['a:reconnected', 'h:reconnected:a']);
       expect(rig.linked()).toEqual(['a']);
@@ -327,7 +181,7 @@ for (const [transport, makeRig] of [
 
 describe('the relay: a player whose link was replaced is told to open it again, and is back by its own RECONNECT', () => {
   it('RELINK reaches the link that is no longer the player\'s, and the engine behind it resumes from its log head', async () => {
-    const rig = await relayRig(3000);
+    const rig = await relayRig({ graceMs: 3000 });
     await aIsUp(rig);
     const head = rig.host.log.head();
     const second = await rig.second();
@@ -359,7 +213,7 @@ describe('the fixed-role WebSocket host: a socket is a player\'s once its HELLO 
     const at = new WsClientTransport({ localId: 'a', url: `ws://127.0.0.1:${port}` });
     await at.connect();
     const a = new ClientMatch({ transport: at, keys: ak, participant: participant('a', ak), game, throwdownCode: CODE, disconnectGraceMs: 0 });
-    open.push(ht, at, host, a);
+    world.open.push(ht, at, host, a);
     const seen = note(host, a);
     a.join();
     await until(() => a.isJoined && host.roster().length === 2);
@@ -382,24 +236,25 @@ describe('the fixed-role WebSocket host: a socket is a player\'s once its HELLO 
   });
 });
 
-describe('a first frame nobody judged: the transport closes the link, and it was never anybody\'s', () => {
+describe('a link that is nobody\'s is closed when its time is up, counted from the connection; it was never anybody\'s', () => {
   const hello = helloAs('x', 1);
   const more = buildMessage('RESUME', {}, { matchId: CODE, seq: 2, from: 'x' });
-  /** Every frame a transport handed over, and the candidate it came with. */
-  const listen = (t: Transport): { got: string[]; candidates: LinkCandidate[]; joins: string[]; leaves: string[] } => {
-    const out = { got: [] as string[], candidates: [] as LinkCandidate[], joins: [] as string[], leaves: [] as string[] };
+  /** Every frame a transport handed over, the candidate it came with, and what the transport reported. */
+  const listen = (t: Transport & { onError(cb: (e: Error) => void): () => void }): { got: string[]; candidates: LinkCandidate[]; joins: string[]; leaves: string[]; errors: string[] } => {
+    const out = { got: [] as string[], candidates: [] as LinkCandidate[], joins: [] as string[], leaves: [] as string[], errors: [] as string[] };
     t.onMessage((from, m, candidate) => {
       out.got.push(`${from}:${m.type}:${candidate ? 'candidate' : 'link'}`);
       if (candidate) out.candidates.push(candidate);
     });
     t.onPeerJoin((p) => out.joins.push(p));
     t.onPeerLeave((p) => out.leaves.push(p));
+    t.onError((e) => out.errors.push(e.message));
     return out;
   };
 
   it('WsPeerTransport: the first frame is handed over once, nothing after it is read, and the socket is closed when the time is up', async () => {
     const t = new WsPeerTransport({ localId: 'h', verdictMs: 200 });
-    open.push(t);
+    world.open.push(t);
     const endpoint = await t.listen(0, '127.0.0.1');
     const seen = listen(t);
     const s = await rawSocket(endpoint);
@@ -415,11 +270,12 @@ describe('a first frame nobody judged: the transport closes the link, and it was
     expect(t.peers()).toEqual([]);
     expect(seen.joins).toEqual([]);
     expect(seen.leaves).toEqual([]);
+    expect(seen.errors).toEqual(['an opening frame was refused (HELLO for x: no verdict in time)']);
   });
 
   it('WsHostTransport: the same', async () => {
     const t = new WsHostTransport({ localId: 'h', port: 0, verdictMs: 200 });
-    open.push(t);
+    world.open.push(t);
     const port = await t.listen();
     const seen = listen(t);
     const s = await rawSocket(`ws://127.0.0.1:${port}`);
@@ -432,14 +288,59 @@ describe('a first frame nobody judged: the transport closes the link, and it was
     expect(seen.leaves).toEqual([]);
   });
 
-  it('RelayHostTransport: the same, and an accepted first frame is what makes a relay peer a link', async () => {
-    const r = (relay = await startFakeRelay({ devices: DEVICES }));
+  for (const kind of ['WsPeerTransport', 'WsHostTransport'] as const) {
+    it(`${kind}: a socket that connects and says nothing is closed when the time is up; one that speaks late has only what is left of it`, async () => {
+      const VERDICT = 400;
+      let t: WsPeerTransport | WsHostTransport;
+      let endpoint: string;
+      if (kind === 'WsPeerTransport') {
+        t = new WsPeerTransport({ localId: 'h', verdictMs: VERDICT });
+        endpoint = await t.listen(0, '127.0.0.1');
+      } else {
+        t = new WsHostTransport({ localId: 'h', port: 0, verdictMs: VERDICT });
+        endpoint = `ws://127.0.0.1:${await t.listen()}`;
+      }
+      world.open.push(t);
+      const seen = listen(t);
+      const started = Date.now();
+      const silent = await rawSocket(endpoint);
+      const late = await rawSocket(endpoint);
+      await sleep(VERDICT * 0.6);
+      late.send(hello);
+      await until(() => silent.shut() && late.shut());
+      // Both are closed about one time after they connected: the late one did not get a time of its own.
+      expect(Date.now() - started).toBeLessThan(VERDICT * 1.5);
+      expect(seen.got).toEqual(['x:HELLO:candidate']);
+      expect(seen.errors.sort()).toEqual(['a connection that sent no opening frame in time was closed', 'an opening frame was refused (HELLO for x: no verdict in time)']);
+      expect(t.peers()).toEqual([]);
+      expect(seen.joins).toEqual([]);
+      expect(seen.leaves).toEqual([]);
+    });
+  }
+
+  it('WsHostTransport: `close()` also ends the sockets that are nobody\'s yet', async () => {
+    const t = new WsHostTransport({ localId: 'h', port: 0 });
+    const port = await t.listen();
+    const seen = listen(t);
+    const silent = await rawSocket(`ws://127.0.0.1:${port}`);
+    const waiting = await rawSocket(`ws://127.0.0.1:${port}`);
+    waiting.send(hello);
+    await until(() => seen.got.length === 1);
+    t.close();
+    await until(() => silent.shut() && waiting.shut());
+    expect(seen.candidates[0]?.accept()).toBe(false);
+    // Closed with the transport, not refused: nothing is reported for them.
+    expect(seen.errors).toEqual([]);
+  });
+
+  it('RelayHostTransport: a first frame nobody judged is let go when the time is up, and an accepted first frame is what makes a relay peer a link', async () => {
+    const r = (world.relay = await startFakeRelay({ devices: DEVICES }));
     const t = new RelayHostTransport(optsFor(r, 'h', { verdictMs: 200 }));
-    open.push(t);
+    world.open.push(t);
     await t.host(CODE);
     const seen = listen(t);
     const c = new RelayClientTransport(optsFor(r, 'a'));
-    open.push(c);
+    world.open.push(c);
     const heard: string[] = [];
     c.onMessage((_f, m) => heard.push(m.type));
     await c.connect(CODE);
@@ -520,11 +421,12 @@ describe('the engines: the number of a frame that opens a link is recorded only 
     const sent: AnyMessage[] = [];
     let bound = false;
     const gone = openCandidate('a', { send: (x) => sent.push(x), bind: () => (bound = true), close: () => undefined });
-    gone.refuse();
+    gone.gone();
     m.host.handle('a', frame, { candidate: gone });
     expect(raised).toEqual([]);
     expect(sent).toEqual([]);
     expect(bound).toBe(false);
+    expect(m.host.snapshot().gone).toEqual([]);
     // The count of `a` is where it was: its own next frame, far below that number, is taken.
     m.host.localBallEnd(100, 'nvram');
     await flush();

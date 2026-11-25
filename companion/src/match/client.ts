@@ -183,6 +183,8 @@ export interface ClientEvents extends Record<string, unknown> {
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'TURN_PASS', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
+/** 2026-11-25: how many RECONNECTs a pending new host keeps for the commit (a match has four players at most). */
+const MAX_HELD_RECONNECTS = 16;
 const DEFAULT_RECONNECT_ATTEMPTS = 30;
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 
@@ -254,7 +256,7 @@ export class ClientMatch {
   /** A10: MATCH_END arrived. */
   private ended = false;
   /** RECONNECTs that reached this client as the pending new host, answered at its commit (A2). */
-  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'>; candidate: LinkCandidate | null }[] = [];
+  private readonly heldReconnects: { linkFrom: PlayerId; msg: Message<'RECONNECT'>; candidate: LinkCandidate | null; count: number | null }[] = [];
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
 
@@ -697,18 +699,44 @@ export class ClientMatch {
   /**
    * 2026-11-25: a frame that opens a link (a RECONNECT, or the first frame of an inbound link that is nobody's yet).
    * A client answers none and binds none. One is kept: over WebSocket a client can reach the new host's listener
-   * before the new host has its majority; that RECONNECT is held, unread, with the link it came on, and the host
-   * engine this client becomes verifies it and gives the verdict at the commit, before the re-issued grant (A2,
-   * 2026-10-30). A held link that the transfer never reaches is closed by the transport when its time is up. Any
-   * other first frame is refused: its link is closed and was never anybody's.
+   * before the new host has its majority; that RECONNECT is held with the link it came on, when it carries the
+   * signature of the roster player it names, and the host engine this client becomes reads it whole and gives the
+   * verdict at the commit, before the re-issued grant (A2, 2026-10-30). A held link that the transfer never reaches
+   * is closed by the transport when its time is up, and its entry is let go. Any other first frame is refused: its
+   * link is closed and was never anybody's.
    */
   private onOpeningFrame(linkFrom: PlayerId, msg: AnyMessage, candidate: LinkCandidate | null): void {
     if (msg.type === 'RECONNECT' && this.joined && this.s.state.pendingTransfer?.newHost === this.localId && msg.from === linkFrom) {
-      this.heldReconnects.push({ linkFrom, msg, candidate });
-      return;
+      // Only what carries the signature of the roster player it names is kept, and no more than sixteen of them:
+      // entries whose link is closed by now are let go first.
+      const held = this.heldReconnects;
+      for (let i = held.length - 1; i >= 0; i--) {
+        const c = held[i]!.candidate;
+        if (c !== null && c.state !== 'open') held.splice(i, 1);
+      }
+      if (!this.signedByItsPlayer(msg)) {
+        candidate?.refuse();
+        this.drop(msg, 'bad_signature');
+        return;
+      }
+      if (held.length < MAX_HELD_RECONNECTS) {
+        // The count of that player as it stands now is what the frame's `seq` is judged against at the commit: what
+        // the old host passes on from the same player meanwhile does not make the frame late.
+        held.push({ linkFrom, msg, candidate, count: this.s.lastSeqFrom(msg.from) });
+        return;
+      }
     }
     candidate?.refuse();
     if (this.joined) this.drop(msg, 'not_host');
+  }
+
+  /** A RECONNECT that names a roster player other than this one and verifies against that player's key. */
+  private signedByItsPlayer(msg: Message<'RECONNECT'>): boolean {
+    const st = this.s.state;
+    const p = msg.payload;
+    const who = st.participants.find((x) => x.playerId === msg.from);
+    if (!who || !st.matchId || p.player !== msg.from || msg.from === this.localId) return false;
+    return verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey);
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1304,7 +1332,7 @@ export class ClientMatch {
     this.events.emit('becameHost', host);
     // Answer the held RECONNECTs first, so those clients get the commit event before the re-issued grant.
     // 2026-11-25: each is read whole by the host engine (signature, then `seq`, then the link it came on).
-    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, h.candidate ? { candidate: h.candidate } : {});
+    for (const h of this.heldReconnects.splice(0)) host.handle(h.linkFrom, h.msg, h.candidate ? { candidate: h.candidate, heldAtCount: h.count } : { heldAtCount: h.count });
     host.run();
   }
 }

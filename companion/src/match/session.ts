@@ -69,6 +69,20 @@ export class Session {
     this.lastSeq.delete(from);
   }
 
+  /** 2026-11-25: the last `seq` taken from `from`, or null when none was. Reads only. */
+  lastSeqFrom(from: PlayerId): number | null {
+    return this.lastSeq.get(from) ?? null;
+  }
+
+  /**
+   * 2026-11-25: record a `seq` that was judged against the count as it stood earlier (an opening frame that was
+   * held before it was read). The count moves up to it and never down.
+   */
+  noteSeq(from: PlayerId, seq: number): void {
+    const last = this.lastSeq.get(from);
+    if (last === undefined || seq > last) this.lastSeq.set(from, seq);
+  }
+
   build<T extends MessageType>(type: T, payload: PayloadInput<T>, matchId: string | null): Message<T> {
     return buildMessage(type, payload, { matchId, seq: this.nextSeq(), from: this.localId, ts: this.clock.now() });
   }

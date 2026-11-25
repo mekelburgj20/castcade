@@ -21,13 +21,20 @@ participants are **clients**; the turn token is a **grant**.
 - `v` must equal the receiver's protocol version or the receiver answers `REFUSE` (`protocol_version`)
   and closes.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
-- A link belongs to a player once the host has accepted the link's first frame (2026-11-25; no change on the
-  wire): a `HELLO` it takes into the lobby, or a `RECONNECT` whose signature verifies and that it accepts. Until
-  then the link is a candidate: the host reads nothing more from it and answers it on that link only, and the
-  link the named player already has, if any, stays theirs. A first frame that is refused changes nothing about
-  the player it names (their link, their `seq` count, whether they count as connected) and its link is closed; a
-  candidate that gets no verdict is closed after a short time. The `seq` of a `HELLO` or a `RECONNECT` is
-  looked at and recorded only when the frame is accepted, for a `RECONNECT` after its signature has verified.
+- A link belongs to a player once the host has accepted the link's first frame (no change on the wire): a
+  `HELLO` it takes into the lobby, or a `RECONNECT` whose signature verifies and that it accepts. Until then the
+  link is a candidate: the host reads nothing more from it and answers it on that link only, and the link the
+  named player already has, if any, stays theirs. A first frame that is refused changes nothing about the player
+  it names (their link, their `seq` count, whether they count as connected) and its link is closed; a link that
+  has brought no first frame to a verdict within a short time of connecting is closed. The `seq` of a `HELLO`
+  or a `RECONNECT` is looked at and recorded only when the frame is accepted, for a `RECONNECT` after its
+  signature has verified. (One thing follows from a `RECONNECT` that carried the player's own signature and
+  was refused: see Reconnect.)
+- The host answers a frame on the link it came on. A frame whose `from` is another participant gets its
+  `REJECT` (`unknown_player`) on the link that sent it; the participant it names is sent nothing. (The types
+  a host passes on with `from` kept, `STATE`, `DMD_FRAME`, `HOST_TRANSFER_ACK`, `MEDIA_SIGNAL` and
+  `PARTICIPANT_UPDATE`, are dropped without an answer when they arrive in another name: after a host transfer
+  they are late, not wrong.)
 
 ## Canonical JSON
 
@@ -244,6 +251,18 @@ the three fields is logged.
   accepted `RECONNECT` makes the link it came on the player's link, in place of the one they had; its
   `seq` must be above the last the host took from that player, or the frame gets `REJECT`
   (`unexpected_state`) and its link is closed.
+- Where a `RECONNECT` may point. It never names the host (`unknown_player`: a host is not a client of
+  itself). A participant's log only grows, and it is saved at every entry, so the head a `RECONNECT` names is
+  never shorter than one its player has been at: the log entry of the `TURN_GRANT` of the last `BALL_END` that
+  player reported (a client reports a ball end only for a grant it holds), and the head of that player's last
+  `RECONNECT` this host accepted. A shorter head is rejected (`unknown_log_hash`); the same head again is
+  taken, since nothing may have been logged between two drops.
+- A `RECONNECT` that carried the player's own signature and is rejected as the first frame of a new link,
+  because the host does not hold the head it names or because its `seq` is not above the count, is that
+  player's own word that it is no longer on the link the host holds for it: the ordinary disconnect grace
+  starts for that player, as for a link that dropped (Pauses and timeouts). A frame from that player's own
+  link under its next `seq` ends it: the player is there. A `RECONNECT` that did not verify, or that names a
+  head the player is past, starts nothing.
 - A rejected client must re-join with a fresh `HELLO`. It is a new participant only if the match allows
   it, which after `MATCH_READY` it does not (`match_started`).
 - The existing pause and timeout rules apply while a player is disconnected (Pauses and timeouts: the grace, and

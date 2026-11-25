@@ -50,7 +50,11 @@
  *   transport.ts; `judge`, `admit`). A HELLO or a RECONNECT that is refused changes nothing about the player it names:
  *   the answer goes to the link it came on, a link that was nobody's yet is closed, and the frame's `seq` is not
  *   recorded (a RECONNECT's signature is verified before its `seq` is looked at). An accepted RECONNECT makes the
- *   link it came on the player's, in place of the one they had.
+ *   link it came on the player's, in place of the one they had. A RECONNECT never names this host, nor a head its
+ *   player is past (`checkReconnect`: the log's own floor, and the head of that player's last accepted RECONNECT).
+ *   One that carried the player's own signature and is refused on a new link starts that player's ordinary grace
+ *   (`presumeAway`); one that did not verify starts nothing. And every answer goes to the link its frame came on,
+ *   also for a frame in another participant's name (`reject`).
  * - A18 (2026-11-24, the owner: "We never want another player's disconnect to cause the active player to have a messed
  *   up session"; match ECVYGP, 2026-11-23: one second without ArcAid paused the match in the owner's ball). Two rules
  *   for a peer whose link drops after MATCH_READY:
@@ -972,14 +976,16 @@ export class HostMatch {
     this.forwardMediaSignal(msg);
   }
 
-  private reject(ref: AnyMessage, code: RejectCode, message: string): void {
+  /** `to`: the link the frame came on, when that is not the link of the player the frame names. */
+  private reject(ref: AnyMessage, code: RejectCode, message: string, to: PlayerId = ref.from): void {
     const payload: PayloadOf<'REJECT'> = { refSeq: ref.seq, refType: ref.type, code, message };
-    // 2026-11-25: the answer to a frame goes to the link the frame came on. For the first frame of a link that is
-    // nobody's yet that is the candidate (which is closed with it), never the link of the player the frame names.
+    // 2026-11-25: the answer to a frame goes to the link the frame came on, and the event is raised for that link.
+    // For the first frame of a link that is nobody's yet that is the candidate (which is closed with it); for a
+    // frame in another player's name it is the link that sent it. The player a frame names is sent nothing for it.
     const candidate = this.candidateOf(ref);
     if (candidate) candidate.refuse(this.s.build('REJECT', payload, this.matchId));
-    this.events.emit('reject', { to: ref.from, ...payload });
-    if (!candidate && ref.from !== this.localId) this.s.transport.send(ref.from, this.s.build('REJECT', payload, this.matchId));
+    this.events.emit('reject', { to, ...payload });
+    if (!candidate && to !== this.localId) this.s.transport.send(to, this.s.build('REJECT', payload, this.matchId));
   }
 
   private refuse(hello: Message<'HELLO'>, code: RefuseCode, message: string, mismatches: PayloadOf<'REFUSE'>['mismatches'] = []): void {
@@ -1031,15 +1037,32 @@ export class HostMatch {
    * here is the frame's `seq` recorded: a HELLO opens a connection, so the count starts over with it (A3: a client
    * that joins again starts a fresh session); a RECONNECT continues the count and must be above it. False, with
    * nothing changed, when the candidate is gone by now or the `seq` is not above the last taken.
+   *
+   * `keepCount`: a HELLO that continues the count instead of starting it over: its `seq` must be above the last taken
+   * from that player, as a RECONNECT's must. For a HELLO that proves who sent it with a signature over its own `seq`
+   * (a member's return to a lobby): starting the count over there would make one such frame good for any number of
+   * uses. Nothing in a plain match asks for it.
+   *
+   * A frame that was held before it was read (`handle`'s `heldAtCount`) is judged against the count as it stood when
+   * it arrived: the frames of the same player that were taken while it waited do not make it late.
    */
-  private admit(msg: Message<'HELLO'> | Message<'RECONNECT'>): boolean {
+  protected admit(msg: Message<'HELLO'> | Message<'RECONNECT'>, opts: { keepCount?: boolean } = {}): boolean {
     const candidate = this.candidateOf(msg);
     if (candidate && candidate.state !== 'open') return false;
-    if (msg.type === 'HELLO') this.s.resetSeq(msg.from);
-    if (!this.s.checkSeq(msg.from, msg.seq)) return false;
+    const then = this.heldAt.get(msg);
+    if (then !== undefined) {
+      if (then !== null && msg.seq <= then) return false;
+      this.s.noteSeq(msg.from, msg.seq);
+    } else {
+      if (msg.type === 'HELLO' && opts.keepCount !== true) this.s.resetSeq(msg.from);
+      if (!this.s.checkSeq(msg.from, msg.seq)) return false;
+    }
     candidate?.accept();
     return true;
   }
+
+  /** 2026-11-25: for an opening frame that was held before it was read, the count of its player when it arrived (null: none). */
+  private readonly heldAt = new WeakMap<AnyMessage, number | null>();
 
   // ------------------------------------------------------------------------------------------
   // Inbound dispatch
@@ -1048,14 +1071,16 @@ export class HostMatch {
   /**
    * Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). `candidate` (2026-11-25):
    * `msg` is the first frame of a link that is nobody's yet; it leaves here accepted or refused (`judge`).
+   * `heldAtCount`: `msg` is an opening frame that waited before it was handed over; the count of its player as it
+   * stood when the frame arrived (null: none was kept), which is what its `seq` is judged against (`admit`).
    */
-  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean; candidate?: LinkCandidate } = {}): void {
+  handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean; candidate?: LinkCandidate; heldAtCount?: number | null } = {}): void {
     if (this.detached) return;
     if (msg.from !== linkFrom) {
       // On a star the old host relays acks and mirrors frames until it steps down; one that
       // reaches this host after the transfer is stale, not an impersonation (A2, 2026-10-30).
       if (this.s.transport.topology === 'star' && RELAYED_TYPES.has(msg.type)) return;
-      this.reject(msg, 'unknown_player', `from=${msg.from} does not match the link peer ${linkFrom}`);
+      this.reject(msg, 'unknown_player', `from=${msg.from} does not match the link peer ${linkFrom}`, linkFrom);
       return;
     }
     // `seq` is strictly increasing within a connection, and a HELLO opens one: a client that must
@@ -1064,6 +1089,7 @@ export class HostMatch {
     // itself is taken (`admit`), after every check that can refuse it, a RECONNECT's signature among them: a frame
     // that is refused leaves the count of the player it names where it was. And the first frame of a link that is
     // nobody's yet is read under `judge`; nothing but an opening frame is read from such a link.
+    if (opts.heldAtCount !== undefined) this.heldAt.set(msg, opts.heldAtCount);
     if (opts.candidate && this.candidateOf(msg) !== opts.candidate) return this.judge(opts.candidate, msg, () => this.handle(linkFrom, msg, opts));
     const opening = msg.type === 'HELLO' || msg.type === 'RECONNECT';
     if (opts.candidate && !opening) return;
@@ -1071,6 +1097,9 @@ export class HostMatch {
       this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
       return;
     }
+    // 2026-11-25: a player this host took for away on that player's own word (`presumeAway`) and whose own link then
+    // brings a frame under its next number is on that link after all.
+    if (!opening && this.presumed.has(msg.from)) this.backOnOwnLink(msg.from);
     if (msg.type === 'HELLO') {
       this.onHello(msg);
       return;
@@ -1667,18 +1696,21 @@ export class HostMatch {
   // ------------------------------------------------------------------------------------------
 
   private onReconnect(linkFrom: PlayerId, msg: Message<'RECONNECT'>): void {
-    const code = this.checkReconnect(msg);
+    const refusal = this.checkReconnect(msg);
     const matchId = this.s.state.matchId ?? this.matchId;
-    if (code !== null) {
+    if (refusal !== null) {
+      const code = refusal.code;
       const head = this.s.log.head();
       const no = this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId);
       // 2026-11-25: a RECONNECT that is refused on a link that is nobody's yet changes nothing about the player it
       // names: the answer goes to that link, the link is closed, and the player keeps the link, the count and the
       // state they have (one whose own link did drop is told so by the transport, and the grace runs as for any drop).
+      // The one thing that follows is for a frame that carried the player's own signature (`presumeAway`).
       const candidate = this.candidateOf(msg);
       if (candidate) {
         candidate.refuse(no);
         this.events.emit('reconnectRejected', { playerId: msg.from, code });
+        if (refusal.itsOwnWord) this.presumeAway(msg.from);
         return;
       }
       this.s.transport.send(linkFrom, no);
@@ -1695,9 +1727,15 @@ export class HostMatch {
     if (!this.admit(msg)) {
       // A candidate that is gone by now gets no answer and changed nothing; a `seq` that is not above the count is
       // answered as for any frame (and a candidate it came on is closed).
-      if (this.candidateOf(msg)?.state !== 'refused') this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
+      const candidate = this.candidateOf(msg);
+      if (candidate?.state === 'refused') return;
+      this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
+      if (candidate) this.presumeAway(msg.from);
       return;
     }
+    // The head this player is at: a later RECONNECT of theirs does not name a shorter one (`checkReconnect`).
+    this.lastHead.set(msg.from, Math.max(this.lastHead.get(msg.from) ?? 0, msg.payload.logLength));
+    this.presumed.delete(msg.from);
     // A18: a client that does not send a lost ball end again (up to 0.2.50: no `resends`) and holds the grant gets the
     // pause it always got, before its answer: its RESUME then has the grant issued again, which is the one way such
     // a client reports a ball that ended while its link was away. Inside the grace, and also when no drop was ever
@@ -1763,15 +1801,95 @@ export class HostMatch {
     this.events.emit('pause', msg.payload);
   }
 
-  private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {
+  /**
+   * Why a RECONNECT is not taken, or null when it is. `itsOwnWord`: the frame carries the named player's signature
+   * over a head that player can be at now, so it is that player's own account of where it is (`presumeAway`).
+   *
+   * 2026-11-25, on top of the roster, the signature and the head: a RECONNECT never names this host (a host is not a
+   * client of itself); and the head it names is not shorter than one the player is known to have been at already,
+   * because a participant's log only grows (it is saved at every entry, so a log restored after a restart is not
+   * shorter either). Two things say where a player has been: the log itself (`headFloor`: it holds the grant of
+   * every ball end that player reported), which a host that took the match over or started again has as well; and
+   * the head of that player's last accepted RECONNECT, which this host remembers while it runs (`lastHead`). The
+   * same head again is taken: nothing may have been logged between two drops.
+   */
+  private checkReconnect(msg: Message<'RECONNECT'>): { code: ReconnectCode; itsOwnWord: boolean } | null {
     const st = this.s.state;
     const p = msg.payload;
-    if (st.phase === 'lobby' || !st.matchId) return 'match_not_started';
+    const no = (code: ReconnectCode, itsOwnWord = false): { code: ReconnectCode; itsOwnWord: boolean } => ({ code, itsOwnWord });
+    if (st.phase === 'lobby' || !st.matchId) return no('match_not_started');
+    if (msg.from === this.localId) return no('unknown_player');
     const who = st.participants.find((x) => x.playerId === msg.from);
-    if (!who || p.player !== msg.from) return 'unknown_player';
-    if (!verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey)) return 'bad_signature';
+    if (!who || p.player !== msg.from) return no('unknown_player');
+    if (!verifyCanonical(reconnectSignBody(st.matchId, p.player, p.logHash, p.logLength), p.signature, who.publicKey)) return no('bad_signature');
+    // A head the player is past is not where the player is: refused like a head this log does not hold, and it says
+    // nothing about the player now.
+    if (p.logLength < Math.max(this.headFloor(msg.from), this.lastHead.get(msg.from) ?? 0)) return no('unknown_log_hash');
     const known = p.logLength === 0 ? p.logHash === GENESIS_HASH : this.s.log.at(p.logLength - 1)?.hash === p.logHash;
-    return known ? null : 'unknown_log_hash';
+    return known ? null : no('unknown_log_hash', true);
+  }
+
+  /** 2026-11-25: the head each player named in its last accepted RECONNECT, as a log length (`checkReconnect`). */
+  private readonly lastHead = new Map<PlayerId, number>();
+
+  /**
+   * 2026-11-25: the shortest log `player` can hold, read from the log: the length that takes in the TURN_GRANT of the
+   * last ball end that player reported. A client reports a ball end only for a grant it holds in its own log, so its
+   * head is never before that entry. 0 for a player who has reported none.
+   */
+  private headFloor(player: PlayerId): number {
+    const grantAt = new Map<number, number>();
+    let floor = 0;
+    for (const e of this.s.log.entries()) {
+      const m = e.message;
+      if (!m) continue;
+      if (m.type === 'TURN_GRANT') grantAt.set(m.payload.grant.grantSeq, e.index);
+      else if (m.type === 'BALL_END' && m.from === player) {
+        const at = grantAt.get(m.payload.grantSeq);
+        if (at !== undefined) floor = Math.max(floor, at + 1);
+      }
+    }
+    return floor;
+  }
+
+  /** 2026-11-25: the players this host took for away on their own word, while their own link has not said otherwise. */
+  private readonly presumed = new Set<PlayerId>();
+
+  /**
+   * 2026-11-25: a RECONNECT that carried the player's own signature was refused on a new link (a head this log does
+   * not hold, or a number that is not above the count). The player has said it is no longer on the link this host
+   * holds for it, and its return did not succeed: the ordinary grace starts for it, exactly as for a link the
+   * transport reported dropped, so the others are told after the grace even when the old link's close never comes.
+   * Only a frame that verified reaches this; a frame that did not changes nothing. Nothing happens for a player who
+   * is away already.
+   */
+  private presumeAway(player: PlayerId): void {
+    if (this.gone.has(player)) return;
+    this.onPeerLeave(player);
+    if (this.gone.has(player)) this.presumed.add(player);
+  }
+
+  /**
+   * 2026-11-25: a player taken for away by `presumeAway` whose own link then brought a frame under its next number:
+   * the link is alive, so the player is not away. Inside the grace nobody was told and nothing is to be undone;
+   * after it the player is back as after a return.
+   */
+  private backOnOwnLink(player: PlayerId): void {
+    this.presumed.delete(player);
+    if (!this.gone.has(player)) return;
+    const timer = this.grace.get(player);
+    if (timer !== undefined) {
+      this.s.clock.clearTimeout(timer);
+      this.grace.delete(player);
+    }
+    this.gone.delete(player);
+    if (timer === undefined) {
+      this.events.emit('reconnected', { playerId: player, entries: 0, quiet: false });
+      return;
+    }
+    // A grant, or a next game, that waited for this player's grace goes out now.
+    this.advance();
+    this.settleNextGame();
   }
 }
 

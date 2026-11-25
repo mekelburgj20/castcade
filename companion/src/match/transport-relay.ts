@@ -66,7 +66,7 @@
  */
 import { io, type Socket } from 'socket.io-client';
 import { decodeFrame, encodeFrame, type AnyMessage, type PlayerId } from '@castcade/protocol';
-import { openCandidate, type LinkCandidate } from './transport.js';
+import { openCandidate, refusedOpening, ReportGate, undecodedFrames, type OpenedCandidate } from './transport.js';
 import type { MessageHandler, PeerHandler, Transport } from './transport.js';
 import { foreignVersionRefusal, type ErrorHandler } from './transport-ws.js';
 
@@ -523,7 +523,12 @@ export class RelayHostTransport extends RelayBase implements Transport {
   /** The newest relay peer of each player (a player that re-joined has a new one). */
   private readonly byPlayer = new Map<PlayerId, string>();
   /** 2026-11-25: relay peers whose opening frame is with the engine and has no verdict yet. Not links. */
-  private readonly candidates = new Map<string, LinkCandidate>();
+  private readonly candidates = new Map<string, OpenedCandidate>();
+  /**
+   * 2026-11-25: what is reported about one relay peer at most once in ten seconds: an opening frame of its that was
+   * refused, and frames of its that did not decode. Kept while the peer has a seat (`forgetPeer`).
+   */
+  private readonly gates = new Map<string, { refused: ReportGate; undecoded: ReportGate }>();
   /** Relay peers that had a link when the socket dropped: told to RELINK once the room is ours again. */
   private stale = new Set<string>();
   private readonly relinkAt = new Map<string, number>();
@@ -670,6 +675,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
 
   /** That peer id is gone for good (a client that comes back has a new one): its pacer goes with it. */
   private forgetPeer(relayPeer: string): void {
+    this.gates.delete(relayPeer);
     const pacer = this.pacers.get(relayPeer);
     if (!pacer) return;
     this.shedGone += pacer.shed;
@@ -804,7 +810,9 @@ export class RelayHostTransport extends RelayBase implements Transport {
           this.emitTo(relayPeer, encodeFrame(refuse), false);
         }
       }
-      this.fail(e, link?.player ?? null);
+      // 2026-11-25: one line for the first, then at most one in ten seconds per relay peer, with how many there were.
+      const times = this.gateOf(relayPeer).undecoded.pass();
+      if (times !== null) this.fail(undecodedFrames(e, times), link?.player ?? null);
       return;
     }
     if (!link) {
@@ -829,6 +837,11 @@ export class RelayHostTransport extends RelayBase implements Transport {
           // The relay has no kick: a peer that was refused is simply nobody's link. What it sends next is read as
           // any unlinked peer's is: an opening frame is judged on its own, anything else is answered with RELINK.
           close: () => void this.candidates.delete(relayPeer),
+          // The peer keeps its seat and may open again: at most one line in ten seconds, with how many there were.
+          refused: (code) => {
+            const times = this.gateOf(relayPeer).refused.pass();
+            if (times !== null) this.fail(refusedOpening(msg.type, player, code, times), null);
+          },
         },
         this.opts.verdictMs,
       );
@@ -853,7 +866,16 @@ export class RelayHostTransport extends RelayBase implements Transport {
 
   /** A relay peer that is gone, or whose room is: a verdict that comes later binds nothing. */
   private dropCandidate(relayPeer: string): void {
-    this.candidates.get(relayPeer)?.refuse();
+    this.candidates.get(relayPeer)?.gone();
+  }
+
+  private gateOf(relayPeer: string): { refused: ReportGate; undecoded: ReportGate } {
+    let g = this.gates.get(relayPeer);
+    if (!g) {
+      g = { refused: new ReportGate(), undecoded: new ReportGate() };
+      this.gates.set(relayPeer, g);
+    }
+    return g;
   }
 
   private closeLink(relayPeer: string, report: boolean): void {
@@ -909,6 +931,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
     if (this.relockTimer) clearTimeout(this.relockTimer);
     this.relockTimer = null;
     for (const peer of [...this.candidates.keys()]) this.dropCandidate(peer);
+    this.gates.clear();
     this.clearPacers();
     this.pacers.clear();
     this.links.clear();

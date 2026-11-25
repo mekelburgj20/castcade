@@ -222,8 +222,9 @@ describe('rejects and the seq rule', () => {
       ['FORFEIT', 'unexpected_state'],
       ['LOG_SIGN', 'unexpected_state'],
     ]);
-    // REJECTs reached the client (the unknown_player one went to 'zz', which has no transport).
-    expect(aRejects.map((x) => x.code)).toEqual(['unexpected_state', 'schema', 'unexpected_state', 'not_grant_holder', 'unexpected_state', 'unexpected_state', 'unexpected_state']);
+    // REJECTs reached the client, the unknown_player one too: an answer goes to the link its frame came on (2026-11-25).
+    expect(aRejects.map((x) => x.code)).toEqual(['unexpected_state', 'unknown_player', 'schema', 'unexpected_state', 'not_grant_holder', 'unexpected_state', 'unexpected_state', 'unexpected_state']);
+    expect(r.rejects[1]).toMatchObject({ to: 'a', refType: 'STATE', code: 'unknown_player' });
     // Nothing was logged by any of that.
     expect(r.host.log.length).toBe(2);
     expect(a.log.length).toBe(2);

@@ -73,7 +73,7 @@ describe('a link is a player\'s once its first frame is accepted (three scripted
             );
         const ballEnd = buildMessage(
           'BALL_END',
-          { grantSeq: grant.grantSeq, ballNumber: grant.ballNumber, finalScore: 999_999_999, detectorReason: 'nvram', shootAgain: false },
+          { grantSeq: grant.grantSeq, ballNumber: grant.ballNumber, finalScore: 7300, detectorReason: 'nvram', shootAgain: false },
           { matchId: 'WS-BIND-1', seq: HIGH + 1, from: grant.player },
         );
         const socket = new WebSocket(endpoint);
