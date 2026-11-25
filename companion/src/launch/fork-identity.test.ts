@@ -9,14 +9,17 @@ import { describe, expect, it } from 'vitest';
 import { MemoryFs } from '../witness/fs.js';
 import { ascii, buildVpx, codeRecord, concat, floatRecord, gameItem, intRecord, record, stringRecord, u32le, utf16, vec2Record } from '../witness/synth-vpx.test-support.js';
 import type { VpxPlayfieldStreams } from '../witness/vpx-file.js';
-import { forkIdentityOf, forkIdentityText, parseForkIdentity, parseForkIdentityText, readForkIdentity, sameForkIdentity } from './fork-identity.js';
+import { FORK_IDENTITY_VERSION, computeForkIdentity, forkIdentityOf, forkIdentityText, parseForkIdentity, parseForkIdentityText, readForkIdentity, sameForkIdentity } from './fork-identity.js';
 
 const ENDB = record('ENDB', new Uint8Array(0));
 /** An item's NAME record as VPX writes it (`BiffWriter::WriteWideString`): the length in bytes, then UTF-16LE. */
 const nameRecord = (s: string): Uint8Array => record('NAME', concat(u32le(s.length * 2), utf16(s)));
-/** `GameData` as VPX writes it: the item count (`SEDT`) among other records, the script, `ENDB`. */
-const gameData = (items: number, script = "Sub Table1_Init\r\n ' SEDT inside the script is not the count\r\nEnd Sub\r\n"): Uint8Array =>
-  concat(floatRecord('GAVT', 1.75), intRecord('SEDT', items), intRecord('SSND', 3), codeRecord(ascii(script)), floatRecord('SLOP', 6), ENDB);
+/** `GameData` as VPX writes it: the counts (`SEDT` first), the table's own script name, the script, `ENDB`. */
+const gameData = (items: number, script = "Sub Table1_Init\r\n ' SEDT inside the script is not the count\r\nEnd Sub\r\n", tableName = 'Table1'): Uint8Array =>
+  concat(floatRecord('GAVT', 1.75), intRecord('SEDT', items), intRecord('SSND', 3), intRecord('SCOL', 0), nameRecord(tableName), codeRecord(ascii(script)), floatRecord('SLOP', 6), ENDB);
+/** A `Collection<n>` stream: its name, the names of its items, three flags. */
+const collection = (name: string, ...members: string[]): Uint8Array =>
+  concat(nameRecord(name), ...members.map((m) => record('ITEM', concat(u32le(m.length * 2), utf16(m)))), intRecord('EVNT', 0), intRecord('SSNG', 0), intRecord('GREL', 1), ENDB);
 
 const WALL = 0;
 const FLIPPER = 1;
@@ -106,6 +109,49 @@ describe('the table identity of the Castcade VPX build, from the file (I11.4.15)
     // No GameData, or one without the count.
     expect(forkIdentityOf({ gameData: null, items: [] })).toBeNull();
     expect(forkIdentityOf({ gameData: concat(floatRecord('GAVT', 1), ENDB), items: [] })).toBeNull();
+  });
+
+  it("review of PR #125 (finding 6): the mesh VPX adds keeps the name `playfield_mesh` only while no other script name of the table is: the table's own name or a collection's makes the identity not to be told; with the table's own playfield mesh nothing is added and nothing matters", () => {
+    const items = [item(WALL, 'Wall1'), item(LIGHT, 'L1')];
+    const plain = forkIdentityOf({ ...streams(items), collections: [collection('GI', 'L1'), collection('Targets')] });
+    expect(plain).toEqual(forkIdentityOf(streams(items)));
+    expect(plain?.editables).toBe(3);
+    // A collection of that name, in any case of letters: VPX would call the mesh `playfield_mesh001`.
+    expect(forkIdentityOf({ ...streams(items), collections: [collection('GI', 'L1'), collection('Playfield_Mesh')] })).toBeNull();
+    // The table object itself is called so.
+    expect(forkIdentityOf({ gameData: gameData(2, 'Option Explicit\r\n', 'PLAYFIELD_MESH'), items: streams(items).items })).toBeNull();
+    // Another kind of object is called so (as before).
+    expect(text([item(WALL, 'playfield_mesh'), item(LIGHT, 'L1')])).toBeNull();
+    // The table has its own playfield mesh: VPX adds none, so no name is asked for, whatever else carries it.
+    const own = [item(WALL, 'Wall1'), item(PRIMITIVE, 'playfield_mesh'), item(TIMER, 'Playfield_Mesh')];
+    const withOwn = forkIdentityOf({ gameData: gameData(3, 'Option Explicit\r\n', 'playfield_mesh'), items: streams(own).items, collections: [collection('playfield_mesh')] });
+    expect(withOwn?.editables).toBe(3);
+    expect(withOwn).toEqual(forkIdentityOf(streams(own)));
+    // A name that only begins like it, or a collection with a member of that name, takes nothing.
+    expect(forkIdentityOf({ ...streams(items), collections: [collection('playfield_mesh2'), collection('Meshes', 'playfield_mesh')] })).toEqual(plain);
+    // From a compound file: the collections are read with the rest.
+    const fs = new MemoryFs();
+    fs.put('C:\\t\\col.vpx', buildVpx({ gameData: gameData(2), gameItems: items, collections: [collection('GI'), collection('playfield_mesh')] }));
+    fs.put('C:\\t\\ok.vpx', buildVpx({ gameData: gameData(2), gameItems: items, collections: [collection('GI'), collection('Targets')] }));
+    return Promise.all([readForkIdentity(fs, 'C:\\t\\col.vpx'), readForkIdentity(fs, 'C:\\t\\ok.vpx')]).then(([col, ok]) => {
+      expect(col).toBeNull();
+      expect(ok).toEqual(plain);
+    });
+  });
+
+  it('review of PR #125 (finding 3): a file that cannot be read, or is no table, is an error for a caller that keeps answers, not "cannot be told"; a file that was read and cannot be told is null', async () => {
+    const fs = new MemoryFs();
+    fs.put('C:\\t\\odd.vpx', buildVpx({ gameData: gameData(1), gameItems: [item(WALL, null)] }));
+    fs.put('C:\\t\\junk.vpx', 'not a compound file');
+    expect(await computeForkIdentity(fs, 'C:\\t\\odd.vpx')).toBeNull();
+    await expect(computeForkIdentity(fs, 'C:\\t\\junk.vpx')).rejects.toThrow(/not a \.vpx/);
+    await expect(computeForkIdentity(fs, 'C:\\t\\gone.vpx')).rejects.toThrow();
+    // A file that is locked for the moment (a save in the editor, a scanner, a sync client).
+    const locked = { ...fs, stat: (p: string) => fs.stat(p), open: async () => Promise.reject(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })) } as unknown as MemoryFs;
+    await expect(computeForkIdentity(locked, 'C:\\t\\odd.vpx')).rejects.toThrow(/EBUSY/);
+    expect(await readForkIdentity(locked, 'C:\\t\\odd.vpx')).toBeNull();
+    // The number the cache of computed values is checked against (`table-objects.ts`): bumped with every change of the computation.
+    expect(Number.isInteger(FORK_IDENTITY_VERSION) && FORK_IDENTITY_VERSION >= 1).toBe(true);
   });
 
   it('from a compound file on disk: the same value, the images never needed; a file that is no table, or is gone, is null', async () => {

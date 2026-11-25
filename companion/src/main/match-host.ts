@@ -1040,7 +1040,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     const role = a.controller.currentRole as HostMatch | ClientMatch;
     const hostId = role instanceof ClientMatch ? role.hostId : null;
     const hostIn3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.mode === '3d');
-    const early = lobby3d && a.launchNot3d === true && !hostIn3d;
+    // Review of PR #125 (finding 1): a host that cannot do 3D at all (its PC said no Castcade VPX build runs its
+    // table) is never the subject of "import this copy for 3D": the player would import, rejoin and still get 2D.
+    // A host of this build says no table objects then (`syncObjects`), so the launch has no such word; this guard is
+    // for a host that says them all the same, and for I11.4.11's note about the host's identical file.
+    const hostNo3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.why === 'no_fork_there');
+    const early = lobby3d && a.launchNot3d === true && !hostIn3d && !hostNo3d;
     const who = lobby3d && v.fork === 'ready' ? v.players.filter((x) => x.why === 'other_table').map((x) => ({ id: x.id, name: x.name })) : [];
     const bothSaid = who.length > 0;
     if (early && hostId !== null && !who.some((x) => x.id === hostId)) who.push({ id: hostId, name: c.participants.find((x) => x.playerId === hostId)?.displayName ?? 'the host' });
@@ -1054,7 +1059,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           : 'stream3d: the lobby no longer says that the table objects differ (it does not apply any more)',
       );
     }
-    const launchNote = lobby3d && !(a.launchNot3d === true && hostIn3d) ? (a.launchNote ?? null) : null;
+    const launchNote = lobby3d && !hostNo3d && !(a.launchNot3d === true && hostIn3d) ? (a.launchNote ?? null) : null;
     const notes = [byHand ? (v.forkFailed ? TABLE_FORK_FAILED_NOTE : TABLE_BY_HAND_NOTE) : null, objectsNote, launchNote].filter((x): x is string => x !== null);
     a.controller.setLobbyNote(notes.length > 0 ? notes.join(' · ') : null);
   };
@@ -1062,8 +1067,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * I11.4.15 (2026-11-24): a host says what its table's objects are (HELLO_ACK `hostTableObjects`), so a joining PC
    * picks, among its copies of the table, one the 3D view works with. What the host's own VPX named in its `hello`
    * when it is up in the Castcade build (that is what the other PC's VPX is compared with); before that, and on a
-   * host whose table runs in its own VPX, what the file computes to (`opts.tableObjects`), so a joiner need not wait
+   * host whose table was opened by hand, what the file computes to (`opts.tableObjects`), so a joiner need not wait
    * for the host's table to load. Lobby only; each source is announced once.
+   *
+   * Review of PR #125 (finding 1): only a host on which 3D can run says (and reads) anything from the file: the
+   * Castcade VPX build is beside its VPX and 3D watch is on, the test of `wants3d()`. A host without the build told a
+   * joining PC what its table holds, and that PC's lobby then said "Not in 3D with the host … import this copy and
+   * rejoin" for a 3D that could never come. A host whose build is installed and not connected yet still says it. The
+   * build's own word is said whenever a VPX of it is on the control connection, whatever the setting: the others can
+   * watch that table in 3D.
    */
   const syncObjects = (a: Active): void => {
     const role = a.controller.currentRole;
@@ -1088,11 +1100,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return;
     }
     const id = witness.status().currentIdentity;
-    const key = id?.filePath ? `file|${id.filePath}|${id.sha256 ?? ''}` : 'none';
+    const can3d = !!a.stream && settings.watch3d === 'auto' && a.stream.status().forkInstalled === true;
+    const key = id?.filePath && can3d ? `file|${id.filePath}|${id.sha256 ?? ''}` : 'none';
     if (key === a.objectsKey) return;
     a.objectsKey = key;
     const read = opts.tableObjects;
-    if (!id?.filePath || !read) {
+    if (!id?.filePath || !read || !can3d) {
       tell(null, '');
       return;
     }

@@ -45,6 +45,8 @@ export interface SynthOptions {
   fillerBytes?: number;
   /** `GameStg/GameItem<n>` streams, each `[type:u32]` + BIFF records (`gameItem()`). */
   gameItems?: Uint8Array[];
+  /** `GameStg/Collection<n>` streams (BIFF records; I11.4.15 reads their names). */
+  collections?: Uint8Array[];
 }
 
 /** One game item stream: the VPX item type, then its records, then `ENDB`. */
@@ -90,6 +92,7 @@ export function buildVpx(opts: SynthOptions = {}): Uint8Array {
       );
     CFB.utils.cfb_add(c, '/GameStg/GameData', Buffer.from(gameData));
     (opts.gameItems ?? []).forEach((bytes, i) => CFB.utils.cfb_add(c, `/GameStg/GameItem${i}`, Buffer.from(bytes)));
+    (opts.collections ?? []).forEach((bytes, i) => CFB.utils.cfb_add(c, `/GameStg/Collection${i}`, Buffer.from(bytes)));
     if (opts.fillerBytes) {
       // Stands in for the GameItem/Image/Sound bulk; the reader must never touch it.
       CFB.utils.cfb_add(c, '/GameStg/Image0', Buffer.alloc(opts.fillerBytes, 0xa5));

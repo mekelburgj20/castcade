@@ -163,6 +163,8 @@ export interface OneStepOptions {
    * identical file is not on this PC and 3D can run here.
    */
   hostHashWaitMs?: number;
+  /** I11.4.15: how long the reads of the copies' table objects may hold a join in all. Default `DEFAULT_OBJECTS_READ_MS`. */
+  objectsReadMs?: number;
   /** The clock of that wait; default `Date.now`. */
   now?(): number;
   /** A14.2: the ArcAid address this PC uses, for the clickable join link. Default: none (the `castcade://` link). */
@@ -175,6 +177,13 @@ export interface OneStepOptions {
 }
 
 export const DEFAULT_LAUNCH_WAIT_MS = 120_000;
+/**
+ * I11.4.15 (review of PR #125, finding 5): how long the reads of the table objects of this PC's copies may hold a
+ * join, all of them together. A table reads in 0.2 to 2.4 s from a warm disk; a file that is only in the cloud, or on
+ * a disk that sleeps, can take any time. After this the pick is made with what is known: a copy not looked at counts
+ * as "not known", and the log says how many were not.
+ */
+export const DEFAULT_OBJECTS_READ_MS = 8_000;
 
 const IDLE: OneStepStatus['launch'] = { state: 'idle', table: null, detail: null };
 
@@ -219,9 +228,10 @@ export function createOneStep(o: OneStepOptions): OneStep {
   /** I11.4.15: when the host's open table was first seen for the match with this code, and when its file hash was: the wait for its table objects counts from the later one. */
   let hostSeen: { code: string; at: number; hashAt: number | null } | null = null;
   /** I11.4.15: the reads of the table objects of this PC's copies, for one match and one host table; `done`: what they found is used. */
-  let objectsRun: { key: string; ctl: AbortController; done: boolean; ids: Map<string, ForkIdentity> } | null = null;
+  let objectsRun: { key: string; ctl: AbortController; done: boolean; ids: Map<string, ForkIdentity>; looked: number; timer: unknown } | null = null;
   const abortObjects = (): void => {
     if (objectsRun && !objectsRun.done) objectsRun.ctl.abort();
+    if (objectsRun && objectsRun.timer !== null) cancel(objectsRun.timer);
     objectsRun = null;
   };
   /** Every read for the pick is given up: the hashes (I11.4.11) and the table objects (I11.4.15). */
@@ -232,6 +242,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
   };
   const now = o.now ?? ((): number => Date.now());
   const HOST_HASH_WAIT_MS = o.hostHashWaitMs ?? 3000;
+  const OBJECTS_READ_MS = o.objectsReadMs ?? DEFAULT_OBJECTS_READ_MS;
   const clearHashTimer = (): void => {
     if (hashTimer !== null) cancel(hashTimer);
     hashTimer = null;
@@ -489,13 +500,16 @@ export function createOneStep(o: OneStepOptions): OneStep {
     // that title are read for theirs (a few at most, one at a time, each kept for the next time; beside this, given
     // up as the hashing is), and the pick ranks by them. Only on a PC where 3D can run. A host that says nothing (an
     // older Castcade) is waited for from the moment its table was seen, as long as its file hash is, and no longer.
+    // Review of PR #125 (finding 5): nothing holds a join where it cannot change the pick. With one copy of the title
+    // on this PC no word of the host's does, so it is not waited for; and the reads have `OBJECTS_READ_MS` in all.
     let evidence: ObjectsEvidence | undefined;
     const readObjects = o.tableObjects;
     const byBytes = findLocalTable(game, all);
     if (byBytes && byBytes.how !== 'same_file' && readObjects && (match.wants3d?.() ?? false)) {
       const hostObjects = match.hostTableObjects?.() ?? null;
       if (hostObjects === null) {
-        const left = HOST_HASH_WAIT_MS - (now() - seenAt);
+        const choice = objectsCandidates(game, all).length > 1;
+        const left = choice ? HOST_HASH_WAIT_MS - (now() - seenAt) : 0;
         if (left > 0) {
           setLaunch({ state: 'waiting_host', table: null, detail: "The host's table is open; waiting a moment for what it holds, to start a copy here that 3D works with" });
           clearHashTimer();
@@ -505,7 +519,7 @@ export function createOneStep(o: OneStepOptions): OneStep {
           }, left + 20);
           return;
         }
-        if (match.hostTableObjects) log.info(`launch: the host's ${game.tableName} came with no table objects in ${HOST_HASH_WAIT_MS / 1000} s (an older Castcade there, or a file they cannot be told from); the table is picked by its file and name`);
+        if (match.hostTableObjects && choice) log.info(`launch: the host's ${game.tableName} came with no table objects in ${HOST_HASH_WAIT_MS / 1000} s (an older Castcade there, or a file they cannot be told from); the table is picked by its file and name`);
         abortObjects();
       } else {
         const okey = `${w.code}|${forkIdentityText(hostObjects)}`;
@@ -514,23 +528,39 @@ export function createOneStep(o: OneStepOptions): OneStep {
         if (!objectsRun) {
           const every = objectsCandidates(game, all);
           const some = every.slice(0, OBJECTS_CANDIDATES_MAX);
-          const run = { key: okey, ctl: new AbortController(), done: false, ids: new Map<string, ForkIdentity>() };
+          const run = { key: okey, ctl: new AbortController(), done: false, ids: new Map<string, ForkIdentity>(), looked: 0, timer: null as unknown };
           objectsRun = run;
           const copies = (n: number): string => `${n} ${n === 1 ? 'copy' : 'copies'}`;
           setLaunch({ state: 'waiting_host', table: null, detail: `Looking at ${copies(some.length)} of ${game.tableName} on this PC: which holds the same table objects as the host's` });
-          void (async (): Promise<void> => {
-            for (const t of some) {
-              if (run.ctl.signal.aborted) return;
-              const id = await readObjects(t.vpxPath, run.ctl.signal).catch(() => null);
-              if (id) run.ids.set(t.vpxPath, id);
-            }
-            if (objectsRun !== run || run.ctl.signal.aborted || stopped) return;
+          /** The pick goes on with what is known: every copy was looked at, or the time for it is over. */
+          const finish = (late: boolean): void => {
+            if (objectsRun !== run || run.done || run.ctl.signal.aborted || stopped) return;
             run.done = true;
+            if (run.timer !== null) cancel(run.timer);
+            run.timer = null;
             const same = [...run.ids.values()].filter((id) => sameForkIdentity(id, hostObjects)).length;
+            const unread = every.length - run.looked;
             log.info(
-              `launch: the table objects of ${copies(some.length)} of the host's ${game.tableName} (table ${forkIdentityText(hostObjects)}): ${same} the same, ${run.ids.size - same} other, ${some.length - run.ids.size} not to be told${every.length > some.length ? `; ${copies(every.length - some.length)} more not looked at (${OBJECTS_CANDIDATES_MAX} at most)` : ''}`,
+              `launch: the table objects of ${copies(run.looked)} of the host's ${game.tableName} (table ${forkIdentityText(hostObjects)}): ${same} the same, ${run.ids.size - same} other, ${run.looked - run.ids.size} not to be told${
+                unread > 0 ? `; ${copies(unread)} more not looked at (${late ? `the reads took longer than ${OBJECTS_READ_MS / 1000} s` : `${OBJECTS_CANDIDATES_MAX} at most`})` : ''
+              }`,
             );
             void reconcile();
+          };
+          run.timer = later(() => {
+            run.timer = null;
+            finish(true);
+          }, OBJECTS_READ_MS);
+          void (async (): Promise<void> => {
+            for (const t of some) {
+              if (run.ctl.signal.aborted || run.done) return;
+              const id = await readObjects(t.vpxPath, run.ctl.signal).catch(() => null);
+              // Past the time: the read is not given up (what it found is kept for the next join), only not waited for.
+              if (run.done) return;
+              run.looked += 1;
+              if (id) run.ids.set(t.vpxPath, id);
+            }
+            finish(false);
           })();
           return;
         }

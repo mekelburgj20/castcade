@@ -997,6 +997,86 @@ describe('one step to a match: a link (A14 step 2)', () => {
     expect(old.logs).toContain("launch: no copy of Congo (Williams 1995) on this PC is the host's file; Congo (Williams 1995) MR mod is started by its name (the lobby says the files differ)");
   });
 
+  it("review of PR #125 (finding 5): one copy of the host's title on this PC: no word of the host's can change the pick, so nothing is waited for; when the host has said what its table holds, the one copy is still read for what the lobby says", async () => {
+    // A host from before I11.4.15 (or one that cannot tell): the one copy is started at once, not 3 s later.
+    const w = world({ tables: [MR, AFM], objects: { [MR.vpxPath]: MOD_OBJECTS }, hostHashWaitMs: 3000 });
+    await w.hostTable(CONGO_HOST);
+    await w.one.openLink(LINK, { trusted: true });
+    await flush();
+    expect(w.launched).toEqual([MR.vpxPath]);
+    expect(w.objectsRead).toEqual([]);
+    // Nothing was waited for, so the log does not say that something did not come in 3 s.
+    expect(w.logs.some((l) => l.includes('came with no table objects'))).toBe(false);
+    // Two copies: the wait is there, as before (the host's word decides between them).
+    const two = world({ tables: [MR, STD], objects: { [MR.vpxPath]: MOD_OBJECTS, [STD.vpxPath]: HOST_OBJECTS }, hostHashWaitMs: 3000 });
+    await two.hostTable(CONGO_HOST);
+    await two.one.openLink(LINK, { trusted: true });
+    await flush();
+    expect(two.launched).toEqual([]);
+    // The host's word is already there: the one copy is read (it costs no wait), and its lobby says what it means.
+    const said = world({ tables: [MR, AFM], objects: { [MR.vpxPath]: MOD_OBJECTS }, hostHashWaitMs: 3000 });
+    await said.hostTable(CONGO_HOST);
+    await said.hostSays(HOST_OBJECTS);
+    await said.one.openLink(LINK, { trusted: true });
+    await flush();
+    expect(said.launched).toEqual([MR.vpxPath]);
+    expect(said.objectsRead).toEqual([MR.vpxPath]);
+    expect(said.not3d.at(-1)).toBe(true);
+  });
+
+  it('review of PR #125 (finding 5): the reads of the table objects have 8 s in all: a file that does not come (a sleeping disk, a file that is only in the cloud) does not hold the join; what was read is used, the rest counts as not known, and the log says how many were not looked at', async () => {
+    const third = table('Congo (Williams 1995) VR room', { sha256: '77'.repeat(32) });
+    let release: () => void = () => undefined;
+    const stuck = new Promise<void>((r) => (release = r));
+    let asked = 0;
+    // The first copy answers; the second never does until the test lets it.
+    const w = world({ tables: [STD, MR, third], objects: { [STD.vpxPath]: HOST_OBJECTS, [MR.vpxPath]: MOD_OBJECTS, [third.vpxPath]: HOST_OBJECTS }, objectsWait: () => (++asked >= 2 ? stuck : Promise.resolve()) });
+    await w.hostTable(CONGO_HOST);
+    await w.hostSays(HOST_OBJECTS);
+    await w.one.openLink(LINK, { trusted: true });
+    await flush();
+    expect(w.launched).toEqual([]);
+    expect(w.objectsRead).toEqual([STD.vpxPath, MR.vpxPath]);
+    // The deadline is a timer of 8 s from when the reads began.
+    expect(w.timers.filter((t) => !t.dead).map((t) => t.ms)).toContain(8000);
+    w.expire();
+    await flush();
+    expect(w.launched).toEqual([STD.vpxPath]);
+    expect(w.logs).toContain("launch: the table objects of 1 copy of the host's Congo (Williams 1995) (table 769 fc87ddefd36bdd13): 1 the same, 0 other, 0 not to be told; 2 copies more not looked at (the reads took longer than 8 s)");
+    // The read that was under way is not given up (its answer is kept for the next join); it starts no further read
+    // and changes nothing when it comes.
+    expect(w.objectsSignals.every((x) => !x.aborted)).toBe(true);
+    release();
+    await flush();
+    expect(w.objectsRead).toEqual([STD.vpxPath, MR.vpxPath]);
+    expect(w.launched).toEqual([STD.vpxPath]);
+
+    // Nothing was read in time at all: every copy is "not known", and the pick is the old one (the list's order).
+    let free: () => void = () => undefined;
+    const never = new Promise<void>((r) => (free = r));
+    const n = world({ tables: [MR, STD], objects: { [MR.vpxPath]: MOD_OBJECTS, [STD.vpxPath]: HOST_OBJECTS }, objectsWait: () => never });
+    await n.hostTable(CONGO_HOST);
+    await n.hostSays(HOST_OBJECTS);
+    await n.one.openLink(LINK, { trusted: true });
+    await flush();
+    n.expire();
+    await flush();
+    expect(n.launched).toEqual([MR.vpxPath]);
+    expect(n.logs).toContain("launch: the table objects of 0 copies of the host's Congo (Williams 1995) (table 769 fc87ddefd36bdd13): 0 the same, 0 other, 0 not to be told; 2 copies more not looked at (the reads took longer than 8 s)");
+    expect(n.not3d).not.toContain(true);
+    free();
+    await flush();
+    expect(n.launched).toEqual([MR.vpxPath]);
+    // A run that finished in time leaves no deadline behind.
+    const quick = world({ tables: [MR, STD], objects: { [MR.vpxPath]: MOD_OBJECTS, [STD.vpxPath]: HOST_OBJECTS } });
+    await quick.hostTable(CONGO_HOST);
+    await quick.hostSays(HOST_OBJECTS);
+    await quick.one.openLink(LINK, { trusted: true });
+    await flush();
+    expect(quick.launched).toEqual([STD.vpxPath]);
+    expect(quick.timers.filter((t) => !t.dead && t.ms === 8000)).toEqual([]);
+  });
+
   it('I11.4.15: the reads of the table objects hold nothing up and are given up at once: the join returns while they run; the match ending, a table opened by hand or stop end them', async () => {
     const make = () => {
       let release: () => void = () => undefined;

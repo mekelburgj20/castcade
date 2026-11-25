@@ -1132,6 +1132,55 @@ describe('the table objects of the two tables, before the start (I11.4.15)', () 
     expect(H2.lines.filter((l) => l.includes('table objects'))).toEqual([]);
   });
 
+  it("review of PR #125 (finding 1): a host on which 3D cannot run (no Castcade VPX build beside its VPX, or 3D watch off) says nothing of its table's objects and reads none; a joining PC is never told to import a copy for 3D with a host that has no build", async () => {
+    const REMEDY = 'For 3D: "Congo (Williams 1995)_VPW_V1.0" on this PC holds the same table objects as the host\'s file and is not imported. Import it in Castcade and rejoin';
+    const hub = new TunnelHub();
+    const asked: string[] = [];
+    // The host has no build. Its companion could compute its table's objects, and must not: no 3D can come of it.
+    const H = seat(hub, 'Hosty', { fork: false, extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked.push(p), CONGO) } });
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    await sleep(250);
+    expect(K.mh.hostTableObjects()).toBeNull();
+    expect(H.mh.hostTableObjects()).toBeNull();
+    expect(asked).toEqual([]);
+    expect(H.lines.filter((l) => l.includes('table objects'))).toEqual([]);
+    // The joining PC has the build, an imported mod and a copy with other bytes. With nothing said by the host its
+    // one-step has no "other objects" word; a host that says its objects all the same (a build without this fix) would
+    // give it one, and the lobby must still not send the player to import a copy: the guard on this side.
+    await K.mh.tableLaunch();
+    K.mh.setLaunchNote(REMEDY, true);
+    await forkOf(K, true, MOD);
+    await until(() => lineFor(K, H) === 'Hosty: the 2D video (no Castcade VPX build runs the table on their PC)', 8000, "the joining PC to know the host has no build");
+    await sleep(200);
+    expect(message(K)).not.toContain('Not in 3D with');
+    expect(message(K)).not.toContain('For 3D:');
+    expect(message(K)).not.toContain('Import it in Castcade');
+    // I11.4.11's note about the host's identical file is a remedy for 3D too: not shown for such a host either.
+    K.mh.setLaunchNote('For 3D: the host\'s file is on this PC as "Congo", not imported. Import it in Castcade and rejoin', false);
+    await sleep(150);
+    expect(message(K)).not.toContain('For 3D:');
+    expect(K.lines.filter((l) => l.includes('do not hold the same table objects'))).toHaveLength(K.lines.filter((l) => l.includes('the lobby no longer says that the table objects differ')).length);
+
+    // The build is there and 3D watch is off on the host: nothing said, nothing read; turned on, it is said.
+    const hub2 = new TunnelHub();
+    const asked2: string[] = [];
+    const H2 = seat(hub2, 'Hosty', { extra: { witness: fileOf(SHA, String.raw`C:\vpx\tables\Congo.vpx`), tableObjects: async (p) => (asked2.push(p), CONGO) } });
+    const K2 = seat(hub2, 'Krobs');
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await both(H2, K2);
+    await sleep(250);
+    expect(K2.mh.hostTableObjects()).toBeNull();
+    expect(asked2).toEqual([]);
+    await H2.mh.setSettings({ watch3d: 'auto' });
+    await until(() => K2.mh.hostTableObjects() !== null, 5000, "the host's table objects once 3D watch is on");
+    expect(K2.mh.hostTableObjects()).toEqual(CONGO);
+    expect(asked2).toHaveLength(1);
+    // And taken back when it is turned off again.
+    await H2.mh.setSettings({ watch3d: 'off' });
+    await until(() => K2.mh.hostTableObjects() === null, 5000, 'the word taken back');
+  });
+
   it("over the wire, the night of 2026-11-23: the host says what its Congo holds, and the joining PC's Castcade starts its copy with those objects, not the mod that was played last; with only the mod there, its lobby says 2D before the table is up", async () => {
     const { createOneStep } = await import('./one-step.js');
     const { formatJoinLink } = await import('./deep-link.js');

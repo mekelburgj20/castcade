@@ -67,7 +67,7 @@ import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol 
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
-import { createTableObjects } from '../launch/table-objects.js';
+import { createTableObjects, objectsDisagreeLine } from '../launch/table-objects.js';
 import { createVpxLauncher } from '../launch/vpx-launch.js';
 import { createWatchHost, type WatchHost } from './watch-host.js';
 import { createStream3dHost, type Stream3dHost } from './stream3d-host.js';
@@ -1021,6 +1021,8 @@ async function main(): Promise<void> {
   const tableObjects = createTableObjects({
     fs: nodeFs,
     io: { read: () => (existsSync(objectsFile) ? readFileSync(objectsFile, 'utf8') : null), write: (text) => writeFileSync(objectsFile, text) },
+    // The build spoke for a file while it was still being read, and the read then gave another identity: in the log.
+    onDisagree: (vpxPath, said, computed) => logger.warn(objectsDisagreeLine(basename(vpxPath).replace(/\.vpx$/i, ''), said, computed)),
   });
 
   // A6 + C3: the match (host or join by invite). A failure here turns matches off for this run; it never stops the witness.
