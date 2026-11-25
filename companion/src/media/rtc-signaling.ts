@@ -21,7 +21,12 @@
  * `negotiationneeded`, and the next offer carries fresh ICE credentials on the same m-lines (the same transceivers), so
  * the peer's connection takes it like any other offer. The impolite peer leads the restart (`leadsIceRestart`): its
  * offer is the one that wins a collision anyway; the polite one restarts only when the lead has not (the page's
- * watchdog gives it a lag), and if both do at once the usual glare rule settles it.
+ * watchdog gives it a lag), and if both do at once the usual glare rule settles it. I11.12 (2026-11-24): the pages'
+ * watchdog now has the two sides take turns at it, the impolite one first, so that a restart is tried from both ends
+ * (`ICE_WATCH`, panel-page.ts, has what the logs show and that the rest is a hypothesis). Nothing here changed for
+ * that: a restart the polite side leads is an offer like any other, the impolite side answers it, and when the
+ * impolite side is in the middle of an offer of its own the glare rule decides as always (rtc-signaling.test.ts has the
+ * three cases; companion/scripts/ice-restart-smoke.mjs runs two of them in real Chromium, in CI).
  *
  * D2.12 (2026-11-15, the owner's match GNBKHT: no voice, "No path to Krobs", ICE `new` with no candidate on either
  * side while the native video ran direct). Both pages add the peer at the match's start and both offer. When the

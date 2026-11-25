@@ -53,6 +53,13 @@ export const PANEL_CHANNELS = {
    */
   videoLine: 'castcade-panel:video-line',
   /**
+   * I11.12 (2026-11-24): the ids of the players the native video holds a direct candidate pair to (an array; empty
+   * clears it), from the match host through `setVideoDirect`. For such a peer the page never says a TURN relay is
+   * needed: the routers do let a direct connection through (`noPathText`). It chooses the words only; the restarts go
+   * on for every peer.
+   */
+  videoDirect: 'castcade-panel:video-direct',
+  /**
    * D7.5.1: one frame of the layer camera (`PanelCameraFrame`: both eyes' JPEGs), only while the capture is the
    * camera (`sourceId: 'layer-camera'`). One in flight: main sends the next only after `cameraAck`, newest wins.
    */
@@ -652,8 +659,62 @@ export function withBitrateHints(sdp: string, hints: { startKbps: number; minKbp
  * restart, and so on; `backoffMs.length` restarts at most, then, `backoffMs` last after the last one, it gives up and says
  * so. The peer that does not lead the restart (`leadsIceRestart`, rtc-signaling.ts) waits `lagMs` longer each time, so
  * the lead's restart reaches it first and is counted as one of its own.
+ *
+ * I11.12 (2026-11-24; the owner and ChuckRibbits could not hear each other and had no 3D, while the native video
+ * between the same two PCs connected in 0.3 s in every one of eight matches). What the logs of that night and of the
+ * nights with Krobs show, and what they do not:
+ * - First rounds, by who made the offer: with the owner's PC offering, 0 of 20 connected (the native helper with
+ *   Krobs 0 of 10, these pages with ChuckRibbits 0 of 10); with it answering, 18 of 33 (the helper with ChuckRibbits
+ *   8 of 8, the pages with Krobs 10 of 25). The helper and these pages pick the offering side by opposite rules.
+ * - Restart rounds do not follow that. Led from the owner's PC they never connected with ChuckRibbits (0 of 21, these
+ *   pages) and did connect with Krobs (10 of 13, the helper: its first round had failed every time, and its own
+ *   restarts, from the same side, then got through). Led by Krobs: 15 of 16 (these pages).
+ * - So the logs do not show that the direction of a restart is what decides. That a restart led from the other PC
+ *   connects where the lead's did not is a hypothesis, and for the ChuckRibbits pair only: what speaks for it is the
+ *   helper's 8 of 8 first rounds in that direction, and no restart round at all. No packet was captured either: that
+ *   a router which sees the other PC's check before its own PC's first packet to that address then lets nothing
+ *   through for that pair is a reading, not a finding.
+ * - What a night on two PCs must show: with ChuckRibbits, `ICE restart 2 of 6` made on his PC (`our turn` in his log,
+ *   `by the peer` in the owner's) and the round after it connecting, for the voice and for the tunnel; with Krobs,
+ *   that restart 1, now his at 3 s, connects as it did at 10 s (every recorded success was 10 s or more into the
+ *   trouble). If restart 2 does not connect with ChuckRibbits the turns have cost nothing (the lead's restarts go on
+ *   as in 0.2.50, sooner) and the cause is somewhere else.
+ * What was changed on that:
+ * - the restarts take turns. Restart 1, 3, 5 is the usual lead's (`leadsIceRestart`), restart 2, 4, 6 the other
+ *   side's, so that the other direction is tried at all: in 0.2.50 the other side restarted only when the lead had
+ *   not. Both sides count every restart, their own and the peer's, so they agree on whose turn it is. Two that cross
+ *   (both at the same moment: the negotiation lets the impolite side's offer stand) are one restart on both sides,
+ *   and a restart of the peer's that this side answered while it still read the connection as up is the first of the
+ *   spell that begins here within 20 s of it (`notePeerRestart` and `iceWatch` in the pages): a blip one side sees
+ *   three or four seconds before the other would else leave the counts at 1 and 0, and with the counts one apart the
+ *   same side makes every restart. What still parts them: a restart offer that is lost on the way, or one that takes
+ *   more than 2 s to cross another. Nothing stops then (each side steps in after its wait), but the turns do, until
+ *   the connection is up or replaced.
+ * - they come sooner: `backoffMs` is 3, 3, 6, 6, 12, 12 s (it was 10, 20, 40). All 43 rounds that connected in those
+ *   logs did so within 1.08 s of the round's start (the pages 0.42 to 1.08 s, the helper 0.25 to 0.32 s), and none of
+ *   the 62 that had not connected by then did so later, however long they ran (10 to 41 s): a round is decided in its
+ *   first second, 3 s is almost three times the slowest connect, and the later rounds are longer for a path whose
+ *   signalling or round trip is slow. With the 1 s tick the six restarts come at about 3, 7, 14, 21, 34 and 47 s,
+ *   where three took 70 s.
+ * - the side whose turn it is not waits `lagMs` (3 s: the 1 s tick, the trip of the offer, and the two sides' clocks,
+ *   which start up to a second apart) before it restarts in the other's place. For restart 1 and 2 it waits longer,
+ *   `waitMs`, because a peer on 0.2.50 or older does not know about turns: it restarts 10 s after the trouble began
+ *   when it is the lead (the restart that connected 15 of 16 times with Krobs must not be overtaken by one from the
+ *   other end), and 25 s after a first restart when it is not (so against an old non-lead the other direction is still
+ *   tried, at about 30 s). After those two an old peer has nothing left that is worth waiting for.
+ * - it is never given up: after the sixth restart one more goes out every `lateMs` (30 s), turns alternating, for as
+ *   long as the peer is wanted (`iceWatchStep`'s `persist`). A path that is away for a minute or two (a VPN that
+ *   reconnects, a router that fails over) while the match's own link stays up was caught by 0.2.50's third restart at
+ *   70 s; with the sixth at 47 s and a give-up that was final it would have been lost for the rest of the match.
+ *   About 60 s in (12 s after the sixth; it was 110 s) the pages say there is no path so far, and go on.
+ * The first round is left as it was (who makes the first offer is `PeerNegotiator`'s, D2.12, and is not changed here):
+ * if the hypothesis holds, between two PCs where the lead's direction does not get through round 1 and restart 1 fail
+ * and restart 2, the other side's, is the first that can work, about 7 s in. Restart 1 stays the lead's because that
+ * is the step the logs have (15 of 16 with Krobs, at 10 s); the other side first would give the same 7 s the other way
+ * round. What could make round 1 itself work, the answering side holding its checks back for one signalling trip so
+ * that both first checks cross, needs the times the round lines now carry from both PCs before it is built.
  */
-export const ICE_WATCH = { backoffMs: [10_000, 20_000, 40_000], lagMs: 5_000, tickMs: 1_000 } as const;
+export const ICE_WATCH = { backoffMs: [3_000, 3_000, 6_000, 6_000, 12_000, 12_000], lagMs: 3_000, waitMs: [14_000, 28_000], lateMs: 30_000, tickMs: 1_000 } as const;
 
 /** D2.9: the candidate pair a connection uses (or none yet), from `getStats()`; types and protocol only, no address. */
 export interface IcePairInfo {
@@ -731,6 +792,14 @@ export function iceUfrag(sdp: string | null | undefined): string | null {
  * Never an address, a port, a ufrag or SDP: candidate types, the protocol, the pair's state and counts only. A
  * candidate's stats id (an opaque key of the browser's report) is kept in the page to tell which candidates were
  * already there before the round began (`(old)`: gathered or learned in an earlier round); it is never logged.
+ *
+ * I11.12 (2026-11-24): two things the lines of that night could not say. A round that ran past 16 s read `0 pairs`:
+ * the browser had deleted every pair by then (all of them timed out unanswered), so the counters of each round after
+ * the first were lost; they are now kept from the page's last look that still saw pairs (`iceRoundLook`, `kept`), and
+ * the line says from when. And who sent first, which is what the reading above rests on: the line now has the time
+ * this side's first server-reflexive candidate went to the peer and the peer's first one arrived (`iceRoundCandidate`),
+ * and the time a check was first sent, and first received, on a pair with such a candidate (seen in the stats, which
+ * the page reads every 50 ms for the first 3 s of a round: `ICE_ROUND_LOOK`).
  */
 export interface IceRound {
   /** 1 for the first round of a peer connection. */
@@ -746,10 +815,19 @@ export interface IceRound {
   known: { local: string[]; remote: string[] } | null;
   /** The round before ended connected: this one begins when the connection is in trouble again. */
   idle: boolean;
+  /**
+   * I11.12 (2026-11-24): ms from `at` to this side's first server-reflexive candidate sent to the peer, to the peer's
+   * first one received, and to the first look at the stats that showed a check sent, and one received, on a pair of
+   * this round's candidates with a server-reflexive (or peer-reflexive) one; null: not (yet).
+   */
+  srflxOutMs: number | null;
+  srflxInMs: number | null;
+  checkOutMs: number | null;
+  checkInMs: number | null;
 }
 
 export function iceRoundStart(n: number, now: number, ufrag: string | null, known: { local: string[]; remote: string[] } | null): IceRound {
-  return { n: n, at: now, ufrag: ufrag, remoteMs: null, checkingMs: null, known: known, idle: false };
+  return { n: n, at: now, ufrag: ufrag, remoteMs: null, checkingMs: null, known: known, idle: false, srflxOutMs: null, srflxInMs: null, checkOutMs: null, checkInMs: null };
 }
 
 /** I11.12: a state change (or a look) during a round: when its remote description came, and its first `checking`. */
@@ -761,6 +839,10 @@ export function iceRoundSeen(round: IceRound, now: number, ice: string, remoteUf
     round.ufrag = remoteUfrag;
     round.remoteMs = null;
     round.checkingMs = null;
+    round.srflxOutMs = null;
+    round.srflxInMs = null;
+    round.checkOutMs = null;
+    round.checkInMs = null;
   }
   if (round.remoteMs === null && remoteUfrag && remoteUfrag !== round.ufrag) round.remoteMs = now - round.at;
   if (round.checkingMs === null && ice === 'checking' && (round.remoteMs !== null || round.n === 1)) round.checkingMs = now - round.at;
@@ -784,9 +866,11 @@ export function iceCandidateIds(entries: ReadonlyArray<Record<string, unknown>>)
  * (local type > remote type, protocol, the pair's state, then the STUN checks this side sent and the answers it got,
  * and the checks it received and the answers it sent), `(old)` after a candidate that was there before the round
  * began, `selected` / `nominated` where the browser says so; pairs that read the same are counted (`3x`). `only`: leave
- * out pairs whose candidates are not in it (a round's line is taken a moment after the next round began).
+ * out pairs whose candidates are not in it (a round's line is taken a moment after the next round began). `asOf`
+ * (I11.12, 2026-11-24): the entries are the page's last look that still saw pairs, taken at that clock time, because
+ * none were left when the round ended; the line says so (`16 pairs as of 14.02 s (none left at the end)`).
  */
-export function iceRoundLine(round: IceRound, now: number, why: string, connected: boolean, ice: string, entries: ReadonlyArray<Record<string, unknown>>, only: { local: string[]; remote: string[] } | null): string {
+export function iceRoundLine(round: IceRound, now: number, why: string, connected: boolean, ice: string, entries: ReadonlyArray<Record<string, unknown>>, only: { local: string[]; remote: string[] } | null, asOf?: number | null): string {
   const byId: Record<string, Record<string, unknown>> = {};
   let selected: unknown = null;
   for (const e of entries) {
@@ -841,6 +925,7 @@ export function iceRoundLine(round: IceRound, now: number, why: string, connecte
   // The kinds that say most come first (a PC with several network adapters forms dozens of pairs that never send).
   const order = texts.map((_t, i) => i).sort((a, b) => (ranks[a] as number) - (ranks[b] as number) || a - b);
   const shown = order.slice(0, max).map((i) => ((counts[i] as number) > 1 ? counts[i] + 'x ' : '') + texts[i]);
+  const at = (ms: number | null): string => (ms === null || ms === undefined ? 'not seen' : 'at ' + secs(ms));
   return (
     'ICE round ' +
     round.n +
@@ -851,13 +936,23 @@ export function iceRoundLine(round: IceRound, now: number, why: string, connecte
     ' (ice ' +
     word(ice) +
     '); remote description ' +
-    (round.remoteMs === null ? 'not seen' : 'at ' + secs(round.remoteMs)) +
+    at(round.remoteMs) +
     ', checking ' +
-    (round.checkingMs === null ? 'not seen' : 'at ' + secs(round.checkingMs)) +
+    at(round.checkingMs) +
     (connected ? ', connected at ' + secs(now - round.at) : ', not connected') +
+    // I11.12 (2026-11-24): who sent first. Before the pairs, so a long list of them never cuts it off.
+    '; srflx candidate sent ' +
+    at(round.srflxOutMs) +
+    ', received ' +
+    at(round.srflxInMs) +
+    '; first check on a srflx pair sent ' +
+    at(round.checkOutMs) +
+    ', received ' +
+    at(round.checkInMs) +
     '; ' +
     total +
     (total === 1 ? ' pair' : ' pairs') +
+    (typeof asOf === 'number' ? ' as of ' + secs(asOf - round.at) + ' (none left at the end)' : '') +
     (shown.length > 0 ? ': ' + shown.join('; ') : '') +
     (texts.length > max ? '; and ' + (texts.length - max) + ' more kinds' : '')
   );
@@ -865,20 +960,124 @@ export function iceRoundLine(round: IceRound, now: number, why: string, connecte
 
 /** The part of a page's per-peer record `iceRoundOver` reads and writes. */
 export interface IceRoundPeer {
-  pc: { iceConnectionState: string; remoteDescription: { sdp?: string } | null; getStats?: () => Promise<{ values(): Iterable<unknown> }> };
+  pc: { iceConnectionState: string; remoteDescription: { sdp?: string } | null; localDescription?: { sdp?: string } | null; getStats?: () => Promise<{ values(): Iterable<unknown> }> };
   round: IceRound;
   /** The candidates at the page's last look at the stats (`iceCandidateIds`), null before the first. */
   ids: { local: string[]; remote: string[] } | null;
   /** When the last rounds ended that the peer ended (its restarts), for `ICE_PEER_ROUNDS`. */
   peerLedAt?: number[];
+  /** I11.12 (2026-11-24): the last look at the stats that still saw candidate pairs (`iceRoundLook`): when, and what a round's line needs of it (no address). */
+  kept?: { at: number; entries: Array<Record<string, unknown>> } | null;
+  /** I11.12 (2026-11-24): when a server-reflexive candidate of the peer's NEXT round arrived (its restart offer is still being answered here); `iceRoundCandidate`. */
+  srflxEarly?: number | null;
 }
 
 /**
  * I11.12: a peer can restart ICE as often as it likes (every offer with new credentials is one), and each restart
  * ends a round here: at most this many of those rounds are written per peer in this many ms; one line says so, and
- * the rest are counted in silence. Rounds this side ends are bounded by its own watchdog (three restarts, then none).
+ * the rest are counted in silence. Rounds this side ends are bounded by its own watchdog (six restarts, then none, or
+ * one every 30 s while the caller says the peer can be reached: `ICE_WATCH`).
  */
 export const ICE_PEER_ROUNDS = { max: 4, perMs: 60_000 } as const;
+
+/**
+ * I11.12 (2026-11-24): how a page reads the stats for a round's line. For the first `forMs` of a round, every
+ * `everyMs`, until a check was seen sent and received on a pair with a server-reflexive candidate (so those two times
+ * are right to 50 ms; in a round that fails the second never comes and the page reads for the whole 3 s, 60 reads);
+ * after that the page's own look every 2 or 3 s does. A look that sees pairs is kept at most once every `keepMs`.
+ */
+export const ICE_ROUND_LOOK = { everyMs: 50, forMs: 3_000, keepMs: 1_000 } as const;
+
+/**
+ * I11.12 (2026-11-24): a look at the stats of `r` (a `getStats()` report's entries) during a round. It notes the
+ * candidates there are (`ids`, as before), keeps what a round's line needs while there still are pairs (the browser
+ * deletes them all about 16 s into a round nothing answered: 16.05 to 16.19 s after each restart on 2026-11-24, which
+ * is why every later round's line read `0 pairs`), and notes the first look that showed a check sent, and one received,
+ * on a pair of this round's own candidates with a server-reflexive or peer-reflexive one. Embedded by its source.
+ */
+export function iceRoundLook(r: IceRoundPeer, now: number, entries: ReadonlyArray<Record<string, unknown>>): void {
+  const byId: Record<string, Record<string, unknown>> = {};
+  const local: string[] = [];
+  const remote: string[] = [];
+  let pairs = 0;
+  for (const e of entries) {
+    if (typeof e.id !== 'string') continue;
+    byId[e.id] = e;
+    if (e.type === 'local-candidate') local.push(e.id);
+    else if (e.type === 'remote-candidate') remote.push(e.id);
+    else if (e.type === 'candidate-pair') pairs++;
+  }
+  r.ids = { local: local, remote: remote };
+  const round = r.round;
+  if (round.idle) return;
+  if (pairs > 0 && (!r.kept || r.kept.at < round.at || now - r.kept.at >= 1000)) {
+    // Only what `iceRoundLine` reads: types, states and counts. No address is ever kept.
+    const keys = ['id', 'type', 'candidateType', 'protocol', 'state', 'nominated', 'localCandidateId', 'remoteCandidateId', 'requestsSent', 'responsesReceived', 'requestsReceived', 'responsesSent', 'selectedCandidatePairId'];
+    const slim: Array<Record<string, unknown>> = [];
+    for (const e of entries) {
+      if (e.type !== 'candidate-pair' && e.type !== 'local-candidate' && e.type !== 'remote-candidate' && e.type !== 'transport') continue;
+      const o: Record<string, unknown> = {};
+      for (const k of keys) if (e[k] !== undefined) o[k] = e[k];
+      slim.push(o);
+    }
+    r.kept = { at: now, entries: slim };
+  }
+  // Only while the page looks every 50 ms (`ICE_ROUND_LOOK.forMs`, with one look's slack): a first check that a look
+  // two or three seconds apart happened to see would be a time that says nothing. `not seen` in a line: not in the first 3 s.
+  if ((round.checkOutMs !== null && round.checkInMs !== null) || now - round.at > 3100) return;
+  const known = round.known;
+  const reflexive = (c: Record<string, unknown> | undefined): boolean => !!c && (c.candidateType === 'srflx' || c.candidateType === 'prflx');
+  const count = (v: unknown): number => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
+  for (const e of entries) {
+    if (e.type !== 'candidate-pair') continue;
+    const li = typeof e.localCandidateId === 'string' ? e.localCandidateId : '';
+    const ri = typeof e.remoteCandidateId === 'string' ? e.remoteCandidateId : '';
+    // A pair with a candidate of an earlier round is not this round's (after a restart the new ports check the old ones too).
+    if (known && (known.local.indexOf(li) >= 0 || known.remote.indexOf(ri) >= 0)) continue;
+    if (!reflexive(byId[li]) && !reflexive(byId[ri])) continue;
+    if (round.checkOutMs === null && count(e.requestsSent) > 0) round.checkOutMs = Math.max(0, now - round.at);
+    if (round.checkInMs === null && count(e.requestsReceived) > 0) round.checkInMs = Math.max(0, now - round.at);
+  }
+}
+
+/**
+ * I11.12 (2026-11-24): a candidate went to the peer (`outgoing`) or came from it, as the page's signalling saw it
+ * (`candidate`: the candidate line). Only a server-reflexive one counts, and only its time is kept: when this round's
+ * first one was sent, and when the peer's first one arrived. Which round a candidate belongs to is read from its
+ * `ufrag` (Chromium writes it into the line) against the descriptions in force: one of ours for another description
+ * than the current local one is not this round's; one of the peer's for the remote description in force counts once
+ * this round has that description; one for a description not applied yet is this round's while the round still waits
+ * for its remote description (round 1, a restart made here), and otherwise the peer's next round's, whose restart
+ * offer is being answered at that moment (`srflxEarly`, taken over by `iceRoundOver`). Embedded by its source.
+ */
+export function iceRoundCandidate(r: IceRoundPeer, now: number, outgoing: boolean, candidate: unknown): void {
+  if (typeof candidate !== 'string' || !/ typ srflx( |$)/.test(candidate)) return;
+  const round = r.round;
+  if (round.idle) return;
+  const m = / ufrag (\S+)/.exec(candidate);
+  const u = m ? m[1] : null;
+  const ufragOf = (d: { sdp?: string } | null | undefined): string | null => {
+    const x = /a=ice-ufrag:(\S+)/.exec((d && d.sdp) || '');
+    return x ? (x[1] as string) : null;
+  };
+  const ms = Math.max(0, now - round.at);
+  if (outgoing) {
+    const cur = ufragOf(r.pc.localDescription);
+    if (u && cur && u !== cur) return;
+    if (round.srflxOutMs === null) round.srflxOutMs = ms;
+    return;
+  }
+  const cur = ufragOf(r.pc.remoteDescription);
+  if (u && u !== cur) {
+    if (round.remoteMs === null) {
+      if (round.srflxInMs === null) round.srflxInMs = ms;
+    } else r.srflxEarly = now;
+    return;
+  }
+  // For the remote description in force: this round's once the round has it; before that it is the round before's.
+  if (u && round.remoteMs === null && round.n > 1) return;
+  if (round.srflxInMs === null) round.srflxInMs = ms;
+}
 
 /**
  * A line a page sends for `companion.log`, as main writes it: one line, 400 characters at most; an ICE round's line
@@ -894,11 +1093,18 @@ export function pageLogLine(line: string): string {
  * `peerLed`: the round ended because the peer restarted ICE and this side has already answered (its remote description
  * is the new round's). The one function both pages call (the panel page for voice, the 3D watch page for the tunnel).
  */
-export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, peerLed: boolean, now: number, log: (line: string) => void): void {
+export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, peerLed: boolean, now: number, log: (line: string) => void, sparse?: boolean): void {
   const round = r.round;
   const ice = r.pc.iceConnectionState;
   const next = iceRoundStart(round.n + 1, now, iceUfrag(r.pc.remoteDescription && r.pc.remoteDescription.sdp), r.ids);
   if (peerLed) next.remoteMs = 0;
+  // I11.12 (2026-11-24): the peer's first server-reflexive candidate of its restart can be here before its offer is
+  // answered (the round changes at the answer): it is the new round's, at its start.
+  if (peerLed && typeof r.srflxEarly === 'number' && now - r.srflxEarly < 2000) next.srflxInMs = 0;
+  r.srflxEarly = null;
+  // I11.12 (2026-11-24): this round's last look that still saw pairs, should none be left now.
+  const kept = r.kept && r.kept.at >= round.at ? r.kept : null;
+  r.kept = null;
   next.idle = connected;
   r.round = next;
   if (peerLed) {
@@ -913,7 +1119,15 @@ export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, p
   }
   // A round that did not connect is read a moment after the next one began: only the pairs of the last look count.
   const only = connected ? null : r.ids;
-  const none = (): void => log(iceRoundLine(round, now, why, connected, ice, [], null) + ' (no stats)');
+  // I11.12 (2026-11-24): `sparse` (a late round, `iceRoundSparse`): the line is written only if the round has something
+  // new to say: a check of this side was answered, or one of the peer's arrived. Nothing answered, nothing received is
+  // what every such round says, every 30 s for as long as the match lasts.
+  const heard = (entries: ReadonlyArray<Record<string, unknown>>): boolean => entries.some((e) => e.type === 'candidate-pair' && ((typeof e.responsesReceived === 'number' && e.responsesReceived > 0) || (typeof e.requestsReceived === 'number' && e.requestsReceived > 0)));
+  const none = (): void => {
+    if (kept) {
+      if (!sparse || heard(kept.entries)) log(iceRoundLine(round, now, why, connected, ice, kept.entries, null, kept.at));
+    } else if (!sparse) log(iceRoundLine(round, now, why, connected, ice, [], null) + ' (no stats)');
+  };
   let stats: Promise<{ values(): Iterable<unknown> }> | null;
   try {
     stats = typeof r.pc.getStats === 'function' ? r.pc.getStats() : null;
@@ -921,31 +1135,94 @@ export function iceRoundOver(r: IceRoundPeer, why: string, connected: boolean, p
     stats = null;
   }
   if (!stats || typeof stats.then !== 'function') return none();
-  stats.then((rep) => log(iceRoundLine(round, now, why, connected, ice, Array.from(rep.values()) as Array<Record<string, unknown>>, only)), none);
+  stats.then((rep) => {
+    const live = Array.from(rep.values()) as Array<Record<string, unknown>>;
+    // I11.12 (2026-11-24): a round nothing answered has no pair left after about 16 s; its counters are the kept look's.
+    const left = live.some((e) => e.type === 'candidate-pair' && (!only || (only.local.indexOf(e.localCandidateId as string) >= 0 && only.remote.indexOf(e.remoteCandidateId as string) >= 0)));
+    const fromKept = !left && !!kept && !connected;
+    const entries = fromKept && kept ? kept.entries : live;
+    if (sparse && !connected && !heard(entries)) return;
+    if (fromKept && kept) log(iceRoundLine(round, now, why, connected, ice, kept.entries, null, kept.at));
+    else log(iceRoundLine(round, now, why, connected, ice, live, only));
+  }, none);
+}
+
+/**
+ * I11.12 (2026-11-24): the pages never give a connection up now: after the `n` scheduled restarts one more goes out
+ * every `ICE_WATCH.lateMs` for as long as the peer is wanted (a path that is away for a minute or two comes back, and
+ * 0.2.50's third restart at 70 s is the case in point: the sixth is now at about 47 s). Over a three-hour match with a
+ * peer that never connects that is about 350 rounds per page, and a line of 600 to 1200 characters for each would be
+ * most of `companion.log`'s megabyte. So of the rounds a late restart ends, the first is written (it has the counters
+ * of the last scheduled round) and then every tenth, about one in five minutes; the others only when they have
+ * something to say (`iceRoundOver`'s `sparse`). `k`: the number of the restart that ends the round. The one line per
+ * late restart (`ICE late restart 7 (…)`) is always written.
+ */
+export function iceRoundSparse(k: number, n: number): boolean {
+  return k > n && (k - n) % 10 !== 1;
 }
 
 /**
  * D2.9: the watchdog's decision for one connection. `elapsedMs`: since it got stuck, or since the last restart (ours
  * or the peer's) if later; `restarts`: in this stuck spell. `ok`: connected (the caller clears the spell); `wait`;
  * `restart`; `give_up` once `w.backoffMs.length` restarts have not helped. A `failed` connection restarts at once
- * (the browser gave up on every pair); the backoff still holds after a restart. `lead`: this side leads restarts.
+ * (the browser gave up on every pair); the backoff still holds after a restart. `lead`: this side is the usual lead
+ * (`leadsIceRestart`).
+ *
+ * I11.12 (2026-11-24, `ICE_WATCH` has the evidence): the restarts take turns. The next restart (number `restarts + 1`)
+ * is the usual lead's when `restarts` is even and the other side's when it is odd; the side whose turn it is restarts
+ * after `backoffMs[restarts]`, the other one only if that did not happen: `lagMs` later, and for the first two
+ * restarts not before `waitMs[restarts]` (what a peer on 0.2.50 needs to make its own). `persist`: after the last
+ * scheduled restart the answer is never `give_up`; one more restart every `lateMs`, the turns going on. Both pages
+ * pass it for every peer (a path that is away for a minute comes back, and a give-up that is final loses it for the
+ * rest of the match); without it `give_up` says when the scheduled restarts and their last wait are over, which is
+ * the moment the pages say there is no path so far.
  */
-export function iceWatchStep(ice: string, elapsedMs: number, restarts: number, lead: boolean, w: { backoffMs: readonly number[]; lagMs: number }): 'ok' | 'wait' | 'restart' | 'give_up' {
+export function iceWatchStep(
+  ice: string,
+  elapsedMs: number,
+  restarts: number,
+  lead: boolean,
+  w: { backoffMs: readonly number[]; lagMs: number; waitMs?: readonly number[]; lateMs?: number },
+  persist?: boolean,
+): 'ok' | 'wait' | 'restart' | 'give_up' {
   if (ice === 'connected' || ice === 'completed') return 'ok';
   if (ice !== 'new' && ice !== 'checking' && ice !== 'disconnected' && ice !== 'failed') return 'wait';
-  const lag = lead ? 0 : w.lagMs;
+  const mine = restarts % 2 === 0 ? lead : !lead;
+  const lag = mine ? 0 : w.lagMs;
   const n = w.backoffMs.length;
-  if (restarts >= n) return elapsedMs >= (w.backoffMs[n - 1] ?? 0) + lag ? 'give_up' : 'wait';
-  const delay = ice === 'failed' && restarts === 0 ? 0 : (w.backoffMs[restarts] ?? 0);
-  return elapsedMs >= delay + lag ? 'restart' : 'wait';
+  if (restarts >= n) {
+    if (persist && typeof w.lateMs === 'number' && w.lateMs > 0) return elapsedMs >= w.lateMs + lag ? 'restart' : 'wait';
+    return elapsedMs >= (w.backoffMs[n - 1] ?? 0) + lag ? 'give_up' : 'wait';
+  }
+  // The browser gave up on every pair before any restart: nothing is lost by restarting now (the other side `lagMs` later).
+  if (ice === 'failed' && restarts === 0) return elapsedMs >= lag ? 'restart' : 'wait';
+  const delay = w.backoffMs[restarts] ?? 0;
+  const wait = mine ? delay : Math.max(delay + lag, (w.waitMs && w.waitMs[restarts]) || 0);
+  return elapsedMs >= wait ? 'restart' : 'wait';
 }
 
-/** D2.9: what the panel and the Match tab say once the watchdog gave up on a peer. */
-export function noPathText(name: string, ice: string, restarts: number, relay: boolean): string {
+/**
+ * I11.12 (2026-11-24): the words for restart number `k` of a schedule of `n`: `restart 2 of 6`, and past the schedule
+ * (a peer that restarts more often, or the restarts that go on while the picture has a direct path) `late restart 7`.
+ */
+export function iceRestartName(k: number, n: number): string {
+  return k <= n ? 'restart ' + k + ' of ' + n : 'late restart ' + k;
+}
+
+/**
+ * D2.9: what the panel and the Match tab say once the watchdog gave up on a peer. I11.12 (2026-11-24): `videoDirect`:
+ * the native video holds a direct pair to the same peer. Then the routers do let a direct connection through and a
+ * TURN relay would change nothing: on 2026-11-24 the panel said "both routers blocked the direct connection; a TURN
+ * relay is needed" for forty minutes while the picture went straight between the two PCs. It says what is true
+ * instead. `trying`: the watchdog goes on restarting (it always does now: `iceWatchStep`'s `persist`), and the text
+ * without a direct picture says so too.
+ */
+export function noPathText(name: string, ice: string, restarts: number, relay: boolean, videoDirect?: boolean, trying?: boolean): string {
   // D2.12: ICE still `new` never tried a path at all (GNBKHT 2026-11-15): that is the connection, not a router.
   if (ice === 'new') return 'Voice with ' + name + ' did not start (ICE new after ' + restarts + ' restarts): leave the match and join again.';
+  if (videoDirect) return 'Voice with ' + name + ' is not connected yet (ICE ' + ice + ' after ' + restarts + ' restarts). The picture has a direct path to their PC, so no relay is needed: still trying.';
   const why = relay ? 'the TURN relay did not get through either' : 'both routers blocked the direct connection; a TURN relay is needed';
-  return 'No path to ' + name + ' (ICE ' + ice + ' after ' + restarts + ' restarts): ' + why + '.';
+  return 'No path to ' + name + ' (ICE ' + ice + ' after ' + restarts + ' restarts): ' + why + '.' + (trying ? ' Still trying.' : '');
 }
 
 /**
@@ -1026,7 +1303,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1091,6 +1368,7 @@ const FEED_FPS = ${VIDEO_FEED_MAX.fps};
 const STALL_MS = ${CAPTURE_STALL_MS};
 const STATS_MS = ${STATS_MS};
 const ICE_WATCH = ${JSON.stringify(ICE_WATCH)};
+const ICE_ROUND_LOOK = ${JSON.stringify(ICE_ROUND_LOOK)};
 const TABLE_WORKLET = ${JSON.stringify(tableWorkletSource())};
 const SAVE_QUALITY = ${IN_JPEG_QUALITY};
 const VOLUME_NOTE_MS = ${VOLUME_NOTE_MS};
@@ -1215,6 +1493,8 @@ function report() {
       signaling: r.pc.signalingState,
       reopens: reopens.get(id) || 0,
     };
+    // I11.12 (2026-11-24): the late restarts are on for this peer: main does not write each of its state changes.
+    if (r.watch && lateSpell(r)) peers[id].quiet = true;
   }
   ipcRenderer.send(C.status, { sending: sending, peers: peers, mic: micState, capturing: !!videoTrack, error: noPathMessage() || localError, captureStalled: stalled, stats: stats });
 }
@@ -1710,12 +1990,33 @@ setInterval(statsTick, STATS_MS);
 /**
  * D2.9: the ICE watchdog and the candidate pair, per peer (r.watch). A spell starts when the connection is stuck
  * (iceWatchStep's states; 'new' only once signalling is stable with a remote description) and ends when it connects.
- * The lead side (leadsIceRestart) restarts after 10 s, then 20 s, then 40 s; the other side 5 s later each time, and a
- * restart the peer made (its offer brought new ICE credentials while the spell lasted) counts as one of ours. After
- * the third, 40 s more and it gives up: the panel and the Match tab say there is no path. Every step is logged.
+ * A restart the peer made (its offer brought new ICE credentials while the spell lasted) counts as one of ours.
+ * I11.12 (2026-11-24, ICE_WATCH): the restarts take turns, the usual lead's (leadsIceRestart) first, 3, 3, 6, 6, 12 and
+ * 12 s apart; the side whose turn it is not steps in 3 s later (for the first two: after 14 s and 28 s, for a peer on
+ * 0.2.50). After the sixth, 12 s more and the panel and the Match tab say there is no path so far (w.gaveUp: what is
+ * said, no longer an end): the restarts go on, one every 30 s, turns alternating, for as long as the peer is in the
+ * match. A path that is away for a minute or two (a VPN that reconnects, a router that fails over) comes back, and a
+ * give-up that is final would leave the players without voice for the rest of the match: 0.2.50's third restart, at
+ * 70 s, caught such a path, and the sixth is now at about 47 s. Whether the native video holds a direct pair to the
+ * peer (videoDirect, from main) only chooses the words: with one, no relay is asked for. The lines of the late
+ * restarts are kept few (iceRoundSparse; no pair and state lines while nothing changes). Every step is logged.
  */
+/** I11.12 (2026-11-24): the peers the native video holds a direct pair to (C.videoDirect, from the match host through main). */
+let videoDirect = [];
+function hasVideoDirect(peer) {
+  return videoDirect.indexOf(peer) >= 0;
+}
+/**
+ * I11.12 (2026-11-24): how long after a restart of the peer's, answered here while this side still saw the connection
+ * up, a spell that begins here is the same trouble: that restart is then its restart 1 (iceWatch).
+ */
+const PEER_RESTART_BEFORE_MS = 20000;
 function newWatch(peer) {
-  return { since: null, lastAt: 0, restarts: 0, gaveUp: false, ufrag: null, lead: leadsIceRestart(localId, peer) };
+  return { since: null, lastAt: 0, restarts: 0, gaveUp: false, said: null, ownAt: 0, peerAt: 0, ufrag: null, lead: leadsIceRestart(localId, peer) };
+}
+/** I11.12 (2026-11-24): the scheduled restarts of this peer's spell are used up: the late ones are on, and its lines are kept few. */
+function lateSpell(r) {
+  return r.watch.since !== null && r.watch.restarts >= ICE_WATCH.backoffMs.length;
 }
 function logLine(line) {
   ipcRenderer.send(C.log, line);
@@ -1743,9 +2044,10 @@ function roundSeen(peer, r) {
   iceRoundSeen(r.round, Date.now(), st, iceUfrag(r.pc.remoteDescription && r.pc.remoteDescription.sdp));
   if ((st === 'connected' || st === 'completed') && !r.round.idle && current(peer, r)) roundOver(peer, r, 'connected', true, false);
 }
-function roundOver(peer, r, why, connected, peerLed) {
+function roundOver(peer, r, why, connected, peerLed, sparse) {
   const lead = r.watch.lead;
-  iceRoundOver(r, why, connected, peerLed, Date.now(), (line) => logLine('peer ' + peer + ': ' + line + (lead ? '; this side leads restarts' : '; the peer leads restarts')));
+  // I11.12 (2026-11-24): restart 1, 3, 5 is the usual lead's turn, 2, 4, 6 the other side's.
+  iceRoundOver(r, why, connected, peerLed, Date.now(), (line) => logLine('peer ' + peer + ': ' + line + (lead ? '; this side leads restarts 1, 3, 5' : '; the peer leads restarts 1, 3, 5')), sparse);
 }
 function iceWatch(peer, r) {
   if (!current(peer, r)) return;
@@ -1755,30 +2057,54 @@ function iceWatch(peer, r) {
   const now = Date.now();
   if (st === 'connected' || st === 'completed') {
     if (w.since !== null && w.restarts > 0) logLine('peer ' + peer + ': ICE ' + st + ' after ' + w.restarts + ' restart(s), ' + Math.round((now - w.since) / 1000) + ' s stuck' + (r.pairText ? '; ' + r.pairText : ''));
+    const said = w.gaveUp;
     r.watch = newWatch(peer);
     r.watch.ufrag = w.ufrag;
-    if (w.gaveUp) { report(); render(); }
+    r.watch.peerAt = w.peerAt;
+    if (said) { report(); render(); }
     return;
   }
   const counting = st === 'checking' || st === 'disconnected' || st === 'failed' || (st === 'new' && pc.signalingState === 'stable' && !!pc.remoteDescription);
   if (!counting) return;
-  if (w.since === null) w.since = now;
-  if (w.gaveUp) return;
-  const action = iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH);
+  const total = ICE_WATCH.backoffMs.length;
+  if (w.since === null) {
+    w.since = now;
+    // I11.12 (2026-11-24): the peer saw this trouble first (a blip the two sides notice seconds apart) and has already
+    // restarted, which this side answered while it still read the connection as up, and so did not count. Without
+    // this the counts are 1 there and 0 here from the start, and from then on one side makes every restart: the turns
+    // are gone for the whole spell. That restart is this spell's first.
+    if (w.peerAt && now - w.peerAt < PEER_RESTART_BEFORE_MS) {
+      w.restarts = 1;
+      w.lastAt = w.peerAt;
+      logLine('peer ' + peer + ': the peer restarted ICE ' + Math.round((now - w.peerAt) / 1000) + ' s before this side saw the trouble: that was ' + iceRestartName(1, total) + ', the next is ' + (w.lead ? "the peer's" : 'our') + ' turn');
+    }
+    w.peerAt = 0;
+  }
+  // I11.12 (2026-11-24): never the end (persist): after the scheduled restarts, one every ICE_WATCH.lateMs.
+  const action = iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH, true);
   if (action === 'restart') {
     const secs = Math.round(stuckFor(r, now) / 1000);
     const n = mesh.get(peer);
     if (!n || n.closed || typeof pc.restartIce !== 'function') return;
-    // I11.12: the round's stats are asked for before the restart changes them.
-    roundOver(peer, r, 'restart ' + (w.restarts + 1) + ' of ' + ICE_WATCH.backoffMs.length + ' decided here', false, false);
+    // I11.12 (2026-11-24): whose turn this restart is (even count: the usual lead's).
+    const mine = w.restarts % 2 === 0 ? w.lead : !w.lead;
+    // I11.12: the round's stats are asked for before the restart changes them (a late round's line: iceRoundSparse).
+    roundOver(peer, r, iceRestartName(w.restarts + 1, total) + ' decided here', false, false, iceRoundSparse(w.restarts + 1, total));
     if (!n.restartIce()) return;
     w.restarts++;
     w.lastAt = now;
-    logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' (' + st + ' for ' + secs + ' s, ' + (w.lead ? 'we lead' : 'the peer did not restart') + '; ' + (r.pairText || 'no pair yet') + ')');
-  } else if (action === 'give_up') {
+    w.ownAt = now;
+    logLine('peer ' + peer + ': ICE ' + iceRestartName(w.restarts, total) + ' (' + st + ' for ' + secs + ' s, ' + (mine ? 'our turn' : 'the peer did not take its turn') + '; ' + (r.pairText || 'no pair yet') + ')');
+  } else if (!w.gaveUp && iceWatchStep(st, stuckFor(r, now), w.restarts, w.lead, ICE_WATCH, false) === 'give_up') {
+    // I11.12 (2026-11-24): where 0.2.50 gave up: the scheduled restarts and their last wait are over. It is said (once,
+    // with the state and the count of this moment: the words must not change with every late restart), and the
+    // restarts go on. With a direct picture to the same peer no relay is asked for (noPathText).
     w.gaveUp = true;
-    roundOver(peer, r, 'gave up after ' + w.restarts + ' restart(s)', false, false);
-    logLine('peer ' + peer + ': no path after ' + w.restarts + ' ICE restart(s), ' + st + ' for ' + Math.round((now - w.since) / 1000) + ' s; ' + (r.pairText || 'no pair yet') + (hasRelay() ? '; the TURN relay did not get through' : '; no TURN relay is set'));
+    w.said = { ice: st, restarts: w.restarts };
+    const every = '; still trying: an ICE restart every ' + Math.round(ICE_WATCH.lateMs / 1000) + ' s';
+    const stuck = st + ' for ' + Math.round((now - w.since) / 1000) + ' s; ' + (r.pairText || 'no pair yet');
+    if (hasVideoDirect(peer)) logLine('peer ' + peer + ': not connected after ' + w.restarts + ' ICE restart(s), ' + stuck + '; the native video holds a direct pair to this peer' + every);
+    else logLine('peer ' + peer + ': no path after ' + w.restarts + ' ICE restart(s), ' + stuck + (hasRelay() ? '; the TURN relay did not get through' : '; no TURN relay is set') + every);
     report();
     render();
   }
@@ -1791,23 +2117,78 @@ function notePeerRestart(peer, r) {
   const was = w.ufrag;
   w.ufrag = u;
   if (!was || !u || u === was || !pc.localDescription || pc.localDescription.type !== 'answer') return;
-  if (w.since === null || w.gaveUp || !current(peer, r)) return;
+  if (!current(peer, r)) return;
+  // I11.12 (2026-11-24): answered while this side reads the connection as up: remembered, for a spell that begins
+  // here within PEER_RESTART_BEFORE_MS (iceWatch counts it as that spell's first restart, as the peer has).
+  if (w.since === null) {
+    w.peerAt = Date.now();
+    return;
+  }
+  // I11.12 (2026-11-24): both sides restarted at the same moment and the negotiation let the peer's offer stand (ours
+  // was rolled back to answer it): that is one restart, already counted and its round already begun here, not two. The
+  // two counts must stay the same, or the sides no longer agree on whose turn the next one is.
+  if (w.ownAt && Date.now() - w.ownAt < 2000) {
+    w.ownAt = 0;
+    w.lastAt = Date.now();
+    logLine('peer ' + peer + ': ICE ' + iceRestartName(w.restarts, ICE_WATCH.backoffMs.length) + ': the peer restarted at the same moment and its offer stands (one restart, counted once)');
+    return;
+  }
+  // I11.12 (2026-11-24): counted after "no path" too: the late restarts take turns as the scheduled ones do.
   w.restarts++;
   w.lastAt = Date.now();
-  roundOver(peer, r, 'restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer', false, true);
-  logLine('peer ' + peer + ': ICE restart ' + w.restarts + ' of ' + ICE_WATCH.backoffMs.length + ' by the peer (' + pc.iceConnectionState + ')');
+  roundOver(peer, r, iceRestartName(w.restarts, ICE_WATCH.backoffMs.length) + ' by the peer', false, true, iceRoundSparse(w.restarts, ICE_WATCH.backoffMs.length));
+  logLine('peer ' + peer + ': ICE ' + iceRestartName(w.restarts, ICE_WATCH.backoffMs.length) + ' by the peer (' + pc.iceConnectionState + ')');
 }
 function iceWatchTick() {
   for (const [peer, r] of remote) iceWatch(peer, r);
 }
 setInterval(iceWatchTick, ICE_WATCH.tickMs);
-/** D2.9: the first peer the watchdog gave up on, as the panel and the Match tab say it; null otherwise. */
+/**
+ * D2.9: the first peer the watchdog found no path to, as the panel and the Match tab say it; null otherwise. I11.12
+ * (2026-11-24): never "a TURN relay is needed" for a peer the native video holds a direct pair to: for that peer,
+ * that the voice is still being tried and the picture has a direct path. The state and the count are those of the
+ * moment it was first said (w.said), so the words stay the same while the restarts go on.
+ */
 function noPathMessage() {
   for (const [peer, r] of remote) {
-    if (r.watch && r.watch.gaveUp) return noPathText(peerName(peer), r.pc.iceConnectionState, r.watch.restarts, hasRelay());
+    const w = r.watch;
+    if (!w || !w.gaveUp) continue;
+    const said = w.said || { ice: r.pc.iceConnectionState, restarts: w.restarts };
+    return noPathText(peerName(peer), said.ice, said.restarts, hasRelay(), hasVideoDirect(peer), true);
   }
   return null;
 }
+/**
+ * I11.12 (2026-11-24): the candidates a peer's signalling carries (iceRoundCandidate keeps the time of the round's
+ * first server-reflexive one each way, nothing else of it).
+ */
+function noteCandidate(peer, signal, outgoing) {
+  const r = remote.get(peer);
+  if (!r || !signal || signal.kind !== 'ice' || !signal.candidate) return;
+  iceRoundCandidate(r, Date.now(), outgoing, signal.candidate.candidate);
+}
+/**
+ * I11.12 (2026-11-24): the stats of a round's first seconds, read every 50 ms until a check was seen sent and received
+ * on a pair with a server-reflexive candidate, 3 s at most (ICE_ROUND_LOOK): the times a round's line gives for them.
+ */
+function roundLook() {
+  const now = Date.now();
+  for (const [peer, r] of [...remote]) {
+    const round = r.round;
+    if (round.idle || now - round.at >= ICE_ROUND_LOOK.forMs || (round.checkOutMs !== null && round.checkInMs !== null)) continue;
+    if (r.looking || typeof r.pc.getStats !== 'function') continue;
+    r.looking = true;
+    let stats;
+    try { stats = r.pc.getStats(); } catch (e) { stats = null; }
+    if (!stats || typeof stats.then !== 'function') { r.looking = false; continue; }
+    stats.then((rep) => {
+      r.looking = false;
+      // The look belongs to the round it was asked in.
+      if (remote.get(peer) === r && r.round === round) iceRoundLook(r, Date.now(), [...rep.values()]);
+    }, () => { r.looking = false; });
+  }
+}
+setInterval(roundLook, ICE_ROUND_LOOK.everyMs);
 /** D2.9: each peer's candidate pair, logged when it changes (a look every 3 s) and on every 10 s counter tick. */
 async function probePairs(tick) {
   for (const [peer, r] of [...remote]) {
@@ -1817,7 +2198,8 @@ async function probePairs(tick) {
       const rep = await r.pc.getStats();
       const entries = [...rep.values()];
       info = icePairInfo(entries);
-      r.ids = iceCandidateIds(entries);
+      // I11.12 (2026-11-24): the candidates there are, and the counters kept while there still are pairs.
+      iceRoundLook(r, Date.now(), entries);
     } catch (e) {
       continue;
     }
@@ -1826,7 +2208,9 @@ async function probePairs(tick) {
     r.pairText = icePairText(info, true);
     const changed = key !== r.pairKey;
     r.pairKey = key;
-    if (changed || tick) logLine('peer ' + peer + ': ' + r.pairText + ', ice ' + r.pc.iceConnectionState + (r.watch.restarts ? ', ' + r.watch.restarts + ' restart(s)' : ''));
+    // I11.12 (2026-11-24): not while the late restarts run and there is still no pair: the same three or four lines
+    // every 30 s (16 tried, 2 tried, 0 tried) for as long as the match lasts. A pair that works is always said.
+    if ((changed || tick) && !(lateSpell(r) && !info.pair)) logLine('peer ' + peer + ': ' + r.pairText + ', ice ' + r.pc.iceConnectionState + (r.watch.restarts ? ', ' + r.watch.restarts + ' restart(s)' : ''));
   }
 }
 setInterval(() => void probePairs(false), 3000);
@@ -1999,7 +2383,7 @@ async function attach(a) {
   mesh = new SignalingMesh(
     localId,
     openPeer,
-    (to, signal) => ipcRenderer.send(C.send, { to: to, signal: tableSdp(signal) }),
+    (to, signal) => { noteCandidate(to, signal, true); ipcRenderer.send(C.send, { to: to, signal: tableSdp(signal) }); },
     (peer, e, where) => { localError = 'Media with ' + peer + ' (' + where + '): ' + errText(e); report(); },
   );
   // D2.7: openPeer has already replaced the connection; count it, so the report (and companion.log) shows it.
@@ -2075,6 +2459,7 @@ ipcRenderer.on(C.signal, (_e, m) => {
     peerEyes.set(m.from, m.signal.stereo === 'sbs' && Array.isArray(m.signal.eyes) && m.signal.eyes.length === 2 ? m.signal.eyes : null);
     return;
   }
+  noteCandidate(m.from, m.signal, false);
   if (mesh) void mesh.receive(m.from, m.signal);
 });
 ipcRenderer.on(C.addPeer, (_e, p) => {
@@ -2104,6 +2489,13 @@ ipcRenderer.on(C.menu, (_e, m) => {
   render();
 });
 ipcRenderer.on(C.videoLine, (_e, line) => { videoLine = typeof line === 'string' ? line : ''; render(); });
+// I11.12 (2026-11-24): who the native video reaches directly; the watchdog looks at once (a peer it gave up on is tried again).
+ipcRenderer.on(C.videoDirect, (_e, ids) => {
+  videoDirect = Array.isArray(ids) ? ids.filter((x) => typeof x === 'string') : [];
+  iceWatchTick();
+  report();
+  render();
+});
 ipcRenderer.on(C.muted, (_e, on) => {
   muted = !!on;
   if (micTrack) {

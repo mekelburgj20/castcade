@@ -296,6 +296,25 @@ describe('createRtcHost (D2)', () => {
     await host.detach();
   });
 
+  it('I11.12 (2026-11-24): who the native video reaches directly goes to the page: what was said before the attach, then every change, and nothing when nothing changed', async () => {
+    const host = createRtcHost({ userData: dir, log, probe: async () => ({ outputs: [], windows: [PLAYER] }), settings: store() });
+    await host.setVr(VR_STEAM);
+    // Said before the panel is up (the helper connects in the lobby): kept for the attach.
+    host.setVideoDirect?.(['krobs']);
+    await host.attach(signalling('owner').sig, ['owner', 'krobs']);
+    const w = fake.FakeWindow.all[0]!;
+    fromPage(w, PANEL_CHANNELS.ready);
+    const direct = (): unknown[] => w.webContents.sent.filter(([ch]) => ch === PANEL_CHANNELS.videoDirect).map(([, arg]) => arg);
+    expect(direct()).toEqual([['krobs']]);
+    host.setVideoDirect?.(['krobs']);
+    expect(direct()).toHaveLength(1);
+    host.setVideoDirect?.(['zed', 'krobs', 'krobs']);
+    expect(direct()).toEqual([['krobs'], ['krobs', 'zed']]);
+    host.setVideoDirect?.([]);
+    expect(direct().at(-1)).toEqual([]);
+    await host.detach();
+  });
+
   it('VR: an offscreen window at 20 fps; attach first, then what was said before the page was ready; signals both ways', async () => {
     let windows: VpxWindow[] = [win('Visual Pinball - [MB]', 800, 600), PLAYER];
     const probe = async (): Promise<WindowProbe> => ({ outputs: [], windows });
@@ -357,6 +376,28 @@ describe('createRtcHost (D2)', () => {
       'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
       'media: peer krobs: connection closed',
     ]);
+    // I11.12 (2026-11-24): a peer the page restarts ICE for every 30 s (`quiet`) changes state four times a round:
+    // those are not written. Going quiet is, a reopen is, and so is the state it comes out with.
+    logs.length = 0;
+    const late = (ice: string, signaling: string, quiet: boolean, reopens = 1) =>
+      fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice, receivingVideo: false, receivingAudio: true, signaling, reopens, ...(quiet ? { quiet: true } : {}) } }, mic: 'open', capturing: true, error: null });
+    late('checking', 'stable', false);
+    late('disconnected', 'stable', true);
+    for (let round = 0; round < 5; round++) {
+      late('disconnected', 'have-local-offer', true);
+      late('checking', 'have-local-offer', true);
+      late('checking', 'stable', true);
+      late('disconnected', 'stable', true);
+    }
+    late('checking', 'stable', true, 2);
+    late('connected', 'stable', false, 2);
+    expect(logs).toEqual([
+      'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
+      'media: peer krobs: ice disconnected, signalling stable',
+      'media: peer krobs: ice checking, signalling stable, connection replaced (2 so far)',
+      'media: peer krobs: ice connected, signalling stable',
+    ]);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: {}, mic: 'open', capturing: true, error: null });
     fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(statuses.length).toBeGreaterThan(0);
 

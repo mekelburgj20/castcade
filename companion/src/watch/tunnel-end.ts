@@ -153,7 +153,7 @@ export function createTunnelEnd(o: TunnelEndOptions): TunnelEnd {
   const early = firstRestartMs(asked);
   // eslint-disable-next-line no-control-regex -- what is logged of a value from the environment has no control characters
   if (asked !== undefined && early === null) o.log(`${tag}: CASTCADE_ICE_FIRST_RESTART_MS is set to "${asked.replace(/[\u0000-\u001f\u007f]+/g, ' ').slice(0, 24)}", which is not a whole number of ms from 500 to 9000: ignored, nothing changes`);
-  if (early !== null) o.log(`${tag}: experiment (CASTCADE_ICE_FIRST_RESTART_MS): a data connection that is stuck gets one more ICE restart, after ${early} ms, before the usual 10 / 20 / 40 s`);
+  if (early !== null) o.log(`${tag}: experiment (CASTCADE_ICE_FIRST_RESTART_MS): a data connection that is stuck gets one more ICE restart, after ${early} ms, before the usual six (3, 3, 6, 6, 12 and 12 s apart since I11.12)`);
 
   const bridge = new TunnelBridge({
     connect: (port) => {

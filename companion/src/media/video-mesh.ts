@@ -135,6 +135,22 @@ export function headsetVideoLine(s: Pick<NativeVideoStatus, 'helper' | 'sending'
   return `video: in ${inbound.width}x${inbound.height} · ${inbound.fps} fps · ${mbps(inbound.kbps)}`;
 }
 
+/**
+ * I11.12 (2026-11-24): the players the native video reaches directly: its connection to them is up and the selected
+ * pair has no relay candidate on either side (`srflx↔srflx`, `host↔host`, a `prflx` one). What the panel page takes
+ * through `setVideoDirect`: while the helper holds such a pair, the two routers do let a direct connection through, so
+ * the page must not say a TURN relay is needed for the voice to the same player (it said so for forty minutes on
+ * 2026-11-24, beside a picture that went straight between the two PCs), and it keeps trying. A pair that is not known
+ * yet, a connection the helper gave up on and a relayed one are not in it.
+ */
+export function videoDirectPeers(s: Pick<NativeVideoStatus, 'helper' | 'peers'>): MatchPlayerId[] {
+  if (s.helper !== 'ready') return [];
+  return Object.entries(s.peers)
+    .filter(([, p]) => (p.ice === 'connected' || p.ice === 'completed') && !p.failed && typeof p.pair === 'string' && p.pair.includes('↔') && !/relay/i.test(p.pair))
+    .map(([id]) => id)
+    .sort();
+}
+
 /** Who makes the offer for a pair: the lexically smaller id (UTF-16 order, the same on every machine). */
 export function initiates(localId: MatchPlayerId, remoteId: MatchPlayerId): boolean {
   return isPolite(localId, remoteId);

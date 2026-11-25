@@ -111,8 +111,11 @@ export interface MediaStatus {
    * Per peer: ICE connection state as the browser names it (`new`, `checking`, `connected`, `failed`, …). D2.7
    * (2026-11-01): `signaling` (the connection's signalling state) and `reopens` (how often the page replaced that
    * connection after a `reset` or a stale offer), so a dead connection shows in companion.log. Absent before D2.7.
+   * I11.12 (2026-11-24): `quiet`: the page's scheduled ICE restarts for this peer are used up and one goes out every
+   * 30 s; its ICE and signalling states then change four times a round for as long as the match lasts, and
+   * `peerChanges` (rtc-host.ts) does not write them. Absent otherwise.
    */
-  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean }>;
+  peers: Record<MatchPlayerId, { ice: string; receivingVideo: boolean; receivingAudio: boolean; signaling?: string; reopens?: number; receivingTable?: boolean; quiet?: boolean }>;
   mic: 'open' | 'muted' | 'unavailable';
   /** The capture source in use, for the Match tab: the window title, or null. */
   captureSource: string | null;
@@ -307,6 +310,13 @@ export interface MatchMedia {
    * size, fps, Mbps, rtt), from the match host; null clears it. Kept for the next attach. Absent in fakes before D10.5.
    */
   setVideoLine?(line: string | null): void;
+  /**
+   * I11.12 (2026-11-24): the players the native video holds a direct candidate pair to (`videoDirectPeers`,
+   * video-mesh.ts), from the match host; an empty list clears it. For such a player the panel never says a TURN relay
+   * is needed (it chooses the words only: the voice connection is retried for every player). Kept for the next
+   * attach. Absent in fakes before I11.12.
+   */
+  setVideoDirect?(peers: MatchPlayerId[]): void;
   /**
    * D8.10 (2026-11-14): the in-game menu over the panel (match/match-menu.ts), or null to take it away. Live only: a
    * new page starts without one. Absent in fakes before D8.10.

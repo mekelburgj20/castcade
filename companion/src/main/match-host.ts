@@ -91,7 +91,7 @@ import { previewAdvice } from '../media/preview-stereo.js';
 import type { NativeVideoHook, RtcHost } from '../media/rtc-host.js';
 import { splitSignalling } from '../media/rtc-signaling.js';
 import type { VideoHelper, VideoSink } from '../media/video-helper.js';
-import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
+import { clampMaxKbps, clampPin, createVideoMesh, headsetVideoLine, THEATER_ON_RING, THEATER_RING_BACK_MS, THEATER_RING_EMPTY_MS, theaterPathStep, videoDirectPeers, type TheaterPathState, type VideoMesh, type VideoRungs } from '../media/video-mesh.js';
 import { clipFolderName, listClips, loadClip, type ClipSummary, type SaveFramesResult } from '../media/frame-clip.js';
 import { benchHint, benchRequestFrom, benchStep, liveRefusal, type BenchState, type BenchStatus, type BenchView } from '../media/bench.js';
 import { tuneWords, VR_LAYER_SCOREBOARD_ROOM_PROTOCOL } from '../media/vr-layer.js';
@@ -1879,6 +1879,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   /** D10.5: the headset panel's one line about the native video, from the mesh status; null clears it. */
   const syncVideoLine = (a: Active): void => {
     opts.media?.setVideoLine?.(a.video ? headsetVideoLine(a.video.status()) : null);
+    // I11.12 (2026-11-24): and who the native video reaches directly: the panel does not ask for a TURN relay for them.
+    opts.media?.setVideoDirect?.(a.video ? videoDirectPeers(a.video.status()) : []);
   };
   /** Where decoded frames go on this rig: the layer's `recv` ring on an OpenXR rig (theater draws it), the helper's own window elsewhere. */
   const videoSink = (a: RigRuntime): VideoSink => (usesLayer(a) && opts.nativeVideo ? { kind: 'ring', token: opts.nativeVideo.recvRing } : { kind: 'window' });
@@ -1992,6 +1994,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     a.video.close();
     a.video = null;
     opts.media?.setVideoLine?.(null);
+    opts.media?.setVideoDirect?.([]);
     opts.media?.setNativeVideo?.(null);
     opts.vrLayer?.setVideoRing?.(null);
   };

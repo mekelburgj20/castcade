@@ -15,6 +15,7 @@ const settle = async (n = 20): Promise<void> => {
  * negotiated with is refused the way Chromium refused it on the owner's rig (m-lines in another order).
  */
 const pcTag = (sdp: string | undefined): string => /\bpc\d+\b/.exec(sdp ?? '')?.[0] ?? '';
+const iceUfragOf = (sdp: string | undefined): string | null => /a=ice-ufrag:(\S+)/.exec(sdp ?? '')?.[1] ?? null;
 const MLINE_ERROR = "Failed to set remote offer sdp: The order of m-lines in subsequent offer doesn't match order from previous offer/answer.";
 /**
  * A17 step 1 (the review of PR 127): what Chromium says to an answer that was made for another offer than the one that
@@ -23,7 +24,14 @@ const MLINE_ERROR = "Failed to set remote offer sdp: The order of m-lines in sub
  * track has no m-lines, so the descriptions of the older tests are what they were.
  */
 const ANSWER_MLINE_ERROR = "Failed to set remote answer sdp: The order of m-lines in answer doesn't match order in offer. Rejecting answer.";
-const mLinesOf = (sdp: string | undefined): string => (sdp ?? '').split('\r\n').slice(1).join('\r\n');
+// Merge of I11.12 (2026-11-25): a description also carries its ICE credentials (`a=ice-ufrag`), which are each side's
+// own and no m-line: they are left out here, with the empty line a description ends on.
+const mLinesOf = (sdp: string | undefined): string =>
+  (sdp ?? '')
+    .split('\r\n')
+    .slice(1)
+    .filter((l) => l !== '' && !l.startsWith('a=ice-ufrag:'))
+    .join('\r\n');
 class FakePc implements NegotiablePc {
   private static serial = 0;
   readonly tag = `pc${++FakePc.serial}`;
@@ -38,6 +46,17 @@ class FakePc implements NegotiablePc {
   tracks: string[] = [];
   private n = 0;
   private stableLocal: { type: string; sdp: string } | null = null;
+  /**
+   * I11.12 (2026-11-24): ICE credentials, as a browser writes them (`a=ice-ufrag`): the same in every description
+   * until an ICE restart; a new one in the offer made after `restartIce()`, and in the answer to an offer whose own
+   * ufrag changed. The pages' watchdog counts the peer's restarts by exactly that.
+   */
+  private gen = 0;
+  private ufrag = `${this.tag}g0`;
+  private offerUfrag: string | null = null;
+  private remoteUfrag: string | null = null;
+  /** `restartIce()` was called and no description with new credentials has been agreed yet. */
+  restartWanted = false;
 
   constructor(
     readonly owner: string,
@@ -51,16 +70,27 @@ class FakePc implements NegotiablePc {
       if (this.signalingState !== 'have-local-offer') throw this.fail('rollback outside have-local-offer');
       this.signalingState = 'stable';
       this.localDescription = this.stableLocal;
+      this.offerUfrag = null;
+      this.afterStable();
       return;
     }
     if (this.signalingState === 'have-remote-offer') {
+      // The answer to an ICE restart restarts this side's ICE too: new credentials, and nothing left to ask for.
+      const offered = iceUfragOf(this.remoteDescription?.sdp);
+      if (this.remoteUfrag !== null && offered !== null && offered !== this.remoteUfrag) {
+        this.ufrag = `${this.tag}g${++this.gen}`;
+        this.restartWanted = false;
+      }
+      this.remoteUfrag = offered;
       const theirs = mLinesOf(this.remoteDescription?.sdp);
-      this.localDescription = { type: 'answer', sdp: `answer ${this.owner}->${this.peer} ${this.tag} #${++this.n}${theirs ? `\r\n${theirs}` : ''}` };
+      this.localDescription = { type: 'answer', sdp: `answer ${this.owner}->${this.peer} ${this.tag} #${++this.n}\r\na=ice-ufrag:${this.ufrag}${theirs ? `\r\n${theirs}` : ''}\r\n` };
       this.stableLocal = this.localDescription;
       this.signalingState = 'stable';
+      this.afterStable();
       return;
     }
-    this.localDescription = { type: 'offer', sdp: `offer ${this.owner}->${this.peer} ${this.tag} #${++this.n}${this.tracks.map((kind, i) => `\r\nm=${kind} 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:${i}`).join('')}` };
+    this.offerUfrag = this.restartWanted ? `${this.tag}g${this.gen + 1}` : this.ufrag;
+    this.localDescription = { type: 'offer', sdp: `offer ${this.owner}->${this.peer} ${this.tag} #${++this.n}\r\na=ice-ufrag:${this.offerUfrag}${this.tracks.map((kind, i) => `\r\nm=${kind} 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:${i}`).join('')}\r\n` };
     this.signalingState = 'have-local-offer';
   }
 
@@ -82,8 +112,17 @@ class FakePc implements NegotiablePc {
     if (this.signalingState !== 'have-local-offer') throw this.fail(`answer in ${this.signalingState}`);
     if (mLinesOf(d.sdp) !== mLinesOf(this.localDescription?.sdp)) throw this.fail(ANSWER_MLINE_ERROR);
     this.remoteDescription = { type: 'answer', sdp: d.sdp ?? '' };
+    // The offer that was answered is in force: if it carried new credentials, the restart is done.
+    if (this.offerUfrag !== null && this.offerUfrag !== this.ufrag) {
+      this.ufrag = this.offerUfrag;
+      this.gen++;
+      this.restartWanted = false;
+    }
+    this.offerUfrag = null;
+    this.remoteUfrag = iceUfragOf(d.sdp);
     this.stableLocal = this.localDescription;
     this.signalingState = 'stable';
+    this.afterStable();
   }
 
   async addIceCandidate(c: CandidateInit): Promise<void> {
@@ -96,11 +135,28 @@ class FakePc implements NegotiablePc {
     this.signalingState = 'closed';
   }
 
-  /** D2.9: like the browser, a restart asks for negotiation (queued, not inside the call). */
+  /**
+   * D2.9: like the browser, a restart asks for negotiation (queued, not inside the call). I11.12 (2026-11-24): and
+   * like the browser only once signalling is stable: a restart asked for in `have-local-offer`, or one whose offer was
+   * rolled back to answer the peer's, is asked for again by itself when the connection is next stable and the
+   * credentials are still the old ones.
+   */
   restarts = 0;
   restartIce(): void {
     this.restarts++;
-    setImmediate(() => this.onnegotiationneeded?.());
+    this.restartWanted = true;
+    if (this.signalingState === 'stable') this.afterStable();
+  }
+
+  private afterStable(): void {
+    setImmediate(() => {
+      if (this.signalingState === 'stable' && this.restartWanted) this.onnegotiationneeded?.();
+    });
+  }
+
+  /** The ICE username fragment this connection's descriptions carry now. */
+  localUfrag(): string {
+    return this.ufrag;
   }
 
   /** The browser gathered a local candidate. */
@@ -575,6 +631,110 @@ describe('perfect negotiation (D2)', () => {
     expect(net.pc('a', 'b')).toBe(pa);
     expect(net.pc('b', 'a')).toBe(pb);
     expect(paired(pa, pb)).toBe(true);
+    expect(net.reopens).toEqual([]);
+    expect(net.errors).toEqual([]);
+  });
+
+  it('I11.12 (2026-11-24): a restart led by the polite side is an ordinary offer the impolite side answers, on the same connections', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    expect(paired(pa, pb)).toBe(true);
+    expect(pb.localDescription?.type).toBe('offer');
+    // a is the polite side (it did not make the first offer): the restart is its turn now, and its offer is taken.
+    expect(isPolite('a', 'b')).toBe(true);
+    const before = [pa.localUfrag(), pb.localUfrag()];
+    expect(net.meshes['a']?.get('b')?.restartIce()).toBe(true);
+    await net.run();
+    expect(pa.restarts).toBe(1);
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('offer');
+    expect(pb.localDescription?.type).toBe('answer');
+    // It took: both sides' ICE credentials are new (what the other page's watchdog counts the restart by), in the
+    // descriptions each side holds of the other, and neither side has anything left to ask for.
+    expect(pa.localUfrag()).not.toBe(before[0]);
+    expect(pb.localUfrag()).not.toBe(before[1]);
+    expect(iceUfragOf(pb.remoteDescription?.sdp)).toBe(pa.localUfrag());
+    expect(iceUfragOf(pa.remoteDescription?.sdp)).toBe(pb.localUfrag());
+    expect([pa.restartWanted, pb.restartWanted]).toEqual([false, false]);
+    expect(net.pc('a', 'b')).toBe(pa);
+    expect(net.pc('b', 'a')).toBe(pb);
+    expect(net.reopens).toEqual([]);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+    expect(net.queue).toEqual([]);
+  });
+
+  it('I11.12 (2026-11-24): a restart led by the polite side while the impolite side waits for the answer to an offer of its own: that offer is answered first, the restart goes out again by itself, and it ends there (no loop)', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    const before = [pa.localUfrag(), pb.localUfrag()];
+    // b (impolite) offers again (a track was added) and the offer is lost on the way: b sits in have-local-offer.
+    pb.onnegotiationneeded?.();
+    await settle();
+    expect(net.queue.map((w) => `${w.from}:${w.signal.kind}`)).toEqual(['b:offer']);
+    net.queue.length = 0;
+    expect(pb.signalingState).toBe('have-local-offer');
+    // a's turn to restart: its offer reaches b, which is mid-offer and impolite: b ignores it.
+    net.meshes['a']?.get('b')?.restartIce();
+    await net.run();
+    expect(pa.signalingState).toBe('have-local-offer');
+    expect(pb.signalingState).toBe('have-local-offer');
+    expect(net.queue).toEqual([]);
+    // Nothing took yet: both still have the credentials they had, and a still wants its restart.
+    expect([pa.localUfrag(), pb.localUfrag()]).toEqual(before);
+    expect(pa.restartWanted).toBe(true);
+    // b's page sends its unanswered offer again (the 5 s retry): a rolls its own back and answers. That offer was no
+    // restart, so a's answer keeps its credentials, and the connection, as a browser does (the fake asks for
+    // negotiation again once it is stable with a restart still wanted; nothing here calls it by hand), offers the
+    // restart again by itself. Now b is stable and takes it.
+    expect(net.meshes['b']?.get('a')?.resendOffer()).toBe(true);
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    expect(pa.localDescription?.type).toBe('offer');
+    expect(pb.localDescription?.type).toBe('answer');
+    expect(pa.localUfrag()).not.toBe(before[0]);
+    expect(pb.localUfrag()).not.toBe(before[1]);
+    expect(iceUfragOf(pb.remoteDescription?.sdp)).toBe(pa.localUfrag());
+    expect([pa.restartWanted, pb.restartWanted]).toEqual([false, false]);
+    // One call of restartIce() did it: the watchdog did not have to ask twice.
+    expect(pa.restarts).toBe(1);
+    expect(net.queue).toEqual([]);
+    expect(net.reopens).toEqual([]);
+    expect([...pa.errors, ...pb.errors, ...net.errors]).toEqual([]);
+  });
+
+  it('I11.12 (2026-11-24): both sides restart at the same moment: the impolite offer stands, the polite side answers it, one exchange and nothing after it', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('b', 'a').onnegotiationneeded?.();
+    await net.run();
+    const pa = net.pc('a', 'b');
+    const pb = net.pc('b', 'a');
+    const before = [pa.localUfrag(), pb.localUfrag()];
+    net.meshes['a']?.get('b')?.restartIce();
+    net.meshes['b']?.get('a')?.restartIce();
+    await net.run();
+    expect(paired(pa, pb)).toBe(true);
+    // b's offer won: a answered it (which is what the pages' watchdog reads as "the peer's restart crossed ours").
+    expect(pb.localDescription?.type).toBe('offer');
+    expect(pa.localDescription?.type).toBe('answer');
+    // One restart: each side's credentials changed once, and a's own request is met by its answer (no second round).
+    expect(pa.localUfrag()).not.toBe(before[0]);
+    expect(pb.localUfrag()).not.toBe(before[1]);
+    expect(pa.localUfrag()).toMatch(/g1$/);
+    expect(pb.localUfrag()).toMatch(/g1$/);
+    expect([pa.restartWanted, pb.restartWanted]).toEqual([false, false]);
+    expect(net.queue).toEqual([]);
     expect(net.reopens).toEqual([]);
     expect(net.errors).toEqual([]);
   });
