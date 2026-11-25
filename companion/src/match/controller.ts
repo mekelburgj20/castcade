@@ -521,6 +521,15 @@ export function owedBallLine(owed: number, ball: number): string {
   return owed === 1 ? `Your last ball is still on the table: play it out, then ball ${ball} begins` : `Your last ${owed} balls are still on the table: play them out, then ball ${ball} begins`;
 }
 
+/**
+ * The step 9 last pass: an offer of the lobby's table (one-step's sentence, `changeWords`) on this PC's own panel.
+ * Its Open it is a button of the Match tab, which the headset does not have: the panel says where it is. (The Match
+ * tab does not show this line: it says the sentence itself beside its Open it.)
+ */
+export function offerOnPanel(line: string): string {
+  return line.replace('Open it:', 'Open it on the Match tab:').replace('(Open it)', '(Open it on the Match tab)');
+}
+
 interface PendingBallEnd {
   grant: GrantBody;
   shootAgain: boolean;
@@ -728,6 +737,8 @@ export class MatchController {
   /** A17 step 10: where this PC stands on its way to the lobby's table, as the lobby was last told, and the sentence for its own panel. */
   private tableChangeSaid: TableChange | null = null;
   private tableChangeLine: string | null = null;
+  /** The step 9 last pass: where this PC stands as the shell said it last (an offer's line reads otherwise on the panel). */
+  private tableChangeState: TableChange | null = null;
   /** A17 step 10: what the lobby was last told about this PC's open table being its copy of the lobby's table; undefined: nothing yet. */
   private pickCopySaid: string | undefined;
   /** A17 step 10: when a pick by each member was last logged on the lobby's PC, and how many since were not (`PICK_LOG_GAP_MS`). */
@@ -3518,6 +3529,15 @@ export class MatchController {
     }
   }
 
+  /**
+   * Step 10: the lobby's table as the lobby says it, cleaned for a screen; null while it has none. (While nobody has
+   * picked, `hostGame` is whatever the lobby's PC says of a table it has not open: no table.)
+   */
+  private lobbyTableName(): string | null {
+    const pick = this.ack?.hostGame ?? null;
+    return pick !== null && (this.ack?.tablePickedBy ?? null) !== null && pick.tableName.trim() !== '' ? tableWords(pick.tableName) : null;
+  }
+
   /** The lobby's line while no game is played and no start counts down (design 11.9): who starts, and how. */
   private lobbyLine(): string {
     const a = this.ack;
@@ -3528,10 +3548,11 @@ export class MatchController {
     if (waiting !== null) return `${over}${waiting}`;
     const between = this.phase === 'over' && (a.match ?? null) !== null;
     // The step 9 last pass (seen in the first picture of a lobby opened with "No table: I open it myself"): a
-    // lobby that has no table yet says so, and where one is picked. It read "… · Owner's, your tables are not open
-    // yet", which is true of every table when there is none to open.
-    const pick = a.hostGame ?? null;
-    if (!between && !(pick !== null && (a.tablePickedBy ?? null) !== null && pick.tableName.trim() !== '')) return `${over}The lobby has no table yet: pick one on the Match tab (Change table…)`;
+    // lobby that has no table yet says so, and how one comes: on the lobby's PC the first table opened in VPX is it
+    // (host.ts `updateMember`), and anybody can pick one on the Match tab (where this line is not shown: it says it
+    // there by its table line and Change table…). It read "… · Owner's, your tables are not open yet", which is
+    // true of every table when there is none to open.
+    if (!between && this.lobbyTableName() === null) return `${over}The lobby has no table yet: ${isHostRole(this.role) ? 'open one in VPX, or pick one' : 'pick one'}, see the Match tab`;
     const players = this.wouldPlay(between);
     const warn = this.unreadableLines();
     const warned = warn.length > 0 ? ` · ${warn.join(' · ')}` : '';
@@ -3624,16 +3645,17 @@ export class MatchController {
     else if (game) off = 'A game is being played.';
     else if (s !== null) off = 'A start is under way.';
     else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
+    // The step 9 last pass: with no table yet a start would wait for tables nobody is opening, and hold the pick
+    // back while it waits ("A match is starting: cancel the start to change the table").
+    else if (!between && this.lobbyTableName() === null) off = "Pick the lobby's table first.";
     const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}${awayNow.length > 0 ? ` ${this.namesOf(awayNow, own)} ${awayNow.length === 1 ? 'is' : 'are'} away.` : ''}` : '';
     // The final review (finding 9): Start match read "Owner, Krobs, Chuck and Dana play." with no word that it would
     // wait for three tables. While PCs of the people who would play are on their way to the lobby's table, it says so.
     const changing = (a?.tableChange ?? []).filter((x) => players.includes(x.playerId)).length;
     const waits = changing > 0 ? ` A start waits for the table${changing > 1 ? 's' : ''} that ${changing > 1 ? 'are' : 'is'} not open yet.` : '';
     // Step 10: the lobby's table, and why it cannot be changed now (the lobby's PC judges a pick by the same rules).
-    // (While nobody has picked, `hostGame` is whatever the lobby's PC says of a table it has not open: no table.)
-    const pick = a?.hostGame ?? null;
     const pickedBy = a?.tablePickedBy ?? null;
-    const named = pick !== null && pickedBy !== null && pick.tableName.trim() !== '' ? tableWords(pick.tableName) : null;
+    const named = this.lobbyTableName();
     let pickOff: string | null = null;
     if (this.seriesOver) pickOff = 'The lobby is closed.';
     else if (this.hostIsAway) pickOff = "The lobby's PC is away.";
@@ -3814,8 +3836,9 @@ export class MatchController {
    */
   setTableChange(state: TableChange | null, line: string | null): void {
     if (!this.lobbyOn || this.closed) return;
-    let changed = line !== this.tableChangeLine;
+    let changed = line !== this.tableChangeLine || state !== this.tableChangeState;
     this.tableChangeLine = line;
+    this.tableChangeState = state;
     if (state !== this.tableChangeSaid && !this.seriesOver) {
       const r = this.role;
       let said = false;
@@ -4014,7 +4037,8 @@ export class MatchController {
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
     // A17 step 10: what this PC is waiting for before it opens the lobby's table (its person may have to act).
-    if (this.lobbyOn && this.tableChangeLine && (this.phase === 'lobby' || this.phase === 'over') && this.countdownSeconds() === null) return this.tableChangeLine;
+    // (The step 9 last pass: an offer's Open it is a button of the Match tab: on the panel, in the headset, it says so.)
+    if (this.lobbyOn && this.tableChangeLine && (this.phase === 'lobby' || this.phase === 'over') && this.countdownSeconds() === null) return this.tableChangeState === 'offered' ? offerOnPanel(this.tableChangeLine) : this.tableChangeLine;
     // The review of PR 131: this player's turn, and the ball they ended by hand is still on the table.
     if (this.phase === 'playing' && this.holding && this.owedSeqs.length > 0 && !this.owedFromRecord) return owedBallLine(this.owedSeqs.length, this.holding.ballNumber);
     // B26: a ball just flagged for Midnight Madness, for a while (over the table note, which stays all match).
@@ -4065,7 +4089,13 @@ export class MatchController {
       // The final review (finding 9): on the lobby's PC, while the question about this player stands: said on the panel
       // too, with the key that opens the menu (the shell's words, `setAwayAsk`).
       if (this.lobbyOn && st.paused?.reason === 'disconnect' && who && this.awayAsk !== null) return this.awayAsk;
-      if (this.lobbyOn && st.paused?.reason === 'disconnect' && who) return who === this.localId ? 'The game waits for you: this PC was away from the lobby' : `Waiting for ${this.nameOf(who)} to come back`;
+      // The step 9 last pass: not "Waiting for Chuck to come back" under the header PAUSED · WAITING FOR CHUCK (the
+      // same words twice): where the game waits, and the way on without them (the lobby PC's, with its words).
+      if (this.lobbyOn && st.paused?.reason === 'disconnect' && who) {
+        if (who === this.localId) return 'The game waits for you: this PC was away from the lobby';
+        const name = this.nameOf(who);
+        return isHostRole(this.role) ? `The game waits at ${possessive(name)} turn until they are back. Play on without ${name} takes them out of this game` : `The game waits at ${possessive(name)} turn until they are back, or until the lobby's PC plays on without them`;
+      }
       return st.paused?.reason === 'disconnect' && who ? `Paused: waiting for ${this.nameOf(who)} to reconnect` : 'Paused';
     }
     if (pressStart) return PRESS_START_MESSAGE;

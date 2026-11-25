@@ -638,7 +638,7 @@ describe('A17 step 7: one lobby, many matches', () => {
     A.r.gameStart();
     A.r.ball(1, 500);
     await until(() => H.mh.status().phase === 'paused' && A.mh.status().phase === 'paused');
-    expect(H.mh.status().panel?.message).toBe('Waiting for Chuck to come back');
+    expect(H.mh.status().panel?.message).toBe("The game waits at Chuck's turn until they are back. Play on without Chuck takes them out of this game");
     expect(H.mh.status().lobby?.waitedFor).toMatchObject({ name: 'Chuck' });
     expect(H.mh.status().lobby?.awayQuestion).toBeNull();
     // Play on without Chuck (the lobby's PC): Chuck is out of this game, and the turn goes on.

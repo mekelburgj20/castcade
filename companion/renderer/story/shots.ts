@@ -72,7 +72,7 @@ const who = (state: string): string => NAMES[FIXTURES[state]?.me ?? 'owner'] ?? 
 const says = (state: string): string => FIXTURES[state]?.says ?? state;
 
 /** The panel page as the headset draws it (960 x 640), as the desktop panel window (480 x 720), and with the menu open. */
-const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed', 'long-four', 'long-game', 'long-away-question', 'offer-other-table', 'offer-nothing-open', 'no-table-yet'];
+const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed', 'long-four', 'long-game', 'long-away-question', 'offer-other-table', 'offer-nothing-open', 'no-table-yet', 'host-kept-quit-my-ball'];
 const PANEL_DESKTOP = ['four-starter', 'start-waits-3d', 'table-changing', 'game-watcher', 'host-away', 'between', 'long-game', 'long-away-question'];
 const PANEL_MENU = ['four-starter', 'game-up', 'between-newmatch', 'away-question', 'long-away-question'];
 const BOARD = ['game-up', 'game-watcher', 'waited-for', 'away-question', 'host-away', 'between', 'long-game', 'long-away-question'];
@@ -80,9 +80,9 @@ const panel: Shot[] = [
   ...PANEL_VR.map((s) => ({ name: `panel-headset-${s}`, page: `panel.html?state=${s}&vr=1`, says: `Panel in the headset, ${who(s)}'s PC: ${says(s)}`, width: 960, height: 640 })),
   ...PANEL_DESKTOP.map((s) => ({ name: `panel-desktop-${s}`, page: `panel.html?state=${s}&vr=0`, says: `Panel window on the desktop, ${who(s)}'s PC: ${says(s)}`, width: 480, height: 720 })),
   ...PANEL_MENU.map((s) => ({ name: `panel-menu-${s}`, page: `panel.html?state=${s}&vr=1&menu=1`, says: `Panel in the headset with the in-game menu open, ${who(s)}'s PC: ${says(s)}`, width: 960, height: 640 })),
-  { name: 'panel-menu-game-owner-last-line', page: 'panel.html?state=game-owner&vr=1&menu=1&at=closeLobby&asked=1', says: "Panel in the headset with the in-game menu open on its last lines, Close lobby chosen and its question asked, Owner's PC", width: 960, height: 640 },
-  { name: 'panel-menu-desktop-long-away-question', page: 'panel.html?state=long-away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open; the player the question is about has a name of 64 characters, Owner's PC", width: 480, height: 720 },
-  { name: 'panel-menu-desktop-away-question', page: 'panel.html?state=away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open, End Krobs' ball chosen and its question asked, Owner's PC", width: 480, height: 720 },
+  { name: 'panel-menu-game-owner-last-line', page: 'panel.html?state=game-owner&vr=1&menu=1&at=closeLobby&asked=1', says: "Panel in the headset with the in-game menu open, Owner's PC: the menu on its last lines, Close lobby chosen and its question asked", width: 960, height: 640 },
+  { name: 'panel-menu-desktop-long-away-question', page: 'panel.html?state=long-away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open, Owner's PC: End Krobs…'s ball chosen and its question asked; the player it is about has a name of 64 characters", width: 480, height: 720 },
+  { name: 'panel-menu-desktop-away-question', page: 'panel.html?state=away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open, Owner's PC: End Krobs' ball chosen and its question asked", width: 480, height: 720 },
   ...BOARD.map((s) => ({ name: `scoreboard-${s}`, page: `scoreboard.html?state=${s}`, says: `Scoreboard card in the headset (the grey stands for the game behind it), ${who(s)}'s PC: ${says(s)}`, width: 512, height: 384 })),
 ];
 
@@ -96,7 +96,12 @@ const MENUS = [
   ['more', ['given-up-me', 'host-kept-quit', 'table-changing']],
   ['long-name', ['long-game', 'long-away-question', 'long-between']],
 ] as const;
-const menus: Shot[] = MENUS.map(([name, states]) => ({ name: `menu-text-${name}`, page: `menu.html?states=${states.join(',')}`, says: `In-game menu as text (each line, its id, what it asks first, why it is off): ${states.join(', ')}`, width: 12 + states.length * 412, height: 400 }));
+/** "Owner's PC, Krobs's PC and Chuck's PC": the PCs of the states of one picture, each once. */
+const pcs = (states: readonly string[]): string => {
+  const n = [...new Set(states.map((x) => `${who(x)}'s PC`))];
+  return n.length <= 1 ? (n[0] ?? '') : `${n.slice(0, -1).join(', ')} and ${n[n.length - 1]}`;
+};
+const menus: Shot[] = MENUS.map(([name, states]) => ({ name: `menu-text-${name}`, page: `menu.html?states=${states.join(',')}`, says: `In-game menu as text, ${pcs(states)}: ${states.join(', ')} (each line, its id, what it asks first, why it is off)`, width: 12 + states.length * 412, height: 400 }));
 
 /** The panel pictures, six to a sheet at half size (three across). */
 const panelSheet = (name: string, states: string[], vr = true): Shot => ({

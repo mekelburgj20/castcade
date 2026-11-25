@@ -451,10 +451,13 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       linkSays(r, 'chuck', 4, 16);
       check('host-kept-quit', S['chuck']);
     }
-    // ---- the last pass: the kept quit's line tells the player whose ball it is what is true for them (their table is theirs)
+    // ---- the step 9 last pass: the kept quit's line tells the player whose ball it is what is true for them (their
+    // table is theirs: "Leave lobby frees your table now" is not), and the one who waits what is true for them
     {
-      const r = await lobby(['krobs', 'chuck'], TABLE);
+      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE);
       const S = r.seats as Record<string, MatchController>;
+      S['dana']!.setStance('watch');
+      await flush();
       expect(S['owner']!.requestStart()).toBeNull();
       await r.tick(5000);
       await playBall(r, 'owner', 1, 1_234_560);
@@ -464,11 +467,11 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       r.host.sayKept(20 * 60_000);
       await flush();
       r.bus.disconnect('owner');
-      await r.tick(60_000);
-      linkSays(r, 'krobs', 1, 19);
-      linkSays(r, 'chuck', 1, 19);
-      expect(S['krobs']!.panel().message).toBe('Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (19 min left). Your ball goes on: play it out, and its end is reported when Owner is back. Leave lobby ends the wait for you.');
-      expect(S['chuck']!.panel().message).toBe('Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (19 min left). You can wait and keep talking; Leave lobby frees your table now.');
+      await r.tick(2 * 60_000);
+      linkSays(r, 'krobs', 2, 18);
+      linkSays(r, 'chuck', 2, 18);
+      check('host-kept-quit-my-ball', S['krobs']);
+      expect(S['chuck']!.panel().message).toBe('Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (18 min left). You can wait and keep talking; Leave lobby frees your table now.');
     }
     // ---- the game somebody gave up, still on their table
     {
@@ -539,10 +542,10 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       const r = await lobby(['krobs'], NO_TABLE);
       const S = r.seats as Record<string, MatchController>;
       check('no-table-yet', S['krobs']);
-      const congo = table(fx.OTHER_TABLE, 'cd'.repeat(32));
-      expect(await S['krobs']!.pickTableAnswered(congo, null, 8000)).toEqual({ kind: 'taken' });
-      await flush();
-      const again = S['krobs']!.pickTableAnswered(table(TABLE), null, 8000);
+      // The lobby's PC picks its table; a second later a member picks another: the lobby PC's answer to that pick.
+      expect(await S['owner']!.pickTableAnswered(table(TABLE), null, 8000)).toEqual({ kind: 'taken' });
+      await r.tick(1000);
+      const again = S['krobs']!.pickTableAnswered(table(fx.OTHER_TABLE, 'cd'.repeat(32)), null, 8000);
       await flush();
       expect(await again).toEqual({ kind: 'refused', sentence: fx.PICK_REFUSED });
     }

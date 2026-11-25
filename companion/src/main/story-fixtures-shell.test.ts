@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { lobbyFullSentence } from '../match/host.js';
+import { offerOnPanel } from '../match/controller.js';
 import { shortName } from '../match/short-name.js';
 import { ForeignVersionError, refusalSentence } from '../match/transport-ws.js';
 import { formatWebJoinLink, inviteMessage } from './deep-link.js';
@@ -36,7 +37,8 @@ describe("the story fixtures say what the shell says (A17 step 9)", () => {
     for (const [name, f] of changes) {
       const c = f.change;
       expect(c.detail, name).toBe(changeWords(c.state, c.table, c.open, c.why, c.by));
-      expect(f.message, name).toBe(c.detail);
+      // (The step 9 last pass: an offer's line on the panel says that its Open it is on the Match tab.)
+      expect(f.message, name).toBe(c.state === 'offered' ? offerOnPanel(c.detail) : c.detail);
     }
     // The three kinds the pictures show: a PC that closes by itself, one whose person closes the table, one that asks first.
     expect(F['table-changing'].change.state).toBe('closing');

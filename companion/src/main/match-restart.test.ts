@@ -241,7 +241,7 @@ describe('a client restarted in the middle of a match (A15)', () => {
     crashed(C, 5 * 60_000);
     await until(() => H.mh.status().phase === 'paused');
     // A17 step 7: the lobby's words (design 11.8): the place is kept, and the game waits at that player's own turn.
-    expect(H.mh.status().panel?.message).toBe('Waiting for Guest to come back');
+    expect(H.mh.status().panel?.message).toBe("The game waits at Guest's turn until they are back. Play on without Guest takes them out of this game");
 
     // Castcade starts again five minutes later: nothing is joined by itself; the tab offers it by name.
     const C2 = castcade('guest', cr.w, C.dir);

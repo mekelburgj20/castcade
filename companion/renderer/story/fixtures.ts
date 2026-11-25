@@ -150,7 +150,9 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
               ? 'A start is under way.'
               : playSet.length < 2
                 ? 'Two people have to be set to Play.'
-                : null;
+                : !between && f.table?.name === null
+                  ? "Pick the lobby's table first."
+                  : null;
   const lobby = inLobby
     ? {
         stance: watch.has(f.me) ? 'watch' : 'play',
@@ -244,6 +246,7 @@ export function status(f: Fixture, base: any): { match: any; oneStep: any } {
 const four: Who[] = ['owner', 'krobs', 'chuck', 'dana'];
 const AWAY_LINE = (left: number, what = 'match'): string => `Owner's PC is away. The ${what} goes on when it is back: waiting up to 20 minutes (${left} min left). You can keep talking; Leave lobby ends the wait for you.`;
 const KEPT_LINE = (left: number): string => `Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (${left} min left). You can wait and keep talking; Leave lobby frees your table now.`;
+const KEPT_MINE_LINE = (left: number): string => `Owner closed Castcade and kept the lobby: it goes on if Owner opens Castcade again within 20 minutes (${left} min left). Your ball goes on: play it out, and its end is reported when Owner is back. Leave lobby ends the wait for you.`;
 const GIVEN_UP_WAIT = 'The game you gave up is still on your table, which is yours meanwhile: play it out (it counts for nothing) or restart the table. The next game waits for it';
 const START = (by: Who, players: Who[], o: any = {}): any => ({ by, players, newMatch: true, waitsFor: null, waitsOn: [], seconds: 4, line: '', ...o });
 
@@ -260,8 +263,10 @@ const ASKS_AWAY = CHANGE('offered', 'away', `Krobs changed the lobby's table to 
 // another table open, and with nothing open (a join by code starts no table).
 const OFFER_OTHER = { state: 'offered', table: TABLE, open: OTHER_TABLE, why: 'here', by: null, detail: `The lobby's table is ${TABLE}, and ${OTHER_TABLE} is open on this PC. Open it: Castcade closes ${OTHER_TABLE} and opens ${TABLE}.` };
 const OFFER_NONE = { state: 'offered', table: TABLE, open: null, why: 'here', by: null, detail: `The lobby's table is ${TABLE}, and no table is open on this PC. Open it: Castcade opens ${TABLE}.` };
-/** What the lobby's PC answers to a member who picks again a moment after their own pick (host.ts; held in match/story-fixtures.test.ts). */
-export const PICK_REFUSED = "You changed the lobby's table a moment ago: you can change it again in 30 s.";
+/** An offer on this PC's own panel: its Open it is on the Match tab (controller.ts `offerOnPanel`; held in main/story-fixtures-shell.test.ts). */
+const ON_PANEL = (line: string): string => line.replace('Open it:', 'Open it on the Match tab:').replace('(Open it)', '(Open it on the Match tab)');
+/** What the lobby's PC answers to a member's pick a second after the table was changed (host.ts; held in match/story-fixtures.test.ts). */
+export const PICK_REFUSED = "The lobby's table was changed a moment ago: it can be changed again in 9 s.";
 const PICKED = { name: OTHER_TABLE, pickedBy: 'krobs', pickedByName: 'Krobs', endsMatch: false };
 const ON_THE_WAY = { owner: ['changing'], krobs: ['changing'], chuck: ['close_table'], dana: ['asked'] };
 
@@ -305,10 +310,11 @@ export const FIXTURES: Record<string, Fixture> = {
   'match-ended': { says: 'End match was pressed: back in the lobby, with the final standing of the match that ended', me: 'krobs', here: four, watch: ['dana'], matchOver: true, series: [['owner', 1, 1], ['krobs', 0, 1], ['chuck', 0, 1]], lastMatch: { games: 1, standing: [['owner', 1, 3_456_780], ['krobs', 0, 2_100_000], ['chuck', 0, 990_000]] }, message: 'Match over after 1 game · Owner 1 win, Krobs 0, Chuck 0 · Owner starts the match from their table. To start it yourself: Start match in the menu' },
 
   // ---- away
-  'waited-for': { says: "Chuck's link dropped during Krobs' ball; that ball has ended and the game waits for Chuck: the lobby's PC can play on without him", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: null, flags: { chuck: ['away'] }, awaySince: { chuck: 75 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 1] }, waitedFor: 'chuck', giveUp: true, message: 'Waiting for Chuck to come back', locked: true },
+  'waited-for': { says: "Chuck's link dropped during Krobs' ball; that ball has ended and the game waits for Chuck: the lobby's PC can play on without him", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: null, flags: { chuck: ['away'] }, awaySince: { chuck: 75 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 1] }, waitedFor: 'chuck', giveUp: true, message: "The game waits at Chuck's turn until they are back. Play on without Chuck takes them out of this game", locked: true },
   'away-question': { says: "The player who is up is out of reach and still seen playing: the question on the lobby's PC", me: 'owner', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, phase: 'paused', up: 'krobs', ball: 1, flags: { krobs: ['away'] }, awaySince: { krobs: 185 }, scores: { owner: [1_234_560, 1], krobs: [2_345_670, 0] }, waitedFor: 'krobs', giveUp: true, awayQuestion: { who: 'krobs', score: 2_345_670 }, message: 'Krobs is out of reach and still playing. Keep waiting, end their ball, or play on without them: open the menu (Ctrl+Alt+M) or the Match tab', locked: true },
   'host-away': { says: "The lobby's PC is away, seen by a member who is on a ball", me: 'krobs', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 1, flags: { owner: ['away'] }, awaySince: { owner: 108 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 0] }, hostAway: { minutesLeft: 18 }, giveUp: true, endBall: { score: 987_650 }, message: AWAY_LINE(18) },
   'host-kept-quit': { says: "The lobby's PC was quit and kept the lobby, seen by a member between games", me: 'chuck', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'between' }, flags: { owner: ['away'] }, awaySince: { owner: 240 }, scores: { owner: [3_456_780, 3], krobs: [2_100_000, 3], chuck: [990_000, 3] }, result: [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]], series: [['owner', 1, 1], ['krobs', 0, 1], ['chuck', 0, 1]], hostAway: { minutesLeft: 16 }, message: KEPT_LINE(16), locked: true },
+  'host-kept-quit-my-ball': { says: "The lobby's PC was quit and kept the lobby, seen by the member whose ball it is", me: 'krobs', here: four, watch: ['dana'], match: { players: ['owner', 'krobs', 'chuck'], game: 1, state: 'game' }, up: 'krobs', ball: 1, flags: { owner: ['away'] }, awaySince: { owner: 108 }, scores: { owner: [1_234_560, 1], krobs: [987_650, 0] }, hostAway: { minutesLeft: 18 }, giveUp: true, endBall: { score: 987_650 }, message: KEPT_MINE_LINE(18) },
   'lobby-closed': { says: 'The lobby was closed by its owner: what a member reads before the tab goes back to Open / Join', me: 'krobs', here: four, over: true, message: 'The lobby is closed: Owner closed the lobby' },
 
   // ---- the game somebody gave up
@@ -318,13 +324,13 @@ export const FIXTURES: Record<string, Fixture> = {
   // ---- the table changes
   'table-changing': { says: "Krobs changed the table: every PC is on its way to it, each row in its own state; this PC is closing its table", me: 'owner', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: CLOSING, message: CLOSING.detail },
   'table-close-it': { says: 'The table was changed and this PC has to close the table that is open on it', me: 'chuck', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: CLOSE_IT, message: CLOSE_IT.detail },
-  'table-open-it': { says: 'The table was changed for the fourth time in a few minutes: this PC asks before it changes tables again (Open it)', me: 'dana', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: ASKS_OFTEN, message: ASKS_OFTEN.detail },
-  'table-asked-after-away': { says: 'The table was changed while this PC was away from the lobby: it is offered, never opened by itself (Open it)', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, change: ASKS_AWAY, message: ASKS_AWAY.detail },
+  'table-open-it': { says: 'The table was changed for the fourth time in a few minutes: this PC asks before it changes tables again (Open it)', me: 'dana', here: four, flags: ON_THE_WAY, table: { ...PICKED, changing: true }, change: ASKS_OFTEN, message: ON_PANEL(ASKS_OFTEN.detail) },
+  'table-asked-after-away': { says: 'The table was changed while this PC was away from the lobby: it is offered, never opened by itself (Open it)', me: 'dana', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, change: ASKS_AWAY, message: ON_PANEL(ASKS_AWAY.detail) },
   'table-one-asked': { says: 'Everybody has the new table open but one PC, which was asked: nobody is closing or opening, so the header is the lobby again', me: 'owner', here: four, flags: { dana: ['asked'] }, table: { ...PICKED, changing: false }, message: "Waiting for Dana to open the lobby's table. A start waits for them (start a game on your table, or Start match in the menu)" },
   'other-table': { says: "A member has another table open than the lobby's", me: 'owner', here: four, flags: { chuck: ['other_table'] }, message: 'Everyone in? Start a game on your table (or Start match in the menu) · different table file: Chuck' },
-  'offer-other-table': { says: "A member has another table open than the lobby's: the lobby's table is offered (Open it), and their row says so", me: 'dana', here: four, open: OTHER_TABLE, flags: { dana: ['asked'] }, change: OFFER_OTHER, message: OFFER_OTHER.detail },
-  'offer-nothing-open': { says: "A member joined by the code with no table open: the lobby's table is offered (Open it)", me: 'krobs', here: four, open: null, flags: { krobs: ['asked'] }, change: OFFER_NONE, message: OFFER_NONE.detail },
-  'no-table-yet': { says: 'A lobby opened with "No table: I open it myself": it has no table yet, and anyone can pick the first', me: 'krobs', here: ['owner', 'krobs'], open: null, flags: { owner: ['loading'], krobs: ['loading'] }, table: { name: null, pickedBy: null, pickedByName: null, endsMatch: false, changing: false }, message: 'The lobby has no table yet: pick one on the Match tab (Change table…)' },
+  'offer-other-table': { says: "A member has another table open than the lobby's: the lobby's table is offered (Open it), and their row says so", me: 'dana', here: four, open: OTHER_TABLE, flags: { dana: ['asked'] }, change: OFFER_OTHER, message: ON_PANEL(OFFER_OTHER.detail) },
+  'offer-nothing-open': { says: "A member joined by the code with no table open: the lobby's table is offered (Open it)", me: 'krobs', here: four, open: null, flags: { krobs: ['asked'] }, change: OFFER_NONE, message: ON_PANEL(OFFER_NONE.detail) },
+  'no-table-yet': { says: 'A lobby opened with "No table: I open it myself": it has no table yet, and anyone can pick the first', me: 'krobs', here: ['owner', 'krobs'], open: null, flags: { owner: ['loading'], krobs: ['loading'] }, table: { name: null, pickedBy: null, pickedByName: null, endsMatch: false, changing: false }, message: 'The lobby has no table yet: pick one, see the Match tab' },
 };
 
 // ---- a name of 64 characters without a space (the longest the name field takes), in the states where a name is

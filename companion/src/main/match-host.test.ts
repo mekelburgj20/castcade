@@ -1876,7 +1876,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     r.dropDevice('dev-c');
     await until(() => H.mh.status().phase === 'paused', 8000);
     // A17 step 7: the lobby's words for it (design 11.8): the place is kept, and the game waits at their own turn.
-    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: clientId, pausedFor: clientId, myTurn: false, message: 'Waiting for Krobs to come back' });
+    expect(H.mh.status().panel).toMatchObject({ phase: 'paused', playerUp: clientId, pausedFor: clientId, myTurn: false, message: "The game waits at Krobs' turn until they are back. Play on without Krobs takes them out of this game" });
     await new Promise((res) => setTimeout(res, 700)); // more than twice the time a missing picture is given
     pageSays(true);
     // The headset was never taken to the panel. Until 0.2.50 every pause put the panel over the picture.
@@ -2186,7 +2186,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     r.dropDevice('dev-h');
     // The host cannot reach the player who holds the grant: the others (here the host itself) wait for it.
     await until(() => H.mh.status().phase === 'paused', 8000);
-    expect(H.mh.status().panel?.message).toBe('Waiting for Krobs to come back');
+    expect(H.mh.status().panel?.message).toBe("The game waits at Krobs' turn until they are back. Play on without Krobs takes them out of this game");
     // The client finds that pause in what it missed, resumes it itself, and the match plays on.
     await until(() => C.seen.slice(before.cSeen).some((x) => x.phase === 'paused'), 8000);
     await until(() => H.mh.status().phase === 'playing' && C.mh.status().phase === 'playing' && C.mh.status().panel?.myTurn === true, 8000);
