@@ -108,7 +108,7 @@ import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
 import { HOST_WAIT_MS, RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, oldRecordSentence, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord, type SavedLobbyPart } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
-import { CompositeTransport, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
+import { CompositeTransport, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy, type RelayHostState } from '../match/transport-relay.js';
 import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 // A17 step 4: on a line of its own, away from the controller's other names above (another branch edits that line).
 import { pausedForPlayerUp } from '../match/controller.js';
@@ -350,6 +350,11 @@ export interface MatchStatus {
   resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean; match: boolean; lost: boolean } | null;
 }
 
+/** The step 9 last pass: what the lobby's PC made of one pick of its table (`MatchHost.pickTable`). */
+export type PickAnswer = { kind: 'taken'; status: MatchStatus } | { kind: 'refused'; sentence: string } | { kind: 'none' };
+/** How long a joined PC waits for the lobby PC's answer to its pick when the caller names no wait. */
+const PICK_WAIT_MS = 8_000;
+
 export interface MatchHost {
   /** A17 step 7: Open a lobby (it was "Host a match"): this PC arbitrates every match in it, also one its owner only watches. */
   host(opts: { port?: number; ballsPerGame: 3 | 5; displayName: string }): Promise<MatchStatus>;
@@ -490,10 +495,16 @@ export interface MatchHost {
    * A17 step 10 (design 11.5): pick the lobby's table. `game` is the pick (only its identity keys count), `objects`
    * the Castcade VPX build's identity of this PC's copy of it, when known. Anyone in the lobby may, outside a game
    * and while no start is announced; between games the open match ends at its tally (the Match tab asked first, and
-   * says what the press was about: `about`, the lobby's `gameKey`). Throws with the sentence when the lobby's PC
-   * refuses at once; a client's refusal comes a moment later as `lastError` (and on the panel).
+   * says what the press was about: `about`, the lobby's `gameKey`).
+   *
+   * The step 9 last pass: the answer is this request's own. `taken` (the lobby's table is the picked one), `refused`
+   * with the sentence (the lobby PC's REJECT that names this very TABLE_PICK, or what this PC can say at once: no
+   * lobby, the lobby's PC is away, a game or a start, a lobby that is not as it was at the press), or `none` when
+   * neither came within `waitMs` (a client; the lobby's own PC answers at once). It was read from the tab's one
+   * sentence (`lastError`), where another refusal that arrived in the same moment was taken for the pick's. Never
+   * throws for a refusal, and leaves `lastError` alone: the pick's answer is said where the pick was made.
    */
-  pickTable(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null }): Promise<MatchStatus>;
+  pickTable(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null; waitMs?: number }): Promise<PickAnswer>;
   /** A17 step 10: this PC's own open table as it says it to the lobby (for "Make <table> the lobby's table"); null: none is open, or no lobby. */
   ownTable(): GameFingerprint | null;
   /**
@@ -3341,60 +3352,72 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * (`setCutOff`), so nobody is paused for, no place runs out and no clock runs; when the room is registered again
    * the engine is told that too, and everything starts from zero. If ArcAid will not have the room again the lobby
    * cannot go on for the members who came through it: it is closed, and its owner is told why.
+   *
+   * The step 9 last pass (the final review's note on `reopenLobby`): a word of the room is heard only while `a` is
+   * the active lobby. A lobby opened again after a restart is watched before it is the active one (its listener is
+   * opened in between, an `await`), so a word that came then (the room taken back, lost again, or refused for good)
+   * was never heard: the tab said for good that ArcAid was not carrying the lobby, and a lobby opened again empty
+   * stayed cut off. `relayCatchUp` hears the room's state as it is now, once, when the lobby has become the active one.
    */
+  const relayCatchUp = new WeakMap<Active, () => void>();
   const watchRelay = (a: Active, engine: HostMatch, relay: RelayHostTransport): void => {
-    a.offs.push(
-      relay.onState((st) => {
-        if (active !== a) return;
-        if (st === 'reconnecting') {
-          engine.setCutOff(true);
-          a.relayNote = 'ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted). Castcade is taking it back; nobody is paused or counted as away for it';
-          log.warn('match: ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted); taking it back. Nobody is paused or counted as away for it, and a ball in play goes on');
-        } else if (st === 'registered') {
-          engine.setCutOff(false);
+    /** The room's state as this watch last acted on it. */
+    let seen = relay.state;
+    const on = (st: RelayHostState): void => {
+      if (active !== a) return;
+      seen = st;
+      if (st === 'reconnecting') {
+        engine.setCutOff(true);
+        a.relayNote = 'ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted). Castcade is taking it back; nobody is paused or counted as away for it';
+        log.warn('match: ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted); taking it back. Nobody is paused or counted as away for it, and a ball in play goes on');
+      } else if (st === 'registered') {
+        engine.setCutOff(false);
+        a.relayNote = null;
+        log.info(`match: ArcAid carries ${a.code} again; the members come back by themselves`);
+      } else if (st === 'closed') {
+        // The review of PR 136: ArcAid's room is gone for good (the code is taken, the pairing was revoked, this
+        // device opened another room). Whoever came through ArcAid cannot be reached again. Somebody connected to
+        // this PC's own port can: for them nothing happened, and a game they play is not ended for it. The
+        // lobby goes on for them, on the listener alone; with nobody there it is closed, as the handoff asks.
+        const direct = (a.ws?.peers() ?? []).filter((id) => id !== engine.localId);
+        // A17 step 8: this PC is no longer paired with ArcAid (it asked for its room a few times and was told so
+        // each time): said in those words, with where to pair it again.
+        const unpaired = relay.closedWhy === 'unauthorized';
+        if (direct.length > 0) {
+          const cs = a.controller.status();
+          const who = direct.map((id) => nameIn(cs, id));
+          const names = who.length <= 1 ? (who[0] ?? '') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+          // Nobody who came through ArcAid can come back: no time to return for them (`returnAllowMs`).
+          engine.setCutOff(false, { returning: false });
+          a.via = 'direct';
           a.relayNote = null;
-          log.info(`match: ArcAid carries ${a.code} again; the members come back by themselves`);
-        } else if (st === 'closed') {
-          // The review of PR 136: ArcAid's room is gone for good (the code is taken, the pairing was revoked, this
-          // device opened another room). Whoever came through ArcAid cannot be reached again. Somebody connected to
-          // this PC's own port can: for them nothing happened, and a game they play is not ended for it. The
-          // lobby goes on for them, on the listener alone; with nobody there it is closed, as the handoff asks.
-          const direct = (a.ws?.peers() ?? []).filter((id) => id !== engine.localId);
-          // A17 step 8: this PC is no longer paired with ArcAid (it asked for its room a few times and was told so
-          // each time): said in those words, with where to pair it again.
-          const unpaired = relay.closedWhy === 'unauthorized';
-          if (direct.length > 0) {
-            const cs = a.controller.status();
-            const who = direct.map((id) => nameIn(cs, id));
-            const names = who.length <= 1 ? (who[0] ?? '') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
-            // Nobody who came through ArcAid can come back: no time to return for them (`returnAllowMs`).
-            engine.setCutOff(false, { returning: false });
-            a.via = 'direct';
-            a.relayNote = null;
-            if (a.directInvite) a.invite = a.directInvite;
-            log.warn(`match: ArcAid closed ${a.code} and it cannot be opened again; the lobby goes on for the ${direct.length} member(s) connected to this PC directly, and whoever came through ArcAid is away from now on`);
-            // The panel's line first (a notice is also the tab's last word); then the tab's own, which says what to do.
-            a.controller.notify("ArcAid closed this lobby's room: it goes on for the people connected to this PC directly");
-            lastError = unpaired
-              ? `This PC is no longer paired with ArcAid, so ArcAid does not carry the lobby ${a.code} any more. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back. Pair this PC again in Settings, then close the lobby and open a new one for a new code.`
-              : `ArcAid closed the room of the lobby ${a.code} and it could not be opened again. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back, and the code no longer works: for a new code, close the lobby and open a new one.`;
-            emit();
-            return;
-          }
-          log.warn(`match: ${unpaired ? `this PC is no longer paired with ArcAid, which does not carry ${a.code} any more` : `ArcAid closed ${a.code} and it cannot be opened again`}; the lobby is closed on this PC`);
-          // The lobby ends for this PC, and its record with it (`teardown`). Whoever came through ArcAid cannot be
-          // told: they meet the line of a lobby's PC that is away, and its twenty minutes.
-          void closeLobby(a, unpaired ? "the lobby's PC is no longer paired with ArcAid" : 'ArcAid closed the room of this lobby and it could not be opened again').then(() => {
-            lastError = unpaired
-              ? unpairedClosedSentence(a.code)
-              : `The lobby ${a.code} is closed: ArcAid closed its room and it could not be opened again. Open a new lobby and send the new code.`;
-            emit();
-          });
+          if (a.directInvite) a.invite = a.directInvite;
+          log.warn(`match: ArcAid closed ${a.code} and it cannot be opened again; the lobby goes on for the ${direct.length} member(s) connected to this PC directly, and whoever came through ArcAid is away from now on`);
+          // The panel's line first (a notice is also the tab's last word); then the tab's own, which says what to do.
+          a.controller.notify("ArcAid closed this lobby's room: it goes on for the people connected to this PC directly");
+          lastError = unpaired
+            ? `This PC is no longer paired with ArcAid, so ArcAid does not carry the lobby ${a.code} any more. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back. Pair this PC again in Settings, then close the lobby and open a new one for a new code.`
+            : `ArcAid closed the room of the lobby ${a.code} and it could not be opened again. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back, and the code no longer works: for a new code, close the lobby and open a new one.`;
+          emit();
           return;
         }
-        emit();
-      }),
-    );
+        log.warn(`match: ${unpaired ? `this PC is no longer paired with ArcAid, which does not carry ${a.code} any more` : `ArcAid closed ${a.code} and it cannot be opened again`}; the lobby is closed on this PC`);
+        // The lobby ends for this PC, and its record with it (`teardown`). Whoever came through ArcAid cannot be
+        // told: they meet the line of a lobby's PC that is away, and its twenty minutes.
+        void closeLobby(a, unpaired ? "the lobby's PC is no longer paired with ArcAid" : 'ArcAid closed the room of this lobby and it could not be opened again').then(() => {
+          lastError = unpaired
+            ? unpairedClosedSentence(a.code)
+            : `The lobby ${a.code} is closed: ArcAid closed its room and it could not be opened again. Open a new lobby and send the new code.`;
+          emit();
+        });
+        return;
+      }
+      emit();
+    };
+    a.offs.push(relay.onState(on));
+    relayCatchUp.set(a, () => {
+      if (active === a && relay.state !== seen) on(relay.state);
+    });
   };
   /** A17 step 7: Close lobby: a game being played is ended for everyone, every member is told (LOBBY_CLOSED), then everything closes. */
   const closeLobby = async (a: Active, why: string): Promise<void> => {
@@ -3819,6 +3842,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         log.warn(`match: could not listen on port ${rec.port} again (${describeError(e)}); ${code} goes through ArcAid only`);
       }
     }
+    // (What the room did during the listen above is caught up once this lobby is the active one: `relayCatchUp`.)
     return a;
   };
 
@@ -3882,6 +3906,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         pendingExit = false;
         active = a;
         connecting = false;
+        // The step 9 last pass: what ArcAid's room did while the lobby was being opened again (`watchRelay`).
+        relayCatchUp.get(a)?.();
         followLog(a);
         if (a.engine instanceof ClientMatch) {
           watchLobby(a, a.engine);
@@ -4529,20 +4555,22 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     async pickTable(o) {
       const a = active;
-      if (!a) return fail(new Error('No lobby'));
-      const l = a.controller.status().lobby;
-      if (!l) return fail(new Error('No lobby'));
-      if (l.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      const l = a?.controller.status().lobby ?? null;
+      if (!a || !l) return { kind: 'refused', sentence: 'You are not in a lobby.' };
+      if (l.hostAway) return { kind: 'refused', sentence: LOBBY_PC_AWAY };
       // What the lobby's PC would answer, said at once on this PC too.
-      if (l.table.off !== null) return fail(new Error(l.table.off));
+      if (l.table.off !== null) return { kind: 'refused', sentence: l.table.off };
       // A change between games ends the open match: the press said so, and only while that is still what there is.
-      if (o.about != null && o.about !== l.gameKey) return fail(new Error("The table was not changed: the lobby is not as it was when you pressed. Look again and press again."));
-      const no = a.controller.pickTable(o.game, o.objects ? { editables: o.objects.editables, hash: o.objects.hash } : null);
-      if (no !== null) return fail(new Error(no));
-      lastError = null;
+      if (o.about != null && o.about !== l.gameKey) return { kind: 'refused', sentence: 'The table was not changed: the lobby is not as it was when you pressed. Look again and press again.' };
+      const waitMs = o.waitMs ?? PICK_WAIT_MS;
+      const answer = await a.controller.pickTableAnswered(o.game, o.objects ? { editables: o.objects.editables, hash: o.objects.hash } : null, waitMs);
+      if (answer.kind !== 'taken') {
+        log.info(`match: ${a.code}: the pick of ${tableWords(o.game.tableName)} on this PC was not taken: ${answer.kind === 'refused' ? answer.sentence : `no answer from the lobby's PC in ${Math.round(waitMs / 1000)} s`}`);
+        return answer;
+      }
       log.info(`match: ${a.code}: the lobby's table was picked on this PC: ${tableWords(o.game.tableName)}${o.objects ? ` (table objects ${forkIdentityText(o.objects)})` : ''}${l.table.endsMatch ? '; the open match ends at its tally' : ''}`);
       emit();
-      return status();
+      return { kind: 'taken', status: status() };
     },
     ownTable() {
       const a = active;

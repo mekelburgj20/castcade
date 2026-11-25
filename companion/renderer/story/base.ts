@@ -129,7 +129,11 @@ export const ok =
     Promise.resolve(v);
 
 /** `window.castcade` for a story: the given match and one-step status, a paired Witness, a few tables in the picker. */
-export function installBridge(match: unknown, oneStep: unknown, o: { paired?: boolean; tableOpen?: string | null; /** false: this PC knows no table (the picker's own sentence). */ tables?: boolean } = {}): void {
+export function installBridge(
+  match: unknown,
+  oneStep: unknown,
+  o: { paired?: boolean; tableOpen?: string | null; /** false: this PC knows no table (the picker's own sentence). */ tables?: boolean; /** What a pick does: `wait` (the lobby's PC has not answered yet), or the sentence it is refused with. */ pick?: string | null } = {},
+): void {
   const bridge = api({
     appVersion: '0.2.51',
     protocolVersion: 7,
@@ -138,7 +142,7 @@ export function installBridge(match: unknown, oneStep: unknown, o: { paired?: bo
     settings: api({ get: ok({}) }),
     app: api({ versions: ok(null), logPath: ok('companion.log'), loginItem: api({ get: ok({ supported: false, openAtLogin: false }) }), clipboardText: ok('') }),
     match: api({ status: ok(match), benchClips: ok([]) }, match),
-    launch: api({ status: ok(oneStep), tables: ok(o.tables === false ? [] : TABLES), browse: ok([]), pick: ok(null) }),
+    launch: api({ status: ok(oneStep), tables: ok(o.tables === false ? [] : TABLES), browse: ok([]), pick: o.pick === 'wait' ? () => new Promise(() => undefined) : o.pick ? () => Promise.reject(new Error(o.pick as string)) : ok(match) }),
     watch: api({ status: ok(WATCH), pickTable: ok(null) }),
   });
   Object.defineProperty(window, 'castcade', { value: bridge });

@@ -9,7 +9,8 @@
  *
  * `&press=Leave lobby` presses the first button with those words once the tab is drawn (several, in order, with `|`
  * between them), for the states a click opens: a confirm row, the table picker. `select:Congo` in that list picks the
- * option of the picker's list whose words begin so. `&tables=0`: this PC knows no table. shoot.mjs takes a screenshot of each.
+ * option of the picker's list whose words begin so. `&tables=0`: this PC knows no table. `&pick=wait`: a pick gets no
+ * answer (the lobby's PC is asked); `&pick=refused`: it is refused with the lobby PC's sentence. shoot.mjs takes a screenshot of each.
  */
 import { StrictMode, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -17,7 +18,7 @@ import { Match } from '../src/views/Match.js';
 import { useCastcade } from '../src/useCastcade.js';
 import '../src/app.css';
 import { installBridge, MATCH } from './base.js';
-import { FIXTURES, TABLE, status } from './fixtures.js';
+import { FIXTURES, PICK_REFUSED, TABLE, status } from './fixtures.js';
 
 const q = new URLSearchParams(location.search);
 const which = q.get('state');
@@ -26,7 +27,7 @@ const presses = (q.get('press') ?? '').split('|').filter((p) => p !== '');
 
 if (fixture) {
   const { match, oneStep } = status(fixture, MATCH);
-  installBridge(match, oneStep, { tables: q.get('tables') !== '0', tableOpen: fixture.here && fixture.here.length > 0 && !(fixture.flags?.[fixture.me] ?? []).includes('no_table') ? TABLE : null });
+  installBridge(match, oneStep, { tables: q.get('tables') !== '0', pick: q.get('pick') === 'refused' ? PICK_REFUSED : q.get('pick'), tableOpen: fixture.open !== undefined ? fixture.open : fixture.here && fixture.here.length > 0 && !(fixture.flags?.[fixture.me] ?? []).includes('no_table') ? TABLE : null });
 } else installBridge(MATCH, { link: null, message: null, copied: false, pending: null, launch: { state: 'idle', table: null, detail: null }, tableToStart: null, change: null, notice: null, attention: 0 });
 
 /** Presses the named buttons one after another, each once the one before has been drawn. */

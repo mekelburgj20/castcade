@@ -124,6 +124,28 @@ export function Match({ state }: { state: CastcadeState }) {
   const shownError = error ?? st.lastError;
   const panel = st.panel;
   const tableOpen = state.status?.currentTable ?? null;
+  /*
+   * The panel's line, as this tab shows it under its headline, or null where the tab does not. A17 step 9: a start
+   * that is announced says its own line beside its buttons (below): the same sentence is not said twice. A line that
+   * sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the
+   * top. Nor is this PC's own table change, which the card at the top of the tab says, with its Open it (on the panel
+   * an offer's Open it says that it is on this tab: controller.ts `offerOnPanel`). The step 9 last pass: nor
+   * "Castcade found no copy of the lobby's table" under the card at the top that says it, with what to do. (Under the
+   * headline WAITING FOR CHUCK the line is where the game waits and the way on: controller.ts, not the same words.)
+   */
+  const message = panel?.message ?? null;
+  const shownMessage =
+    message !== null &&
+    !st.advisories.some((line) => message.includes(line)) &&
+    !(st.lobby?.start && message === st.lobby.start.line) &&
+    !message.endsWith('see the Match tab') &&
+    message.replaceAll(' on the Match tab', '') !== one?.change?.detail &&
+    !(one?.launch.state === 'needed' && message.startsWith('Castcade found no copy'))
+      ? message
+      : null;
+  // The step 9 last pass: the line beside Start match says the start waits for tables that are not open yet; where the
+  // line above it says so already (with whose), it is not said twice.
+  const startLine = st.lobby ? (shownMessage?.includes('A start waits for') ? st.lobby.startButton.line.replace(/ A start waits for the tables? that (is|are) not open yet\.$/, '') : st.lobby.startButton.line) : '';
 
   const copyInvite = () => {
     if (!st.invite) return;
@@ -472,11 +494,9 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.transfer && <p className="warn">{transferLine(st.transfer)}</p>}
             {/* D10.8: which path the match control takes (a lobby says it in its own line). */}
             {!st.lobby && st.path && <p className="muted">{st.path}</p>}
-            {/* A17 step 9: a start that is announced says its own line beside its buttons (below): the same sentence is not said twice.
-                A line that sends the reader to this tab (the headset's "see the Match tab") is not shown on it: what it points at is at the top.
-                Nor is this PC's own table change, which the card at the top of the tab says, with its Open it. */}
-            {panel?.message && !st.advisories.some((line) => panel.message?.includes(line)) && !(st.lobby?.start && panel.message === st.lobby.start.line) && !panel.message.endsWith('see the Match tab') && panel.message !== one?.change?.detail && (
-              <p className={panel.message.startsWith('different') || panel.message.includes('cannot report ball ends') || panel.message.startsWith('The lobby is closed') || panel.message.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, panel.message, now)}</p>
+            {/* The panel's line, where this tab shows it (`shownMessage`). */}
+            {shownMessage !== null && (
+              <p className={shownMessage.startsWith('different') || shownMessage.includes('cannot report ball ends') || shownMessage.startsWith('The lobby is closed') || shownMessage.startsWith('The lobby is over') || st.lobby?.hostAway ? 'warn' : 'muted'}>{awayClock(st, shownMessage, now)}</p>
             )}
             {/* B26: the Midnight Madness setting when it is ON on a table, and the balls of this game it ran on (a flag only). */}
             {st.advisories.map((line) => (
@@ -516,7 +536,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     >
                       {st.lobby.startButton.label}
                     </button>
-                    <span className="muted">{st.lobby.startButton.off ?? st.lobby.startButton.line}</span>
+                    <span className="muted">{st.lobby.startButton.off ?? startLine}</span>
                   </div>
                 )}
                 {/* The final review (finding 9): what Start a new match does stands beside it before the press (it was said only in the question after it). */}
@@ -1555,7 +1575,8 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
         <>
           {link && <code className="mono invite">{link}</code>}
           <p className="muted">
-            Send the code or the link{link?.startsWith('https://') ? ' (it opens this lobby with the table started)' : ''}. Everyone needs Castcade paired with ArcAid.
+            {/* The step 9 last pass: "with the table started" only while the lobby has a table to start. */}
+            Send the code or the link{link?.startsWith('https://') ? (st.lobby?.table.name ? ' (it opens this lobby with the table started)' : ' (it opens this lobby)') : ''}. Everyone needs Castcade paired with ArcAid.
           </p>
           {/* The review of PR 136: this PC's own connection to ArcAid is away: said here, on the tab of the PC it is about. */}
           {/* Step 9: not when the sentence at the top of the tab already says it (Castcade started again and waits for ArcAid). */}

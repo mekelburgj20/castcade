@@ -636,9 +636,17 @@ export class ClientMatch {
     this.assertActive();
     if (!this.lobbyOn || !this.joined) return false;
     // A17 step 10: with the Castcade VPX build's identity of the picker's own copy, when its PC knows it.
-    this.sendToHost(this.s.build('TABLE_PICK', { game: { ...game }, ...(tableObjects ? { tableObjects: { editables: tableObjects.editables, hash: tableObjects.hash } } : {}) }, this.throwdownCode));
+    const msg = this.s.build('TABLE_PICK', { game: { ...game }, ...(tableObjects ? { tableObjects: { editables: tableObjects.editables, hash: tableObjects.hash } } : {}) }, this.throwdownCode);
+    this.pickSeq = msg.seq;
+    this.sendToHost(msg);
     return true;
   }
+
+  /** The step 9 last pass: the seq of the TABLE_PICK this client sent last (null: none), which a REJECT of it names (`refSeq`). */
+  lastPickSeq(): number | null {
+    return this.pickSeq;
+  }
+  private pickSeq: number | null = null;
 
   /**
    * A17 step 6 (review, 2026-11-25): Leave lobby. Says LEAVE_LOBBY to the lobby's PC (this member's row goes at
