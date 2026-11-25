@@ -1,6 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
-import { OneStepCard, TablePicker, useOneStep } from './OneStep.js';
+import { LobbyTable, OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
 import { WatchCard, useWatch, watchHoldsRoom } from './Watch3D.js';
 
@@ -456,6 +456,8 @@ export function Match({ state }: { state: CastcadeState }) {
                     ))}
               </tbody>
             </table>
+            {/* A17 step 10: the lobby's table, and its change by anyone. */}
+            <LobbyTable bridge={bridge} st={st} tableOpen={tableOpen} />
             {/* A17 step 7: the start, asked for by anyone: what a press does, the start that is announced, and how to take it back. */}
             {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && (
               <>
@@ -1416,6 +1418,10 @@ function memberWords(st: MatchStatus, id: string, now: number): string {
     no_table: 'NO TABLE',
     other_table: 'OTHER TABLE',
     own_game: 'OWN GAME',
+    // A17 step 10: on the way to the lobby's new table.
+    close_table: 'HAS TO CLOSE THEIR TABLE',
+    asked: 'ASKED TO OPEN IT',
+    changing: 'CHANGING TABLE',
   };
   // PLAY and WATCH are the choice for the NEXT start. While a match is open, somebody whose choice is not what they
   // do in it is said so (`inMatch`): set to Play and not in it (they joined during it), or set to Watch and still in it.

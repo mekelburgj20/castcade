@@ -56,6 +56,9 @@ export const IPC = {
   launchStartTable: 'launch:startTable',
   /** A17 step 3: Open it: the lobby's new table on this PC, when "Change tables for me" is off. */
   launchOpenPick: 'launch:openPick',
+  /** A17 step 10: make a table of this PC's lists, or the table that is open here, the lobby's table. */
+  launchPick: 'launch:pick',
+  launchPickOpen: 'launch:pickOpen',
   launchConfirm: 'launch:confirm',
   launchDismiss: 'launch:dismiss',
   launchCopy: 'launch:copy',
@@ -372,6 +375,13 @@ export interface CastcadeApi {
     startTable(): Promise<OneStepStatus>;
     /** A17 step 3: Open it: close the table that is open here and open the lobby's new one (`OneStepStatus.change`). */
     openPick(): Promise<OneStepStatus>;
+    /**
+     * A17 step 10: make `tablePath` (a `path` from `tables()` or `browse()`) the lobby's table. `about`: the lobby as
+     * the press saw it (`MatchStatus.lobby.gameKey`). Rejects with the sentence why not.
+     */
+    pick(tablePath: string, about: string | null): Promise<MatchStatus>;
+    /** A17 step 10: "Make <table> the lobby's table": the table that is open on this PC. */
+    pickOpen(about: string | null): Promise<MatchStatus>;
     /** Join the match of the link that waits (`status.pending`) and start its table here. */
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;

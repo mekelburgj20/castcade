@@ -601,11 +601,13 @@ interface LobbyView {
     me: boolean;
     starter: boolean;
     inMatch: boolean;
-    flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game'>;
+    flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing'>;
     /** Since when this PC has known the member to be away (ms, this PC's clock); null: here. */
     awaySince: number | null;
   }>;
   match: { id: string; game: number; state: 'game' | 'between'; players: string[] } | null;
+  /** A17 step 10: the lobby's table, who picked it, why it cannot be changed now (null: it can), whether a change ends the open match, and whether PCs are on their way to it. */
+  table: { name: string | null; pickedBy: string | null; pickedByName: string | null; off: string | null; endsMatch: boolean; changing: boolean };
   start: { by: string; players: string[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: string[]; seconds: number | null; line: string } | null;
   startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
   newMatch: { line: string; warnings: string[] } | null;
@@ -848,6 +850,10 @@ interface CastcadeBridge {
     startTable(): Promise<OneStepStatus>;
     /** A17 step 3: Open it: the lobby's new table on this PC (`OneStepStatus.change`). */
     openPick(): Promise<OneStepStatus>;
+    /** A17 step 10: make a table of this PC's lists the lobby's table (`about`: `lobby.gameKey` at the press). */
+    pick(tablePath: string, about: string | null): Promise<MatchStatus>;
+    /** A17 step 10: make the table that is open on this PC the lobby's table. */
+    pickOpen(about: string | null): Promise<MatchStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;

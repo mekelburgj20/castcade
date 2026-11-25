@@ -73,7 +73,13 @@ export interface PanelState {
    * `players` stays the players of the match (the members while none is open), so the score strip, the scoreboard
    * and the tally do not change. Absent when the match has no lobby. The panel page draws them from step 9 on.
    */
-  members?: Array<{ id: MatchPlayerId; name: string; stance: 'play' | 'watch'; flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game'>; inMatch: boolean }>;
+  members?: Array<{ id: MatchPlayerId; name: string; stance: 'play' | 'watch'; flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing'>; inMatch: boolean }>;
+  /**
+   * A17 step 10 (alpha-match.md section 11.5): the lobby's table is being changed: its name, while some member's PC
+   * is on its way to it (closing a table, opening the new one, waiting for a game or for its person). The header
+   * reads `CHANGING TABLE · <NAME>`. Absent otherwise.
+   */
+  changingTable?: string;
   /** A17 step 7: the one member whose Start on their own table asks for a game; null: nobody. Absent without a lobby. */
   starter?: MatchPlayerId | null;
   /** A17 step 7: this player's own choice at the next start. Absent without a lobby. */

@@ -35,6 +35,7 @@ const { matchSignalling } = await import('./match-setup.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
 const { RelayHostTransport } = await import('../match/transport-relay.js');
 const { RESUME_FILE } = await import('./match-resume.js');
+const { headerText } = await import('../media/panel-page.js');
 type FakeRelay = Awaited<ReturnType<typeof startFakeRelay>>;
 type MatchHost = ReturnType<typeof createMatchHost>;
 type Options = Parameters<typeof createMatchHost>[0];
@@ -61,6 +62,9 @@ function rig(o: { table?: boolean; ballEnds?: boolean } = {}) {
   const statusCbs = new Set<(s: WStatus) => void>();
   let inGame = false;
   let open = o.table !== false;
+  // A17 step 10: the table that is open can be another one (the PC closed its table and opened the lobby's).
+  let name = 'Test Table';
+  let sha = SHA;
   const say = (ev: Feed): void => {
     if (ev.kind === 'game_start') inGame = true;
     else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') inGame = false;
@@ -69,8 +73,8 @@ function rig(o: { table?: boolean; ballEnds?: boolean } = {}) {
   const status = (): WStatus =>
     ({
       paired: false,
-      currentTable: open ? 'Test Table' : null,
-      currentIdentity: open ? { sha256: SHA, tableInfo: null } : null,
+      currentTable: open ? name : null,
+      currentIdentity: open ? { sha256: sha, tableInfo: null } : null,
       currentAttestation: null,
       captureMode: open ? 'live' : 'none',
       note: null,
@@ -79,7 +83,7 @@ function rig(o: { table?: boolean; ballEnds?: boolean } = {}) {
   const w = {
     status,
     sampleVr: async () => null,
-    liveGame: () => ({ table: 'Test Table', inGame, scores: [], player: null, ball: null }),
+    liveGame: () => ({ table: name, inGame, scores: [], player: null, ball: null }),
     onEvent: (cb: Listener) => (eventCbs.add(cb), () => eventCbs.delete(cb)),
     onStatus: (cb: (s: WStatus) => void) => (statusCbs.add(cb), () => statusCbs.delete(cb)),
     journalMark: () => null,
@@ -103,6 +107,14 @@ function rig(o: { table?: boolean; ballEnds?: boolean } = {}) {
     },
     openTable: () => {
       open = true;
+      for (const cb of [...statusCbs]) cb(status());
+    },
+    /** A17 step 10: this PC's VPX has another table open now (closed and opened: one status, as the lobby hears it in the end). */
+    setTable: (table: string, hash: string) => {
+      name = table;
+      sha = hash;
+      open = true;
+      inGame = false;
       for (const cb of [...statusCbs]) cb(status());
     },
     inGame: () => inGame,
@@ -1052,5 +1064,155 @@ describe('A17 step 7: one lobby, many matches', () => {
     H.r.gameStart();
     H.r.ball(1, 100);
     await until(() => up(C2, 1));
+  }, 60_000);
+});
+
+describe('A17 step 10: the table changes in a lobby', () => {
+  const AFM = 'Attack from Mars';
+  const AFM_SHA = 'cd'.repeat(32);
+  const OBJECTS = { editables: 1203, hash: '00aa11bb22cc33dd' };
+  /** A pick as a PC makes it from its table list: the identity keys, nothing of a copy. */
+  const pickOf = (tableName: string, tableHash: string, romName: string | null = null) => ({ kind: 'vpx' as const, tableName, tableHash, romName, romHash: null, physicsHash: null, recipeVersion: null, sidecarHash: null, emulatorVersion: '' });
+  const flags = (s: Seat, who: string): string[] => member(s, who)?.flags ?? [];
+  const two = async (ballsPerGame: 3 | 5 = 3) => {
+    const H = seat('h');
+    const A = seat('a');
+    const hs = await H.mh.host({ port: 0, ballsPerGame, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await until(() => names(H).length === 2 && names(A).length === 2 && H.page.held().length === 1 && A.page.held().length === 1);
+    return { H, A };
+  };
+
+  it("anyone picks the lobby's table: every PC hears the pick and who made it, each row is compared with it, the header says CHANGING TABLE while PCs are on their way, and a match on the new table starts with the voice peers untouched", async () => {
+    const { H, A } = await two(3);
+    const voiceBefore = [H, A].map((s) => s.page.voiceCalls().length);
+    const videoBefore = [H, A].map((s) => s.video.peers().length);
+    expect(H.mh.status().lobby?.table).toEqual({ name: 'Test Table', pickedBy: H.id(), pickedByName: 'Owner', off: null, endsMatch: false, changing: false });
+
+    // The member picks, with what the Castcade VPX build says of its copy.
+    await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS });
+    await until(() => H.mh.status().lobby?.table.name === AFM && A.mh.status().lobby?.table.name === AFM);
+    for (const s of [H, A]) {
+      expect(s.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedBy: A.id(), pickedByName: 'Krobs', off: null });
+      expect(s.mh.lobbyTable()?.game).toEqual(pickOf(AFM, AFM_SHA, 'afm_113b'));
+      // The 3D ranking of every PC's copies follows the picked table, on the lobby's PC too.
+      expect(s.mh.hostTableObjects()).toEqual(OBJECTS);
+      // Both still have the old table open: another game than the lobby's.
+      expect([flags(s, 'Owner'), flags(s, 'Krobs')]).toEqual([['other_table'], ['other_table']]);
+    }
+    // The lobby PC's own table (still the old one) is its row's business: it is not the lobby's table any more.
+    expect(H.mh.ownTable()?.tableName).toBe('Test Table');
+
+    // Each PC says where it stands on its way (the shell's one-step does; here the test is it).
+    A.mh.setTableChange('closing', null);
+    H.mh.setTableChange('waits_person', `Close the table on this PC: Castcade opens ${AFM} when it is closed.`);
+    await until(() => flags(H, 'Krobs').includes('changing') && flags(A, 'Owner').includes('close_table'));
+    for (const s of [H, A]) {
+      expect(s.mh.status().lobby?.table.changing).toBe(true);
+      expect(headerText(s.mh.status().panel!)).toBe('CHANGING TABLE · ATTACK FROM MARS');
+    }
+    // The person who has to act reads it on their own panel (the headset), not only on the Match tab.
+    expect(H.mh.status().panel?.message).toBe(`Close the table on this PC: Castcade opens ${AFM} when it is closed.`);
+    // A start asked for meanwhile waits for the tables, and says for whose.
+    await A.mh.start();
+    await until(() => H.mh.status().lobby?.start?.waitsFor === 'other_tables');
+    expect(H.mh.status().lobby?.start?.waitsOn.sort()).toEqual([H.id(), A.id()].sort());
+    await A.mh.cancelStart();
+    await until(() => H.mh.status().lobby?.start === null);
+
+    // Both tables are closed and the new one opened; each PC has nothing more to say.
+    A.r.setTable(AFM, AFM_SHA);
+    A.mh.setTableChange('opening', null);
+    A.mh.setTableChange(null, null);
+    H.r.setTable(AFM, AFM_SHA);
+    H.mh.setTableChange(null, null);
+    await until(() => [flags(H, 'Owner'), flags(H, 'Krobs'), flags(A, 'Owner'), flags(A, 'Krobs')].every((f) => f.length === 0));
+    for (const s of [H, A]) {
+      expect(s.mh.status().lobby?.table.changing).toBe(false);
+      expect(headerText(s.mh.status().panel!)).not.toMatch(/CHANGING TABLE/);
+      expect(s.mh.status().participants.map((x) => x.tableNote)).toEqual([null, null]);
+    }
+
+    // A match on the new table, asked for by the member: played to its end.
+    await A.mh.start();
+    await until(() => A.mh.status().phase === 'playing' && H.mh.status().phase === 'playing', 15_000);
+    expect(A.mh.hostGame()?.tableName).toBe(AFM);
+    await playGame([A, H], 3);
+    await until(() => H.mh.status().phase === 'over' && A.mh.status().phase === 'over');
+    // Not one voice peer was added or removed for the change of table or for the match after it, and the video
+    // helper holds the peers it held.
+    expect([H, A].map((s) => s.page.voiceCalls().length)).toEqual(voiceBefore);
+    expect([H, A].map((s) => s.video.peers().length)).toEqual(videoBefore);
+    expect([H, A].map((s) => s.page.log.filter((l) => l === 'detach').length)).toEqual([0, 0]);
+  }, 60_000);
+
+  it('a pick is refused with a sentence while a start counts down and while a game is played; between games it ends the open match, after the press said so; and the table cannot change again at once', async () => {
+    const H = seat('h', { lobby: { countdownMs: 600 } });
+    const A = seat('a');
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await until(() => names(H).length === 2 && names(A).length === 2);
+    const afm = { game: pickOf(AFM, AFM_SHA), objects: null };
+    // While a start counts down: on the PC that asked, and on the other.
+    await H.mh.start();
+    await until(() => A.mh.status().lobby?.start !== null && A.mh.status().lobby?.start !== undefined);
+    expect(A.mh.status().lobby?.table.off).toBe('A match is starting: cancel the start to change the table.');
+    await expect(A.mh.pickTable(afm)).rejects.toThrow('A match is starting: cancel the start to change the table.');
+    await expect(H.mh.pickTable(afm)).rejects.toThrow('A match is starting: cancel the start to change the table.');
+    // While a game is played.
+    await until(() => H.mh.status().phase === 'playing' && A.mh.status().phase === 'playing', 15_000);
+    await expect(A.mh.pickTable(afm)).rejects.toThrow('A game is being played: the table changes after it.');
+    await expect(H.mh.pickTable(afm)).rejects.toThrow('A game is being played: the table changes after it.');
+    expect(H.mh.status().lobby?.table.name).toBe('Test Table');
+    await playGame([H, A], 3);
+    await until(() => H.mh.status().phase === 'over' && A.mh.status().phase === 'over' && A.mh.status().lobby?.match?.state === 'between');
+    // Between games: a pick ends the open match, and the tab asked first (`endsMatch`).
+    expect(A.mh.status().lobby?.table).toMatchObject({ off: null, endsMatch: true });
+    const about = A.mh.status().lobby!.gameKey;
+    // A press about a lobby that has moved on changes nothing.
+    await expect(A.mh.pickTable({ ...afm, about: 'ZZZZZZ-9/1/between' })).rejects.toThrow(/The table was not changed: the lobby is not as it was when you pressed/);
+    expect(A.mh.status().lobby?.match).not.toBeNull();
+    await A.mh.pickTable({ ...afm, about });
+    await until(() => H.mh.status().lobby?.match === null && A.mh.status().lobby?.match === null);
+    expect(H.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedByName: 'Krobs', endsMatch: false });
+    expect(H.lines.some((l) => /the table changed/.test(l))).toBe(true);
+    // Everyone is still in the lobby, and nobody's voice was touched.
+    expect([names(H), names(A)]).toEqual([
+      ['Owner', 'Krobs'],
+      ['Owner', 'Krobs'],
+    ]);
+    // Limits on how often the lobby's table can change: the same member again at once is told so (a client hears
+    // it from the lobby's PC a moment later; the lobby's PC itself at once).
+    await A.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null });
+    await until(() => /You changed the lobby's table a moment ago: you can change it again in \d+ s\./.test(A.mh.status().lastError ?? '') || /You changed the lobby's table a moment ago/.test(A.mh.status().panel?.message ?? ''));
+    await expect(H.mh.pickTable({ game: pickOf('Medieval Madness', 'ef'.repeat(32)), objects: null })).rejects.toThrow(/The lobby's table was changed a moment ago: it can be changed again in \d+ s\./);
+    expect(H.mh.status().lobby?.table.name).toBe(AFM);
+  }, 60_000);
+
+  it("a pick before the picker's table is open flags nobody: the member who has that file open is not said to have another, and the picker's own row is the loading one", async () => {
+    // The lobby's PC has no VPX open; the member has Test Table open.
+    const H = seat('h', {}, rig({ table: false }));
+    const A = seat('a');
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await A.mh.join(hs.invite!, 'Krobs');
+    await until(() => names(H).length === 2 && names(A).length === 2);
+    expect(H.mh.status().lobby?.table.name).toBeNull();
+    // The lobby's PC picks that table from its own list, with the ROM its import read (a PC's own row names none).
+    await H.mh.pickTable({ game: pickOf('Test Table', SHA, 'tt_10'), objects: OBJECTS });
+    await until(() => A.mh.status().lobby?.table.name === 'Test Table');
+    await sleep(100);
+    for (const s of [H, A]) {
+      expect(s.mh.status().lobby?.table).toMatchObject({ name: 'Test Table', pickedByName: 'Owner' });
+      expect(flags(s, 'Krobs')).toEqual([]);
+      expect(flags(s, 'Owner')).toEqual(['loading']);
+      const krobs = s.mh.status().participants.find((x) => x.name === 'Krobs');
+      expect([krobs?.tableMatch, krobs?.tableNote]).toEqual([true, null]);
+      expect(s.mh.hostTableObjects()).toEqual(OBJECTS);
+    }
+    // The lobby's PC opens it: nobody is flagged, and nobody was.
+    H.r.openTable();
+    await until(() => flags(A, 'Owner').length === 0);
+    expect(A.mh.status().participants.map((x) => x.tableNote)).toEqual([null, null]);
+    expect(H.mh.ownTable()?.tableName).toBe('Test Table');
   }, 60_000);
 });

@@ -126,7 +126,8 @@
  *   - **away is not gone** (A18's rule in every phase): a member whose link dropped keeps the voice while that
  *     connection is itself up; the lobby's PC away is said on a client's panel, and nothing closes.
  */
-import type { GrantBody, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance } from '@castcade/protocol';
+import { pickName } from './table-identity.js';
+import type { GameFingerprint, GrantBody, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance, TableChange } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
 import { midnightLine, midnightSettingLine, possessive } from '../witness/midnight.js';
@@ -146,15 +147,21 @@ export type MatchRole = HostRole | ClientRole;
 
 /** A17 step 7: what a lobby's role offers beyond a match's (the engines made with the `lobby` option). */
 export type LobbyHostRole = HostRole &
-  Pick<HostMatch, 'isLobby' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateLocal' | 'announcedStart' | 'waitedFor' | 'members' | 'stanceOf' | 'starter' | 'openMatch' | 'table' | 'publicKey'>;
-export type LobbyClientRole = ClientRole & Pick<ClientMatch, 'isLobby' | 'isJoined' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateParticipant' | 'holdsOpenLog' | 'hostAway'>;
+  Pick<HostMatch, 'isLobby' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateLocal' | 'announcedStart' | 'waitedFor' | 'members' | 'stanceOf' | 'starter' | 'openMatch' | 'table' | 'publicKey' | 'pickTable' | 'tableChanges' | 'tableObjects'>;
+export type LobbyClientRole = ClientRole & Pick<ClientMatch, 'isLobby' | 'isJoined' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateParticipant' | 'holdsOpenLog' | 'hostAway' | 'pickTable'>;
 /** A17 step 7: the role is a lobby's (its engine was made with the `lobby` option). */
 export function isLobbyRole(role: MatchRole): boolean {
   return (role as { isLobby?: boolean }).isLobby === true;
 }
 
 /** A17 step 7: what is wrong, or special, about a member's row (the Match tab's roster; design section 11.3). */
-export type LobbyFlag = 'away' | 'loading' | 'no_table' | 'other_table' | 'own_game';
+/**
+ * A17 step 10: three more, from where a member's PC says it stands on its way to the lobby's table
+ * (`HELLO_ACK.tableChange`): `close_table` (its person has to close the open table), `asked` (it changes tables only
+ * when its person says so), `changing` (the open table was asked to close, or the lobby's table is being opened).
+ * A PC that waits for a game or its initials says `own_game`.
+ */
+export type LobbyFlag = 'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing';
 
 /** A17 step 7: the lobby as this controller knows it, for the Match tab and the in-game menu. Null without a lobby. */
 export interface LobbyStatus {
@@ -166,6 +173,12 @@ export interface LobbyStatus {
   members: Array<{ id: PlayerId; name: string; rig: ParticipantInfo['rig']; stance: Stance; opener: boolean; me: boolean; starter: boolean; inMatch: boolean; flags: LobbyFlag[]; awaySince: number | null }>;
   /** The match that is open: its id, the game, whether one is being played, and its players. Null: none. */
   match: { id: string; game: number; state: 'game' | 'between'; players: PlayerId[] } | null;
+  /**
+   * A17 step 10: the lobby's table: its name (null: none is named yet), who picked it, why it cannot be changed now
+   * (`off`; null: it can), and whether a change ends the open match (`endsMatch`: asked before the press).
+   * `changing`: some member's PC is on its way to it (the header says CHANGING TABLE).
+   */
+  table: { name: string | null; pickedBy: PlayerId | null; pickedByName: string | null; off: string | null; endsMatch: boolean; changing: boolean };
   /**
    * The review of PR 136: what a press about the match is made against: the open match, its game and whether that
    * game is being played ("JHDFEF-2/3/game"; empty: no match). A press carries it, and the main process refuses a
@@ -687,6 +700,9 @@ export class MatchController {
   private tableAskTimer: unknown = null;
   /** The lobby was told that a game the match does not own runs on this table (`ownGame`). */
   private ownGameSaid = false;
+  /** A17 step 10: where this PC stands on its way to the lobby's table, as the lobby was last told, and the sentence for its own panel. */
+  private tableChangeSaid: TableChange | null = null;
+  private tableChangeLine: string | null = null;
   /** A client: its link to the lobby's PC has been down for longer than the grace. */
   private hostIsAway = false;
   private hostAwayTimer: unknown = null;
@@ -2845,6 +2861,7 @@ export class MatchController {
       noCopy: [],
       ownGame: [],
       otherTable: [],
+      tableChange: h.tableChanges(),
       tablePickedBy: table.pickedBy,
       ballsPerGame: this.opts.ballsPerGame ?? null,
       starter: h.starter(),
@@ -3399,7 +3416,12 @@ export class MatchController {
       if (has(a?.noCopy, id)) flags.push('no_table');
       else if (has(a?.otherTable, id)) flags.push('other_table');
       else if (this.loadingIds.includes(id)) flags.push('loading');
-      if (has(a?.ownGame, id)) flags.push('own_game');
+      // Step 10: where their PC stands on its way to the lobby's table.
+      const way = (a?.tableChange ?? []).find((x) => x.playerId === id)?.state ?? null;
+      if (has(a?.ownGame, id) || way === 'waits_game') flags.push('own_game');
+      if (way === 'waits_person') flags.push('close_table');
+      else if (way === 'offered') flags.push('asked');
+      else if (way === 'closing' || way === 'opening') flags.push('changing');
       return { id, name: p.displayName, rig: p.rig, stance: id === me ? this.myStance : (stanceOf.get(id) ?? 'play'), opener: id === this.hostId, me: id === me, starter: starter === id, inMatch: match?.players.includes(id) ?? false, flags, awaySince: flags.includes('away') ? (this.awayAt.get(id) ?? null) : null };
     });
     const game = this.phase === 'playing' || this.phase === 'paused';
@@ -3423,11 +3445,23 @@ export class MatchController {
     else if (s !== null) off = 'A start is under way.';
     else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
     const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, own)} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, own)} ${watchers.length === 1 ? 'watches' : 'watch'}.` : ''}` : '';
+    // Step 10: the lobby's table, and why it cannot be changed now (the lobby's PC judges a pick by the same rules).
+    // (While nobody has picked, `hostGame` is whatever the lobby's PC says of a table it has not open: no table.)
+    const pick = a?.hostGame ?? null;
+    const pickedBy = a?.tablePickedBy ?? null;
+    const named = pick !== null && pickedBy !== null && pick.tableName.trim() !== '' ? pickName(pick.tableName).slice(0, 80).trim() : null;
+    let pickOff: string | null = null;
+    if (this.seriesOver) pickOff = 'The lobby is closed.';
+    else if (this.hostIsAway) pickOff = "The lobby's PC is away.";
+    else if (!a) pickOff = 'Joining the lobby.';
+    else if (game) pickOff = 'A game is being played: the table changes after it.';
+    else if (s !== null) pickOff = 'A match is starting: cancel the start to change the table.';
     return {
       stance: this.myStance,
       starter,
       members,
       match: match ? { id: match.matchId, game: match.game, state: match.state, players: [...match.players] } : null,
+      table: { name: named, pickedBy, pickedByName: pickedBy !== null && this.lobby.some((p) => p.playerId === pickedBy) ? this.nameOf(pickedBy) : null, off: pickOff, endsMatch: between, changing: !game && (a?.tableChange ?? []).length > 0 },
       gameKey: match ? `${match.matchId}/${match.game}/${match.state}` : '',
       start: s ? { by: s.by, players: [...s.players], newMatch: s.newMatch, waitsFor: s.waitsFor, waitsOn: [...s.waitsOn], seconds: s.waitsFor === null ? this.countdownSeconds() : null, line: this.startLine() ?? '' } : null,
       startButton: { label: between ? 'Next game' : 'Start match', line, off },
@@ -3444,10 +3478,16 @@ export class MatchController {
   }
 
   /** The lobby's rows, the starter and this player's own choice on the panel (nothing without a lobby). */
-  private panelLobby(): Pick<PanelState, 'members' | 'starter' | 'stance'> {
+  private panelLobby(): Pick<PanelState, 'members' | 'starter' | 'stance' | 'changingTable'> {
     const l = this.lobbyStatus();
     if (!l) return {};
-    return { members: l.members.map((m) => ({ id: m.id, name: m.name, stance: m.stance, flags: [...m.flags], inMatch: m.inMatch })), starter: l.starter, stance: l.stance };
+    return {
+      members: l.members.map((m) => ({ id: m.id, name: m.name, stance: m.stance, flags: [...m.flags], inMatch: m.inMatch })),
+      starter: l.starter,
+      stance: l.stance,
+      // Step 10: tables are being changed: the header names the lobby's table (the key is absent otherwise).
+      ...(l.table.changing && l.table.name !== null ? { changingTable: l.table.name } : {}),
+    };
   }
 
   /**
@@ -3495,6 +3535,55 @@ export class MatchController {
       else no = (r as LobbyClientRole).requestEnd() ? null : 'This PC is not in the lobby yet';
     }, 'the end of the match');
     return no;
+  }
+
+  /**
+   * A17 step 10 (design 11.5): pick the lobby's table: its identity keys, and the Castcade VPX build's identity of
+   * this PC's copy when it is known. Anyone may, outside a game and while no start is announced; between games the
+   * open match ends at its tally (the shell asked first). Null: asked (the lobby's PC announces it, or answers with
+   * a sentence that comes as a notice); a sentence: not taken, and why (the lobby's PC knows at once).
+   */
+  pickTable(game: GameFingerprint, objects: { editables: number; hash: string } | null): string | null {
+    if (!this.lobbyOn || this.closed || this.seriesOver) return 'There is no lobby';
+    const r = this.role;
+    let no: string | null = "The lobby's table could not be changed";
+    this.call(() => {
+      if (isHostRole(r)) no = (r as LobbyHostRole).pickTable(game, r.localId, objects);
+      else no = (r as LobbyClientRole).pickTable(game, objects) ? null : 'This PC is not in the lobby yet';
+    }, 'the table pick');
+    if (no !== null) this.opts.log(`match: the lobby's table was not changed: ${no}`);
+    return no;
+  }
+
+  /**
+   * A17 step 10: where this PC stands on its way to the lobby's table after a change of it (the shell knows: it is
+   * the one that closes and opens tables), and the sentence for this PC's own panel while it waits (null: none). The
+   * lobby is told when the state changed, so every row and every header says it. A client that is not in yet is not
+   * recorded as having said it: the shell says it again at its next look.
+   */
+  setTableChange(state: TableChange | null, line: string | null): void {
+    if (!this.lobbyOn || this.closed) return;
+    let changed = line !== this.tableChangeLine;
+    this.tableChangeLine = line;
+    if (state !== this.tableChangeSaid && !this.seriesOver) {
+      const r = this.role;
+      let said = false;
+      this.call(() => {
+        if (isHostRole(r)) {
+          (r as LobbyHostRole).updateLocal({ tableChange: state });
+          said = true;
+        } else if ((r as LobbyClientRole).isJoined) {
+          (r as LobbyClientRole).updateParticipant({ tableChange: state });
+          said = true;
+        }
+      }, 'the table change');
+      if (said) {
+        this.tableChangeSaid = state;
+        changed = true;
+        this.opts.log(state === null ? "match: this PC has nothing more to say about the change of the lobby's table: the lobby is told" : `match: this PC's way to the lobby's table: ${state.replace('_', ' ')}: the lobby is told`);
+      }
+    }
+    if (changed) this.push();
   }
 
   /** A17 step 7 (design 11.3): this player's own choice, Play or Watch; it counts from the next start. */
@@ -3634,6 +3723,8 @@ export class MatchController {
     if (this.message) return this.message;
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
+    // A17 step 10: what this PC is waiting for before it opens the lobby's table (its person may have to act).
+    if (this.lobbyOn && this.tableChangeLine && (this.phase === 'lobby' || this.phase === 'over') && this.countdownSeconds() === null) return this.tableChangeLine;
     // The review of PR 131: this player's turn, and the ball they ended by hand is still on the table.
     if (this.phase === 'playing' && this.holding && this.owedSeqs.length > 0 && !this.owedFromRecord) return owedBallLine(this.owedSeqs.length, this.holding.ballNumber);
     // B26: a ball just flagged for Midnight Madness, for a while (over the table note, which stays all match).

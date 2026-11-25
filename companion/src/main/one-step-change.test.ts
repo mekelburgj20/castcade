@@ -8,8 +8,10 @@
  *   never a pick, and a match's own table (`hostGame()` from MATCH_READY on: the open table of its first player,
  *   under whatever file name) is not the lobby's. So nobody's table is closed for either.
  *
- * The change itself (a pick by a member: closed, then started, and every case in which nothing may close) is in
- * `one-step.test.ts`; the shell gets a way to pick in step 10 (TABLE_PICK), and this is the path it then runs.
+ * The change itself, case by case (every case in which nothing may close), is in `one-step.test.ts`. A17 step 10:
+ * the shell can pick (`OneStep.pick`, TABLE_PICK), and the last cases here run the whole of it over the real lobby: a
+ * member picks, both PCs close their table and open the picked one, and the lobby's PC that starts again after
+ * that is the same lobby with the same pick, for which nothing closes (step 8's restore).
  * The scaffolding is the one of `match-host-orderings.test.ts`, which stays as it is.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -125,10 +127,14 @@ const until = async (cond: () => boolean, ms = 4000): Promise<void> => {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const known = (tableId: string, sha: string | null): KnownTable => ({ tableId, vpxPath: `C:\\vpx\\tables\\${tableId}.vpx`, infoName: null, rom: null, sha256: sha, imported: true, lastPlayedAt: null, patchedAt: null });
 
-/** One-step on a rig, with a launcher that records and a closer that records (and never answers: nothing may reach it here). */
+/** What the Castcade VPX build says of every table file in these tests (the pick carries it). */
+const OBJECTS = { editables: 1203, hash: '00aa11bb22cc33dd' };
+
+/** One-step on a rig, with a launcher that records and a closer that records; `answer` is the closer's word on the last request. */
 function oneStepOn(mh: MatchHost, r: ReturnType<typeof rig>, tables: KnownTable[]) {
   const launched: string[] = [];
   const closes: string[] = [];
+  const answers: Array<(o: CloseOutcome) => void> = [];
   const logs: string[] = [];
   const one = createOneStep({
     match: mh,
@@ -139,14 +145,21 @@ function oneStepOn(mh: MatchHost, r: ReturnType<typeof rig>, tables: KnownTable[
         return { ok: true, pid: 1 };
       },
     },
-    closer: { close: (table, _pid) => new Promise<CloseOutcome>(() => void closes.push(table)) },
+    closer: {
+      close: (table, _pid) =>
+        new Promise<CloseOutcome>((answer) => {
+          closes.push(table);
+          answers.push(answer);
+        }),
+    },
+    tableObjects: async () => OBJECTS,
     clipboard: { writeText: () => undefined },
     tables: async () => tables,
     hostHashWaitMs: 0,
     log: { info: (l) => void logs.push(l), warn: (l) => void logs.push(l) },
   });
   steps.push(one);
-  return { one, launched, closes, logs };
+  return { one, launched, closes, logs, answer: (o: CloseOutcome): void => answers.at(-1)?.(o) };
 }
 
 /**
@@ -246,5 +259,61 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     expect(co.one.status().change).toBeNull();
     expect(co.logs.filter((l) => /the lobby's table changed/.test(l))).toEqual([]);
     expect(co.logs.some((l) => /this PC joined the lobby again/.test(l))).toBe(true);
+  }, 60_000);
+
+  it("A17 step 10: a member picks another table from their own list: every PC hears it, both close the table they have and open their copy of the picked one, and each row says where its PC stands; then the lobby's PC starts again: the same lobby, the same pick with who made it and what is known of it, and nothing closes (step 8's restore)", async () => {
+    const { hr, cr, H, C, ho, co } = await lobby();
+    const afm = known('Attack from Mars', AFM_SHA).vpxPath;
+    const picker = C.status().lobby?.members.find((m) => m.me)?.name ?? '';
+    // The friend picks, on their Match tab.
+    await co.one.pick(afm, C.status().lobby?.gameKey ?? null);
+    await until(() => H.lobbyTable()?.game.tableName === 'Attack from Mars' && C.lobbyTable()?.game.tableName === 'Attack from Mars');
+    expect(H.status().lobby?.table).toMatchObject({ name: 'Attack from Mars', pickedByName: picker });
+    // The picked table's identity for the 3D view is the picker's copy's, on the lobby's PC too.
+    expect(H.hostTableObjects()).toEqual(OBJECTS);
+    expect(C.hostTableObjects()).toEqual(OBJECTS);
+    // Both PCs follow: the table each has open is asked to close, the picker's own too.
+    await until(() => ho.closes.length === 1 && co.closes.length === 1);
+    expect([ho.closes, co.closes]).toEqual([['Monster Bash'], ['mb_vpw_1.1']]);
+    expect([ho.launched, co.launched]).toEqual([[], []]);
+    await until(() => (C.status().lobby?.members ?? []).every((m) => m.flags.includes('changing')) && (H.status().lobby?.members ?? []).every((m) => m.flags.includes('changing')));
+    expect(C.status().lobby?.table.changing).toBe(true);
+    expect(H.status().panel?.changingTable).toBe('Attack from Mars');
+    // VPX closes on both PCs: each starts its copy of the picked table.
+    hr.close();
+    ho.answer({ state: 'closed', rung: 2 });
+    cr.close();
+    co.answer({ state: 'closed', rung: 2 });
+    await until(() => ho.launched.length === 1 && co.launched.length === 1);
+    expect([ho.launched, co.launched]).toEqual([[afm], [afm]]);
+    hr.open('Attack from Mars', AFM_SHA);
+    cr.open('Attack from Mars', AFM_SHA);
+    await until(() => (H.status().lobby?.members ?? []).every((m) => m.flags.length === 0) && (C.status().lobby?.members ?? []).every((m) => m.flags.length === 0));
+    expect([H.status().lobby?.table.changing, C.status().lobby?.table.changing]).toEqual([false, false]);
+    expect(H.status().participants.map((x) => x.tableNote)).toEqual([null, null]);
+    expect([ho.one.status().change, co.one.status().change]).toEqual([null, null]);
+
+    // A match on the picked table is open when Castcade on the lobby's PC closes and starts again.
+    const stayBefore = C.lobbyTable()?.joined;
+    await C.start({ anyway: true });
+    await until(() => C.status().phase === 'playing' && H.status().phase === 'playing');
+    await H.stop({ keepForRestart: true });
+    const H2 = make('host', hr.w, folders.get('host'));
+    const ho2 = oneStepOn(H2, hr, [known('Monster Bash', MB_SHA), known('Attack from Mars', AFM_SHA)]);
+    await H2.rejoin();
+    // The lobby as it was: the pick, who made it, and what the Castcade VPX build says of it.
+    expect(H2.lobbyTable()?.game).toMatchObject({ tableName: 'Attack from Mars', tableHash: AFM_SHA });
+    expect(H2.status().lobby?.table).toMatchObject({ name: 'Attack from Mars', pickedByName: picker });
+    expect(H2.hostTableObjects()).toEqual(OBJECTS);
+    await until(() => H2.status().participants.length === 2 && C.status().lobby?.hostAway === null && C.lobbyTable()?.joined !== stayBefore, 20_000);
+    await sleep(300);
+    // A restart and a rejoin are joins: nobody's table is asked to close, on either PC.
+    expect(C.lobbyTable()?.game.tableName).toBe('Attack from Mars');
+    expect(co.closes).toHaveLength(1);
+    expect(co.launched).toHaveLength(1);
+    expect(ho2.closes).toEqual([]);
+    expect(ho2.launched).toEqual([]);
+    expect([co.one.status().change, ho2.one.status().change]).toEqual([null, null]);
+    expect(co.logs.filter((l) => /the lobby's table changed/.test(l))).toHaveLength(1);
   }, 60_000);
 });

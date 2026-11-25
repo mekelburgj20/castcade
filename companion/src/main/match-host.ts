@@ -93,7 +93,8 @@ import { BrowserWindow, ipcMain } from 'electron';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance } from '@castcade/protocol';
+import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance, TableChange } from '@castcade/protocol';
+import { pickName } from '../match/table-identity.js';
 import { ClientMatch, LOBBY_HOST_WAIT_MS } from '../match/client.js';
 import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind, type LobbyStatus } from '../match/controller.js';
 import { menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
@@ -479,6 +480,21 @@ export interface MatchHost {
    * before it was changed while this PC was there.
    */
   lobbyTable(): { game: GameFingerprint; joined: string } | null;
+  /**
+   * A17 step 10 (design 11.5): pick the lobby's table. `game` is the pick (only its identity keys count), `objects`
+   * the Castcade VPX build's identity of this PC's copy of it, when known. Anyone in the lobby may, outside a game
+   * and while no start is announced; between games the open match ends at its tally (the Match tab asked first, and
+   * says what the press was about: `about`, the lobby's `gameKey`). Throws with the sentence when the lobby's PC
+   * refuses at once; a client's refusal comes a moment later as `lastError` (and on the panel).
+   */
+  pickTable(o: { game: GameFingerprint; objects: ForkIdentity | null; about?: string | null }): Promise<MatchStatus>;
+  /** A17 step 10: this PC's own open table as it says it to the lobby (for "Make <table> the lobby's table"); null: none is open, or no lobby. */
+  ownTable(): GameFingerprint | null;
+  /**
+   * A17 step 10: where this PC stands on its way to the lobby's table after a change of it (`one-step.ts` knows),
+   * and the sentence for this PC's own panel while it waits: said to the lobby, so every row and header says it.
+   */
+  setTableChange(state: TableChange | null, line: string | null): void;
   /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
@@ -4244,11 +4260,37 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const a = active;
       if (!a) return null;
       const role = a.controller.currentRole;
-      const o = role instanceof ClientMatch ? role.hostTableObjects() : (a.objectsSent ?? null);
+      // A17 step 10: in a lobby it is the picked table's, on the lobby's PC too (not the table that PC has open).
+      const o = role instanceof ClientMatch ? role.hostTableObjects() : role instanceof HostMatch ? role.tableObjects() : (a.objectsSent ?? null);
       return o ? { editables: o.editables, hash: o.hash } : null;
     },
     tableHeld() {
       return active?.controller.status().initialsHold ?? false;
+    },
+    async pickTable(o) {
+      const a = active;
+      if (!a) return fail(new Error('No lobby'));
+      const l = a.controller.status().lobby;
+      if (!l) return fail(new Error('No lobby'));
+      if (l.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      // What the lobby's PC would answer, said at once on this PC too.
+      if (l.table.off !== null) return fail(new Error(l.table.off));
+      // A change between games ends the open match: the press said so, and only while that is still what there is.
+      if (o.about != null && o.about !== l.gameKey) return fail(new Error("The table was not changed: the lobby is not as it was when you pressed. Look again and press again."));
+      const no = a.controller.pickTable(o.game, o.objects ? { editables: o.objects.editables, hash: o.objects.hash } : null);
+      if (no !== null) return fail(new Error(no));
+      lastError = null;
+      log.info(`match: ${a.code}: the lobby's table was picked on this PC: ${pickName(o.game.tableName).slice(0, 80)}${o.objects ? ` (table objects ${forkIdentityText(o.objects)})` : ''}${l.table.endsMatch ? '; the open match ends at its tally' : ''}`);
+      emit();
+      return status();
+    },
+    ownTable() {
+      const a = active;
+      if (!a || !isTableOpen(a.sent.game)) return null;
+      return { ...a.sent.game };
+    },
+    setTableChange(state, line) {
+      active?.controller.setTableChange(state, line);
     },
     lobbyTable() {
       const role = active?.controller.currentRole;

@@ -42,6 +42,11 @@ describe('panel text (D2)', () => {
     expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: true }))).toBe('LOBBY OVER');
     expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: true, countdown: 3 }))).toBe('LOBBY OVER');
     expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: false }))).toBe('WAITING FOR THE START');
+    // A17 step 10: tables are being changed; a start that counts down is still the header, and so is a lobby that is over.
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, changingTable: 'Monster Bash (Williams 1998)' }))).toBe('CHANGING TABLE · MONSTER BASH (WILLIAMS 1998)');
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, changingTable: 'Monster Bash', countdown: 4 }))).toBe('STARTING IN 4');
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, changingTable: 'Monster Bash', seriesOver: true }))).toBe('LOBBY OVER');
+    expect(headerText(state({ changingTable: 'Monster Bash' }))).toBe('KROBS IS UP');
     expect(headerText(state({ phase: 'over' }))).toBe('MATCH OVER');
     expect(headerText(state({ playerUp: null, ball: null }))).toBe('WAITING');
   });

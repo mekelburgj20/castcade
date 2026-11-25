@@ -708,6 +708,10 @@ function registerIpc(
   ipcMain.handle(IPC.launchStartTable, () => os().startTable());
   // A17 step 3: Open it (the lobby's new table, with "Change tables for me" off).
   ipcMain.handle(IPC.launchOpenPick, () => os().openPick());
+  // A17 step 10: the lobby's table is picked: a path that is a key into this PC's own lists, never a path to run;
+  // `about` is the lobby as the press saw it, a string or nothing.
+  ipcMain.handle(IPC.launchPick, (_e, tablePath: unknown, about: unknown) => os().pick(str(tablePath, 'table'), typeof about === 'string' ? about : null));
+  ipcMain.handle(IPC.launchPickOpen, (_e, about: unknown) => os().pickOpen(typeof about === 'string' ? about : null));
   ipcMain.handle(IPC.launchConfirm, () => {
     noWatch();
     return os().confirm();

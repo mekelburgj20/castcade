@@ -273,7 +273,10 @@ export function headerText(s: PanelState): string {
   if (s.phase === 'over') return s.seriesOver === false ? 'GAME ' + game + ' OVER' : 'MATCH OVER';
   // A17 step 1 (the review of PR 127): a lobby this PC has lost (its host is gone) is over, and says so.
   if (s.phase === 'idle' && s.seriesOver === true) return 'LOBBY OVER';
-  if (s.phase === 'idle') return typeof s.countdown === 'number' ? 'STARTING IN ' + s.countdown : 'WAITING FOR THE START';
+  if (s.phase === 'idle' && typeof s.countdown === 'number') return 'STARTING IN ' + s.countdown;
+  // A17 step 10: tables are being changed (a start does not count down meanwhile; one that does is the header).
+  if (s.phase === 'idle' && typeof s.changingTable === 'string' && s.changingTable !== '') return 'CHANGING TABLE · ' + s.changingTable.toUpperCase();
+  if (s.phase === 'idle') return 'WAITING FOR THE START';
   const up = s.players.find((p) => p.id === s.playerUp);
   const ball = s.ball !== null ? ' ' + s.ball : '';
   const turn = (game > 1 ? 'GAME ' + game + ' · ' : '') + (s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING');

@@ -57,7 +57,7 @@ describe("A17 step 10: how often the lobby's table can change", () => {
     expect(r.lobby('b').hostGame?.tableName).toBe('Attack from Mars');
   });
 
-  it('a pick refused for another reason does not start the limits; leaving the lobby and joining again is no way around them', async () => {
+  it("a pick refused for another reason does not start the limits; a member's own time runs on while they are out of the lobby", async () => {
     const r = await starLobby(['a', 'b'], { lobby: { placeMs: 10_000 } });
     r.host.requestStart();
     await flush();

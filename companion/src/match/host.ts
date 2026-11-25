@@ -2633,7 +2633,7 @@ export class HostMatch {
     const anyone = left(this.lastPickAt, this.pickGapMs);
     if (anyone > 0) return `The lobby's table was changed a moment ago: it can be changed again in ${anyone} s.`;
     this.lastPickAt = now;
-    // (Kept when a member leaves, so that leaving and joining again is no way around it; forgotten once it is over.)
+    // (A member's own time runs on whether they are in the lobby or not, and is forgotten once it is over.)
     for (const [id, at] of this.lastPickBy) if (at + this.pickMemberGapMs <= now) this.lastPickBy.delete(id);
     this.lastPickBy.set(by, now);
     this.hostGame = next;

@@ -168,7 +168,15 @@ function parseLobbyPart(v: unknown, code: string): SavedLobbyPart | null {
   return {
     code,
     members: rows,
-    table: { game: table.game as unknown as GameFingerprint, fixed: table.fixed, pickedBy: table.pickedBy as string | null },
+    // A17 step 10: whether the pick is the lobby PC's own table by default, and what the Castcade VPX build says of
+    // the picked table; a record from before has neither (read as a person's pick with nothing known of it).
+    table: {
+      game: table.game as unknown as GameFingerprint,
+      fixed: table.fixed,
+      pickedBy: table.pickedBy as string | null,
+      ...(typeof table.byDefault === 'boolean' ? { byDefault: table.byDefault } : {}),
+      ...(isObj(table.objects) && isCount(table.objects.editables) && typeof table.objects.hash === 'string' && /^[0-9a-f]{16}$/.test(table.objects.hash) ? { objects: { editables: table.objects.editables, hash: table.objects.hash } } : {}),
+    },
     nextMatch,
     match: open,
     ballsPerGame,
