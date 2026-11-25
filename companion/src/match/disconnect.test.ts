@@ -309,15 +309,23 @@ describe('A18: what follows from "inside the grace it is not a disconnect" (revi
     m.host.localBallEnd(100, 'nvram');
     await until(() => m.client.myGrant?.ballNumber === 1);
     const grant = m.client.myGrant!.grantSeq;
+    // Every frame the host sends this client from here on, as its link delivers them.
+    const frames: string[] = [];
+    m.ct.onMessage((_from, msg) => frames.push(msg.type));
     m.ct.dropLinks('h');
     await until(() => m.host.snapshot().gone.includes('c'));
     // The ball drains while the link is away: this frame goes nowhere, and this client will not send it again.
     m.client.reportBallEnd(4200, 'nvram');
     // The host commits the pause before the RECONNECT_ACK, so the client finds it in what it missed. (The client's own
-    // side raised no leave, its grace had not run out: its `reconnected` says quiet; the host's does not.)
+    // side raised no leave, its grace had not run out: its `reconnected` says quiet; the host's does not. And the host
+    // tells nobody the client "left": it did not.)
     await until(() => m.seen.includes('c:reconnected:quiet'));
     expect(m.client.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
-    expect(m.seen).toEqual(['h:peerLeft:c', 'h:pause:c', 'h:reconnected:told', 'c:pause:c', 'c:reconnected:quiet']);
+    expect(m.seen).toEqual(['h:pause:c', 'h:reconnected:told', 'c:pause:c', 'c:reconnected:quiet']);
+    // The pause reached this client in the answer's entries and nowhere else: sent live as well it would arrive ahead
+    // of the RECONNECT_ACK, and the client's controller would resume twice (review 2 of PR 126, B).
+    await sleep(30);
+    expect(frames).toEqual(['RECONNECT_ACK']);
     // What that client's controller does: RESUME for its own drop; the grant comes again under a new number, and its
     // shell reports the table's ball end for it (`tryReconcile`).
     m.client.resume();
@@ -327,6 +335,40 @@ describe('A18: what follows from "inside the grace it is not a disconnect" (revi
     expect(m.host.state.players.c?.score).toBe(4200);
     expect(types(m.host).slice(-6)).toEqual(['TURN_GRANT:h', 'PAUSE:h', 'RESUME:c', 'TURN_GRANT:h', 'BALL_END:c', 'TURN_GRANT:h']);
     await until(() => m.client.log.head().hash === m.host.log.head().hash);
+  });
+
+  it('a client from before A18 that holds the grant and reconnects with no drop ever noted here (its relay peer was replaced with no leave) is paused for all the same; one that says `resends` is not', async () => {
+    const m = await wsMatch(DEFAULT_DISCONNECT_GRACE_MS, 60);
+    asBefore(m.client);
+    m.host.localBallEnd(100, 'nvram');
+    await until(() => m.client.myGrant?.ballNumber === 1);
+    const grant = m.client.myGrant!.grantSeq;
+    expect(m.host.snapshot().gone).toEqual([]);
+    // A second link from the same player, RECONNECT first, while the host has seen no leave.
+    m.client.relinkTo('h');
+    await until(() => m.seen.some((x) => x.startsWith('c:reconnected')));
+    expect(m.host.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
+    expect(m.client.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
+    m.client.resume();
+    await until(() => (m.client.myGrant?.grantSeq ?? 0) > grant);
+    expect(m.host.state.paused).toBeNull();
+
+    const n = await wsMatch(DEFAULT_DISCONNECT_GRACE_MS, 60);
+    n.host.localBallEnd(100, 'nvram');
+    await until(() => n.client.myGrant?.ballNumber === 1);
+    const head = n.host.log.head();
+    n.client.relinkTo('h');
+    await until(() => n.seen.some((x) => x.startsWith('c:reconnected')));
+    expect(n.host.log.head()).toEqual(head);
+    expect(n.seen.filter((x) => x.includes('pause'))).toEqual([]);
+  });
+
+  it('a reconnect with no drop noted (a rejoin after a restart, a relink) is not a quiet return of a link that blinked: `quiet` is false on both ends, at the default grace', async () => {
+    const m = await wsMatch(DEFAULT_DISCONNECT_GRACE_MS, 60);
+    m.client.relinkTo('h');
+    await until(() => m.seen.some((x) => x.startsWith('c:reconnected')) && m.seen.some((x) => x.startsWith('h:reconnected')));
+    expect(m.seen.filter((x) => x.includes('reconnected')).sort()).toEqual(['c:reconnected:told', 'h:reconnected:told']);
+    expect(m.seen.filter((x) => x.includes('peerLeft') || x.includes('pause'))).toEqual([]);
   });
 
   it('a client from before A18 that is only waiting is not paused for, inside the grace or after it', async () => {

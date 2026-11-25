@@ -85,7 +85,7 @@ import { createLayerAgeWatch, readRegisteredAt, sha256File, stageVrLayer, versio
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { watchFocus } from '../media/focus-watch.js';
 import { probeWindows } from '../media/window-geometry.js';
-import { giveForegroundToVpx } from './vpx-foreground.js';
+import { createVpxForeground } from './vpx-foreground.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -112,6 +112,16 @@ const NOT_IN_WITNESS = 'not part of the Castcade Witness edition';
 
 let quitting = false;
 let win: BrowserWindow | null = null;
+
+// I11.4.18: how VPX gets the foreground back from a Castcade window, and what the player is doing in that window:
+// every key that goes down in one of Castcade's pages is noted (the time only, never the key), so a grant does not
+// take the keyboard from somebody who is typing here.
+const vpxForeground = createVpxForeground({ focusedPage: () => BrowserWindow.getFocusedWindow()?.webContents ?? null, ownerPid: process.pid });
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('before-input-event', (_ev, input) => {
+    if (input.type === 'keyDown') vpxForeground.keyPressed();
+  });
+});
 let log: Logger | null = null;
 let tray: TrayHandle | null = null;
 let sidecarWatch: SidecarWatch | null = null;
@@ -1046,10 +1056,8 @@ async function main(): Promise<void> {
       },
       // I11.4.18: VPX gets the foreground back when a Castcade window (this one, the desktop panel) holds it and this
       // PC's table is the one to play. This process owns those windows, so Windows lets it hand the foreground on.
-      foreground: {
-        castcadeActive: () => BrowserWindow.getFocusedWindow() !== null,
-        give: () => giveForegroundToVpx(process.pid),
-      },
+      // At a grant it is not handed on while the player types in Castcade (`vpxForeground`, above).
+      foreground: vpxForeground,
       appVersion,
       log: logger,
     });
