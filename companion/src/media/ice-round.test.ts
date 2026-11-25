@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { ICE_PEER_ROUNDS, ICE_ROUND_LOOK, ICE_WATCH, iceCandidateIds, iceRoundCandidate, iceRoundLine, iceRoundLook, iceRoundOver, iceRoundSeen, iceRoundStart, iceWatchStep, pageLogLine, type IceRound, type IceRoundPeer } from './panel-page.js';
-import { WATCH_CHANNELS, firstRestartMs, watchPageHtml } from '../watch/watch-page.js';
+import { WATCH_CHANNELS, firstRestartMs, pathOf, watchPageHtml, type WatchPagePeer } from '../watch/watch-page.js';
 
 type Entry = Record<string, unknown>;
 const recorded = JSON.parse(readFileSync(new URL('./ice-round.test-data.json', import.meta.url), 'utf8')) as { first: Entry[]; second: Entry[] };
@@ -235,11 +235,13 @@ function loadWatchPage(cfg: { firstRestartMs?: number | null } = {}, localId = '
   class FakeChannel {
     readyState = 'connecting';
     bufferedAmount = 0;
+    onopen: (() => void) | null = null;
     close(): void {}
     send(): void {}
   }
   class FakePc {
     static all: FakePc[] = [];
+    readonly channel = new FakeChannel();
     iceConnectionState = 'new';
     signalingState = 'stable';
     localDescription: { type: string; sdp: string } | null = null;
@@ -253,7 +255,7 @@ function loadWatchPage(cfg: { firstRestartMs?: number | null } = {}, localId = '
       FakePc.all.push(this);
     }
     createDataChannel(): FakeChannel {
-      return new FakeChannel();
+      return this.channel;
     }
     addEventListener(name: string, cb: () => void): void {
       this.listeners.set(name, [...(this.listeners.get(name) ?? []), cb]);
@@ -295,7 +297,9 @@ function loadWatchPage(cfg: { firstRestartMs?: number | null } = {}, localId = '
     pc.iceConnectionState = 'checking';
     pc.fire('iceconnectionstatechange');
   };
-  return { pc, tick, look, probe, gather, emit, logs, checking, t0 };
+  /** What the page last told main of krobs (`WatchPagePeer`): `pathOf` of it is what the match and the card go by. */
+  const told = (): WatchPagePeer | undefined => (sent.filter((s) => s.channel === WATCH_CHANNELS.status).pop()?.arg as { peers: Record<string, WatchPagePeer> } | undefined)?.peers['krobs'];
+  return { pc, tick, look, probe, gather, emit, logs, checking, told, t0 };
 }
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
@@ -557,6 +561,144 @@ describe('the 3D watch page runs it (I11.12)', () => {
     }
   });
 
+  it("I11.12 (2026-11-24): a restart of the peer's answered while this page still read the connection as up is the first of the spell that begins here within 20 s; later than that it is another trouble", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      /** The page that is not the usual lead, connected; the lead restarts `before` ms before this page's ICE reads disconnected. */
+      const run = async (before: number) => {
+        const p = loadWatchPage({}, 'alice');
+        p.checking();
+        p.pc.localDescription = { type: 'answer', sdp: '' };
+        p.pc.iceConnectionState = 'connected';
+        p.pc.fire('iceconnectionstatechange');
+        await settle();
+        vi.advanceTimersByTime(60_000);
+        p.pc.remoteDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:uf2\r\n' };
+        p.pc.fire('signalingstatechange');
+        vi.advanceTimersByTime(before);
+        p.pc.iceConnectionState = 'disconnected';
+        p.pc.fire('iceconnectionstatechange');
+        return p;
+      };
+      const soon = await run(4_000);
+      expect(soon.logs().filter((l) => l.includes('by the peer'))).toEqual([]);
+      expect(soon.logs().at(-1)).toBe('peer krobs: the peer restarted ICE 4 s before this side saw the trouble: that was restart 1 of 6, the next is our turn');
+      vi.advanceTimersByTime(3_000);
+      soon.tick.cb();
+      expect(soon.pc.restarts).toBe(1);
+      expect(soon.logs().at(-1)).toBe('peer krobs: ICE restart 2 of 6 (disconnected for 3 s, our turn; no pair yet)');
+      const late = await run(21_000);
+      expect(late.logs().some((l) => l.includes('before this side saw the trouble'))).toBe(false);
+      vi.advanceTimersByTime(13_000);
+      late.tick.cb();
+      expect(late.pc.restarts).toBe(0);
+      vi.advanceTimersByTime(1_000);
+      late.tick.cb();
+      expect(late.pc.restarts).toBe(1);
+      expect(late.logs().at(-1)).toBe('peer krobs: ICE restart 1 of 6 (disconnected for 14 s, the peer did not take its turn; no pair yet)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('I11.12 (2026-11-24): "no path" is what main is told, not the end: 30 s after the sixth restart the seventh goes out, and when the connection comes up after all the channel opens and the path is direct', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = loadWatchPage();
+      p.checking();
+      const seconds = (n: number): void => {
+        for (let i = 0; i < n; i++) {
+          vi.advanceTimersByTime(1_000);
+          p.tick.cb();
+        }
+      };
+      // The six scheduled restarts (this fake peer never takes its turn): 3 + 28 + 6 + 9 + 12 + 15 s.
+      seconds(73);
+      expect(p.pc.restarts).toBe(6);
+      expect(p.told()?.gaveUp).toBe(false);
+      // 12 s after the sixth, where 0.2.50 gave up: main is told there is no path, so the match's start does not wait
+      // for this peer and its turns are the 2D video (stream3d.ts reads `no_path`), as before.
+      seconds(12);
+      expect(p.logs().at(-1)).toBe('peer krobs: no path after 6 ICE restart(s), checking for 85 s; no pair yet; still trying: an ICE restart every 30 s');
+      expect(p.told()).toMatchObject({ gaveUp: true, channel: 'connecting' });
+      expect(pathOf(p.told())).toBe('no_path');
+      // And the restarts go on: the seventh 30 s after the sixth, the eighth (the peer's turn, not taken) 33 s on.
+      seconds(17);
+      expect(p.pc.restarts).toBe(6);
+      seconds(1);
+      expect(p.pc.restarts).toBe(7);
+      expect(p.logs().at(-1)).toBe('peer krobs: ICE late restart 7 (checking for 30 s, our turn; no pair yet)');
+      seconds(33);
+      expect(p.pc.restarts).toBe(8);
+      expect(pathOf(p.told())).toBe('no_path');
+      expect(p.logs().filter((l) => l.includes('no path after'))).toHaveLength(1);
+      // Three minutes in the path is back: ICE connects, the channel opens, and main hears a direct path, which the
+      // match takes as it takes any connection that comes up late (the next turn can be 3D).
+      seconds(60);
+      p.pc.iceConnectionState = 'connected';
+      p.pc.fire('iceconnectionstatechange');
+      p.pc.channel.readyState = 'open';
+      p.pc.channel.onopen?.();
+      expect(p.told()).toMatchObject({ gaveUp: false, channel: 'open', restarts: 0 });
+      expect(pathOf(p.told())).toBe('direct');
+      expect(p.logs()).toContain('peer krobs: ICE connected after 9 restart(s)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('I11.12 (2026-11-24): three hours beside a peer that never connects: one line per late restart and a round in full every five minutes, about 103 kB of companion.log', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = loadWatchPage();
+      p.checking();
+      const gone = stalled().filter((e) => e.type !== 'candidate-pair' && e.type !== 'remote-candidate');
+      const flush = async (): Promise<void> => {
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+      };
+      let made = 0;
+      let madeAt = 0;
+      for (let s = 1; s <= 3 * 3600; s++) {
+        vi.advanceTimersByTime(1_000);
+        if (p.pc.restarts !== made) {
+          made = p.pc.restarts;
+          madeAt = s;
+        }
+        // A round nothing answers: pairs that send and hear nothing, deleted by the browser after 16 s.
+        p.pc.stats = s - madeAt < 16 ? stalled() : gone;
+        const ice = s - madeAt < 16 ? 'checking' : 'disconnected';
+        if (ice !== p.pc.iceConnectionState) {
+          p.pc.iceConnectionState = ice;
+          p.pc.fire('iceconnectionstatechange');
+        }
+        p.tick.cb();
+        if (s % 2 === 0) p.probe.cb();
+        await flush();
+      }
+      const logs = p.logs();
+      // As companion.log has it: the time and level, `stream3d: `, and a player id of 36 characters for krobs.
+      const bytes = logs.reduce((n, l) => n + l.length + 31 + 10 + (l.split('krobs').length - 1) * 31 + 1, 0);
+      const lateRestarts = p.pc.restarts - 6;
+      expect(lateRestarts).toBeGreaterThan(330);
+      expect(lateRestarts).toBeLessThan(345);
+      const late = logs.filter((l) => l.includes('late restart'));
+      expect(late.filter((l) => /: ICE late restart \d+ \(/.test(l))).toHaveLength(lateRestarts);
+      expect(late.filter((l) => l.includes('ICE round'))).toHaveLength(Math.ceil(lateRestarts / 10));
+      // Nothing else is written once the late restarts are on: no pair line every time the pairs come and go.
+      const first = logs.findIndex((l) => l.includes('late restart 7 ('));
+      expect(logs.slice(first).filter((l) => !l.includes('late restart'))).toEqual([]);
+      // Measured here: 390 lines and 103 kB in three hours (340 late restarts, 34 rounds in full, four kinds of pair
+      // each), of the megabyte companion.log holds before it rolls over; the voice page beside it writes 92 kB
+      // (panel-page.test.ts). Computed from the lines of 2026-11-24, every late round in full with its pair and state
+      // lines would be about 2.7 kB a round for voice and 1 kB for the tunnel: 1.3 MB in the same three hours.
+      expect(logs.length).toBeLessThan(410);
+      expect(bytes).toBeGreaterThan(90_000);
+      expect(bytes).toBeLessThan(115_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 60_000);
+
   it('a peer that restarts ICE again and again ends a round here each time: four of those lines a minute, one that says the rest are not written, then silence', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -574,12 +716,336 @@ describe('the 3D watch page runs it (I11.12)', () => {
       expect(rounds.filter((l) => / by the peer after /.test(l))).toHaveLength(ICE_PEER_ROUNDS.max);
       expect(rounds.filter((l) => l.includes('the peer restarted ICE more than 4 times in 60 s'))).toHaveLength(1);
       expect(rounds).toHaveLength(ICE_PEER_ROUNDS.max + 1);
-      // A minute on they are written again.
+      // A minute on they are written again. I11.12 (2026-11-24): by now these are late restarts (the thirteenth and
+      // on), whose rounds are written only when they have something to say: one that heard nothing is not...
       vi.advanceTimersByTime(ICE_PEER_ROUNDS.perMs);
+      p.pc.stats = stalled();
       p.pc.remoteDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:later\r\n' };
       p.pc.fire('signalingstatechange');
       await settle();
-      expect(p.logs().filter((l) => / by the peer after /.test(l))).toHaveLength(ICE_PEER_ROUNDS.max + 1);
+      expect(p.logs().filter((l) => / by the peer after /.test(l))).toHaveLength(ICE_PEER_ROUNDS.max);
+      expect(p.logs().at(-1)).toBe('peer krobs: ICE late restart 13 by the peer (checking)');
+      // ...and one in which a check of the peer's arrived is.
+      vi.advanceTimersByTime(30_000);
+      p.pc.stats = stalled().map((e) => (e.id === 'CPL1_R2' ? { ...e, requestsReceived: 3, responsesSent: 3 } : e));
+      p.pc.remoteDescription = { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:later2\r\n' };
+      p.pc.fire('signalingstatechange');
+      await settle();
+      const heard = p.logs().filter((l) => / by the peer after /.test(l));
+      expect(heard).toHaveLength(ICE_PEER_ROUNDS.max + 1);
+      expect(heard.at(-1)).toContain('ICE round 14: late restart 14 by the peer after 30.00 s');
+      expect(heard.at(-1)).toContain('host>srflx udp in-progress sent 21 answered 0, received 3 answered 3');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * I11.12 (2026-11-24): two 3D watch pages, each run as the page runs it, wired to each other through an in-memory
+ * signalling: what one page sends on `signalOut` the other gets on `signalIn`, in order. Their `RTCPeerConnection` is a
+ * fake that does what a browser does with ICE credentials: every description carries `a=ice-ufrag`; the offer made
+ * after `restartIce()` carries a new one, and so does the answer to an offer whose own ufrag changed; `restartIce()`
+ * asks for negotiation only once signalling is stable, and again by itself when a restart's offer was rolled back.
+ * So a restart one page's watchdog decides really travels: the other page's real negotiator answers it, and its real
+ * watchdog counts it by the changed ufrag. 'bob' > 'alice': bob is the impolite side and the usual lead.
+ */
+function loadWatchPair() {
+  const script = /<script>([\s\S]*)<\/script>/.exec(watchPageHtml())?.[1] ?? '';
+  const ufragOf = (sdp: string | undefined): string | null => /a=ice-ufrag:(\S+)/.exec(sdp ?? '')?.[1] ?? null;
+  type Desc = { type: string; sdp: string };
+  class BrowserLikePc {
+    iceConnectionState = 'new';
+    signalingState = 'stable';
+    localDescription: Desc | null = null;
+    remoteDescription: Desc | null = null;
+    onnegotiationneeded: (() => void) | null = null;
+    onicecandidate: unknown = null;
+    restartCalls = 0;
+    offersMade = 0;
+    private gen = 0;
+    private ufrag: string;
+    private offerUfrag: string | null = null;
+    private remoteUfrag: string | null = null;
+    private restartWanted = false;
+    private stableLocal: Desc | null = null;
+    private readonly listeners = new Map<string, Array<() => void>>();
+    constructor(private readonly owner: string) {
+      this.ufrag = `${owner}0`;
+    }
+    createDataChannel(): { readyState: string; bufferedAmount: number; close(): void; send(): void } {
+      return { readyState: 'connecting', bufferedAmount: 0, close: () => undefined, send: () => undefined };
+    }
+    addEventListener(name: string, cb: () => void): void {
+      this.listeners.set(name, [...(this.listeners.get(name) ?? []), cb]);
+    }
+    fire(name: string): void {
+      for (const cb of this.listeners.get(name) ?? []) cb();
+    }
+    localUfrag(): string {
+      return this.ufrag;
+    }
+    private to(state: string): void {
+      this.signalingState = state;
+      this.fire('signalingstatechange');
+      if (state === 'stable') this.afterStable();
+    }
+    private afterStable(): void {
+      setImmediate(() => {
+        if (this.signalingState === 'stable' && this.restartWanted) this.onnegotiationneeded?.();
+      });
+    }
+    restartIce(): void {
+      this.restartCalls += 1;
+      this.restartWanted = true;
+      if (this.signalingState === 'stable') this.afterStable();
+    }
+    async getStats(): Promise<Map<string, Entry>> {
+      throw new Error('no stats');
+    }
+    async setLocalDescription(d?: { type: string }): Promise<void> {
+      if (d?.type === 'rollback') {
+        if (this.signalingState !== 'have-local-offer') throw new Error('rollback outside have-local-offer');
+        this.localDescription = this.stableLocal;
+        this.offerUfrag = null;
+        this.to('stable');
+        return;
+      }
+      if (this.signalingState === 'have-remote-offer') {
+        const offered = ufragOf(this.remoteDescription?.sdp);
+        if (this.remoteUfrag !== null && offered !== this.remoteUfrag) {
+          this.ufrag = `${this.owner}${++this.gen}`;
+          this.restartWanted = false;
+        }
+        this.remoteUfrag = offered;
+        this.localDescription = { type: 'answer', sdp: `v=0\r\na=ice-ufrag:${this.ufrag}\r\n` };
+        this.stableLocal = this.localDescription;
+        this.to('stable');
+        return;
+      }
+      if (this.signalingState !== 'stable') throw new Error(`an offer in ${this.signalingState}`);
+      this.offersMade += 1;
+      this.offerUfrag = this.restartWanted ? `${this.owner}${this.gen + 1}` : this.ufrag;
+      this.localDescription = { type: 'offer', sdp: `v=0\r\na=ice-ufrag:${this.offerUfrag}\r\n` };
+      this.to('have-local-offer');
+    }
+    async setRemoteDescription(d: Desc): Promise<void> {
+      if (d.type === 'offer') {
+        if (this.signalingState !== 'stable') throw new Error(`a remote offer in ${this.signalingState}`);
+        this.remoteDescription = d;
+        this.to('have-remote-offer');
+        return;
+      }
+      if (this.signalingState !== 'have-local-offer') throw new Error(`an answer in ${this.signalingState}`);
+      this.remoteDescription = d;
+      if (this.offerUfrag !== null && this.offerUfrag !== this.ufrag) {
+        this.ufrag = this.offerUfrag;
+        this.gen += 1;
+        this.restartWanted = false;
+      }
+      this.offerUfrag = null;
+      this.remoteUfrag = ufragOf(d.sdp);
+      this.stableLocal = this.localDescription;
+      this.to('stable');
+    }
+    async addIceCandidate(): Promise<void> {}
+    close(): void {}
+  }
+  const wire: Array<{ to: string; from: string; signal: { kind: string } }> = [];
+  /** Signals a test holds back or loses on the way: return false to drop one. */
+  const net = { pass: (_m: { to: string; from: string; signal: { kind: string } }): boolean => true };
+  const page = (id: string, peer: string) => {
+    const handlers = new Map<string, (e: unknown, arg: unknown) => void>();
+    const sent: Array<{ channel: string; arg: unknown }> = [];
+    const intervals: Array<{ cb: () => void; ms: number }> = [];
+    const pcs: BrowserLikePc[] = [];
+    const electron = {
+      ipcRenderer: {
+        on: (ch: string, cb: (e: unknown, arg: unknown) => void) => handlers.set(ch, cb),
+        send: (channel: string, arg?: unknown) => {
+          sent.push({ channel, arg });
+          if (channel !== WATCH_CHANNELS.signalOut) return;
+          const m = arg as { to: string; signal: { kind: string } };
+          wire.push({ to: m.to, from: id, signal: m.signal });
+        },
+      },
+    };
+    class Pc extends BrowserLikePc {
+      constructor() {
+        super(id);
+        pcs.push(this);
+      }
+    }
+    new Function('require', 'RTCPeerConnection', 'setInterval', 'clearInterval', script)(() => electron, Pc, (cb: () => void, ms: number) => intervals.push({ cb, ms }), () => undefined);
+    const emit = (ch: string, arg?: unknown): void => handlers.get(ch)?.({}, arg);
+    emit(WATCH_CHANNELS.config, { localId: id, ice: [], reset: false, peers: [] });
+    emit(WATCH_CHANNELS.addPeer, peer);
+    return {
+      id,
+      emit,
+      pc: pcs[0]!,
+      tick: intervals.find((i) => i.ms === ICE_WATCH.tickMs)!,
+      /** The page's own retry: an offer that got no answer is sent again every 5 s. */
+      retry: intervals.find((i) => i.ms === 5000)!,
+      logs: (): string[] => sent.filter((s) => s.channel === WATCH_CHANNELS.log).map((s) => s.arg as string),
+      kinds: (): string[] => sent.filter((s) => s.channel === WATCH_CHANNELS.signalOut).map((s) => (s.arg as { signal: { kind: string } }).signal.kind),
+    };
+  };
+  const alice = page('alice', 'bob');
+  const bob = page('bob', 'alice');
+  const sides: Record<string, typeof alice> = { alice, bob };
+  /** Everything on the wire is delivered, in order, until both pages are quiet. */
+  const run = async (): Promise<void> => {
+    for (let quiet = 0; quiet < 3; ) {
+      await settle();
+      const m = wire.shift();
+      if (!m) {
+        quiet += 1;
+        continue;
+      }
+      quiet = 0;
+      if (net.pass(m)) sides[m.to]?.emit(WATCH_CHANNELS.signalIn, { from: m.from, signal: m.signal });
+    }
+  };
+  /** Both connections read `checking` (nothing answers): the watchdogs' spells begin. */
+  const checking = (...who: Array<typeof alice>): void => {
+    for (const p of who) {
+      p.pc.iceConnectionState = 'checking';
+      p.pc.fire('iceconnectionstatechange');
+    }
+  };
+  return { alice, bob, wire, net, run, checking };
+}
+
+describe('two pages, one connection: a restart the polite side leads travels and takes (I11.12, 2026-11-24)', () => {
+  /** The first negotiation: bob (impolite) offers, as a browser asks him to once his data channel exists; alice answers. */
+  const connected = async () => {
+    const p = loadWatchPair();
+    p.bob.pc.onnegotiationneeded?.();
+    await p.run();
+    expect([p.alice.pc.signalingState, p.bob.pc.signalingState]).toEqual(['stable', 'stable']);
+    expect([p.bob.pc.localDescription?.type, p.alice.pc.localDescription?.type]).toEqual(['offer', 'answer']);
+    return p;
+  };
+
+  it('restart 1 is the lead\'s, restart 2 the polite side\'s: its offer is answered by the lead, both sides\' credentials are new, and the lead\'s watchdog counts it', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = await connected();
+      p.checking(p.alice, p.bob);
+      // 3 s of nothing: restart 1, the lead's turn.
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      expect([p.alice.pc.restartCalls, p.bob.pc.restartCalls]).toEqual([0, 1]);
+      await p.run();
+      expect(p.bob.logs()).toContain('peer alice: ICE restart 1 of 6 (checking for 3 s, our turn; no pair yet)');
+      expect(p.alice.logs()).toContain('peer bob: ICE restart 1 of 6 by the peer (checking)');
+      const before = [p.alice.pc.localUfrag(), p.bob.pc.localUfrag()];
+      expect(before).toEqual(['alice1', 'bob1']);
+      // 3 s more: restart 2 is the polite side's turn. The lead waits for it.
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      expect([p.alice.pc.restartCalls, p.bob.pc.restartCalls]).toEqual([1, 1]);
+      await p.run();
+      // It travelled and took: alice offered with new credentials, bob (stable, impolite) answered with new ones.
+      expect([p.alice.pc.localDescription?.type, p.bob.pc.localDescription?.type]).toEqual(['offer', 'answer']);
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice2', 'bob2']);
+      expect([p.alice.pc.signalingState, p.bob.pc.signalingState]).toEqual(['stable', 'stable']);
+      // The polite side's log says it was its turn; the lead's says the peer made restart 2.
+      expect(p.alice.logs()).toContain('peer bob: ICE restart 2 of 6 (checking for 3 s, our turn; no pair yet)');
+      expect(p.bob.logs()).toContain('peer alice: ICE restart 2 of 6 by the peer (checking)');
+      // Neither counted it twice: alice did not read bob's answer as a restart of his, bob made none of his own.
+      expect(p.alice.logs().filter((l) => l.includes('restart 2 of 6'))).toHaveLength(2);
+      expect(p.alice.logs().some((l) => l.includes('restart 2 of 6 by the peer'))).toBe(false);
+      expect(p.bob.logs().some((l) => l.includes('restart 2 of 6 (')).valueOf()).toBe(false);
+      // So restart 3 is the lead's again, 6 s on, and alice counts it.
+      vi.advanceTimersByTime(6_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      expect([p.alice.pc.restartCalls, p.bob.pc.restartCalls]).toEqual([1, 2]);
+      await p.run();
+      expect(p.bob.logs()).toContain('peer alice: ICE restart 3 of 6 (checking for 6 s, our turn; no pair yet)');
+      expect(p.alice.logs()).toContain('peer bob: ICE restart 3 of 6 by the peer (checking)');
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice3', 'bob3']);
+      expect(p.wire).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the lead is in the middle of an offer of its own when the polite side\'s restart arrives: that offer is answered first, and the restart goes out again by itself and is counted once on each side', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = await connected();
+      p.checking(p.alice, p.bob);
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      await p.run();
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice1', 'bob1']);
+      // The lead offers again for a reason of its own, and that offer is lost on the way: he waits for its answer.
+      p.net.pass = (m) => !(m.from === 'bob' && m.signal.kind === 'offer');
+      p.bob.pc.onnegotiationneeded?.();
+      await p.run();
+      p.net.pass = () => true;
+      expect(p.bob.pc.signalingState).toBe('have-local-offer');
+      // Restart 2, the polite side's turn: her offer reaches a lead who is mid-offer and impolite, and is ignored.
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      await p.run();
+      expect([p.alice.pc.restartCalls, p.alice.pc.signalingState, p.bob.pc.signalingState]).toEqual([1, 'have-local-offer', 'have-local-offer']);
+      expect(p.bob.logs().some((l) => l.includes('restart 2 of 6'))).toBe(false);
+      const offers = p.alice.pc.offersMade;
+      // The lead's page sends its unanswered offer again (its 5 s retry). She rolls her restart back and answers; that
+      // offer was no restart, so her credentials stay, and her connection asks for negotiation again by itself (the
+      // watchdog does nothing more): the restart goes out a second time, the lead is stable now and answers it.
+      p.bob.retry.cb();
+      await p.run();
+      expect(p.alice.pc.offersMade).toBe(offers + 1);
+      expect(p.alice.pc.restartCalls).toBe(1);
+      expect([p.alice.pc.signalingState, p.bob.pc.signalingState]).toEqual(['stable', 'stable']);
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice2', 'bob2']);
+      expect(p.alice.logs().filter((l) => l.includes('ICE restart 2 of 6'))).toEqual(['peer bob: ICE restart 2 of 6 (checking for 3 s, our turn; no pair yet)']);
+      expect(p.bob.logs().filter((l) => l.includes('ICE restart 2 of 6'))).toEqual(['peer alice: ICE restart 2 of 6 by the peer (checking)']);
+      expect(p.wire).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('both restart at the same moment: the lead\'s offer stands, the polite side answers it and counts one restart, and the next one is its turn', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const p = await connected();
+      // The polite side has read `checking` for 11 s when the lead's own trouble begins; 3 s later it is 14 s for her
+      // (her wait for the lead's restart 1 is over) and 3 s for him: both restart in the same second.
+      p.checking(p.alice);
+      vi.advanceTimersByTime(11_000);
+      p.checking(p.bob);
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      expect([p.alice.pc.restartCalls, p.bob.pc.restartCalls]).toEqual([1, 1]);
+      await p.run();
+      // One restart happened: his offer, her answer; each side's credentials changed once.
+      expect([p.bob.pc.localDescription?.type, p.alice.pc.localDescription?.type]).toEqual(['offer', 'answer']);
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice1', 'bob1']);
+      expect(p.alice.logs()).toContain('peer bob: ICE restart 1 of 6: the peer restarted at the same moment and its offer stands (one restart, counted once)');
+      expect(p.alice.logs().some((l) => l.includes('by the peer ('))).toBe(false);
+      expect(p.bob.logs().some((l) => l.includes('by the peer'))).toBe(false);
+      // Both count one, so restart 2 is hers, 3 s on, and he counts it.
+      vi.advanceTimersByTime(3_000);
+      p.alice.tick.cb();
+      p.bob.tick.cb();
+      expect([p.alice.pc.restartCalls, p.bob.pc.restartCalls]).toEqual([2, 1]);
+      await p.run();
+      expect(p.alice.logs()).toContain('peer bob: ICE restart 2 of 6 (checking for 3 s, our turn; no pair yet)');
+      expect(p.bob.logs()).toContain('peer alice: ICE restart 2 of 6 by the peer (checking)');
+      expect([p.alice.pc.localUfrag(), p.bob.pc.localUfrag()]).toEqual(['alice2', 'bob2']);
+      expect(p.wire).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -745,15 +1211,19 @@ describe('what a round keeps of a look at the stats, and of the candidates that 
 
 /**
  * I11.12 (2026-11-24): the two sides of one connection, each with its own watchdog, its own 1 s tick and its own
- * clock, restarting by `iceWatchStep` until the schedule is used up. `OLD` is 0.2.50's rule as it shipped (the lead at
- * 10, 20, 40 s, the other side 5 s later, three restarts), for the nights when only one PC has the update. A restart
- * reaches the other side `tripMs` later and is counted there as one of its own (`notePeerRestart`); two that cross are
- * settled as the negotiation settles them: the impolite side (the usual lead) ignores the polite one's offer, and the
- * polite side answers the impolite one's, which the new pages count as the one restart it is and 0.2.50 counted on top
- * of its own.
+ * clock, restarting by `iceWatchStep`. `NEW` is the schedule alone (it stops where the pages say "no path so far":
+ * `gaveUp` is that moment), `NEW_ON` is what the pages run (the restarts go on every 30 s after it), and `OLD` is
+ * 0.2.50's rule as it shipped (the lead at 10, 20, 40 s, the other side 5 s later, three restarts), for the nights
+ * when only one PC has the update. A restart reaches the other side `tripMs` later and is counted there as one of its
+ * own (`notePeerRestart`); two that cross are settled as the negotiation settles them: the impolite side (the usual
+ * lead) ignores the polite one's offer, and the polite side answers the impolite one's, which the new pages count as
+ * the one restart it is and 0.2.50 counted on top of its own. A restart that arrives before a side's own trouble
+ * began (it still read the connection as up) is not counted by 0.2.50; the new pages remember it and begin their
+ * spell at restart 1 when that is within 20 s (`forget`: the pages as the first commit of this change had them).
  */
 type Rule = (elapsedMs: number, restarts: number, lead: boolean) => 'ok' | 'wait' | 'restart' | 'give_up';
 const NEW: Rule = (e, n, lead) => iceWatchStep('checking', e, n, lead, ICE_WATCH);
+const NEW_ON: Rule = (e, n, lead) => iceWatchStep('checking', e, n, lead, ICE_WATCH, true);
 const OLD_WATCH = { backoffMs: [10_000, 20_000, 40_000], lagMs: 5_000 } as const;
 const OLD: Rule = (e, n, lead) => {
   const lag = lead ? 0 : OLD_WATCH.lagMs;
@@ -769,8 +1239,8 @@ interface Side {
   phase: number;
   restarts?: number;
 }
-function twoSides(a: Side, b: Side, tripMs = 150, untilMs = 200_000) {
-  const st = [a, b].map((s) => ({ ...s, n: s.restarts ?? 0, lastAt: 0, gaveUp: null as number | null, offerAt: null as number | null }));
+function twoSides(a: Side, b: Side, tripMs = 150, untilMs = 200_000, o: { forget?: boolean } = {}) {
+  const st = [a, b].map((s) => ({ ...s, n: s.restarts ?? 0, lastAt: 0, gaveUp: null as number | null, offerAt: null as number | null, peerAt: null as number | null, begun: false }));
   const events: Array<{ at: number; by: string; turn: string }> = [];
   const mail: Array<{ at: number; to: number; sentAt: number }> = [];
   for (let t = 0; t <= untilMs; t += 50) {
@@ -780,15 +1250,29 @@ function twoSides(a: Side, b: Side, tripMs = 150, untilMs = 200_000) {
       const crossed = me.offerAt !== null && t - me.offerAt < 2_000 && m.sentAt < me.offerAt + tripMs;
       if (crossed && me.lead) continue;
       me.offerAt = null;
-      if (me.gaveUp !== null || t < me.since) continue;
+      if (me.gaveUp !== null) continue;
+      // Answered while this side still reads the connection as up: not counted; the new pages remember when.
+      if (t < me.since) {
+        if (me.rule !== OLD && !o.forget) me.peerAt = t;
+        continue;
+      }
       me.lastAt = t;
       // The new pages: its own restart and the peer's that crossed it are one restart (`ownAt`).
-      if (crossed && me.rule === NEW) continue;
+      if (crossed && me.rule !== OLD) continue;
       me.n += 1;
     }
     for (let i = 0; i < 2; i++) {
       const me = st[i]!;
-      if (me.gaveUp !== null || t < me.since || (t - me.phase) % 1000 !== 0) continue;
+      if (me.gaveUp !== null || t < me.since) continue;
+      if (!me.begun) {
+        me.begun = true;
+        // The spell begins: a restart of the peer's within the 20 s before it is this spell's first.
+        if (me.peerAt !== null && t - me.peerAt < 20_000) {
+          me.n = 1;
+          me.lastAt = me.peerAt;
+        }
+      }
+      if ((t - me.phase) % 1000 !== 0) continue;
       const action = me.rule(t - Math.max(me.since, me.lastAt), me.n, me.lead);
       if (action === 'give_up') me.gaveUp = t;
       if (action !== 'restart') continue;
@@ -877,6 +1361,65 @@ describe('the two watchdogs of one connection, in every mix of versions (I11.12,
     expect(r.counts).toEqual([6, 6]);
     expect(r.events.slice(2).every((e) => e.by === e.turn)).toBe(true);
     expect(r.events.slice(2).reduce((min, e, i) => Math.min(min, e.at - r.events[i + 1]!.at), Infinity)).toBeGreaterThanOrEqual(3_000);
+  });
+
+  it('a blip one side sees seconds before the other: the restart the first side has already made is the first of the other side\'s spell, so the counts agree and the turns alternate', () => {
+    // The lead sees the trouble 5 s before the other side: it restarts at 3 s, which the other side answers while it
+    // still reads the connection as up. Its own spell begins at 5 s, at restart 1: restart 2 is its turn.
+    const r = twoSides({ name: 'L', lead: true, rule: NEW, since: 0, phase: 0 }, { name: 'P', lead: false, rule: NEW, since: 5_000, phase: 0 });
+    expect(r.by).toBe('LPLPLP');
+    expect(r.events.every((e) => e.by === e.turn)).toBe(true);
+    expect(r.at).toEqual([3, 8, 15, 22, 35, 48]);
+    expect(r.counts).toEqual([6, 6]);
+    expect(r.closest).toBeGreaterThanOrEqual(3_000);
+    // The same with the lead's and the other side's ticks apart, and a slow trip.
+    for (const [late, phaseL, phaseP, trip] of [[3_500, 300, 800, 150], [4_000, 0, 950, 800], [9_000, 500, 0, 150], [19_000, 0, 0, 150]] as const) {
+      const x = twoSides({ name: 'L', lead: true, rule: NEW, since: 1_000, phase: phaseL }, { name: 'P', lead: false, rule: NEW, since: 1_000 + late, phase: phaseP }, trip);
+      const what = `the other side ${late} ms later, ticks ${phaseL}/${phaseP}, trip ${trip}`;
+      expect(x.by, what).toBe('LPLPLP');
+      expect(x.events.every((e) => e.by === e.turn), what).toBe(true);
+      expect(x.counts, what).toEqual([6, 6]);
+    }
+    // What it was without that (the first commit of this change): the counts are 1 and 0 from the start, and after
+    // the lead's first restart the other side makes every one, because each time it is the first whose wait is over.
+    const before = twoSides({ name: 'L', lead: true, rule: NEW, since: 0, phase: 0 }, { name: 'P', lead: false, rule: NEW, since: 5_000, phase: 0 }, 150, 200_000, { forget: true });
+    expect(before.by).toBe('LPPPPPP');
+    expect(before.at).toEqual([3, 19, 22, 31, 37, 52, 64]);
+    expect(before.counts).toEqual([7, 6]);
+    // The other way round: the side that is not the lead sees it 16 s before the lead, waits its 14 s and makes
+    // restart 1 in the lead's place; the lead's spell begins at restart 1 too, and restart 2 is the other side's.
+    const other = twoSides({ name: 'L', lead: true, rule: NEW, since: 16_000, phase: 0 }, { name: 'P', lead: false, rule: NEW, since: 0, phase: 0 });
+    expect(other.by).toBe('PPLPLP');
+    expect(other.events.slice(1).every((e) => e.by === e.turn)).toBe(true);
+    expect(other.counts).toEqual([6, 6]);
+    // More than 20 s apart is another trouble: nothing is carried over (the lead's spell begins at its own restart 1).
+    const apart = twoSides({ name: 'L', lead: true, rule: NEW, since: 0, phase: 0 }, { name: 'P', lead: false, rule: NEW, since: 26_000, phase: 0 });
+    expect(apart.events[0]).toMatchObject({ by: 'L', at: 3_000 });
+    expect(apart.counts[1]).toBeLessThan(apart.counts[0]!);
+  });
+
+  it('never the end: after the sixth restart the two sides go on, one restart every 30 s, turns alternating, and the words come at the moment 0.2.50 gave up', () => {
+    const r = twoSides({ name: 'L', lead: true, rule: NEW_ON, since: 0, phase: 0 }, { name: 'P', lead: false, rule: NEW_ON, since: 0, phase: 0 }, 150, 300_000);
+    expect(r.by.slice(0, 6)).toBe('LPLPLP');
+    expect(r.at.slice(0, 6)).toEqual([3, 7, 14, 21, 34, 47]);
+    // Restart 7 is the lead's, 30 s after the sixth; restart 8 the other side's, and so on.
+    expect(r.by.slice(6)).toBe('LPLPLPLP');
+    expect(r.at.slice(6)).toEqual([78, 109, 140, 171, 202, 233, 264, 295]);
+    expect(r.events.every((e) => e.by === e.turn)).toBe(true);
+    expect(r.gaveUp).toEqual([null, null]);
+    expect(r.counts).toEqual([14, 14]);
+    // A peer on 0.2.50 beside a new side that goes on: it counts each restart and never reaches its own 40 s of
+    // quiet, so it never says there is no path either; the new side makes every late restart, 30 or 33 s apart.
+    for (const [old, mine] of [['p', 'L'], ['l', 'P']] as const) {
+      const x = twoSides({ name: old === 'l' ? 'l' : 'L', lead: true, rule: old === 'l' ? OLD : NEW_ON, since: 0, phase: 0 }, { name: old === 'p' ? 'p' : 'P', lead: false, rule: old === 'p' ? OLD : NEW_ON, since: 0, phase: 0 }, 150, 400_000);
+      const late = x.events.slice(6);
+      expect(late.length, old).toBeGreaterThanOrEqual(9);
+      expect(late.every((e) => e.by === mine), old).toBe(true);
+      const gaps = late.slice(1).map((e, i) => e.at - late[i]!.at);
+      expect(Math.min(...gaps), old).toBeGreaterThanOrEqual(30_000);
+      expect(Math.max(...gaps), old).toBeLessThanOrEqual(34_000);
+      expect(x.gaveUp, old).toEqual([null, null]);
+    }
   });
 
   it('the two counts apart (one side counted a restart the other did not: a page rebuilt, a signal lost): restarts go on to the end of both schedules, and both sides give up', () => {

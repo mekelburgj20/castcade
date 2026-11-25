@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -241,7 +241,14 @@ class FakePeerConnection {
   static session(sdp: string | undefined): string | null {
     return /session:(\w+)/.exec(sdp ?? '')?.[1] ?? null;
   }
-  addEventListener(): void {}
+  /** I11.12: the page's own listeners, so a test can have the connection say what a browser would (`fire`). */
+  listeners = new Map<string, Array<() => void>>();
+  addEventListener(name: string, cb: () => void): void {
+    this.listeners.set(name, [...(this.listeners.get(name) ?? []), cb]);
+  }
+  fire(name: string): void {
+    for (const cb of this.listeners.get(name) ?? []) cb();
+  }
   addTrack(track: FakeTrack) {
     const s = {
       track,
@@ -1211,6 +1218,23 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
     expect(direct).not.toMatch(/TURN|blocked|No path/);
     expect(noPathText('ChuckRibbits', 'checking', 8, true, true)).not.toMatch(/TURN|blocked|No path/);
     expect(noPathText('ChuckRibbits', 'new', 6, false, true)).toBe('Voice with ChuckRibbits did not start (ICE new after 6 restarts): leave the match and join again.');
+    // I11.12 (2026-11-24): the restarts go on after these words, and the words without a direct picture say so too.
+    expect(noPathText('Krobs', 'checking', 6, false, false, true)).toBe('No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed. Still trying.');
+    expect(noPathText('Krobs', 'failed', 6, true, false, true)).toBe('No path to Krobs (ICE failed after 6 restarts): the TURN relay did not get through either. Still trying.');
+    expect(noPathText('ChuckRibbits', 'disconnected', 6, false, true, true)).toBe(direct);
+  });
+
+  it('iceRoundSparse: of the rounds a late restart ends, the first is written in full and then every tenth', () => {
+    for (let k = 1; k <= 6; k++) expect(iceRoundSparse(k, 6), `restart ${k}`).toBe(false);
+    expect(iceRoundSparse(7, 6)).toBe(false);
+    for (let k = 8; k <= 16; k++) expect(iceRoundSparse(k, 6), `restart ${k}`).toBe(true);
+    expect(iceRoundSparse(17, 6)).toBe(false);
+    expect(iceRoundSparse(18, 6)).toBe(true);
+    expect(iceRoundSparse(27, 6)).toBe(false);
+    // The switch's seven (CASTCADE_ICE_FIRST_RESTART_MS): the same from the eighth on.
+    expect(iceRoundSparse(7, 7)).toBe(false);
+    expect(iceRoundSparse(8, 7)).toBe(false);
+    expect(iceRoundSparse(9, 7)).toBe(true);
   });
 
   it('the page: a connection stuck in checking restarts ICE on the backoff, then says there is no path; connected clears it', async () => {
@@ -1266,23 +1290,42 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       vi.advanceTimersByTime(1_000);
       tick.cb();
       expect(restart).toHaveBeenCalledTimes(6);
-      expect(logs().at(-1)).toBe('peer krobs: no path after 6 ICE restart(s), checking for 85 s; no pair yet; no TURN relay is set');
-      const msg = 'No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed.';
+      expect(logs().at(-1)).toBe('peer krobs: no path after 6 ICE restart(s), checking for 85 s; no pair yet; no TURN relay is set; still trying: an ICE restart every 30 s');
+      const msg = 'No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed. Still trying.';
       expect(status().error).toBe(msg);
       expect(p.el('msg').textContent).toBe(msg);
+      // I11.12 (2026-11-24): "no path" is what is said, not the end. With no direct picture either (videoDirect was
+      // never sent), restart 7 goes out 30 s after the sixth, and so on, turns alternating: a path that was away for a
+      // minute is found again. The words stay the same meanwhile (the count in them is the one they were first said with).
+      vi.advanceTimersByTime(17_000);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(6);
+      vi.advanceTimersByTime(1_000);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(7);
+      expect(logs().at(-1)).toBe('peer krobs: ICE late restart 7 (checking for 30 s, our turn; no pair yet)');
+      vi.advanceTimersByTime(33_000);
+      tick.cb();
+      expect(restart).toHaveBeenCalledTimes(8);
+      expect(logs().at(-1)).toBe('peer krobs: ICE late restart 8 (checking for 33 s, the peer did not take its turn; no pair yet)');
+      expect(status().error).toBe(msg);
+      expect(logs().filter((l) => l.includes('no path after'))).toHaveLength(1);
+      // The late restarts are on: main is told, and does not write this peer's state changes one by one.
+      expect((p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { peers: Record<string, { quiet?: boolean }> }).peers['krobs']?.quiet).toBe(true);
       // a path after all: the message goes, the outcome is logged
       pc.iceConnectionState = 'connected';
       vi.advanceTimersByTime(5_000);
       tick.cb();
-      expect(logs().at(-1)).toBe('peer krobs: ICE connected after 6 restart(s), 90 s stuck');
+      expect(logs().at(-1)).toBe('peer krobs: ICE connected after 8 restart(s), 141 s stuck');
       expect(status().error).toBeNull();
+      expect((p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).pop()?.arg as { peers: Record<string, { quiet?: boolean }> }).peers['krobs']?.quiet).toBeUndefined();
     } finally {
       restart.mockRestore();
       vi.useRealTimers();
     }
   });
 
-  it('I11.12 (2026-11-24): while the native video holds a direct pair to the peer the page never asks for a TURN relay and never gives up: it says the voice is still being tried, and restarts every 30 s', async () => {
+  it('I11.12 (2026-11-24): while the native video holds a direct pair to the peer the page never asks for a TURN relay: it says the voice is still being tried and the picture has a direct path; the restarts are the same either way', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const restart = vi.spyOn(FakePeerConnection.prototype, 'restartIce');
     try {
@@ -1308,18 +1351,18 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       tick.cb();
       // The picture connects straight between the two PCs half a second in (2026-11-24: 0.3 s, in all eight matches).
       p.emit(PANEL_CHANNELS.videoDirect, ['krobs']);
-      // The six scheduled restarts: 3 + 28 + 6 + 9 + 12 + 15 s, nothing said meanwhile.
-      seconds(72);
-      expect(restart).toHaveBeenCalledTimes(5);
+      // The six scheduled restarts: 3 + 28 + 6 + 9 + 12 + 15 s, and 12 s more: nothing said until then.
+      seconds(73);
+      expect(restart).toHaveBeenCalledTimes(6);
+      seconds(11);
       expect(status().error).toBeNull();
       seconds(1);
-      expect(restart).toHaveBeenCalledTimes(6);
-      // The schedule is used up: where it gave up, it says what is true and goes on.
-      const msg = 'Voice with Krobs is not connected yet (ICE checking after 6 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.';
-      expect(status().error).toBe(msg);
-      expect(p.el('msg').textContent).toBe(msg);
-      expect(logs()).toContain('peer krobs: not connected after 6 ICE restart(s), checking for 73 s; the native video holds a direct pair to this peer, so nothing is given up: an ICE restart every 30 s');
-      seconds(29);
+      // Where 0.2.50 gave up and asked for a relay, it says what is true, and goes on.
+      const direct = 'Voice with Krobs is not connected yet (ICE checking after 6 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.';
+      expect(status().error).toBe(direct);
+      expect(p.el('msg').textContent).toBe(direct);
+      expect(logs().at(-1)).toBe('peer krobs: not connected after 6 ICE restart(s), checking for 85 s; no pair yet; the native video holds a direct pair to this peer; still trying: an ICE restart every 30 s');
+      seconds(17);
       expect(restart).toHaveBeenCalledTimes(6);
       seconds(1);
       expect(restart).toHaveBeenCalledTimes(7);
@@ -1330,18 +1373,19 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       expect(logs().at(-1)).toBe('peer krobs: ICE late restart 8 (checking for 33 s, the peer did not take its turn; no pair yet)');
       expect(logs().some((l) => l.includes('no path after'))).toBe(false);
       expect(p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).some((s) => /TURN|blocked/.test(String((s.arg as { error: string | null }).error)))).toBe(false);
-      // The picture loses its direct pair: the voice connection is given up the usual way, 12 s after its last restart.
+      // The picture loses its direct pair: only the words change (the relay may be what is missing after all); the
+      // restarts go on as they were, the next 30 s after the last.
       p.emit(PANEL_CHANNELS.videoDirect, []);
-      seconds(12);
-      expect(logs().at(-1)).toBe('peer krobs: no path after 8 ICE restart(s), checking for 148 s; no pair yet; no TURN relay is set');
-      expect(status().error).toBe('No path to Krobs (ICE checking after 8 restarts): both routers blocked the direct connection; a TURN relay is needed.');
-      // And it is back: tried again at once, the relay no longer asked for.
-      p.emit(PANEL_CHANNELS.videoDirect, ['krobs']);
-      expect(logs().at(-1)).toBe('peer krobs: not connected after 8 ICE restart(s), checking for 148 s; the native video holds a direct pair to this peer, so nothing is given up: an ICE restart every 30 s');
-      expect(logs()).toContain('peer krobs: the native video holds a direct pair to this peer: trying again, an ICE restart every 30 s');
-      expect(status().error).toBe('Voice with Krobs is not connected yet (ICE checking after 8 restarts). The picture has a direct path to their PC, so no relay is needed: still trying.');
-      seconds(30);
+      expect(status().error).toBe('No path to Krobs (ICE checking after 6 restarts): both routers blocked the direct connection; a TURN relay is needed. Still trying.');
+      seconds(29);
+      expect(restart).toHaveBeenCalledTimes(8);
+      seconds(1);
       expect(restart).toHaveBeenCalledTimes(9);
+      // And it is back: the relay is no longer asked for.
+      p.emit(PANEL_CHANNELS.videoDirect, ['krobs']);
+      expect(status().error).toBe(direct);
+      // Each state of the words was written to the log once by main (it logs a change): nothing here repeats them.
+      expect(logs().filter((l) => /no path after|not connected after/.test(l))).toHaveLength(1);
       // Connected at last: the message goes.
       pc.iceConnectionState = 'connected';
       seconds(1);
@@ -1351,6 +1395,144 @@ describe('ICE: the candidate pair and the watchdog (D2.9, 2026-11-02)', () => {
       vi.useRealTimers();
     }
   });
+
+  it("I11.12 (2026-11-24): a restart of the peer's that this side answered while it still read the connection as up is the first of the spell that begins here within 20 s: the counts agree, and restart 2 is this side's turn", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const restart = vi.spyOn(FakePeerConnection.prototype, 'restartIce');
+    try {
+      /** A page that is not the usual lead ('alice' < 'krobs'), connected to krobs, who then restarts ICE `before` ms before this side's ICE goes `disconnected`. */
+      const run = async (before: number) => {
+        restart.mockClear();
+        const p = loadPage({ mic: true, capture: false });
+        p.emit(PANEL_CHANNELS.attach, { localId: 'alice', peers: ['krobs'], ice: [{ urls: ['stun:x'] }], capture: null, micDeviceId: null, muted: false, sending: false });
+        p.emit(PANEL_CHANNELS.state, state());
+        await settle();
+        const pc = FakePeerConnection.all[0]!;
+        p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'offer', sdp: 'offer session:k1\r\na=ice-ufrag:uf1\r\n' } });
+        await settle();
+        pc.fire('signalingstatechange');
+        const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+        const logs = () => p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
+        expect(pc.iceConnectionState).toBe('connected');
+        tick.cb();
+        // The lead sees a blip first and restarts; this side answers, its own ICE still reading connected.
+        vi.advanceTimersByTime(60_000);
+        pc.remoteDescription = { type: 'offer', sdp: 'offer session:k1\r\na=ice-ufrag:uf2\r\n' };
+        pc.localDescription = { type: 'answer', sdp: 'answer-sdp' };
+        pc.fire('signalingstatechange');
+        expect(logs().some((l) => l.includes('by the peer'))).toBe(false);
+        vi.advanceTimersByTime(before);
+        await settle();
+        pc.iceConnectionState = 'disconnected';
+        tick.cb();
+        return { pc, tick, logs };
+      };
+      // 4 s later this side sees it too: the peer's restart was restart 1, so restart 2 is this side's, 3 s on.
+      const soon = await run(4_000);
+      expect(soon.logs().at(-1)).toBe('peer krobs: the peer restarted ICE 4 s before this side saw the trouble: that was restart 1 of 6, the next is our turn');
+      vi.advanceTimersByTime(2_000);
+      soon.tick.cb();
+      expect(restart).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1_000);
+      soon.tick.cb();
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(soon.logs().at(-1)).toBe('peer krobs: ICE restart 2 of 6 (disconnected for 3 s, our turn; no pair yet)');
+      // 25 s later is another trouble: this side's spell begins at restart 1, the lead's turn, for which it waits 14 s.
+      const late = await run(25_000);
+      expect(late.logs().some((l) => l.includes('before this side saw the trouble'))).toBe(false);
+      vi.advanceTimersByTime(13_000);
+      late.tick.cb();
+      expect(restart).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1_000);
+      late.tick.cb();
+      expect(restart).toHaveBeenCalledTimes(1);
+      expect(late.logs().at(-1)).toBe('peer krobs: ICE restart 1 of 6 (disconnected for 14 s, the peer did not take its turn; no pair yet)');
+    } finally {
+      restart.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('I11.12 (2026-11-24): three hours beside a peer that never connects: one line per late restart and a round in full every five minutes, about 92 kB of companion.log; main is told the peer is quiet', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const restart = vi.spyOn(FakePeerConnection.prototype, 'restartIce');
+    try {
+      const p = loadPage({ mic: true, capture: false });
+      p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [{ urls: ['stun:x'] }], capture: null, micDeviceId: null, muted: false, sending: false });
+      p.emit(PANEL_CHANNELS.state, state());
+      await settle();
+      const pc = FakePeerConnection.all[0]!;
+      pc.onnegotiationneeded?.();
+      await settle();
+      p.emit(PANEL_CHANNELS.signal, { from: 'krobs', signal: { kind: 'answer', sdp: 'answer session:k1' } });
+      await settle();
+      const tick = p.intervals.find((i) => i.ms === ICE_WATCH.tickMs)!;
+      const probe = p.intervals.find((i) => i.ms === 3000)!;
+      const stats = p.intervals.find((i) => i.ms === STATS_MS)!;
+      const report = p.intervals.find((i) => i.ms === 2000)!;
+      // What a round nothing answers looks like in the stats: pairs that send and hear nothing, gone after 16 s.
+      const entry = (e: Record<string, unknown>): [string, Record<string, unknown>] => [e.id as string, e];
+      const candidates = [
+        { id: 'L', type: 'local-candidate', candidateType: 'host', protocol: 'udp' },
+        { id: 'R', type: 'remote-candidate', candidateType: 'srflx', protocol: 'udp' },
+      ];
+      const checking = new Map([...candidates, { id: 'P', type: 'candidate-pair', localCandidateId: 'L', remoteCandidateId: 'R', state: 'in-progress', requestsSent: 20, responsesReceived: 0, requestsReceived: 0, responsesSent: 0 }].map(entry));
+      const gone = new Map([candidates[0]!].map(entry));
+      pc.iceConnectionState = 'checking';
+      tick.cb();
+      const flush = async (): Promise<void> => {
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+      };
+      let made = 0;
+      let madeAt = 0;
+      const HOURS = 3;
+      for (let s = 1; s <= HOURS * 3600; s++) {
+        vi.advanceTimersByTime(1_000);
+        if (restart.mock.calls.length !== made) {
+          made = restart.mock.calls.length;
+          madeAt = s;
+        }
+        // The browser's own states through a round: checking with pairs, then disconnected with none.
+        pc.stats = s - madeAt < 16 ? checking : gone;
+        pc.iceConnectionState = s - madeAt < 16 ? 'checking' : 'disconnected';
+        tick.cb();
+        if (s % 2 === 0) report.cb();
+        if (s % 3 === 0) probe.cb();
+        if (s % (STATS_MS / 1000) === 0) stats.cb();
+        await flush();
+      }
+      const logs = p.sent.filter((s) => s.channel === PANEL_CHANNELS.log).map((s) => s.arg as string);
+      // As companion.log has it: the time and level, `media: `, and a player id of 36 characters where this test says krobs.
+      const bytes = (lines: string[]): number => lines.reduce((n, l) => n + l.length + 31 + 7 + (l.split('krobs').length - 1) * 31 + 1, 0);
+      const late = logs.filter((l) => l.includes('late restart'));
+      const lateRestarts = restart.mock.calls.length - 6;
+      // A late restart every 30 s (its own turn) or 33 s (the peer's, which this fake never takes).
+      expect(lateRestarts).toBeGreaterThan(330);
+      expect(lateRestarts).toBeLessThan(345);
+      // One line for each, and a round in full for the first and every tenth.
+      expect(late.filter((l) => /: ICE late restart \d+ \(/.test(l))).toHaveLength(lateRestarts);
+      const rounds = late.filter((l) => l.includes('ICE round'));
+      expect(rounds).toHaveLength(Math.ceil(lateRestarts / 10));
+      expect(rounds[0]).toContain('late restart 7 decided here after 30.00 s');
+      expect(rounds[0]).toContain('; 1 pair as of ');
+      // Nothing else is written in the late phase: no pair line, no state line of its own.
+      const first = logs.findIndex((l) => l.includes('late restart 7 ('));
+      expect(logs.slice(first).filter((l) => !l.includes('late restart'))).toEqual([]);
+      const total = bytes(logs);
+      // Measured here: 396 lines and 92 kB in three hours (340 late restarts, 34 rounds in full), of the megabyte
+      // companion.log holds before it rolls over. A real round names more kinds of pair (up to 1200 characters a line).
+      expect(logs.length).toBeLessThan(420);
+      expect(total).toBeGreaterThan(80_000);
+      expect(total).toBeLessThan(100_000);
+      // And main: every report since the scheduled restarts were used up marks the peer quiet, so `peerChanges` writes
+      // none of its four state changes a round.
+      const statuses = p.sent.filter((s) => s.channel === PANEL_CHANNELS.status).map((s) => s.arg as { peers: Record<string, { quiet?: boolean }> });
+      expect(statuses.slice(-1000).every((s) => s.peers['krobs']?.quiet === true)).toBe(true);
+    } finally {
+      restart.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 60_000);
 
   it('I11.12: the page writes one line per ICE round of the voice connection: what every kind of pair sent and received when the restart was decided', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });

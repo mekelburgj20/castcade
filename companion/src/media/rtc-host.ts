@@ -458,6 +458,10 @@ export function peerChanges(before: PanelPageStatus['peers'] | null | undefined,
   for (const [id, p] of Object.entries(after)) {
     const b = before?.[id];
     if (b && b.ice === p.ice && b.signaling === p.signaling && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
+    // I11.12 (2026-11-24): a peer the page restarts ICE for every 30 s (its scheduled restarts are used up: `quiet`)
+    // goes through checking, have-local-offer, stable and disconnected each time: four lines a round, for as long as
+    // the match lasts. The page's own line per restart says it; a reopen, and the state it leaves this with, are written.
+    if (b?.quiet && p.quiet && (b.reopens ?? 0) === (p.reopens ?? 0)) continue;
     const reopened = (p.reopens ?? 0) > (b?.reopens ?? 0) ? `, connection replaced (${p.reopens} so far)` : '';
     out.push(`media: peer ${id}: ice ${p.ice}, signalling ${p.signaling ?? '?'}${reopened}`);
   }

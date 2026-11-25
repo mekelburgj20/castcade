@@ -376,6 +376,28 @@ describe('createRtcHost (D2)', () => {
       'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
       'media: peer krobs: connection closed',
     ]);
+    // I11.12 (2026-11-24): a peer the page restarts ICE for every 30 s (`quiet`) changes state four times a round:
+    // those are not written. Going quiet is, a reopen is, and so is the state it comes out with.
+    logs.length = 0;
+    const late = (ice: string, signaling: string, quiet: boolean, reopens = 1) =>
+      fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice, receivingVideo: false, receivingAudio: true, signaling, reopens, ...(quiet ? { quiet: true } : {}) } }, mic: 'open', capturing: true, error: null });
+    late('checking', 'stable', false);
+    late('disconnected', 'stable', true);
+    for (let round = 0; round < 5; round++) {
+      late('disconnected', 'have-local-offer', true);
+      late('checking', 'have-local-offer', true);
+      late('checking', 'stable', true);
+      late('disconnected', 'stable', true);
+    }
+    late('checking', 'stable', true, 2);
+    late('connected', 'stable', false, 2);
+    expect(logs).toEqual([
+      'media: peer krobs: ice checking, signalling stable, connection replaced (1 so far)',
+      'media: peer krobs: ice disconnected, signalling stable',
+      'media: peer krobs: ice checking, signalling stable, connection replaced (2 so far)',
+      'media: peer krobs: ice connected, signalling stable',
+    ]);
+    fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: {}, mic: 'open', capturing: true, error: null });
     fromPage(w, PANEL_CHANNELS.status, { sending: false, peers: { krobs: { ice: 'connected', receivingVideo: false, receivingAudio: true } }, mic: 'open', capturing: true, error: null });
     expect(statuses.length).toBeGreaterThan(0);
 
