@@ -275,6 +275,12 @@ export interface StartAsk {
   newMatch?: boolean;
   anyway?: boolean;
   now?: boolean;
+  /**
+   * The final review (2026-11-28): with `now`, what the start waited for when the press was made. "Start without
+   * Dana" that arrives when the start has turned to wait for 3D, or for Chuck, is not carried out: it was checked on
+   * the pressing PC alone, and the lobby's PC acted on whatever the start waited for when the request arrived.
+   */
+  nowFor?: { waitsFor: string; waitsOn: readonly PlayerId[] } | undefined;
 }
 
 type StartWait = 'result' | 'tables' | 'other_tables' | 'own_games' | '3d';
@@ -1734,9 +1740,37 @@ export class HostMatch {
     this.acceptPause(this.s.build('PAUSE', { reason, player }, this.matchId));
   }
 
-  resume(): void {
+  /**
+   * Resume a pause, when a press can end it. The final review (2026-11-28, finding 3): false, with nothing logged,
+   * while `resumeBlocker()` says why not. It was `void` and always logged a RESUME.
+   */
+  resume(): boolean {
     this.assertActive();
-    this.onResume(this.s.build('RESUME', {}, this.matchId));
+    if (this.resumeBlocker() !== null) return false;
+    this.onResume(this.s.build('RESUME', {}, this.matchId), true);
+    return true;
+  }
+
+  /**
+   * The final review (2026-11-28, finding 3): why a Resume would do nothing, or harm, now: the game waits for a
+   * member who is away. Resumed, it paused again at once (RESUME, PAUSE in every log, the same screen); and for the
+   * player who is up and away the RESUME took their grant back, after which the turn clock counted them out without
+   * the question it owes a player who is still seen playing. Such a pause ends with that player's return, with Play
+   * on without them, or with the owner's answer to the question; never with a Resume. Null: a Resume does what it
+   * says (a pause somebody asked for, a ball that ran into the ball-end timeout).
+   */
+  resumeBlocker(): string | null {
+    const st = this.s.state;
+    if (!this.lobbyOn || st.phase !== 'running' || !st.paused) return null;
+    const who = st.paused.reason === 'disconnect' ? st.paused.player : null;
+    if (who === null || !this.gone.has(who)) return null;
+    const name = this.nameOf(who);
+    return `${name} is away: the game goes on when they are back, or with Play on without ${name}`;
+  }
+
+  /** The engine's own resume: the wait is over (the player is out of the game, or their ball was ended for them). */
+  private resumeNow(): void {
+    this.onResume(this.s.build('RESUME', {}, this.matchId), true);
   }
 
   /**
@@ -2564,7 +2598,11 @@ export class HostMatch {
         }
         return null;
       }
-      if (ask.now === true && p.waitsFor !== null) return this.startWithout();
+      if (ask.now === true && p.waitsFor !== null) {
+        const about = ask.nowFor;
+        if (about && (about.waitsFor !== p.waitsFor || [...about.waitsOn].sort().join(' ') !== [...p.waitsOn].sort().join(' '))) return 'The start waits for something else now: look again, then choose.';
+        return this.startWithout();
+      }
       return null;
     }
     if (fromTable && by !== starter) return notStarter;
@@ -3017,7 +3055,7 @@ export class HostMatch {
     const st = this.s.state;
     if (st.phase !== 'running' || st.paused?.reason !== 'disconnect' || st.paused.player !== player || st.players[player]?.status !== 'playing') return false;
     this.forfeit(player, 'did not come back');
-    if (this.s.state.phase === 'running' && this.s.state.paused) this.resume();
+    if (this.s.state.phase === 'running' && this.s.state.paused) this.resumeNow();
     return true;
   }
 
@@ -3040,7 +3078,7 @@ export class HostMatch {
       return true;
     }
     if (!this.passTurn(score)) return false;
-    if (this.s.state.phase === 'running' && this.s.state.paused) this.resume();
+    if (this.s.state.phase === 'running' && this.s.state.paused) this.resumeNow();
     return true;
   }
 
@@ -3253,7 +3291,7 @@ export class HostMatch {
     if (st.phase === 'running' && st.players[id]?.status === 'playing' && !st.pendingTransfer) {
       this.forfeit(id, 'left the lobby');
       const paused = this.s.state.phase === 'running' ? this.s.state.paused : null;
-      if (paused?.reason === 'disconnect' && paused.player === id) this.resume();
+      if (paused?.reason === 'disconnect' && paused.player === id) this.resumeNow();
     }
     this.events.emit('memberLeft', id);
     this.dropMember(id, true);
@@ -3642,10 +3680,17 @@ export class HostMatch {
     this.reviewClocks();
   }
 
-  private onResume(msg: Message<'RESUME'>): void {
+  private onResume(msg: Message<'RESUME'>, own = false): void {
     const st = this.s.state;
     if (st.phase !== 'running' || !st.paused || st.pendingTransfer) {
       this.reject(msg, 'unexpected_state', 'not paused');
+      return;
+    }
+    // The final review (finding 3): a RESUME from somebody else while the game waits for a member who is away is
+    // refused with the sentence, and logged nowhere. The member's own RESUME after their return is not: they are back.
+    const why = own ? null : this.resumeBlocker();
+    if (why !== null) {
+      this.reject(msg, 'unexpected_state', why);
       return;
     }
     this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });

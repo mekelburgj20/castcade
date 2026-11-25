@@ -21,6 +21,7 @@ import { COUNTDOWN_HELD_MS, MatchController, type ControllerFeed } from './contr
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { NO_TABLE } from './lobby.test-support.js';
+import { awayQuestionLine, shortcutWords } from './match-menu.js';
 import { MemoryBus } from './transport.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -60,11 +61,24 @@ class FakeMedia implements MatchMedia {
   }
 }
 
+/** Each seat's table lock as it stands (`MatchStatus.locked` in the shell). */
+const LOCK = new WeakMap<MatchController, { on: boolean }>();
+/** Each seat's engine, for what the shell reads from it beside the controller (`waitedFor`). */
+const ROLE = new WeakMap<MatchController, HostMatch | ClientMatch>();
+
 function seat(role: HostMatch | ClientMatch, clock: ManualClock): MatchController {
+  const lock = { on: false };
+  const c = makeSeat(role, clock, lock);
+  LOCK.set(c, lock);
+  ROLE.set(c, role);
+  return c;
+}
+
+function makeSeat(role: HostMatch | ClientMatch, clock: ManualClock, lock: { on: boolean }): MatchController {
   return new MatchController({
     role,
     localId: role.localId,
-    lock: { lock: () => undefined, unlock: () => undefined },
+    lock: { lock: () => void (lock.on = true), unlock: () => void (lock.on = false) },
     cue: { play: () => undefined },
     media: new FakeMedia(),
     now: () => clock.now(),
@@ -75,12 +89,12 @@ function seat(role: HostMatch | ClientMatch, clock: ManualClock): MatchControlle
 }
 
 /** A lobby opened by Owner on Monster Bash, with the members named, every one set to Play. */
-async function lobby(members: string[], tableName: string, graceMs = 0, balls = 3) {
+async function lobby(members: string[], tableName: string, graceMs = 0, balls = 3, stillSeen = false) {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
   const game = table(tableName);
-  const host = new HostMatch({ disconnectGraceMs: graceMs, transport: bus.transport('owner'), keys: hk, matchId: 'JHDFEF', ballsPerGame: balls, hostParticipant: who('owner', hk), hostGame: game, clock, lobby: { stance: 'play', countdownMs: 5000 } });
+  const host = new HostMatch({ disconnectGraceMs: graceMs, transport: bus.transport('owner'), keys: hk, matchId: 'JHDFEF', ballsPerGame: balls, hostParticipant: who('owner', hk), hostGame: game, clock, lobby: { stance: 'play', countdownMs: 5000, ...(stillSeen ? { stillSeen: () => true } : {}) } });
   const seats: Record<string, MatchController> = { owner: seat(host, clock) };
   await seats['owner']!.open();
   const clients: Record<string, ClientMatch> = {};
@@ -141,6 +155,8 @@ function real(c: MatchController): unknown {
   const l = st.lobby;
   const p = c.panel();
   if (!l) return null;
+  const role = ROLE.get(c);
+  const waited = role instanceof HostMatch ? role.waitedFor() : null;
   return {
     phase: st.phase,
     header: still(headerText(p)),
@@ -157,6 +173,21 @@ function real(c: MatchController): unknown {
     giveUp: l.giveUp,
     over: l.over,
     hostAway: l.hostAway !== null,
+    // The final review (finding 15): the rest of what a picture shows of a game.
+    players: p.players.map((x) => `${x.id} ${x.score} ${x.ballsDone}${x.isUp ? ' up' : ''}`),
+    up: p.playerUp,
+    pausedFor: p.pausedFor ?? null,
+    result: p.result ? p.result.map((x) => `${x.place} ${x.id} ${x.score}`) : null,
+    series: p.series ? p.series.map((x) => `${x.place} ${x.id} ${x.wins}/${x.games}`) : null,
+    matchOver: p.matchOver === true,
+    lastMatch: l.lastMatch ? `${l.lastMatch.games} ${l.lastMatch.standing.map((x) => `${x.id} ${x.wins} ${x.total}`).join(', ')}` : null,
+    pass: st.pass ? `${st.pass.name} ${st.pass.ball} ${st.pass.score}` : null,
+    endBall: st.endBall ? st.endBall.score : null,
+    locked: LOCK.get(c)?.on ?? false,
+    canResume: role instanceof HostMatch ? st.phase === 'paused' && role.resumeBlocker() === null : false,
+    // As the shell's `lobbyView`: whom the game waits for, and whether the question about them is open.
+    waitedFor: waited ? waited.player : null,
+    awayQuestion: waited ? waited.asked : false,
   };
 }
 
@@ -180,6 +211,19 @@ function told(st: any): unknown {
     giveUp: l.giveUp,
     over: l.over,
     hostAway: l.hostAway !== null,
+    players: p.players.map((x) => `${x.id} ${x.score} ${x.ballsDone}${x.isUp ? ' up' : ''}`),
+    up: p.playerUp,
+    pausedFor: p.pausedFor ?? null,
+    result: p.result ? p.result.map((x) => `${x.place} ${x.id} ${x.score}`) : null,
+    series: p.series ? p.series.map((x) => `${x.place} ${x.id} ${x.wins}/${x.games}`) : null,
+    matchOver: p.matchOver === true,
+    lastMatch: l.lastMatch ? `${l.lastMatch.games} ${l.lastMatch.standing.map((x: any) => `${x.id} ${x.wins} ${x.total}`).join(', ')}` : null,
+    pass: st.pass ? `${st.pass.name} ${st.pass.ball} ${st.pass.score}` : null,
+    endBall: st.endBall ? st.endBall.score : null,
+    locked: st.locked,
+    canResume: st.canResume,
+    waitedFor: l.waitedFor ? l.waitedFor.player : null,
+    awayQuestion: l.awayQuestion != null,
   };
 }
 
@@ -213,6 +257,8 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
     {
       const r = await lobby([], TABLE);
       check('alone', r.seats['owner']);
+      // The same lobby; the opener's picked table waits for Start the table (one-step's card, not the controller's).
+      check('alone-start-table', r.seats['owner']);
     }
     // ---- four people, two set to Watch; then a start that counts down; a game from each seat; between games; the match ended
     {
@@ -329,13 +375,26 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       expect(S['owner']!.requestStart()).toBeNull();
       await r.tick(5000);
       await playBall(r, 'owner', 1, 1_234_560);
-      await playBall(r, 'krobs', 1, 987_650);
+      // The final review (finding 4): the commoner order. Chuck's link drops during Krobs' ball; that ball ends, and
+      // the game waits for Chuck with nobody holding the turn.
+      S['krobs']!.feed(start);
+      S['krobs']!.feed(scores(987_650, 1));
+      await flush();
       r.bus.disconnect('chuck');
       await r.tick(1000);
+      expect(S['owner']!.status().phase).toBe('playing');
+      S['krobs']!.feed(ballEnd(1));
+      await r.tick(2500);
       check('waited-for', S['owner']);
+      // Krobs' own panel does not say YOUR BALL over his locked table, and nobody's row is the one that is up.
+      expect(headerText(S['krobs']!.panel())).toBe('PAUSED · WAITING FOR CHUCK');
+      expect(S['krobs']!.panel()).toMatchObject({ myTurn: false, playerUp: null, ball: null, pausedFor: 'chuck' });
+      expect(S['krobs']!.panel().players.some((x) => x.isUp)).toBe(false);
+      expect(headerText(S['dana']!.panel())).toBe('PAUSED · WAITING FOR CHUCK');
     }
     {
-      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE);
+      // The lobby's PC still sees Krobs playing (his picture arrives) after his link to it dropped.
+      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE, 0, 3, true);
       const S = r.seats as Record<string, MatchController>;
       S['dana']!.setStance('watch');
       await flush();
@@ -343,10 +402,20 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       await r.tick(5000);
       await playBall(r, 'owner', 1, 1_234_560);
       S['krobs']!.feed(start);
-      S['krobs']!.feed(scores(987_650, 1));
+      S['krobs']!.feed(scores(2_345_670, 1));
       await flush();
       r.bus.disconnect('krobs');
       await r.tick(1000);
+      // Not asked yet: the game waits for him, and the owner can play on without him.
+      expect(r.host.waitedFor()).toMatchObject({ player: 'krobs', asked: false });
+      const asked: string[] = [];
+      r.host.on('awayQuestion', (x) => {
+        asked.push(x.player);
+        // As the shell does when the question opens (match-host.ts): the panel's line says so, with the menu's key.
+        S['owner']!.setAwayAsk(awayQuestionLine('Krobs', shortcutWords('Control+Alt+M')));
+      });
+      await r.tick(3 * 60_000);
+      expect(asked).toEqual(['krobs']);
       check('away-question', S['owner']);
     }
     {
@@ -366,13 +435,14 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
       check('host-away', S['krobs']);
     }
     {
-      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE, 0, 1);
+      const r = await lobby(['krobs', 'chuck', 'dana'], TABLE);
       const S = r.seats as Record<string, MatchController>;
       S['dana']!.setStance('watch');
       await flush();
       expect(S['owner']!.requestStart()).toBeNull();
       await r.tick(5000);
-      for (const [id, score] of [['owner', 3_456_780], ['krobs', 2_100_000], ['chuck', 990_000]] as const) await playBall(r, id, 1, score, 1);
+      const total: Record<string, number> = { owner: 3_456_780, krobs: 2_100_000, chuck: 990_000 };
+      for (const ball of [1, 2, 3]) for (const id of ['owner', 'krobs', 'chuck']) await playBall(r, id, ball, ball === 3 ? (total[id] as number) : ball * 400_000);
       await r.tick(100);
       r.host.sayKept(20 * 60_000);
       await flush();
@@ -435,7 +505,8 @@ describe('the story fixtures say what the controller says (A17 step 9)', () => {
 
     expect(wrong, JSON.stringify(wrong, null, 1)).toEqual([]);
     // No lobby fixture is believed before it has a scene here.
-    const unseen = Object.keys(fx.FIXTURES).filter((name) => (fx.FIXTURES[name].here ?? []).length > 0 && !seen.has(name));
+    // (A fixture with `names` is a copy of one that is held above, with one name replaced by the longest a name can be.)
+    const unseen = Object.keys(fx.FIXTURES).filter((name) => (fx.FIXTURES[name].here ?? []).length > 0 && !fx.FIXTURES[name].names && !seen.has(name));
     expect(unseen).toEqual([]);
   }, 120_000);
 });

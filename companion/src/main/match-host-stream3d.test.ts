@@ -1119,7 +1119,7 @@ describe('the first turn starts in 3D (I11.4.9)', () => {
 
 describe('a table that Castcade did not start in the Castcade VPX build (I11.4.12)', () => {
   const message = (s: Seat): string => s.mh.status().panel?.message ?? '';
-  const NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again';
+  const NOTE = 'Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then open or join a lobby again';
 
   it('with the build beside VPX and 3D watch on, a table that is open and not on the control connection is said in the lobby, on the panel line and in the log, and no longer once Castcade has started the table', async () => {
     const hub = new TunnelHub();

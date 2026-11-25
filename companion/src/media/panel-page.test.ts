@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PanelState } from './match-media-types.js';
-import { bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, watchingText, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { shortName, bitrateHintsFor, cameraCapture, cameraFrameSize, eyesKey, isCameraCapture, LAYER_CAMERA_SOURCE_ID, stereoSignal, feedSize, headerText, ICE_ROUND_LOOK, ICE_WATCH, icePairInfo, icePairText, iceUfrag, iceRestartName, iceRoundSparse, iceWatchStep, micText, noPathText, PANEL_CHANNELS, paintFrame, panelPageHtml, preferH264, SBS_MIN_ASPECT, scoreText, stageText, stallStep, CAPTURE_STALL_MS, STATS_MS, stereoOf, stripRows, VIDEO_FEED_MAX, videoBitrateFor, videoCropRect, videoPeer, watchingText, withBitrateHints, volumeGains, VOLUME_NOTE_MS, type Paint2D } from './panel-page.js';
+import { shortName as shortNameOfMatch } from '../match/short-name.js';
+import { scoreboardPageHtml, scoreboardView, shortName as shortNameOfScoreboard, tallyText } from './scoreboard-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -169,6 +171,23 @@ describe("the panel's lobby view (A17 step 9, 2026-11-27, alpha-match.md section
     expect(headerText(lobby({ phase: 'playing', playerUp: 'krobs', ball: 2 }))).toBe('KROBS IS UP');
   });
 
+  it('the final review (findings 4 and 7): a game that waits for a player who is away says for whom, and not who held the last turn; a match that ended a moment ago reads MATCH OVER', () => {
+    // Chuck's link dropped during Krobs' ball; the ball ended; nobody holds the turn.
+    const waits = lobby({ phase: 'paused', playerUp: null, ball: null, pausedFor: 'krobs', members: members.slice(0, 2) });
+    expect(headerText(waits)).toBe('PAUSED · WAITING FOR KROBS');
+    expect(headerText({ ...waits, game: 2 })).toBe('PAUSED · GAME 2 · WAITING FOR KROBS');
+    // The player who is up is the one who is away (still seen playing): the same words, for everybody else.
+    expect(headerText(lobby({ phase: 'paused', playerUp: 'krobs', ball: 2, pausedFor: 'krobs' }))).toBe('PAUSED · WAITING FOR KROBS');
+    // That player's own panel, while the ball is theirs, keeps their ball.
+    expect(headerText(lobby({ phase: 'paused', playerUp: 'krobs', ball: 2, myTurn: true, pausedFor: 'krobs' }))).toBe('PAUSED · YOUR BALL 2');
+    // A pause that is nobody's keeps its words.
+    expect(headerText(lobby({ phase: 'paused', playerUp: 'krobs', ball: 2 }))).toBe('PAUSED · KROBS IS UP');
+    // Finding 7.
+    expect(headerText(lobby({ matchOver: true }))).toBe('MATCH OVER');
+    expect(headerText(lobby({ matchOver: true, countdown: 3 }))).toBe('STARTING IN 3');
+    expect(headerText(lobby({ matchOver: true, seriesOver: true }))).toBe('LOBBY CLOSED');
+  });
+
   it('the rows: in the lobby every member with PLAY or WATCH and what is wrong with their row, no score; in a game the players of the match as before', () => {
     expect(stripRows(lobby()).map((r) => [r.name, r.detail, r.score, r.flags.join('|')])).toEqual([
       ['Owner', 'PLAY', '', ''],
@@ -202,6 +221,45 @@ describe("the panel's lobby view (A17 step 9, 2026-11-27, alpha-match.md section
       expect(html).toContain('function watchingText(');
       expect(html).toContain('const watching = panel ? watchingText(panel) : ');
     }
+  });
+});
+
+describe('a long name (the final review, finding 10)', () => {
+  const LONG = 'Krobs'.padEnd(64, 'wxyz');
+  it('the three copies of `shortName` are one function (a page helper can only call what its own file defines)', () => {
+    const body = (f: (name: string, max?: number) => string): string => f.toString().replace(/\s+/g, ' ');
+    expect(body(shortName)).toBe(body(shortNameOfMatch));
+    expect(body(shortNameOfScoreboard)).toBe(body(shortNameOfMatch));
+    expect(shortName(LONG)).toHaveLength(24);
+    expect(shortName(LONG).endsWith('…')).toBe(true);
+    expect(shortName('Krobs')).toBe('Krobs');
+    expect(shortName(LONG, 12)).toHaveLength(12);
+  });
+
+  it('never breaks the header, the stage text, the Watching line or a row: the name is cut, and what stands beside it stays', () => {
+    const players = state().players.map((p) => (p.id === 'krobs' ? { ...p, name: LONG, flags: ['disconnected' as const] } : p));
+    const up = state({ players });
+    expect(headerText(up)).toBe(`${shortName(LONG, 14).toUpperCase()} IS UP`);
+    expect(headerText(up).length).toBeLessThanOrEqual(24);
+    expect(headerText(state({ players, phase: 'paused', pausedFor: 'krobs' })).length).toBeLessThanOrEqual(40);
+    expect(stageText(up, false).length).toBeLessThanOrEqual(40);
+    expect(watchingText(state({ members: [{ id: 'x', name: LONG, stance: 'watch', flags: [], inMatch: false }] }))).toBe(`Watching: ${shortName(LONG, 18)}`);
+    // A row keeps the whole name; the page cuts it in a box of its own and puts the flags beside that box.
+    expect(stripRows(up).find((r) => r.id === 'krobs')).toMatchObject({ name: LONG, flags: ['AWAY'] });
+    for (const vr of [false, true]) {
+      const html = panelPageHtml({ vr });
+      expect(html).toContain("nm.className = 'nm';");
+      expect(html).toContain('.row .name .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }');
+      expect(html).toContain('.row .name .flag, .row .name .note { flex: none; }');
+      expect(html).toContain('function shortName(');
+    }
+    // The scoreboard card: the name is cut so that AWAY and the score keep their room; the title and the tally too.
+    const view = scoreboardView(state({ players, phase: 'paused', pausedFor: 'krobs' }));
+    expect(view?.rows.find((r) => r.up)?.name).toBe(shortName(LONG, 11));
+    expect(view?.title).toBe(`${shortName(LONG, 10).toUpperCase()} AWAY · GAME 1 · BALL 2 OF 3`);
+    expect(tallyText(state({ players }))).toBe(`0 GAMES PLAYED · Owner 0 · ${shortName(LONG, 14)} 0`);
+    expect(scoreboardPageHtml()).toContain('grid-template-columns: 24px minmax(0, 1fr) auto;');
+    expect(scoreboardPageHtml()).toContain('function shortName(');
   });
 });
 

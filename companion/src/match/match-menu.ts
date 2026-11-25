@@ -40,6 +40,7 @@
 
 import type { PanelMenu } from '../media/match-media-types.js';
 import { possessive } from '../witness/midnight.js';
+import { shortName } from './short-name.js';
 
 export type MenuItemId =
   | 'start'
@@ -270,6 +271,12 @@ function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
   }
   const game = f.phase === 'playing' || f.phase === 'paused';
   const subject = l.game ?? '';
+  if (l.awayQuestion) {
+    const who = shortName(l.awayQuestion.name, 16);
+    items.push({ id: 'awayWait', label: `Keep waiting for ${who}`, value: null, off: null, confirm: null });
+    items.push({ id: 'awayEnd', label: `End ${possessive(who)} ball`, value: null, off: null, confirm: `Choose again to end ${possessive(who)} ball at ${l.awayQuestion.score.toLocaleString('en-US')}; the turn passes`, subject });
+    items.push({ id: 'awayPlayOn', label: `Play on without ${who}`, value: null, off: null, confirm: `Choose again: ${who} is out of this game`, subject });
+  }
   const away = l.hostAway ? "The lobby's PC is away: this waits until it is back" : null;
   if (l.announced) {
     // A second choose while a start waits starts without what it waits for; anybody takes a start back.
@@ -294,12 +301,10 @@ function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
   commonItems(f, items, subject);
   if (l.giveUp) items.push({ id: 'giveUp', label: 'Give up this game', value: null, off: null, confirm: 'Choose again to give up this game', subject });
   if (l.awayQuestion) {
-    const who = l.awayQuestion.name;
-    items.push({ id: 'awayWait', label: `Keep waiting for ${who}`, value: null, off: null, confirm: null });
-    items.push({ id: 'awayEnd', label: `End ${possessive(who)} ball`, value: null, off: null, confirm: `Choose again to end ${possessive(who)} ball at ${l.awayQuestion.score.toLocaleString('en-US')}; the turn passes`, subject });
-    items.push({ id: 'awayPlayOn', label: `Play on without ${who}`, value: null, off: null, confirm: `Choose again: ${who} is out of this game`, subject });
+    // The final review (2026-11-28, finding 9): the three answers are the first lines of the menu while the question
+    // stands (`awayItems`, above): they were lines 8 to 10, seven presses down in the headset.
   } else if (l.waitedFor !== null) {
-    items.push({ id: 'playOn', label: `Play on without ${l.waitedFor}`, value: null, off: null, confirm: `Choose again: ${l.waitedFor} is out of this game`, subject });
+    items.push({ id: 'playOn', label: `Play on without ${shortName(l.waitedFor, 16)}`, value: null, off: null, confirm: `Choose again: ${shortName(l.waitedFor)} is out of this game`, subject });
   }
   // Two lines with two ids: a question asked about the one is never answered as the other.
   if (l.end === 'match') items.push({ id: 'endMatch', label: 'End match', value: null, off: null, confirm: 'Choose again to end the match; everyone stays in the lobby', subject });
@@ -321,6 +326,8 @@ export interface MenuState {
   confirming: MenuItemId | null;
   /** One line under the menu: the question, a refusal, or what the last choose did. */
   note: string | null;
+  /** The final review (finding 12): the words of the chosen line when the menu was last drawn (`menuDrawn`). */
+  drawn?: string | null;
   /** The review of PR 131: for End my ball, the grant the question on screen was asked about (absent: none). */
   confirmFor?: number | null;
   /** The review of PR 136: what the question on screen was asked about (`MenuItem.subject`; absent: nothing that changes). */
@@ -328,6 +335,62 @@ export interface MenuState {
 }
 
 export const MENU_CLOSED: MenuState = { open: false, at: null, confirming: null, note: null };
+
+/**
+ * The final review (2026-11-28, finding 12): the words of the chosen line as the person sees them, noted when the
+ * menu is drawn (`drawn`). A press acts on what was on the screen: "Start without Dana" chosen in the moment the
+ * start turns to wait for 3D sends "Start without Dana", which the shell then refuses, as the Match tab's button does.
+ */
+export function menuDrawn(state: MenuState, items: readonly MenuItem[]): MenuState {
+  if (!state.open) return state;
+  const label = items.find((it) => it.id === state.at)?.label ?? null;
+  return (state.drawn ?? null) === label ? state : { ...state, drawn: label };
+}
+
+/**
+ * The lobby PC's panel line while it is asked about a player who is up, out of reach and still seen playing (finding
+ * 9): that the question is open, what the answers are, and which key opens the menu that holds them.
+ */
+export function awayQuestionLine(name: string, menuKeyWords: string): string {
+  return `${name} is out of reach and still playing. Keep waiting, end their ball, or play on without them: open the menu (${menuKeyWords}) or the Match tab`;
+}
+
+/**
+ * The lobby's part of the menu's facts, from the lobby as the Match tab has it. One function for the shell and for
+ * the story pages of the screens (finding 15: the story drew its menus from a copy of this made by hand).
+ */
+export function menuLobbyOf(
+  l: {
+    stance: 'play' | 'watch';
+    startButton: { label: 'Start match' | 'Next game'; off: string | null };
+    start: unknown | null;
+    startWithout: string | null;
+    newMatch: { warnings: string[] } | null;
+    gameKey: string;
+    hostAway: unknown | null;
+    over: boolean;
+    end: 'match' | 'everyone' | null;
+    giveUp: boolean;
+    waitedFor: { name: string } | null;
+    awayQuestion: { name: string; score: number } | null;
+  },
+  opener: boolean,
+): MenuLobby {
+  return {
+    opener,
+    stance: l.stance,
+    start: { label: l.startButton.label, off: l.startButton.off },
+    announced: l.start ? { without: l.startWithout } : null,
+    newMatch: l.newMatch ? { warnings: l.newMatch.warnings } : null,
+    game: l.gameKey,
+    hostAway: l.hostAway !== null,
+    over: l.over,
+    end: l.end,
+    giveUp: l.giveUp,
+    waitedFor: l.waitedFor?.name ?? null,
+    awayQuestion: l.awayQuestion ? { name: l.awayQuestion.name, score: l.awayQuestion.score } : null,
+  };
+}
 
 export type MenuKey = 'menu' | 'choose' | 'up' | 'down' | 'left' | 'right';
 
@@ -434,8 +497,10 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
       return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
     case 'startNow':
       // The review of PR 138: the press says what it was about (the line's own words): the shell does nothing when
-      // the start waits for something else by then.
-      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: false, now: true, without: item.label } };
+      // the start waits for something else by then. The final review (finding 12): the words are the ones the line
+      // had when the menu was last drawn with the cursor on it (`MenuState.drawn`), not the ones it has at the
+      // press: those were compared with themselves.
+      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: false, now: true, without: state.at === 'startNow' && state.drawn != null ? state.drawn : item.label } };
     case 'cancelStart':
       return { state: MENU_CLOSED, effect: { kind: 'cancelStart' } };
     case 'newMatch':

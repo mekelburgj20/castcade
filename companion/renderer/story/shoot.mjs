@@ -1,5 +1,5 @@
 // A17 step 9 (2026-11-27): screenshots of the story pages, one PNG per state, without Electron and without a window.
-// It starts the story dev server (127.0.0.1 only) and one headless Edge or Chrome with a profile folder of its own
+// It starts the story dev server (127.0.0.1 only, on a free port) and one headless Edge or Chrome with a profile folder of its own
 // (so it never joins a browser that is already open), drives that browser over its DevTools connection (loopback,
 // a port the browser picks), and closes both again. No dependency: Node's own WebSocket.
 //
@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout } from 'node:timers';
 import { fileURLToPath } from 'node:url';
+import { createServer as createNetServer } from 'node:net';
 import { createServer } from 'vite';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,7 +69,17 @@ async function openBrowser(profile) {
 const pieces = Number(process.env.STORY_PIECES ?? 0);
 mkdirSync(pieces > 0 ? join(out, 'pieces') : out, { recursive: true });
 const profile = mkdtempSync(join(tmpdir(), 'castcade-story-'));
-const server = await createServer({ configFile: join(here, 'vite.config.mjs'), logLevel: 'error' });
+// The final review (2026-11-28, finding 16): a port of its own. 5199 (the story server's own, for a person's browser)
+// may be another program's on this PC; the pictures would then be of that program's pages, or the run would fail.
+const port = await new Promise((ok, fail) => {
+  const probe = createNetServer();
+  probe.once('error', fail);
+  probe.listen(0, '127.0.0.1', () => {
+    const { port: free } = probe.address();
+    probe.close(() => ok(free));
+  });
+});
+const server = await createServer({ configFile: join(here, 'vite.config.mjs'), logLevel: 'error', server: { host: '127.0.0.1', port, strictPort: true, open: false } });
 await server.listen();
 // The list is TypeScript beside the fixtures it names: the story server reads it.
 // STORY_SHEETS=1: the side-by-side sheets in place of the single pictures.
@@ -89,7 +100,7 @@ try {
     await size(width, low);
     // A page left behind by the shot before would answer for this one: start from an empty page.
     await page('Page.navigate', { url: 'about:blank' });
-    await page('Page.navigate', { url: `http://127.0.0.1:5199/story/${shot.page}` });
+    await page('Page.navigate', { url: `http://127.0.0.1:${port}/story/${shot.page}` });
     // The page says how tall it is once it has drawn (and pressed what the shot asks it to press).
     let tall = 0;
     for (let i = 0; i < 200 && !(tall > 0); i += 1) {
@@ -100,15 +111,20 @@ try {
     const sizes = [[shot.name, width, Math.max(low, tall)]];
     if (shot.window) sizes.push([`${shot.name}@420x640`, 420, 640], [`${shot.name}@380x520`, 380, 520]);
     for (const [name, w, h] of sizes) {
-      await size(w, h);
-      await sleep(120);
-      const { data } = await page('Page.captureScreenshot', { format: 'png' });
+      // The final review (finding 9): the window keeps a window's height, and the picture is taken of the page's own
+      // height beyond it. The window was made as tall as the page and the picture taken 120 ms later: now and then
+      // the page was not drawn again by then, and the picture held it three times, one under the other
+      // (tab-resume-v1.png). Two frames are waited for as well.
+      await size(w, Math.min(h, 900));
+      await page('Runtime.evaluate', { expression: 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))', awaitPromise: true });
+      await sleep(60);
+      const { data } = await page('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: w, height: h, scale: 1 } });
       writeFileSync(join(out, `${name}.png`), Buffer.from(data, 'base64'));
       index.push(`${name}.png\t${shot.says}${name.includes('@') ? ` (the window at ${w} x ${h}: what is seen without scrolling)` : ''}`);
       process.stdout.write(`${name}.png ${w}x${h}\n`);
       // STORY_PIECES=900: a tall picture also in pieces of that height (in pieces/), for a reader that shrinks a long image.
       for (let y = 0, n = 1; pieces > 0 && h > pieces && y < h; y += pieces, n += 1) {
-        const part = await page('Page.captureScreenshot', { format: 'png', clip: { x: 0, y, width: w, height: Math.min(pieces, h - y), scale: 1 } });
+        const part = await page('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y, width: w, height: Math.min(pieces, h - y), scale: 1 } });
         writeFileSync(join(out, 'pieces', `${name}.${n}.png`), Buffer.from(part.data, 'base64'));
       }
     }
@@ -118,12 +134,22 @@ try {
   await browser.send('Browser.close').catch(() => undefined);
   await Promise.race([gone, sleep(5000)]);
   await server.close();
-  // The browser's last process lets go of its profile folder a moment after it closes.
-  await sleep(1000);
-  try {
-    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
-  } catch {
-    process.stdout.write(`could not remove ${profile}: remove it by hand\n`);
+  // The final review (finding 16): the browser's last process lets go of its profile folder a moment after it
+  // closes, and a short run was over before it had. The folder is tried for until it is gone (20 s at most); a
+  // folder that stays fails the run, and says where it is.
+  let removed = false;
+  for (let i = 0; i < 40 && !removed; i += 1) {
+    await sleep(500);
+    try {
+      rmSync(profile, { recursive: true, force: true });
+      removed = !existsSync(profile);
+    } catch {
+      removed = false;
+    }
+  }
+  if (!removed) {
+    process.stderr.write(`the browser's profile folder could not be removed: ${profile}\n`);
+    process.exitCode = 1;
   }
 }
 if (!filter) writeFileSync(join(out, 'index.txt'), `${index.join('\n')}\n`);

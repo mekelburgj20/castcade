@@ -264,6 +264,17 @@ export interface StripRow {
 // ---- formatting helpers (embedded in the page; keep them self-contained) ----
 
 /**
+ * The final review (finding 10): a name as it is shown in a header or a sentence: cut to `max` characters, the last an
+ * ellipsis. The page embeds its helpers by their source text, and a helper can only call what is defined in its own
+ * file: this is `match/short-name.ts`, word for word (held equal by panel-page.test.ts).
+ */
+export function shortName(name: string, max = 24): string {
+  const chars = Array.from(String(name));
+  return chars.length <= max ? String(name) : chars.slice(0, Math.max(1, max - 1)).join('') + '…';
+}
+
+
+/**
  * `YOUR BALL 2` / `KROBS IS UP`, or the phase when nobody is. A10 (2026-11-02): from game 2 of a series the turn line
  * says the game (`GAME 2 · YOUR BALL 1`), and a game's result reads `GAME 1 OVER` until the series is over
  * (`MATCH OVER`). A11: `STARTING IN 5` while the start from the host's table counts down.
@@ -277,13 +288,20 @@ export function headerText(s: PanelState): string {
   // A17 step 9 (2026-11-27): a countdown that has run out and is held (a player's link dropped a moment ago, see the
   // line under it) reads STARTING: "IN 0" looked stuck.
   if (s.phase === 'idle' && typeof s.countdown === 'number') return s.countdown > 0 ? 'STARTING IN ' + s.countdown : 'STARTING';
+  // The final review (finding 7; design 11.9): a match ended a moment ago: MATCH OVER, and the line under it says the standing.
+  if (s.phase === 'idle' && s.matchOver === true) return 'MATCH OVER';
   // A17 step 10: tables are being changed (a start does not count down meanwhile; one that does is the header).
   if (s.phase === 'idle' && typeof s.changingTable === 'string' && s.changingTable !== '') return 'CHANGING TABLE · ' + s.changingTable.toUpperCase();
   // A17 step 9 (design 11.9): in a lobby the header is the lobby (`LOBBY · 3 HERE`); who starts, and how, is the line.
   if (s.phase === 'idle') return s.members && s.members.length > 0 ? 'LOBBY · ' + s.members.length + ' HERE' : 'WAITING FOR THE START';
+  // The final review (2026-11-28, finding 4): a game that waits for a player who is away says for whom: `PAUSED ·
+  // WAITING FOR CHUCK`. It named whoever held the last turn (`PAUSED · KROBS IS UP`), which was untrue whenever the
+  // drop came during somebody else's ball. A player's own panel keeps `YOUR BALL` only while the ball is theirs.
+  const waited = s.phase === 'paused' && s.pausedFor ? s.players.find((p) => p.id === s.pausedFor) : null;
+  if (waited && !(s.myTurn && s.playerUp === s.pausedFor)) return 'PAUSED · ' + (game > 1 ? 'GAME ' + game + ' · ' : '') + 'WAITING FOR ' + shortName(waited.name, 14).toUpperCase();
   const up = s.players.find((p) => p.id === s.playerUp);
   const ball = s.ball !== null ? ' ' + s.ball : '';
-  const turn = (game > 1 ? 'GAME ' + game + ' · ' : '') + (s.myTurn ? 'YOUR BALL' + ball : up ? up.name.toUpperCase() + ' IS UP' : 'WAITING');
+  const turn = (game > 1 ? 'GAME ' + game + ' · ' : '') + (s.myTurn ? 'YOUR BALL' + ball : up ? shortName(up.name, 14).toUpperCase() + ' IS UP' : 'WAITING');
   return s.phase === 'paused' ? 'PAUSED · ' + turn : turn;
 }
 
@@ -339,7 +357,7 @@ export function stripRows(s: PanelState): StripRow[] {
  */
 export function watchingText(s: PanelState): string {
   if ((s.phase !== 'playing' && s.phase !== 'paused') || !s.members) return '';
-  const names = s.members.filter((m) => !s.players.some((p) => p.id === m.id) && m.flags.indexOf('away') < 0).map((m) => m.name);
+  const names = s.members.filter((m) => !s.players.some((p) => p.id === m.id) && m.flags.indexOf('away') < 0).map((m) => shortName(m.name, 18));
   return names.length > 0 ? 'Watching: ' + names.join(', ') : '';
 }
 
@@ -365,7 +383,7 @@ export function stageText(s: PanelState | null, hasVideo: boolean, voiceUp = fal
   if (s.myTurn) return 'NO PICTURE FROM YOUR TABLE';
   const up = s.players.find((p) => p.id === s.playerUp);
   // A17 step 9: "KROBS' TABLE", as every sentence of the lobby writes a name that ends in s (it read KROBS'S here alone).
-  return up ? 'WAITING FOR ' + up.name.toUpperCase() + (/s$/i.test(up.name) ? "' TABLE" : "'S TABLE") : '';
+  return up ? 'WAITING FOR ' + shortName(up.name, 14).toUpperCase() + (/s$/i.test(up.name) ? "' TABLE" : "'S TABLE") : '';
 }
 
 /**
@@ -1328,7 +1346,7 @@ export function tableWorkletSource(): string {
   ].join('\n');
 }
 
-const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, headerText, scoreText, stripRows, watchingText, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
+const HELPERS = [cameraCapture, isCameraCapture, cameraFrameSize, eyesKey, stereoSignal, videoBitrateFor, shortName, headerText, scoreText, stripRows, watchingText, tallyText, micText, videoPeer, stageText, videoCropRect, paintFrame, stereoOf, feedSize, stallStep, trackRole, tablePlays, volumeGains, outgoingSdp, preferH264, bitrateHintsFor, withBitrateHints, icePairInfo, icePairText, iceUfrag, iceWatchStep, iceRestartName, noPathText, iceRoundStart, iceRoundSeen, iceCandidateIds, iceRoundLine, iceRoundOver, iceRoundSparse, iceRoundLook, iceRoundCandidate];
 
 /** The page. `vr`: drawn offscreen for the headset (960x640) rather than as a 480x720 desktop window; same layout. */
 export function panelPageHtml(opts: { vr: boolean }): string {
@@ -1345,6 +1363,7 @@ export function panelPageHtml(opts: { vr: boolean }): string {
      the scores off the right edge. Seen in the first pictures ever taken of this page (renderer/story). */
   body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr auto auto; gap: 1vmin; padding: 1.5vmin; }
   #head { font-size: 7.5vmin; line-height: 1.1; letter-spacing: 0.04em; text-align: center; padding: 1vmin 0; }
+  #head { overflow: hidden; overflow-wrap: anywhere; }
   #head.mine { color: var(--mine); }
   #head .sub { font-size: 4vmin; letter-spacing: 0.02em; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #stage { position: relative; min-height: 0; background: var(--panel); border-radius: 1vmin; overflow: hidden; }
@@ -1355,7 +1374,9 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   .row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 2vmin; align-items: baseline; padding: 0.6vmin 1.5vmin;
     background: var(--panel); border-radius: 0.8vmin; font-size: 4.8vmin; }
   .row.up { outline: 0.5vmin solid var(--up); }
-  .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .name { display: flex; align-items: baseline; min-width: 0; white-space: nowrap; }
+  .row .name .nm { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .row .name .flag, .row .name .note { flex: none; }
   .row .detail { color: var(--dim); font-size: 3.6vmin; }
   .row .score { font-variant-numeric: tabular-nums; }
   .row .flag { color: var(--bad); font-size: 3vmin; margin-left: 1.5vmin; }
@@ -1377,10 +1398,12 @@ export function panelPageHtml(opts: { vr: boolean }): string {
   /* A17 step 9 (2026-11-27): the list is a window onto the lines, and keeps the chosen one in it. A lobby's menu has
      up to thirteen lines where a match's had seven: the lines past the seventh were cut off, and with them the
      question under the list and the keys (seen in the first pictures of this page, renderer/story). */
-  #menuitems { display: grid; gap: 0.8vmin; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0.6vmin; margin: -0.6vmin; scroll-padding-block: 1.2vmin; }
+  #menuitems { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.8vmin; align-content: start; flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 0.6vmin; margin: -0.6vmin; scroll-padding-block: 1.2vmin; }
   .more { flex: 0 0 auto; font-size: 2.6vmin; line-height: 1; text-align: center; color: var(--dim); visibility: hidden; }
   .more.on { visibility: visible; }
   #head { grid-row: 1; } #stage { grid-row: 2; grid-column: 1; } #strip { grid-row: 3; grid-column: 1; } footer { grid-row: 4; }
+  .mi > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .mi .val { flex: none; }
   .mi { display: flex; justify-content: space-between; gap: 2vmin; padding: 1vmin 2vmin; border-radius: 0.8vmin;
     font-size: 5vmin; background: #1b2029; }
   .mi.sel { outline: 0.6vmin solid var(--mine); color: var(--mine); }
@@ -1596,7 +1619,11 @@ function render() {
     el.className = row.up ? 'row up' : 'row';
     const name = document.createElement('span');
     name.className = 'name';
-    name.textContent = row.name;
+    // The final review (finding 10): the name is cut in a box of its own, so that the flag beside it is never what goes.
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = row.name;
+    name.appendChild(nm);
     for (const f of row.flags) {
       const flag = document.createElement('span');
       flag.className = 'flag';

@@ -59,6 +59,7 @@ export const MATCH: any = {
   wait3d: { players: [], seconds: 0, armed: null },
   advisories: [],
   pass: null,
+  canResume: false,
   endBall: null,
   transfer: null,
   series: null,

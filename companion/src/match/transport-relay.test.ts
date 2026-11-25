@@ -867,6 +867,29 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(hErrors.at(-1)).toBe('This PC is no longer paired with ArcAid');
   }, 40_000);
 
+  it("the final review (finding 6): a PC that is paired again during its lobby (a new token) gets its room back by itself. The open socket held the old token, so the relay went on answering `unauthorized` while the pairing check, made with the new token, said paired: the room was asked for again for ever", async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    let asked = 0;
+    let token = DEVICES['dev-h'];
+    const { h, states } = await matchOf(r, ['a'], {
+      host: {
+        // The pairing check is ArcAid's own, made with the token this PC has now: paired.
+        confirmUnpaired: async () => (asked++, false),
+        freshAuth: () => ({ deviceId: 'dev-h', deviceToken: token }),
+      },
+    });
+    // Paired again in Settings: the old token is dead, the new one verifies.
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    r.accept('dev-h', 'tok-h-new');
+    token = 'tok-h-new';
+    await until(() => states.at(-1) === 'registered' && asked >= 1, 30_000);
+    expect(h.closedWhy).toBeNull();
+    expect(states).not.toContain('closed');
+    expect(asked).toBe(1);
+    expect(r.rooms()).toHaveLength(1);
+  }, 45_000);
+
   it("A17 step 8 (the review of PR 138): the relay could not read the device for a while (two answers `unauthorized`, then it reads again): the host has its room back, nothing was given up and the second question was never asked; and when that question's answer is \"cannot tell\", the host goes on asking for its room", async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
     let asked = 0;

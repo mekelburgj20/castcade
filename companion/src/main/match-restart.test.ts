@@ -15,7 +15,7 @@
  * match is open, goes back by itself as a player does. Only a record that does not read in full opens the code
  * again empty (step 7's behaviour), with the match lost and said.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -941,7 +941,7 @@ describe("the lobby's PC restarted (A15; A17 step 8: it is the same lobby again)
   it("the lobby's PC is quit with somebody present in its lobby (the review of PR 138): there is a question to ask; Keep: the others read that Castcade was closed there and that the lobby is kept, and at the next start the lobby is offered, never gone back into by itself; Close: everyone is told it is closed; with everybody else away, or alone, a quit closes it", async () => {
     const { hr, H, C } = await started();
     hr.gameStart();
-    expect(H.mh.quitQuestion()).toEqual({ code: H.mh.status().code, names: ['Guest'] });
+    expect(H.mh.quitQuestion()).toEqual({ code: H.mh.status().code, names: ['Guest'], away: [] });
     expect(C.mh.quitQuestion()).toBeNull();
     await H.mh.stop({ lobby: 'keep' });
     expect(JSON.parse(readFileSync(H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit' });
@@ -963,13 +963,32 @@ describe("the lobby's PC restarted (A15; A17 step 8: it is the same lobby again)
     expect(existsSync(H2.record)).toBe(false);
     await until(() => (C.mh.status().panel?.message ?? C.mh.status().lastError ?? '').includes('closed the lobby'));
 
-    // Everybody else is away: nothing to ask, and the quit closes the lobby as before.
+    // The final review (finding 2): the only other member is away at the moment of the quit (their PC is restarting).
+    // They have a place: the question is asked about them, and Keep keeps the lobby. It closed the lobby for
+    // everyone, with no question, because nobody was "present".
     const t = await started();
     await t.C.mh.stop({ keepForRestart: true });
     await until(() => t.H.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.flags.includes('away') === true);
-    expect(t.H.mh.quitQuestion()).toBeNull();
-    await t.H.mh.stop();
-    expect(existsSync(t.H.record)).toBe(false);
+    expect(t.H.mh.quitQuestion()).toEqual({ code: t.H.mh.status().code, names: [], away: ['Guest'] });
+    await t.H.mh.stop({ lobby: 'keep' });
+    expect(JSON.parse(readFileSync(t.H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit' });
+    // The lobby is offered at the next start, with its match; the member who was away can come back into it.
+    const T2 = castcade('host', t.hr.w, t.H.dir);
+    expect(T2.mh.status().resume).toMatchObject({ role: 'host', auto: false, lost: false, match: true });
+    await T2.mh.stop();
+    // The friend's link drops while the owner reads the question, and the owner answers Keep: kept all the same.
+    const u = await started();
+    expect(u.H.mh.quitQuestion()).toMatchObject({ names: ['Guest'], away: [] });
+    await u.C.mh.stop({ keepForRestart: true });
+    await until(() => u.H.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.flags.includes('away') === true);
+    await u.H.mh.stop({ lobby: 'keep' });
+    expect(JSON.parse(readFileSync(u.H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit' });
+    // Close the lobby for everyone closes it whoever is present.
+    const v = await started();
+    await v.C.mh.stop({ keepForRestart: true });
+    await until(() => v.H.mh.status().lobby?.members.find((m) => m.name === 'Guest')?.flags.includes('away') === true);
+    await v.H.mh.stop({ lobby: 'close' });
+    expect(existsSync(v.H.record)).toBe(false);
     // Alone in a lobby: the same.
     const sr = rig();
     const S = castcade('solo', sr.w);
@@ -977,6 +996,20 @@ describe("the lobby's PC restarted (A15; A17 step 8: it is the same lobby again)
     expect(S.mh.quitQuestion()).toBeNull();
     await S.mh.stop();
     expect(existsSync(S.record)).toBe(false);
+  }, 60_000);
+
+  it("the final review: a kept quit whose record cannot be written is never gone back into by itself. The record on disk was the one of a minute before, with no word of the quit: a start within the minute went back into the lobby, microphone on. It is taken away, and the next start offers nothing", async () => {
+    const { hr, H } = await started();
+    expect(JSON.parse(readFileSync(H.record, 'utf8'))).toMatchObject({ role: 'host', restart: null });
+    // The record cannot be written any more: a folder stands where its temporary file goes.
+    mkdirSync(`${H.record}.tmp`);
+    await H.mh.stop({ lobby: 'keep' });
+    expect(H.logs.some((l) => l.includes('its record could not be written'))).toBe(true);
+    expect(existsSync(H.record)).toBe(false);
+    rmSync(`${H.record}.tmp`, { recursive: true, force: true });
+    const H2 = castcade('host', hr.w, H.dir);
+    expect(H2.mh.status().resume).toBeNull();
+    expect(H2.mh.status().role).toBe('none');
   }, 60_000);
 
   it("the review of PR 138: a ball ends in the seconds Castcade takes to close on the lobby's PC (a kept quit, or an update): the engine had stopped taking frames before the last record was written, so that ball end is in nobody's log but its player's own PC, which kept it; after the start again it is taken, once, and the turn goes on. Nothing the lobby's PC acknowledged is missing from what it came back with", async () => {
@@ -1373,7 +1406,7 @@ describe('a match through ArcAid, restarted (A15)', () => {
     // ArcAid's 30 s after a host is gone are 400 ms here.
     const m = await relayed(400, { relayRejoin: { gapsMs: [300, 600, 2000], maxMisses: 60 } });
     try {
-      expect(m.H.mh.quitQuestion()).toEqual({ code: m.code, names: ['Guest'] });
+      expect(m.H.mh.quitQuestion()).toEqual({ code: m.code, names: ['Guest'], away: [] });
       expect(m.C.mh.quitQuestion()).toBeNull();
       await m.H.mh.stop({ lobby: 'keep' });
       expect(JSON.parse(readFileSync(m.H.record, 'utf8'))).toMatchObject({ role: 'host', restart: 'quit', relay: true, code: m.code });

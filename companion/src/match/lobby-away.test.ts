@@ -1170,4 +1170,65 @@ describe('A17 step 6, the review of 2026-11-25: the clocks, and the lobby`s PC c
     expect(r.results['a']?.[0]?.result.signatures.map((s) => s.playerId)).toEqual(['a']);
     expect(r.results['a']?.[0]?.result.winner).toBe('b');
   });
+
+  it('the final review (finding 3): a Resume is refused while the game waits for a member who is away: nothing is logged, the grant of a player who is up and away stays theirs, and the question about them is still asked', async () => {
+    // A: a waiting player is away at their own turn. A press of Resume changed nothing and logged RESUME, PAUSE each time.
+    const r = await starLobby(['a', 'b']);
+    r.host.startMatch(['h', 'b', 'a']);
+    await flush();
+    await r.cut('b');
+    await r.tick(5000);
+    r.host.localBallEnd(10, 'nvram');
+    await r.tick(MIN);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'b' });
+    const before = logged(r).length;
+    expect(r.host.resumeBlocker()).toBe('B is away: the game goes on when they are back, or with Play on without B');
+    expect(r.host.resume()).toBe(false);
+    expect(r.host.resume()).toBe(false);
+    expect(logged(r).length).toBe(before);
+    // Another member's RESUME for it is refused with the same sentence, and logged nowhere.
+    client(r, 'a').resume();
+    await flush();
+    expect(r.said['a']?.at(-1)).toBe('B is away: the game goes on when they are back, or with Play on without B');
+    expect(logged(r).length).toBe(before);
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'b' });
+    // The player who is waited for comes back: their own RESUME is taken, as ever.
+    await r.mend('b');
+    expect(r.host.resumeBlocker()).toBeNull();
+    client(r, 'b').resume();
+    await flush();
+    expect(client(r, 'b').myGrant).toMatchObject({ player: 'b', ballNumber: 1 });
+
+    // B: the player who is up is away and still seen playing. A press of Resume withdrew their grant, and the clock
+    // then counted them out with no question (`[RESUME, PAUSE, FORFEIT, RESUME, TURN_GRANT]`).
+    const q = await starLobby(['a', 'b'], { balls: 2, stances: { b: 'watch' }, lobby: { stillSeen: (p: PlayerId) => p === 'a' } });
+    const asked: PlayerId[] = [];
+    q.host.on('awayQuestion', (x) => asked.push(x.player));
+    q.host.startMatch(['a', 'h']);
+    await flush();
+    await q.cut('a');
+    await q.tick(5000);
+    expect(q.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    const grant = q.host.state.currentGrant?.grant.grantSeq;
+    expect(grant).toBeDefined();
+    const logBefore = logged(q).length;
+    expect(q.host.resume()).toBe(false);
+    expect(logged(q).length).toBe(logBefore);
+    expect(q.host.state.currentGrant?.grant.grantSeq).toBe(grant);
+    expect(q.host.passTurnBlocker()).toBeNull();
+    await q.tick(3 * MIN);
+    expect(asked).toEqual(['a']);
+    expect(q.host.state.players['a']?.status).toBe('playing');
+    expect(logged(q)).not.toContain('FORFEIT');
+    // The owner's answers still work, and they are what ends the wait: End their ball resumes by itself.
+    expect(q.host.answerAway('a', 'end_ball')).toBe(true);
+    await flush();
+    expect(logged(q).slice(-3)).toEqual(['TURN_PASS', 'RESUME', 'TURN_GRANT']);
+    // A pause that a press can end keeps its Resume: one that the lobby's PC asked for.
+    q.host.pause('requested', null);
+    await flush();
+    expect(q.host.resumeBlocker()).toBeNull();
+    expect(q.host.resume()).toBe(true);
+    expect(q.host.state.paused).toBeNull();
+  });
 });

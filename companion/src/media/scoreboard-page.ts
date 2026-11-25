@@ -54,6 +54,16 @@ export interface ScoreboardView {
 }
 
 /**
+ * The final review (finding 10): a name as it is shown in a header or a sentence: cut to `max` characters, the last an
+ * ellipsis. The page embeds its helpers by their source text, and a helper can only call what is defined in its own
+ * file: this is `match/short-name.ts`, word for word (held equal by panel-page.test.ts).
+ */
+export function shortName(name: string, max = 24): string {
+  const chars = Array.from(String(name));
+  return chars.length <= max ? String(name) : chars.slice(0, Math.max(1, max - 1)).join('') + '…';
+}
+
+/**
  * The session tally: games finished in this match and each player's wins, in turn order: `18 GAMES PLAYED ·
  * MekelburgJ 10 · Krobs 8`. Before the first result every count is 0. A player the series does not list yet (joined
  * since the last result) has 0 wins.
@@ -64,7 +74,7 @@ export function tallyText(s: Pick<PanelState, 'players' | 'series'>): string {
   for (const x of series) if (x.games > games) games = x.games;
   const wins = s.players.map((p) => {
     const sr = series.find((x) => x.id === p.id);
-    return p.name + ' ' + (sr ? sr.wins : 0);
+    return shortName(p.name, 14) + ' ' + (sr ? sr.wins : 0);
   });
   return [games + (games === 1 ? ' GAME PLAYED' : ' GAMES PLAYED'), ...wins].join(' · ');
 }
@@ -84,14 +94,17 @@ export function scoreboardView(s: PanelState | null): ScoreboardView | null {
     // away from the host and may well be playing on, and the watcher keeps the picture while it arrives. The card is
     // then all that says so: `KROBS AWAY · GAME 2 · BALL 1 OF 3`. Any other pause, and the player's own card: PAUSED.
     const up = s.pausedFor && s.pausedFor === s.playerUp && !s.myTurn ? s.players.find((p) => p.id === s.pausedFor) : null;
-    title = (up ? up.name.toUpperCase() + ' AWAY' : 'PAUSED') + ' · ' + title;
+    // The final review (finding 4): the game waits for a player who does not hold the turn: said by name.
+    const waited = !up && s.pausedFor ? s.players.find((p) => p.id === s.pausedFor) : null;
+    title = (up ? shortName(up.name, 10).toUpperCase() + ' AWAY' : waited && !s.myTurn ? 'WAITING FOR ' + shortName(waited.name, 10).toUpperCase() : 'PAUSED') + ' · ' + title;
   }
   // A17 step 9 (2026-11-27, design 11.9): the lobby's PC is away (the first of the lobby's rows is its own): the
   // game goes on under the player who is up, and this card is all that player sees of it.
   const lobbyPc = s.members && s.members.length > 0 ? s.members[0] : null;
   if (lobbyPc && lobbyPc.flags.indexOf('away') >= 0 && title.indexOf(' AWAY · ') < 0) title = 'LOBBY PC AWAY · ' + title.replace(/^PAUSED · /, '');
   const rows = s.players.map((p) => ({
-    name: p.name,
+    // The final review (finding 10): cut so that AWAY beside it and the score keep their room.
+    name: shortName(p.name, 11),
     score: p.score === null ? '–' : p.score.toLocaleString('en-US'),
     up: s.phase !== 'over' && p.isUp,
     away: s.phase !== 'over' && (p.flags || []).indexOf('disconnected') >= 0,
@@ -107,7 +120,7 @@ export function scoreboardWanted(s: Pick<PanelState, 'phase'> | null, enabled: b
   return enabled && s !== null && s.phase !== 'idle';
 }
 
-const HELPERS = [tallyText, scoreboardView];
+const HELPERS = [shortName, tallyText, scoreboardView];
 
 /** The page: a transparent 512x384 frame with the card at its bottom edge. */
 export function scoreboardPageHtml(): string {
@@ -124,7 +137,7 @@ export function scoreboardPageHtml(): string {
   #card.off { display: none; }
   #title { font-size: 21px; letter-spacing: 0.06em; color: var(--dim); }
   #rows { display: grid; gap: 4px; }
-  .row { display: grid; grid-template-columns: 24px 1fr auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
+  .row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 6px; align-items: baseline; font-size: 30px; line-height: 1.25; }
   .row .mark { color: var(--up); font-size: 22px; }
   .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .score { font-variant-numeric: tabular-nums; }

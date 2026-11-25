@@ -583,7 +583,7 @@ describe('what the lobby says about 3D before the start (I11.4.11, I11.4.12, I11
     const { host, clock, H, c } = await rig();
     c.ctl.setLobbyNote(TABLE_BY_HAND_NOTE);
     expect(c.line()).toBe(`Waiting for Hosty to start a game on the table · ${TABLE_BY_HAND_NOTE}`);
-    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then host or join again');
+    expect(TABLE_BY_HAND_NOTE).toBe('Not in 3D: this table is not running in the Castcade VPX build. For 3D it has to be started again by Castcade: close VPX, then open or join a lobby again');
     // Only on the PC it is about.
     expect(H.line()).toBe('Everyone in? Start a game on your table (or press Start match)');
     let changes = 0;

@@ -646,6 +646,10 @@ export const StartRequest = z
     newMatch: z.boolean().default(false).describe('True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`).'),
     anyway: z.boolean().default(false).describe('A13: the sender confirmed a start with a table that cannot report ball ends.'),
     now: z.boolean().default(false).describe('Do not wait: start without the 3D connections and without the people whose table is not ready (a second press).'),
+    nowFor: z
+      .object({ waitsFor: z.enum(['tables', 'other_tables', 'own_games', '3d']), waitsOn: z.array(PlayerId).max(64).default([]) })
+      .optional()
+      .describe("With `now`: what the announced start waited for when the sender pressed (its `waitsFor` and `waitsOn`, as the sender's last HELLO_ACK said them). The host starts without it only while the start still waits for exactly that; otherwise REJECT, and nothing changes. Absent: not checked."),
   })
   .describe('client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown.');
 

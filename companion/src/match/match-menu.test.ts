@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MATCH_SETTINGS, patchMatchSettings } from '../main/match-setup.js';
 import { DEFAULT_VR_VIEW, vrViewMode } from './controller.js';
-import { MENU_CHANGED_NOTE, MENU_CLOSED, cleanShortcut, endBallQuestion, menuItems, menuPress, menuSettle, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuLobby, type MenuState } from './match-menu.js';
+import { MENU_CHANGED_NOTE, MENU_CLOSED, awayQuestionLine, menuDrawn, cleanShortcut, endBallQuestion, menuItems, menuPress, menuSettle, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuLobby, type MenuState } from './match-menu.js';
 
 const facts = (over: Partial<MenuFacts> = {}): MenuFacts => ({
   role: 'host',
@@ -491,5 +491,33 @@ describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md se
     const open = run(facts(), ['menu']).state;
     const started = facts({ phase: 'playing' });
     expect(menuPress(open, menuItems(started), started, 'choose')).toMatchObject({ effect: null, state: { at: 'voice', note: MENU_CHANGED_NOTE } });
+  });
+
+  it('the final review (finding 9): while the lobby\'s PC is asked about a player who is up and away, the three answers are the first lines of the menu', () => {
+    const asked = inLobby({ opener: true, waitedFor: 'Krobs', awayQuestion: { name: 'Krobs', score: 2_345_670 }, end: 'everyone', giveUp: true }, { role: 'host', phase: 'paused' });
+    expect(ids(asked).slice(0, 4)).toEqual(['awayWait', 'awayEnd', 'awayPlayOn', 'stance']);
+    expect(ids(asked).filter((x) => x.startsWith('away'))).toHaveLength(3);
+    // The menu opens on the first of them: one choose keeps waiting, and no line has to be looked for.
+    expect(run(asked, ['menu']).state.at).toBe('awayWait');
+    expect(run(asked, ['menu', 'choose']).effects).toEqual([{ kind: 'away', answer: 'wait' }]);
+    // The panel's line for it names the key that opens the menu.
+    expect(awayQuestionLine('Krobs', 'Ctrl+Alt+M')).toBe('Krobs is out of reach and still playing. Keep waiting, end their ball, or play on without them: open the menu (Ctrl+Alt+M) or the Match tab');
+  });
+
+  it('the final review (finding 12): Start without … sends what the line said when it was drawn, not what it says at the press', () => {
+    const dana = inLobby({ announced: { without: 'Start without Dana' } });
+    const drawn = menuDrawn(run(dana, ['menu']).state, menuItems(dana));
+    expect(drawn).toMatchObject({ at: 'startNow', drawn: 'Start without Dana' });
+    // The start turned to wait for something else between the draw and the press: the press still says Dana, and
+    // the shell, which compares it with what the start waits for now, does nothing.
+    const now3d = inLobby({ announced: { without: 'Start without 3D' } });
+    expect(menuPress(drawn, menuItems(now3d), now3d, 'choose').effect).toEqual({ kind: 'start', anyway: false, now: true, without: 'Start without Dana' });
+    // Drawn again, it is what it says now; and a menu that was never drawn falls back on the line's own words.
+    expect(menuPress(menuDrawn(drawn, menuItems(now3d)), menuItems(now3d), now3d, 'choose').effect).toMatchObject({ without: 'Start without 3D' });
+    expect(run(dana, ['menu', 'choose']).effects).toEqual([{ kind: 'start', anyway: false, now: true, without: 'Start without Dana' }]);
+    // The note moves with the cursor, and a closed menu holds none.
+    expect(menuDrawn(MENU_CLOSED, menuItems(dana))).toBe(MENU_CLOSED);
+    const moved = menuDrawn(menuPress(drawn, menuItems(dana), dana, 'down').state, menuItems(dana));
+    expect(moved).toMatchObject({ at: 'cancelStart', drawn: 'Cancel the start' });
   });
 });

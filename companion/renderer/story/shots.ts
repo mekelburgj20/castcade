@@ -46,6 +46,7 @@ export const SHEETS: Shot[] = [
   sheet('resume', ['resume-crash-member', 'resume-damaged', 'resume-v1']),
   sheet('refused', ['refused-old-here', 'refused-old-there', 'refused-full']),
   sheet('lobby-1', ['unpaired-closed', 'alone', 'four-starter']),
+  sheet('none-2', ['none~Advanced: the TCP port', 'lobby-closed', 'relay-waiting']),
   sheet('lobby-2', ['four-player', 'four-watcher', 'four-owner-watches']),
   sheet('lobby-3', ['full-direct', 'member-away-lobby', 'no-table']),
   sheet('start', ['start-countdown', 'start-waits-table', 'start-waits-3d']),
@@ -60,6 +61,8 @@ export const SHEETS: Shot[] = [
   sheet('ask-1', ['game-waiting~Leave lobby', 'four-starter~Close lobby', 'game-waiting~Give up this game']),
   sheet('ask-2', ['game-up~End my ball', 'game-owner~End match for everyone', 'game-owner~Pass the turn']),
   sheet('ask-3', ['waited-for~Play on without Chuck', 'between-newmatch~Start a new match', 'four-player~Change table…'], 1100),
+  sheet('long', ['long-four', 'long-game', 'long-away-question'], 1000),
+  sheet('long-2', ['long-between', 'alone-start-table', 'long-away-question~Play on without Krobswxyzwxyzwxyzwxyzwx…'], 1100),
   sheet('ask-4', ['four-player~Change table…|select:Congo', 'between~Change table…|select:Congo|Change table', 'away-question~End Krobs\' ball'], 1100),
 ];
 
@@ -67,15 +70,16 @@ const who = (state: string): string => NAMES[FIXTURES[state]?.me ?? 'owner'] ?? 
 const says = (state: string): string => FIXTURES[state]?.says ?? state;
 
 /** The panel page as the headset draws it (960 x 640), as the desktop panel window (480 x 720), and with the menu open. */
-const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed'];
-const PANEL_DESKTOP = ['four-starter', 'start-waits-3d', 'table-changing', 'game-watcher', 'host-away', 'between'];
-const PANEL_MENU = ['four-starter', 'game-up', 'between-newmatch', 'away-question'];
-const BOARD = ['game-up', 'game-watcher', 'waited-for', 'away-question', 'host-away', 'between'];
+const PANEL_VR = ['alone', 'four-starter', 'four-player', 'four-watcher', 'start-countdown', 'start-waits-table', 'start-held-grace', 'member-away-lobby', 'table-changing', 'table-close-it', 'table-one-asked', 'game-up', 'game-waiting', 'game-watcher', 'waited-for', 'host-away', 'between', 'match-ended', 'given-up-me', 'host-kept-quit', 'lobby-closed', 'long-four', 'long-game', 'long-away-question'];
+const PANEL_DESKTOP = ['four-starter', 'start-waits-3d', 'table-changing', 'game-watcher', 'host-away', 'between', 'long-game', 'long-away-question'];
+const PANEL_MENU = ['four-starter', 'game-up', 'between-newmatch', 'away-question', 'long-away-question'];
+const BOARD = ['game-up', 'game-watcher', 'waited-for', 'away-question', 'host-away', 'between', 'long-game', 'long-away-question'];
 const panel: Shot[] = [
   ...PANEL_VR.map((s) => ({ name: `panel-headset-${s}`, page: `panel.html?state=${s}&vr=1`, says: `Panel in the headset, ${who(s)}'s PC: ${says(s)}`, width: 960, height: 640 })),
   ...PANEL_DESKTOP.map((s) => ({ name: `panel-desktop-${s}`, page: `panel.html?state=${s}&vr=0`, says: `Panel window on the desktop, ${who(s)}'s PC: ${says(s)}`, width: 480, height: 720 })),
   ...PANEL_MENU.map((s) => ({ name: `panel-menu-${s}`, page: `panel.html?state=${s}&vr=1&menu=1`, says: `Panel in the headset with the in-game menu open, ${who(s)}'s PC: ${says(s)}`, width: 960, height: 640 })),
   { name: 'panel-menu-game-owner-last-line', page: 'panel.html?state=game-owner&vr=1&menu=1&at=closeLobby&asked=1', says: "Panel in the headset with the in-game menu open on its last lines, Close lobby chosen and its question asked, Owner's PC", width: 960, height: 640 },
+  { name: 'panel-menu-desktop-long-away-question', page: 'panel.html?state=long-away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open; the player the question is about has a name of 64 characters, Owner's PC", width: 480, height: 720 },
   { name: 'panel-menu-desktop-away-question', page: 'panel.html?state=away-question&vr=0&menu=1&at=awayEnd&asked=1', says: "Panel window on the desktop with the in-game menu open, End Krobs' ball chosen and its question asked, Owner's PC", width: 480, height: 720 },
   ...BOARD.map((s) => ({ name: `scoreboard-${s}`, page: `scoreboard.html?state=${s}`, says: `Scoreboard card in the headset (the grey stands for the game behind it), ${who(s)}'s PC: ${says(s)}`, width: 512, height: 384 })),
 ];
@@ -88,6 +92,7 @@ const MENUS = [
   ['between', ['between', 'between-newmatch', 'game-watcher']],
   ['away', ['waited-for', 'away-question', 'host-away']],
   ['more', ['given-up-me', 'host-kept-quit', 'table-changing']],
+  ['long-name', ['long-game', 'long-away-question', 'long-between']],
 ] as const;
 const menus: Shot[] = MENUS.map(([name, states]) => ({ name: `menu-text-${name}`, page: `menu.html?states=${states.join(',')}`, says: `In-game menu as text (each line, its id, what it asks first, why it is off): ${states.join(', ')}`, width: 12 + states.length * 412, height: 400 }));
 
@@ -102,14 +107,17 @@ const panelSheet = (name: string, states: string[], vr = true): Shot => ({
 SHEETS.push(
   panelSheet('lobby', PANEL_VR.slice(0, 6)),
   panelSheet('start', PANEL_VR.slice(6, 12)),
-  panelSheet('game', PANEL_VR.slice(12)),
+  panelSheet('game', PANEL_VR.slice(12, 18)),
+  panelSheet('game-2', PANEL_VR.slice(18)),
   panelSheet('desktop', PANEL_DESKTOP.slice(0, 4), false),
   panelSheet('desktop-2', PANEL_DESKTOP.slice(4), false),
   panelSheet('menu', [...PANEL_MENU.map((x) => `${x}~~menu=1`), 'game-owner~~menu=1&at=closeLobby&asked=1']),
-  panelSheet('menu-desktop', ['away-question~~menu=1&at=awayEnd&asked=1'], false),
+  panelSheet('menu-desktop', ['away-question~~menu=1&at=awayEnd&asked=1', 'long-away-question~~menu=1&at=awayEnd&asked=1'], false),
   { name: 'sheet-scoreboard-1', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(0, 3).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
-  { name: 'sheet-scoreboard-2', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(3).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
+  { name: 'sheet-scoreboard-2', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(3, 6).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
+  { name: 'sheet-scoreboard-3', page: `sheet.html?page=scoreboard.html&states=${BOARD.slice(6).join(',')}&w=512&h=384`, says: 'Scoreboards side by side', width: 3 * 518, height: 420 },
 );
+
 
 
 export const SHOTS: Shot[] = [

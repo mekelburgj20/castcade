@@ -74,10 +74,28 @@ function lobbyPages() {
         if (!f) throw new Error(`no fixture named ${name}`);
         return m.fx.status(f, m.base.MATCH).match;
       };
+      // The menu's facts as the shell makes them (match-host.ts `menuFacts`): the lobby's part through the same
+      // function (match-menu.ts `menuLobbyOf`); the volumes are the defaults, and the scoreboard line is there for a
+      // headset during a game.
       const menuOf = (m, st) => {
-        const facts = m.fx.menuFacts(st);
-        const items = facts ? m.menu.menuItems(facts) : [];
-        return { facts, items };
+        if (!st.lobby) return { facts: null, items: [] };
+        const playing = st.phase === 'playing' || st.phase === 'paused';
+        const facts = {
+          role: st.role,
+          phase: st.phase,
+          players: st.participants.length,
+          startWarnings: st.startWarnings,
+          seriesOver: st.series?.over ?? false,
+          nextGameBlocker: null,
+          voice: 150,
+          theirTable: 100,
+          myTable: 100,
+          mic: 'open',
+          scoreboardPlace: st.rig === 'vr_headset' && playing ? 'ready' : null,
+          endBall: st.endBall,
+          lobby: m.menu.menuLobbyOf(st.lobby, st.role === 'host'),
+        };
+        return { facts, items: m.menu.menuItems(facts) };
       };
       const HINT = 'Ctrl+Alt+M: next line · Ctrl+Alt+K, or Ctrl+Alt+M twice quickly: choose · the arrow keys work too';
 

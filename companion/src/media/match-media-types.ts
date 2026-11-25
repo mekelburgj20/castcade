@@ -80,6 +80,11 @@ export interface PanelState {
    * reads `CHANGING TABLE · <NAME>`. Absent otherwise.
    */
   changingTable?: string;
+  /**
+   * The final review (2026-11-28, finding 7; alpha-match.md section 11.9): a match ended a moment ago: for the twenty
+   * seconds of the line that says how, and who won, the header reads `MATCH OVER`. Absent otherwise.
+   */
+  matchOver?: boolean;
   /** A17 step 7: the one member whose Start on their own table asks for a game; null: nobody. Absent without a lobby. */
   starter?: MatchPlayerId | null;
   /** A17 step 7: this player's own choice at the next start. Absent without a lobby. */

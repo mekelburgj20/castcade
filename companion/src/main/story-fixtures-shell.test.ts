@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { PROTOCOL_VERSION } from '@castcade/protocol';
 import { lobbyFullSentence } from '../match/host.js';
+import { shortName } from '../match/short-name.js';
 import { ForeignVersionError, refusalSentence } from '../match/transport-ws.js';
 import { formatWebJoinLink, inviteMessage } from './deep-link.js';
 import { cannotSaveSentence, refusalShown, RELAY_WAITING, reopenedSentence, unpairedClosedSentence } from './match-host.js';
@@ -49,6 +50,12 @@ describe("the story fixtures say what the shell says (A17 step 9)", () => {
     const st = fx.status(F['four-player'], base.MATCH);
     expect(st.oneStep.link).toBe(formatWebJoinLink(CODE, 'https://arcaid.app'));
     expect(st.oneStep.message).toBe(inviteMessage(st.oneStep.link, fx.TABLE));
+
+    // ---- a long name is cut in the fixtures as the code cuts it
+    expect(fx.LONG_NAME).toHaveLength(64);
+    expect(fx.shown(fx.LONG_NAME)).toBe(shortName(fx.LONG_NAME));
+    expect(shortName(fx.LONG_NAME)).toHaveLength(24);
+    expect(shortName('Krobs')).toBe('Krobs');
 
     // ---- what went wrong, at the top of the tab
     expect(error('resume-v1')).toBe(oldRecordSentence({ code: CODE, names: ['Owner'] } as Parameters<typeof oldRecordSentence>[0]));

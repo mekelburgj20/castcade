@@ -58,7 +58,7 @@ function usePresses(): void {
         } else tries += 1;
         return;
       }
-      const b = [...document.querySelectorAll('button')].find((x) => x.textContent?.trim() === want && !x.disabled);
+      const b = ([...document.querySelectorAll('button, summary')] as HTMLButtonElement[]).find((x) => x.textContent?.trim() === want && !x.disabled);
       if (b) {
         b.click();
         i += 1;

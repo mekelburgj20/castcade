@@ -138,6 +138,12 @@ export interface RelayOptions {
    * any absence of ArcAid.
    */
   confirmUnpaired?: () => Promise<boolean>;
+  /**
+   * The final review (2026-11-28, finding 6): this device's credentials as they are now (the settings after a new
+   * pairing). Asked for when the relay says `unauthorized` and the pairing check says paired: the socket was made
+   * with what the device had when the lobby opened. Null or absent: there are no others.
+   */
+  freshAuth?: () => { deviceId: string; deviceToken: string } | null;
   /** Test seam: how long a host that had to open its room again waits for its players before it locks it again. Default 60 s. */
   relockWaitMs?: number;
   /** Test seam: how long a relay peer's opening frame may wait for the engine's verdict (`CANDIDATE_VERDICT_MS`). */
@@ -411,6 +417,25 @@ export abstract class RelayBase {
   protected abstract onSocketUp(socket: Socket): void;
   protected abstract onSocketDown(reason: string): void;
   protected abstract wire(socket: Socket): void;
+
+  /** The credentials the socket was last given (`renewAuth`). */
+  private authNow: { deviceId: string; deviceToken: string } | null = null;
+
+  /**
+   * The final review (2026-11-28, finding 6): the socket is connected again with this device's credentials as they
+   * are now (`RelayOptions.freshAuth`), when they are others than the ones it holds. True: it was.
+   */
+  protected renewAuth(): boolean {
+    const fresh = this.opts.freshAuth?.() ?? null;
+    const held = this.authNow ?? this.opts.auth;
+    const socket = this.socket;
+    if (!fresh || !socket || (fresh.deviceId === held.deviceId && fresh.deviceToken === held.deviceToken)) return false;
+    this.authNow = { deviceId: fresh.deviceId, deviceToken: fresh.deviceToken };
+    socket.auth = { deviceId: fresh.deviceId, deviceToken: fresh.deviceToken };
+    socket.disconnect();
+    socket.connect();
+    return true;
+  }
 
   /** The socket, created on first use. Events are wired once; socket.io reconnects it by itself. */
   protected ensureSocket(): Socket {
@@ -911,6 +936,9 @@ export class RelayHostTransport extends RelayBase implements Transport {
       .catch(() => false)
       .then((unpaired) => {
         this.confirming = false;
+        // The final review (finding 6): paired, and still refused: the socket holds the credentials of before a new
+        // pairing. It is made again with the ones the device has now; the room is asked for when it is up.
+        if (!unpaired && !this.closed && this.current === 'reconnecting') this.renewAuth();
         if (!unpaired || this.closed || this.current !== 'reconnecting') return;
         this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
         this.giveUp('unauthorized');

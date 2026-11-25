@@ -1031,6 +1031,7 @@ client -> host, in a lobby. A member asks for a start. The host announces it (HE
 | `newMatch` | boolean | yes | True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`). |
 | `anyway` | boolean | yes | A13: the sender confirmed a start with a table that cannot report ball ends. |
 | `now` | boolean | yes | Do not wait: start without the 3D connections and without the people whose table is not ready (a second press). |
+| `nowFor` | object | no | With `now`: what the announced start waited for when the sender pressed (its `waitsFor` and `waitsOn`, as the sender's last HELLO_ACK said them). The host starts without it only while the start still waits for exactly that; otherwise REJECT, and nothing changes. Absent: not checked. |
 
 ### `START_CANCEL`
 

@@ -66,7 +66,7 @@ import { createMatchHost, type MatchHost } from './match-host.js';
 import { readAbout, readAwayAnswer, readEndMatch, readPlayer, readStance } from './match-ipc.js';
 import { matchSignalling } from './match-setup.js';
 import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
-import { askQuit } from './quit-question.js';
+import { askLeave, askQuit, oneAtATime, type QuitAnswer } from './quit-question.js';
 import { createOneStep, type OneStep } from './one-step.js';
 import { createRecentTables, listKnownTables, listTableFiles } from '../launch/known-tables.js';
 import { createTableHasher } from '../launch/table-hash.js';
@@ -342,6 +342,9 @@ function setLoginItem(openAtLogin: boolean): LoginItemState {
   return loginItemState();
 }
 
+/** The quit question, asked once at a time (quit-question.ts). */
+const quitAsked = oneAtATime<QuitAnswer | null>();
+
 /** The orderly shutdown; `install` swaps the final app.quit() for the updater's quit-and-install (E6). */
 async function quit(host: WitnessHost, install = false): Promise<void> {
   // A17 step 8 (the review of PR 138): Castcade is closed by its owner on the lobby's PC while others are present in
@@ -349,9 +352,16 @@ async function quit(host: WitnessHost, install = false): Promise<void> {
   // and the lobby is kept for them to wait in, and it is offered again at the next start; Cancel closes nothing. An
   // update restart is never asked (it keeps the lobby and goes back in by itself).
   // Step 9: the words and the three answers are quit-question.ts (tested there without Electron).
-  const answer = await askQuit(install ? null : (match?.quitQuestion() ?? null), (box) => dialog.showMessageBox(box));
-  if (answer === 'cancel') return;
-  const lobby: 'close' | 'keep' | undefined = answer ?? undefined;
+  // The final review (finding 8): one question at a time (Quit chosen again while it is up does nothing); and a member
+  // who is a player of the game being played is asked too, since their quit gives that game up.
+  const asked = await quitAsked(async () => {
+    const owner = await askQuit(install ? null : (match?.quitQuestion() ?? null), (box) => dialog.showMessageBox(box));
+    if (owner !== null) return owner;
+    const member = await askLeave(install ? null : (match?.quitGameQuestion() ?? null), (box) => dialog.showMessageBox(box));
+    return member === 'cancel' ? 'cancel' : null;
+  });
+  if (asked === 'busy' || asked === 'cancel') return;
+  const lobby: 'close' | 'keep' | undefined = asked ?? undefined;
   quitting = true;
   sidecarWatch?.stop();
   await overlay?.stop();
@@ -496,7 +506,7 @@ async function updaterAtStart(logger: Logger, userData: string): Promise<{ hidde
     busy: updateWaitReason,
     busyAtStart: async () => {
       const rec = resume.read();
-      if (rec && resumeFreshness(rec, Date.now()) !== 'stale') return `Castcade was in match ${rec.code} when it closed`;
+      if (rec && resumeFreshness(rec, Date.now()) !== 'stale') return `Castcade was in the lobby ${rec.code} when it closed`;
       const vpx = (await lister.list()).find((p) => isVpxExe(p.exe));
       return vpx ? `VPX is open (${basename(vpx.exe)}, pid ${vpx.pid})` : null;
     },

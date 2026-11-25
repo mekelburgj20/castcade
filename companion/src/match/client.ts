@@ -608,10 +608,10 @@ export class ClientMatch {
    * a start waits. The answer is the start in HELLO_ACK (`roster`), or a REJECT with the sentence (`reject`).
    * False when nothing was sent (no lobby, not joined).
    */
-  requestStart(ask: { fromTable?: boolean; newMatch?: boolean; anyway?: boolean; now?: boolean } = {}): boolean {
+  requestStart(ask: { fromTable?: boolean; newMatch?: boolean; anyway?: boolean; now?: boolean; nowFor?: { waitsFor: string; waitsOn: readonly PlayerId[] } | undefined } = {}): boolean {
     this.assertActive();
     if (!this.lobbyOn || !this.joined) return false;
-    this.sendToHost(this.s.build('START_REQUEST', { fromTable: ask.fromTable === true, newMatch: ask.newMatch === true, anyway: ask.anyway === true, now: ask.now === true }, this.throwdownCode));
+    this.sendToHost(this.s.build('START_REQUEST', { fromTable: ask.fromTable === true, newMatch: ask.newMatch === true, anyway: ask.anyway === true, now: ask.now === true, ...(ask.now === true && ask.nowFor && ask.nowFor.waitsFor !== 'result' ? { nowFor: { waitsFor: ask.nowFor.waitsFor as 'tables' | 'other_tables' | 'own_games' | '3d', waitsOn: [...ask.nowFor.waitsOn] } } : {}) }, this.throwdownCode));
     return true;
   }
 

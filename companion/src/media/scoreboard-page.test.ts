@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelState } from './match-media-types.js';
 import { panelPageHtml } from './panel-page.js';
-import { SCOREBOARD_CHANNEL, SCOREBOARD_READY_CHANNEL, SCOREBOARD_SIZE, scoreboardPageHtml, scoreboardView, scoreboardWanted, tallyText } from './scoreboard-page.js';
+import { SCOREBOARD_CHANNEL, SCOREBOARD_READY_CHANNEL, SCOREBOARD_SIZE, scoreboardPageHtml, scoreboardView, scoreboardWanted, shortName, tallyText } from './scoreboard-page.js';
 
 const state = (o: Partial<PanelState> = {}): PanelState => ({
   playerUp: 'krobs',
@@ -119,7 +119,9 @@ describe('the corner scoreboard (D8.12)', () => {
     expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'krobs' }))?.title).toBe('KROBS AWAY · GAME 2 · BALL 2 OF 3');
     // A pause with nobody named (the host's own, a ball-end timeout), and one for a player who is not the one up.
     expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: null }))?.title).toBe('PAUSED · GAME 2 · BALL 2 OF 3');
-    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'owner' }))?.title).toBe('PAUSED · GAME 2 · BALL 2 OF 3');
+    // The final review (finding 4): a pause for a player who is not the one up says for whom it waits.
+    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'owner' }))?.title).toBe('WAITING FOR MEKELBURGJ · GAME 2 · BALL 2 OF 3');
+    expect(scoreboardView(state({ phase: 'paused', game: 2, pausedFor: 'owner', playerUp: null, ball: null, players: state().players.map((x) => ({ ...x, isUp: false })) }))?.title).toBe('WAITING FOR MEKELBURGJ · GAME 2');
     // The card of the player the pause is for (back on the link, their own ball): PAUSED, as D8.14 has it.
     expect(scoreboardView(state({ phase: 'paused', myTurn: true, playerUp: 'owner', pausedFor: 'owner' }))?.title).toBe('PAUSED · GAME 1 · BALL 2 OF 3');
     // Outside a pause the key means nothing.
@@ -205,7 +207,9 @@ describe('the corner scoreboard (D8.12)', () => {
     expect(html).toContain('justify-content: flex-end');
     expect(html).toContain('function scoreboardView');
     expect(html).toContain('function tallyText');
-    const standalone = new Function(`${tallyText.toString()}; ${scoreboardView.toString()}; return scoreboardView;`)() as typeof scoreboardView;
+    // The final review (finding 10): the helper that cuts a long name is one of them.
+    expect(html).toContain('function shortName');
+    const standalone = new Function(`${shortName.toString()}; ${tallyText.toString()}; ${scoreboardView.toString()}; return scoreboardView;`)() as typeof scoreboardView;
     expect(standalone(state({ game: 2, series }))?.tally).toBe('18 GAMES PLAYED · MekelburgJ 8 · Krobs 10');
   });
 

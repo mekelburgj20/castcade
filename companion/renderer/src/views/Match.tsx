@@ -1,5 +1,6 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { describe, type CastcadeState } from '../useCastcade.js';
+import { inviteFromText } from '../invite-text.js';
 import { LobbyTable, OneStepCard, TablePicker, useOneStep } from './OneStep.js';
 import { TestBench } from './TestBench.js';
 import { WatchCard, useWatch, watchHoldsRoom } from './Watch3D.js';
@@ -259,7 +260,9 @@ export function Match({ state }: { state: CastcadeState }) {
 
       {/* A17 step 9 (2026-11-27): what went wrong is said first, in the same place in every state (it stood below the
           lobby, a screen further down, where nobody looked for it). */}
-      {shownError && <p className="error">{shownError}</p>}
+      {/* The final review (finding 9): a lobby that is open again as it was is good news, and was drawn in the error
+          colour like everything that comes this way: said in the colour of what it is. */}
+      {shownError && <p className={error === null && noticeKind(shownError) !== 'error' ? noticeKind(shownError) : 'error'}>{shownError}</p>}
 
       {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
       <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} lobby={st.lobby !== null} />
@@ -272,7 +275,7 @@ export function Match({ state }: { state: CastcadeState }) {
       {!inMatch && st.phase !== 'connecting' && st.resume && (
         <div className="card">
           <strong>
-            You were in a lobby{st.resume.names.length > 0 ? ` with ${listOf(st.resume.names)}` : ''}
+            You were in a lobby{st.resume.names.length > 0 ? ` with ${listOf(st.resume.names.map((n) => short(n)))}` : ''}
           </strong>
           <p>
             Castcade closed in the lobby {st.resume.code}
@@ -327,12 +330,12 @@ export function Match({ state }: { state: CastcadeState }) {
                 className="quiet"
                 onClick={() =>
                   void bridge.app.clipboardText().then((t) => {
-                    const v = t.trim();
-                    // D10.8: a relay invite is the six-letter code alone.
-                    if (v.startsWith('castcade:') || /^[A-Za-z]{6}$/.test(v)) {
+                    // The final review (finding 5): everything the invite's Copy buttons give (invite-text.ts).
+                    const v = inviteFromText(t);
+                    if (v !== null) {
                       setError(null);
                       setInvite(v);
-                    } else setError('The clipboard does not hold a Castcade link or invite (six letters, or one that starts with castcade:).');
+                    } else setError('The clipboard does not hold a Castcade invite: the six-letter code, the join link, or the chat line with the link in it.');
                   }, (e: unknown) => setError(describe(e)))
                 }
               >
@@ -348,10 +351,6 @@ export function Match({ state }: { state: CastcadeState }) {
             <strong>Open a lobby</strong>
             <fieldset disabled={busy}>
               <div className="row">
-                <label className="field">
-                  <span>TCP port</span>
-                  <input type="text" inputMode="numeric" className="port" value={portText} onChange={(e) => setPort(e.target.value)} />
-                </label>
                 <label className="field">
                   <span>Balls per game</span>
                   <select value={ballsPerGame} onChange={(e) => setBalls(e.target.value === '5' ? 5 : 3)}>
@@ -375,6 +374,15 @@ export function Match({ state }: { state: CastcadeState }) {
                 You get a code to send. Everyone who joins can talk, play or watch. Play as many matches as you like without leaving. Your microphone is on for the
                 others from the moment you open it.
               </p>
+              {/* The final review (finding 9): the port was the first field of this card, with no word on when it matters. */}
+              <details className="advanced">
+                <summary>Advanced: the TCP port</summary>
+                <label className="field">
+                  <span>TCP port</span>
+                  <input type="text" inputMode="numeric" className="port" value={portText} onChange={(e) => setPort(e.target.value)} />
+                  <small>Only for a lobby that is reached at this PC&apos;s address: a PC that is not paired with ArcAid, or players on your home network. A PC paired with ArcAid needs nothing set here.</small>
+                </label>
+              </details>
               <button
                 type="button"
                 className="primary"
@@ -509,21 +517,22 @@ export function Match({ state }: { state: CastcadeState }) {
                       {st.lobby.startButton.label}
                     </button>
                     <span className="muted">{st.lobby.startButton.off ?? st.lobby.startButton.line}</span>
-                    {st.lobby.newMatch && (
-                      <button
-                        type="button"
-                        className="small quiet"
-                        disabled={busy || (confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey)}
-                        onClick={() => setConfirming({ what: 'newMatch', about: st.lobby?.gameKey ?? '' })}
-                      >
+                  </div>
+                )}
+                {/* The final review (finding 9): what Start a new match does stands beside it before the press (it was said only in the question after it). */}
+                {!st.lobby.start && st.lobby.newMatch && !(confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey) && (
+                  <div className="row">
+                    <span className="muted">{st.lobby.newMatch.line}</span>
+                    <span className="actions">
+                      <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming({ what: 'newMatch', about: st.lobby?.gameKey ?? '' })}>
                         Start a new match
                       </button>
-                    )}
+                    </span>
                   </div>
                 )}
               </>
             )}
-            {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && st.lobby.starter === st.localId && !st.lobby.start && st.lobby.startButton.off === null && (
+            {st.lobby && !st.lobby.over && (st.phase === 'lobby' || st.phase === 'over') && st.lobby.starter === st.localId && !st.lobby.start && st.lobby.startButton.off === null && !one?.change && (
               <small className="muted">Starting a game on your table asks for the start too (it counts down 5 s in every headset).</small>
             )}
             {st.lobby?.newMatch && confirming?.what === 'newMatch' && confirming.about === st.lobby.gameKey && (
@@ -556,7 +565,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.lobby?.awayQuestion ? (
               <div className="row ask">
                 <span className="warn">
-                  {st.lobby.awayQuestion.name} has been out of the lobby's reach for {Math.max(1, st.lobby.awayQuestion.minutes)} minute{st.lobby.awayQuestion.minutes > 1 ? 's' : ''} and is still playing.
+                  {short(st.lobby.awayQuestion.name)} has been out of the lobby's reach for {Math.max(1, st.lobby.awayQuestion.minutes)} minute{st.lobby.awayQuestion.minutes > 1 ? 's' : ''} and is still playing.
                 </span>
                 <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.answerAway('wait', { player: st.lobby?.awayQuestion?.player ?? null }))}>
                   Keep waiting
@@ -568,7 +577,7 @@ export function Match({ state }: { state: CastcadeState }) {
                   title={`Their ball ends at ${st.lobby.awayQuestion.score.toLocaleString()} and the turn passes`}
                   onClick={() => setConfirming({ what: 'awayEnd', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
                 >
-                  End {possessive(st.lobby.awayQuestion.name)} ball
+                  End {possessive(short(st.lobby.awayQuestion.name))} ball
                 </button>
                 <button
                   type="button"
@@ -576,20 +585,20 @@ export function Match({ state }: { state: CastcadeState }) {
                   disabled={busy || (confirming?.what === 'awayPlayOn' && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey)}
                   onClick={() => setConfirming({ what: 'awayPlayOn', player: st.lobby?.awayQuestion?.player ?? '', about: st.lobby?.gameKey ?? '' })}
                 >
-                  Play on without {st.lobby.awayQuestion.name}
+                  Play on without {short(st.lobby.awayQuestion.name)}
                 </button>
               </div>
             ) : (
               st.lobby?.waitedFor && (
                 <div className="row">
-                  <span className="muted">{panel?.message?.includes(st.lobby.waitedFor.name) ? '' : `Waiting for ${st.lobby.waitedFor.name} to come back.`}</span>
+                  <span className="muted">{panel?.message?.includes(short(st.lobby.waitedFor.name)) ? '' : `Waiting for ${short(st.lobby.waitedFor.name)} to come back.`}</span>
                   <button
                     type="button"
                     className="small quiet"
                     disabled={busy || (confirming?.what === 'playOn' && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey)}
                     onClick={() => setConfirming({ what: 'playOn', player: st.lobby?.waitedFor?.player ?? '', about: st.lobby?.gameKey ?? '' })}
                   >
-                    Play on without {st.lobby.waitedFor.name}
+                    Play on without {short(st.lobby.waitedFor.name)}
                   </button>
                 </div>
               )
@@ -598,7 +607,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {confirming?.what === 'awayEnd' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
               <div className="row ask">
                 <span className="warn">
-                  End {possessive(st.lobby.awayQuestion.name)} ball at {st.lobby.awayQuestion.score.toLocaleString()}? The turn passes.
+                  End {possessive(short(st.lobby.awayQuestion.name))} ball at {st.lobby.awayQuestion.score.toLocaleString()}? The turn passes.
                 </span>
                 <button
                   type="button"
@@ -610,7 +619,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     void run(() => bridge.match.answerAway('end_ball', { player }));
                   }}
                 >
-                  End {possessive(st.lobby.awayQuestion.name)} ball
+                  End {possessive(short(st.lobby.awayQuestion.name))} ball
                 </button>
                 <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
                   Cancel
@@ -619,7 +628,7 @@ export function Match({ state }: { state: CastcadeState }) {
             )}
             {confirming?.what === 'awayPlayOn' && st.lobby?.awayQuestion && confirming.player === st.lobby.awayQuestion.player && confirming.about === st.lobby.gameKey && (
               <div className="row ask">
-                <span className="warn">Play on without {st.lobby.awayQuestion.name}? They are out of this game; they stay in the lobby.</span>
+                <span className="warn">Play on without {short(st.lobby.awayQuestion.name)}? They are out of this game; they stay in the lobby.</span>
                 <button
                   type="button"
                   className="small"
@@ -630,7 +639,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     void run(() => bridge.match.answerAway('play_on', { player }));
                   }}
                 >
-                  Play on without {st.lobby.awayQuestion.name}
+                  Play on without {short(st.lobby.awayQuestion.name)}
                 </button>
                 <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
                   Cancel
@@ -639,7 +648,7 @@ export function Match({ state }: { state: CastcadeState }) {
             )}
             {confirming?.what === 'playOn' && st.lobby?.waitedFor && !st.lobby.awayQuestion && confirming.player === st.lobby.waitedFor.player && confirming.about === st.lobby.gameKey && (
               <div className="row ask">
-                <span className="warn">Play on without {st.lobby.waitedFor.name}? They are out of this game; they stay in the lobby.</span>
+                <span className="warn">Play on without {short(st.lobby.waitedFor.name)}? They are out of this game; they stay in the lobby.</span>
                 <button
                   type="button"
                   className="small"
@@ -650,7 +659,7 @@ export function Match({ state }: { state: CastcadeState }) {
                     void run(() => bridge.match.playOnWithout({ player }));
                   }}
                 >
-                  Play on without {st.lobby.waitedFor.name}
+                  Play on without {short(st.lobby.waitedFor.name)}
                 </button>
                 <button type="button" className="small quiet" disabled={busy} onClick={() => setConfirming(null)}>
                   Cancel
@@ -658,7 +667,9 @@ export function Match({ state }: { state: CastcadeState }) {
               </div>
             )}
             <div className="row controls">
-              {st.role === 'host' && st.phase === 'paused' && !st.transfer && (
+              {/* The final review (finding 3): only a pause that a press ends. While the game waits for a member who is away,
+                  Resume did nothing, or took the turn of the player who is up: what helps then is on the row above. */}
+              {st.role === 'host' && st.phase === 'paused' && !st.transfer && st.canResume && (
                 <button type="button" className="small" disabled={busy} onClick={() => void run(() => bridge.match.resume())}>
                   Resume
                 </button>
@@ -704,7 +715,6 @@ export function Match({ state }: { state: CastcadeState }) {
                   type="button"
                   className="small quiet"
                   disabled={busy}
-                  title="Closes the tally. Everyone stays in the lobby."
                   onClick={() => void run(() => bridge.match.endMatch({ everyone: false, about: st.lobby?.gameKey ?? null }))}
                 >
                   End match
@@ -785,7 +795,7 @@ export function Match({ state }: { state: CastcadeState }) {
             {st.role === 'host' && confirming?.what === 'pass' && confirming.turn === passTurnKey(st) && st.pass && (st.phase === 'playing' || st.phase === 'paused') && (
               <div className="row ask">
                 <span className="warn">
-                  End {possessive(st.pass.name)} ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby's PC.
+                  End {possessive(short(st.pass.name))} ball {st.pass.ball} at {st.pass.score.toLocaleString()} and give the next player the turn? The match log records it as passed by the lobby's PC.
                 </span>
                 <button
                   type="button"
@@ -833,6 +843,8 @@ export function Match({ state }: { state: CastcadeState }) {
               </small>
             )}
             {st.phase === 'over' && !st.series?.over && st.locked && <small className="muted">Your table is locked until the next game reaches your ball.</small>}
+            {/* The final review (finding 9): what End match does, in sight (it was a tooltip; the one press of that row with no question). */}
+            {st.lobby?.end === 'match' && <small className="muted">End match closes the tally. Everyone stays in the lobby.</small>}
             {/* A17 step 7: this person's own choice for the next start. Step 9: the two stand side by side and do not move; the one that holds is the filled one. */}
             {st.lobby && !st.lobby.over && (
               <div className="row">
@@ -858,7 +870,7 @@ export function Match({ state }: { state: CastcadeState }) {
             )}
             {/* A17 step 9 (2026-11-27): the way out is the last line of this card in every state, and never the filled button. */}
             <div className="row leave">
-              <span className="muted">{st.role === 'host' ? 'Close lobby ends it for everyone.' : ''}</span>
+              <span className="muted">{st.lobby?.over ? 'Castcade goes back to Open and Join by itself in a moment.' : st.role === 'host' && confirming?.what !== 'close' ? 'Close lobby ends it for everyone.' : ''}</span>
               <span className="actions">
                 {st.role === 'host' ? (
                   <button type="button" className="small quiet" disabled={busy || confirming?.what === 'close'} onClick={() => setConfirming({ what: 'close' })}>
@@ -867,7 +879,7 @@ export function Match({ state }: { state: CastcadeState }) {
                 ) : (
                   <button
                     type="button"
-                    className="small quiet"
+                    className={st.lobby?.over ? 'small' : 'small quiet'}
                     disabled={busy || (confirming?.what === 'leave' && confirming.about === (st.lobby?.gameKey ?? ''))}
                     onClick={() => {
                       // The review of PR 136: a player who leaves during their own game gives it up first (design 11.2):
@@ -876,7 +888,8 @@ export function Match({ state }: { state: CastcadeState }) {
                       else void run(() => bridge.match.leave());
                     }}
                   >
-                    Leave lobby
+                    {/* The final review (finding 9): under LOBBY CLOSED the button says where it leads. */}
+                    {st.lobby?.over ? 'Back to Open and Join' : 'Leave lobby'}
                   </button>
                 )}
               </span>
@@ -921,6 +934,37 @@ export function Match({ state }: { state: CastcadeState }) {
             )}
           </div>
 
+          {st.lobby?.lastMatch && !st.lobby.match && (
+            <div className="card">
+              <strong>
+                {st.lobby.lastMatch.abandoned !== null ? `Match ended · game ${st.lobby.lastMatch.abandoned} not finished` : `Match over after ${st.lobby.lastMatch.games} game${st.lobby.lastMatch.games === 1 ? '' : 's'}`}
+              </strong>
+              {st.lobby.lastMatch.standing.length > 0 ? (
+                <table className="match-table">
+                  <thead>
+                    <tr>
+                      <th>Final standing</th>
+                      <th className="num">Games won</th>
+                      <th className="num">Total score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {st.lobby.lastMatch.standing.map((x, i) => (
+                      <tr key={x.id}>
+                        <td>
+                          {i + 1}. <span className="who">{x.name}</span>
+                        </td>
+                        <td className="num">{x.wins}</td>
+                        <td className="num">{x.total.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="muted">No game of it was finished.</p>
+              )}
+            </div>
+          )}
           {panel?.result && (
             <div className="card">
               <strong>{st.lobby ? `Game ${panel.game ?? 1}` : panel.game && panel.game > 1 ? `Game ${panel.game}` : 'Result'}</strong>
@@ -1345,7 +1389,7 @@ function tableSoundLine(st: MatchStatus): string {
 }
 
 function nameOf(st: MatchStatus, id: string | null): string {
-  return st.participants.find((p) => p.id === id)?.name ?? 'the host';
+  return short(st.participants.find((p) => p.id === id)?.name ?? (st.lobby ? "the lobby's PC" : 'the host'));
 }
 
 function turnLine(st: MatchStatus): string {
@@ -1366,10 +1410,13 @@ function turnLine(st: MatchStatus): string {
       if (st.lobby?.over) return 'LOBBY CLOSED';
       const game = panel?.game && panel.game > 1 ? `GAME ${panel.game} · ` : '';
       if (!panel?.playerUp) return `${game}Next ball coming up`;
-      return game + (panel.myTurn ? `YOUR BALL ${panel.ball ?? ''}`.trim() : `${nameOf(st, panel.playerUp).toUpperCase()} IS UP`);
+      return game + (panel.myTurn ? `YOUR BALL ${panel.ball ?? ''}`.trim() : `${short(nameOf(st, panel.playerUp), 16).toUpperCase()} IS UP`);
     }
     case 'paused':
-      return st.lobby?.over ? 'LOBBY CLOSED' : 'PAUSED';
+      if (st.lobby?.over) return 'LOBBY CLOSED';
+      // The final review (finding 4): a game that waits for somebody who is away says for whom, as the panel does.
+      if (panel?.pausedFor && !(panel.myTurn && panel.playerUp === panel.pausedFor)) return `WAITING FOR ${short(nameOf(st, panel.pausedFor), 16).toUpperCase()}`;
+      return 'PAUSED';
     case 'over':
       if (st.lobby?.over) return 'LOBBY CLOSED';
       if (st.lobby && typeof panel?.countdown === 'number') return panel.countdown > 0 ? `STARTING IN ${panel.countdown}` : 'STARTING';
@@ -1570,6 +1617,25 @@ function awayClock(st: MatchStatus, message: string, now: number): string {
   return message.replace(/\(\d+ min left\)/, `(${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} left)`);
 }
 
+/**
+ * The final review (finding 9): what kind of sentence stands at the top of the tab. The shell has one line for it
+ * (`lastError`); a lobby that Castcade opened again as it was is good news (`ok`), and one that waits for ArcAid to
+ * carry it again is something to know (`warn`). Everything else is what went wrong.
+ */
+function noticeKind(text: string): 'ok' | 'warn' | 'error' {
+  if (!/^Castcade on this PC started again: the lobby \S+ is open again as it was/.test(text)) return 'error';
+  return text.includes('waiting for ArcAid') ? 'warn' : 'ok';
+}
+
+/**
+ * The final review (finding 10): a name inside a sentence or on a button, as the main process cuts it
+ * (`match/short-name.ts`): 24 characters at most, the last an ellipsis. A row shows the name whole, cut in its own box.
+ */
+function short(name: string, max = 24): string {
+  const chars = Array.from(name);
+  return chars.length <= max ? name : `${chars.slice(0, max - 1).join('')}…`;
+}
+
 /** "Krobs' ball", "Dana's ball" (as `possessive` in the main process words it). */
 function possessive(name: string): string {
   return `${name}${/s$/i.test(name) ? "'" : "'s"}`;
@@ -1590,7 +1656,7 @@ function playsNoMore(st: MatchStatus): boolean {
 }
 
 function passTurnKey(st: MatchStatus): string {
-  return st.pass ? `${st.pass.name}#${st.pass.ball}#${st.panel?.game ?? 1}#${st.lobby?.match?.id ?? ''}` : '';
+  return st.pass ? `${short(st.pass.name)}#${st.pass.ball}#${st.panel?.game ?? 1}#${st.lobby?.match?.id ?? ''}` : '';
 }
 
 function nativeVideoLine(v: NonNullable<NonNullable<MatchStatus['media']>['nativeVideo']>, participants: MatchStatus['participants']): string {

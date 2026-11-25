@@ -12,6 +12,7 @@ import { ManualClock } from './clock.js';
 import { COUNTDOWN_HELD_MS, GIVEN_UP_AT_TURN, GIVEN_UP_WAIT, MatchController, MIDNIGHT_LINE_MS, type ControllerFeed } from './controller.js';
 import { HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
+import { NO_TABLE } from './lobby.test-support.js';
 import { MemoryBus } from './transport.js';
 
 const flush = async (n = 12): Promise<void> => {
@@ -351,5 +352,25 @@ describe("A17 step 7: the controller in a lobby, from one game and one match to 
     expect(H.ctl.status().phase).toBe('playing');
     expect(H.locked()).toBe(false);
     expect(C.locked()).toBe(true);
+  });
+
+  it('the final review: "Start without Dana" is checked on the lobby\'s PC too: a request that arrives when the start waits for something else is refused and nothing changes; one that still fits is carried out', async () => {
+    const r = await lobby(['c', 'd'], 1);
+    const { h: H, c: C } = r.seats as { h: Seat; c: Seat };
+    r.clients['d']!.updateParticipant({ game: NO_TABLE });
+    await flush();
+    expect(H.ctl.requestStart()).toBeNull();
+    await flush();
+    const waits = r.host.announcedStart();
+    expect(waits).toMatchObject({ waitsOn: ['d'] });
+    // Krobs' press was made while the start waited for something else (as his PC knew it then): refused, with the sentence.
+    expect(r.host.requestStart({ now: true, nowFor: { waitsFor: '3d', waitsOn: ['h'] } }, 'c')).toBe('The start waits for something else now: look again, then choose.');
+    expect(r.host.requestStart({ now: true, nowFor: { waitsFor: waits!.waitsFor as string, waitsOn: ['c'] } }, 'c')).toBe('The start waits for something else now: look again, then choose.');
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: waits!.waitsFor, waitsOn: ['d'] });
+    // Over the wire, from his controller, which says what the start waits for as it knows it: it fits, and the start goes on without Dana.
+    expect(C.ctl.status().lobby?.startWithout).toBe('Start without Dana');
+    expect(C.ctl.requestStart({ now: true })).toBeNull();
+    await flush();
+    expect(r.host.announcedStart()).toMatchObject({ waitsFor: null, players: ['h', 'c'] });
   });
 });

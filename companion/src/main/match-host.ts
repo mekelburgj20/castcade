@@ -97,7 +97,7 @@ import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance, TableChange }
 import { tableWords } from '../match/table-identity.js';
 import { ClientMatch, LOBBY_HOST_WAIT_MS } from '../match/client.js';
 import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind, type LobbyStatus } from '../match/controller.js';
-import { menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
+import { awayQuestionLine, menuDrawn, menuLobbyOf, menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch, STREAM3D_WAIT_MAX_MS, type LobbyOptions } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
@@ -252,6 +252,12 @@ export interface MatchStatus {
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. Else null. */
   pass: { name: string; ball: number; score: number } | null;
+  /**
+   * The final review (2026-11-28, finding 3): on the lobby's PC, a pause that a press of Resume ends. False for a
+   * pause that waits for a member who is away (`HostMatch.resumeBlocker`), where the press did nothing or took the
+   * turn of the player who is up: the tab offers Resume only while this is true.
+   */
+  canResume: boolean;
   /**
    * A17 step 4 (2026-11-24): for the player who is up, while they can end their own ball by hand (End my ball): the
    * ball and the score it would end at. Else null (not this player's ball, the match paused, no match). The review of
@@ -542,7 +548,12 @@ export interface MatchHost {
    * A17 step 8 (the review of PR 138): Castcade is about to be closed on the lobby's PC while others are present in
    * its lobby: who they are, for the question "Close the lobby for everyone / Keep the lobby". Null: nothing to ask.
    */
-  quitQuestion(): { code: string; names: string[] } | null;
+  quitQuestion(): { code: string; names: string[]; away: string[] } | null;
+  /**
+   * The final review (finding 8): this PC is a member (not the lobby's PC) and a player of the game being played, so
+   * a quit of Castcade, which leaves the lobby, gives that game up: there is a question to ask first. Null otherwise.
+   */
+  quitGameQuestion(): { code: string } | null;
 }
 
 export interface MatchHostOptions {
@@ -1181,6 +1192,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       wait3d: c?.wait3d ?? { players: [], seconds: 0, armed: null },
       advisories: c?.advisories ?? [],
       pass: c?.pass ? { name: c.pass.name, ball: c.pass.ball, score: c.pass.score } : null,
+      canResume: canResume(a),
       endBall: c?.endBall ? { ...c.endBall } : null,
       transfer: c?.transfer
         ? {
@@ -2265,12 +2277,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         if (active !== a) return;
         log.warn(`match: ${name(q.player)} holds the turn, has been out of this PC's reach for ${Math.round(q.waitedMs / 60_000)} minute(s) and is still seen playing: nothing is done by itself; the Match tab and the menu ask (keep waiting, end their ball, play on without them)`);
         cue.play('opponent_turn');
+        // The final review (finding 9): said on the panel too, with the key that opens the menu.
+        a.controller.setAwayAsk(awayQuestionLine(name(q.player), shortcutWords(settings.menuKey)));
         emit();
       }),
     );
     a.offs.push(
       engine.on('awayQuestionOff', (q) => {
         if (active !== a) return;
+        a.controller.setAwayAsk(null);
         log.info(`match: the question about ${name(q.player)} is off (they are back, or the game went on another way)`);
         emit();
       }),
@@ -2661,6 +2676,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   let arrowsHeld = false;
   let menuSent = 'null';
+  /** The lobby's PC, a pause, and a Resume that would end it. */
+  const canResume = (a: Active | null): boolean => {
+    const r = a?.controller.currentRole;
+    if (!(r instanceof HostMatch)) return false;
+    return r.state.phase === 'running' && r.state.paused !== null && !r.state.pendingTransfer && r.resumeBlocker() === null;
+  };
   const menuFacts = (a: Active): MenuFacts => {
     const st = a.controller.status();
     return {
@@ -2683,21 +2704,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   const menuLobby = (a: Active, st: ControllerStatus): MenuFacts['lobby'] => {
     const l = lobbyView(a, st);
-    if (!l) return null;
-    return {
-      opener: a.engine instanceof HostMatch,
-      stance: l.stance,
-      start: { label: l.startButton.label, off: l.startButton.off },
-      announced: l.start ? { without: l.startWithout } : null,
-      newMatch: l.newMatch ? { warnings: l.newMatch.warnings } : null,
-      game: l.gameKey,
-      hostAway: l.hostAway !== null,
-      over: l.over,
-      end: l.end,
-      giveUp: l.giveUp,
-      waitedFor: l.waitedFor?.name ?? null,
-      awayQuestion: l.awayQuestion ? { name: l.awayQuestion.name, score: l.awayQuestion.score } : null,
-    };
+    // The final review (finding 15): one function with the story pages of the screens (match-menu.ts `menuLobbyOf`).
+    return l ? menuLobbyOf(l, a.engine instanceof HostMatch) : null;
   };
   const menuHint = (): string => {
     const key = shortcutWords(settings.menuKey);
@@ -2724,10 +2732,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         dropMenuAnswer();
       }
     }
-    const view = active ? menuView(menu, menuItems(menuFacts(active)), menuHint()) : null;
+    const items = active ? menuItems(menuFacts(active)) : [];
+    const view = active ? menuView(menu, items, menuHint()) : null;
     const text = JSON.stringify(view);
     if (text === menuSent) return;
     menuSent = text;
+    // The final review (finding 12): what the chosen line says as it is drawn now is what a press of it is about.
+    menu = menuDrawn(menu, items);
     opts.media?.setMenu?.(view);
   };
   const holdArrows = (on: boolean): void => {
@@ -3407,6 +3418,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       connectTimeoutMs: opts.relayTimeouts?.connectMs,
       ackTimeoutMs: opts.relayTimeouts?.ackMs,
       confirmUnpaired: async () => ((await opts.pairingCheck?.()) ?? 'unknown') === 'unpaired',
+      // The final review (finding 6): a PC paired again during its lobby has a new token in its settings.
+      freshAuth: () => {
+        const now = opts.relay?.() ?? null;
+        return now ? { deviceId: now.deviceId, deviceToken: now.deviceToken } : null;
+      },
     });
 
   /**
@@ -4018,8 +4034,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * rest closes (the panel, the overlay, the connections: seconds of awaits, during which nothing arbitrates any
    * more). `tell`: the lobby PC's owner quit: the others are told so before its links go (`HELLO_ACK.hostQuit`).
    */
-  /** The members of the lobby other than this PC who are here now (not away): the people a quit of the lobby's PC is about. */
-  const presentOthers = (a: Active): string[] => (a.controller.status().lobby?.members ?? []).filter((m) => !m.me && !m.flags.includes('away')).map((m) => m.name);
+  /**
+   * The members of the lobby other than this PC: the people a quit of the lobby's PC is about. The final review
+   * (2026-11-28, finding 2): everybody who has a place, present (`here`) or away (`away`). It was the present ones
+   * alone, read at the moment of the stop: a friend whose link was down in that moment (their PC restarting, a
+   * router) made "Keep the lobby" close the lobby for everyone, and with them away there was no question at all.
+   */
+  const otherMembers = (a: Active): { here: string[]; away: string[] } => {
+    const others = (a.controller.status().lobby?.members ?? []).filter((m) => !m.me);
+    return { here: others.filter((m) => !m.flags.includes('away')).map((m) => m.name), away: others.filter((m) => m.flags.includes('away')).map((m) => m.name) };
+  };
   const teardown = async (a: Active, keep = false, mark: 'update' | 'quit' | null = null, tell = false): Promise<void> => {
     if (keep && active === a) {
       if (tell && a.engine instanceof HostMatch) {
@@ -4036,7 +4060,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
           log.warn(`match: closing the engine: ${describeError(e)}`);
         }
       }
-      saveResume(a, mark);
+      const saved = saveResume(a, mark);
+      // The final review (2026-11-28): a kept quit whose last record could not be written. What is on disk then is the
+      // record of a minute ago, which says nothing of a quit: a start within the minute would go back into the lobby
+      // by itself, microphone on, although its owner closed Castcade. It is tried once more; when that fails too the
+      // record is taken away: the lobby is lost for this PC, and never entered again without being asked.
+      if (mark === 'quit' && !saved && !saveResume(a, mark)) {
+        log.warn(`match: the lobby ${a.code} was to be kept, and its record could not be written (${resumeStore.writeError() ?? 'unknown error'}): the record is removed, so that the next start does not go back into it by itself`);
+        resumeStore.remove();
+      }
       active = null;
       endRecord(a, true);
       // The last word leaves the sockets; a host that closes to come back does not tell ArcAid it left (A15).
@@ -4270,6 +4302,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       if (!(r instanceof HostMatch)) return fail(new Error("Only the lobby's PC resumes a pause from here"));
       if (r.state.phase !== 'running' || !r.state.paused) return fail(new Error('The match is not paused'));
       if (r.state.pendingTransfer) return fail(new Error('A host transfer is under way: wait for it to finish'));
+      // The final review (finding 3): a pause that waits for a member who is away is not one a press ends.
+      const blocked = r.resumeBlocker();
+      if (blocked !== null) return fail(new Error(`${blocked}.`));
       try {
         r.resume();
       } catch (e) {
@@ -4285,8 +4320,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     quitQuestion() {
       const a = active;
       if (!a || a.role !== 'host' || a.recordOff) return null;
-      const names = presentOthers(a);
-      return names.length > 0 ? { code: a.code, names } : null;
+      const o = otherMembers(a);
+      return o.here.length + o.away.length > 0 ? { code: a.code, names: o.here, away: o.away } : null;
+    },
+    quitGameQuestion() {
+      const a = active;
+      if (!a || a.role !== 'client' || !a.code) return null;
+      return a.controller.status().lobby?.giveUp ? { code: a.code } : null;
     },
     forgetResume() {
       const rec = pendingResume;
@@ -4570,12 +4610,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // nothing, and the next start goes back in without asking. The review of PR 138: the lobby's PC that is quit
       // with somebody else PRESENT in its lobby keeps it unless its owner answered "Close the lobby for everyone"
       // (`quitQuestion`; a quit that could not ask keeps it): the others are told, and the lobby is offered at the
-      // next start, never gone back into by itself. With everybody else away, or alone, it is closed as before.
-      const present = a ? presentOthers(a) : [];
+      // next start, never gone back into by itself. Alone in the lobby it is closed as before.
+      // The final review (finding 2): the owner's answer is what happens. "Keep" keeps the lobby whoever is present
+      // at this moment, and so does a quit that could not ask, as long as anybody else has a place in it.
+      const others = a ? otherMembers(a) : { here: [], away: [] };
+      const present = [...others.here, ...others.away.map((n) => `${n} (away)`)];
       const mark: 'update' | 'quit' | null = !a || a.recordOff ? null : o?.keepForRestart ? 'update' : a.role === 'host' && present.length > 0 && o?.lobby !== 'close' ? 'quit' : null;
       if (a && mark !== null) {
         await teardown(a, true, mark, mark === 'quit');
-        log.info(`match: the lobby ${a.code} is kept for the next start of Castcade${mark === 'update' ? ' (an update)' : ` (Castcade was closed on the lobby's PC with ${present.join(', ')} in the lobby, who were told; it is offered at the next start)`}`);
+        log.info(`match: the lobby ${a.code} is kept for the next start of Castcade${mark === 'update' ? ' (an update)' : ` (Castcade was closed on the lobby's PC with ${present.join(', ')} in the lobby; whoever is present was told; it is offered at the next start)`}`);
       } else await leave().catch((e: unknown) => log.warn(`match: leave on quit: ${describeError(e)}`));
       unregisterKeys();
       closeMenu();

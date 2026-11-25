@@ -420,6 +420,8 @@ interface PanelState {
   countdown?: number | null;
   message: string | null;
   mic: 'open' | 'muted' | 'unavailable';
+  /** A17 step 4: who a pause for a dropped link waits for (absent for any other pause). */
+  pausedFor?: string | null;
 }
 interface MediaStatus {
   attached: boolean;
@@ -618,6 +620,8 @@ interface LobbyView {
   giveUp: boolean;
   hostAway: { since: number; until: number | null } | null;
   over: boolean;
+  /** The final review (finding 7): the match that ended last, until the next one begins (controller.ts `LobbyStatus.lastMatch`). */
+  lastMatch: { games: number; abandoned: number | null; standing: Array<{ id: string; name: string; wins: number; total: number }> } | null;
   waitedFor: { player: string; name: string; minutes: number } | null;
   awayQuestion: { player: string; name: string; minutes: number; score: number } | null;
 }
@@ -660,6 +664,8 @@ interface MatchStatus {
   advisories: string[];
   /** A13: for the host while a turn is held: whose ball Pass the turn would end, and at what score. */
   pass: { name: string; ball: number; score: number } | null;
+  /** The final review (finding 3): on the lobby's PC, a pause that a press of Resume ends (not one that waits for a member who is away). */
+  canResume: boolean;
   /** A17 step 4: for the player who is up, while they can end their own ball by hand: the ball and the score it would end at. */
   endBall: { grantSeq: number; ball: number; score: number; tableBall: boolean } | null;
   /** A8: a host transfer under way (names), else null. */

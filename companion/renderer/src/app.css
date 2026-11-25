@@ -219,6 +219,18 @@ button.quiet {
   padding: 0.6rem 0 0;
   margin: 0.6rem 0 0;
 }
+/* The final review (finding 9): what few people need, under a line that says when (the TCP port of Open a lobby). */
+details.advanced {
+  margin: 0 0 0.75rem;
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+details.advanced[open] > summary {
+  margin-bottom: 0.5rem;
+}
 .row.leave {
   border-top: 1px solid var(--line);
   padding-top: 0.6rem;
@@ -226,6 +238,35 @@ button.quiet {
 }
 .match-table .who {
   font-weight: 600;
+  /* The final review (finding 10): a long name is cut in its own box; its words, the balls and the score stay. */
+  display: inline-block;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+/* Finding 10: nothing a name is part of pushes a card wider than the window: a sentence wraps inside a long word,
+   and a button keeps its first words and cuts its end. */
+.card,
+.turn-line,
+.view > p {
+  overflow-wrap: anywhere;
+}
+.match-table th,
+.match-table td.num,
+.match-table td:not(:first-child) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.match-table td:first-child {
+  width: 100%;
+}
+.card button {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 button.link {
   background: none;
