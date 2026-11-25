@@ -215,7 +215,10 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     expect([...ho.closes, ...co.closes]).toEqual([]);
     expect(co.launched).toEqual([]);
     expect(co.one.status().change).toBeNull();
-    expect(ho.one.status().change).toBeNull();
+    // (The final review: the owner's own table is not the lobby's any more, so the lobby's table is on offer there.)
+    await until(() => ho.one.status().change?.state === 'offered');
+    expect(ho.one.status().change?.detail).toBe("The lobby's table is Monster Bash, and Attack from Mars is open on this PC. Open it: Castcade closes Attack from Mars and opens Monster Bash.");
+    expect([...ho.closes, ...co.closes]).toEqual([]);
     expect(co.logs.filter((l) => /the lobby's table changed/.test(l))).toEqual([]);
   });
 
@@ -387,6 +390,143 @@ describe("review of PR 139, finding 1: this PC's copy of the picked game is foun
     await until(() => H.status().phase !== 'playing' && C.status().lobby?.match === null);
     cr.close();
     cr.open('mb_vpw_1.1', MB_SHA);
-    await until(() => (friend(H)?.flags ?? []).includes('other_table'));
+    // (The lobby's table is then on offer on the friend's PC, and its row says so: the final review.)
+    await until(() => (friend(H)?.flags ?? []).includes('asked') && co.one.status().change?.state === 'offered');
+    await H.start({ anyway: true });
+    await until(() => H.status().lobby?.start?.waitsFor === 'other_tables');
   }, 30_000);
+});
+
+describe("the final review, finding 1: in a lobby that has a table, a PC whose open table is not its copy of it has the table on offer", () => {
+  const AFM_PATH = known('Attack from Mars', AFM_SHA).vpxPath;
+  const MB_PATH = known('Monster Bash', MB_SHA).vpxPath;
+  const LISTS = (): KnownTable[] => [known('Monster Bash', MB_SHA), known('Attack from Mars', AFM_SHA)];
+  const HERE = (table: string, open: string): string => `The lobby's table is ${table}, and ${open} is open on this PC. Open it: Castcade closes ${open} and opens ${table}.`;
+  const NOTHING = (table: string): string => `The lobby's table is ${table}, and no table is open on this PC. Open it: Castcade opens ${table}.`;
+  const flagsOf = (s: MatchHost, name: string): string[] => s.status().lobby?.members.find((x) => x.name === name)?.flags ?? ['?'];
+
+  it("a lobby opened with no table, then a table is picked (three PCs): the picker's own PC opens the file it picked, a PC that joined by link with nothing open starts it, a PC with another table open is offered it and closes nothing until Open it; no row stays LOADING for a table nobody is opening, and the match starts", async () => {
+    const hr = rig();
+    const cr = rig();
+    const dr = rig({ name: 'Monster Bash', sha: MB_SHA });
+    const H = make('host', hr.w);
+    const C = make('c', cr.w);
+    const D = make('d', dr.w);
+    const ho = oneStepOn(H, hr, LISTS());
+    const co = oneStepOn(C, cr, LISTS());
+    const dd = oneStepOn(D, dr, LISTS());
+    // "No table: I open it myself", and nothing open in VPX.
+    await ho.one.host({ tablePath: null, startTable: false, port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.setSettings({ displayName: 'Chuck' });
+    await D.setSettings({ displayName: 'Dana' });
+    await co.one.openLink(ho.one.status().link!, { trusted: true });
+    await dd.one.openLink(ho.one.status().link!, { trusted: true });
+    await until(() => H.status().participants.length === 3 && C.status().participants.length === 3 && D.status().participants.length === 3);
+    expect(H.status().lobby?.table.name).toBeNull();
+    expect([ho.launched, co.launched, dd.launched]).toEqual([[], [], []]);
+    // The owner presses Change table…, picks Attack from Mars and confirms.
+    await ho.one.pick(AFM_PATH, H.status().lobby?.gameKey ?? null);
+    await until(() => C.lobbyTable()?.game.tableName === 'Attack from Mars' && D.lobbyTable()?.game.tableName === 'Attack from Mars');
+    // The picker's own PC opens the file it picked; the PC that came by link with nothing open starts its copy.
+    await until(() => ho.launched.length === 1 && co.launched.length === 1);
+    expect([ho.launched, co.launched]).toEqual([[AFM_PATH], [AFM_PATH]]);
+    // The PC with Monster Bash open: nothing closes, nothing opens, and the table is on offer with a sentence that says both.
+    await until(() => dd.one.status().change?.state === 'offered');
+    expect(dd.one.status().change).toMatchObject({ state: 'offered', table: 'Attack from Mars', open: 'Monster Bash', detail: HERE('Attack from Mars', 'Monster Bash') });
+    expect([dd.closes, dd.launched]).toEqual([[], []]);
+    // Every row says why its table is not open: two PCs are opening it, one asks its person. None is a bare LOADING.
+    await until(() => flagsOf(H, 'Dana').includes('asked') && flagsOf(H, 'Owner').includes('changing') && flagsOf(H, 'Chuck').includes('loading'));
+    hr.open('Attack from Mars', AFM_SHA);
+    cr.open('Attack from Mars', AFM_SHA);
+    await until(() => flagsOf(H, 'Owner').length === 0 && flagsOf(H, 'Chuck').length === 0);
+    await sleep(200);
+    expect([dd.closes, dd.launched]).toEqual([[], []]);
+    // Open it: by the rules of any change (the table is followed, no game is on): asked to close, then the copy is started.
+    await dd.one.openPick();
+    await until(() => dd.closes.length === 1);
+    expect(dd.closes).toEqual(['Monster Bash']);
+    dr.close();
+    dd.answer({ state: 'closed', rung: 2 });
+    await until(() => dd.launched.length === 1);
+    expect(dd.launched).toEqual([AFM_PATH]);
+    dr.open('Attack from Mars', AFM_SHA);
+    await until(() => flagsOf(H, 'Dana').length === 0 && dd.one.status().change === null);
+    await H.start({ anyway: true });
+    await until(() => H.status().phase === 'playing' && C.status().phase === 'playing' && D.status().phase === 'playing');
+    expect(H.status().lobby?.match?.players).toHaveLength(3);
+  }, 60_000);
+
+  it('a join by typed code: with nothing open the lobby`s table is offered and Open it starts it; with another table open it is offered and nothing closes', async () => {
+    const hr = rig({ name: 'Monster Bash', sha: MB_SHA });
+    const H = make('host', hr.w);
+    const ho = oneStepOn(H, hr, LISTS());
+    await ho.one.host({ tablePath: null, startTable: false, port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    const invite = H.status().invite!;
+    // Nothing open: typed code, no link.
+    const cr = rig();
+    const C = make('c', cr.w);
+    const co = oneStepOn(C, cr, LISTS());
+    await C.join(invite, 'Chuck');
+    await until(() => co.one.status().change?.state === 'offered');
+    expect(co.one.status().change).toMatchObject({ table: 'Monster Bash', open: null, detail: NOTHING('Monster Bash') });
+    expect(co.launched).toEqual([]);
+    await co.one.openPick();
+    await until(() => co.launched.length === 1);
+    expect(co.launched).toEqual([MB_PATH]);
+    // Another table open.
+    const dr = rig({ name: 'Attack from Mars', sha: AFM_SHA });
+    const D = make('d', dr.w);
+    const dd = oneStepOn(D, dr, LISTS());
+    await D.join(invite, 'Dana');
+    await until(() => dd.one.status().change?.state === 'offered');
+    expect(dd.one.status().change).toMatchObject({ table: 'Monster Bash', open: 'Attack from Mars', detail: HERE('Monster Bash', 'Attack from Mars') });
+    await sleep(200);
+    expect([dd.closes, dd.launched]).toEqual([[], []]);
+  }, 30_000);
+
+  it('a join by link with another table open: the table is kept, and the lobby`s table is offered (it no longer reads "Using the table that is already open")', async () => {
+    const hr = rig({ name: 'Monster Bash', sha: MB_SHA });
+    const cr = rig({ name: 'Attack from Mars', sha: AFM_SHA });
+    const H = make('host', hr.w);
+    const C = make('c', cr.w);
+    const ho = oneStepOn(H, hr, LISTS());
+    const co = oneStepOn(C, cr, LISTS());
+    await ho.one.host({ tablePath: null, startTable: false, port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await co.one.openLink(ho.one.status().link!, { trusted: true });
+    await until(() => co.one.status().change?.state === 'offered');
+    expect(co.one.status().change?.detail).toBe(HERE('Monster Bash', 'Attack from Mars'));
+    expect(co.one.status().launch.detail ?? '').not.toMatch(/Using the table that is already open/);
+    await sleep(200);
+    expect([co.closes, co.launched]).toEqual([[], []]);
+    // A PC with no copy of the lobby's table: the no-copy sentence, and nothing to offer.
+    const dr = rig({ name: 'Attack from Mars', sha: AFM_SHA });
+    const D = make('d', dr.w);
+    const dd = oneStepOn(D, dr, [known('Attack from Mars', AFM_SHA)]);
+    await dd.one.openLink(ho.one.status().link!, { trusted: true });
+    await until(() => dd.one.status().launch.state === 'needed');
+    expect(dd.one.status().change).toBeNull();
+    expect(dd.one.status().launch.detail).toBe("The lobby's table is Monster Bash. Castcade found no copy of it on this PC, and Attack from Mars stays open: you can watch, or pick another table.");
+  }, 30_000);
+
+  it("Castcade starts again inside the lobby beside another table than the lobby's: the lobby's table is on offer again", async () => {
+    const { cr, H, C, co } = await lobby();
+    // The friend opens another table by hand; the offer is there.
+    cr.close();
+    cr.open('Attack from Mars', AFM_SHA);
+    await until(() => co.one.status().change?.state === 'offered');
+    expect(co.one.status().change?.detail).toBe(HERE('Monster Bash', 'Attack from Mars'));
+    // Their Castcade closes (a crash, an update) and starts again: it comes back into the lobby, and offers again.
+    co.one.stop();
+    await C.stop({ keepForRestart: true });
+    const C2 = make('client', cr.w, folders.get('client'));
+    const co2 = oneStepOn(C2, cr, [known('mb_vpw_1.1', MB_SHA), known('Attack from Mars', AFM_SHA)]);
+    await C2.rejoin();
+    await until(() => H.status().participants.length === 2 && C2.status().lobby?.hostAway === null && C2.lobbyTable()?.game.tableName === 'Monster Bash', 20_000);
+    await until(() => co2.one.status().change?.state === 'offered');
+    expect(co2.one.status().change?.detail).toBe(HERE('Monster Bash', 'Attack from Mars'));
+    expect([co2.closes, co2.launched]).toEqual([[], []]);
+    await co2.one.openPick();
+    await until(() => co2.closes.length === 1);
+    expect(co2.closes).toEqual(['Attack from Mars']);
+  }, 60_000);
 });
