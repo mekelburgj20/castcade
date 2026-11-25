@@ -7,6 +7,15 @@ and back-filled from the GitHub release notes on 2026-10-29 (H2).
 
 ## [Unreleased]
 
+- **The log bundle also holds VPX's own files and the 3D stream logs (E8.4).** Both ways of sending it (0.2.50's
+  button in Settings, and Get logs on arcaid.app) now add: `vpx/VPinballX.ini` (the ini VPX reads for the exe Castcade last saw
+  run: beside the exe, else `%APPDATA%\VPinballX`; the value of any key named like a password, token, secret or API
+  key is replaced with `<removed>`), `vpx/vpinball.log` and `vpx/crash.txt` (the newest copy in the exe's folder or
+  the ini's; the end of each, 500 KB at most; never `crash.dmp`), and the fork's `vpx-stream-match.log`,
+  `vpx-stream-play.log` and `vpx-stream-watch.log` (the end of each, 500 KB at most). `manifest.txt` names the exe
+  and the ini, and any file that found no room in the 12 MB; the small files go first and the journals last, newest
+  first, so a full bundle leaves out its oldest journal. `companion/src/witness/log-bundle.ts`.
+
 ## [0.2.50] — 2026-11-24
 
 Protocol 6 is unchanged: this build plays a match with 0.2.46 to 0.2.49. It is a companion-only release: the OpenXR
