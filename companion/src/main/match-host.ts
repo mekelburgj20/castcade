@@ -445,6 +445,8 @@ export interface MatchHostOptions {
   now?: () => number;
   /** A15: the saved match. Default `match-resume.json` beside `file`. */
   resumeFile?: string;
+  /** Test seam: `SERIES_OVER_LINGER_MS`, how long a client's panel stays after the series, or the lobby, is over. */
+  seriesOverLingerMs?: number;
   /** A15 test seams: how long a client waits for a host that is gone, and how long a rejoin waits for the host's answer. */
   hostWaitMs?: number;
   rejoinTimeoutMs?: number;
@@ -1168,15 +1170,22 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   };
   /** A10: a client whose series is over closes the match after the linger (the host's End match tears down at once). */
   const scheduleSeriesEnd = (a: Active): void => {
-    if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !a.controller.status().series.over) return;
-    log.info(`match: the series is over; closing the match in ${Math.round(SERIES_OVER_LINGER_MS / 1000)} s`);
+    const st = a.controller.status();
+    if (a.endTimer || active !== a || a.controller.currentRole instanceof HostMatch || !st.series.over) return;
+    const lingerMs = opts.seriesOverLingerMs ?? SERIES_OVER_LINGER_MS;
+    // A17 step 1 (the review of PR 127): a client that lost its host in the lobby (`MatchController.onLobbyLost`): the
+    // voice is let go already; the panel says the lobby is over for the same linger, then everything of it closes
+    // here (the page with the microphone, the video mesh, the tunnels, the link), and the Match tab keeps the reason.
+    const lobbyLost = st.phase === 'lobby' ? (st.panel.message ?? 'The lobby is over: the host is gone.') : null;
+    log.info(lobbyLost !== null ? `match: the lobby is over on this PC (the host is gone); closing it in ${Math.round(lingerMs / 1000)} s` : `match: the series is over; closing the match in ${Math.round(lingerMs / 1000)} s`);
     a.endTimer = setTimeout(() => {
       if (active !== a) return;
       void teardown(a).then(() => {
-        log.info(`match: closed ${a.code} after the series ended`);
+        if (lobbyLost !== null) lastError = lobbyLost;
+        log.info(lobbyLost !== null ? `match: closed the lobby ${a.code}: its host is gone` : `match: closed ${a.code} after the series ended`);
         emit();
       });
-    }, SERIES_OVER_LINGER_MS);
+    }, lingerMs);
   };
   /**
    * I11.4.18 (2026-11-24): VPX holds a table still while its window is not the active one. When this PC's table is the

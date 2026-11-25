@@ -264,6 +264,8 @@ export interface StripRow {
 export function headerText(s: PanelState): string {
   const game = typeof s.game === 'number' && s.game > 0 ? s.game : 1;
   if (s.phase === 'over') return s.seriesOver === false ? 'GAME ' + game + ' OVER' : 'MATCH OVER';
+  // A17 step 1 (the review of PR 127): a lobby this PC has lost (its host is gone) is over, and says so.
+  if (s.phase === 'idle' && s.seriesOver === true) return 'LOBBY OVER';
   if (s.phase === 'idle') return typeof s.countdown === 'number' ? 'STARTING IN ' + s.countdown : 'WAITING FOR THE START';
   const up = s.players.find((p) => p.id === s.playerUp);
   const ball = s.ball !== null ? ' ' + s.ball : '';
@@ -1975,13 +1977,16 @@ function openPeer(peer) {
     const n = mesh && mesh.get(peer);
     const st = pc.iceConnectionState;
     if (!n || n.pc !== pc) return;
-    if (st !== 'connected' && st !== 'completed') n.resendOffer();
+    // A17: less and less often while the peer has never answered (a PC on 0.2.50 answers at its MATCH_READY).
+    if (st !== 'connected' && st !== 'completed') n.resendWaitingOffer();
     else if (n.resendStuckOffer(Date.now())) logLine('peer ' + peer + ': an offer had no answer for ' + Math.round(PeerNegotiator.STUCK_OFFER_MS / 1000) + ' s or more on a connected link: sent again');
   }, 5000);
   sendStereo(peer);
   return pc;
 }
 
+/** A17: the peers to add once attach() has the microphone and the capture (its own list, and any named meanwhile); null outside that wait. */
+let waitingPeers = null;
 async function attach(a) {
   detach();
   localId = a.localId;
@@ -2006,9 +2011,16 @@ async function attach(a) {
   // D2.7: this page replaces one whose connections still stand on the peers' side: they reopen first.
   if (a.reset) for (const p of a.peers) ipcRenderer.send(C.send, { to: p, signal: { kind: 'reset' } });
   const m = mesh;
+  // A17 (the review of PR 127): a peer named while the microphone and the capture are still being opened waits with
+  // the attach's own peers. Main names the lobby's players the moment the attach is posted (the voice is connected
+  // from the join on), and a connection opened before the microphone is there offers without it: a second offer
+  // follows, and a PC on 0.2.50 answers the first one many times over.
+  waitingPeers = new Set(a.peers);
   await Promise.all([openMic(a.micDeviceId), openCapture(a.capture)]);
   if (mesh !== m) return;
-  for (const p of a.peers) mesh.add(p);
+  const peers = waitingPeers;
+  waitingPeers = null;
+  for (const p of peers) mesh.add(p);
   report();
   render();
 }
@@ -2016,6 +2028,7 @@ async function attach(a) {
 function detach() {
   if (mesh) mesh.close();
   mesh = null;
+  waitingPeers = null;
   for (const id of [...remote.keys()]) closeRemote(id);
   for (const t of localStream.getTracks()) {
     localStream.removeTrack(t);
@@ -2064,8 +2077,14 @@ ipcRenderer.on(C.signal, (_e, m) => {
   }
   if (mesh) void mesh.receive(m.from, m.signal);
 });
-ipcRenderer.on(C.addPeer, (_e, p) => { if (mesh) mesh.add(p); report(); });
+ipcRenderer.on(C.addPeer, (_e, p) => {
+  // A17: while attach() still opens the microphone and the capture, the peer is added with the others after it.
+  if (waitingPeers) waitingPeers.add(p);
+  else if (mesh) mesh.add(p);
+  report();
+});
 ipcRenderer.on(C.removePeer, (_e, p) => {
+  if (waitingPeers) waitingPeers.delete(p);
   if (mesh) mesh.remove(p);
   closeRemote(p);
   report();

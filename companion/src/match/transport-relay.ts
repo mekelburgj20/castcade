@@ -778,7 +778,24 @@ export class RelayHostTransport extends RelayBase implements Transport {
     this.emitTo(relayPeer, RELINK, false);
   }
 
+  /**
+   * Review of PR 127: a frame from a relay peer that is not linked (it has a seat in the room and has not said HELLO
+   * or RECONNECT) never throws out of the socket's handler: whatever goes wrong is reported through `onError`.
+   */
   private onFrame(relayPeer: string, text: string): void {
+    if (this.links.has(relayPeer)) return this.takeFrame(relayPeer, text);
+    try {
+      this.takeFrame(relayPeer, text);
+    } catch (e) {
+      try {
+        this.fail(e, null);
+      } catch {
+        /* nothing more to do for a peer nobody knows */
+      }
+    }
+  }
+
+  private takeFrame(relayPeer: string, text: string): void {
     let link = this.links.get(relayPeer) ?? null;
     let msg: AnyMessage;
     try {
@@ -786,6 +803,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
     } catch (e) {
       if (!link) {
         // A17 (2026-11-24): a frame already, written in the asker's version (a HELLO's REFUSE, a RECONNECT's RECONNECT_ACK).
+        // Null for anything else, and it never throws. The answer is a REFUSE or a RECONNECT_ACK, which nobody answers.
         const refuse = foreignVersionRefusal(text, this.localId, this.seqForRefuse + 1);
         if (refuse) {
           this.seqForRefuse += 1;

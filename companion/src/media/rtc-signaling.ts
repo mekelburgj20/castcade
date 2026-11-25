@@ -32,6 +32,18 @@
  * rules keep the polite side out of it: it does not make the first offer (it waits `FIRST_OFFER_WAIT_MS` for the
  * impolite one, whose offer carries m-lines for the same tracks), and no side offers while it is answering (the
  * browser asks again once the answer is set, if anything is still to negotiate).
+ *
+ * A17 step 1 (2026-11-24, the review of PR 127): a peer is added at the join now, and a PC on 0.2.46 to 0.2.50 adds
+ * its side only at MATCH_READY: an offer can wait for minutes, and that PC then answers every copy of it that it
+ * held. Three rules for that wait:
+ *   - an answer that was not made for the offer that is waiting (another list of m-lines: this side offered again
+ *     meanwhile, with a track more) is dropped. Chromium refuses it ("The order of m-lines in answer doesn't match
+ *     order in offer"), and the refusal stood on the panel as an error for the whole match while the voice worked;
+ *   - an offer the peer has never answered is sent again less and less often (`resendWaitingOffer`: after 5 s, then
+ *     10, 20, 40 ... up to 5 minutes apart), so a long lobby leaves a handful of copies with the old PC, not sixty;
+ *   - and when the peer then offers by itself while ours still waits (its page was rebuilt and lost what it held, and
+ *     it is the polite one), the impolite side, which ignores that offer, sends its own again at once: the peer is
+ *     listening now, and the next look could be minutes away.
  */
 import type { MatchPlayerId, MediaSignal, MediaSignalling } from './match-media-types.js';
 
@@ -80,6 +92,11 @@ export class PeerNegotiator {
   static STUCK_OFFER_MS = 4000;
   /** A18: when an offer of ours was first seen waiting for its answer; null while none waits. */
   offerSince: number | null = null;
+  /** A17: an offer the peer has never answered is sent again at the first look, then every 2nd, 4th, 8th ... look, at most every this many. */
+  static QUIET_RESEND_MAX_LOOKS = 60;
+  /** A17: how often an offer was sent again to a peer that has never answered, and the looks since the last time. */
+  quietResends = 0;
+  quietLooks = 0;
   /** D2.12: an offer is being answered (rollback, remote description, answer): no offer of ours in between. */
   answering = false;
   /** D2.12: the polite peer's wait for the first offer; `waited` once it ran out. */
@@ -167,6 +184,37 @@ export class PeerNegotiator {
   }
 
   /**
+   * A17 (2026-11-24, the review of PR 127): what the page's 5 s timer calls while the connection is not up. An offer
+   * to a peer that has answered before (a renegotiation whose offer was lost) goes out again at every look, as it
+   * always did. An offer to a peer that has NEVER answered (it has not added this side yet: a PC on 0.2.50 does so at
+   * MATCH_READY, and holds what it is sent until then) goes out at the first look and then at every 2nd, 4th, 8th ...
+   * look, `QUIET_RESEND_MAX_LOOKS` apart at most: 5 s, 15 s, 35 s, 75 s, 155 s, 315 s, then every 5 minutes.
+   */
+  resendWaitingOffer(): boolean {
+    if (this.pc.remoteDescription) return this.resendOffer();
+    if (this.closed || this.makingOffer || this.pc.signalingState !== 'have-local-offer') return false;
+    this.quietLooks += 1;
+    if (this.quietLooks < Math.min(PeerNegotiator.QUIET_RESEND_MAX_LOOKS, Math.pow(2, this.quietResends))) return false;
+    if (!this.resendOffer()) return false;
+    this.quietLooks = 0;
+    this.quietResends += 1;
+    return true;
+  }
+
+  /**
+   * A17 (the review of PR 127): the m-lines of a description, each as its kind and its mid, in order. An answer is
+   * made for one offer and lists that offer's m-lines; one that lists others belongs to an older offer of ours.
+   */
+  static lines(sdp: string | undefined): string {
+    const out: string[] = [];
+    for (const line of String(sdp || '').split(/\r?\n/)) {
+      if (line.indexOf('m=') === 0) out.push(line.slice(2).split(' ')[0] + ':');
+      else if (line.indexOf('a=mid:') === 0 && out.length > 0 && out[out.length - 1]!.slice(-1) === ':') out[out.length - 1] += line.slice(6).trim();
+    }
+    return out.join(' ');
+  }
+
+  /**
    * A18 (2026-11-24): the same for a connection that IS up. Since a peer whose match link drops keeps its media
    * connection, an offer made while that link was away (a track added when a capture or a microphone opened, an ICE
    * restart) is lost with nobody to notice: `resendOffer` is only called while ICE is not connected, so the
@@ -230,9 +278,22 @@ export class PeerNegotiator {
     if (signal.sdp === undefined) return;
     const offerCollision = signal.kind === 'offer' && (this.makingOffer || this.pc.signalingState !== 'stable');
     this.ignoreOffer = !this.polite && offerCollision;
-    if (this.ignoreOffer) return;
+    if (this.ignoreOffer) {
+      // A17: ours has waited through a resend with no word from the peer, and now the peer offers by itself: it is
+      // listening, and never had ours (see the header). Ours wins the collision, so it goes out again at once.
+      if (this.quietResends > 0 && !this.pc.remoteDescription && this.resendOffer()) this.quietLooks = 0;
+      return;
+    }
     // An answer with no offer of ours outstanding is stale: one for an offer we rolled back, or an old connection's.
     if (signal.kind === 'answer' && this.pc.signalingState !== 'have-local-offer') return;
+    // A17: nor is an answer to an older offer of ours than the one that waits (see the header): dropped, not applied.
+    // (Only where both list m-lines: a description without any says nothing to compare.)
+    if (signal.kind === 'answer') {
+      const mine = this.pc.localDescription;
+      const offered = mine && mine.type === 'offer' ? PeerNegotiator.lines(mine.sdp) : '';
+      const answered = PeerNegotiator.lines(signal.sdp);
+      if (offered !== '' && answered !== '' && offered !== answered) return;
+    }
     // D2.7: an offer onto a connection that was already negotiated, which it refuses, comes from a new remote connection.
     const negotiated = this.pc.remoteDescription !== null;
     this.answering = signal.kind === 'offer';
