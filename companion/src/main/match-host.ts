@@ -94,7 +94,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance, TableChange } from '@castcade/protocol';
-import { pickName } from '../match/table-identity.js';
+import { tableWords } from '../match/table-identity.js';
 import { ClientMatch, LOBBY_HOST_WAIT_MS } from '../match/client.js';
 import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind, type LobbyStatus } from '../match/controller.js';
 import { menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
@@ -496,6 +496,14 @@ export interface MatchHost {
    */
   setTableChange(state: TableChange | null, line: string | null): void;
   /**
+   * A17 step 10 (review of PR 139, finding 1): the table open on this PC (`open`, as the witness names it) is this
+   * PC's own copy of the lobby's table named `pick`, or is not (null). One step says it: it finds this PC's copies,
+   * by the ROM its lists know where the names share nothing, and a row carries no ROM. The lobby is told with the
+   * table as this PC's row names it, and again whenever that row changes while the same table stands open (its hash
+   * comes a moment after its name); the lobby then never calls that table another game.
+   */
+  setPickCopy(word: { pick: string; open: string } | null): void;
+  /**
    * D7.6.3 (2026-11-03): the Match tab's Save 2 s of frames: the layer camera's frames and the theater frames handed to
    * the layer, into `<logs>/frames/<yyyy-mm-dd-hhmmss>/` (media/frame-clip.ts). Throws without the media layer.
    */
@@ -723,6 +731,8 @@ interface Active {
    * under way. Krobs joined before his table loaded and read "PC · different table file" for the whole match.
    */
   sent: { rig: Rig; game: GameFingerprint; ballEnds: boolean | null };
+  /** A17 step 10: one step's word that the table open here (`open`) is this PC's copy of the lobby's table (`pick`); null: it is not. */
+  pickCopy?: { pick: string; open: string } | null;
   lobbyKey: string;
   refreshing: boolean;
   refreshAgain: boolean;
@@ -1382,7 +1392,13 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     // loading, the host said its table's objects and the copy that was started has others (`launchNot3d`). The
     // launch's word is dropped once the two VPX themselves say 3D runs (the player opened another copy since).
     const role = a.controller.currentRole as HostMatch | ClientMatch;
-    const hostId = role instanceof ClientMatch ? role.hostId : null;
+    // A17 step 10 (review of PR 139): in a lobby the table objects a copy is ranked by are the picked table's, which
+    // are those of its picker's copy: the note names that person, on the lobby's PC too, and nobody when this PC made
+    // the pick itself. Without a lobby it is the host, as before.
+    const picker = c.lobby ? c.lobby.table.pickedBy : null;
+    const hostId = c.lobby ? (picker !== null && picker !== me ? picker : null) : role instanceof ClientMatch ? role.hostId : null;
+    /** The table objects this PC's copy was ranked by came with a member's pick, not from the lobby's PC. */
+    const pickersWord = c.lobby !== null && picker !== null && picker !== (role instanceof ClientMatch ? role.hostId : me);
     const hostIn3d = hostId !== null && v.fork === 'ready' && v.players.some((x) => x.id === hostId && x.mode === '3d');
     // Review of PR #125 (finding 1): a host that cannot do 3D at all (its PC said no Castcade VPX build runs its
     // table) is never the subject of "import this copy for 3D": the player would import, rejoin and still get 2D.
@@ -1399,7 +1415,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.objectsSaid = said;
       log.info(
         said
-          ? `stream3d: this PC's table and ${said}'s do not hold the same table objects (${bothSaid ? 'both VPX said so' : "the host's word against the copy that was started here"}): the 2D video between them; the lobby says so`
+          ? `stream3d: this PC's table and ${said}'s do not hold the same table objects (${bothSaid ? 'both VPX said so' : pickersWord ? "what its picker said of the lobby's table against the copy that was started here" : "the host's word against the copy that was started here"}): the 2D video between them; the lobby says so`
           : 'stream3d: the lobby no longer says that the table objects differ (it does not apply any more)',
       );
     }
@@ -2889,6 +2905,16 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * engines carry only the rig (a table change then is not sent, and `sent.game` keeps what was). The role in charge
    * now (`currentRole`): after a host transfer `a.engine` is the role that stepped down.
    */
+  /**
+   * A17 step 10 (review of PR 139, finding 1): tells the lobby that this PC's open table is its copy of the lobby's
+   * table, while the table one step said it of is still the one the witness names and the row names a table. The
+   * controller only passes on what changed.
+   */
+  const sayPickCopy = (a: Active): void => {
+    const w = a.pickCopy ?? null;
+    const holds = w !== null && witness.status().currentTable === w.open && isTableOpen(a.sent.game);
+    a.controller.setPickCopy(holds ? { pick: w.pick, tableName: a.sent.game.tableName, tableHash: a.sent.game.tableHash } : null);
+  };
   const announceLobby = (a: Active, rig: Rig, game: GameFingerprint): void => {
     const role = a.controller.currentRole as HostMatch | ClientMatch;
     // A17 step 7: every key counts in every phase (the engines' lobby); `lobby` only words the log line now.
@@ -2909,6 +2935,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       return;
     }
     a.sent = { rig, game: gameChanged ? game : a.sent.game, ballEnds: readyChanged ? ballEnds : a.sent.ballEnds };
+    // A17 step 10: the word about this PC's copy names the table as the row does: said again with the new row.
+    if (gameChanged) sayPickCopy(a);
     if (!done) return;
     const what = [
       rigChanged ? `rig ${rig}` : null,
@@ -4280,7 +4308,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const no = a.controller.pickTable(o.game, o.objects ? { editables: o.objects.editables, hash: o.objects.hash } : null);
       if (no !== null) return fail(new Error(no));
       lastError = null;
-      log.info(`match: ${a.code}: the lobby's table was picked on this PC: ${pickName(o.game.tableName).slice(0, 80)}${o.objects ? ` (table objects ${forkIdentityText(o.objects)})` : ''}${l.table.endsMatch ? '; the open match ends at its tally' : ''}`);
+      log.info(`match: ${a.code}: the lobby's table was picked on this PC: ${tableWords(o.game.tableName)}${o.objects ? ` (table objects ${forkIdentityText(o.objects)})` : ''}${l.table.endsMatch ? '; the open match ends at its tally' : ''}`);
       emit();
       return status();
     },
@@ -4291,6 +4319,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     },
     setTableChange(state, line) {
       active?.controller.setTableChange(state, line);
+    },
+    setPickCopy(word) {
+      const a = active;
+      if (!a) return;
+      a.pickCopy = word ? { pick: word.pick, open: word.open } : null;
+      sayPickCopy(a);
     },
     lobbyTable() {
       const role = active?.controller.currentRole;

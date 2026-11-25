@@ -80,6 +80,7 @@ import { createMediaSettingsStore, iceServers, type MediaSettingsStore } from '.
 import { usableBounds } from '../media/panel-placement.js';
 import { readIniStereo } from '../media/preview-stereo.js';
 import { nodeFs } from '../witness/fs.js';
+import { readVpxFacts } from '../witness/vpx-file.js';
 import { createRtcHost, type RtcHost } from '../media/rtc-host.js';
 import { createTableAudioHelper, resolveAudioHelper, type TableAudioHelper } from '../media/audio-helper.js';
 import { createVideoHelper, resolveVideoHelper, type VideoHelper } from '../media/video-helper.js';
@@ -711,7 +712,7 @@ function registerIpc(
   // A17 step 10: the lobby's table is picked: a path that is a key into this PC's own lists, never a path to run;
   // `about` is the lobby as the press saw it, a string or nothing.
   ipcMain.handle(IPC.launchPick, (_e, tablePath: unknown, about: unknown) => os().pick(str(tablePath, 'table'), typeof about === 'string' ? about : null));
-  ipcMain.handle(IPC.launchPickOpen, (_e, about: unknown) => os().pickOpen(typeof about === 'string' ? about : null));
+  ipcMain.handle(IPC.launchPickOpen, (_e, about: unknown, name: unknown) => os().pickOpen(typeof about === 'string' ? about : null, typeof name === 'string' ? name.slice(0, 300) : null));
   ipcMain.handle(IPC.launchConfirm, () => {
     noWatch();
     return os().confirm();
@@ -1177,6 +1178,8 @@ async function main(): Promise<void> {
         // I11.4.15: and among copies that are not the identical file, one with the host's table objects is.
         tableObjects: (vpxPath, signal) => tableObjects.objectsOf(vpxPath, signal),
         learnObjects: (vpxPath, objects) => tableObjects.learn(vpxPath, objects),
+        // A17 step 10: a picked file the witness never read is named by its own TableInfo, as every row names it.
+        tableInfoName: async (vpxPath) => (await readVpxFacts(nodeFs, vpxPath)).tableInfo.tableName?.trim() || null,
         arcaidBaseUrl: () => store.get().arcaidBaseUrl ?? null,
         log: logger,
       });

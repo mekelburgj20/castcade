@@ -90,6 +90,8 @@ function world(
     /** A17 step 10: this PC's own open table as it says it to the lobby. */
     ownTable?: GameFingerprint;
     autoChangesMax?: number;
+    /** Review of PR 139: the tables' own names as their files say them, by path (a pick reads the one the list has not). */
+    infoNames?: Record<string, string>;
   } = {},
 ) {
   const matchCbs = new Set<(s: MatchStatus) => void>();
@@ -114,6 +116,12 @@ function world(
   /** A17 step 10: every pick made on this PC, and what this PC told the lobby of its way to the lobby's table (each change of it). */
   const picks: Array<{ game: GameFingerprint; objects: ForkIdentity | null; about: string | null }> = [];
   const changes: Array<[string | null, string | null]> = [];
+  /** Review of PR 139: what this PC told the lobby of its open table being its copy of the lobby's table (each change of it). */
+  const copies: Array<{ pick: string; open: string } | null> = [];
+  /** Review of PR 139: `WitnessStatus.watching` (undefined: not said, as a witness from before), who picked the lobby's table, and the witness's own facts of the open file. */
+  let watching: boolean | undefined;
+  let picker: { id: string; name: string } | null = null;
+  let openFacts: { sha256?: string; tableInfo?: { tableName: string } } = {};
   const noCopy: boolean[] = [];
   const launched: string[] = [];
   /** I11.4.2: every launch with the options it was given (null: the plain A14 launch). */
@@ -131,7 +139,8 @@ function world(
   const objectsSignals: AbortSignal[] = [];
   const learned: Array<[string, ForkIdentity]> = [];
   let clock = 1_000_000;
-  const status = (): MatchStatus => ({ ...m }) as unknown as MatchStatus;
+  const status = (): MatchStatus =>
+    ({ ...m, ...(picker ? { lobby: { table: { name: lobbyPick?.tableName ?? null, pickedBy: picker.id, pickedByName: picker.name }, members: [{ id: 'me', me: true }] } } : {}) }) as unknown as MatchStatus;
   const launcher: VpxLauncher = {
     async launch(path, opts) {
       launched.push(path);
@@ -181,9 +190,19 @@ function world(
         const last = changes.at(-1);
         if (!last ? state !== null || line !== null : last[0] !== state || last[1] !== line) changes.push([state, line]);
       },
+      setPickCopy: (word) => {
+        if (JSON.stringify(word) !== JSON.stringify(copies.at(-1) ?? null)) copies.push(word);
+      },
     },
     witness: {
-      status: () => ({ currentTable: open, ...(followed !== undefined ? { gamesSeen: open === null ? null : followed } : {}), currentPid: open === null ? null : vpxPid, vpxOpen: vpxOpen ?? (open === null ? 0 : 1), currentIdentity: open !== null && o.openPath ? { filePath: o.openPath } : null }),
+      status: () => ({
+        currentTable: open,
+        ...(followed !== undefined ? { gamesSeen: open === null ? null : followed } : {}),
+        ...(watching !== undefined ? { watching } : {}),
+        currentPid: open === null ? null : vpxPid,
+        vpxOpen: vpxOpen ?? (open === null ? 0 : 1),
+        currentIdentity: open !== null && (o.openPath || Object.keys(openFacts).length > 0) ? { filePath: o.openPath ?? null, ...openFacts } : null,
+      }),
       onStatus: (cb) => (witnessCbs.add(cb), () => void witnessCbs.delete(cb)),
       liveGame: () => game,
       onGame: (cb) => (gameCbs.add(cb), () => void gameCbs.delete(cb)),
@@ -228,6 +247,7 @@ function world(
       learned.push([path, id]);
       return o.learnAnswer ?? null;
     },
+    ...(o.infoNames ? { tableInfoName: async (path: string) => o.infoNames?.[path] ?? null } : {}),
     hostHashWaitMs: o.hostHashWaitMs ?? 0,
     now: () => clock,
     arcaidBaseUrl: () => o.arcaid ?? null,
@@ -246,6 +266,24 @@ function world(
     noCopy,
     picks,
     changes,
+    copies,
+    /** Review of PR 139: the witness stops watching (paused, or made again and not looked yet), or watches again. `state`: what it names from then on. */
+    async watch(on: boolean, state?: { open: string | null }) {
+      watching = on;
+      if (state) open = state.open;
+      witnessCbs.forEach((cb) => cb({ currentTable: open }));
+      await flush();
+    },
+    /** Review of PR 139: who picked the lobby's table, as the lobby says it (`me`: this PC's person). */
+    pickedBy(name: string | null, me = false) {
+      picker = name === null ? null : { id: me ? 'me' : 'them', name };
+    },
+    /** Review of PR 139: what the witness itself read of the open file. */
+    async facts(f: { sha256?: string; tableInfo?: { tableName: string } }) {
+      openFacts = f;
+      witnessCbs.forEach((cb) => cb({ currentTable: open }));
+      await flush();
+    },
     /** A17 step 3: the game on the open table changes (a start, a score, the end; null: no live table). */
     async game(g: { inGame: boolean; scores?: (number | null)[] } | null) {
       game = g ? { inGame: g.inGame, scores: g.scores ?? [] } : null;
@@ -1532,7 +1570,7 @@ describe("the lobby's table changes while a table is open here (A17 step 3)", ()
     expect(w.one.status().launch).toEqual({
       state: 'needed',
       table: 'Medieval Madness',
-      detail: "The lobby's table is now Medieval Madness. Castcade found no copy of it on this PC: you can watch, or open it in VPX if you have it under another name. Attack from Mars stays open.",
+      detail: "The lobby's table is now Medieval Madness. Castcade found no copy of it on this PC, and Attack from Mars stays open: you can watch, or pick another table.",
     });
     // The lobby is told (this person is not counted for a start), and the table that stands open is not taken for the lobby's.
     expect(w.noCopy.at(-1)).toBe(true);
@@ -1726,18 +1764,30 @@ describe('when Castcade is not sure, it asks the person and closes nothing (A17 
     await flush();
   };
 
-  it('finding 1: joining again is a join: the lobby is found with another table, nobody picked it, and the open table is kept', async () => {
+  it('finding 1: joining again is a join: the lobby is found with another table, the open table is kept, and the table is offered (review of PR 139, finding 2)', async () => {
     // The lobby's PC started again and opened the lobby under its code with the table it then had; this PC came back by itself.
     const w = await inLobby();
     await w.rejoin(fingerprint('Monster Bash'));
     expect(w.closes).toEqual([]);
     expect(w.launched).toEqual([]);
-    expect(w.one.status().change).toBeNull();
     expect(w.logs).toContain("launch: this PC joined the lobby again; the lobby's table is Monster Bash (it was Attack from Mars): as at any join, the table that is open here is kept and nothing is closed");
-    expect(w.logs.filter((l) => /the lobby's table changed/.test(l))).toEqual([]);
-    // A reconnect that finds the same table is a join too, and says less.
+    expect(w.logs.filter((l) => /the lobby's table changed from/.test(l))).toEqual([]);
+    // Nothing is closed, and the table is not lost: it stands as an offer, with the sentence that says why.
+    expect(w.one.status().change).toEqual({
+      state: 'offered',
+      table: 'Monster Bash',
+      open: AFM_OPEN,
+      detail: "The lobby's table changed to Monster Bash while this PC was away from the lobby. Open it: Castcade closes Attack from Mars and opens Monster Bash.",
+    });
+    expect(w.changes.at(-1)?.[0]).toBe('offered');
+    // However long it stands, with "Change tables for me" on: it never becomes a change by itself.
+    await tick(w, 10 * 60_000);
+    await w.hold(false);
+    expect(w.closes).toEqual([]);
+    // A reconnect that finds the same table is a join too, and says less; the offer stands as it was.
     await w.rejoin();
     expect(w.closes).toEqual([]);
+    expect(w.one.status().change?.detail).toMatch(/while this PC was away from the lobby/);
     // From here on a pick somebody makes while this PC is in the lobby is a change again.
     await w.pick(fingerprint('Attack from Mars'));
     expect(w.one.status().change).toBeNull();
@@ -1755,21 +1805,53 @@ describe('when Castcade is not sure, it asks the person and closes nothing (A17 
     await u.rejoin(fingerprint(NO_TABLE_NAME));
     await u.rejoin(fingerprint('Monster Bash'));
     expect(u.closes).toEqual([]);
-    expect(u.one.status().change).toBeNull();
+    expect(u.one.status().change?.state).toBe('offered');
+
+    // Open it carries the offer out, by the rules of any change.
+    const p = await inLobby();
+    await p.rejoin(fingerprint('Monster Bash'));
+    await p.one.openPick();
+    expect(p.closes.map((c) => c.table)).toEqual([AFM_OPEN]);
+    await p.closed();
+    expect(p.launched).toEqual([MB.vpxPath]);
+
+    // With nothing open here the table is offered too, and Open it starts it.
+    const n = await inLobby();
+    await n.table(null);
+    await n.rejoin(fingerprint('Monster Bash'));
+    expect(n.launched).toEqual([]);
+    expect(n.one.status().change).toMatchObject({ state: 'offered', open: null, detail: "The lobby's table changed to Monster Bash while this PC was away from the lobby." });
+    await n.one.openPick();
+    expect(n.launched).toEqual([MB.vpxPath]);
+
+    // No copy of it on this PC: nothing to offer; the tab says so, as for any change.
+    const c = await inLobby({ tables: [AFM] });
+    await c.rejoin(fingerprint('Medieval Madness'));
+    expect(c.one.status().change).toBeNull();
+    expect(c.one.status().launch.state).toBe('needed');
   });
 
-  it('finding 1: a change that was waiting is dropped when this PC joins again, and its open table is kept', async () => {
+  it('finding 1: a change that was waiting when this PC joins again is not gone on with by itself: its open table is kept, and the table is offered (review of PR 139, finding 2)', async () => {
     const w = await inLobby();
     await w.game({ inGame: true });
     await w.pick(fingerprint('Monster Bash'));
     expect(w.one.status().change?.state).toBe('own_game');
     await w.rejoin();
-    expect(w.one.status().change).toBeNull();
-    expect(w.logs).toContain('launch: the table change that was waiting on this PC is dropped with it');
+    expect(w.one.status().change).toEqual({
+      state: 'offered',
+      table: 'Monster Bash',
+      open: AFM_OPEN,
+      detail: "The lobby's table is now Monster Bash. This PC was away from the lobby for a moment, so Castcade asks before it changes tables. Open it: Castcade closes Attack from Mars and opens Monster Bash.",
+    });
     await w.game({ inGame: false, scores: [1] });
-    await tick(w, 200_000);
+    await tick(w, 400_000);
+    await w.hold(false);
+    // Nothing closes and nothing opens by itself, and the offer is still there.
     expect(w.closes).toEqual([]);
     expect(w.launched).toEqual([]);
+    expect(w.one.status().change?.state).toBe('offered');
+    await w.one.openPick();
+    expect(w.closes.map((c) => c.table)).toEqual([AFM_OPEN]);
   });
 
   it('finding 2: the witness must have evidence that a game would be seen: a table that is only "live" is the person\'s to close, even with no game known', async () => {
@@ -1874,6 +1956,11 @@ describe('when Castcade is not sure, it asks the person and closes nothing (A17 
     await w.pick(fingerprint('Attack from Mars'));
     expect(w.one.status().change).toBeNull();
     expect(w.closes[0]!.mayClose()).toBe(false);
+    // Review of PR 139 (finding 6): the table is closing all the same, and this PC says so: to its person, and to the
+    // lobby (a start does not count this PC in until it has a table again).
+    expect(w.changes.at(-1)).toEqual(['closing', "Attack from Mars is closing (Castcade had asked it to close, and that cannot be taken back); the lobby's table opens when it has closed."]);
+    expect(w.one.status().launch.detail).toBe("Attack from Mars is closing: Castcade had asked it to close before the lobby's table changed back to Attack from Mars, and that cannot be taken back. Castcade opens it again when it has closed.");
+    expect(w.copies.at(-1) ?? null).toBeNull();
     // VPX obeys the request that was already out.
     await w.closed(1);
     expect(w.launched).toEqual([AFM.vpxPath]);
@@ -1884,7 +1971,8 @@ describe('when Castcade is not sure, it asks the person and closes nothing (A17 
     const r = await inLobby();
     await r.pick(fingerprint('Monster Bash'));
     await r.rejoin();
-    expect(r.one.status().change).toBeNull();
+    // (The change itself stands as an offer from here: review of PR 139, finding 2. The request that is out is obeyed.)
+    expect(r.one.status().change?.state).toBe('offered');
     await r.closed(1);
     expect(r.launched).toEqual([MB.vpxPath]);
 
@@ -2082,7 +2170,7 @@ describe("picking the lobby's table, and what a PC says on its way to it (A17 st
       w.advance(60_000);
     }
     expect(w.launched).toHaveLength(3);
-    expect(w.logs.some((l) => /this PC has changed tables by itself 3 times in 5 minutes .*the next change of the lobby's table is only offered, until the person acts/.test(l))).toBe(true);
+    expect(w.logs.some((l) => /this PC has changed tables by itself 3 times in 5 minutes .*from here a change of the lobby's table is only offered, until the person acts/.test(l))).toBe(true);
     // The fourth, inside the five minutes: offered, whatever the setting says, and the tab says why.
     await w.pick(fingerprint(tables[3]!));
     expect(w.closes).toHaveLength(3);
@@ -2093,6 +2181,19 @@ describe("picking the lobby's table, and what a PC says on its way to it (A17 st
       detail: "The lobby's table is now Attack from Mars. Open it: Castcade closes Monster Bash (Williams 1998) and opens Attack from Mars. The table has changed several times in a few minutes, so Castcade asks before it changes tables again.",
     });
     expect(w.changes.at(-1)?.[0]).toBe('offered');
+    // Review of PR 139 (S1): the offer stays an offer. Five minutes and more go by, statuses of every kind come in:
+    // nothing closes, nothing opens, and the tab still says why it asks.
+    for (let i = 0; i < 8; i++) {
+      w.advance(60_000);
+      w.expire();
+      await w.hold(false);
+      await w.follow(true);
+      await w.phase('lobby');
+    }
+    expect(w.closes).toHaveLength(3);
+    expect(w.launched).toHaveLength(3);
+    expect(w.one.status().change).toMatchObject({ state: 'offered', table: 'Attack from Mars', open: 'Monster Bash (Williams 1998)' });
+    expect(w.one.status().change?.detail).toMatch(/Castcade asks before it changes tables again/);
     // The person presses Open it: that change is made, and from here Castcade changes tables by itself again.
     await w.one.openPick();
     expect(w.closes).toHaveLength(4);
@@ -2179,5 +2280,258 @@ describe("picking the lobby's table, and what a PC says on its way to it (A17 st
     expect(v.closes).toEqual([]);
     expect(v.launched).toEqual([]);
     expect(v.one.status().change).toBeNull();
+  });
+});
+
+describe('the review of PR 139: not sure, so ask; an offer stays an offer; this PC says which table is its copy', () => {
+  const AFM_OPEN = 'Attack from Mars';
+  const MB_OPEN = 'Monster Bash (Williams 1998)';
+  const inLobby = async (o: Parameters<typeof world>[0] = {}, open: string | null = AFM_OPEN, first = 'Attack from Mars') => {
+    const w = world({ followed: true, ...o });
+    if (open !== null) await w.table(open);
+    await w.pick(fingerprint(first));
+    await w.one.openLink(LINK, { trusted: true });
+    return w;
+  };
+  const tick = async (w: ReturnType<typeof world>, ms: number): Promise<void> => {
+    w.advance(ms);
+    w.expire();
+    await flush();
+  };
+
+  it("finding 1: this PC tells the lobby when the table open here is its own copy of the lobby's table, also one it found by the ROM alone, and takes the word back when it is not", async () => {
+    // This PC's copy of Attack from Mars: a file and a name that share nothing with the title; its list knows the ROM.
+    const copy = table('AFM_VPW_v1.2', { rom: 'afm_113b', sha256: 'ef'.repeat(32) });
+    const w = await inLobby({ tables: [MB, copy] }, MB_OPEN, 'Monster Bash');
+    // The table open at the join is this PC's copy of the lobby's table: said.
+    expect(w.copies).toEqual([{ pick: 'Monster Bash', open: MB_OPEN }]);
+    await w.pick({ ...fingerprint('Attack from Mars', 'cd'.repeat(32)), romName: 'afm_113b' });
+    // Monster Bash is no copy of Attack from Mars: the word is taken back, and the table is asked to close.
+    expect(w.copies.at(-1)).toBeNull();
+    expect(w.closes.map((c) => c.table)).toEqual([MB_OPEN]);
+    await w.closed();
+    expect(w.launched).toEqual([copy.vpxPath]);
+    await w.table('AFM_VPW_v1.2');
+    expect(w.copies.at(-1)).toEqual({ pick: 'Attack from Mars', open: 'AFM_VPW_v1.2' });
+    // Another table opened by hand: no copy, and the lobby is told so.
+    await w.table(null);
+    await w.table('Medieval Madness');
+    expect(w.copies.at(-1)).toBeNull();
+    // A table from a folder Castcade does not list, whose own name the witness reads a moment later: a copy by that name.
+    await w.table(null);
+    await w.table('some file');
+    expect(w.copies.at(-1)).toBeNull();
+    await w.facts({ tableInfo: { tableName: 'Attack from Mars (Bally 1995)' } });
+    expect(w.copies.at(-1)).toEqual({ pick: 'Attack from Mars', open: 'some file' });
+    // With no lobby there is nobody to tell.
+    const n = w.copies.length;
+    await w.leave();
+    expect(w.copies).toHaveLength(n);
+  });
+
+  it('findings 4 and 5: a witness that is not watching knows neither what is open nor whether a game is on: nothing is closed, nothing is started, the person is asked; when it watches again the change is looked at afresh', async () => {
+    // "Pause watching" with a table open and no game known: the next pick closes nothing.
+    const w = await inLobby();
+    await w.watch(false);
+    await w.pick(fingerprint('Monster Bash'));
+    expect(w.closes).toEqual([]);
+    expect(w.launched).toEqual([]);
+    expect(w.one.status().change).toEqual({
+      state: 'close_it',
+      table: 'Monster Bash',
+      open: AFM_OPEN,
+      detail: "The lobby's table is now Monster Bash. Castcade is not watching VPX on this PC right now (watching is paused, or was started again a moment ago), so it closes and opens nothing. Open Monster Bash in VPX yourself, or turn watching back on.",
+    });
+    expect(w.changes.at(-1)?.[0]).toBe('waits_person');
+    // However long: nothing.
+    await tick(w, 10 * 60_000);
+    await w.hold(false);
+    expect(w.closes).toEqual([]);
+    // Watching again, with what is then known: the open table is followed, no game is on, it is asked to close.
+    await w.watch(true);
+    expect(w.closes.map((c) => c.table)).toEqual([AFM_OPEN]);
+
+    // A witness that is made again (a setting changed) while a change waits for a game: for a moment it names no
+    // table and counts no VPX. That is not "the table closed": the new table is not started beside the running one.
+    const v = await inLobby();
+    await v.game({ inGame: true });
+    await v.pick(fingerprint('Monster Bash'));
+    expect(v.one.status().change?.state).toBe('own_game');
+    await v.watch(false, { open: null });
+    expect(v.launched).toEqual([]);
+    expect(v.one.status().change?.state).toBe('close_it');
+    // It has looked: the table is there, the game is on, and the change waits for it as before.
+    await v.watch(true, { open: AFM_OPEN });
+    expect(v.one.status().change?.state).toBe('own_game');
+    expect(v.launched).toEqual([]);
+    expect(v.closes).toEqual([]);
+
+    // The same for a table its person has to close, and for a close request that is out: no start for a table that
+    // only seems to be gone, and no further request.
+    const c = await inLobby();
+    await c.pick(fingerprint('Monster Bash'));
+    expect(c.closes).toHaveLength(1);
+    await c.watch(false, { open: null });
+    expect(c.closes[0]!.mayClose()).toBe(false);
+    expect(c.launched).toEqual([]);
+
+    // With nothing open as far as a blind witness knows, a change starts nothing either.
+    const n = await inLobby();
+    await n.table(null);
+    await n.watch(false);
+    await n.pick(fingerprint('Monster Bash'));
+    expect(n.launched).toEqual([]);
+    expect(n.one.status().change?.state).toBe('close_it');
+    await n.watch(true);
+    expect(n.launched).toEqual([MB.vpxPath]);
+  });
+
+  it('finding 7: with Change tables for me off nothing starts by itself, also not after a VPX that could not be named has closed', async () => {
+    const w = await inLobby({ changeTablesForMe: false });
+    await w.table(null);
+    await w.vpx(1, 7002);
+    await w.pick(fingerprint('Monster Bash'));
+    expect(w.one.status().change).toMatchObject({
+      state: 'close_it',
+      detail: "The lobby's table is now Monster Bash. VPX is open on this PC and Castcade cannot tell which table it has: close VPX, and Monster Bash can be opened from here (Open it).",
+    });
+    await w.vpx(0, null);
+    expect(w.launched).toEqual([]);
+    expect(w.one.status().change).toMatchObject({ state: 'offered', open: null });
+    await w.one.openPick();
+    expect(w.launched).toEqual([MB.vpxPath]);
+
+    // And when this PC asks first because it changed tables often, the same.
+    const o = await inLobby({ autoChangesMax: 1 });
+    await o.pick(fingerprint('Monster Bash'));
+    await o.closed();
+    await o.table(MB_OPEN);
+    await o.table(null);
+    await o.vpx(1, 7003);
+    await o.pick(fingerprint('Attack from Mars'));
+    expect(o.one.status().change?.state).toBe('close_it');
+    await o.vpx(0, null);
+    expect(o.launched).toEqual([MB.vpxPath]);
+    expect(o.one.status().change).toMatchObject({ state: 'offered', open: null });
+    expect(o.one.status().change?.detail).toMatch(/Castcade asks before it changes tables again/);
+  });
+
+  it("finding 8: a pick of a file the witness never read is named by the table's own name, read first; a file that cannot be read is picked by its name, and the tab says so", async () => {
+    // From Browse: the list has neither the table's own name nor a hash.
+    const raw = table('mb_vpw_1.1', { imported: false });
+    const w = await inLobby({ tables: [AFM, MB], files: [raw], hashes: { [raw.vpxPath]: 'cd'.repeat(32) }, infoNames: { [raw.vpxPath]: ' Monster Bash (Williams 1998) ' } });
+    await w.one.pick(raw.vpxPath);
+    expect(w.picks[0]!.game).toMatchObject({ tableName: 'Monster Bash (Williams 1998)', tableHash: 'cd'.repeat(32) });
+    expect(w.one.status().notice).toBeNull();
+    // Neither can be read.
+    const u = await inLobby({ tables: [AFM, MB], files: [raw], hashes: {}, infoNames: {} });
+    await u.one.pick(raw.vpxPath);
+    expect(u.picks[0]!.game).toMatchObject({ tableName: 'mb_vpw_1.1', tableHash: ZERO_SHA256 });
+    expect(u.one.status().notice).toBe(
+      "Castcade could not read the file of mb_vpw_1.1, so it is the lobby's table by its name alone: every PC opens its own table of that name, and Castcade cannot tell who has the identical file.",
+    );
+  });
+
+  it('finding 10: "Make <table> the lobby\'s table" picks the table the question named, or nothing; the sentences name who picked', async () => {
+    const w = await inLobby({}, AFM_OPEN, 'Monster Bash');
+    // The question was about Medieval Madness; Attack from Mars is open at the answer.
+    await expect(w.one.pickOpen('about', 'Medieval Madness')).rejects.toThrow("Medieval Madness was not made the lobby's table: Attack from Mars is open on this PC now. Look again and press again.");
+    expect(w.picks).toEqual([]);
+    await w.one.pickOpen('about', 'Attack from Mars');
+    expect(w.picks).toHaveLength(1);
+
+    // Somebody else picked: their name, on the tab and on this PC's own panel.
+    const k = await inLobby({ changeTablesForMe: false });
+    k.pickedBy('Krobs');
+    await k.pick(fingerprint('Monster Bash'));
+    const said = "Krobs changed the lobby's table to Monster Bash. Open it: Castcade closes Attack from Mars and opens Monster Bash.";
+    expect(k.one.status().change?.detail).toBe(said);
+    expect(k.changes.at(-1)).toEqual(['offered', said]);
+    // This PC's own person picked.
+    const me = await inLobby({ changeTablesForMe: false });
+    me.pickedBy('Owner', true);
+    await me.pick(fingerprint('Monster Bash'));
+    expect(me.one.status().change?.detail).toBe("You changed the lobby's table to Monster Bash. Open it: Castcade closes Attack from Mars and opens Monster Bash.");
+    // No copy: who changed it, what stays, and what the person can do.
+    const n = await inLobby({ tables: [AFM] });
+    n.pickedBy('Krobs');
+    await n.pick(fingerprint('Medieval Madness'));
+    expect(n.one.status().launch.detail).toBe("Krobs changed the lobby's table to Medieval Madness. Castcade found no copy of it on this PC, and Attack from Mars stays open: you can watch, or pick another table.");
+    // A pick made while this PC was away names its picker too.
+    const a = await inLobby();
+    a.pickedBy('Krobs');
+    await a.rejoin(fingerprint('Monster Bash'));
+    expect(a.one.status().change?.detail).toBe("Krobs changed the lobby's table to Monster Bash while this PC was away from the lobby. Open it: Castcade closes Attack from Mars and opens Monster Bash.");
+  });
+
+  it("finding 11: the PC that made the pick opens the file it picked, whatever other copy of that game it has; any other PC picks its copy by the rules of a join", async () => {
+    // Two files of one game here: an imported one, and one from Browse. The person picks the one from Browse.
+    const raw = table('Attack from Mars (VPW)', { imported: false });
+    const lists = { tables: [MB, AFM], files: [raw], hashes: { [raw.vpxPath]: 'cd'.repeat(32) } };
+    const w = await inLobby(lists, MB_OPEN, 'Monster Bash');
+    await w.one.pick(raw.vpxPath);
+    await w.pick(w.picks[0]!.game);
+    expect(w.closes).toHaveLength(1);
+    await w.closed();
+    expect(w.launched).toEqual([raw.vpxPath]);
+    // A PC with the same two files that did not make the pick: the imported copy (it reports ball ends), as at a join.
+    const o = await inLobby(lists, MB_OPEN, 'Monster Bash');
+    await o.pick(w.picks[0]!.game);
+    await o.closed();
+    await flush();
+    expect(o.launched).toEqual([AFM.vpxPath]);
+    // The pick is somebody else's again: this PC's own pick of before decides nothing.
+    await w.table('Attack from Mars (VPW)');
+    await w.pick(fingerprint('Monster Bash'));
+    await w.closed();
+    await w.table(MB_OPEN);
+    await w.pick({ ...w.picks[0]!.game });
+    await w.closed();
+    await flush();
+    expect(w.launched).toEqual([raw.vpxPath, MB.vpxPath, AFM.vpxPath]);
+  });
+
+  it('finding 11: the number of changes this PC made by itself counts changes, not close requests: a change whose close had to be asked twice is one', async () => {
+    const w = await inLobby({ autoChangesMax: 2, qualifying: [] });
+    await w.pick(fingerprint('Monster Bash'));
+    expect(w.closes).toHaveLength(1);
+    // A game begins before the request is made: the closer holds, the game is waited for, and the close is asked again.
+    await w.game({ inGame: true });
+    w.closes[0]!.answer({ state: 'held', asked: false });
+    await flush();
+    expect(w.one.status().change?.state).toBe('own_game');
+    await w.game({ inGame: false, scores: [1] });
+    await tick(w, 4_000);
+    expect(w.closes).toHaveLength(2);
+    await w.closed();
+    await w.table(MB_OPEN);
+    // One change so far: the second is still made by itself (and is the one after which this PC asks first).
+    await w.pick(fingerprint('Attack from Mars'));
+    expect(w.closes).toHaveLength(3);
+    await w.closed();
+    await w.table(AFM_OPEN);
+    await w.pick(fingerprint('Monster Bash'));
+    expect(w.closes).toHaveLength(3);
+    expect(w.one.status().change?.state).toBe('offered');
+  });
+
+  it('S1: a pick made on this PC, and a new join, end "asks first"; nothing else does', async () => {
+    const w = await inLobby({ autoChangesMax: 1 });
+    await w.pick(fingerprint('Monster Bash'));
+    await w.closed();
+    await w.table(MB_OPEN);
+    await w.pick(fingerprint('Attack from Mars'));
+    expect(w.one.status().change?.state).toBe('offered');
+    // Another pick by somebody else, an hour later: still only offered.
+    await tick(w, 60 * 60_000);
+    await w.pick(fingerprint('Medieval Madness'));
+    await w.pick(fingerprint('Attack from Mars'));
+    expect(w.closes).toHaveLength(1);
+    expect(w.one.status().change?.state).toBe('offered');
+    // This PC's own person picks a table: from here Castcade changes tables by itself again.
+    await w.one.pick(AFM.vpxPath);
+    await w.pick(fingerprint('Medieval Madness'));
+    await w.pick(fingerprint('Attack from Mars'));
+    expect(w.closes).toHaveLength(2);
   });
 });

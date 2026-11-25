@@ -335,7 +335,9 @@ export interface VpxCloser {
   /**
    * Ask the VPX process `pid`, which holds `table`, to close, rung by rung, and say how it ended. `mayClose` is asked
    * before every request: false (a game started meanwhile, the setting was switched off) and nothing more is asked.
-   * One close per process at a time: a second call while one runs gets the same answer. Never throws.
+   * One close per process at a time: a second call while one runs gets the same answer, and from then on it is the
+   * second caller's `mayClose` that is asked (the first caller's reason to close may be gone, the second's stands).
+   * Never throws.
    */
   close(table: string, pid: number, mayClose?: () => boolean): Promise<CloseOutcome>;
 }
@@ -345,7 +347,7 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
   const cancel = o.clearTimeout ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>));
   const quitWait = o.forkQuitWaitMs ?? FORK_QUIT_WAIT_MS;
   const closeWait = o.closeWaitMs ?? CLOSE_WAIT_MS;
-  const running = new Map<number, Promise<CloseOutcome>>();
+  const running = new Map<number, { answer: Promise<CloseOutcome>; mayClose: () => boolean }>();
 
   const run = (table: string, pid: number, mayClose: () => boolean): Promise<CloseOutcome> =>
     new Promise<CloseOutcome>((resolve) => {
@@ -409,12 +411,16 @@ export function createVpxCloser(o: VpxCloserOptions): VpxCloser {
   return {
     close(table, pid, mayClose = () => true) {
       const now = running.get(pid);
-      if (now) return now;
-      const mine = run(table, pid, mayClose).finally(() => {
+      if (now) {
+        now.mayClose = mayClose;
+        return now.answer;
+      }
+      const mine: { answer: Promise<CloseOutcome>; mayClose: () => boolean } = { answer: Promise.resolve<CloseOutcome>({ state: 'held', asked: false }), mayClose };
+      running.set(pid, mine);
+      mine.answer = run(table, pid, () => mine.mayClose()).finally(() => {
         if (running.get(pid) === mine) running.delete(pid);
       });
-      running.set(pid, mine);
-      return mine;
+      return mine.answer;
     },
   };
 }

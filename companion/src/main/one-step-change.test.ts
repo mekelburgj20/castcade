@@ -47,12 +47,12 @@ const MB_SHA = 'ab'.repeat(32);
 const AFM_SHA = 'cd'.repeat(32);
 
 /** A rig's witness: a table opens and closes, a game starts; live mode whenever a table is open. */
-function rig(start: { name: string; sha: string } | null = null) {
+function rig(start: { name: string; sha: string; info?: string; path?: string } | null = null) {
   const statusCbs = new Set<(s: WStatus) => void>();
   const eventCbs = new Set<(e: Feed) => void>();
   let table = start;
   let inGame = false;
-  const status = (): WStatus => ({ paired: false, currentTable: table?.name ?? null, currentIdentity: table ? { sha256: table.sha, tableInfo: null } : null, currentAttestation: null, captureMode: table ? 'live' : null, gamesSeen: table ? true : null, currentPid: table ? 4242 : null, vpxOpen: table ? 1 : 0, note: null }) as unknown as WStatus;
+  const status = (): WStatus => ({ paired: false, currentTable: table?.name ?? null, currentIdentity: table ? { sha256: table.sha, filePath: table.path ?? null, tableInfo: table.info ? { tableName: table.info } : null } : null, currentAttestation: null, captureMode: table ? 'live' : null, gamesSeen: table ? true : null, currentPid: table ? 4242 : null, vpxOpen: table ? 1 : 0, note: null }) as unknown as WStatus;
   const say = (): void => statusCbs.forEach((cb) => cb(status()));
   const feed = (ev: Feed): void => {
     if (ev.kind === 'game_start') inGame = true;
@@ -68,8 +68,9 @@ function rig(start: { name: string; sha: string } | null = null) {
   } as unknown as WitnessHost;
   return {
     w,
-    open(name: string, sha: string) {
-      table = { name, sha };
+    /** `more`: the table's own name as its file says it (the row then names the table by it), and the file's path. */
+    open(name: string, sha: string, more: { info?: string; path?: string } = {}) {
+      table = { name, sha, ...more };
       say();
     },
     close() {
@@ -131,13 +132,14 @@ const known = (tableId: string, sha: string | null): KnownTable => ({ tableId, v
 const OBJECTS = { editables: 1203, hash: '00aa11bb22cc33dd' };
 
 /** One-step on a rig, with a launcher that records and a closer that records; `answer` is the closer's word on the last request. */
-function oneStepOn(mh: MatchHost, r: ReturnType<typeof rig>, tables: KnownTable[]) {
+function oneStepOn(mh: MatchHost, r: ReturnType<typeof rig>, tables: KnownTable[], o: { word?: boolean } = {}) {
   const launched: string[] = [];
   const closes: string[] = [];
   const answers: Array<(o: CloseOutcome) => void> = [];
   const logs: string[] = [];
   const one = createOneStep({
-    match: mh,
+    // `word: false`: a one-step that never says "this is my copy of the lobby's table" (as before the review of PR 139).
+    match: o.word === false ? { ...mh, setPickCopy: undefined } : mh,
     witness: r.w as unknown as Parameters<typeof createOneStep>[0]['witness'],
     launcher: {
       async launch(path) {
@@ -316,4 +318,75 @@ describe("the lobby's table over real match hosts: what one-step follows is the 
     expect([co.one.status().change, ho2.one.status().change]).toEqual([null, null]);
     expect(co.logs.filter((l) => /the lobby's table changed/.test(l))).toHaveLength(1);
   }, 60_000);
+});
+
+describe("review of PR 139, finding 1: this PC's copy of the picked game is found by its ROM, and the lobby takes it for the lobby's table", () => {
+  const OTHER_SHA = 'ef'.repeat(32);
+  /**
+   * The owner's list has Attack from Mars with its ROM. The friend's copy is another file of that game: other bytes,
+   * a file name (`AFM_VPW_v1.2`) and a table name of its own (`JPs Martians`) that share nothing with the title. Only
+   * the ROM the friend's own list knows says it is the same game, and a row carries no ROM.
+   */
+  const setUp = async (word: boolean) => {
+    const hr = rig({ name: 'Monster Bash', sha: MB_SHA });
+    const cr = rig({ name: 'mb_vpw_1.1', sha: MB_SHA });
+    const H = make('host', hr.w);
+    const C = make('client', cr.w);
+    const afm = { ...known('Attack from Mars', AFM_SHA), rom: 'afm_113b' };
+    const copy = { ...known('AFM_VPW_v1.2', OTHER_SHA), rom: 'afm_113b' };
+    const ho = oneStepOn(H, hr, [known('Monster Bash', MB_SHA), afm]);
+    const co = oneStepOn(C, cr, [known('mb_vpw_1.1', MB_SHA), copy], { word });
+    await ho.one.host({ tablePath: null, startTable: false, port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await co.one.openLink(ho.one.status().link!, { trusted: true });
+    await until(() => C.lobbyTable()?.game.tableName === 'Monster Bash' && co.one.status().launch.state === 'running');
+    // The owner picks Attack from Mars from the list; both PCs close their table and open their copy of it.
+    await ho.one.pick(afm.vpxPath, H.status().lobby?.gameKey ?? null);
+    await until(() => C.lobbyTable()?.game.tableName === 'Attack from Mars');
+    expect(C.lobbyTable()?.game).toMatchObject({ tableHash: AFM_SHA, romName: 'afm_113b' });
+    await until(() => ho.closes.length === 1 && co.closes.length === 1);
+    hr.close();
+    ho.answer({ state: 'closed', rung: 2 });
+    cr.close();
+    co.answer({ state: 'closed', rung: 2 });
+    await until(() => ho.launched.length === 1 && co.launched.length === 1);
+    // What `find-table.ts` decided on each PC: the picked file on the owner's, the copy with that ROM on the friend's.
+    expect([ho.launched, co.launched]).toEqual([[afm.vpxPath], [copy.vpxPath]]);
+    hr.open('Attack from Mars', AFM_SHA);
+    // (The table's own name comes from that file as it is: with a line break and two spaces in it here. Every PC
+    // cleans a name from another PC before it shows it.)
+    cr.open('AFM_VPW_v1.2', OTHER_SHA, { info: 'JPs\r\n  Martians', path: copy.vpxPath });
+    await until(() => H.status().participants.find((x) => x.name !== 'Owner')?.tableNote === 'different table file' && !(H.status().lobby?.members.find((x) => !x.opener)?.flags ?? ['loading']).includes('loading'));
+    const friend = (s: MatchHost) => s.status().lobby?.members.find((x) => !x.opener);
+    return { hr, cr, H, C, ho, co, friend };
+  };
+
+  it("without the PC's word (what the review found): the copy reads OTHER TABLE, and a start waits for that person for ever", async () => {
+    const { H, C, friend } = await setUp(false);
+    await sleep(300);
+    expect(friend(H)?.flags).toEqual(['other_table']);
+    expect(friend(C)?.flags).toEqual(['other_table']);
+    await H.start({ anyway: true });
+    await until(() => H.status().lobby?.start?.waitsFor === 'other_tables');
+    expect(H.status().lobby?.start?.line).toBe('You start the match once client has Attack from Mars open (JPs Martians is open there)');
+    await sleep(300);
+    expect(H.status().phase).not.toBe('playing');
+  }, 30_000);
+
+  it("the PC that followed the pick says that the table it opened is its copy: no OTHER TABLE on any PC, the lobby still says that the file differs, and the match starts", async () => {
+    const { cr, H, C, co, friend } = await setUp(true);
+    await until(() => (friend(H)?.flags ?? ['?']).length === 0 && (friend(C)?.flags ?? ['?']).length === 0);
+    // The advisory of a different file stands (it is one), and nobody is waited for.
+    expect(H.status().participants.find((x) => x.name !== 'Owner')?.tableNote).toBe('different table file');
+    expect(co.one.status().change).toBeNull();
+    await H.start({ anyway: true });
+    await until(() => H.status().phase === 'playing' && C.status().phase === 'playing');
+    expect(H.status().lobby?.match?.players).toHaveLength(2);
+
+    // The word is about that table: the friend opens something else by hand, and that is another table again.
+    await H.endMatch({ everyone: true });
+    await until(() => H.status().phase !== 'playing' && C.status().lobby?.match === null);
+    cr.close();
+    cr.open('mb_vpw_1.1', MB_SHA);
+    await until(() => (friend(H)?.flags ?? []).includes('other_table'));
+  }, 30_000);
 });

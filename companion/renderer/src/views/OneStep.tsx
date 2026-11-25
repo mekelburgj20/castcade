@@ -78,8 +78,10 @@ export function TablePicker({
   if (all.length === 0) {
     return (
       <p className="muted">
-        {others === null ? 'Castcade knows no table yet (Settings → Import tables). ' : 'No table file found in your tables folder. '}Open lobby still works: open the table in VPX
-        yourself, before or after.{' '}
+        {others === null ? 'Castcade knows no table yet (Settings → Import tables). ' : 'No table file found in your tables folder. '}
+        {pick
+          ? "So there is no table to pick here. To make a table the lobby's, open it in VPX yourself: this card then offers to make it the lobby's table."
+          : 'Open lobby still works: open the table in VPX yourself, before or after.'}{' '}
         {others === null && (
           <button type="button" className="small" disabled={browsing} onClick={browse}>
             Browse…
@@ -237,14 +239,16 @@ export function LobbyTable({ bridge, st, tableOpen }: { bridge: CastcadeBridge; 
   if (!l || l.over) return null;
   const me = l.members.find((m) => m.me);
   const off = l.table.off;
-  // The question stands only while the lobby is what it was when it was asked (a game that began meanwhile takes it away).
-  const question = asking !== null && asking.about === l.gameKey && off === null ? asking : null;
+  // The question stands only while the lobby is what it was when it was asked (a game that began meanwhile takes it
+  // away), and one about the table that is open here only while that table is the one that is open.
+  const question = asking !== null && asking.about === l.gameKey && off === null && (asking.path !== null || asking.name === tableOpen) ? asking : null;
   // The table that is open here can be made the lobby's in one press: when it is another game than the lobby's, and
   // while the lobby has no table at all.
   const offerOpen = tableOpen !== null && ((me?.flags.includes('other_table') ?? false) || l.table.name === null);
-  const go = (q: { path: string | null; about: string }) => {
+  const go = (q: { path: string | null; name: string; about: string }) => {
     setBusy(true);
-    void (q.path === null ? bridge.launch.pickOpen(q.about) : bridge.launch.pick(q.path, q.about))
+    // The open table is picked by the name the question had: main refuses when another one is open by now.
+    void (q.path === null ? bridge.launch.pickOpen(q.about, q.name) : bridge.launch.pick(q.path, q.about))
       .then(
         () => {
           setError(null);
