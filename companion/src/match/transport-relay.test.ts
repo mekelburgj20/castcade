@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { buildMessage, decodeFrame, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
-import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
+import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, REHOST_UNAUTHORIZED_MAX, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
 import { ForeignVersionError, foreignVersionOf, foreignVersionRefusal, PROTOCOL_SINCE_RELEASE, WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
@@ -848,6 +848,25 @@ describe('relay transports against the server as built (D10.8, 2026-11-12)', () 
     expect(r.rooms()).toEqual([]);
     expect(h.state).toBe('closed');
   });
+
+  it('A17 step 8: a host whose device ArcAid no longer accepts asks for its room a bounded number of times (three, a few seconds apart), then gives it up for good and says why; until this step it asked for ever', async () => {
+    const r = (relay = await startFakeRelay({ devices: DEVICES, hostGraceMs: 50 }));
+    const { h, states, hErrors } = await matchOf(r, ['a']);
+    expect(h.closedWhy).toBeNull();
+    // The pairing is revoked and the socket drops: the room cannot be taken back.
+    r.revoke('dev-h');
+    r.dropDevice('dev-h');
+    await until(() => states.at(-1) === 'closed', 25_000);
+    expect(h.state).toBe('closed');
+    expect(h.closedWhy).toBe('unauthorized');
+    expect(hErrors.filter((e) => e === 'ArcAid did not accept this device')).toHaveLength(REHOST_UNAUTHORIZED_MAX);
+    expect(REHOST_UNAUTHORIZED_MAX).toBe(3);
+    // And it stays so: nothing more is asked.
+    const asked = hErrors.length;
+    await new Promise((res) => setTimeout(res, 300));
+    expect(hErrors).toHaveLength(asked);
+    expect(states.filter((s) => s === 'closed')).toHaveLength(1);
+  }, 40_000);
 
   it('match:leave: a host that closes ends the room at once (the clients are told host_left and do not ask again); a client that closes is a leave at the host', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));

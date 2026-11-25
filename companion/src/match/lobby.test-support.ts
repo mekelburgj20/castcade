@@ -11,6 +11,7 @@ import { ManualClock } from './clock.js';
 import { HostMatch, type LobbyOptions, type RejectInfo } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
 import { TapTransport, type RecordedFrame } from './lobby-off.test-support.js';
+import { Session, type SeqGuard } from './session.js';
 import { MemoryBus } from './transport.js';
 
 /** Let every frame in flight land. The bus delivers on the microtask queue: a few turns of the event loop empty it (no timer: a timer of 0 costs up to 15 ms on Windows). */
@@ -85,6 +86,8 @@ export interface StarOptions {
   /** A18's grace on both sides. Default 5 s. */
   grace?: number;
   client?: Partial<ClientOptions>;
+  /** A17 step 8: the lobby PC's session keeps its counters for a restart (`Session.seqGuard`). */
+  seqGuard?: SeqGuard;
 }
 
 const who = (id: string, keys: KeyPair): ParticipantInfo => ({ playerId: id, displayName: id.toUpperCase(), publicKey: keys.publicKeyB64, rig: 'pc' });
@@ -109,7 +112,7 @@ export async function starLobby(clientIds: string[], opts: StarOptions = {}): Pr
     clock,
     ...(opts.ballEndReady?.['h'] !== undefined ? { ballEndReady: opts.ballEndReady['h'] } : {}),
     lobby: { ...(opts.lobby ?? {}), stance: opts.stances?.['h'] ?? 'play' },
-  });
+  }, opts.seqGuard ? new Session({ transport: taps.get('h') as TapTransport, keys: hostKeys, clock, seqGuard: opts.seqGuard }) : undefined);
   const r: StarRig = {
     bus,
     clock,

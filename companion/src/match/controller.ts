@@ -723,7 +723,9 @@ export class MatchController {
   private restore(): void {
     const st = this.role.state;
     this.hostId = st.hostId ?? this.hostId;
-    this.lobby = st.participants.map((p) => ({ ...p }));
+    // A17 step 8: in a lobby the people are its members (the lobby's own word, which `bind` has taken already), not
+    // the roster of the match that is picked up.
+    if (!this.lobbyOn) this.lobby = st.participants.map((p) => ({ ...p }));
     for (const p of Object.values(st.players)) if (p.score > 0 || p.ballsPlayed > 0) this.scores.set(p.playerId, p.score);
     const me = st.players[this.localId];
     this.myBallsDone = me?.ballsPlayed ?? 0;
@@ -738,13 +740,16 @@ export class MatchController {
     else this.phase = st.paused ? 'paused' : 'playing';
     // Forced either way: the lock file is whatever the last run left.
     this.locked = mine;
-    this.setLocked(!mine && !(st.phase === 'ended' && isHostRole(this.role)));
+    // A17 step 8: in a lobby the table of anybody who is not on their own ball is what the lobby's rule says (a
+    // watcher, the starter between games, a game of one's own), as after any return (`relock`).
+    const lobbyWants = this.lobbyOn ? this.lobbyLockWanted() : null;
+    this.setLocked(lobbyWants ?? (!mine && !(st.phase === 'ended' && isHostRole(this.role))));
     // The review of PR 131: what the table still owed when Castcade closed; checked against the log at its first use,
     // which is after the host's answer has been merged (`settleOwed`).
     this.owedSeqs = [...(this.opts.owedTableEnds ?? [])].filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, 16);
     this.owedFromRecord = this.owedSeqs.length > 0;
     // A17: this process is new, so every connection is (the others take its offer on a fresh one, D2.7).
-    this.wantVoice(st.participants.map((p) => p.playerId));
+    this.wantVoice((this.lobbyOn ? this.lobby : st.participants).map((p) => p.playerId));
     void this.ensureAttached();
     this.opts.log(`match: picked up again from the saved log: game ${this.gameNumber()}, ${this.phase}${g ? `, ${g.player === this.localId ? 'my' : `${this.nameOf(g.player)}'s`} ball ${g.ballNumber}` : ''}`);
   }

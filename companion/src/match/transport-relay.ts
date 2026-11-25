@@ -189,6 +189,13 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_ACK_TIMEOUT_MS = 4_000;
 /** After a reconnect, `match:host` is tried again until it is accepted: after this long, then twice as long each time. */
 const REHOST_RETRY_MS = 3_000;
+/**
+ * A17 step 8 (2026-11-26): how often in a row a host is answered that its device is not accepted (`unauthorized`)
+ * before it stops asking for its room. One such answer can be the server failing to read the device just then, so
+ * it is asked again; three in a row, over about ten seconds (the first at once, then 3 s and 6 s later), is a
+ * pairing that is gone. Until this step it asked for ever, and a lobby whose PC was unpaired never ended.
+ */
+export const REHOST_UNAUTHORIZED_MAX = 3;
 /** ... up to this (the server allows a device 20 `match:host` / `match:join` a minute). */
 const REHOST_RETRY_MAX_MS = 30_000;
 const DEFAULT_RELOCK_WAIT_MS = 60_000;
@@ -576,6 +583,10 @@ export class RelayHostTransport extends RelayBase implements Transport {
   private readonly stateHandlers = new Set<(s: RelayHostState) => void>();
   private rehostTimer: ReturnType<typeof setTimeout> | null = null;
   private rehostDelayMs = REHOST_RETRY_MS;
+  /** A17 step 8: `unauthorized` answers to `match:host` in a row since the room was last held. */
+  private unauthorizedAsks = 0;
+  /** A17 step 8: why this transport gave its room up for good (`closedWhy`); null while it has not. */
+  private gaveUpFor: string | null = null;
   private seqForRefuse = 0;
   /** `lock()` was called: the room is locked again whenever it had to be opened anew. */
   private wantLocked = false;
@@ -658,6 +669,15 @@ export class RelayHostTransport extends RelayBase implements Transport {
     return this.current;
   }
 
+  /**
+   * A17 step 8: once `closed`: why the room was given up: `unauthorized` (this device is no longer paired with
+   * ArcAid), the server's reason for closing the room for good (`replaced`, `host_left`), or the refusal of the ask
+   * for it (`code_in_use`, `refused`). Null while the room is held or being taken back.
+   */
+  get closedWhy(): string | null {
+    return this.gaveUpFor;
+  }
+
   onState(cb: (s: RelayHostState) => void): () => void {
     this.stateHandlers.add(cb);
     return () => this.stateHandlers.delete(cb);
@@ -699,7 +719,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
         // This device's pairing was revoked mid-match: ArcAid closes the room (`host_gone` follows). Not opened again.
         this.fail(new RelayError('unauthorized', RELAY_UNPAIRED), null);
         this.dropLinks();
-        return this.giveUp();
+        return this.giveUp('unauthorized');
       }
       this.reportDropped(word, null);
       if (this.code === null || this.current !== 'registered') return;
@@ -754,10 +774,11 @@ export class RelayHostTransport extends RelayBase implements Transport {
       return;
     }
     this.fail(new RelayError('closed', `ArcAid closed the room (${reason})`), null);
-    this.giveUp();
+    this.giveUp(reason);
   }
 
-  private giveUp(): void {
+  private giveUp(why: string): void {
+    this.gaveUpFor = why;
     if (this.rehostTimer) clearTimeout(this.rehostTimer);
     this.rehostTimer = null;
     if (this.relockTimer) clearTimeout(this.relockTimer);
@@ -807,6 +828,7 @@ export class RelayHostTransport extends RelayBase implements Transport {
       (ack) => {
         if (this.closed || this.socket !== socket || !socket.connected || this.current !== 'reconnecting') return;
         this.rehostDelayMs = REHOST_RETRY_MS;
+        this.unauthorizedAsks = 0;
         this.setState('registered');
         // The clients that were linked lost whatever crossed while we were away: they resume with RECONNECT. A room
         // that had to be opened anew holds none of them (`peers` says who is there): those come back by themselves.
@@ -822,8 +844,12 @@ export class RelayHostTransport extends RelayBase implements Transport {
         if (this.closed || this.socket !== socket || this.current !== 'reconnecting') return;
         this.fail(e, null);
         // Another device has the code now: asking again changes nothing. (`unauthorized` is asked again: the server
-        // also answers it when it could not read the device just now.)
-        if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) return this.giveUp();
+        // also answers it when it could not read the device just now. A17 step 8: a few times, not for ever.)
+        if (e instanceof RelayError && (e.code === 'code_in_use' || e.code === 'refused')) return this.giveUp(e.code);
+        if (e instanceof RelayError && e.code === 'unauthorized') {
+          this.unauthorizedAsks += 1;
+          if (this.unauthorizedAsks >= REHOST_UNAUTHORIZED_MAX) return this.giveUp('unauthorized');
+        } else this.unauthorizedAsks = 0;
         if (!socket.connected) return;
         this.rehostTimer = setTimeout(() => this.rehost(socket), this.rehostDelayMs);
         this.rehostDelayMs = Math.min(this.rehostDelayMs * 2, REHOST_RETRY_MAX_MS);

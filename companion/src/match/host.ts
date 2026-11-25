@@ -230,6 +230,29 @@ export interface LobbyOptions {
   stillSeen?: (player: PlayerId) => boolean;
 }
 
+/**
+ * A17 step 8 (2026-11-26, alpha-match.md section 11.8: "the lobby's PC also saves what only it knows"): what a
+ * lobby's PC keeps beside the open match's log so that, after its Castcade started again, it is the same lobby and
+ * not a new one (`HostMatch.savedLobby`, `HostMatch.restoreLobby`). Plain data. No private key: the keys are the
+ * members' public ones, as every member's HELLO_ACK has them.
+ */
+export interface SavedLobby {
+  code: string;
+  /** Everyone but this PC, in the order they joined, as their row stands, with their choice. */
+  members: Array<{ participant: ParticipantInfo; stance: Stance }>;
+  /** The table that is picked (`HELLO_ACK.hostGame`), whether a pick was made, and who made it. */
+  table: { game: GameFingerprint; fixed: boolean; pickedBy: PlayerId | null };
+  /** The number the next match gets (`<code>-<n>`): a lobby never uses a match id twice. */
+  nextMatch: number;
+  /** The balls per game the lobby was opened with. */
+  ballsPerGame: number;
+  /**
+   * The match that is open: its id, and the RESULT of every game of it that has one (a RESULT is not in the log).
+   * The log itself is the session's, and is saved beside this. Null: no match is open.
+   */
+  match: { matchId: string; results: PayloadOf<'RESULT'>[] } | null;
+}
+
 /** A17 step 6: what a start can be asked with (START_REQUEST's payload; every key defaults to false). */
 export interface StartAsk {
   fromTable?: boolean;
@@ -659,6 +682,121 @@ export class HostMatch {
     for (const id of opts.gone ?? []) host.gone.add(id);
     for (const [id, m] of Object.entries(opts.tableMismatches ?? {})) if (m.length > 0) host.mismatched.set(id, m.map((x) => ({ ...x })));
     return host;
+  }
+
+  /**
+   * A17 step 8 (2026-11-26): the lobby as it has to be saved for a restart of this PC's Castcade (`SavedLobby`);
+   * the open match's log is `log`, and the counters are the session's (`Session.seqCeilings`). What is NOT in it,
+   * and is said again by each member when it is back (the engine's own rule for every return): the table each has
+   * open, whether it can report ball ends, no copy, a game of one's own. Nor a start that was counting down (it is
+   * off), nor the match before the open one.
+   */
+  savedLobby(): SavedLobby {
+    if (!this.lobbyOn) throw new Error('savedLobby: this match has no lobby');
+    const st = this.s.state;
+    const open = st.phase !== 'lobby' && st.matchId !== null;
+    return {
+      code: this.code,
+      members: this.lobby.filter((p) => p.playerId !== this.localId).map((p) => ({ participant: { ...p }, stance: this.stances.get(p.playerId) ?? 'play' })),
+      table: { game: { ...this.hostGame }, fixed: this.pickFixed, pickedBy: this.pickedBy },
+      nextMatch: this.matchNumber,
+      ballsPerGame: this.ballsPerGameInit,
+      match: open ? { matchId: st.matchId as string, results: this.resultMsgs.map((r) => ({ ...r.payload })) } : null,
+    };
+  }
+
+  /**
+   * A17 step 8 (2026-11-26, design 11.8: "the lobby's PC opens the same code again, with every member away until
+   * they return; an open match is taken up from its log"). The lobby of a PC whose Castcade started again, from
+   * what it saved: the members with their keys and choices and their places kept, the picked table, the number of
+   * the next match, and the open match from its log (`session.log`, replayed) with the RESULTs it had sent.
+   *
+   * `opts` is what a new lobby is opened with (this PC's own row, its table as it is now, the lobby's options);
+   * `session` holds the open match's log, or an empty one, and the counters this PC must not fall behind
+   * (`SeqGuard`). Throws when the saved lobby and the log do not belong together: the caller then has no lobby to
+   * restore, and says so.
+   *
+   * The lobby comes back as one whose PC was away (`setCutOff`): every member's link is down and none of them is at
+   * fault, so nobody is paused for, no place runs out and no clock runs. `runAfterRestore()` ends that, once this
+   * PC can be reached again.
+   */
+  static restoreLobby(saved: SavedLobby, opts: HostOptions, session: Session): HostMatch {
+    const lobby: LobbyOptions = opts.lobby === true || !opts.lobby ? {} : opts.lobby;
+    if (!opts.lobby) throw new Error('restoreLobby: the lobby option is off');
+    if (saved.code !== opts.matchId) throw new Error(`restoreLobby: the saved lobby is ${saved.code}, not ${opts.matchId}`);
+    const me = opts.transport.localId;
+    const st = session.state;
+    const open = st.phase !== 'lobby' && st.matchId !== null;
+    if (saved.match === null && open) throw new Error('restoreLobby: a log was saved, and no match is said to be open');
+    if (saved.match !== null && !open) throw new Error(`restoreLobby: ${saved.match.matchId} is said to be open, and its log was not saved`);
+    if (saved.match !== null && st.matchId !== saved.match.matchId) throw new Error(`restoreLobby: the saved log is of ${st.matchId}, not of ${saved.match.matchId}`);
+    if (open && st.hostId !== me) throw new Error(`restoreLobby: the saved log names ${st.hostId} as the lobby's PC, not ${me}`);
+    if (open && !st.matchId?.startsWith(`${saved.code}-`)) throw new Error(`restoreLobby: ${st.matchId} is not a match of the lobby ${saved.code}`);
+    const ids = new Set<PlayerId>([me]);
+    for (const m of saved.members) {
+      const id = m.participant.playerId;
+      if (ids.has(id)) throw new Error(`restoreLobby: ${id} is in the saved lobby twice`);
+      ids.add(id);
+    }
+    // A player of the open match may have left the lobby since its MATCH_READY; nobody else is in a roster.
+    const host = new HostMatch(
+      {
+        ...opts,
+        ballsPerGame: Number.isSafeInteger(saved.ballsPerGame) && saved.ballsPerGame > 0 ? saved.ballsPerGame : opts.ballsPerGame,
+        turnMode: open ? st.turnMode : opts.turnMode,
+        lobby: { ...lobby, firstMatch: Math.max(1, Math.floor(saved.nextMatch)), ...(saved.table.fixed ? { table: saved.table.game } : {}) },
+      },
+      session,
+    );
+    host.pickedBy = saved.table.fixed && saved.table.pickedBy !== null && ids.has(saved.table.pickedBy) ? saved.table.pickedBy : host.pickedBy;
+    for (const m of saved.members.slice(0, host.lobbySize - 1)) {
+      const id = m.participant.playerId;
+      host.lobby.push({ ...m.participant });
+      host.stances.set(id, m.stance === 'watch' ? 'watch' : 'play');
+      // Nobody is on a link yet, and nobody was told that anybody left: each is inside a grace that is held.
+      host.gone.add(id);
+      host.grace.set(id, null as unknown as TimerHandle);
+    }
+    host.cutOff = true;
+    if (open && saved.match) {
+      host.matchId = saved.match.matchId;
+      for (const r of saved.match.results) {
+        if (r.matchId === saved.match.matchId) host.resultMsgs.push(session.build('RESULT', r, saved.match.matchId));
+      }
+      // Between games: the RESULT of the game that is over went out before the restart (it is sent again to each
+      // member at its return); when it had not gone out yet, `runAfterRestore` ends the game as it would have ended.
+      const last = st.phase === 'ended' ? host.resultMsgs.find((r) => r.payload.game === Math.max(1, st.gameNumber)) : undefined;
+      if (last) {
+        host.finalHead = { hash: last.payload.logHash, length: last.payload.logLength };
+        host.resultSent = true;
+      }
+    }
+    return host;
+  }
+
+  /**
+   * A17 step 8: after `restoreLobby`, once this PC can be reached again (its listener is up, its room registered).
+   * This PC's own outstanding grant is issued again under a new number, as after a RESUME (A15: its table may have
+   * ended that ball while Castcade was closed, and the shell reports it for a grant that is live). A member's
+   * outstanding grant stands as it is: the member holds it, plays on, and reports for it when it is back. Then the
+   * absence ends as any absence of this PC does: every member has the grace from zero and the time to return
+   * (`returnAllowMs`) before a clock counts.
+   */
+  runAfterRestore(): void {
+    this.assertActive();
+    if (!this.lobbyOn) throw new Error('runAfterRestore: this match has no lobby');
+    const st = this.s.state;
+    const g = st.currentGrant?.grant;
+    if (st.phase === 'running' && g && g.player === this.localId && !st.paused && !st.pendingTransfer) {
+      st.pendingReissue = { player: g.player, ballNumber: g.ballNumber };
+      st.currentGrant = null;
+    }
+    // Between games: the RESULT that went out before the restart is this PC's own shell's to show again (a member
+    // gets it at its return).
+    const last = st.phase === 'ended' && this.resultSent ? this.resultMsgs[this.resultMsgs.length - 1] : undefined;
+    if (last) this.events.emit('result', { result: last.payload, signatures: [] });
+    if (this.cutOff) this.setCutOff(false);
+    else this.advance();
   }
 
   // ------------------------------------------------------------------------------------------
@@ -2191,6 +2329,8 @@ export class HostMatch {
   private dropMember(peer: PlayerId, tell: boolean): void {
     if (!this.isMember(peer) || peer === this.localId) return;
     this.lobby = this.lobby.filter((p) => p.playerId !== peer);
+    // Step 8: a row that is gone keeps no count across a restart (a later frame of that name is a newcomer's).
+    this.s.dropCeiling(peer);
     this.lobbyGames.delete(peer);
     this.ballEndReady.delete(peer);
     this.midnightModeOf.delete(peer);

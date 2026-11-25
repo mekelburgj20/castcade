@@ -22,7 +22,48 @@ export interface SessionOptions {
    * from a number no earlier run can have reached (the shell passes the wall clock in ms).
    */
   seqStart?: number;
+  /**
+   * A17 step 8 (2026-11-26): the numbers this participant must never fall behind across a restart of its process,
+   * for the one participant that keeps them: a lobby's PC (`SeqGuard`). Without it nothing here changes.
+   */
+  seqGuard?: SeqGuard;
 }
+
+/**
+ * A17 step 8 (2026-11-26, alpha-match.md section 11.7: "a lobby's PC that restarted has lost the counters"). What a
+ * lobby's PC holds so that a restart loses none of them.
+ *
+ * The property: **after a restart, a frame is taken from a sender only when its number is above every number this
+ * PC could have taken from that sender before the restart, and this PC's own frames are numbered above every number
+ * it could have used before.** So nothing it took before a restart is taken again after it, and no count runs
+ * backwards.
+ *
+ * How: beside each count a ceiling is kept in the saved lobby. Before a number above the ceiling is taken (or
+ * used), a new ceiling `step` further is handed to `save`, which writes it before it returns; only then does the
+ * frame count. After a restart the counts start at the saved ceilings (`taken`, `sent`). A sender whose own count
+ * is below its ceiling then is told where the lobby stands and goes on above it (`RECONNECT_ACK.seqAbove`), once.
+ * A write for one number in `step`, not for every frame.
+ */
+export interface SeqGuard {
+  /** How far ahead a ceiling is written. Default 1024. */
+  step?: number;
+  /** The ceilings as last saved: the last number that may have been taken from each sender, and that may have been used by this PC. */
+  taken?: Readonly<Record<PlayerId, number>>;
+  sent?: number;
+  /**
+   * Called, synchronously, before a number above a saved ceiling counts: write `now` where the lobby is saved.
+   * False: it was not written (nothing is saved yet, or the write failed): the ceiling stays where it was, and the
+   * next number asks again.
+   */
+  save: (now: SeqCeilings) => boolean | void;
+}
+
+export interface SeqCeilings {
+  taken: Record<PlayerId, number>;
+  sent: number;
+}
+
+const DEFAULT_SEQ_STEP = 1024;
 
 export class Session {
   readonly transport: Transport;
@@ -41,6 +82,11 @@ export class Session {
   onCommit: ((entry: LogEntry) => void) | null = null;
   private seq = 0;
   private readonly lastSeq = new Map<PlayerId, number>();
+  /** A17 step 8: `SessionOptions.seqGuard`, and the ceilings as they were last handed to it. */
+  private readonly guard: SeqGuard | null;
+  private readonly step: number;
+  private readonly takenCeil = new Map<PlayerId, number>();
+  private sentCeil = 0;
 
   constructor(opts: SessionOptions) {
     this.transport = opts.transport;
@@ -49,6 +95,39 @@ export class Session {
     this.log = opts.log ?? new MatchLog();
     this.state = this.log.length > 0 ? replayLog(this.log) : initialState();
     if (opts.seqStart !== undefined && Number.isSafeInteger(opts.seqStart) && opts.seqStart > 0) this.seq = opts.seqStart;
+    this.guard = opts.seqGuard ?? null;
+    this.step = Math.max(1, Math.floor(opts.seqGuard?.step ?? DEFAULT_SEQ_STEP));
+    if (this.guard) {
+      // A restart: every count begins at its saved ceiling, never below it.
+      for (const [id, n] of Object.entries(this.guard.taken ?? {})) {
+        if (!Number.isSafeInteger(n) || n < 0) continue;
+        this.lastSeq.set(id, n);
+        this.takenCeil.set(id, n);
+      }
+      const sent = this.guard.sent ?? 0;
+      if (Number.isSafeInteger(sent) && sent > this.seq) this.seq = sent;
+      this.sentCeil = Math.max(0, Number.isSafeInteger(sent) ? sent : 0);
+    }
+  }
+
+  /** A17 step 8: the ceilings as they stand (what `SeqGuard.save` was last given, or the restored ones). */
+  seqCeilings(): SeqCeilings {
+    return { taken: Object.fromEntries(this.takenCeil), sent: this.sentCeil };
+  }
+
+  /** A17 step 8: a number from `from` is about to count: when it is above the saved ceiling, a new ceiling is saved first. */
+  private reserveTaken(from: PlayerId, seq: number): void {
+    const was = this.takenCeil.get(from);
+    if (!this.guard || seq <= (was ?? -1)) return;
+    this.takenCeil.set(from, seq + this.step);
+    if (this.guard.save(this.seqCeilings()) !== false) return;
+    if (was === undefined) this.takenCeil.delete(from);
+    else this.takenCeil.set(from, was);
+  }
+
+  /** A17 step 8: a sender this PC holds no row for any more: its ceiling is no longer kept (a later frame of that name is a newcomer's). */
+  dropCeiling(from: PlayerId): void {
+    this.takenCeil.delete(from);
   }
 
   get localId(): PlayerId {
@@ -57,6 +136,11 @@ export class Session {
 
   nextSeq(): number {
     this.seq += 1;
+    if (this.guard && this.seq > this.sentCeil) {
+      const was = this.sentCeil;
+      this.sentCeil = this.seq + this.step;
+      if (this.guard.save(this.seqCeilings()) === false) this.sentCeil = was;
+    }
     return this.seq;
   }
 
@@ -72,6 +156,7 @@ export class Session {
   checkSeq(from: PlayerId, seq: number): boolean {
     const last = this.lastSeq.get(from);
     if (last !== undefined && seq <= last) return false;
+    this.reserveTaken(from, seq);
     this.lastSeq.set(from, seq);
     return true;
   }
@@ -92,7 +177,10 @@ export class Session {
    */
   noteSeq(from: PlayerId, seq: number): void {
     const last = this.lastSeq.get(from);
-    if (last === undefined || seq > last) this.lastSeq.set(from, seq);
+    if (last === undefined || seq > last) {
+      this.reserveTaken(from, seq);
+      this.lastSeq.set(from, seq);
+    }
   }
 
   build<T extends MessageType>(type: T, payload: PayloadInput<T>, matchId: string | null): Message<T> {
