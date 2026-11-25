@@ -321,4 +321,29 @@ describe('WatchSession through the relay', () => {
     // Told once that it was out, and not again for the asks that missed.
     expect(downs).toHaveLength(1);
   });
+
+  // 2026-11-24: the test above then failed in two of five full runs on `expect(ups).toBe(1)`: two. The first join
+  // itself was asked twice. `WatchRelayClient.join` named the room before its socket was up, so the socket coming up
+  // looked like a reconnect of a client that had lost its seat, and a second `match:join` went out a millisecond
+  // later, beside the first. Unseen on a test PC, where ArcAid's double answers before that millisecond is over; on
+  // the real ArcAid every join was two, and a mistyped code counted twice towards the eight that lock a PC out for
+  // fifteen minutes. Here the server takes 40 ms to answer, as a real one does.
+  it('asks ArcAid once for a join, also while the answer takes its time: a wrong code is one miss, a right one is no "back in the room"', async () => {
+    relay = await startFakeRelay({ devices: DEVICES, checkMs: 40 });
+    await expect(WatchSession.join(opts(relay, 'a'), 'NOSUCH')).rejects.toThrow('Nothing is hosted on NOSUCH');
+    // A second ask would have left the PC about when the first did, and been answered by now.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(relay.misses.get('dev-a')).toBe(1);
+
+    const h = await hostOn(relay);
+    const client = new WatchRelayClient({ localId: 'b', baseUrl: relay.url, auth: { deviceId: 'dev-b', deviceToken: 'tok-b' }, connectTimeoutMs: 1500, ackTimeoutMs: 1500 });
+    open.push(client);
+    let ups = 0;
+    client.onUp(() => void ups++);
+    await client.join(h.state().code);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(client.inRoom).toBe(true);
+    expect(ups).toBe(0);
+    expect(relay.peers(h.state().code)).toHaveLength(1);
+  });
 });

@@ -197,10 +197,14 @@ export class WatchRelayClient extends RelayBase {
 
   /** Join the room of `code`. Rejects with a `RelayError` (`no_such_match`, `locked`, `full`, `unauthorized`, …). */
   async join(code: string): Promise<void> {
-    this.code = code;
     const socket = await this.whenConnected();
     await this.request(socket, 'match:join', code);
     if (this.socket !== socket || !socket.connected) throw new RelayError('unreachable', 'the connection to ArcAid dropped while joining');
+    // The room is named only now that this client is in it (2026-11-24). Named before the socket was up, the socket
+    // coming up looked like a reconnect of a client out of its room (`onSocketUp`), and a second `match:join` went out
+    // beside the first: every join was asked twice, and a mistyped code counted as two of the eight misses that lock
+    // a PC out. A first join that fails is the caller's to try again; only a room once joined is asked for again.
+    this.code = code;
     this.joined = true;
   }
 
