@@ -361,6 +361,21 @@ describe('closing the open table: the three rungs (A17 step 3)', () => {
     expect(r.asked).toEqual([PID]);
   });
 
+  it("a second call for the same process takes the close over: from then on it is the second caller's question that is asked before each request (review of PR 139)", async () => {
+    // The first change was taken back while the Castcade VPX build had 60 ms to leave on quit; the next change wants
+    // the same table closed. The first caller's answer is no by now, the second's is yes: the window is asked.
+    let first = true;
+    const r = rig({ quitFork: () => true, forkQuitWaitMs: 60, closeWaitMs: 2_000 });
+    const a = r.closer.close('Monster Bash', PID, () => first);
+    first = false;
+    const b = r.closer.close('Monster Bash', PID, () => true);
+    await until(() => r.asked.length >= 1, 2_000, 'the window to be asked');
+    r.exit();
+    expect(await a).toEqual({ state: 'closed', rung: 2 });
+    expect(await b).toEqual({ state: 'closed', rung: 2 });
+    expect(r.asked).toEqual([PID]);
+  });
+
   it('the control connection: quit goes to nobody once Castcade stops', async () => {
     const c = control();
     const fork = await started(c);

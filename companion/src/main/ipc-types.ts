@@ -381,7 +381,7 @@ export interface CastcadeApi {
      */
     pick(tablePath: string, about: string | null): Promise<MatchStatus>;
     /** A17 step 10: "Make <table> the lobby's table": the table that is open on this PC. */
-    pickOpen(about: string | null): Promise<MatchStatus>;
+    pickOpen(about: string | null, name: string | null): Promise<MatchStatus>;
     /** Join the match of the link that waits (`status.pending`) and start its table here. */
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;

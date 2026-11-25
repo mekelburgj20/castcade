@@ -1417,6 +1417,33 @@ describe('createWitness: live mode (a table with a Castcade sidecar posts every 
         expect(old.witness.status()).toMatchObject({ captureMode: 'live', gamesSeen: false });
       });
 
+      it('review of PR 139: `watching` is true only while the witness runs and has looked at the processes; while watching is paused no game is seen, and what the status names is what was open at the pause', async () => {
+        const h = liveHarness();
+        // A witness that was just made has looked at nothing: "no table, no VPX" is not something it knows yet.
+        expect(h.witness.status()).toMatchObject({ watching: false, vpxOpen: 0 });
+        expect(h.witness.watching()).toBe(false);
+        await h.witness.start();
+        await h.until(() => h.witness.status().watching === true);
+        await h.launch(TFTC_CMD, 31);
+        h.fs.put(TFTC_JOURNAL, loaded('A', 'tftc_400', h.clock.now()));
+        await h.poll();
+        await h.until(() => h.witness.status().gamesSeen === true);
+        // "Pause watching": the table is still named, and nothing says a game on it would be seen.
+        const said: Array<boolean | null | undefined> = [];
+        h.witness.on('status', (s) => said.push(s.gamesSeen));
+        await h.witness.stop();
+        expect(h.witness.status()).toMatchObject({ running: false, watching: false, gamesSeen: false, currentPid: 31, vpxOpen: 1 });
+        expect(h.witness.status().currentTable).not.toBeNull();
+        expect(said.at(-1)).toBe(false);
+        expect([h.witness.watching(), h.witness.holdsVpx(31)]).toEqual([false, true]);
+        // Watching again: only once it has looked.
+        await h.witness.start();
+        await h.until(() => h.witness.status().watching === true);
+        await h.poll();
+        await h.until(() => h.witness.status().gamesSeen === true);
+        expect(h.witness.status()).toMatchObject({ watching: true, gamesSeen: true, currentPid: 31, vpxOpen: 1 });
+      });
+
       it('an original: seen only when the import manifest says its patch is whole; partial, or no manifest at all, is not', async () => {
         // No manifest: the journal is read (live) and the ball ends are the recipe's, but nobody can say the patch is whole.
         const none = liveHarness();

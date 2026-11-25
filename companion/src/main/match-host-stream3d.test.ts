@@ -1444,6 +1444,24 @@ describe('the table objects of the two tables, before the start (I11.4.15)', () 
     expect(message(K2)).not.toContain('Not in 3D with');
     expect(message(K2)).not.toContain('For 3D:');
   });
+
+  it("A17 step 10 (review of PR 139): after a member's pick the early word names the person whose copy the picked table's objects are of, on the lobby's PC too, and nobody on the picker's own PC", async () => {
+    const hub = new TunnelHub();
+    const H = seat(hub, 'Hosty');
+    const K = seat(hub, 'Krobs', { extra: { witness: fileOf('cd'.repeat(32), null) } });
+    await both(H, K);
+    // Krobs picks another table, with what the Castcade VPX build says of his copy of it.
+    await K.mh.pickTable({ game: { kind: 'vpx', tableName: 'Attack from Mars', tableHash: 'ef'.repeat(32), romName: 'afm_113b', romHash: null, physicsHash: null, recipeVersion: null, sidecarHash: null, emulatorVersion: '' }, objects: { editables: 1203, hash: '00aa11bb22cc33dd' } });
+    await until(() => H.mh.status().lobby?.table.pickedByName === 'Krobs', 5000, 'the pick on the lobby PC');
+    // The lobby's PC started its own copy of it and knows that copy holds other objects than the picked one.
+    H.mh.setLaunchNote(null, true);
+    await until(() => message(H).includes(NOT_3D('Krobs')), 5000, "the picker's name on the lobby PC's line");
+    expect(H.lines).toContain("stream3d: this PC's table and Krobs's do not hold the same table objects (what its picker said of the lobby's table against the copy that was started here): the 2D video between them; the lobby says so");
+    // On the picker's own PC the same flag names nobody: the picked table's objects are those of its own copy.
+    K.mh.setLaunchNote(null, true);
+    await sleep(150);
+    expect(message(K)).not.toContain('Not in 3D with');
+  });
 });
 
 describe('the turn lock and a fork that answers at once (A8)', () => {

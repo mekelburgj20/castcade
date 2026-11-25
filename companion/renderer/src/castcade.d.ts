@@ -853,7 +853,7 @@ interface CastcadeBridge {
     /** A17 step 10: make a table of this PC's lists the lobby's table (`about`: `lobby.gameKey` at the press). */
     pick(tablePath: string, about: string | null): Promise<MatchStatus>;
     /** A17 step 10: make the table that is open on this PC the lobby's table. */
-    pickOpen(about: string | null): Promise<MatchStatus>;
+    pickOpen(about: string | null, name: string | null): Promise<MatchStatus>;
     confirm(): Promise<OneStepStatus>;
     dismiss(): Promise<OneStepStatus>;
     copy(what: 'link' | 'message'): Promise<OneStepStatus>;

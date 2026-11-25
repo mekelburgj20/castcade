@@ -303,7 +303,8 @@ export function createWitnessHost(store: SettingsStore, log: Logger, overrides: 
     journalMark: () => witness.journalMark(),
     vpxPid: () => launchPid,
     vpxStartedAt: () => launchStartedAt,
-    vpxAlive: (pid) => witness.holdsVpx(pid),
+    // A witness that is not watching (paused, or made anew a moment ago) does not know that a process has ended.
+    vpxAlive: (pid) => !witness.watching() || witness.holdsVpx(pid),
     highScoreKnown: (score) => witness.highScoreKnown(score),
     onEvent(listener) {
       eventListeners.add(listener);
