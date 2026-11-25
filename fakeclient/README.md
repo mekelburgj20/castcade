@@ -14,6 +14,14 @@ in-memory full mesh there, and over real WebSockets on localhost in `src/ws-tran
 2026-10-30: every participant reconnects to the new host's listener with `RECONNECT`); a client whose
 socket is killed mid-match resumes from its log head in `src/ws-reconnect.test.ts` (A3).
 
+Lobby scenarios (A17 step 5, 2026-11-25): a scenario with `lobby: true` is a whole evening in one lobby, with
+the engines' lobby option on (`HostOptions.lobby` / `ClientOptions.lobby`; off everywhere else, and in the
+companion until the lobby is turned on). It has `matches` (who plays each, how many games, how it ends), a
+`stance` per player (Play or Watch) and, for someone who joins while a match is played, `joinsAt`. It is run by
+`runLobbyScenario` (`src/lobby.ts`; `local --scenario lobby-two-matches` on the command line) and checked in
+`src/lobby.test.ts`: every match's log is one hash chain from its own entry 0, the same on every PC that was in
+the lobby for it, watchers included.
+
 A scripted Castcade participant that speaks the protocol with no emulator present. It lets the host
 arbiter, the match log, host transfer and the ArcAid result path be tested on Linux CI long before
 a real VPX table is connected, and it stays useful afterwards as the opponent in a one-PC match test.

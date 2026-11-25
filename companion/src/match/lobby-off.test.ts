@@ -2,7 +2,8 @@
  * A17 step 5 (2026-11-25): the lobby is behind an option, and with the option off the engine is the engine it was.
  * The proof is not "the old tests still pass" alone: `lobby-off.frames.json` holds every frame of one scripted match
  * (`lobby-off.test-support.ts`: 108 frames, 22 message types, a reconnect inside the grace and one after it) as the
- * engine built them on commit 55ff0a0, the commit this step started from, before any of its changes. This test plays
+ * engine built them on commit 55ff0a0, the commit this step started from, before any of its changes (the base moved
+ * once more before this step was done, to 5c2430d, without touching the engine or the schemas). This test plays
  * the same script on the tree as it is and compares the text of every frame. A new key that is sent without a lobby,
  * a default that is filled in, a frame more or less, a different order: any of them fails it.
  *
@@ -30,6 +31,28 @@ const LOBBY_KEYS: Record<string, string[]> = {
   RECONNECT: ['match'],
   RECONNECT_ACK: ['match', 'restart', 'more'],
 };
+/**
+ * Keys that OTHER work adds to the wire of a match without a lobby, each a defaulted key of its own item, said here
+ * so that this test goes on comparing everything else whichever of the two is merged first. I11.4.15 (pull request
+ * 125, open beside this step): HELLO_ACK `hostTableObjects`, null until the shell says the table's objects. Such a
+ * key is taken out of a frame played now only while it holds its default; with any other value the frame differs
+ * from the recording and the test fails, as it should.
+ */
+const LATER_DEFAULTS: Record<string, Record<string, unknown>> = { HELLO_ACK: { hostTableObjects: null } };
+
+function withoutLaterDefaults(frame: string): string {
+  const msg = JSON.parse(frame) as { type: string; payload: Record<string, unknown> };
+  const later = LATER_DEFAULTS[msg.type];
+  if (!later) return frame;
+  let changed = false;
+  for (const [key, value] of Object.entries(later)) {
+    if (key in msg.payload && msg.payload[key] === value) {
+      delete msg.payload[key];
+      changed = true;
+    }
+  }
+  return changed ? JSON.stringify(msg) : frame;
+}
 
 describe('A17 step 5: with the lobby off, every frame is the frame it was', () => {
   it('a whole scripted match sends, byte for byte, the frames recorded before the lobby was built', async () => {
@@ -40,7 +63,7 @@ describe('A17 step 5: with the lobby off, every frame is the frame it was', () =
       const was = recorded[i] as Recorded;
       const is = now[i];
       expect(`${i}: ${is?.by} -> ${is?.to}`).toBe(`${i}: ${was.by} -> ${was.to}`);
-      expect(is?.frame, `frame ${i} (${was.msg.type}, ${was.by} -> ${was.to})`).toBe(JSON.stringify(was.msg));
+      expect(withoutLaterDefaults(is?.frame ?? ''), `frame ${i} (${was.msg.type}, ${was.by} -> ${was.to})`).toBe(JSON.stringify(was.msg));
     }
   });
 
@@ -65,7 +88,7 @@ describe('A17 step 5: with the lobby off, every frame is the frame it was', () =
     // What a 0.2.50 host sends, parsed by this build and written again, is the same text: no key is added on the way.
     for (const f of recorded) {
       const text = JSON.stringify(f.msg);
-      expect(JSON.stringify(parseMessage(JSON.parse(text))), f.msg.type).toBe(text);
+      expect(withoutLaterDefaults(JSON.stringify(parseMessage(JSON.parse(text)))), f.msg.type).toBe(text);
     }
     // And built here from the smallest input, the six messages that gained keys carry none of them.
     const hex = 'ab'.repeat(32);

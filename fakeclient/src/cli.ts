@@ -9,6 +9,7 @@
 import { parseArgs } from 'node:util';
 import { WsClientTransport, WsHostTransport } from '@castcade/companion';
 import { FakePlayer, runLocalScenario } from './lib.js';
+import { runLobbyScenario } from './lobby.js';
 import { defaultScores, generateScenario, loadScenario, type PlayerScript, type Scenario } from './scenario.js';
 
 const USAGE = `usage:
@@ -81,6 +82,24 @@ async function main(argv: string[]): Promise<number> {
           matchId: values.match,
           transfer: values['host-left'] ? 'host_left' : values.transfer ? 'host_requested' : null,
         });
+    // A17 step 5: a lobby scenario (`lobby: true`) is a whole evening in one lobby, run by its own runner.
+    if (scenario.lobby) {
+      const lobby = await runLobbyScenario(scenario, { ballMs, timeoutMs });
+      const pc = lobby.outcomes[scenario.host];
+      console.log(
+        JSON.stringify(
+          {
+            scenario: scenario.name,
+            matches: (pc?.matches ?? []).map((m) => ({ matchId: m.matchId, players: m.ready.playerOrder, games: m.results.length, winners: m.results.map((r) => r.result.winner), logHead: m.head })),
+            logHeads: Object.fromEntries(Object.values(lobby.outcomes).map((o) => [o.playerId, o.matches.map((m) => m.head)])),
+            closed: pc?.closed ?? null,
+          },
+          null,
+          2,
+        ),
+      );
+      return pc?.closed ? 0 : 1;
+    }
     const run = await runLocalScenario(scenario, { ballMs, timeoutMs });
     const finalHost = Object.values(run.outcomes).find((o) => o.result && o.rolesHeld[o.rolesHeld.length - 1] === 'host');
     const out = {
