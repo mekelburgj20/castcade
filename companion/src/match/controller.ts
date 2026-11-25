@@ -475,7 +475,7 @@ export class MatchController {
    * for the new grant, once; a table-made end is recovered by the table's own events, one made by hand has none
    * behind it. And a Pass the turn for that ball owes nothing new: this PC had ended the ball already.
    */
-  private unansweredEnd: { grantSeq: number; game: number; ball: number; score: number; byHand: boolean } | null = null;
+  private unansweredEnd: { grantSeq: number; game: number; ball: number; score: number; byHand: boolean; again: boolean } | null = null;
   /** `feed`'s answer for the event being fed: a ball end the match will never take (see `feed`). */
   private droppedEnd = false;
   private voiceWanted = new Set<PlayerId>();
@@ -1042,14 +1042,16 @@ export class MatchController {
     if (p.player === this.localId) {
       // The review of PR 131: a pass is an end by hand too (since 0.2.40), and on a table whose ball was still in
       // play its drain was taken for the end of this player's next ball. The same rule as End my ball, on this PC
-      // alone (nothing on the wire): unless the table had already ended the ball (its bonus was being waited for).
-      // Nor for a ball this PC had already ended itself (its report went into a link that had dropped): the table's
-      // own end of it has been seen, or what it owes is noted already, and is owed under the pass's grant from now on.
+      // alone (nothing on the wire). Not when the table had already ended the ball for good: its bonus was being
+      // waited for, or this PC had reported that end into a link that had dropped. (An end with an extra ball is not
+      // that: the machine serves the same ball again, and the pass leaves it on the table.) And a ball this PC had
+      // itself ended by hand, unanswered, is noted already: it is owed under the pass's grant from now on.
       this.settleOwed();
-      const sent = this.unansweredEnd;
-      if (sent && sent.ball === p.ballNumber && sent.game === this.gameNumber()) {
+      const sent = this.unansweredEnd?.ball === p.ballNumber && this.unansweredEnd.game === this.gameNumber() ? this.unansweredEnd : null;
+      const tableEnded = (this.pending !== null && !this.pending.shootAgain) || (sent !== null && !sent.byHand && !sent.again);
+      if (sent?.byHand) {
         this.owedSeqs = this.owedSeqs.map((seq) => (seq === sent.grantSeq ? p.grantSeq : seq));
-      } else if (!this.pending && !this.owedSeqs.includes(p.grantSeq) && this.tableOwesAfter(p.ballNumber)) {
+      } else if (!tableEnded && !this.owedSeqs.includes(p.grantSeq) && this.tableOwesAfter(p.ballNumber)) {
         this.owedSeqs.push(p.grantSeq);
         this.opts.log("match: the turn was passed with this table's ball still in play: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
       }
@@ -2113,7 +2115,7 @@ export class MatchController {
     this.clearStateTimer();
     const finalScore = score ?? this.myScore ?? (reason === 'manual' ? (this.role.state.players[this.localId]?.score ?? 0) : 0);
     // The review of PR 131: a client remembers it until the host's echo (a host's own end is in its log at once).
-    this.unansweredEnd = isHostRole(this.role) ? null : { grantSeq: grant.grantSeq, game: grant.game ?? this.gameNumber(), ball: grant.ballNumber, score: finalScore, byHand: reason === 'manual' };
+    this.unansweredEnd = isHostRole(this.role) ? null : { grantSeq: grant.grantSeq, game: grant.game ?? this.gameNumber(), ball: grant.ballNumber, score: finalScore, byHand: reason === 'manual', again: shootAgain };
     if (!shootAgain) this.myBallsDone = Math.max(this.myBallsDone, grant.ballNumber);
     this.scores.set(this.localId, finalScore);
     // Bookkeeping first: a HostMatch issues the next grant inside localBallEnd.

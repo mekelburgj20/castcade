@@ -1583,6 +1583,18 @@ describe('A17 step 4 (2026-11-24): End my ball, and a pause for the player who i
       await flush();
       expect(C.ctl.status()).toMatchObject({ myTurn: false, owedTableEnds: [] });
     }
+    // ---- the table had ended the ball with an extra ball: the machine serves it again, and the pass leaves it there ----
+    {
+      const s = await clientUp();
+      const { H, C } = s;
+      C.ctl.feed(gameStart);
+      C.ctl.feed(scores(700));
+      const seq = seqOf(C);
+      C.ctl.feed(ballEnd(1, 1));
+      expect(H.ctl.passTurn()).toBe(true);
+      await flush();
+      expect(C.ctl.status()).toMatchObject({ myTurn: false, owedTableEnds: [seq] });
+    }
     // ---- a table that reports no ball ends: the pass is the only end there is ----
     {
       const s = await clientUp();
