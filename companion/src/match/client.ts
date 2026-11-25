@@ -75,6 +75,21 @@
  *   again when the lobby's PC is back (A18's `resendUnanswered`: a ball that ended while it was away is reported
  *   then). When the time is up the host is gone, as before (`hostLost` / `hostGone`). How often the relay may be
  *   asked for a room that is not there is the transport's rule, not this engine's.
+ *
+ * A17 step 6, after the review of 2026-11-25 (still behind the option):
+ * - after every return this member **says its whole row again** (`sayRowAgain`): what it said while the link was
+ *   down reached nobody, and it only ever says what changed. A place that was gone and is taken again by HELLO is
+ *   told `noCopy` and `ownGame` again;
+ * - its HELLO is signed (`proof`), so a lobby that still holds its place takes a fresh HELLO as its return;
+ * - `stale_seq` with `seqAbove`: the counter goes on above it and one more RECONNECT is sent;
+ * - `RECONNECT_ACK.closed`: the match it held ended while it was away: the rest of that log, then its RESULTs and
+ *   its real MATCH_END arrive; nothing is reported into it, signed for it or unlocked by it;
+ * - Leave lobby: `leave()` (LEAVE_LOBBY, and no reconnect after it);
+ * - a return that was still waiting for pages when the match closed is finished (`reconnected`), and a log that
+ *   does not chain is put away and asked for once more, whole;
+ * - the attempts to get back to the lobby's PC grow apart (a second at first, half a minute at most), and when the
+ *   20 minutes are up, or the shell says the room is gone (`hostLeft`), the lobby is over: `lobbyClosed`, once;
+ * - in a lobby nothing thrown inside this engine leaves a transport's handler or a timer (`engineError`).
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance } from '@castcade/protocol';
 import { buildMessage, parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
@@ -83,7 +98,7 @@ import { Emitter } from './events.js';
 import { compareFingerprints, DEFAULT_DISCONNECT_GRACE_MS, HostMatch, type OutgoingMediaSignal, type ReconnectCode } from './host.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
-import { lobbyReconnectSignBody, logSignBody, reconnectSignBody } from './result.js';
+import { helloProofBody, lobbyReconnectSignBody, logSignBody, reconnectSignBody } from './result.js';
 import { compareWithPick, identityOnly } from './table-identity.js';
 import { Session } from './session.js';
 import { cloneState, isStrictMajority, remainingParticipants, type MatchState } from './state.js';
@@ -202,8 +217,12 @@ export interface ClientEvents extends Record<string, unknown> {
   reconnected: { host: PlayerId; entries: number; quiet: boolean };
   /** RECONNECT rejected: re-join with a fresh HELLO, which after MATCH_READY is refused. */
   reconnectRejected: { host: PlayerId; code: ReconnectCode | null };
-  /** One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. */
-  reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number };
+  /**
+   * One reconnect attempt to `host` failed; `attemptsLeft` 0 means this client gave up. A17 step 6 (review): in a
+   * lobby the wait is counted in minutes, so `attemptsLeft` is only "some" (a large whole number) and `nextInMs` says
+   * when the next attempt is made (null: none; it gave up): one second apart at first, then further apart.
+   */
+  reconnectFailed: { host: PlayerId; error: Error; attemptsLeft: number; nextInMs?: number | null };
   /** A MEDIA_SIGNAL for this player, forwarded by the host (or sent by it); `from` is the original sender (D2). */
   mediaSignal: { from: PlayerId; signal: PayloadOf<'MEDIA_SIGNAL'> };
   /**
@@ -240,17 +259,26 @@ export interface ClientEvents extends Record<string, unknown> {
    * put away whatever it held and said HELLO again to `host`; `joined` (or `refused`) follows.
    */
   rejoining: PlayerId;
+  /**
+   * A17 step 6 (review): in a lobby, something threw inside this engine while it handled a frame, a dropped link or
+   * one of its own timers (`where`). Reported here; nothing is thrown out of the transport's handler or the timer.
+   */
+  engineError: { where: string; error: Error };
 }
 
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'TURN_PASS', 'RESULT', 'PAUSE', 'RESUME', 'FORFEIT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 /** A17: the messages of a match (the logged stream, and its RESULT): a lobby's member takes them only into a log it holds. */
 const MATCH_STREAM_TYPES: ReadonlySet<MessageType> = new Set(['TURN_GRANT', 'BALL_END', 'TURN_PASS', 'GAME_OVER', 'FORFEIT', 'PAUSE', 'RESUME', 'NEXT_GAME', 'RESULT']);
 const DEFAULT_RECONNECT_ATTEMPTS = 30;
+/** A17 step 6 (review): the longest gap between two attempts to get back to the lobby's PC. */
+const LOBBY_RECONNECT_GAP_MAX_MS = 30_000;
 /** A17 step 6 (design 11.8a): how long a lobby's member goes on trying to get back to the lobby's PC. */
 export const LOBBY_HOST_WAIT_MS = 20 * 60 * 1000;
 const DEFAULT_RECONNECT_DELAY_MS = 1000;
 
 interface Reconnecting {
+  /** How many attempts have failed so far (A17: what the gap before the next one grows with). */
+  failed: number;
   host: PlayerId;
   endpoint: string | undefined;
   replacing: PlayerId | undefined;
@@ -343,6 +371,14 @@ export class ClientMatch {
   private lastMatch: { matchId: string; log: MatchLog } | null = null;
   /** A17 step 6: when the link to the host dropped (this session's clock); null while it is up. */
   private downSince: number | null = null;
+  /** A17 step 6 (review): `noCopy` / `ownGame` as last said before this client's place was gone, to be said again to the new row. */
+  private rowAfterRejoin: { noCopy?: boolean; ownGame?: boolean } | null = null;
+  /** A17 step 6 (review): the log being merged is of a match that is over (`RECONNECT_ACK.closed`): no grant in it is this player's turn. */
+  private closedMerge = false;
+  /** A17 step 6 (review): a `stale_seq` was answered with a new attempt already (one per drop). */
+  private seqRaised = false;
+  /** A17 step 6 (review): the match whose log did not chain and was asked for once more (one ask per match). */
+  private askedAgainFor: string | null = null;
 
   constructor(opts: ClientOptions, session?: Session) {
     this.s = session ?? new Session({ transport: opts.transport, keys: opts.keys, clock: opts.clock });
@@ -356,7 +392,8 @@ export class ClientMatch {
     this.hostTimeouts = opts.hostTimeouts ?? {};
     this.lobbyOn = opts.lobby !== undefined && opts.lobby !== false;
     // A17 step 6: in a lobby the wait for the lobby's PC is counted in minutes, not in attempts.
-    this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? (this.lobbyOn ? Number.POSITIVE_INFINITY : DEFAULT_RECONNECT_ATTEMPTS));
+    // (A whole number, not infinity: the count goes into an event that a shell passes on as JSON.)
+    this.reconnectAttempts = Math.max(1, opts.reconnect?.attempts ?? (this.lobbyOn ? Number.MAX_SAFE_INTEGER : DEFAULT_RECONNECT_ATTEMPTS));
     this.reconnectDelayMs = opts.reconnect?.delayMs ?? DEFAULT_RECONNECT_DELAY_MS;
     this.reconnectMaxMs = opts.reconnect?.maxMs ?? (this.lobbyOn ? LOBBY_HOST_WAIT_MS : null);
     if (typeof opts.lobby === 'object') this.myStance = opts.lobby.stance ?? 'play';
@@ -552,6 +589,39 @@ export class ClientMatch {
   }
 
   /**
+   * A17 step 6 (review, 2026-11-25): Leave lobby. Says LEAVE_LOBBY to the lobby's PC (this member's row goes at
+   * once and its place is free; a game it is playing it gives up), and from then on this client does not come back:
+   * no reconnect. The caller closes the link after it. False when nothing was sent (no lobby, not joined, over).
+   */
+  leave(): boolean {
+    if (this.detached || !this.lobbyOn || !this.joined || this.ended) return false;
+    this.sendToHost(this.s.build('LEAVE_LOBBY', {}, this.throwdownCode));
+    this.ended = true;
+    this.cancelReconnect();
+    this.clearDown();
+    return true;
+  }
+
+  /**
+   * A17 step 6 (review): the wait for the lobby's PC is over from outside this engine: the relay said the room is
+   * gone ("host left"), or the shell gives up. Ends cleanly: no more attempts, `hostAway()` null, and `lobbyClosed`
+   * with `reason`, once. False when the lobby was over already.
+   */
+  hostLeft(reason: string): boolean {
+    if (this.detached || !this.lobbyOn || this.ended) return false;
+    this.endLobby(reason);
+    return true;
+  }
+
+  /** A17: the lobby is over for this client, for a reason of its own (LOBBY_CLOSED has its own path). */
+  private endLobby(reason: string): void {
+    this.ended = true;
+    this.cancelReconnect();
+    this.clearDown();
+    this.events.emit('lobbyClosed', { reason: reason.slice(0, 200) });
+  }
+
+  /**
    * A17 step 6: the link to the lobby's PC is down and this client is trying to get back: since when, and until
    * when it goes on trying (this session's clock; null: no limit by time). Null while the link is up.
    */
@@ -563,6 +633,29 @@ export class ClientMatch {
   join(): void {
     this.assertActive();
     if (this.joined) throw new Error('already joined');
+    if (this.lobbyOn) {
+      // A17 step 6 (review): a lobby's HELLO is signed (`proof`: the lobby, this player, the envelope's own `seq`,
+      // with this player's key). A lobby that still holds this player's place takes it as their return (a Castcade
+      // that started again has nothing to RECONNECT with); for a newcomer it is not looked at.
+      const seq = this.s.nextSeq();
+      const proof = signCanonical(helloProofBody(this.throwdownCode, this.localId, seq), this.s.keys.privateKey);
+      const hello = buildMessage(
+        'HELLO',
+        {
+          protocolVersion: PROTOCOL_VERSION,
+          companionVersion: this.companionVersion,
+          throwdownCode: this.throwdownCode,
+          participant: this.participant,
+          game: this.game,
+          ...(this.ballEndReady !== undefined ? { ballEndReady: this.ballEndReady } : {}),
+          stance: this.myStance,
+          proof,
+        },
+        { matchId: null, seq, from: this.localId, ts: this.s.clock.now() },
+      );
+      this.s.transport.send(this.explicitHostId ?? 'all', hello);
+      return;
+    }
     const msg = this.s.build(
       'HELLO',
       {
@@ -765,6 +858,7 @@ export class ClientMatch {
     if (!this.s.transport.connectTo || this.detached) return;
     this.cancelReconnect();
     this.reconnecting = {
+      failed: 0,
       host,
       endpoint: opts.endpoint,
       replacing: opts.replacing,
@@ -789,15 +883,28 @@ export class ClientMatch {
     );
   }
 
+  /**
+   * The gap before the next attempt. Without a lobby: `delayMs`, always. A17 step 6 (review): in a lobby the wait
+   * can be twenty minutes, so after the first three attempts the gap doubles each time, up to half a minute: a
+   * link that is back within seconds is found within seconds, and a PC that is off for minutes is not asked (and
+   * its failure not reported) once a second.
+   */
+  private reconnectGap(r: Reconnecting): number {
+    if (!this.lobbyOn) return this.reconnectDelayMs;
+    return Math.min(LOBBY_RECONNECT_GAP_MAX_MS, this.reconnectDelayMs * 2 ** Math.max(0, r.failed - 2));
+  }
+
   private scheduleReconnect(r: Reconnecting): void {
-    r.timer = this.s.clock.setTimeout(() => this.attemptReconnect(r), this.reconnectDelayMs);
+    r.timer = this.s.clock.setTimeout(this.guarded('a reconnect attempt', () => this.attemptReconnect(r)), this.reconnectGap(r));
   }
 
   private reconnectAttemptFailed(r: Reconnecting, error: Error): void {
     if (this.reconnecting !== r || this.detached) return;
     r.inFlight = false;
-    this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft });
-    if (r.attemptsLeft > 0 && (r.deadline === null || this.s.clock.now() < r.deadline)) {
+    r.failed += 1;
+    const again = r.attemptsLeft > 0 && (r.deadline === null || this.s.clock.now() < r.deadline);
+    this.events.emit('reconnectFailed', { host: r.host, error, attemptsLeft: r.attemptsLeft, ...(this.lobbyOn ? { nextInMs: again ? this.reconnectGap(r) : null } : {}) });
+    if (again) {
       this.scheduleReconnect(r);
       return;
     }
@@ -808,6 +915,8 @@ export class ClientMatch {
     this.down = null;
     this.downSince = null;
     if (r.host === this.hostId) this.onHostGone(r.host);
+    // A17 step 6 (review): in a lobby that is the end, said once more as what it is for this PC: the lobby is closed.
+    if (this.lobbyOn && r.host === this.hostId && !this.ended) this.endLobby("the lobby's PC did not come back");
   }
 
   /**
@@ -825,10 +934,13 @@ export class ClientMatch {
     this.clearDown();
     this.downSince = since;
     const d = { peer, timer: null as TimerHandle | null, told: false };
-    d.timer = this.s.clock.setTimeout(() => {
-      d.timer = null;
-      if (this.down === d) this.tellDown();
-    }, this.graceMs);
+    d.timer = this.s.clock.setTimeout(
+      this.guarded('the end of the grace', () => {
+        d.timer = null;
+        if (this.down === d) this.tellDown();
+      }),
+      this.graceMs,
+    );
     this.down = d;
   }
 
@@ -890,8 +1002,43 @@ export class ClientMatch {
 
   private attach(): void {
     const t = this.s.transport;
-    this.unsubscribe.push(t.onMessage((from, msg) => this.handle(from, msg)));
-    this.unsubscribe.push(t.onPeerLeave((peer) => this.onPeerLeave(peer)));
+    this.unsubscribe.push(t.onMessage((from, msg) => this.guard(`a ${msg.type}`, () => this.handle(from, msg))));
+    this.unsubscribe.push(t.onPeerLeave((peer) => this.guard('a dropped link', () => this.onPeerLeave(peer))));
+  }
+
+  /**
+   * A17 step 6 (review, 2026-11-25): in a lobby nothing this engine does for a frame, a dropped link or one of its
+   * own timers throws out of the transport's handler or the timer that called it: it is caught and reported
+   * (`engineError`). Without a lobby `fn` runs as it always did.
+   */
+  private guard(where: string, fn: () => void): void {
+    if (!this.lobbyOn) {
+      fn();
+      return;
+    }
+    try {
+      fn();
+    } catch (e) {
+      this.events.emit('engineError', { where, error: e instanceof Error ? e : new Error(String(e)) });
+    }
+  }
+
+  private guarded(where: string, fn: () => void): () => void {
+    return () => this.guard(where, fn);
+  }
+
+  /**
+   * A17 step 6 (review, 2026-11-25): this member's whole row, said again as it was last given: the rig, the table,
+   * whether its ball ends can be reported, the choice, and `noCopy` / `ownGame` when they were ever said. After
+   * every return: what was said while the link was down went nowhere, and this client would not say it a second
+   * time by itself (it only says what changed). The lobby's PC ignores what it already holds.
+   */
+  private sayRowAgain(): void {
+    const row: PayloadOf<'PARTICIPANT_UPDATE'> = { rig: this.participant.rig, game: { ...this.game }, stance: this.myStance };
+    if (this.ballEndReady !== undefined) row.ballEndReady = this.ballEndReady;
+    if (this.saidNoCopy !== undefined) row.noCopy = this.saidNoCopy;
+    if (this.saidOwnGame !== undefined) row.ownGame = this.saidOwnGame;
+    this.sendToHost(this.s.build('PARTICIPANT_UPDATE', row, this.lobbyIdForWire()));
   }
 
   private detach(): void {
@@ -950,7 +1097,11 @@ export class ClientMatch {
    * A17: the match this client was in is over, or another begins: its log is put away and everything counted per
    * match starts over. `grantSeq` begins at 1 again in the next match, so the last one seen must not outlive this.
    */
-  private putMatchAway(): void {
+  private putMatchAway(keepReturn = false): void {
+    // A return that was still waiting for the rest of its log (a RECONNECT_ACK that said `more`) is over with the
+    // match: the link is up and this client is back, and it says so now, or it would look away for ever (review).
+    const waiting = keepReturn ? null : this.afterCatchUp;
+    this.afterCatchUp = keepReturn ? this.afterCatchUp : null;
     const matchId = this.s.state.matchId;
     const log = this.s.newMatch();
     if (matchId !== null) this.lastMatch = { matchId, log };
@@ -964,7 +1115,8 @@ export class ClientMatch {
     this.hostLost = false;
     this.holdsLog = true;
     this.catchingUp = null;
-    this.afterCatchUp = null;
+    this.closedMerge = false;
+    if (waiting) waiting.done(waiting.entries);
   }
 
   /**
@@ -989,9 +1141,7 @@ export class ClientMatch {
     const p = msg.payload;
     if (!this.lobbyOn || msg.from !== this.hostId) return this.drop(msg, 'unexpected');
     if (p.restart) {
-      const after = this.afterCatchUp;
-      this.putMatchAway();
-      this.afterCatchUp = after;
+      this.putMatchAway(true);
       this.catchingUp = p.match;
       this.holdsLog = false;
     } else if (this.catchingUp !== p.match) {
@@ -1003,6 +1153,16 @@ export class ClientMatch {
     if (appended === null || this.s.state.matchId !== p.match || head.hash !== p.logHash || head.length !== p.logLength) {
       // The log stays not held: nothing of this match is taken until a whole log arrives again.
       this.events.emit('desync', { context: 'matchlog.entries', expected: p.logHash, actual: head.hash });
+      // What does not chain is put away (a return that waited for these pages is finished with it), and the whole
+      // log is asked for once more, the way a log is asked for: a new link and a RECONNECT that holds none. Once
+      // per match: a log that fails twice is not asked for in a loop.
+      this.putMatchAway();
+      this.holdsLog = false;
+      this.catchingUp = p.match;
+      if (this.askedAgainFor !== p.match && this.hostId !== null && this.mayReconnect()) {
+        this.askedAgainFor = p.match;
+        this.relinkTo(this.hostId);
+      }
       return;
     }
     if (this.afterCatchUp) this.afterCatchUp.entries += appended;
@@ -1041,6 +1201,13 @@ export class ClientMatch {
         this.ackHostId = msg.payload.hostPlayerId;
         this.ackHostKey = msg.payload.hostPublicKey;
         if (this.lobbyOn) this.noteLobby(msg.payload, true);
+        // A17 step 6 (review): a place that was gone and is taken again: the new row has not heard `noCopy` and
+        // `ownGame`, which a HELLO does not carry.
+        if (this.lobbyOn && this.rowAfterRejoin) {
+          const row = this.rowAfterRejoin;
+          this.rowAfterRejoin = null;
+          this.updateInLobby(row);
+        }
         // Advisory (alpha-match.md §3, 2026-10-30): the host accepted us anyway; say so on this side too.
         this.compareTable(msg.payload);
         this.events.emit('joined', msg.payload);
@@ -1212,6 +1379,8 @@ export class ClientMatch {
         if (!this.lobbyOn || msg.from !== this.hostId || this.ended) return this.drop(msg, 'unexpected');
         this.ended = true;
         this.cancelReconnect();
+        // (Also the answer to a member who came back after the lobby had closed: the wait is over.)
+        this.clearDown();
         this.events.emit('lobbyClosed', msg.payload);
         return;
       default:
@@ -1442,11 +1611,24 @@ export class ClientMatch {
         this.putMatchAway();
         this.joined = false;
         this.lobbyAck = null;
+        // The new row has been told nothing: what was said to the old one is said again after the HELLO_ACK.
+        this.rowAfterRejoin = { ...(this.saidNoCopy !== undefined ? { noCopy: this.saidNoCopy } : {}), ...(this.saidOwnGame !== undefined ? { ownGame: this.saidOwnGame } : {}) };
+        this.saidNoCopy = undefined;
+        this.saidOwnGame = undefined;
         this.events.emit('rejoining', want.host);
         this.join();
       }
+      // A17 step 6 (review): the counter fell behind what the lobby last took from this member (a Castcade that
+      // started again without its counter). The lobby says where it stands; this client goes on above it and comes
+      // back once more. The counter only moves forward, and the new RECONNECT is signed over the new number.
+      if (this.lobbyOn && p.code === 'stale_seq' && p.seqAbove !== undefined && !this.seqRaised && !this.ended) {
+        this.seqRaised = true;
+        this.s.raiseSeq(p.seqAbove);
+        this.relinkTo(want.host, { delayFirst: true });
+      }
       return;
     }
+    this.seqRaised = false;
     if (this.lobbyOn && p.restart === true) {
       // A17 step 6: this client's log is not of the open match (it ended while this PC was away, another began, or
       // none is open): it is put away. The open match's log, when there is one, follows in MATCH_LOG from entry 0.
@@ -1456,6 +1638,7 @@ export class ClientMatch {
       if (had !== null && had !== (p.match ?? null)) this.events.emit('matchEnded', { games, reason: 'the match ended while this PC was away' });
       const back = (entries: number): void => {
         const quiet = this.clearDown();
+        this.sayRowAgain();
         this.events.emit('reconnected', { host: want.host, entries, quiet });
         this.maybeSignLog();
       };
@@ -1468,6 +1651,8 @@ export class ClientMatch {
       back(0);
       return;
     }
+    // A17 step 6 (review): the entries of a match that is over (`closed`) unlock nothing, whatever grant they end on.
+    this.closedMerge = this.lobbyOn && p.closed === true;
     const appended = this.mergeEntries(p.entries);
     const head = this.s.log.head();
     // A17: an answer that says `more` holds the first page only; like every answer it names the head of the log
@@ -1477,9 +1662,21 @@ export class ClientMatch {
       this.events.emit('desync', { context: 'reconnect.entries', expected: p.logHash, actual: head.hash });
     }
     if (want.closeListener) this.s.transport.closeListener?.();
+    // A17 step 6 (review): the match these entries belong to ended while this client was away (`closed`): its
+    // RESULTs and its MATCH_END follow as they were sent. Nothing is reported into it, or signed for it, again.
+    const closed = this.lobbyOn && p.closed === true;
+    if (closed) {
+      this.unanswered = { ballEnd: null, gameOver: null, forfeit: null };
+      this.logSignSent = null;
+      this.signedGame = this.s.state.gameNumber;
+      this._myGrant = null;
+      this._inputUnlocked = false;
+    }
     const done = (entries: number): void => {
       // A18: what was reported into the dead link first, then the news (a listener may answer it with a RESUME).
-      this.resendUnanswered();
+      if (!closed) this.resendUnanswered();
+      // A17 step 6 (review): and this member's row, which may have changed while the link was down.
+      if (this.lobbyOn) this.sayRowAgain();
       const quiet = this.clearDown();
       this.events.emit('reconnected', { host: want.host, entries, quiet });
       this.maybeSignLog();
@@ -1581,7 +1778,7 @@ export class ClientMatch {
     const cg = this.s.state.currentGrant;
     const key = this.hostPublicKey;
     if (cg && cg.grant.player === this.localId) {
-      if (cg.grant.grantSeq > seenBefore && key && verifyCanonical(cg.grant, cg.grantSig, key)) {
+      if (!this.closedMerge && cg.grant.grantSeq > seenBefore && key && verifyCanonical(cg.grant, cg.grantSig, key)) {
         this._myGrant = cg.grant;
         this._inputUnlocked = true;
         this.events.emit('myTurn', cg.grant);

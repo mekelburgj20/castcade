@@ -60,6 +60,19 @@ export class Session {
     return this.seq;
   }
 
+  /**
+   * A17 step 6: the outgoing `seq` continues above `floor` (never below where it is). For a member a lobby told
+   * that its counter fell behind (`RECONNECT_ACK.seqAbove`): the counter only ever moves forward.
+   */
+  raiseSeq(floor: number): void {
+    if (Number.isSafeInteger(floor) && floor > this.seq) this.seq = floor;
+  }
+
+  /** A17 step 6: the last `seq` taken from `from`, or null when none was. */
+  lastSeqFrom(from: PlayerId): number | null {
+    return this.lastSeq.get(from) ?? null;
+  }
+
   /** Per-sender strictly increasing `seq`. Records the seq when it is acceptable. */
   checkSeq(from: PlayerId, seq: number): boolean {
     const last = this.lastSeq.get(from);

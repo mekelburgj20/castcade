@@ -6,9 +6,11 @@
  * a place that ran out and the HELLO that follows.
  */
 import { describe, expect, it } from 'vitest';
-import type { AnyMessage, PlayerId } from '@castcade/protocol';
+import { buildMessage, PROTOCOL_VERSION, type AnyMessage, type PlayerId } from '@castcade/protocol';
 import type { ClientMatch } from './client.js';
-import { expectHeadsNamed, flush, playGame, starLobby, type StarRig } from './lobby.test-support.js';
+import { generateKeys, signCanonical } from './keys.js';
+import { expectHeadsNamed, flush, NO_TABLE, playGame, starLobby, TABLE, type StarRig } from './lobby.test-support.js';
+import { helloProofBody } from './result.js';
 
 const client = (r: StarRig, id: string): ClientMatch => r.clients[id] as ClientMatch;
 const logged = (r: StarRig): string[] => r.host.log.entries().map((e) => `${e.message?.type ?? e.event?.type}${e.message?.type === 'PAUSE' ? `(${e.message.payload.reason} ${e.message.payload.player})` : ''}`);
@@ -107,7 +109,7 @@ describe('A17 step 6: a member who is away keeps their place, for a while', () =
     headsNamed(r);
   });
 
-  it('a HELLO never takes over the place of a member who is away, and does not make an old RECONNECT good again', async () => {
+  it('a HELLO in the name of a member who is away, that is not that member`s own return, is refused; the member`s row and counter stay as they were', async () => {
     const r = await starLobby(['a', 'b']);
     await r.cut('a');
     await r.mend('a');
@@ -118,7 +120,7 @@ describe('A17 step 6: a member who is away keeps their place, for a while', () =
     const codes: string[] = [];
     r.host.on('refused', (x) => codes.push(`${x.refuse.code}: ${x.refuse.message}`));
     r.host.on('reconnectRejected', (x) => codes.push(`reconnect ${x.code}`));
-    // Somebody says HELLO as A (a copy of A's own first frame would do: it is not signed).
+    // A's first HELLO, a second time: its signature is over a `seq` that was taken long ago.
     const hello = r.frames.map((f) => JSON.parse(f.frame) as AnyMessage).find((m) => m.type === 'HELLO' && m.from === 'a');
     if (!hello) throw new Error('no HELLO recorded');
     r.host.handle('a', hello);
@@ -310,8 +312,8 @@ describe('A17 step 6: the lobby`s PC itself is cut off (design 11.8a)', () => {
     expect(r.host.waitedFor()).toBeNull();
     // Back: the members return by RECONNECT inside a grace that starts from zero, and nobody was ever told they left.
     r.host.setCutOff(false);
-    await r.mend('a');
-    await r.mend('b');
+    await r.relink('a');
+    await r.relink('b');
     expect(back).toEqual(['a quiet', 'b quiet']);
     expect(left).toEqual([]);
     expect(r.events['a']?.slice(-1)).toEqual(['reconnected 0']);
@@ -346,7 +348,7 @@ describe('A17 step 6: the lobby`s PC itself is cut off (design 11.8a)', () => {
     expect(r.host.state.currentGrant).toBeNull();
     expect(left).toEqual([]);
     r.host.setCutOff(false);
-    await r.mend('b');
+    await r.relink('b');
     // B is back; A is not. Inside the new grace A's grant waits; after it A is away and the game is paused for A.
     expect(r.host.state.currentGrant).toBeNull();
     expect(r.host.state.paused).toBeNull();
@@ -365,31 +367,56 @@ describe('A17 step 6: the lobby`s PC itself is cut off (design 11.8a)', () => {
     const r = await starLobby(['a', 'b'], { stances: { b: 'watch' } });
     r.host.startMatch(['h', 'a']);
     await flush();
-    let failed = 0;
-    client(r, 'a').on('reconnectFailed', () => (failed += 1));
+    const gaps: (number | null | undefined)[] = [];
+    const left: number[] = [];
+    client(r, 'a').on('reconnectFailed', (x) => {
+      gaps.push(x.nextInMs);
+      left.push(x.attemptsLeft);
+    });
     await r.cut('a');
     await r.cut('b');
-    for (let i = 0; i < 40; i++) await r.tick(1000);
-    expect(failed).toBeGreaterThan(30);
+    for (let i = 0; i < 200; i++) await r.tick(1000);
+    // Not thirty attempts and then nothing; and not one a second either: a second apart at first, then further
+    // apart, half a minute at most. The count left is "some": a whole number a shell can pass on.
+    expect(gaps.slice(0, 8)).toEqual([1000, 1000, 2000, 4000, 8000, 16_000, 30_000, 30_000]);
+    expect(gaps.length).toBeLessThan(20);
+    expect(left.every((n) => Number.isSafeInteger(n) && n > 1000)).toBe(true);
     expect(r.events['a']).not.toContain('hostLost');
-    await r.tick(19 * MIN);
+    for (let i = 0; i < 32; i++) await r.tick(30_000);
     expect(r.events['a']).not.toContain('hostLost');
-    await r.tick(MIN);
-    await r.tick(1000);
-    // A player of the game being played: the host is lost. A watcher holds the same log, and hears the same.
-    expect(r.events['a']?.slice(-1)).toEqual(['hostLost']);
-    expect(r.events['b']?.slice(-1)).toEqual(['hostLost']);
+    for (let i = 0; i < 4; i++) await r.tick(30_000);
+    // A player of the game being played: the host is lost, and for this PC the lobby is closed. A watcher holds
+    // the same log, and hears the same. Once, and nothing after it.
+    expect(r.events['a']?.slice(-2)).toEqual(['hostLost', 'lobbyClosed']);
+    expect(r.events['b']?.slice(-2)).toEqual(['hostLost', 'lobbyClosed']);
+    expect(gaps.slice(-1)).toEqual([null]);
     expect(client(r, 'a').hostAway()).toBeNull();
+    expect(client(r, 'a').matchEnded).toBe(true);
+    const n = r.events['a']?.length;
+    await r.tick(10 * MIN);
+    expect(r.events['a']?.length).toBe(n);
     // With no match open it is `hostGone`.
     const q = await starLobby(['a'], { client: { reconnect: { delayMs: 1000, maxMs: 5000 } } });
     await q.cut('a');
-    for (let i = 0; i < 8; i++) await q.tick(1000);
-    expect(q.events['a']?.slice(-2)).toEqual(['peerLeft h', 'hostGone']);
+    for (let i = 0; i < 12; i++) await q.tick(1000);
+    expect(q.events['a']?.slice(-3)).toEqual(['peerLeft h', 'hostGone', 'lobbyClosed']);
+    // The relay says the room is gone before the 20 minutes are up: the wait ends at once, cleanly.
+    const w = await starLobby(['a']);
+    await w.cut('a');
+    await w.tick(5000);
+    expect(client(w, 'a').hostAway()).not.toBeNull();
+    expect(client(w, 'a').hostLeft('The lobby is closed: its PC left.')).toBe(true);
+    expect(client(w, 'a').hostLeft('again')).toBe(false);
+    expect(w.events['a']?.slice(-1)).toEqual(['lobbyClosed']);
+    expect(client(w, 'a').hostAway()).toBeNull();
+    const m = w.events['a']?.length;
+    await w.tick(10 * MIN);
+    expect(w.events['a']?.length).toBe(m);
   });
 });
 
 describe('A17 step 6: RECONNECT in every phase', () => {
-  it('`restart`: the match the member held is over and another is open: its log is put away and the open one arrives whole', async () => {
+  it('the match the member held was closed while it was away: the rest of its log, then the open one whole; a match closed before that one: `restart`', async () => {
     const r = await starLobby(['a', 'b'], { stances: { b: 'watch' }, lobby: { logPageSize: 3 } });
     r.host.start();
     await flush();
@@ -408,13 +435,24 @@ describe('A17 step 6: RECONNECT in every phase', () => {
     await r.mend('b');
     const ask = r.sent('b', 'h', from)[0];
     expect(ask?.type === 'RECONNECT' && [ask.matchId, ask.payload.match]).toEqual(['JHDFEF', 'JHDFEF-1']);
-    const ack = r.sent('h', 'b', from)[0];
-    expect(ack?.type === 'RECONNECT_ACK' && [ack.payload.accept, ack.payload.restart, ack.payload.match, ack.payload.entries.length]).toEqual([true, true, 'JHDFEF-2', 0]);
-    const pages = r.sent('h', 'b', from).filter((m) => m.type === 'MATCH_LOG');
-    expect(pages.length).toBe(Math.ceil(r.host.log.length / 3));
-    expect(pages[0]?.type === 'MATCH_LOG' && [pages[0].payload.restart, pages[0].payload.match]).toEqual([true, 'JHDFEF-2']);
-    expect(r.events['b']?.slice(at)).toEqual(['matchEnded 0', 'ready JHDFEF-2', `caughtUp JHDFEF-2 ${r.host.log.length}`, `reconnected ${r.host.log.length}`]);
+    // The match B holds is the one that was closed last: B is brought to its end (the entries B lacks, its RESULT,
+    // its MATCH_END as everyone got it), and then sent the open one from entry 0.
+    const got = r.sent('h', 'b', from);
+    const ack = got[0];
+    const closedLength = r.host.previousMatch()?.log.length ?? 0;
+    expect(ack?.type === 'RECONNECT_ACK' && [ack.payload.accept, ack.payload.closed, ack.payload.restart, ack.payload.match, ack.payload.more, ack.payload.entries.length]).toEqual([true, true, undefined, 'JHDFEF-2', undefined, 3]);
+    expect(closedLength).toBe(5);
+    expect(got.map((m) => `${m.type}${m.type === 'MATCH_LOG' ? (m.payload.restart ? ' restart' : '') : ''} ${m.matchId}`).slice(1)).toEqual([
+      'RESULT JHDFEF-1',
+      'MATCH_END JHDFEF-1',
+      'MATCH_LOG restart JHDFEF',
+      'MATCH_LOG JHDFEF',
+      'HELLO_ACK null',
+    ]);
+    expect(r.events['b']?.slice(at)).toEqual(['reconnected 3', 'matchEnded 1', 'ready JHDFEF-2', `caughtUp JHDFEF-2 ${r.host.log.length}`]);
+    expect(r.results['b']?.map((x) => [x.result.matchId, x.logMatches, x.signatureValid])).toEqual([['JHDFEF-1', true, true]]);
     expect(client(r, 'b').previousMatch()?.matchId).toBe('JHDFEF-1');
+    expect(client(r, 'b').previousMatch()?.log.head()).toEqual(r.host.previousMatch()?.log.head());
     expect(client(r, 'b').log.head()).toEqual(r.host.log.head());
     expect(client(r, 'b').holdsOpenLog).toBe(true);
     // None open on the return: back in the lobby, with nothing to be sent.
@@ -427,10 +465,29 @@ describe('A17 step 6: RECONNECT in every phase', () => {
     await flush();
     const then = r.frames.length;
     await r.mend('b');
-    expect(r.sent('h', 'b', then).map((m) => m.type)).toEqual(['RECONNECT_ACK', 'HELLO_ACK']);
-    expect(r.events['b']?.slice(-2)).toEqual(['matchEnded 0', 'reconnected 0']);
+    // Closed with no other open: the same, and nothing follows but the lobby.
+    expect(r.sent('h', 'b', then).map((m) => m.type)).toEqual(['RECONNECT_ACK', 'RESULT', 'MATCH_END', 'HELLO_ACK']);
+    expect(r.events['b']?.slice(-2)).toEqual(['reconnected 1', 'matchEnded 1']);
     expect(client(r, 'b').state.phase).toBe('lobby');
     expect(r.lobby('b').match).toBeNull();
+    // Two matches closed while it was away: the one it holds is not the last one closed. Its log is put away
+    // (`restart`), and what it hears of that match's end is what it can know itself.
+    await r.cut('b');
+    await r.tick(5000);
+    r.host.start();
+    await flush();
+    await playGame(r);
+    r.host.endMatch('three');
+    r.host.start();
+    await flush();
+    await playGame(r);
+    r.host.endMatch('four');
+    await flush();
+    const later = r.frames.length;
+    await r.mend('b');
+    const plain = r.sent('h', 'b', later)[0];
+    expect(plain?.type === 'RECONNECT_ACK' && [plain.payload.accept, plain.payload.restart, plain.payload.closed, plain.payload.match, plain.payload.logLength]).toEqual([true, true, undefined, null, 0]);
+    expect(r.events['b']?.slice(-1)).toEqual(['reconnected 0']);
     expect(r.dropped['b']).toEqual([]);
     headsNamed(r);
   });
@@ -449,7 +506,7 @@ describe('A17 step 6: RECONNECT in every phase', () => {
     r.host.on('peerLeft', (p) => left.push(p));
     const head = r.host.log.head();
     const from = r.frames.length;
-    // The captured frame, sent again as it was.
+    // The same frame, a second time.
     r.host.handle('a', old);
     // And its payload in a new envelope with a higher seq (and a later time): the signature is over the old seq.
     r.host.handle('a', { ...old, seq: old.seq + 1_000_000, ts: old.ts + 1 });
@@ -497,10 +554,10 @@ describe('A17 step 6: RECONNECT in every phase', () => {
     const from = r.frames.length;
     await r.mend('b');
     const got = r.sent('h', 'b', from);
-    expect(got.map((m) => m.type)).toEqual(['RECONNECT_ACK', 'HELLO_ACK', 'MATCH_LOG', 'TURN_GRANT']);
+    expect(got.map((m) => m.type)).toEqual(['RECONNECT_ACK', 'MATCH_LOG', 'HELLO_ACK', 'TURN_GRANT']);
     const ack = got[0];
     expect(ack?.type === 'RECONNECT_ACK' && [ack.payload.more, ack.payload.match, ack.payload.entries.length, ack.payload.logLength]).toEqual([true, 'JHDFEF-1', 2, held + 2]);
-    const page = got[2];
+    const page = got[1];
     // Three entries were missed (the grant for B itself waited for B): two in the answer, one in the page.
     expect(page?.type === 'MATCH_LOG' && [page.payload.restart, page.payload.more, page.payload.entries.length, page.payload.logLength]).toEqual([false, false, 1, held + 3]);
     expect(r.events['b']?.slice(-2)).toEqual([`caughtUp JHDFEF-1 ${held + 3}`, 'reconnected 3 quiet']);
@@ -531,5 +588,459 @@ describe('A17 step 6: RECONNECT in every phase', () => {
     await q.tick(5000);
     expect(q.lobby('b').start).toBeNull();
     expect(q.lobby('b').startOff).toBe('A is away: the start is off.');
+  });
+});
+
+describe('A17 step 6, the review of 2026-11-25: what a member said, and what it missed', () => {
+  it('a choice, a table and a game of one`s own said while the link was down are said again on the return', async () => {
+    const r = await starLobby(['a', 'b'], { tables: { a: NO_TABLE } });
+    expect(r.lobby('b').loading).toEqual(['a']);
+    await r.cut('a');
+    // All of this goes into a link that is down. The engine records each as said.
+    expect(client(r, 'a').setStance('watch')).toBe(true);
+    expect(client(r, 'a').updateParticipant({ game: TABLE, ballEndReady: true, rig: 'vr_headset', ownGame: true, noCopy: true })).toBe(true);
+    await r.tick(2000);
+    expect(r.host.stanceOf('a')).toBe('play');
+    await r.mend('a');
+    // Back inside the grace: the lobby's PC holds the row as the member last gave it.
+    expect(r.events['a']?.slice(-1)).toEqual(['reconnected 0 quiet']);
+    expect(r.host.stanceOf('a')).toBe('watch');
+    const seen = r.lobby('b');
+    expect(seen.stances?.find((s) => s.playerId === 'a')?.stance).toBe('watch');
+    expect(seen.loading).toEqual([]);
+    expect(seen.ownGame).toEqual(['a']);
+    expect(seen.noCopy).toEqual(['a']);
+    expect(seen.ballEndReady).toContainEqual({ playerId: 'a', ready: true });
+    expect(seen.participants.find((p) => p.playerId === 'a')?.rig).toBe('vr_headset');
+    // And what the member reads back from the lobby is what it holds itself.
+    expect(r.lobby('a').stances?.find((s) => s.playerId === 'a')?.stance).toBe(client(r, 'a').stance);
+    // A match that starts now is without A, who is set to Watch.
+    r.host.requestStart();
+    await r.tick(5000);
+    expect(r.host.state.playerOrder).toEqual(['h', 'b']);
+  });
+
+  it('after a rejoin by HELLO the lobby`s PC holds `noCopy` and `ownGame` again', async () => {
+    const r = await starLobby(['a', 'b']);
+    client(r, 'a').updateParticipant({ noCopy: true, ownGame: true });
+    await flush();
+    expect(r.host.playSet()).toEqual(['h', 'b']);
+    await r.cut('a');
+    await r.tick(5000);
+    await r.tick(3 * MIN);
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'b']);
+    await r.mend('a');
+    expect(r.events['a']?.slice(-3)).toEqual(['reconnectRejected unknown_player', 'rejoining', 'joined']);
+    // The new row was told what a HELLO does not carry.
+    expect(r.lobby('b').noCopy).toEqual(['a']);
+    expect(r.lobby('b').ownGame).toEqual(['a']);
+    expect(r.host.playSet()).toEqual(['h', 'b']);
+    // And the member can still take them back.
+    expect(client(r, 'a').updateParticipant({ noCopy: false, ownGame: false })).toBe(true);
+    await flush();
+    expect(r.host.playSet()).toEqual(['h', 'b', 'a']);
+  });
+
+  it('a player who was away when the RESULT and MATCH_END went out gets that RESULT on the return', async () => {
+    const r = await starLobby(['a', 'b']);
+    r.host.startMatch(['b', 'a', 'h']);
+    await flush();
+    // B plays first, the best score, and then is away while the others finish and somebody ends the match.
+    client(r, 'b').reportBallEnd(500, 'script');
+    await flush();
+    await r.cut('b');
+    await r.tick(5000);
+    client(r, 'a').reportBallEnd(20, 'script');
+    await flush();
+    r.host.localBallEnd(30, 'nvram');
+    await flush();
+    await flush();
+    expect(r.host.resultOut).toBe(true);
+    expect(client(r, 'a').requestEnd()).toBe(true);
+    await flush();
+    expect(r.results['a']?.map((x) => x.result.winner)).toEqual(['b']);
+    expect(r.results['b']).toEqual([]);
+    await r.mend('b');
+    // The same tally on every PC: the winner sees the result, and the match's real end.
+    expect(r.results['b']?.map((x) => [x.result.winner, x.logMatches, x.signatureValid])).toEqual([['b', true, true]]);
+    expect(r.results['b']?.[0]?.result).toEqual(r.results['a']?.[0]?.result);
+    expect(r.events['b']?.slice(-2)).toEqual(['reconnected 3', 'matchEnded 1']);
+    expect(client(r, 'b').previousMatch()?.log.head()).toEqual(r.host.previousMatch()?.log.head());
+    expect(client(r, 'b').state.phase).toBe('lobby');
+    // Nothing was reported into the closed match, and nothing unlocked for it.
+    expect(r.rejects).toEqual([]);
+    expect(client(r, 'b').inputUnlocked).toBe(false);
+    headsNamed(r);
+  });
+
+  it('a member inside the grace at End match for everyone hears `abandoned`', async () => {
+    const r = await starLobby(['a', 'b'], { balls: 2 });
+    r.host.start();
+    await flush();
+    await playGame(r);
+    r.host.requestStart();
+    await r.tick(5000);
+    expect(r.host.state.gameNumber).toBe(2);
+    // B is up in game 2 after H's ball... H plays, then A holds the grant; B's link blinks.
+    r.host.localBallEnd(10, 'nvram');
+    await flush();
+    await r.cut('b');
+    await r.tick(1000);
+    expect(r.host.endMatch('enough')).toBe(true);
+    await flush();
+    expect(r.events['a']?.slice(-1)).toEqual(['matchEnded 1 abandoned 2']);
+    await r.mend('b');
+    expect(r.events['b']?.slice(-2)).toEqual(['reconnected 0 quiet', 'matchEnded 1 abandoned 2']);
+    // Game 2 has no result on any PC; game 1's is the tally, the same everywhere.
+    for (const id of ['a', 'b']) expect(r.results[id]?.map((x) => x.result.game), id).toEqual([1]);
+    expect(client(r, 'b').inputUnlocked).toBe(false);
+    expect(r.rejects).toEqual([]);
+  });
+
+  it('a match that closes while a returning member is still being sent its log: the member is back, once', async () => {
+    const r = await starLobby(['a', 'b'], { balls: 3, lobby: { logPageSize: 1, logPageGapMs: 200 } });
+    r.host.startMatch(['h', 'a', 'b']);
+    await flush();
+    await r.cut('b');
+    r.host.localBallEnd(10, 'nvram');
+    await flush();
+    client(r, 'a').reportBallEnd(20, 'script');
+    await flush();
+    await r.tick(5000);
+    const at = r.events['b']?.length ?? 0;
+    await r.relink('b');
+    // The answer said `more`; the rest comes page by page, 200 ms apart. The match is ended before the last page.
+    expect(client(r, 'b').holdsOpenLog).toBe(false);
+    expect(r.events['b']?.slice(at).filter((e) => e.startsWith('reconnected'))).toEqual([]);
+    r.host.endMatch('enough');
+    await flush();
+    // Back (it says so once, with what had reached it), and then the end of the match as everyone heard it.
+    const after = r.events['b']?.slice(at).filter((e) => !e.startsWith('pause')) ?? [];
+    expect(after).toHaveLength(2);
+    expect(after[0]).toMatch(/^reconnected \d+$/);
+    expect(after[1]).toBe('matchEnded 0 abandoned 1');
+    expect(client(r, 'b').hostAway()).toBeNull();
+    expect(client(r, 'b').holdsOpenLog).toBe(true);
+    const n = r.events['b']?.length;
+    await r.tick(60_000);
+    expect(r.events['b']?.length).toBe(n);
+    expect(r.lobby('b').match).toBeNull();
+  });
+
+  it('a page that does not chain: the member puts the log away, asks for the whole of it once, and ends on the host`s head', async () => {
+    const r = await starLobby(['a'], { balls: 3 });
+    r.host.start();
+    await flush();
+    r.host.localBallEnd(10, 'nvram');
+    await flush();
+    const c = await r.join('c');
+    expect(c.log.head()).toEqual(r.host.log.head());
+    const at = r.events['c']?.length ?? 0;
+    // A page that cannot follow what C holds (a bug at the other end, a frame that went astray).
+    const bad = r.host.session.build('MATCH_LOG', { match: 'JHDFEF-1', restart: true, entries: [{ ...(r.host.log.at(1) as object) } as never], logHash: r.host.log.head().hash, logLength: 1, more: false }, 'JHDFEF');
+    r.host.session.transport.send('c', bad);
+    await flush();
+    expect(r.events['c']?.slice(at)).toEqual(['desync matchlog.entries', 'ready JHDFEF-1', `caughtUp JHDFEF-1 ${r.host.log.length}`, `reconnected ${r.host.log.length}`]);
+    expect(c.holdsOpenLog).toBe(true);
+    expect(c.log.head()).toEqual(r.host.log.head());
+    // Once per match: a second page that does not chain is not answered with another ask.
+    const frames = r.frames.filter((f) => f.by === 'c').length;
+    r.host.session.transport.send('c', r.host.session.build('MATCH_LOG', { ...bad.payload }, 'JHDFEF'));
+    await flush();
+    expect(r.frames.filter((f) => f.by === 'c').length).toBe(frames);
+    expect(c.holdsOpenLog).toBe(false);
+  });
+});
+
+describe('A17 step 6, the review of 2026-11-25: leaving, coming back, and a lobby that is closed', () => {
+  it('a member who leaves is out at once: the row goes, the start they were in is judged again, a fifth person can join', async () => {
+    const r = await starLobby(['a', 'b', 'c']);
+    const left: string[] = [];
+    r.host.on('memberLeft', (p) => left.push(p));
+    client(r, 'a').requestStart();
+    await r.tick(1000);
+    expect(r.lobby('b').start).toMatchObject({ players: ['a', 'h', 'b', 'c'] });
+    expect(client(r, 'c').leave()).toBe(true);
+    expect(client(r, 'c').leave()).toBe(false);
+    await flush();
+    expect(left).toEqual(['c']);
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    expect(r.lobby('b').participants.map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    expect(r.lobby('b').away).toEqual([]);
+    expect(r.lobby('b').start).toMatchObject({ players: ['a', 'h', 'b'], waitsFor: null });
+    // The place is free at once.
+    const e = await r.join('e');
+    expect(e.refused).toBeNull();
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b', 'e']);
+    // The one who left does not come back by itself when its link closes.
+    await r.cut('c');
+    await r.tick(60_000);
+    expect(r.events['c']?.filter((x) => x.startsWith('reconnect') || x === 'rejoining')).toEqual([]);
+    await r.tick(4000);
+    expect(r.host.state.playerOrder).toEqual(['a', 'h', 'b']);
+    // A player who leaves during a game gives it up first; the others carry on.
+    expect(r.host.state.currentGrant?.grant.player).toBe('a');
+    client(r, 'a').leave();
+    await flush();
+    expect(r.host.log.entries().slice(-2).map((x) => x.message?.type)).toEqual(['FORFEIT', 'TURN_GRANT']);
+    expect(r.host.state.players['a']?.status).toBe('forfeit');
+    expect(r.host.state.paused).toBeNull();
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'b', 'e']);
+    await playGame(r);
+    expect(r.results['b']?.[0]?.result.entries.map((x) => [x.playerId, x.status])).toEqual([
+      ['a', 'forfeit'],
+      ['h', 'finished'],
+      ['b', 'finished'],
+    ]);
+    // The asker of a start leaves: the start is off, and everyone is told who.
+    client(r, 'e').requestStart({ newMatch: true });
+    await flush();
+    expect(r.lobby('b').start).toMatchObject({ by: 'e' });
+    client(r, 'e').leave();
+    await flush();
+    expect(r.lobby('b').start).toBeNull();
+    expect(r.lobby('b').startOff).toBe('E left the lobby: the start is off.');
+  });
+
+  it('a member whose Castcade started again says HELLO afresh while its place is kept: taken as that member when the HELLO is signed with the row`s key', async () => {
+    const r = await starLobby(['a', 'b'], { stances: { a: 'watch' } });
+    // Every HELLO of a lobby's client is signed.
+    const first = r.sent('a', 'h')[0];
+    if (first?.type !== 'HELLO' || first.payload.proof === undefined) throw new Error('the HELLO carries no proof');
+    r.host.startMatch(['h', 'b']);
+    await flush();
+    await r.cut('a');
+    await r.tick(5000);
+    expect(r.lobby('b').away).toEqual(['a']);
+    const back: string[] = [];
+    const refused: string[] = [];
+    r.host.on('reconnected', (x) => back.push(`${x.playerId} ${x.entries}`));
+    r.host.on('refused', (x) => refused.push(x.refuse.code));
+    const keys = r.keys['a'];
+    if (!keys) throw new Error('no keys');
+    const hello = (seq: number, signer = keys, key = keys.publicKeyB64): AnyMessage =>
+      buildMessage(
+        'HELLO',
+        { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.51', throwdownCode: 'JHDFEF', participant: { playerId: 'a', displayName: 'A', publicKey: key, rig: 'vr_headset' }, game: TABLE, stance: 'play', proof: signCanonical(helloProofBody('JHDFEF', 'a', seq), signer.privateKey) },
+        { matchId: null, seq, from: 'a', ts: r.clock.now() },
+      );
+    // Signed with another key, or with the right key for a counter that was already taken: refused, the row untouched.
+    const other = generateKeys();
+    r.host.handle('a', hello(9_000_000, other));
+    r.host.handle('a', hello(9_000_001, other, other.publicKeyB64));
+    r.host.handle('a', hello(1));
+    await flush();
+    expect(refused).toEqual(['duplicate_player', 'duplicate_player', 'duplicate_player']);
+    expect(back).toEqual([]);
+    expect(r.host.stanceOf('a')).toBe('watch');
+    expect(r.lobby('b').away).toEqual(['a']);
+    // The member's own: taken. The row is theirs, with what the new HELLO says; the open match's log follows.
+    const from = r.frames.length;
+    const own = hello(9_000_002);
+    r.host.handle('a', own);
+    await flush();
+    expect(back).toEqual(['a 0']);
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a', 'b']);
+    expect(r.lobby('b').away).toEqual([]);
+    expect(r.host.stanceOf('a')).toBe('play');
+    expect(r.lobby('b').participants.find((p) => p.playerId === 'a')?.rig).toBe('vr_headset');
+    expect(r.sent('h', 'a', from).map((m) => m.type)).toEqual(['HELLO_ACK', 'MATCH_LOG']);
+    // The same frame a second time is not.
+    r.host.handle('a', own);
+    await flush();
+    expect(refused.slice(-1)).toEqual(['duplicate_player']);
+    expect(back).toEqual(['a 0']);
+  });
+
+  it('a counter that fell behind is no reason to stay out: `stale_seq` says where it stands, and the member comes back above it', async () => {
+    const r = await starLobby(['a', 'b']);
+    // The lobby's PC has taken a higher `seq` from A than A's engine will use next (a Castcade started again without its counter).
+    const floor = 5_000_000_000_000;
+    expect(r.host.session.checkSeq('a', floor)).toBe(true);
+    await r.cut('a');
+    await r.tick(5000);
+    const from = r.frames.length;
+    const at = r.events['a']?.length ?? 0;
+    await r.mend('a');
+    await r.tick(1000);
+    const acks = r.sent('h', 'a', from).filter((m) => m.type === 'RECONNECT_ACK');
+    expect(acks.map((m) => m.type === 'RECONNECT_ACK' && [m.payload.accept, m.payload.code, m.payload.seqAbove])).toEqual([
+      [false, 'stale_seq', floor],
+      [true, null, undefined],
+    ]);
+    expect(r.events['a']?.slice(at)).toEqual(['reconnectRejected stale_seq', 'reconnected 0 quiet']);
+    expect(r.lobby('b').away).toEqual([]);
+    // The counter moved forward only, on both sides; what A says next is taken.
+    expect(r.host.session.lastSeqFrom('a')).toBeGreaterThan(floor);
+    expect(client(r, 'a').setStance('watch')).toBe(true);
+    await flush();
+    expect(r.host.stanceOf('a')).toBe('watch');
+    expect(r.rejects).toEqual([]);
+  });
+
+  it('a member who was away when the lobby closed is told so when it returns', async () => {
+    const r = await starLobby(['a', 'b']);
+    await r.cut('b');
+    await r.tick(5000);
+    r.host.closeLobby('good night');
+    await flush();
+    expect(r.events['a']?.slice(-1)).toEqual(['lobbyClosed']);
+    expect(client(r, 'b').hostAway()).not.toBeNull();
+    const closed: string[] = [];
+    client(r, 'b').on('lobbyClosed', (x) => closed.push(x.reason));
+    await r.mend('b');
+    expect(closed).toEqual(['good night']);
+    expect(client(r, 'b').hostAway()).toBeNull();
+    expect(client(r, 'b').matchEnded).toBe(true);
+    const n = r.events['b']?.length;
+    await r.tick(21 * MIN);
+    expect(r.events['b']?.length).toBe(n);
+  });
+});
+
+describe('A17 step 6, the review of 2026-11-25: the clocks, and the lobby`s PC cut off', () => {
+  it('the lobby`s PC cut off for 4 s during a member`s ball: nobody is paused at second 5, and nobody at second 8 when the member is back by then', async () => {
+    const r = await starLobby(['a', 'b'], { stances: { b: 'watch' } });
+    const left: string[] = [];
+    const own: (readonly string[])[] = [];
+    r.host.on('peerLeft', (p) => left.push(p));
+    r.host.on('lobby', (ack) => own.push(ack.away ?? []));
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    r.host.setCutOff(true);
+    await r.cut('a');
+    await r.cut('b');
+    await r.tick(4000);
+    r.host.setCutOff(false);
+    // Second 5: the members' first grace would have ended here. It was held, and began again at second 4.
+    await r.tick(1000);
+    expect(left).toEqual([]);
+    expect(r.host.state.paused).toBeNull();
+    expect(own.every((away) => away.length === 0)).toBe(true);
+    await r.relink('a');
+    await r.relink('b');
+    // Second 8 and after: both are back; nobody was told anything, and nothing is paused.
+    await r.tick(10_000);
+    expect(left).toEqual([]);
+    expect(r.host.state.paused).toBeNull();
+    expect(r.host.log.entries().filter((e) => e.message?.type === 'PAUSE')).toEqual([]);
+    expect(own.every((away) => away.length === 0)).toBe(true);
+    expect(r.lobby('b').away).toEqual([]);
+    // A member that is not back when the new grace is over is away then, counted from the return of the lobby's PC.
+    r.host.setCutOff(true);
+    await r.cut('b');
+    await r.tick(60_000);
+    r.host.setCutOff(false);
+    await r.tick(4999);
+    expect(left).toEqual([]);
+    await r.tick(1);
+    expect(left).toEqual(['b']);
+  });
+
+  it('a game that ends while the lobby`s PC is cut off waits for the signatures it would have waited for; no timeout runs against a player meanwhile', async () => {
+    const r = await starLobby(['a'], { balls: 1 });
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    client(r, 'a').reportBallEnd(10, 'script');
+    await flush();
+    // The lobby PC's own ball is the last of the game, and it ends while the relay is away.
+    r.host.setCutOff(true);
+    await r.cut('a');
+    r.host.localBallEnd(20, 'nvram');
+    await flush();
+    expect(r.host.state.phase).toBe('ended');
+    // Not at once with nobody's signature, and not after the ten seconds of the log-sign wait either.
+    await r.tick(5 * MIN);
+    expect(r.host.resultOut).toBe(false);
+    r.host.setCutOff(false);
+    await r.relink('a');
+    await flush();
+    expect(r.host.resultOut).toBe(true);
+    expect(r.results['a']?.map((x) => [x.result.signatures.map((s) => s.playerId), x.logMatches])).toEqual([[['a'], true]]);
+    // The ball-end timeout (20 minutes) does not run against a player the lobby's PC cannot hear.
+    const q = await starLobby(['a']);
+    q.host.startMatch(['a', 'h']);
+    await flush();
+    await q.tick(15 * MIN);
+    q.host.setCutOff(true);
+    await q.cut('a');
+    await q.tick(10 * MIN);
+    // (Twenty-five minutes since the grant by now.)
+    expect(q.host.state.paused).toBeNull();
+    q.host.setCutOff(false);
+    await q.relink('a');
+    // From zero when it is back: not after the five minutes that were left, but after twenty.
+    await q.tick(19 * MIN);
+    expect(q.host.state.paused).toBeNull();
+    await q.tick(MIN);
+    expect(q.host.state.paused).toEqual({ reason: 'ball_end_timeout', player: 'a' });
+  });
+
+  it('End their ball passes the turn at the score the shell gives; a question that is no longer open says so', async () => {
+    const r = await starLobby(['a', 'b'], { balls: 2, stances: { b: 'watch' }, lobby: { stillSeen: () => true } });
+    const asked: string[] = [];
+    r.host.on('awayQuestion', (x) => asked.push(`asked ${x.player}`));
+    r.host.on('awayQuestionOff', (x) => asked.push(`off ${x.player}`));
+    r.host.startMatch(['a', 'h']);
+    await flush();
+    client(r, 'a').reportState({ ballNumber: 1, score: 123_456, ballInPlay: true, tilt: false });
+    await flush();
+    await r.cut('a');
+    await r.tick(5000);
+    await r.tick(3 * MIN);
+    expect(asked).toEqual(['asked a']);
+    // The score as it stands is the shell's to give (it has A's last STATE); without it the pass would be at 0.
+    expect(r.host.answerAway('a', 'end_ball', 123_456)).toBe(true);
+    await flush();
+    const pass = r.host.log.entries().find((e) => e.message?.type === 'TURN_PASS')?.message;
+    expect(pass?.type === 'TURN_PASS' && [pass.payload.player, pass.payload.score]).toEqual(['a', 123_456]);
+    expect(r.host.state.players['a']).toMatchObject({ score: 123_456, ballsPlayed: 1 });
+    // An answer is not a question going stale.
+    expect(asked).toEqual(['asked a']);
+    // Asked again at A's next turn (A is still seen, but holds no grant: forfeited by the clock)... so make A up again.
+    r.host.localBallEnd(10, 'nvram');
+    await flush();
+    expect(r.host.state.paused).toEqual({ reason: 'disconnect', player: 'a' });
+    // A comes back while nobody has been asked: nothing to withdraw.
+    await r.mend('a');
+    client(r, 'a').resume();
+    await flush();
+    expect(client(r, 'a').myGrant?.ballNumber).toBe(2);
+    expect(asked).toEqual(['asked a']);
+    // Up, away, asked about; and then back before the owner answers: the question is withdrawn.
+    await r.cut('a');
+    await r.tick(5000);
+    await r.tick(3 * MIN);
+    expect(asked).toEqual(['asked a', 'asked a']);
+    expect(r.host.waitedFor()).toMatchObject({ player: 'a', asked: true });
+    await r.mend('a');
+    client(r, 'a').resume();
+    await flush();
+    expect(asked).toEqual(['asked a', 'asked a', 'off a']);
+    expect(r.host.waitedFor()).toBeNull();
+    expect(r.host.answerAway('a', 'play_on')).toBe(false);
+    expect(r.host.state.players['a']?.status).toBe('playing');
+  });
+
+  it('the place clock took a finished player`s row: that game`s RESULT does not wait for their signature', async () => {
+    const r = await starLobby(['a', 'b']);
+    r.host.startMatch(['b', 'a', 'h']);
+    await flush();
+    client(r, 'b').reportBallEnd(500, 'script');
+    await flush();
+    // B's game is over; B drops, and the place runs out while A takes a long ball.
+    await r.cut('b');
+    await r.tick(5000);
+    await r.tick(3 * MIN);
+    expect(r.host.members().map((p) => p.playerId)).toEqual(['h', 'a']);
+    client(r, 'a').reportBallEnd(20, 'script');
+    await flush();
+    r.host.localBallEnd(30, 'nvram');
+    await flush();
+    await flush();
+    // At once: not after the ten seconds the lobby's PC waits for a signature that can still come.
+    expect(r.host.resultOut).toBe(true);
+    expect(r.results['a']?.[0]?.result.signatures.map((s) => s.playerId)).toEqual(['a']);
+    expect(r.results['a']?.[0]?.result.winner).toBe('b');
   });
 });

@@ -28,6 +28,17 @@ export const OTHER_GAME: GameFingerprint = { ...TABLE, tableName: 'Congo (Willia
 /** No table open: what a PC says before its VPX has loaded one. */
 export const NO_TABLE: GameFingerprint = { kind: 'vpx', tableName: 'none', tableHash: '0'.repeat(64), romName: null, romHash: null, physicsHash: null, recipeVersion: null, sidecarHash: null, emulatorVersion: '' };
 
+/**
+ * `TapTransport` whose `closePeer` closes one link and not the peer for good: what a socket transport does when the
+ * engine refuses a first frame. The frames already sent on the link arrive first (a socket delivers, then closes),
+ * then both ends see the link drop, and the peer may open a new one.
+ */
+class StarTap extends TapTransport {
+  override closePeer(peer: PlayerId): void {
+    setImmediate(() => this.cut(peer));
+  }
+}
+
 export interface StarRig {
   bus: MemoryBus;
   clock: ManualClock;
@@ -51,8 +62,13 @@ export interface StarRig {
   join(id: string, opts?: { stance?: Stance; game?: GameFingerprint; ballEndReady?: boolean }): Promise<ClientMatch>;
   /** The link between a member and the lobby's PC drops; it cannot be made again until `mend`. */
   cut(id: string): Promise<void>;
-  /** The link can be made again: the member's next attempt (one second on the clock) gets through. */
+  /** The link can be made again: the clock moves, a second at a time, until the member's next attempt got through. */
   mend(id: string): Promise<void>;
+  /**
+   * The lobby's PC is back on the relay and tells the member to open its link again (the relay transport's RELINK):
+   * the member's link "drops" once more, which starts its attempts afresh, and the first of them gets through.
+   */
+  relink(id: string): Promise<void>;
   /** Let every frame land, move the clock, and let what that caused land too. */
   tick(ms: number): Promise<void>;
   /** The frames `by` sent to `to`, decoded, from index `from` of `frames` on. */
@@ -79,7 +95,7 @@ export async function starLobby(clientIds: string[], opts: StarOptions = {}): Pr
   const clock = new ManualClock();
   const taps = new Map<PlayerId, TapTransport>();
   const frames: RecordedFrame[] = [];
-  const tap = (id: PlayerId): TapTransport => new TapTransport(bus.transport(id), bus, taps, frames);
+  const tap = (id: PlayerId): TapTransport => new StarTap(bus.transport(id), bus, taps, frames);
   const hostKeys = generateKeys();
   const grace = opts.grace ?? 5000;
   const host = new HostMatch({
@@ -170,6 +186,19 @@ export async function starLobby(clientIds: string[], opts: StarOptions = {}): Pr
       const t = taps.get(id);
       if (!t) throw new Error(`no link for ${id}`);
       t.unreachable = false;
+      // The member's next attempt: a second away at first, further apart after several that failed (half a minute at most).
+      for (let i = 0; i < 31; i++) {
+        clock.advance(1000);
+        await flush();
+        if (r.clients[id]?.hostAway() === null) break;
+      }
+    },
+    async relink(id) {
+      const t = taps.get(id);
+      if (!t) throw new Error(`no link for ${id}`);
+      t.unreachable = false;
+      t.cut('h');
+      await flush();
       clock.advance(1000);
       await flush();
     },

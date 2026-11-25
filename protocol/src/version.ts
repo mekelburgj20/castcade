@@ -53,5 +53,8 @@
  * all behind the same option. On the wire it adds HELLO_ACK `startOff` (optional) and two RECONNECT_ACK codes
  * (`protocol_version`, `stale_seq`) that only a lobby sends; a lobby's RECONNECT signs another body (with the
  * lobby's code and the envelope's `seq`), which a host without a lobby is never sent. Still 6.
+ * The review of steps 5 and 6 (same day): LEAVE_LOBBY (a lobby's client only); HELLO `proof` (optional, a lobby's
+ * client only); RECONNECT_ACK `closed` and `seqAbove` (optional, a lobby's host only); HELLO_ACK `startOff` up to
+ * 500 characters. None of them is in a frame of a match without a lobby. Still 6.
  */
 export const PROTOCOL_VERSION = 6 as const;

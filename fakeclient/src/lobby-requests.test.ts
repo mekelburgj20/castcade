@@ -174,21 +174,22 @@ describe('lobby scenarios: links that drop (A17 step 6)', () => {
     expect(run.outcomes['p2']?.sent['RESUME']).toBe(1);
   });
 
-  it('lobby-rejoin-other-match: back during the next match: `restart`, the old log put away, the open one whole', async () => {
+  it('lobby-rejoin-other-match: back during the next match: the old match brought to its end, then the open one whole', async () => {
     const scenario = loadScenario('lobby-rejoin-other-match');
     const l = links(scenario);
     const run = await runLobbyScenario(scenario, l.opts);
     expect(lobbyProblems(run)).toEqual([]);
     const w = run.outcomes['p3'];
     const acks = l.frames.filter((f) => f.by === 'p1' && f.to === 'p3').map((f) => JSON.parse(f.frame) as AnyMessage).filter((m) => m.type === 'RECONNECT_ACK');
-    expect(acks.map((m) => m.type === 'RECONNECT_ACK' && [m.payload.accept, m.payload.restart, m.payload.match, m.payload.entries.length])).toEqual([[true, true, 'REJOIN-2', 0]]);
+    expect(acks.map((m) => m.type === 'RECONNECT_ACK' && [m.payload.accept, m.payload.closed, m.payload.match])).toEqual([[true, true, 'REJOIN-2']]);
+    // The match it was away for ended as it ended for everyone: the real MATCH_END, the same RESULT, the same log.
     expect(w?.matches.map((m) => [m.matchId, m.end?.reason])).toEqual([
-      ['REJOIN-1', 'the match ended while this PC was away'],
+      ['REJOIN-1', 'match 1 is over'],
       ['REJOIN-2', 'match 2 is over'],
     ]);
     expect(w?.caughtUp.map((c) => c.match)).toEqual(['REJOIN-2']);
-    // Its log of the first match is the part it saw; of the second, everyone's.
-    expect(w?.matches[0]?.head?.length).toBeLessThan(run.outcomes['p1']?.matches[0]?.head?.length ?? 0);
+    expect(w?.matches[0]?.head).toEqual(run.outcomes['p1']?.matches[0]?.head);
+    expect(w?.matches[0]?.results.map((r) => r.result)).toEqual(run.outcomes['p1']?.matches[0]?.results.map((r) => r.result));
     expect(w?.matches[1]?.head).toEqual(run.outcomes['p1']?.matches[1]?.head);
     expect(w?.matches[1]?.results.map((r) => [r.logMatches, r.signatureValid])).toEqual([[true, true]]);
   });

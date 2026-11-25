@@ -171,6 +171,11 @@
         "play",
         "watch"
       ]
+    },
+    "proof": {
+      "description": "A17: the sender's signature over canonicalJson({hello: true, lobby, player, seq}) with the key in `participant.publicKey`: the lobby's code, its player id, and this envelope's own `seq`. A lobby that still holds a place for that player with that key takes the HELLO as that member's return when the signature verifies and the `seq` is above the last it took from them; without it such a HELLO is refused (`duplicate_player`). Ignored for a player the lobby holds no place for.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9+/]+={0,2}$"
     }
   },
   "required": [

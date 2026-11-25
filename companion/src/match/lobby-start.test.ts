@@ -152,8 +152,9 @@ describe('A17 step 6: the checks of a start (design 11.4), at the request', () =
     expect(r.host.resultOut).toBe(false);
     client(r, 'b').requestStart();
     await flush();
-    expect(start(r, 'b')).toEqual({ by: 'b', players: ['b', 'h'], newMatch: false, waitsFor: 'result', waitsOn: [], leftMs: null });
-    // The grace runs out: the RESULT goes without A, and the countdown begins by itself.
+    // A is inside the grace, so A is still counted: the next game is for all three, the asker first.
+    expect(start(r, 'b')).toEqual({ by: 'b', players: ['b', 'a', 'h'], newMatch: false, waitsFor: 'result', waitsOn: [], leftMs: null });
+    // The grace runs out: A is away and out of the start, the RESULT goes without A, and the countdown begins by itself.
     await r.tick(5000);
     expect(r.host.resultOut).toBe(true);
     expect(start(r, 'b')).toMatchObject({ by: 'b', players: ['b', 'h'], waitsFor: null, leftMs: 5000 });
@@ -622,5 +623,175 @@ describe('A17 step 6: the lobby`s table is a pick (design 11.5)', () => {
     const late = await q.join('late', { game: OTHER_GAME });
     expect(late.refused).toBeNull();
     expect(q.lobby('a').otherTable).toEqual(['late']);
+  });
+});
+
+describe('A17 step 6, the review of 2026-11-25: starts', () => {
+  it('a start that waited for a table is refused for two tables that cannot report ball ends: every panel is told the sentence', async () => {
+    const r = await starLobby(['mekelburgj', 'chuckribbits'], { tables: { h: NO_TABLE }, lobby: { table: TABLE }, ballEndReady: { mekelburgj: false, chuckribbits: false } });
+    const errors: string[] = [];
+    r.host.on('engineError', (x) => errors.push(`${x.where}: ${x.error.message}`));
+    expect(r.host.requestStart()).toBeNull();
+    await flush();
+    expect(start(r, 'mekelburgj')).toMatchObject({ waitsFor: 'tables', waitsOn: ['h'] });
+    // The table of the lobby's PC opens: the next check refuses, with a sentence that names both (over 200 characters).
+    r.host.updateLocal({ game: TABLE });
+    await flush();
+    const words = "MEKELBURGJ and CHUCKRIBBITS's table cannot report ball ends (not patched, an original table, or a machine whose ball ends cannot be read). Start anyway: each of their balls is then ended with End my ball.";
+    expect(words.length).toBeGreaterThan(200);
+    for (const id of ['mekelburgj', 'chuckribbits']) {
+      expect(start(r, id), id).toBeNull();
+      expect(r.lobby(id).startOff, id).toBe(words);
+      expect(r.lobby(id).loading, id).toEqual([]);
+    }
+    expect(r.host.announcedStart()).toBeNull();
+    expect(errors).toEqual([]);
+    // The same sentence to a member who asks; and with the confirmation it starts.
+    client(r, 'chuckribbits').requestStart();
+    await flush();
+    // (The asker comes first in their own start, so they are named first.)
+    expect(r.said['chuckribbits']).toEqual([words.replace('MEKELBURGJ and CHUCKRIBBITS', 'CHUCKRIBBITS and MEKELBURGJ')]);
+    client(r, 'chuckribbits').requestStart({ anyway: true });
+    await countDown(r);
+    expect(r.host.state.playerOrder).toEqual(['chuckribbits', 'h', 'mekelburgj']);
+  });
+
+  it('nothing thrown inside the engine leaves a transport`s handler or a timer: it is reported, and the lobby goes on', async () => {
+    const r = await starLobby(['a', 'b'], { stances: { b: 'watch' } });
+    const errors: string[] = [];
+    r.host.on('engineError', (x) => errors.push(`${x.where}: ${x.error.message}`));
+    // A listener of this engine's own events that throws (a shell's bug) while a frame is handled, and in a timer.
+    let broken = true;
+    r.host.on('participantUpdated', () => {
+      if (broken) throw new Error('a listener threw');
+    });
+    r.host.on('memberRemoved', () => {
+      throw new Error('a listener threw in a timer');
+    });
+    client(r, 'a').updateParticipant({ rig: 'vr_headset' });
+    await flush();
+    expect(errors).toEqual(['a PARTICIPANT_UPDATE: a listener threw']);
+    broken = false;
+    client(r, 'a').updateParticipant({ rig: 'pc' });
+    await flush();
+    expect(r.lobby('b').participants.find((p) => p.playerId === 'a')?.rig).toBe('pc');
+    await r.cut('b');
+    await r.tick(5000);
+    expect(() => r.clock.advance(3 * 60_000)).not.toThrow();
+    expect(errors.slice(1)).toEqual(['the end of a place: a listener threw in a timer']);
+    // And the same on a client.
+    const clientErrors: string[] = [];
+    client(r, 'a').on('engineError', (x) => clientErrors.push(`${x.where}: ${x.error.message}`));
+    client(r, 'a').on('roster', () => {
+      throw new Error('a client listener threw');
+    });
+    r.host.updateLocal({ rig: 'vr_headset' });
+    await flush();
+    expect(clientErrors).toEqual(['a HELLO_ACK: a client listener threw']);
+  });
+
+  it('a player`s link blinks across the countdown`s end: the match starts with them once they are back', async () => {
+    const r = await starLobby(['a', 'b']);
+    client(r, 'a').requestStart();
+    await r.tick(4000);
+    await r.cut('b');
+    await r.tick(1000);
+    // The countdown has run out; B is inside the grace: the start is held, with B in it, and nothing has started.
+    expect(r.host.state.phase).toBe('lobby');
+    expect(r.host.announcedStart()).toEqual({ by: 'a', players: ['a', 'h', 'b'], newMatch: true, waitsFor: null, waitsOn: [], leftMs: 0 });
+    expect(start(r, 'a')).toMatchObject({ players: ['a', 'h', 'b'], waitsFor: null, leftMs: 0 });
+    await r.mend('b');
+    expect(r.host.state.matchId).toBe('JHDFEF-1');
+    expect(r.host.state.playerOrder).toEqual(['a', 'h', 'b']);
+    expect(client(r, 'b').log.head()).toEqual(r.host.log.head());
+    expect(r.events['b']?.filter((e) => e.startsWith('ready'))).toEqual(['ready JHDFEF-1']);
+    // The same blip, and the player does not come back: when the grace is over the match starts without them.
+    const q = await starLobby(['a', 'b']);
+    client(q, 'a').requestStart();
+    await q.tick(4000);
+    await q.cut('b');
+    await q.tick(1000);
+    expect(q.host.state.phase).toBe('lobby');
+    await q.tick(3999);
+    expect(q.host.state.phase).toBe('lobby');
+    await q.tick(1);
+    expect(q.host.state.playerOrder).toEqual(['a', 'h']);
+    expect(q.lobby('a').away).toEqual(['b']);
+  });
+
+  it('the starter is the same person during a member`s grace', async () => {
+    const r = await starLobby(['a', 'b'], { stances: { h: 'watch' } });
+    expect(r.host.starter()).toBe('a');
+    await r.cut('a');
+    await r.tick(2000);
+    // A blip: A is still the starter and still counted; a start asked now is for both.
+    expect(r.host.starter()).toBe('a');
+    expect(r.host.playSet()).toEqual(['a', 'b']);
+    client(r, 'b').requestStart();
+    await flush();
+    expect(start(r, 'b')).toMatchObject({ by: 'b', players: ['b', 'a'] });
+    await r.mend('a');
+    expect(r.lobby('b').starter).toBe('a');
+    expect(start(r, 'a')).toMatchObject({ by: 'b', players: ['b', 'a'] });
+    r.host.cancelStart();
+    // Away for longer than the grace: now the turn to start is the next person's.
+    await r.cut('a');
+    await r.tick(5000);
+    expect(r.lobby('b').starter).toBe('b');
+    expect(r.host.playSet()).toEqual(['b']);
+  });
+
+  it('the lobby PC`s own blip does not cancel a countdown', async () => {
+    const r = await starLobby(['a', 'b']);
+    const off: string[] = [];
+    r.host.on('startOff', (x) => off.push(x.reason));
+    client(r, 'a').requestStart();
+    await r.tick(3000);
+    // The lobby's PC loses the relay: every member's link drops with it.
+    r.host.setCutOff(true);
+    await r.cut('a');
+    await r.cut('b');
+    await r.tick(4000);
+    // The countdown has run out meanwhile: nothing started, nothing was cancelled, nobody is away.
+    expect(r.host.state.phase).toBe('lobby');
+    expect(r.host.announcedStart()).toMatchObject({ by: 'a', players: ['a', 'h', 'b'], waitsFor: null, leftMs: 0 });
+    expect(off).toEqual([]);
+    r.host.setCutOff(false);
+    await r.relink('a');
+    expect(r.host.state.phase).toBe('lobby');
+    await r.relink('b');
+    expect(r.host.state.playerOrder).toEqual(['a', 'h', 'b']);
+    expect(off).toEqual([]);
+    expect(r.lobby('a').startOff).toBeUndefined();
+    expect(client(r, 'a').myGrant?.player).toBe('a');
+  });
+
+  it('the starter whose table game is not the match`s is told so', async () => {
+    const r = await starLobby(['a', 'b'], { stances: { h: 'watch' } });
+    client(r, 'b').requestStart();
+    await flush();
+    expect(start(r)).toMatchObject({ by: 'b', players: ['b', 'a'] });
+    // H sets themselves to Play: first in the lobby's order, so the starter; but this start was asked without them.
+    r.host.updateLocal({ stance: 'play' });
+    await flush();
+    expect(r.lobby('a').starter).toBe('h');
+    expect(r.host.requestStart({ fromTable: true })).toBe('A match is starting without you: the game on your table is your own.');
+    expect(r.host.announcedStart()).toMatchObject({ by: 'b', players: ['b', 'a'] });
+    await countDown(r);
+    expect(r.host.state.playerOrder).toEqual(['b', 'a']);
+  });
+
+  it('a waiting start asked by a watcher is off when the watcher goes away', async () => {
+    const r = await starLobby(['a', 'b', 'c'], { stances: { c: 'watch' } });
+    client(r, 'a').updateParticipant({ ownGame: true });
+    client(r, 'c').requestStart();
+    await flush();
+    expect(start(r, 'b')).toMatchObject({ by: 'c', players: ['h', 'a', 'b'], waitsFor: 'own_games', waitsOn: ['a'] });
+    await r.cut('c');
+    await r.tick(4999);
+    expect(start(r, 'b')).not.toBeNull();
+    await r.tick(1);
+    expect(start(r, 'b')).toBeNull();
+    expect(r.lobby('b').startOff).toBe('C is away: the start is off.');
   });
 });

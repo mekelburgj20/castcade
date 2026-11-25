@@ -40,7 +40,8 @@
         "END_REQUEST",
         "TABLE_PICK",
         "LOBBY_CLOSED",
-        "MATCH_LOG"
+        "MATCH_LOG",
+        "LEAVE_LOBBY"
       ]
     },
     "matchId": {

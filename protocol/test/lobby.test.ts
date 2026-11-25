@@ -31,9 +31,9 @@ const entry = (index: number) => ({ index, prevHash: hex64, ts: 5, kind: 'msg' a
 describe('A17: the lobby in the schemas, on protocol 6', () => {
   it('the version did not change, and the six new types have a direction', () => {
     expect(PROTOCOL_VERSION).toBe(6);
-    const added = ['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LOBBY_CLOSED', 'MATCH_LOG'] as const;
+    const added = ['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LOBBY_CLOSED', 'MATCH_LOG', 'LEAVE_LOBBY'] as const;
     for (const t of added) expect(MESSAGE_TYPES).toContain(t);
-    expect(added.map((t) => MESSAGE_DIRECTION[t])).toEqual(['client->host', 'client->host', 'client->host', 'client->host', 'host->all', 'host->client']);
+    expect(added.map((t) => MESSAGE_DIRECTION[t])).toEqual(['client->host', 'client->host', 'client->host', 'client->host', 'host->all', 'host->client', 'client->host']);
     expect(Stance.options).toEqual(['play', 'watch']);
   });
 
@@ -48,6 +48,7 @@ describe('A17: the lobby in the schemas, on protocol 6', () => {
     expect(Object.keys(end.payload)).toEqual(['games', 'reason']);
     const reconnect = buildMessage('RECONNECT', { player: 'p1', logHash: hex64, logLength: 0, signature: b64sig }, at);
     expect(Object.keys(reconnect.payload)).toEqual(['player', 'logHash', 'logLength', 'signature']);
+    expect(Object.keys(hello.payload)).not.toContain('proof');
     const back = buildMessage('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: hex64, logLength: 0 }, at);
     expect(Object.keys(back.payload)).toEqual(['accept', 'code', 'entries', 'logHash', 'logLength']);
     // And each of those, on the wire and back, is the same text.
@@ -139,7 +140,9 @@ describe('A17: the lobby in the schemas, on protocol 6', () => {
     expect(decodeFrame(encodeFrame(off))).toEqual(off);
     expect(off.payload.startOff).toBe('Krobs cancelled the start.');
     expect(Object.keys(buildMessage('HELLO_ACK', base, { ...at, matchId: null }).payload)).not.toContain('startOff');
-    expect(() => buildMessage('HELLO_ACK', { ...base, startOff: 'x'.repeat(201) }, { ...at, matchId: null })).toThrow(ProtocolError);
+    // As long as a REJECT's sentence may be (500): the refusal of a start names people, and names can be long.
+    expect(buildMessage('HELLO_ACK', { ...base, startOff: 'x'.repeat(500) }, { ...at, matchId: null }).payload.startOff).toHaveLength(500);
+    expect(() => buildMessage('HELLO_ACK', { ...base, startOff: 'x'.repeat(501) }, { ...at, matchId: null })).toThrow(ProtocolError);
     for (const code of ['stale_seq', 'protocol_version'] as const) {
       const no = buildMessage('RECONNECT_ACK', { accept: false, code, entries: [], logHash: '0'.repeat(64), logLength: 0 }, at);
       expect(decodeFrame(encodeFrame(no))).toEqual(no);
@@ -148,6 +151,22 @@ describe('A17: the lobby in the schemas, on protocol 6', () => {
     // The lobby's answer that puts a member's log away: no match, or another one, and no log in the answer itself.
     const restart = buildMessage('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: '0'.repeat(64), logLength: 0, match: null, restart: true }, at);
     expect([restart.payload.restart, restart.payload.match]).toEqual([true, null]);
+  });
+
+  it('the review of step 6: Leave lobby, a signed HELLO, and the two keys of a lobby`s RECONNECT_ACK', () => {
+    const leave = buildMessage('LEAVE_LOBBY', {}, at);
+    expect(decodeFrame(encodeFrame(leave))).toEqual(leave);
+    expect(leave.payload).toEqual({});
+    const hello = buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.51', throwdownCode: 'JHDFEF', participant, game: fingerprint, stance: 'play', proof: b64sig }, { ...at, matchId: null });
+    expect(decodeFrame(encodeFrame(hello))).toEqual(hello);
+    expect(() => buildMessage('HELLO', { protocolVersion: PROTOCOL_VERSION, companionVersion: '0.2.51', throwdownCode: 'JHDFEF', participant, game: fingerprint, proof: 'not base64 !' }, { ...at, matchId: null })).toThrow(ProtocolError);
+    // The match the member held is over: the answer brings it to its end, and says so.
+    const closed = buildMessage('RECONNECT_ACK', { accept: true, code: null, entries: [entry(4)], logHash: hex64, logLength: 5, match: null, closed: true }, at);
+    expect(decodeFrame(encodeFrame(closed))).toEqual(closed);
+    // A counter that fell behind: where the lobby's stands.
+    const stale = buildMessage('RECONNECT_ACK', { accept: false, code: 'stale_seq', entries: [], logHash: '0'.repeat(64), logLength: 0, seqAbove: 1_795_000_000_123 }, at);
+    expect(decodeFrame(encodeFrame(stale))).toEqual(stale);
+    expect(() => buildMessage('RECONNECT_ACK', { accept: false, code: 'stale_seq', entries: [], logHash: hex64, logLength: 0, seqAbove: -1 }, at)).toThrow(ProtocolError);
   });
 
   it('what a member asks of the lobby, and its end: START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LOBBY_CLOSED', () => {

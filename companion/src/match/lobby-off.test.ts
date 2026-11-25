@@ -27,14 +27,14 @@ interface Recorded {
 
 const recorded = JSON.parse(readFileSync(new URL('./lobby-off.frames.json', import.meta.url), 'utf8')) as Recorded[];
 /** What step 5 added to the protocol: none of it may be on the wire of a match played without a lobby. */
-const LOBBY_TYPES = ['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LOBBY_CLOSED', 'MATCH_LOG'];
+const LOBBY_TYPES = ['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LOBBY_CLOSED', 'MATCH_LOG', 'LEAVE_LOBBY'];
 const LOBBY_KEYS: Record<string, string[]> = {
-  HELLO: ['stance'],
+  HELLO: ['stance', 'proof'],
   PARTICIPANT_UPDATE: ['stance', 'noCopy', 'ownGame'],
   HELLO_ACK: ['stances', 'away', 'noCopy', 'ownGame', 'otherTable', 'tablePickedBy', 'ballsPerGame', 'starter', 'match', 'start'],
   MATCH_END: ['abandoned'],
   RECONNECT: ['match'],
-  RECONNECT_ACK: ['match', 'restart', 'more'],
+  RECONNECT_ACK: ['match', 'restart', 'more', 'closed', 'seqAbove'],
 };
 /**
  * Keys that OTHER work adds to the wire of a match without a lobby, each a defaulted key of its own item, said here

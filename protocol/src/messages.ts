@@ -119,6 +119,11 @@ export const Hello = z
     // A17 (2026-11-25): optional and never logged. Sent only to a lobby (the lobby is off until the build that makes
     // the protocol 7); a host that does not know it strips it.
     stance: Stance.optional().describe('A17: Play or Watch at the next start. Absent: play.'),
+    // A17 step 6, the review of 2026-11-25: optional, sent only to a lobby: a HELLO that says whose it is. A member
+    // whose Castcade started again says HELLO afresh while its place is still kept, and is taken back by it.
+    proof: Signature.optional().describe(
+      "A17: the sender's signature over canonicalJson({hello: true, lobby, player, seq}) with the key in `participant.publicKey`: the lobby's code, its player id, and this envelope's own `seq`. A lobby that still holds a place for that player with that key takes the HELLO as that member's return when the signature verifies and the `seq` is above the last it took from them; without it such a HELLO is refused (`duplicate_player`). Ignored for a player the lobby holds no place for.",
+    ),
   })
   .describe('client -> host. First message on a connection.');
 
@@ -166,7 +171,7 @@ const HelloAckLobby = {
   // to say it; without this key the others could only see that `start` is null again.
   startOff: z
     .string()
-    .max(200)
+    .max(500)
     .nullable()
     .optional()
     .describe('A17: on the one HELLO_ACK that takes an announced start away without starting anything: the sentence that says why ("Krobs cancelled the start."). Absent otherwise.'),
@@ -571,6 +576,17 @@ export const ReconnectAck = z
     match: MatchId.nullable().optional().describe('A17: the match that is open now; null: none. Absent: not said (no lobby).'),
     restart: z.boolean().optional().describe("A17: true: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG. Absent: false."),
     more: z.boolean().optional().describe('A17: true: `entries` holds only the first page (at most 100); the rest follows in MATCH_LOG, and the sender is current at its last page. Absent: false.'),
+    // A17 step 6, the review of 2026-11-25: two more optional keys, sent by a lobby only.
+    closed: z
+      .boolean()
+      .optional()
+      .describe("A17: true: the match the sender holds a log of (`RECONNECT.match`) ended while it was away, and is the last one the lobby closed: `entries` (and MATCH_LOG, with `more`) bring that log to its end, then that match's RESULTs and its MATCH_END follow as they were sent, and after them the lobby as it is now (the open match's log, if one is open, from entry 0). Nothing is reported into the closed match again. Absent: false."),
+    seqAbove: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("A17: with `stale_seq`: the last `seq` the lobby took from this member. The member's next RECONNECT carries a `seq` above it (signed, as every one is), so a counter that fell behind is no reason to stay out, and the counter itself is never moved back."),
   })
   .describe('host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection.');
 
@@ -592,6 +608,12 @@ export const EndRequest = z.object({}).describe('client -> host, in a lobby, bet
 export const TablePick = z
   .object({ game: GameFingerprint.describe("The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick.") })
   .describe("client -> host, in a lobby, outside a game. A member picks the lobby's table; answered by the HELLO_ACK that carries it (`hostGame`, `tablePickedBy`), or by REJECT.");
+
+// A17 step 6, the review of 2026-11-25: Leave lobby. Until this message a member could only drop their link, which
+// a lobby reads as "away" and keeps a place for.
+export const LeaveLobby = z
+  .object({})
+  .describe("client -> host, in a lobby. The sender leaves on purpose: its row goes at once (a game it is playing it gives up first), a start it was in is looked at again, and its place is free. Sent before the link closes; nothing answers it but the HELLO_ACK the others get. Never logged.");
 
 export const LobbyClosed = z
   .object({ reason: z.string().max(200) })
@@ -706,6 +728,7 @@ export const payloadSchemas = {
   TABLE_PICK: TablePick,
   LOBBY_CLOSED: LobbyClosed,
   MATCH_LOG: MatchLogPage,
+  LEAVE_LOBBY: LeaveLobby,
 } as const;
 
 export type MessageType = keyof typeof payloadSchemas;
@@ -746,4 +769,5 @@ export const MESSAGE_DIRECTION: Record<MessageType, 'client->host' | 'host->clie
   TABLE_PICK: 'client->host',
   LOBBY_CLOSED: 'host->all',
   MATCH_LOG: 'host->client',
+  LEAVE_LOBBY: 'client->host',
 };

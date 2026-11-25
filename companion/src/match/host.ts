@@ -114,9 +114,25 @@
  *     the last from that member (`stale_seq`). The same match and a known head: the entries after it, in pages;
  *     anything else: `restart`, and the open match's whole log in MATCH_LOG. A member whose place is gone is
  *     answered `unknown_player` and says HELLO again on the same link. Every answer names the head of the log it
- *     carries, a page of MATCH_LOG too. A refused RECONNECT never changes a member's standing.
+ *     carries, a page of MATCH_LOG too. What this lobby holds about a member (the row, the place, the counter)
+ *     does not change for a RECONNECT it refuses; which link is whose is the transport's.
  *   - **End match for everyone** (`endMatch` during a game, the lobby's PC only): no FORFEIT, no RESULT, the log
  *     stops where it is, MATCH_END says `abandoned`. A member's END_REQUEST ends a match between games.
+ * - A17 step 6, after the review of 2026-11-25 (still behind the option):
+ *   - **a member inside A18's grace is not away**: they are counted for a start and stay the starter (`canPlay`
+ *     reads `away`); a countdown that runs out while one of its players is inside the grace, or while this PC is
+ *     cut off, is held and judged when the grace has settled (`judgeStart`);
+ *   - **cut off**: every grace is held with no timer running and begins from zero when this PC is back; nobody is
+ *     away for it; the ball-end timeout and the wait for LOG_SIGN stand still as the clocks do (`setCutOff`);
+ *   - **Leave lobby** (LEAVE_LOBBY, `memberLeaves`): the row goes at once, after a FORFEIT for a game they play;
+ *   - **a member's own HELLO** while its place is kept (`HELLO.proof`, `returnsByHello`) is its return; `stale_seq`
+ *     says where the counter stands (`seqAbove`), and the member comes back above it;
+ *   - **the match that was closed last** is kept with its RESULTs and its MATCH_END: a member who was away gets the
+ *     rest of its log and both (`RECONNECT_ACK.closed`), so every PC ends a match with the same tally;
+ *   - a closed lobby answers a returning member with LOBBY_CLOSED; a player whose row is gone is not waited for
+ *     to sign; `answerAway` takes the score for "End their ball" and `awayQuestionOff` withdraws a question;
+ *   - a sentence that goes into a bounded key is cut where it is built, and in a lobby nothing thrown inside this
+ *     engine leaves a transport's handler or a timer (`guard`, `engineError`).
  */
 import {
   MATCH_LOG_PAGE_SIZE,
@@ -139,7 +155,7 @@ import type { Clock, TimerHandle } from './clock.js';
 import { Emitter } from './events.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { GENESIS_HASH, type LogHead, type MatchLog } from './log.js';
-import { lobbyReconnectSignBody, logSignBody, pickWinner, rankEntries, reconnectSignBody, seriesOf } from './result.js';
+import { helloProofBody, lobbyReconnectSignBody, logSignBody, pickWinner, rankEntries, reconnectSignBody, seriesOf } from './result.js';
 import { compareWithPick, pickOf, samePick, tableRelation } from './table-identity.js';
 import { Session } from './session.js';
 import {
@@ -376,6 +392,19 @@ export interface HostEvents extends Record<string, unknown> {
    * (keep waiting, end their ball, play on without them). Asked again after every "keep waiting".
    */
   awayQuestion: { player: PlayerId; waitedMs: number };
+  /**
+   * A17 step 6 (review): the question about `player` is no longer open and was not answered: they came back, the game
+   * went on some other way, or this PC was cut off (the clock starts from zero after it). `answerAway` is false now.
+   */
+  awayQuestionOff: { player: PlayerId };
+  /** A17 step 6 (review): a member left on purpose (LEAVE_LOBBY): their row is gone and their place is free. */
+  memberLeft: PlayerId;
+  /**
+   * A17 step 6 (review): in a lobby, something threw inside this engine while it handled a frame, a dropped link or
+   * one of its own timers (`where`). It is reported here and nowhere else: nothing is thrown out of a transport's
+   * handler or a timer, and the engine goes on. Without a lobby an error is thrown as it always was.
+   */
+  engineError: { where: string; error: Error };
 }
 
 /**
@@ -408,7 +437,11 @@ const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE'
 const ZERO_HASH = '0'.repeat(64);
 const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
 /** A17: what a member says to the lobby and not to a match: the envelope carries the lobby's code (the open match's id is taken too). */
-const LOBBY_TYPES: ReadonlySet<MessageType> = new Set(['PARTICIPANT_UPDATE', 'MEDIA_SIGNAL', 'START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK']);
+const LOBBY_TYPES: ReadonlySet<MessageType> = new Set(['PARTICIPANT_UPDATE', 'MEDIA_SIGNAL', 'START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LEAVE_LOBBY']);
+/** The longest sentence REJECT, REFUSE and HELLO_ACK `startOff` take (the schemas' limit); a sentence with names in it is cut to this where it is built. */
+const SENTENCE_MAX = 500;
+/** The longest reason FORFEIT, MATCH_END and LOBBY_CLOSED take. */
+const REASON_MAX = 200;
 /** A17: what only a player of the game being played may send; a watcher reports nothing and signs nothing. */
 const PLAYER_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'BALL_END', 'GAME_OVER', 'FORFEIT', 'PAUSE', 'RESUME', 'LOG_SIGN']);
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
@@ -487,8 +520,13 @@ export class HostMatch {
    * carries it.
    */
   private readonly catchUps = new Map<PlayerId, { next: number; restart: boolean; pages: number; from: number; timer: TimerHandle | null }>();
-  /** A17: the match that was closed last, with its log as it stood. */
-  private lastMatch: { matchId: string; log: MatchLog } | null = null;
+  /**
+   * A17: the match that was closed last, with its log as it stood; and (step 6, review) what went out about it that
+   * is in no log: its RESULTs and its MATCH_END, for a member who was away when they did.
+   */
+  private lastMatch: { matchId: string; log: MatchLog; results: PayloadOf<'RESULT'>[]; end: PayloadOf<'MATCH_END'> } | null = null;
+  /** A17: what LOBBY_CLOSED said, for a member who comes back after it. */
+  private closedReason = '';
   /** A17: the order a held next game was asked with (`nextGame(order)`), if any. */
   private heldOrder: PlayerId[] | undefined;
   /** A17 step 6: this PC's own table in a lobby, where `hostGame` is the lobby's pick. Without a lobby it is not read. */
@@ -506,10 +544,8 @@ export class HostMatch {
   private readonly stillSeen: (player: PlayerId) => boolean;
   /** A17 step 6: this PC is itself cut off from the relay (`setCutOff`): the drops it sees are its own, not the members'. */
   private cutOff = false;
-  /** A17 step 6: the members whose link dropped while this PC was cut off: not yet a leave for anyone. */
-  private readonly deferredLeaves = new Set<PlayerId>();
   private readonly placeTimers = new Map<PlayerId, TimerHandle>();
-  private turnClock: { player: PlayerId; timer: TimerHandle | null; since: number } | null = null;
+  private turnClock: { player: PlayerId; timer: TimerHandle | null; since: number; asked: boolean } | null = null;
 
   constructor(opts: HostOptions, session?: Session) {
     this.s = session ?? new Session({ transport: opts.transport, keys: opts.keys, clock: opts.clock });
@@ -658,9 +694,13 @@ export class HostMatch {
     return this.lobby.map((p) => p.playerId).filter((id) => this.canPlay(id));
   }
 
-  /** A17: in the lobby, set to Play, on a link, and with a copy of the lobby's table: who a start counts. */
+  /**
+   * A17: in the lobby, set to Play, not away, and with a copy of the lobby's table: who a start counts. A member
+   * inside A18's grace IS counted (review, 2026-11-25): a link that blinks for two seconds takes nobody out of a
+   * match and changes nobody's turn to start; the start itself waits for the grace to settle (`judgeStart`).
+   */
   private canPlay(id: PlayerId): boolean {
-    return this.isMember(id) && this.stances.get(id) !== 'watch' && !this.gone.has(id) && !this.withoutCopy.has(id);
+    return this.isMember(id) && this.stances.get(id) !== 'watch' && !this.away(id) && !this.withoutCopy.has(id);
   }
 
   /**
@@ -697,8 +737,8 @@ export class HostMatch {
     return { matchId: st.matchId, players: st.participants.map((p) => p.playerId), game: Math.max(1, st.gameNumber), state: st.phase === 'running' ? 'game' : 'between' };
   }
 
-  /** A17: the match that was closed last in this lobby, with its log as it stood at MATCH_END; null before any. */
-  previousMatch(): { matchId: string; log: MatchLog } | null {
+  /** A17: the match that was closed last in this lobby, with its log as it stood at MATCH_END, its RESULTs and its MATCH_END; null before any. */
+  previousMatch(): { matchId: string; log: MatchLog; results: PayloadOf<'RESULT'>[]; end: PayloadOf<'MATCH_END'> } | null {
     return this.lastMatch ? { ...this.lastMatch } : null;
   }
 
@@ -897,7 +937,7 @@ export class HostMatch {
     if (this.detached || !this.waits3dNow() || this.stream3dWait.size === 0) return;
     const now = this.s.clock.now();
     const next = Math.min(...this.stream3dWait.values()) + STREAM3D_WAIT_GRACE_MS;
-    this.stream3dTimer = this.s.clock.setTimeout(() => {
+    this.stream3dTimer = this.s.clock.setTimeout(this.guarded('the 3D wait', () => {
       this.stream3dTimer = null;
       if (this.detached || !this.waits3dNow()) return;
       const t = this.s.clock.now();
@@ -905,7 +945,7 @@ export class HostMatch {
       this.armStream3dTimer();
       this.events.emit('participantUpdated', { ...this.lobby[0]! });
       this.resendAck();
-    }, Math.max(0, next - now));
+    }), Math.max(0, next - now));
   }
 
   private clearStream3dWait(): void {
@@ -1014,7 +1054,7 @@ export class HostMatch {
     if (new Set(order).size !== order.length) return 'a player is named twice';
     for (const id of order) {
       if (!this.isMember(id)) return `${id} is not in the lobby`;
-      if (this.gone.has(id)) return `${id} is away`;
+      if (this.away(id)) return `${id} is away`;
     }
     if (order.length < 2) return 'a match needs two people set to Play';
     if (order.length > 4) return 'a match has at most four players';
@@ -1092,11 +1132,12 @@ export class HostMatch {
    */
   private closeMatch(reason: string, abandoned: number | null = null): void {
     const closed = this.matchId;
-    const msg = this.s.build('MATCH_END', { games: this.resultMsgs.length, reason: reason.slice(0, 200), ...(abandoned !== null ? { abandoned } : {}) }, closed);
+    const msg = this.s.build('MATCH_END', { games: this.resultMsgs.length, reason: reason.slice(0, REASON_MAX), ...(abandoned !== null ? { abandoned } : {}) }, closed);
     this.stopCatchUps();
     for (const id of this.reachable()) this.s.transport.send(id, msg);
+    const results = this.resultMsgs.map((r) => r.payload);
     this.resetMatch();
-    this.lastMatch = { matchId: closed, log: this.s.newMatch() };
+    this.lastMatch = { matchId: closed, log: this.s.newMatch(), results, end: msg.payload };
     this.matchId = this.code;
     this.events.emit('matchEnded', msg.payload);
     this.resendAck();
@@ -1113,6 +1154,7 @@ export class HostMatch {
     this.clearPending();
     if (this.s.state.phase !== 'lobby') this.endOpenMatch('the lobby was closed');
     this.ended = true;
+    this.closedReason = reason.slice(0, REASON_MAX);
     // Nothing of a game that was being played acts after this: no ball-end timeout, no grace or clock running out.
     this.clearClocks();
     this.clearStartTimer();
@@ -1121,7 +1163,7 @@ export class HostMatch {
     this.resetMatch();
     for (const t of this.grace.values()) this.s.clock.clearTimeout(t);
     this.grace.clear();
-    const msg = this.s.build('LOBBY_CLOSED', { reason: reason.slice(0, 200) }, this.code);
+    const msg = this.s.build('LOBBY_CLOSED', { reason: this.closedReason }, this.code);
     for (const id of this.reachable()) this.s.transport.send(id, msg);
     this.events.emit('lobbyClosed', msg.payload);
     return true;
@@ -1387,7 +1429,7 @@ export class HostMatch {
   /** Host forfeits a player (itself or one who does not return). */
   forfeit(player: PlayerId, reason: string): void {
     this.assertActive();
-    this.onForfeit(this.s.build('FORFEIT', { player, reason }, this.matchId));
+    this.onForfeit(this.s.build('FORFEIT', { player, reason: reason.slice(0, REASON_MAX) }, this.matchId));
   }
 
   pause(reason: PayloadOf<'PAUSE'>['reason'], player: PlayerId | null): void {
@@ -1447,8 +1489,29 @@ export class HostMatch {
 
   private attach(): void {
     const t = this.s.transport;
-    this.unsubscribe.push(t.onMessage((from, msg) => this.handle(from, msg)));
-    this.unsubscribe.push(t.onPeerLeave((peer) => this.onPeerLeave(peer)));
+    this.unsubscribe.push(t.onMessage((from, msg) => this.guard(`a ${msg.type}`, () => this.handle(from, msg))));
+    this.unsubscribe.push(t.onPeerLeave((peer) => this.guard('a dropped link', () => this.onPeerLeave(peer))));
+  }
+
+  /**
+   * A17 step 6 (review, 2026-11-25): in a lobby nothing this engine does for a frame, a dropped link or one of its
+   * own timers throws out of the transport's handler or the timer that called it: it is caught, reported
+   * (`engineError`) and the engine goes on with what it holds. Without a lobby `fn` runs as it always did.
+   */
+  private guard(where: string, fn: () => void): void {
+    if (!this.lobbyOn) {
+      fn();
+      return;
+    }
+    try {
+      fn();
+    } catch (e) {
+      this.events.emit('engineError', { where, error: e instanceof Error ? e : new Error(String(e)) });
+    }
+  }
+
+  private guarded(where: string, fn: () => void): () => void {
+    return () => this.guard(where, fn);
   }
 
   private detach(): void {
@@ -1543,13 +1606,13 @@ export class HostMatch {
   }
 
   private reject(ref: AnyMessage, code: RejectCode, message: string): void {
-    const payload: PayloadOf<'REJECT'> = { refSeq: ref.seq, refType: ref.type, code, message };
+    const payload: PayloadOf<'REJECT'> = { refSeq: ref.seq, refType: ref.type, code, message: message.slice(0, SENTENCE_MAX) };
     this.events.emit('reject', { to: ref.from, ...payload });
     if (ref.from !== this.localId) this.s.transport.send(ref.from, this.s.build('REJECT', payload, this.matchId));
   }
 
   private refuse(hello: Message<'HELLO'>, code: RefuseCode, message: string, mismatches: PayloadOf<'REFUSE'>['mismatches'] = []): void {
-    const msg = this.s.build('REFUSE', { code, message, mismatches }, null);
+    const msg = this.s.build('REFUSE', { code, message: message.slice(0, SENTENCE_MAX), mismatches }, null);
     this.s.transport.send(hello.from, msg);
     this.events.emit('refused', { playerId: hello.from, refuse: msg.payload });
     this.s.transport.closePeer?.(hello.from);
@@ -1562,8 +1625,12 @@ export class HostMatch {
   /** Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). */
   handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
     if (this.detached) return;
-    // A17: a closed lobby reads nothing more; only somebody who still tries to join is told so (`onHello`).
-    if (this.lobbyOn && this.ended && msg.type !== 'HELLO') return;
+    // A17: a closed lobby reads nothing more. Somebody who still tries to join is told so (`onHello`), and so is a
+    // member who was away when it closed and comes back now: LOBBY_CLOSED on that link, so its PC stops waiting.
+    if (this.lobbyOn && this.ended && msg.type !== 'HELLO') {
+      if (msg.type === 'RECONNECT' && msg.from === linkFrom) this.s.transport.send(linkFrom, this.s.build('LOBBY_CLOSED', { reason: this.closedReason }, this.code));
+      return;
+    }
     if (msg.from !== linkFrom) {
       // On a star the old host relays acks and mirrors frames until it steps down; one that
       // reaches this host after the transfer is stale, not an impersonation (A2, 2026-10-30).
@@ -1578,7 +1645,7 @@ export class HostMatch {
     const memberHello = this.lobbyOn && msg.type === 'HELLO' && this.isMember(msg.from);
     if (msg.type === 'HELLO' && !memberHello) this.s.resetSeq(msg.from);
     // A17 step 6: a lobby's RECONNECT has its `seq` under its signature, so the signature is looked at first and the
-    // `seq` taken after it (`onLobbyReconnect`): a frame nobody signed must not be able to move a member's counter.
+    // `seq` taken after it (`onLobbyReconnect`): a member's counter moves only for a frame that verified.
     const lobbyReconnect = this.lobbyOn && msg.type === 'RECONNECT';
     if (!opts.seqChecked && !memberHello && !lobbyReconnect && !this.s.checkSeq(msg.from, msg.seq)) {
       this.reject(msg, 'unexpected_state', `seq ${msg.seq} is not greater than the last accepted from ${msg.from}`);
@@ -1673,6 +1740,13 @@ export class HostMatch {
         if (why !== null) this.reject(msg, 'unexpected_state', why);
         return;
       }
+      case 'LEAVE_LOBBY':
+        if (!this.lobbyOn) {
+          this.reject(msg, 'unexpected_state', `${msg.type} is not a client -> host message`);
+          return;
+        }
+        this.memberLeaves(msg.from);
+        return;
       default:
         this.reject(msg, 'unexpected_state', `${msg.type} is not a client -> host message`);
     }
@@ -1753,12 +1827,30 @@ export class HostMatch {
       this.confirmLeave(peer);
       return;
     }
+    this.startGrace(peer);
+  }
+
+  /**
+   * A18: the grace of a peer whose link dropped begins (again): `graceMs` from now. A17 step 6 (review): while this
+   * PC is itself cut off the grace is HELD, in the map with no timer running, and begins from zero when this PC is
+   * back (`setCutOff`): a member is not away because the lobby's PC was.
+   */
+  private startGrace(peer: PlayerId): void {
+    const running: TimerHandle | null | undefined = this.grace.get(peer);
+    if (running != null) this.s.clock.clearTimeout(running);
+    if (this.lobbyOn && this.cutOff) {
+      this.grace.set(peer, null);
+      return;
+    }
     this.grace.set(
       peer,
-      this.s.clock.setTimeout(() => {
-        this.grace.delete(peer);
-        this.confirmLeave(peer);
-      }, this.graceMs),
+      this.s.clock.setTimeout(
+        this.guarded('the end of a grace', () => {
+          this.grace.delete(peer);
+          this.confirmLeave(peer);
+        }),
+        this.graceMs,
+      ),
     );
   }
 
@@ -1770,8 +1862,9 @@ export class HostMatch {
   private confirmLeave(peer: PlayerId): void {
     if (this.detached || !this.gone.has(peer)) return;
     // A17 step 6: while this PC is itself cut off, the drop is its own: no leave is told and nobody is paused for.
+    // The member is held inside the grace, which begins from zero when this PC is back.
     if (this.lobbyOn && this.cutOff) {
-      this.deferredLeaves.add(peer);
+      this.grace.set(peer, null);
       return;
     }
     this.events.emit('peerLeft', peer);
@@ -1824,9 +1917,13 @@ export class HostMatch {
       this.refuse(msg, 'unknown_throwdown', `this host runs ${this.code}, not ${p.throwdownCode}`);
       return;
     }
-    if (this.lobby.some((x) => x.playerId === p.participant.playerId)) {
-      // A17 step 6: also for a member who is away: an unsigned HELLO never takes a member's place over. That member
-      // comes back with RECONNECT, or joins again once the place has run out.
+    const row = this.lobby.find((x) => x.playerId === p.participant.playerId);
+    // A17 step 6 (review): a member whose Castcade started again holds nothing to RECONNECT with and says HELLO
+    // afresh. While its place is kept, that HELLO is its return when it is signed with the row's own key.
+    if (row && this.lobbyOn && this.returnsByHello(msg, row)) return;
+    if (row) {
+      // A17 step 6: also for a member who is away: a HELLO that is not that member's own never takes the place.
+      // That member comes back with RECONNECT, or joins again once the place has run out.
       this.refuse(msg, 'duplicate_player', this.lobbyOn && this.gone.has(p.participant.playerId) ? `${p.participant.playerId} is in this lobby and away: the place is kept for a few minutes` : `${p.participant.playerId} is already in the match`);
       return;
     }
@@ -1953,11 +2050,11 @@ export class HostMatch {
     this.withoutCopy.delete(peer);
     this.inOwnGame.delete(peer);
     if (this.stream3dWait.delete(peer)) this.armStream3dTimer();
-    const held = this.grace.get(peer);
-    if (held !== undefined) this.s.clock.clearTimeout(held);
+    const inGrace = this.grace.has(peer);
+    const held: TimerHandle | null | undefined = this.grace.get(peer);
+    if (held != null) this.s.clock.clearTimeout(held);
     this.grace.delete(peer);
-    const told = this.gone.delete(peer) && held === undefined && !this.deferredLeaves.has(peer);
-    this.deferredLeaves.delete(peer);
+    const told = this.gone.delete(peer) && !inGrace;
     const place = this.placeTimers.get(peer);
     if (place !== undefined) this.s.clock.clearTimeout(place);
     this.placeTimers.delete(peer);
@@ -2031,9 +2128,12 @@ export class HostMatch {
     if (p) {
       if (fromTable) {
         if (by !== starter) return notStarter;
+        // The starter, but not one of this start's players (they set themselves to Play after it was asked): their
+        // game is not the match's, and their PC has to hear it.
+        if (!p.players.includes(by)) return 'A match is starting without you: the game on your table is your own.';
         // The starter's own game began in the moment before the announced start's lock reached their PC: theirs is
         // the one table that can have begun a game, so it is the match's first and they go first.
-        if (p.players.includes(by) && p.tableOf !== by) {
+        if (p.tableOf !== by) {
           p.players = [by, ...p.players.filter((id) => id !== by)];
           p.tableOf = by;
           this.resendAck();
@@ -2231,30 +2331,37 @@ export class HostMatch {
     const out = p.players.filter((id) => !this.canPlay(id));
     if (out.length > 0) {
       const first = out[0] as PlayerId;
-      const why = !this.isMember(first) ? 'left the lobby' : this.gone.has(first) ? 'is away' : this.stances.get(first) === 'watch' ? 'is set to Watch now' : 'has no copy of the table';
+      const why = !this.isMember(first) ? 'left the lobby' : this.away(first) ? 'is away' : this.stances.get(first) === 'watch' ? 'is set to Watch now' : 'has no copy of the table';
       const words = `${this.isMember(first) ? this.nameOf(first) : first} ${why}: the start is off.`;
       p.players = p.players.filter((id) => this.canPlay(id));
       if (p.tableOf !== null && !p.players.includes(p.tableOf)) p.tableOf = null;
       // A start that waits belongs to the person who asked: without them as a player it is off. One that counts
       // down goes on without whoever stepped out, while two are left.
-      if (p.players.length < 2 || (p.endsAt === null && !p.due && out.includes(p.by))) return this.dropStart(words);
+      if (p.players.length < 2 || (p.endsAt === null && out.includes(p.by))) return this.dropStart(words);
     }
-    if (p.endsAt !== null) return;
+    // A start that waits belongs to the person who asked, whether or not they play it: away, it is off.
+    if (p.endsAt === null && this.away(p.by)) return this.dropStart(`${p.byName} is away: the start is off.`);
+    // Counting down: nothing is checked until it runs out.
+    if (p.endsAt !== null && !p.due) return;
+    // Run out, and one of its players is inside A18's grace, or this PC is itself cut off: it stays due, and is
+    // judged again when the grace settles (their return, or the end of the grace, both say the lobby again).
+    if (p.due && (this.cutOff || p.players.some((id) => this.grace.has(id)))) return;
     const v = this.checkStart(p);
     if (v.kind === 'refuse') return this.dropStart(v.message);
     if (v.kind === 'wait') {
       p.due = false;
+      p.endsAt = null;
       p.waitsFor = v.waitsFor;
       p.waitsOn = v.on;
       // The 3D wait has one limit, counted from the first time this start was held for it.
       if (v.waitsFor === '3d' && p.capAt === null) {
         p.capAt = this.s.clock.now() + this.start3dMaxMs;
-        p.capTimer = this.s.clock.setTimeout(() => {
+        p.capTimer = this.s.clock.setTimeout(this.guarded('the limit of the 3D wait', () => {
           p.capTimer = null;
           if (this.pending !== p || this.detached) return;
           p.no3d = true;
           this.resendAck();
-        }, this.start3dMaxMs);
+        }), this.start3dMaxMs);
       }
       return;
     }
@@ -2273,16 +2380,15 @@ export class HostMatch {
       return;
     }
     p.endsAt = this.s.clock.now() + this.countdownMs;
-    p.timer = this.s.clock.setTimeout(() => {
+    p.timer = this.s.clock.setTimeout(this.guarded('the end of a countdown', () => {
       p.timer = null;
       if (this.pending !== p || this.detached) return;
-      p.endsAt = null;
+      // Due from here on (`endsAt` stays where it was: the start reads "counting down, nothing left" while it is held).
       p.due = true;
       this.judgeStart();
-      // Started: MATCH_READY or NEXT_GAME said it. Not started: it waits again, or is off; the lobby hears which.
-      if (this.pending === p) p.due = false;
+      // Started: MATCH_READY or NEXT_GAME said it. Not started: it is held, waits again, or is off; the lobby hears which.
       if (this.s.state.phase !== 'running') this.resendAck();
-    }, this.countdownMs);
+    }), this.countdownMs);
     this.events.emit('countdown', { startsInMs: this.countdownMs });
   }
 
@@ -2307,8 +2413,10 @@ export class HostMatch {
     if (!p) return;
     this.clearPending();
     if (reason === null) return;
-    this.startOffNote = reason;
-    if (p.announced) this.events.emit('startOff', { reason });
+    // Cut to what HELLO_ACK takes: a sentence with two long names in it must not be what stops the lobby being said.
+    const words = reason.slice(0, SENTENCE_MAX);
+    this.startOffNote = words;
+    if (p.announced) this.events.emit('startOff', { reason: words });
   }
 
   private clearPending(): void {
@@ -2341,12 +2449,12 @@ export class HostMatch {
         if (running === undefined) {
           this.placeTimers.set(
             id,
-            this.s.clock.setTimeout(() => {
+            this.s.clock.setTimeout(this.guarded('the end of a place', () => {
               this.placeTimers.delete(id);
               if (this.detached || !this.away(id)) return;
               this.events.emit('memberRemoved', id);
               this.dropMember(id, true);
-            }, this.placeMs),
+            }), this.placeMs),
           );
         }
       } else if (running !== undefined) {
@@ -2356,42 +2464,49 @@ export class HostMatch {
     }
     const paused = st.phase === 'running' ? st.paused : null;
     const waited = paused?.reason === 'disconnect' && paused.player !== null && this.away(paused.player) && needs(paused.player) ? paused.player : null;
-    if (this.turnClock && this.turnClock.player !== waited) {
-      if (this.turnClock.timer !== null) this.s.clock.clearTimeout(this.turnClock.timer);
-      this.turnClock = null;
-    }
+    if (this.turnClock && this.turnClock.player !== waited) this.stopTurnClock();
     if (waited !== null && !this.turnClock) {
-      this.turnClock = { player: waited, timer: null, since: this.s.clock.now() };
+      this.turnClock = { player: waited, timer: null, since: this.s.clock.now(), asked: false };
       this.armTurnClock();
     }
+  }
+
+  /** The turn clock is over without having done anything; a question that was open about that player is withdrawn. */
+  private stopTurnClock(): void {
+    const t = this.turnClock;
+    if (!t) return;
+    if (t.timer !== null) this.s.clock.clearTimeout(t.timer);
+    this.turnClock = null;
+    if (t.asked) this.events.emit('awayQuestionOff', { player: t.player });
   }
 
   private armTurnClock(): void {
     const t = this.turnClock;
     if (!t) return;
-    t.timer = this.s.clock.setTimeout(() => {
+    t.asked = false;
+    t.timer = this.s.clock.setTimeout(this.guarded('the end of a turn clock', () => {
       t.timer = null;
       if (this.turnClock !== t || this.detached) return;
       // A player who holds the grant and is still seen playing is never forfeited by a clock: this PC's owner is asked.
       if (this.s.state.currentGrant?.grant.player === t.player && this.stillSeen(t.player)) {
+        t.asked = true;
         this.events.emit('awayQuestion', { player: t.player, waitedMs: this.s.clock.now() - t.since });
         return;
       }
       this.playOnWithout(t.player);
-    }, this.turnMs);
+    }), this.turnMs);
   }
 
   private clearClocks(): void {
     for (const t of this.placeTimers.values()) this.s.clock.clearTimeout(t);
     this.placeTimers.clear();
-    if (this.turnClock?.timer != null) this.s.clock.clearTimeout(this.turnClock.timer);
-    this.turnClock = null;
+    this.stopTurnClock();
   }
 
   /** A17 step 6: the player the game is paused for at their own turn, and since when (this PC's clock); null: nobody is waited for. */
   waitedFor(): { player: PlayerId; since: number; asked: boolean } | null {
     const t = this.turnClock;
-    return t ? { player: t.player, since: t.since, asked: t.timer === null } : null;
+    return t ? { player: t.player, since: t.since, asked: t.asked } : null;
   }
 
   /**
@@ -2410,20 +2525,23 @@ export class HostMatch {
 
   /**
    * A17 step 6: the owner's answer to `awayQuestion`. `wait`: keep waiting (asked again after another turn clock);
-   * `end_ball`: their ball ends by hand at the score as it stands (Pass the turn) and the game goes on (it pauses
-   * again when the turn next reaches them and they are still away); `play_on`: `playOnWithout`. False when nobody
-   * is asked about.
+   * `end_ball`: their ball ends by hand (Pass the turn) at `score`, the score as it stands, which the shell knows
+   * from that player's last STATE (without it: their last logged score, the end of their ball before), and the game
+   * goes on (it pauses again when the turn next reaches them and they are still away); `play_on`: `playOnWithout`.
+   * False when nobody is asked about.
    */
-  answerAway(player: PlayerId, answer: 'wait' | 'end_ball' | 'play_on'): boolean {
+  answerAway(player: PlayerId, answer: 'wait' | 'end_ball' | 'play_on', score?: number): boolean {
     this.assertActive();
     const t = this.turnClock;
-    if (!t || t.player !== player || t.timer !== null) return false;
+    if (!t || t.player !== player || !t.asked) return false;
+    // Answered: whatever ends this clock now is the answer, not the question going stale.
+    t.asked = false;
     if (answer === 'play_on') return this.playOnWithout(player);
     if (answer === 'wait') {
       this.armTurnClock();
       return true;
     }
-    if (!this.passTurn()) return false;
+    if (!this.passTurn(score)) return false;
     if (this.s.state.phase === 'running' && this.s.state.paused) this.resume();
     return true;
   }
@@ -2435,29 +2553,38 @@ export class HostMatch {
    * is back the members get A18's grace again from zero, then whoever is still gone is away and the clocks start.
    */
   setCutOff(cutOff: boolean): void {
-    if (!this.lobbyOn || this.detached || this.cutOff === cutOff) return;
+    if (!this.lobbyOn || this.detached || this.ended || this.cutOff === cutOff) return;
     this.cutOff = cutOff;
     if (cutOff) {
+      // Every grace that is running is held where it is, with no timer: what it counted was this PC's own absence.
+      for (const [id, t] of [...this.grace]) {
+        if (t != null) this.s.clock.clearTimeout(t);
+        this.grace.set(id, null);
+      }
       this.clearClocks();
+      // The two timeouts that count against a player stand still as well: nobody can hear the player now.
+      this.clearBallEndTimer();
+      if (this.logSignTimer !== null) this.s.clock.clearTimeout(this.logSignTimer);
+      this.logSignTimer = null;
       return;
     }
-    for (const id of [...this.deferredLeaves]) {
-      this.deferredLeaves.delete(id);
-      if (!this.gone.has(id) || this.grace.has(id)) continue;
-      if (this.graceMs <= 0) {
+    // Back. Every member whose link is down and whose leave was told to nobody gets the grace from zero.
+    for (const id of [...this.grace.keys()]) {
+      if (!this.gone.has(id)) {
+        this.grace.delete(id);
+      } else if (this.graceMs <= 0) {
+        this.grace.delete(id);
         this.confirmLeave(id);
-        continue;
+      } else {
+        this.startGrace(id);
       }
-      this.grace.set(
-        id,
-        this.s.clock.setTimeout(() => {
-          this.grace.delete(id);
-          this.confirmLeave(id);
-        }, this.graceMs),
-      );
     }
-    this.reviewClocks();
+    const st = this.s.state;
+    if (st.phase === 'running' && st.currentGrant && !st.paused && !st.pendingTransfer) this.armBallEndTimer(st.currentGrant.grant.grantSeq);
+    if (st.phase === 'ended' && this.finalHead && !this.resultSent && !this.maybeSendResult()) this.armLogSignTimer();
     this.advance();
+    // The lobby again (to this PC's own shell at least): the clocks from zero, and a start that was held.
+    this.resendAck();
   }
 
   // ------------------------------------------------------------------------------------------
@@ -2487,11 +2614,10 @@ export class HostMatch {
     // from this member; the same frame sent a second time stops here.
     if (!this.s.checkSeq(msg.from, msg.seq)) return this.refuseReconnect(linkFrom, msg, 'stale_seq');
     // Back on a link. A18: inside the grace (or while this PC was cut off) nobody was told it had left.
-    const timer = this.grace.get(msg.from);
-    const quiet = timer !== undefined || this.deferredLeaves.has(msg.from);
-    if (timer !== undefined) this.s.clock.clearTimeout(timer);
+    const quiet = this.grace.has(msg.from);
+    const timer: TimerHandle | null | undefined = this.grace.get(msg.from);
+    if (timer != null) this.s.clock.clearTimeout(timer);
     this.grace.delete(msg.from);
-    this.deferredLeaves.delete(msg.from);
     this.gone.delete(msg.from);
     this.stopCatchUp(msg.from);
     const open = st.phase === 'lobby' ? null : st.matchId;
@@ -2506,19 +2632,107 @@ export class HostMatch {
         this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: first.map((e) => ({ ...e })), logHash: this.hashAt(upTo), logLength: upTo, match: open, ...(more ? { more: true } : {}) }, this.code),
       );
       this.events.emit('reconnected', { playerId: msg.from, entries: entries.length, quiet });
-      this.resendAck();
       if (more) this.sendLog(msg.from, upTo, false);
       else this.sendResults(msg.from);
     } else {
-      this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: GENESIS_HASH, logLength: 0, match: open, restart: true }, this.code));
-      this.events.emit('reconnected', { playerId: msg.from, entries: 0, quiet });
-      this.resendAck();
+      const last = this.lastMatch;
+      const knownThere = last !== null && held === last.matchId && (p.logLength === 0 ? p.logHash === GENESIS_HASH : last.log.at(p.logLength - 1)?.hash === p.logHash);
+      if (last !== null && knownThere) {
+        // The match this member holds was closed while they were away, and is the last one closed: they get what
+        // everyone else got. Its log to the end (the first page here, the rest in MATCH_LOG), then its RESULTs and
+        // its MATCH_END as they were sent, so that every member ends that match with the same tally.
+        const entries = last.log.entries().slice(p.logLength);
+        const head = (length: number): string => (length <= 0 ? GENESIS_HASH : (last.log.at(length - 1)?.hash ?? GENESIS_HASH));
+        let upTo = p.logLength + Math.min(entries.length, this.logPageSize);
+        const more = upTo < last.log.length;
+        this.s.transport.send(
+          linkFrom,
+          this.s.build(
+            'RECONNECT_ACK',
+            { accept: true, code: null, entries: entries.slice(0, this.logPageSize).map((e) => ({ ...e })), logHash: head(upTo), logLength: upTo, match: open, closed: true, ...(more ? { more: true } : {}) },
+            this.code,
+          ),
+        );
+        while (upTo < last.log.length) {
+          const page = last.log.entries().slice(upTo, upTo + this.logPageSize);
+          upTo += page.length;
+          this.s.transport.send(
+            linkFrom,
+            this.s.build('MATCH_LOG', { match: last.matchId, restart: false, entries: page.map((e) => ({ ...e })), logHash: head(upTo), logLength: upTo, more: upTo < last.log.length }, this.code),
+          );
+        }
+        for (const r of last.results) this.s.transport.send(linkFrom, this.s.build('RESULT', r, last.matchId));
+        this.s.transport.send(linkFrom, this.s.build('MATCH_END', last.end, last.matchId));
+        this.events.emit('reconnected', { playerId: msg.from, entries: entries.length, quiet });
+      } else {
+        this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: [], logHash: GENESIS_HASH, logLength: 0, match: open, restart: true }, this.code));
+        this.events.emit('reconnected', { playerId: msg.from, entries: 0, quiet });
+      }
       if (open !== null) this.sendLog(msg.from, 0, true);
     }
+    // The lobby as it is now, to everyone, AFTER what the answer carries (a start that waited for this member's
+    // grace to settle may begin in here, and must not come between an answer and its pages).
+    this.resendAck();
     // A grant, or a next game, that waited for this member goes out now, after the answer it follows in the log.
     this.advance();
     this.settleNextGame();
     this.reviewClocks();
+  }
+
+  /**
+   * A17 step 6 (review, 2026-11-25): a HELLO from somebody the lobby holds a place for. It is that member's own
+   * return, and taken, when it carries `proof`: a signature with the row's key over the lobby's code, the player and
+   * the envelope's `seq`, and that `seq` is above the last taken from them. It is the signature that says whose
+   * HELLO it is; the key in it only says which row is meant. The row stays theirs, with what this HELLO says; the
+   * member holds no log, so an open match's log follows whole. False: not such a HELLO; the caller refuses it.
+   */
+  private returnsByHello(msg: Message<'HELLO'>, row: ParticipantInfo): boolean {
+    const p = msg.payload;
+    const id = row.playerId;
+    if (id === this.localId || p.proof === undefined || p.participant.publicKey !== row.publicKey) return false;
+    if (!verifyCanonical(helloProofBody(this.code, id, msg.seq), p.proof, row.publicKey)) return false;
+    if (!this.s.checkSeq(id, msg.seq)) return false;
+    const quiet = this.grace.has(id);
+    const timer: TimerHandle | null | undefined = this.grace.get(id);
+    if (timer != null) this.s.clock.clearTimeout(timer);
+    this.grace.delete(id);
+    this.gone.delete(id);
+    this.stopCatchUp(id);
+    // What the new run of that PC says about itself replaces what the row held; what it has not said yet is not known.
+    const i = this.lobby.findIndex((x) => x.playerId === id);
+    this.lobby[i] = { ...p.participant };
+    this.lobbyGames.set(id, { ...p.game });
+    if (p.ballEndReady !== undefined) this.ballEndReady.set(id, p.ballEndReady);
+    else this.ballEndReady.delete(id);
+    this.stances.set(id, p.stance ?? 'play');
+    this.withoutCopy.delete(id);
+    this.inOwnGame.delete(id);
+    this.setMismatch(id, compareWithPick(this.hostGame, p.game, this.localId));
+    this.events.emit('reconnected', { playerId: id, entries: 0, quiet });
+    // HELLO_ACK first (it is this member's answer), then the open match's log from entry 0.
+    this.resendAck();
+    if (this.s.state.phase !== 'lobby') this.sendLog(id, 0, true);
+    this.advance();
+    this.settleNextGame();
+    this.reviewClocks();
+    return true;
+  }
+
+  /**
+   * A17 step 6 (review, 2026-11-25): Leave lobby. The member is out at once: a game they are still playing they give
+   * up first (a FORFEIT from this PC in their name; the others carry on), then the row goes, the place is free, and
+   * a start they were in is looked at again.
+   */
+  private memberLeaves(id: PlayerId): void {
+    if (!this.isMember(id) || id === this.localId) return;
+    const st = this.s.state;
+    if (st.phase === 'running' && st.players[id]?.status === 'playing' && !st.pendingTransfer) {
+      this.forfeit(id, 'left the lobby');
+      const paused = this.s.state.phase === 'running' ? this.s.state.paused : null;
+      if (paused?.reason === 'disconnect' && paused.player === id) this.resume();
+    }
+    this.events.emit('memberLeft', id);
+    this.dropMember(id, true);
   }
 
   /** The hash of the log's head when it is `length` entries long. */
@@ -2527,15 +2741,17 @@ export class HostMatch {
   }
 
   /**
-   * A RECONNECT that is not taken. It changes nothing about the member it names: a forged or repeated one must not
-   * be able to put anybody out, or to make anybody look back. `unknown_player` (the place is gone) leaves the link
-   * open: the sender says HELLO on it and is a newcomer.
+   * A RECONNECT that is not taken. Nothing this lobby holds about the member it names changes: not the row, not
+   * the place, not the counter. `unknown_player` (the place is gone) leaves the link open: the sender says HELLO on
+   * it and is a newcomer.
    */
   private refuseReconnect(linkFrom: PlayerId, msg: Message<'RECONNECT'>, code: ReconnectCode): void {
-    this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: GENESIS_HASH, logLength: 0 }, this.code));
+    // `stale_seq` says where the counter stands: the member's next RECONNECT is signed over a `seq` above it. The
+    // counter is not moved, and nobody without the member's key can use the number.
+    const floor = code === 'stale_seq' ? { seqAbove: this.s.lastSeqFrom(msg.from) ?? 0 } : {};
+    this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: GENESIS_HASH, logLength: 0, ...floor }, this.code));
     this.events.emit('reconnectRejected', { playerId: msg.from, code });
-    // The link is closed when it is a new one (the member it names is not on a link, or is nobody's name here). A
-    // frame that names a member who IS on a link is only refused: closing "their" link for it would be the harm.
+    // Which link is whose is the transport's to say; here the link is closed when the member named is on none.
     if (code !== 'unknown_player' && (!this.isMember(msg.from) || this.gone.has(msg.from))) this.s.transport.closePeer?.(linkFrom);
   }
 
@@ -2570,7 +2786,7 @@ export class HostMatch {
       c.restart = false;
       if (!more) break;
       if (this.logPageGapMs > 0) {
-        c.timer = this.s.clock.setTimeout(() => this.pumpLog(member), this.logPageGapMs);
+        c.timer = this.s.clock.setTimeout(this.guarded('a page of the log', () => this.pumpLog(member)), this.logPageGapMs);
         return;
       }
     }
@@ -2749,10 +2965,33 @@ export class HostMatch {
     const msg = this.s.build('TURN_GRANT', { grant: body, grantSig: signCanonical(body, this.s.keys.privateKey) }, this.matchId);
     this.s.commit({ ts: msg.ts, kind: 'grant', from: this.localId, message: msg });
     this.broadcast(msg);
-    this.clearBallEndTimer();
-    this.ballEndTimer = this.s.clock.setTimeout(() => this.onBallEndTimeout(body.grantSeq), this.ballEndTimeoutMs);
+    this.armBallEndTimer(body.grantSeq);
     // Listeners may act on the grant (e.g. start a transfer), so arm the timer before telling them.
     this.events.emit('grant', body);
+  }
+
+  /**
+   * The ball-end timeout of the outstanding grant, from now. A17 step 6 (review): not while this PC is cut off: a
+   * player whom nobody can hear must not be timed out for it; it is armed again, in full, when this PC is back.
+   */
+  private armBallEndTimer(grantSeq: number): void {
+    this.clearBallEndTimer();
+    if (this.lobbyOn && this.cutOff) return;
+    this.ballEndTimer = this.s.clock.setTimeout(this.guarded('the ball-end timeout', () => this.onBallEndTimeout(grantSeq)), this.ballEndTimeoutMs);
+  }
+
+  /** The wait for LOG_SIGNs before the RESULT goes without them. A17 step 6 (review): not while this PC is cut off. */
+  private armLogSignTimer(): void {
+    if (this.logSignTimer !== null) this.s.clock.clearTimeout(this.logSignTimer);
+    this.logSignTimer = null;
+    if (this.lobbyOn && this.cutOff) return;
+    this.logSignTimer = this.s.clock.setTimeout(
+      this.guarded('the log-sign timeout', () => {
+        this.logSignTimer = null;
+        this.sendResult();
+      }),
+      this.logSignTimeoutMs,
+    );
   }
 
   private clearBallEndTimer(): void {
@@ -2895,17 +3134,13 @@ export class HostMatch {
     this.clearBallEndTimer();
     this.finalHead = this.s.log.head();
     this.events.emit('allGamesEnded', this.finalHead);
-    if (!this.maybeSendResult()) {
-      this.logSignTimer = this.s.clock.setTimeout(() => {
-        this.logSignTimer = null;
-        this.sendResult();
-      }, this.logSignTimeoutMs);
-    }
+    if (!this.maybeSendResult()) this.armLogSignTimer();
   }
 
   /** A18: a player inside the grace still signs (it is not a disconnect yet); one who is away does not. */
   private expectedSigners(): PlayerId[] {
-    return this.s.state.playerOrder.filter((id) => id !== this.localId && !this.away(id) && this.s.state.players[id]?.connected);
+    // A17 (review): in a lobby a player whose row is gone (the place ran out, or they left) signs nothing more.
+    return this.s.state.playerOrder.filter((id) => id !== this.localId && !this.away(id) && this.s.state.players[id]?.connected && (!this.lobbyOn || this.isMember(id)));
   }
 
   private onLogSign(msg: Message<'LOG_SIGN'>): void {

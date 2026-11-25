@@ -128,6 +128,10 @@
     "MATCH_LOG": {
       "direction": "host->client",
       "schema": "MATCH_LOG.schema.json"
+    },
+    "LEAVE_LOBBY": {
+      "direction": "client->host",
+      "schema": "LEAVE_LOBBY.schema.json"
     }
   }
 }
