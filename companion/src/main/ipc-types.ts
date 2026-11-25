@@ -285,7 +285,7 @@ export interface CastcadeApi {
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4 (2026-11-24): the player who is up ends their own ball at the score as it stands; the turn passes (BALL_END, `manual`). */
-    endMyBall(): Promise<MatchStatus>;
+    endMyBall(grantSeq: number): Promise<MatchStatus>;
     /** A8 (2026-10-31): host only: end a pause nobody resumed. */
     resume(): Promise<MatchStatus>;
     /** D7.6.3 (2026-11-03): save the next 2 s of layer-camera and theater frames to `<logs>/frames/<date>/`. */

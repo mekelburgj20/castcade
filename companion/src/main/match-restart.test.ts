@@ -49,6 +49,8 @@ function rig() {
   let offset = 100;
   let delivered: Mark | null = null;
   let session = 's1';
+  // A17 step 4: whether a game runs on the table right now, which a Castcade that starts in the middle of one reads.
+  let inGame = false;
   const markAt = (o: number): Mark => ({ path: '/journal/table.jsonl', session, loaded: 50, offset: o });
   const emit = (ev: Feed, o: number, backlog: boolean): void => {
     delivered = markAt(o);
@@ -57,12 +59,14 @@ function rig() {
   const say = (ev: Feed): void => {
     offset += 10;
     journal.push({ ev, offset });
+    if (ev.kind === 'game_start') inGame = true;
+    else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned') inGame = false;
     emit(ev, offset, false);
   };
   const w = {
     status: () => ({ paired: false, currentTable: 'Test Table', currentIdentity: { sha256: SHA, tableInfo: null }, currentAttestation: null, captureMode: 'live', note: null }) as unknown as WStatus,
     sampleVr: async () => null,
-    liveGame: () => ({ table: 'Test Table', inGame: false, scores: [], player: null, ball: null }),
+    liveGame: () => ({ table: 'Test Table', inGame, scores: [], player: null, ball: null }),
     onEvent: (cb: Listener) => (eventCbs.add(cb), () => eventCbs.delete(cb)),
     onStatus: (cb: (s: WStatus) => void) => (statusCbs.add(cb), () => statusCbs.delete(cb)),
     journalMark: () => delivered,
@@ -87,6 +91,7 @@ function rig() {
     reopenTable() {
       journal.length = 0;
       session = 's2';
+      inGame = false;
     },
   };
 }
@@ -461,6 +466,184 @@ describe('a client restarted in the middle of a match (A15)', () => {
     expect(C2.mh.status().resume).toBeNull();
     expect(existsSync(C2.record)).toBe(false);
   }, 40_000);
+});
+
+/**
+ * A17 step 4 (2026-11-24, the review of PR 131): a ball ended by hand while the table's ball is still in play. The
+ * table then owes the match that ball's end; it is swallowed when it comes, never kept for a replay, and what is
+ * owed is in the saved record.
+ */
+describe('a ball ended by hand, and Castcade restarted (A17 step 4, the review of PR 131)', () => {
+  const owedIn = (s: Seat): number[] => (JSON.parse(readFileSync(s.record, 'utf8')) as { owed?: number[] }).owed ?? [];
+  /** The guest is up on ball 1 at 1200 with its ball in play, and ends it by hand: the host is up on ball 2. */
+  async function endedByHand() {
+    const s = await started();
+    const { hr, cr, H, C } = s;
+    hr.gameStart();
+    hr.ball(1, 500);
+    await until(() => up(C.mh, 1));
+    cr.gameStart();
+    cr.score(1, 1200);
+    await until(() => C.mh.status().endBall?.score === 1200);
+    const b = C.mh.status().endBall!;
+    expect(b).toMatchObject({ ball: 1, score: 1200, tableBall: true });
+    await C.mh.endMyBall(b.grantSeq);
+    await until(() => up(H.mh, 2));
+    // What the table owes is on disk before anything else happens.
+    await until(() => owedIn(C)[0] === b.grantSeq);
+    return { ...s, seq: b.grantSeq };
+  }
+  /** What a seat's log says of a ball end it took for the match: the table's, and the report. */
+  const ballEndLines = (s: Seat): string[] => s.logs.filter((l) => l.includes('BALL_END ball') || l.includes('ended on the table; reporting'));
+  /** The journal's backlog was fed to the match with a ball end in it (after a rejoin). */
+  const replayed = (s: Seat): string[] => s.logs.filter((l) => / \([1-9]\d* ball end\(s\)\)/.test(l));
+
+  it("the reviewer's sequence B: the ball drained during the other player's turn, and Castcade restarts on the next ball: the old drain is not read again from the journal, and the ball in play is not ended", async () => {
+    const { hr, cr, H, C } = await endedByHand();
+    cr.ballEnd(1);
+    cr.score(1, 1250);
+    await until(() => owedIn(C).length === 0);
+    hr.ball(2, 900);
+    await until(() => up(C.mh, 2));
+    cr.score(2, 1500);
+    await until(() => scoreOf(H.mh, 'Guest') === 1500);
+
+    await closes(C);
+    crashed(C);
+    await until(() => H.mh.status().phase === 'paused');
+    const C2 = castcade('guest', cr.w, C.dir);
+    cr.castcadeStarts();
+    await C2.mh.rejoin();
+    await until(() => up(C2.mh, 2) && H.mh.status().phase === 'playing');
+    await sleep(300);
+    // Until this fix: "BALL_END ball 2 score 1500" here, with the ball in play.
+    expect(up(C2.mh, 2)).toBe(true);
+    expect(existsSync(C2.lock)).toBe(false);
+    expect(ballEndLines(C2)).toEqual([]);
+    expect(replayed(C2)).toEqual([]);
+    cr.ball(2, 2000);
+    await until(() => up(H.mh, 3));
+    expect(scoreOf(H.mh, 'Guest')).toBe(2000);
+    expect(ballEndLines(C2).filter((l) => l.includes('BALL_END'))).toEqual(['match: BALL_END ball 2 score 2000']);
+  }, 40_000);
+
+  it('Castcade restarts before the ball drained, and it drains while Castcade is closed: what the table owes came back from the record, the drain in the journal reports nothing, and the next ball end is the end of ball 2', async () => {
+    const { hr, cr, H, C, seq } = await endedByHand();
+    await closes(C);
+    crashed(C);
+    expect(owedIn(C)).toEqual([seq]);
+    // Nobody is listening: the ball drains on the locked table.
+    cr.ballEnd(1);
+    cr.score(1, 1250);
+
+    const C2 = castcade('guest', cr.w, C.dir);
+    cr.castcadeStarts();
+    await C2.mh.rejoin();
+    await until(() => C2.mh.status().role === 'client' && C2.mh.status().phase === 'playing' && H.mh.status().phase === 'playing');
+    await until(() => C2.logs.some((l) => l.startsWith('match: the ball that was ended by hand has ended on the table: nothing is reported for it')));
+    await until(() => owedIn(C2).length === 0);
+    hr.ball(2, 900);
+    await until(() => up(C2.mh, 2));
+    expect(C2.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    await sleep(300);
+    expect(up(C2.mh, 2)).toBe(true);
+    expect(ballEndLines(C2)).toEqual([]);
+    cr.ball(2, 2000);
+    await until(() => up(H.mh, 3));
+    expect(scoreOf(H.mh, 'Guest')).toBe(2000);
+    expect(ballEndLines(C2).filter((l) => l.includes('BALL_END'))).toEqual(['match: BALL_END ball 2 score 2000']);
+  }, 40_000);
+
+  it('Castcade restarts with the ball still on the table: at the next grant the panel says to play it out, its points count, its drain reports nothing, and the ball after it is ball 2', async () => {
+    const { hr, cr, H, C, seq } = await endedByHand();
+    await closes(C);
+    crashed(C);
+    const C2 = castcade('guest', cr.w, C.dir);
+    cr.castcadeStarts();
+    await C2.mh.rejoin();
+    await until(() => C2.mh.status().role === 'client' && C2.mh.status().phase === 'playing' && H.mh.status().phase === 'playing');
+    hr.ball(2, 900);
+    await until(() => up(C2.mh, 2));
+    expect(C2.mh.status().panel?.message).toBe('Your last ball is still on the table: play it out, then ball 2 begins');
+    expect(owedIn(C2)).toEqual([seq]);
+    cr.score(1, 1800);
+    await until(() => scoreOf(H.mh, 'Guest') === 1800);
+    cr.ballEnd(1);
+    cr.score(1, 1900);
+    await until(() => owedIn(C2).length === 0);
+    await sleep(300);
+    expect(up(C2.mh, 2)).toBe(true);
+    expect(C2.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    expect(ballEndLines(C2)).toEqual([]);
+    cr.ball(2, 2600);
+    await until(() => up(H.mh, 3));
+    expect(scoreOf(H.mh, 'Guest')).toBe(2600);
+    expect(ballEndLines(C2).filter((l) => l.includes('BALL_END'))).toEqual(['match: BALL_END ball 2 score 2600']);
+  }, 40_000);
+
+  it('the host passed the turn while this player was away and the ball is still on the table at the rejoin (a game running on it): the pass is an end by hand, its drain after the rejoin reports nothing', async () => {
+    const { hr, cr, H, C } = await started();
+    hr.gameStart();
+    hr.ball(1, 500);
+    await until(() => up(C.mh, 1));
+    cr.gameStart();
+    cr.score(1, 100);
+    await until(() => scoreOf(H.mh, 'Guest') === 100);
+    await closes(C);
+    crashed(C);
+    await until(() => H.mh.status().phase === 'paused');
+    await H.mh.passTurn();
+
+    const C2 = castcade('guest', cr.w, C.dir);
+    cr.castcadeStarts();
+    await C2.mh.rejoin();
+    await until(() => H.mh.status().phase === 'playing' && up(H.mh, 2));
+    // The journal is read again from the start of this game (nothing was logged since): that start is not a new game.
+    await until(() => owedIn(C2).length === 1);
+    hr.ball(2, 900);
+    await until(() => up(C2.mh, 2));
+    expect(C2.mh.status().panel?.message).toBe('Your last ball is still on the table: play it out, then ball 2 begins');
+    // The old ball drains only now, live, under the grant for ball 2.
+    cr.ballEnd(1);
+    cr.score(1, 130);
+    await until(() => owedIn(C2).length === 0);
+    await sleep(300);
+    expect(up(C2.mh, 2)).toBe(true);
+    expect(ballEndLines(C2)).toEqual([]);
+    cr.ball(2, 700);
+    await until(() => up(H.mh, 3));
+    expect(ballEndLines(C2).filter((l) => l.includes('BALL_END'))).toEqual(['match: BALL_END ball 2 score 700']);
+  }, 40_000);
+
+  it("the host ends its own ball by hand and its Castcade restarts before the ball drained: what its table owes is in its record too, the drain while it was closed reports nothing, and its ball 2 ends with the table's next ball end", async () => {
+    const { hr, cr, H, C } = await started();
+    hr.gameStart();
+    hr.score(1, 300);
+    await until(() => H.mh.status().endBall?.score === 300);
+    const seq = H.mh.status().endBall!.grantSeq;
+    await H.mh.endMyBall(seq);
+    await until(() => up(C.mh, 1));
+    expect(owedIn(H)).toEqual([seq]);
+    await closes(H);
+    crashed(H);
+    hr.ballEnd(1);
+    hr.score(1, 350);
+    const H2 = castcade('host', hr.w, H.dir);
+    hr.castcadeStarts();
+    await H2.mh.rejoin();
+    await until(() => H2.mh.status().phase === 'playing' && up(C.mh, 1), 15_000);
+    await until(() => owedIn(H2).length === 0, 15_000);
+    cr.gameStart();
+    cr.ball(1, 100);
+    await until(() => up(H2.mh, 2), 15_000);
+    await sleep(300);
+    expect(up(H2.mh, 2)).toBe(true);
+    expect(H2.mh.status().panel?.message ?? '').not.toContain('still on the table');
+    expect(ballEndLines(H2)).toEqual([]);
+    hr.ball(2, 900);
+    await until(() => up(C.mh, 2), 15_000);
+    expect(ballEndLines(H2).filter((l) => l.includes('BALL_END'))).toEqual(['match: BALL_END ball 2 score 900']);
+  }, 60_000);
 });
 
 describe('the host restarted in the middle of a match (A15)', () => {

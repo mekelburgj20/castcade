@@ -121,7 +121,21 @@ to confirm the start); the host still may start, and such a match is played with
   host checks the sender, the grant and the ball as for every `BALL_END`, logs the frame as it came and goes on with
   the rotation, and a client folds it the same way; the value is in the log for the record, which is how a ball
   ended by its player differs from one the host passed (`TURN_PASS`). A companion offers it only to the grant
-  holder and only while the match is not paused.
+  holder and only while the match is not paused, and its confirmation is for one grant: an answer to a question
+  that was asked under another `grantSeq` (the same ball number granted again after a shoot-again) ends nothing.
+  A manual `BALL_END` that the host never answered is sent again by the companion, once, when the grant for that
+  same ball comes back under a new `grantSeq`.
+- The table owes a ball end (A17 step 4; a rule of the holder's companion, nothing on the wire). A ball that is
+  ended by hand, by End my ball or by the host's `TURN_PASS`, while it is still in play on a table whose ball ends
+  the companion reads, leaves that table one ball end behind the match. The holder's companion notes it and takes
+  the table's next ball end for that old ball: it reports nothing for it, with or without a grant held, and with an
+  extra ball it is still the old ball (no `shootAgain` is reported for it). If the old ball is still on the table
+  at the holder's next grant, it is played out first under that grant: its points are reported in `STATE` as they
+  come, and only the ball end after it is that grant's `BALL_END`. Two balls ended by hand with no drain between
+  owe two. Nothing is owed on a table whose ball ends the companion does not read, with no game running on the
+  table, or for the player's last ball of a game; what is owed ends with the table's game (its end, its
+  abandonment, the table closing, a new game) and with the match's game. A companion from before this rule takes
+  the old ball's drain for the end of the player's next ball.
 - A player's game ends after `BALL_END` (or `TURN_PASS`) for ball `ballsPerGame` (with `shootAgain: false`), or on
   `GAME_OVER`, or on `FORFEIT`. The host keeps rotating among players whose games have not ended. A
   `GAME_OVER` for a game that has already ended is answered with `REJECT` (`unexpected_state`).
