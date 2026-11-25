@@ -8,11 +8,12 @@
  * at the RECONNECT, and a ball end reported into the dead link is sent again.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { GameFingerprint, Message, ParticipantInfo, PayloadOf } from '@castcade/protocol';
+import { parseMessage, type GameFingerprint, type Message, type ParticipantInfo, type PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { DEFAULT_DISCONNECT_GRACE_MS, HostMatch } from './host.js';
 import { generateKeys, type KeyPair } from './keys.js';
+import { hashEntry, MatchLog, type LogEntry, type LogEntryBody } from './log.js';
 import { MemoryBus } from './transport.js';
 import { WsPeerTransport } from './transport-ws.js';
 
@@ -440,5 +441,89 @@ describe('A18: what follows from "inside the grace it is not a disconnect" (revi
     await flush();
     // With the default five seconds on this manual clock nothing would have been raised.
     expect(left).toEqual(['b']);
+  });
+});
+
+/**
+ * What a 0.2.46 to 0.2.50 client does with an accepted RECONNECT_ACK, written out from the v0.2.50 tag
+ * (`client.ts` `onReconnectAck` and `mergeEntries`; `log.ts` is unchanged since) and run here on the frame as the host
+ * sent it, on a copy of the log that client held when it sent its RECONNECT. It appends the entries after its head,
+ * checking each `prevHash` and `hash`, then compares the head it ends at with the `logHash` the ACK names, and raises
+ * `desync` (`reconnect.entries`) when they differ. Returns that desync, or null when the ACK describes the log it
+ * carries. (The ACK's `logLength` is not looked at by that client; it is asserted beside this.)
+ */
+function ackAsZeroTwoFifty(held: LogEntry[], ack: PayloadOf<'RECONNECT_ACK'>): { expected: string; actual: string } | null {
+  const log = MatchLog.fromJSON(held);
+  let chained = true;
+  for (const raw of ack.entries) {
+    if (raw.index < log.length) {
+      if (log.at(raw.index)?.hash !== raw.hash) {
+        chained = false;
+        break;
+      }
+      continue;
+    }
+    if (raw.index !== log.length || raw.prevHash !== log.head().hash) {
+      chained = false;
+      break;
+    }
+    const message = raw.message === undefined ? undefined : parseMessage(raw.message);
+    const body: LogEntryBody = { index: raw.index, prevHash: raw.prevHash, ts: raw.ts, kind: raw.kind, from: raw.from };
+    if (message !== undefined) body.message = message;
+    if (raw.event !== undefined) body.event = raw.event;
+    if (hashEntry(body) !== raw.hash) {
+      chained = false;
+      break;
+    }
+    log.append({ ts: raw.ts, kind: raw.kind, from: raw.from, message, event: raw.event });
+  }
+  const head = log.head();
+  return !chained || head.hash !== ack.logHash ? { expected: ack.logHash, actual: head.hash } : null;
+}
+
+describe('A18: the RECONNECT_ACK that carries the pause for an older grant holder names the head of the log it carries', () => {
+  /**
+   * An older client holds the grant and reconnects (`how`); the ACK the host sends it is taken off the wire and put
+   * through 0.2.50's check. Before the fix the host read the head for the ACK first and committed the pause after:
+   * `logHash` was one entry behind `entries`, and that client raised `desync` at the very reconnect the pause is for.
+   */
+  async function ackFor(how: 'a drop inside the grace' | 'no drop noted') {
+    const m = await wsMatch(DEFAULT_DISCONNECT_GRACE_MS, 60);
+    asBefore(m.client);
+    m.host.localBallEnd(100, 'nvram');
+    await until(() => m.client.myGrant?.ballNumber === 1);
+    const acks: PayloadOf<'RECONNECT_ACK'>[] = [];
+    m.ct.onMessage((_from, msg) => {
+      if (msg.type === 'RECONNECT_ACK') acks.push(msg.payload);
+    });
+    const desyncs: string[] = [];
+    m.client.on('desync', (d) => desyncs.push(d.context));
+    // The log this client holds when its RECONNECT goes out (nothing reaches it between here and the answer).
+    const held = JSON.parse(JSON.stringify(m.client.log.toJSON())) as LogEntry[];
+    if (how === 'a drop inside the grace') m.ct.dropLinks('h');
+    else m.client.relinkTo('h');
+    await until(() => acks.length === 1 && m.seen.some((x) => x.startsWith('c:reconnected')));
+    return { m, ack: acks[0]!, held, desyncs };
+  }
+
+  it.each(['a drop inside the grace', 'no drop noted'] as const)('%s: one entry, the PAUSE; the head the ACK names is the head after it, and a 0.2.50 client raises no desync', async (how) => {
+    const { m, ack, held, desyncs } = await ackFor(how);
+    expect(ack.accept).toBe(true);
+    expect(ack.entries.map((e) => e.message?.type)).toEqual(['PAUSE']);
+    expect(ack.entries[0]?.message).toMatchObject({ payload: { reason: 'disconnect', player: 'c' } });
+    // The ACK describes the log it carries: its head is the host's head, which is the PAUSE's hash and position.
+    expect({ hash: ack.logHash, length: ack.logLength }).toEqual(m.host.log.head());
+    expect(ack.logHash).toBe(ack.entries[0]?.hash);
+    expect(ack.logLength).toBe(held.length + 1);
+    // 0.2.50's own check on that frame, and the same check as this build's client made it.
+    expect(ackAsZeroTwoFifty(held, ack)).toBeNull();
+    expect(desyncs).toEqual([]);
+    expect(m.client.log.head()).toEqual(m.host.log.head());
+  });
+
+  it('the check itself: an ACK whose `logHash` is one entry behind its entries is a desync for a 0.2.50 client', async () => {
+    const { ack, held } = await ackFor('no drop noted');
+    const before = held[held.length - 1]!.hash;
+    expect(ackAsZeroTwoFifty(held, { ...ack, logHash: before, logLength: held.length })).toEqual({ expected: before, actual: ack.entries[0]!.hash });
   });
 });

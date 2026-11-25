@@ -2216,9 +2216,9 @@ export class HostMatch {
 
   private onReconnect(linkFrom: PlayerId, msg: Message<'RECONNECT'>): void {
     const code = this.checkReconnect(msg);
-    const head = this.s.log.head();
     const matchId = this.s.state.matchId ?? this.matchId;
     if (code !== null) {
+      const head = this.s.log.head();
       this.s.transport.send(linkFrom, this.s.build('RECONNECT_ACK', { accept: false, code, entries: [], logHash: head.hash, logLength: head.length }, matchId));
       this.events.emit('reconnectRejected', { playerId: msg.from, code });
       this.s.transport.closePeer?.(linkFrom);
@@ -2244,6 +2244,11 @@ export class HostMatch {
       this.pauseBehind(msg.from);
       legacyPause = true;
     }
+    // The head is read HERE, after that pause is committed, with the entries it belongs to: the answer names the head
+    // of the log it carries. (Read before the pause, `logHash` was one entry behind `entries`, and the client, which
+    // compares the head it ends at with the one the answer names, raised `desync` at the very reconnect the pause is
+    // for: 0.2.46 to 0.2.50 and this build alike. Found on PR 126, 2026-11-24.)
+    const head = this.s.log.head();
     const entries = this.s.log.entries().slice(msg.payload.logLength);
     // A17: in a lobby an answer of more than one page says `more` and the rest follows in MATCH_LOG (a log of 600
     // entries is over the relay's 256 KB as one frame). Without a lobby the answer is one frame, as it was.
