@@ -28,7 +28,10 @@ participants are **clients**; the turn token is a **grant**.
   `RECONNECT_ACK` have had the same shape since protocol 2. A host up to 0.2.50 answered a `HELLO` in its
   own version, which the asker could not decode, and a `RECONNECT` not at all; a client that is sent a
   frame of another version while it joins or rejoins reports both versions instead of waiting for an
-  answer.
+  answer. Nothing of the frame that is answered goes into the answer but its `v` when that is a whole
+  number (the sentence says "another version" otherwise) and, for a `RECONNECT`, a match id of letters,
+  digits, `_`, `.`, `:` and `-`: a frame from a socket that has not joined may hold anything, and no such
+  frame may make the host fail.
 - `matchId` is `null` only on `HELLO`, `HELLO_ACK` and `REFUSE`.
 
 ## Canonical JSON
@@ -295,11 +298,19 @@ to confirm the start); the host still may start, and such a match is played with
   never from the media.
 - The `rtc` connection of a pair exists from the moment both are in the lobby (A17, the build after 0.2.50): a
   participant opens its side to everyone in the roster as it learns of them (`HELLO_ACK`, sent again on every
-  change) and closes it for one who is no longer listed. `MATCH_READY`, `NEXT_GAME`, `RESULT`, `MATCH_END` and an
-  accepted `RECONNECT` open and close nothing: the voice of the lobby is the voice of the match. A participant on
+  change) and closes it for one who is no longer listed. `MATCH_READY`, `NEXT_GAME`, `RESULT` and an accepted
+  `RECONNECT` open and close nothing: the voice of the lobby is the voice of the match. A participant on
   0.2.46 to 0.2.50 opens its side at `MATCH_READY`, as every build did. It holds the offer and the candidates it was
-  sent before that (64 signals per peer) and answers them then, and an offer without an answer is sent again every
-  few seconds, so the voice with such a participant starts with the match, as it did.
+  sent before that (64 signals per peer) and answers them then, so the voice with such a participant starts with the
+  match, as it did. An offer the peer has never answered is sent again after 5 s and then less and less often (up to
+  5 minutes apart), so that a long lobby leaves that participant a handful of copies to answer; when the peer then
+  offers by itself, the side whose offer wins the collision sends its own again at once. An answer whose m-lines are
+  not those of the offer that is waiting was made for an older offer and is dropped.
+- Nobody's microphone is sent to a participant once the lobby they shared is over, or either has left it. A client
+  that loses the host before `MATCH_READY` (the host left, its link closed, the room was closed, or the client's own
+  link dropped: in the lobby none of these is followed by a `RECONNECT`) closes every `rtc` connection at once,
+  those to the other clients too: no roster will tell it who is still there. So does every participant at
+  `MATCH_END`, and a client whose host is gone between two games.
 - A dropped match link is not a dropped media connection (A18): the two are different paths, and a participant
   keeps every media connection that is itself still connected through a drop and a reconnect of the match link.
   Only a connection that is not connected any more is closed, and made again when its peer is back (the peer

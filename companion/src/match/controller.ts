@@ -1538,7 +1538,7 @@ export class MatchController {
     this.lobby = participants.map((p) => ({ ...p }));
     // A17 (2026-11-24): the voice follows the lobby's roster: a player who joins is connected at once, one who is no
     // longer listed is let go. (Until 0.2.50 nobody was connected before MATCH_READY.)
-    if (this.phase === 'lobby') this.followLobbyVoice(participants.map((p) => p.playerId));
+    if (this.phase === 'lobby' && !this.seriesOver) this.followLobbyVoice(participants.map((p) => p.playerId));
     this.push();
   }
 
@@ -1602,15 +1602,39 @@ export class MatchController {
     this.push();
   }
 
-  /** A10: no next game follows. Every table is unlocked (solo play works again); the panel keeps the standings. */
+  /**
+   * A10: no next game follows. Every table is unlocked (solo play works again); the panel keeps the standings.
+   * A17 step 1 (the review of PR 127): and every voice connection is let go at once. Nothing follows in this lobby
+   * (the host ended the match or is gone), and the players in it must not go on hearing each other through the
+   * seconds the panel lingers, or for ever in a lobby that never started: nobody's microphone is sent to a person
+   * once the lobby they shared is over. (When a match's end stops being the lobby's end, step 7, this goes with it.)
+   */
   private onSeriesOver(line: string): void {
     if (this.seriesOver) return;
     this.seriesOver = true;
     this.seriesOverLine = line;
+    this.syncVoice();
     this.endInitialsHold('the match ended');
     this.setLocked(false);
     this.opts.log(`match: ${line}`);
     this.push();
+  }
+
+  /**
+   * A17 step 1 (the review of PR 127): a client has lost the host in the lobby: the host left or quit, its Castcade
+   * died, ArcAid closed or lost the room, or this PC's own link to the host dropped. In the lobby nobody comes back
+   * from that (a drop there is a leave, and the host has taken this PC off its roster), and no roster will ever say
+   * again who is in the lobby. Until 0.2.50 that dead lobby was silent; with the voice connected from the join on,
+   * two clients went on hearing each other in it until each pressed Leave. So the lobby is over for this PC: every
+   * voice connection is let go at once, the panel and the Match tab say so, and the shell closes the match after its
+   * usual linger (`scheduleSeriesEnd`).
+   */
+  private onLobbyLost(): void {
+    if (this.seriesOver) return;
+    this.clearCountdown();
+    this.onSeriesOver(
+      `The lobby is over: the link to ${this.nameOf(this.hostId)}'s Castcade is gone (they left or closed Castcade, or the connection dropped). Nobody hears your microphone any more. Join again to play.`,
+    );
   }
 
   private onRigUpdated(id: PlayerId, rig: ParticipantInfo['rig']): void {
@@ -1711,9 +1735,12 @@ export class MatchController {
 
   private onPeerLeft(id: PlayerId): void {
     this.left.add(id);
-    // A drop in the lobby is a leave (the host takes the player off the roster): the voice to them goes with it.
-    if (this.phase === 'lobby') this.dropVoice(id);
-    else this.closeDeadMedia(id);
+    // A drop in the lobby is a leave (the host takes the player off the roster): the voice to them goes with it. For
+    // a client the one link it has is the host's: without it the lobby is over, and everybody is let go.
+    if (this.phase === 'lobby') {
+      if (!isHostRole(this.role) && id === this.hostId) this.onLobbyLost();
+      else this.dropVoice(id);
+    } else this.closeDeadMedia(id);
     if (isHostRole(this.role)) this.lobby = this.role.state.phase === 'lobby' ? this.role.roster() : this.lobby;
     this.push();
   }
@@ -1771,6 +1798,8 @@ export class MatchController {
    * the media layer has attached nothing is sent (it would drop the call); `ensureAttached` runs this when it has.
    */
   private syncVoice(): void {
+    // Nothing follows in this lobby (`onSeriesOver`): nobody is wanted any more, whoever names them.
+    if (this.seriesOver) this.voiceWanted.clear();
     const media = this.opts.media;
     if (!media || this.closed || !this.mediaReady) return;
     for (const id of [...this.voiceHeld]) {
@@ -2319,6 +2348,8 @@ export class MatchController {
   }
 
   private panelMessage(): string | null {
+    // A17 step 1: a lobby this PC has lost says so, over anything else (`onLobbyLost`).
+    if (this.phase === 'lobby' && this.seriesOver) return this.seriesOverLine;
     if (this.message) return this.message;
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;

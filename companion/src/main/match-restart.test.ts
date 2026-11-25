@@ -341,6 +341,45 @@ describe('a client restarted in the middle of a match (A15)', () => {
     expect(existsSync(C2.lock)).toBe(false);
   }, 40_000);
 
+  it('the review of PR 127: a rejoin that is not taken back (the match ended while Castcade was closed): the panel page that came up for the attempt, with its microphone, is closed with it', async () => {
+    const { hr, cr, H, C } = await started();
+    hr.gameStart();
+    hr.score(1, 200);
+    await until(() => scoreOf(C.mh, 'Host') === 200);
+    await closes(C);
+    crashed(C);
+    await H.mh.leave();
+
+    // The page as the match host drives it: the attach, the peers it is given, the detach.
+    const page = { attached: false, attaches: 0, detaches: 0, added: [] as string[] };
+    const media = {
+      async attach() {
+        page.attached = true;
+        page.attaches++;
+      },
+      addPeer: (p: string) => void page.added.push(p),
+      removePeer: () => undefined,
+      setSending: () => undefined,
+      setPanelState: () => undefined,
+      setMuted: () => undefined,
+      status: () => ({ attached: page.attached, sending: false, peers: {}, mic: 'open', captureSource: null, lastError: null }),
+      onStatus: () => () => undefined,
+      frames: () => null,
+      showPanel: () => undefined,
+      async detach() {
+        page.attached = false;
+        page.detaches++;
+      },
+    };
+    const C2 = castcade('guest', cr.w, C.dir, { rejoinTimeoutMs: 1500, media: media as never });
+    await expect(C2.mh.rejoin()).rejects.toThrow(/The match may be over, or its host away for the moment/);
+    // The attempt brought the page up (a match picked up again names its players at once, as it did before the voice
+    // came with the join; what the page offers goes over the link to the host, which is not there). When the attempt
+    // is over the page is gone: no microphone stays open for a match this PC is not in.
+    expect(page).toMatchObject({ attaches: 1, detaches: 1, attached: false });
+    expect(C2.mh.status()).toMatchObject({ role: 'none', phase: 'none' });
+  }, 40_000);
+
   it('the host passed the turn by hand while this player was away: the ball that then drained is not reported for the next grant', async () => {
     const { hr, cr, H, C } = await started();
     hr.gameStart();
