@@ -28,11 +28,39 @@
  * notes it (`MenuState.confirmFor`), and a second choose for another grant (the table ended the ball with an extra
  * ball in between: the same ball number, another score) only asks again. And the question says what becomes of a
  * ball that is still on the table: it is played out at the next turn.
+ *
+ * A17 step 7 (2026-11-25, alpha-match.md section 11.9): in a lobby (`MenuFacts.lobby`) the menu is every member's,
+ * and its lines are the lobby's: Start match / Next game for anyone (off with the sentence of the check that fails; a
+ * second choose where Start anyway is needed; **Start without Dana** while a start waits, **Cancel the start** while
+ * one is announced), Start a new match when it applies, Play or watch (a choose flips it), the volumes and the
+ * microphone as before, End my ball, Give up this game, End match (between games; on the lobby's PC during a game:
+ * End match for everyone), the lobby PC's answers about a player who is away, and Leave lobby (the lobby's PC:
+ * Close lobby). Without `lobby` in the facts the menu is the one it was. The table is changed on the Match tab only.
  */
 
 import type { PanelMenu } from '../media/match-media-types.js';
 
-export type MenuItemId = 'start' | 'next' | 'voice' | 'theirTable' | 'myTable' | 'mic' | 'scoreboard' | 'endBall' | 'leave' | 'close';
+export type MenuItemId =
+  | 'start'
+  | 'next'
+  | 'voice'
+  | 'theirTable'
+  | 'myTable'
+  | 'mic'
+  | 'scoreboard'
+  | 'endBall'
+  | 'leave'
+  | 'close'
+  // A17 step 7: the lobby's lines.
+  | 'cancelStart'
+  | 'newMatch'
+  | 'stance'
+  | 'giveUp'
+  | 'endMatch'
+  | 'awayWait'
+  | 'awayEnd'
+  | 'awayPlayOn'
+  | 'playOn';
 export type MenuVolume = 'voice' | 'theirTable' | 'myTable';
 
 /** What the match host knows that decides the menu's lines. */
@@ -63,6 +91,32 @@ export interface MenuFacts {
    * in facts from before it): no such line (it is not this player's ball, or the match is paused).
    */
   endBall?: { ball: number; score: number; grantSeq?: number; tableBall?: boolean } | null;
+  /**
+   * A17 step 7: the match is in a lobby: the lines are the lobby's (the file header). Null or absent: no lobby, the
+   * menu as it was.
+   */
+  lobby?: MenuLobby | null;
+}
+
+/** A17 step 7: what the match host knows of the lobby that decides the menu's lines. */
+export interface MenuLobby {
+  /** This PC opened the lobby: its Leave closes the lobby for everyone. */
+  opener: boolean;
+  stance: 'play' | 'watch';
+  /** The start line: its words (Start match, Next game) and why it cannot be chosen now (null: it can). */
+  start: { label: string; off: string | null };
+  /** A start is announced. `without`: while it waits for people or 3D, the words of the second press ("Start without Dana"). */
+  announced: { without: string | null } | null;
+  /** Start a new match applies: a match is open between games and somebody outside it is set to Play. */
+  newMatch: boolean;
+  /** What End match would end: the open match, between games; on the lobby's PC during a game, the match for everyone. */
+  end: 'match' | 'everyone' | null;
+  /** This player plays the game that is being played and may give it up. */
+  giveUp: boolean;
+  /** The lobby's PC: the name of the player the game waits for at their own turn; null: nobody. */
+  waitedFor: string | null;
+  /** The lobby's PC: that player is up, out of reach and still seen playing: the three answers, and the score their ball would end at. */
+  awayQuestion: { name: string; score: number } | null;
 }
 
 export interface MenuItem {
@@ -95,6 +149,7 @@ export function endBallQuestion(b: { score: number; tableBall?: boolean }): stri
 
 export function menuItems(f: MenuFacts): MenuItem[] {
   const items: MenuItem[] = [];
+  if (f.lobby) return lobbyItems(f, f.lobby);
   if (f.role === 'host' && f.phase === 'lobby') {
     items.push({
       id: 'start',
@@ -148,6 +203,78 @@ export function menuItems(f: MenuFacts): MenuItem[] {
   return items;
 }
 
+/** The lines every menu has: the three volumes, the microphone, the scoreboard's place and End my ball. */
+function commonItems(f: MenuFacts, items: MenuItem[]): void {
+  items.push({ id: 'voice', label: 'Voice volume', value: `${f.voice} %`, off: null, confirm: null });
+  items.push({ id: 'theirTable', label: 'Their table sound', value: `${f.theirTable} %`, off: null, confirm: null });
+  items.push({ id: 'myTable', label: 'My table while I play', value: `${f.myTable} %`, off: null, confirm: null });
+  items.push({
+    id: 'mic',
+    label: 'Microphone',
+    value: f.mic === 'open' ? 'ON' : f.mic === 'muted' ? 'MUTED' : 'NONE',
+    off: f.mic === 'unavailable' ? 'No microphone on this PC' : null,
+    confirm: null,
+  });
+  if (f.scoreboardPlace !== null) {
+    items.push({
+      id: 'scoreboard',
+      label: 'Put the scoreboard where I look',
+      value: null,
+      off:
+        f.scoreboardPlace === 'old_layer'
+          ? 'Restart VPX first: until then the scoreboard follows your head'
+          : f.scoreboardPlace === 'not_connected'
+            ? 'The headset is not showing Castcade yet'
+            : null,
+      confirm: null,
+    });
+  }
+  if (f.endBall) items.push({ id: 'endBall', label: 'End my ball', value: null, off: null, confirm: endBallQuestion(f.endBall) });
+}
+
+/** A17 step 7 (alpha-match.md section 11.9): the menu of a member of a lobby, top to bottom. */
+function lobbyItems(f: MenuFacts, l: MenuLobby): MenuItem[] {
+  const items: MenuItem[] = [];
+  const game = f.phase === 'playing' || f.phase === 'paused';
+  if (l.announced) {
+    // A second choose while a start waits starts without what it waits for; anybody takes a start back.
+    if (l.announced.without !== null) items.push({ id: 'start', label: l.announced.without, value: null, off: null, confirm: null });
+    items.push({ id: 'cancelStart', label: 'Cancel the start', value: null, off: null, confirm: null });
+  } else if (!game) {
+    // Not while a game is being played: nothing can start then, and the first line of the menu is not one that is off.
+    items.push({
+      id: 'start',
+      label: l.start.label,
+      value: null,
+      off: l.start.off,
+      confirm: l.start.off === null && f.startWarnings.length > 0 ? `${f.startWarnings.join(' · ')}. Choose again to start anyway` : null,
+    });
+    if (l.newMatch) items.push({ id: 'newMatch', label: 'Start a new match', value: null, off: null, confirm: 'Choose again: the open match ends' });
+  }
+  items.push({ id: 'stance', label: 'Play or watch', value: l.stance === 'play' ? 'PLAY' : 'WATCH', off: null, confirm: null });
+  commonItems(f, items);
+  if (l.giveUp) items.push({ id: 'giveUp', label: 'Give up this game', value: null, off: null, confirm: 'Choose again to give up this game' });
+  if (l.awayQuestion) {
+    const who = l.awayQuestion.name;
+    items.push({ id: 'awayWait', label: `Keep waiting for ${who}`, value: null, off: null, confirm: null });
+    items.push({ id: 'awayEnd', label: `End ${who}'s ball`, value: null, off: null, confirm: `Choose again to end ${who}'s ball at ${l.awayQuestion.score.toLocaleString('en-US')}; the turn passes` });
+    items.push({ id: 'awayPlayOn', label: `Play on without ${who}`, value: null, off: null, confirm: `Choose again: ${who} is out of this game` });
+  } else if (l.waitedFor !== null) {
+    items.push({ id: 'playOn', label: `Play on without ${l.waitedFor}`, value: null, off: null, confirm: `Choose again: ${l.waitedFor} is out of this game` });
+  }
+  if (l.end === 'match') items.push({ id: 'endMatch', label: 'End match', value: null, off: null, confirm: 'Choose again to end the match; everyone stays in the lobby' });
+  if (l.end === 'everyone') items.push({ id: 'endMatch', label: 'End match for everyone', value: null, off: null, confirm: 'Choose again to end the match for everyone: the game being played gets no result' });
+  items.push({
+    id: 'leave',
+    label: l.opener ? 'Close lobby' : 'Leave lobby',
+    value: null,
+    off: null,
+    confirm: l.opener ? 'Choose again to close the lobby for everyone' : 'Choose again to leave the lobby',
+  });
+  items.push({ id: 'close', label: 'Close menu', value: null, off: null, confirm: null });
+  return items;
+}
+
 export interface MenuState {
   open: boolean;
   /** The chosen line, by id: the lines change with the match (Start match goes at the start), the choice stays put. */
@@ -165,7 +292,16 @@ export const MENU_CLOSED: MenuState = { open: false, at: null, confirming: null,
 export type MenuKey = 'menu' | 'choose' | 'up' | 'down' | 'left' | 'right';
 
 export type MenuEffect =
-  | { kind: 'start'; anyway: boolean }
+  /** `now` (A17 step 7): the second choose while a start waits: start without what it waits for. */
+  | { kind: 'start'; anyway: boolean; now?: boolean }
+  /** A17 step 7: the lobby's choices. */
+  | { kind: 'cancelStart' }
+  | { kind: 'newMatch' }
+  | { kind: 'stance'; to: 'play' | 'watch' }
+  | { kind: 'giveUp' }
+  | { kind: 'endMatch' }
+  | { kind: 'away'; answer: 'wait' | 'end_ball' | 'play_on' }
+  | { kind: 'playOn' }
   | { kind: 'next' }
   /** `to`: the new value in percent, already inside the line's range. */
   | { kind: 'volume'; which: MenuVolume; to: number }
@@ -219,7 +355,26 @@ export function menuPress(state: MenuState, items: readonly MenuItem[], facts: M
   }
   switch (item.id) {
     case 'start':
-      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null } };
+      return { state: MENU_CLOSED, effect: { kind: 'start', anyway: item.confirm !== null, ...(facts.lobby?.announced ? { now: true } : {}) } };
+    case 'cancelStart':
+      return { state: MENU_CLOSED, effect: { kind: 'cancelStart' } };
+    case 'newMatch':
+      return { state: MENU_CLOSED, effect: { kind: 'newMatch' } };
+    case 'stance':
+      // The menu stays open: the line shows the new choice.
+      return { state: here, effect: { kind: 'stance', to: facts.lobby?.stance === 'play' ? 'watch' : 'play' } };
+    case 'giveUp':
+      return { state: MENU_CLOSED, effect: { kind: 'giveUp' } };
+    case 'endMatch':
+      return { state: MENU_CLOSED, effect: { kind: 'endMatch' } };
+    case 'awayWait':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'wait' } };
+    case 'awayEnd':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'end_ball' } };
+    case 'awayPlayOn':
+      return { state: MENU_CLOSED, effect: { kind: 'away', answer: 'play_on' } };
+    case 'playOn':
+      return { state: MENU_CLOSED, effect: { kind: 'playOn' } };
     case 'next':
       return { state: MENU_CLOSED, effect: { kind: 'next' } };
     case 'mic':

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { io as ioClient, type Socket as ClientSocket } from 'socket.io-client';
 import { buildMessage, decodeFrame, PROTOCOL_VERSION, type AnyMessage } from '@castcade/protocol';
 import { startFakeRelay, type FakeRelay } from './relay-fake.test-support.js';
-import { CompositeTransport, dropWords, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
+import { CompositeTransport, DEFAULT_REJOIN, dropWords, LOBBY_REJOIN, rejoinGapAfter, RelayClientTransport, RelayError, RelayHostTransport, RelayPacer, relayEndpoint, RELINK, type RelayOptions } from './transport-relay.js';
 import { ForeignVersionError, foreignVersionOf, foreignVersionRefusal, PROTOCOL_SINCE_RELEASE, WsPeerTransport } from './transport-ws.js';
 
 const ZERO = '0'.repeat(64);
@@ -567,6 +567,37 @@ describe('relay transports (D10.8)', () => {
     expect(foreignVersionOf(frame({}))).toBe(5);
     expect(foreignVersionOf(frame({ v: PROTOCOL_VERSION }))).toBeNull();
     expect(foreignVersionOf('nope')).toBeNull();
+  });
+
+  it("A17 step 7: the asks of a lobby's member for a room that is gone (`LOBBY_REJOIN`): at once, 2 s and 8 s later, then every 150 s; never more than six in any ten minutes, under ArcAid's eight, and never stopping in the twenty minutes a member waits", () => {
+    // Every ask misses (the lobby's PC is gone for the whole wait). The arithmetic is the transport's own: the misses
+    // inside the window, the cap, and the gap after the n-th miss (`rejoinGapAfter`, which `join` uses).
+    const p = LOBBY_REJOIN;
+    const wait = 20 * 60_000;
+    const asks: number[] = [];
+    let misses: number[] = [];
+    let t = 0;
+    let capped = false;
+    while (t <= wait) {
+      misses = misses.filter((m) => t - m < p.windowMs);
+      if (misses.length >= p.maxMisses) {
+        capped = true;
+        break;
+      }
+      asks.push(t);
+      misses.push(t);
+      t += rejoinGapAfter(p, misses.length);
+    }
+    expect(asks.slice(0, 6)).toEqual([0, 2_000, 8_000, 158_000, 308_000, 458_000]);
+    expect(capped).toBe(false);
+    // In any ten minutes: six at the most (the first ten), four once the first three have left the window.
+    const inWindow = (end: number): number => asks.filter((a) => a > end - 600_000 && a <= end).length;
+    expect(Math.max(...asks.map(inWindow))).toBe(6);
+    expect(inWindow(asks.at(-1)!)).toBe(4);
+    // A lobby's PC that is back is asked for within two and a half minutes, whenever it comes back.
+    expect(Math.max(...asks.slice(1).map((a, i) => a - asks[i]!))).toBe(150_000);
+    // The policy of a match before the lobby gave up after five asks, 18 s in: a member would not ask again for ten minutes.
+    expect(DEFAULT_REJOIN.maxMisses).toBe(5);
   });
 
   it('relayEndpoint: the origin, and a path in the base URL as the socket.io path prefix', () => {

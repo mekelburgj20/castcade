@@ -99,13 +99,39 @@
  *     anywhere every player sees one line (`midnightSettingLine`): on the Match tab from the lobby on, and on the
  *     panel for `MIDNIGHT_LINE_MS` at each game's start. A rig that said nothing is left out, never guessed. Nothing
  *     is written to anyone's NVRAM.
+ * - A17 step 7 (2026-11-25, docs/design/alpha-match.md section 11: "a lobby that outlives a match"). When the role is
+ *   a lobby's (`HostMatch` / `ClientMatch` made with the `lobby` option, which the companion's shell always sets from
+ *   protocol 7 on) this controller lives from Open lobby / Join lobby to Leave / Close, across any number of matches.
+ *   With a role whose option is off nothing here behaves differently (every rule above is that mode's). In a lobby:
+ *   - **the one source is the lobby as its PC last said it** (`HELLO_ACK`, in every phase: the host's `lobby` event,
+ *     a client's `joined` / `roster`): the members with their choices (Play or Watch), who is away, the starter,
+ *     the open match, the start that is announced. `participants()` is the members in every phase; the panel's
+ *     `players` are the open match's players (the members while none is open).
+ *   - **a match's end is "back to the lobby"** (`onMatchEnded`): the scores, the result and what was counted per
+ *     game go, the series stays on the panel until the next start, the voice and every connection stay. `seriesOver`
+ *     means the LOBBY is over for this PC (it was closed, or its PC did not come back): only then is the voice let
+ *     go and every table unlocked for good.
+ *   - **a start is asked for, by anyone** (`requestStart`, section 11.4): from the Match tab or the menu, or by a
+ *     game the STARTER begins on their own table (`fromTable`). That game is the match's first only when the lobby's
+ *     PC announces a start with this player first; anybody else's game on a table, and the starter's when it is
+ *     refused, is a game of their own, which the lobby is told (`ownGame`) and a start waits for. What the table
+ *     says while the start counts down is kept for the first grant (A18's `heldFeed`).
+ *   - **the lock outside a turn** (`lobbyLockWanted`, the table of section 11.2): in the lobby every table is its
+ *     owner's; while a start counts down the tables of the people in it are locked, unless a game runs on one;
+ *     between games the players of the open match are locked but the starter; during a game a member who is not in
+ *     it (a watcher, the lobby's PC that only watches) is locked while it is played, unless a game of their own is
+ *     running, and never gets a grant. A player's lock follows the turn as it always did.
+ *   - **a member who is not in the game reports nothing** (`myGameOver` from MATCH_READY / NEXT_GAME on): no
+ *     GAME_OVER at their table's game end, no FORFEIT when their table closes or they leave.
+ *   - **away is not gone** (A18's rule in every phase): a member whose link dropped keeps the voice while that
+ *     connection is itself up; the lobby's PC away is said on a client's panel, and nothing closes.
  */
-import type { GrantBody, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
+import type { GrantBody, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
 import { midnightLine, midnightSettingLine, possessive } from '../witness/midnight.js';
 import type { ClientMatch } from './client.js';
-import type { HostMatch } from './host.js';
+import type { HostMatch, StartAsk } from './host.js';
 import type { MatchState } from './state.js';
 import { START_WAIT_MS } from './stream3d.js';
 
@@ -117,6 +143,46 @@ export type HostRole = Pick<
 /** What a client-side role must offer (structurally a ClientMatch). */
 export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'log' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory' | 'reportMidnightMode'>;
 export type MatchRole = HostRole | ClientRole;
+
+/** A17 step 7: what a lobby's role offers beyond a match's (the engines made with the `lobby` option). */
+export type LobbyHostRole = HostRole &
+  Pick<HostMatch, 'isLobby' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateLocal' | 'announcedStart' | 'waitedFor' | 'members' | 'stanceOf' | 'starter' | 'openMatch' | 'table' | 'publicKey'>;
+export type LobbyClientRole = ClientRole & Pick<ClientMatch, 'isLobby' | 'isJoined' | 'requestStart' | 'cancelStart' | 'requestEnd' | 'updateParticipant' | 'holdsOpenLog' | 'hostAway'>;
+/** A17 step 7: the role is a lobby's (its engine was made with the `lobby` option). */
+export function isLobbyRole(role: MatchRole): boolean {
+  return (role as { isLobby?: boolean }).isLobby === true;
+}
+
+/** A17 step 7: what is wrong, or special, about a member's row (the Match tab's roster; design section 11.3). */
+export type LobbyFlag = 'away' | 'loading' | 'no_table' | 'other_table' | 'own_game';
+
+/** A17 step 7: the lobby as this controller knows it, for the Match tab and the in-game menu. Null without a lobby. */
+export interface LobbyStatus {
+  /** This member's own choice, as the lobby's PC holds it. */
+  stance: Stance;
+  /** The one member whose Start on their own table asks for a game; null: nobody can. */
+  starter: PlayerId | null;
+  /** Every member, the lobby's PC first, then in the order they joined. */
+  members: Array<{ id: PlayerId; name: string; rig: ParticipantInfo['rig']; stance: Stance; opener: boolean; me: boolean; starter: boolean; inMatch: boolean; flags: LobbyFlag[] }>;
+  /** The match that is open: its id, the game, whether one is being played, and its players. Null: none. */
+  match: { id: string; game: number; state: 'game' | 'between'; players: PlayerId[] } | null;
+  /** The start that is announced: counting down (`seconds`) or waiting (`waitsFor`), in one line. Null: none. */
+  start: { by: PlayerId; players: PlayerId[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: PlayerId[]; seconds: number | null; line: string } | null;
+  /** The start button: its words, the line that says what a press does, and why it cannot be pressed now (null: it can). */
+  startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
+  /** "Start a new match": there while a match is open between games and somebody outside it is set to Play. */
+  newMatch: { line: string } | null;
+  /** While a start waits for people or for 3D: the words of the second press ("Start without Dana"). Null: none. */
+  startWithout: string | null;
+  /** What End match would end: the open match between games (anyone), or the game being played, for everyone (the lobby's PC only). */
+  end: 'match' | 'everyone' | null;
+  /** A player of the game being played may give it up. */
+  giveUp: boolean;
+  /** A client: the lobby's PC is away, since when, and until when this PC goes on trying (null: no limit by time). */
+  hostAway: { since: number; until: number | null } | null;
+  /** The lobby is over for this PC (it was closed, or its PC did not come back): nothing follows. */
+  over: boolean;
+}
 
 /** A HostMatch plays through `local*`; a ClientMatch through `report*` (host.ts / client.ts). */
 export function isHostRole(role: MatchRole): role is HostRole {
@@ -204,6 +270,13 @@ export interface ControllerStatus {
    * game's start, the newest flagged ball for as long, and keeps the flag on the player's row.
    */
   advisories: string[];
+  /** A17 step 7: the lobby (members, choices, the starter, the open match, the announced start); null when the role is no lobby's. */
+  lobby: LobbyStatus | null;
+  /**
+   * A17 step 7: a game the match does not own is running on this player's table, as the lobby was told (design
+   * 11.3). While a game of the match is played the shell leaves this PC its own table, view and sound until it ends.
+   */
+  ownGame: boolean;
   panel: PanelState;
 }
 
@@ -246,6 +319,13 @@ export interface MatchControllerOptions {
    * Absent, or false: no initials hold.
    */
   highScoreQualifies?: (score: number) => boolean;
+  /**
+   * A17 step 7: a sentence of the lobby's for this player (the answer to something they asked: a start that was
+   * refused, a start that was taken away). It is on the panel's line for a while; the shell keeps it for the Match tab.
+   */
+  onNotice?: (sentence: string) => void;
+  /** A17 step 7: this player's choice when the controller is made (match.json `stance`); the lobby's word replaces it. */
+  stance?: Stance;
 }
 
 /**
@@ -314,8 +394,16 @@ export const INITIALS_HOLD_MESSAGE = "Your score is on this table's high-score l
 export const MIDNIGHT_LINE_MS = 20_000;
 /** B26: at most this many flagged balls are kept (a match is 2–4 players, a few balls each, a few games). */
 const MIDNIGHT_KEEP = 64;
+/** A17 step 7: how long a sentence of the lobby's stays on the panel's line (`flash`). */
+export const NOTICE_MS = 12_000;
+/** A17 step 7 (design 11.9): how long the lobby's line says how the last match ended. */
+export const MATCH_OVER_LINE_MS = 20_000;
+/** A17 step 7: how long a client's game started on its table waits for the lobby's word before it counts as a game of one's own. */
+export const TABLE_ASK_WAIT_MS = 5_000;
 /** A10: the prompt for the player whose first ball of a game it is. */
 const PRESS_START_MESSAGE = 'Press Start on the table to begin your game';
+/** A17 step 7: what a member asks the lobby's PC for; its REJECT carries a sentence for the asker. */
+const LOBBY_REQUESTS: ReadonlySet<string> = new Set(['START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK', 'LEAVE_LOBBY']);
 const DEFAULT_SETTLE_MS = 2000;
 const DEFAULT_START_COUNTDOWN_MS = 5000;
 const DEFAULT_STATE_INTERVAL_MS = 100;
@@ -570,6 +658,32 @@ export class MatchController {
   /** B26.4: the setting line is on the panel until then (each game's start), and the timer that takes it off. */
   private midnightSettingUntil = 0;
   private midnightSettingTimer: unknown = null;
+  // ---- A17 step 7: the lobby (the file header) ----
+  /** The role is a lobby's: this controller lives across matches. */
+  private readonly lobbyOn: boolean;
+  /** The lobby as its PC last said it (HELLO_ACK); null before the first one. */
+  private ack: PayloadOf<'HELLO_ACK'> | null = null;
+  /** This member's choice until the lobby's PC says what it holds. */
+  private myStance: Stance;
+  /**
+   * A game began on this table and asked for a start (`fromTable`): `asked` while the lobby's word is waited for,
+   * `match` once a start is announced with this player first (the game is the match's first), `none` otherwise.
+   */
+  private tableAsk: 'none' | 'asked' | 'match' = 'none';
+  private tableAskTimer: unknown = null;
+  /** The lobby was told that a game the match does not own runs on this table (`ownGame`). */
+  private ownGameSaid = false;
+  /** A client: its link to the lobby's PC has been down for longer than the grace. */
+  private hostIsAway = false;
+  private hostAwayTimer: unknown = null;
+  /** How the last match ended, on the lobby's line until `until`. */
+  private matchOver: { line: string; until: number } | null = null;
+  private matchOverTimer: unknown = null;
+  /** The sentence on the panel's line (`flash`) and the timer that takes it off. */
+  private notice: string | null = null;
+  private noticeTimer: unknown = null;
+  /** The lock file may not be what this controller believes (a Castcade that started again): the next word is written whatever it is. */
+  private lockStale = false;
 
   constructor(opts: MatchControllerOptions) {
     this.opts = opts;
@@ -579,6 +693,10 @@ export class MatchController {
     this.stateIntervalMs = opts.stateIntervalMs ?? DEFAULT_STATE_INTERVAL_MS;
     this.tableGameRunning = opts.tableGameRunning ?? false;
     this.preMatchPlay = opts.preMatchPlay ?? 'free';
+    this.lobbyOn = isLobbyRole(opts.role);
+    this.myStance = opts.stance ?? 'play';
+    // A17 step 7: a Castcade that started again finds the lock file as the last run left it.
+    this.lockStale = this.lobbyOn && opts.resumed === true;
     this.bind(opts.role);
     if (opts.resumed && opts.role.state.phase !== 'lobby') this.restore();
   }
@@ -673,13 +791,16 @@ export class MatchController {
       transfer: this.transfer(),
       series: { game: this.gameNumber(), over: this.seriesOver, nextGameBlocker: this.nextGameBlocker() },
       ballEnds: this.ballEnds(),
-      startWarnings: this.phase === 'lobby' ? this.unreadableLines() : [],
+      // A17 step 7: in a lobby every start is checked, the next game's too.
+      startWarnings: this.phase === 'lobby' || (this.lobbyOn && this.phase === 'over') ? this.unreadableLines() : [],
       pass: this.passInfo(),
       endBall: this.endBallInfo(),
       owedTableEnds: [...this.owedSeqs],
       wait3d: this.wait3dStatus(),
       initialsHold: this.initialsHold,
       advisories: this.advisoryLines(),
+      lobby: this.lobbyStatus(),
+      ownGame: this.ownGameSaid,
       panel: this.panel(),
     };
   }
@@ -706,6 +827,15 @@ export class MatchController {
   }
 
   private wait3dStatus(): ControllerStatus['wait3d'] {
+    // A17 step 7: in a lobby the start waits inside the engine (`HELLO_ACK.start`, `waitsFor: '3d'`) and begins by
+    // itself: nothing is armed here for the shell to start. Who is waited for, and for how long, is still said.
+    if (this.lobbyOn) {
+      const s = this.ack?.start ?? null;
+      const held = s !== null && s.waitsFor === '3d';
+      const noGame = this.phase === 'lobby' || this.phase === 'over';
+      const making = noGame ? this.wait3d.filter((id) => this.lobby.some((m) => m.playerId === id) && !this.loadingIds.includes(id)) : [];
+      return { players: making, seconds: held && s.leftMs !== null ? Math.ceil(s.leftMs / 1000) : 0, armed: null };
+    }
     const w = this.wait3dNow();
     const host = isHostRole(this.role);
     return { players: w.ids, seconds: w.seconds, armed: !host || this.phase !== 'lobby' ? null : this.tabArmed ? 'tab' : this.startArmed && this.armedFor === '3d' ? 'table' : null };
@@ -834,6 +964,8 @@ export class MatchController {
   /** A10: for the host's Next game button: why not now, or null. A client is never the one to start it. */
   private nextGameBlocker(): string | null {
     const r = this.role;
+    // A17 step 7: in a lobby anyone asks, and the lobby's PC answers with the start or with a sentence.
+    if (this.lobbyOn) return this.seriesOver ? 'the lobby is closed' : null;
     if (!isHostRole(r)) return 'only the host starts the next game';
     if (this.seriesOver) return 'the match has ended';
     return r.nextGameBlocker();
@@ -914,9 +1046,9 @@ export class MatchController {
    * not open any more is loading, not unreadable: what it last said was about the table it closed.
    */
   private unreadableIds(): PlayerId[] {
-    return this.participants()
-      .map((p) => p.playerId)
-      .filter((id) => this.readyOf(id) === false && !(this.phase === 'lobby' && this.loadingIds.includes(id)));
+    // A17 step 7: in a lobby a start is checked for the people who would play it; a watcher's table holds nothing up.
+    const ids = this.lobbyOn ? this.wouldPlay(this.ack?.match?.state === 'between') : this.participants().map((p) => p.playerId);
+    return ids.filter((id) => this.readyOf(id) === false && !((this.phase === 'lobby' || this.lobbyOn) && this.loadingIds.includes(id)));
   }
 
   private unreadableLines(): string[] {
@@ -1062,6 +1194,10 @@ export class MatchController {
       const tableEnded = (this.pending !== null && !this.pending.shootAgain) || (sent !== null && !sent.byHand && !sent.again);
       if (sent?.byHand) {
         this.owedSeqs = this.owedSeqs.map((seq) => (seq === sent.grantSeq ? p.grantSeq : seq));
+      } else if (this.replaying()) {
+        // A17 step 7: the log of a match this PC joined, or came back into, in the middle of is being played to it:
+        // a pass from before says nothing about the table as it is now. What this table owes after a restart is the
+        // shell's to say, from its saved record and the passes made while Castcade was closed (`takeOwed`, `passedWhileAway`).
       } else if (!tableEnded && !this.owedSeqs.includes(p.grantSeq) && this.tableOwesAfter(p.ballNumber)) {
         this.owedSeqs.push(p.grantSeq);
         this.opts.log("match: the turn was passed with this table's ball still in play: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
@@ -1148,6 +1284,10 @@ export class MatchController {
     // A12: this player's own table game, any phase (the lobby rules read it).
     if (ev.kind === 'game_start') this.tableGameRunning = true;
     else if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.tableGameRunning = false;
+    // A17 step 7: in a lobby the game that ended may have been one the match did not own, or the one a start from
+    // the table was asked with: the lobby hears it, and the lock follows (`afterTableGameEnd`, once this event is handled).
+    const ended = this.lobbyOn && (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit');
+    if (ended) this.opts.setTimeout(() => this.afterTableGameEnd(), 0);
     // The review of PR 131: what the table owed was a ball of the game that has just begun anew, ended or gone. Not
     // at a `game_start` that is fed again: the ball was ended by hand after it, in that same game.
     if ((ev.kind === 'game_start' && !replay) || ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') this.clearOwed();
@@ -1185,7 +1325,7 @@ export class MatchController {
     }
     switch (ev.kind) {
       case 'game_start':
-        this.onTableGameStart();
+        this.onTableGameStart(replay);
         return;
       case 'current_scores': {
         if (!this.holding) return;
@@ -1234,7 +1374,7 @@ export class MatchController {
         return;
       }
       case 'game_end': {
-        if (this.phase === 'lobby') {
+        if (this.phase === 'lobby' && !this.lobbyOn) {
           this.disarmStart('the game on your table ended');
           this.onLobbyGameEnded();
         }
@@ -1251,7 +1391,7 @@ export class MatchController {
       }
       case 'game_abandoned':
       case 'table_exit': {
-        if (this.phase === 'lobby') {
+        if (this.phase === 'lobby' && !this.lobbyOn) {
           this.disarmStart(ev.kind === 'table_exit' ? 'your table closed' : 'the game on your table ended');
           this.onLobbyGameEnded();
         }
@@ -1302,6 +1442,7 @@ export class MatchController {
     this.releaseMatch();
     this.clearCountdown();
     this.clearWait3d();
+    this.clearLobbyTimers();
     for (const off of this.offs) off();
     this.offs = [];
     // The lobby's own lock (A12: the host's table before anyone joined) goes here at the latest.
@@ -1328,8 +1469,20 @@ export class MatchController {
    * The hook's `game_start` (the player pressed Start on the table). The host's starts the match from the lobby (A11)
    * or the next game between games (A10); a client's, and the host's during a game, only clear the "press Start" prompt.
    */
-  private onTableGameStart(): void {
+  private onTableGameStart(replay = false): void {
     const r = this.role;
+    // A17 step 7: in a lobby a game on a table is the starter's request, or a game of one's own (`onLobbyTableStart`).
+    if (this.lobbyOn) {
+      if ((this.phase === 'playing' || this.phase === 'paused') && this.holding) {
+        if (!this.tableStarted) {
+          this.tableStarted = true;
+          this.push();
+        }
+        return;
+      }
+      this.onLobbyTableStart(replay);
+      return;
+    }
     if (this.phase === 'playing' || this.phase === 'paused') {
       if (this.holding && !this.tableStarted) {
         this.tableStarted = true;
@@ -1523,7 +1676,8 @@ export class MatchController {
   }
 
   private countdownSeconds(): number | null {
-    if (this.countdownEnd === null || this.phase !== 'lobby') return null;
+    // A17 step 7: in a lobby the next game counts down too.
+    if (this.countdownEnd === null || !(this.phase === 'lobby' || (this.lobbyOn && this.phase === 'over'))) return null;
     return Math.max(0, Math.ceil((this.countdownEnd - this.opts.now()) / 1000));
   }
 
@@ -1551,7 +1705,10 @@ export class MatchController {
     this.noteWait3d(h.stream3dWaiting());
     if (h.state.phase === 'lobby') this.noteBallEndReady(h.ballEndReadiness());
     for (const [id, mode] of Object.entries(h.midnightModes())) if (id !== this.localId) this.midnightModes.set(id, mode);
-    this.syncLobby(h);
+    if (!this.lobbyOn) this.syncLobby(h);
+    // A17 step 7: the lobby's PC knows its lobby before it has said it to anyone (its `lobby` event comes with the
+    // first change): what the first HELLO_ACK would say is read from the engine, so the panel has it from Open lobby.
+    else this.ack = this.lobbyOf(h as LobbyHostRole);
     const offs = this.offs;
     offs.push(
       h.on('joined', (p) => {
@@ -1559,20 +1716,25 @@ export class MatchController {
         // (`left` was only ever emptied by a reconnect, which a fresh join is not).
         this.left.delete(p.playerId);
         this.mediaClosed.delete(p.playerId);
-        this.onHostLobby(h);
+        // A17 step 7: in a lobby the `lobby` event says every change, this one too.
+        if (!this.lobbyOn) this.onHostLobby(h);
       }),
     );
     // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
-    offs.push(h.on('participantUpdated', () => this.onHostLobby(h)));
-    offs.push(h.on('countdown', (c) => this.setCountdown(c.startsInMs)));
+    offs.push(h.on('participantUpdated', () => void (this.lobbyOn || this.onHostLobby(h))));
+    offs.push(h.on('countdown', (c) => void (this.lobbyOn || this.setCountdown(c.startsInMs))));
     offs.push(
       h.on('countdownCancelled', (c) => {
+        if (this.lobbyOn) return;
         this.opts.log(`match: the start from the table did not happen: ${c.reason}`);
         // I11.4.9: a start that is asked for again later is held anew.
         if (!this.tabArmed) this.endHold();
         this.setCountdown(null);
       }),
     );
+    // A17 step 7: the lobby as every member was just told, this PC's own row included: the one source in a lobby.
+    offs.push(h.on('lobby', (ack) => this.onLobbyAck(ack)));
+    offs.push(h.on('lobbyClosed', (x) => this.onLobbyOver(`The lobby is closed: ${x.reason}`)));
     offs.push(h.on('nextGame', (p) => this.onNextGame(p)));
     offs.push(
       h.on('nextGameOff', (x) => {
@@ -1582,7 +1744,7 @@ export class MatchController {
         this.push();
       }),
     );
-    offs.push(h.on('matchEnded', (p) => this.onSeriesOver(`Match over after ${p.games} game${p.games === 1 ? '' : 's'}`)));
+    offs.push(h.on('matchEnded', (p) => (this.lobbyOn ? this.onMatchEnded(p) : this.onSeriesOver(`Match over after ${p.games} game${p.games === 1 ? '' : 's'}`))));
     offs.push(h.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     offs.push(h.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
     offs.push(h.on('midnightMode', (m) => this.onMidnightMode(m.playerId, m.mode)));
@@ -1604,11 +1766,13 @@ export class MatchController {
     );
     offs.push(
       h.on('peerLeft', (id) => {
+        // A17 step 7: in a lobby a dropped link is "away", and who is away is in the lobby's own word (`onLobbyAck`).
+        if (this.lobbyOn) return;
         this.onPeerLeft(id);
         if (h.state.phase === 'lobby') this.onHostLobby(h);
       }),
     );
-    offs.push(h.on('reconnected', (r) => this.onPeerBack(r.playerId, r.quiet)));
+    offs.push(h.on('reconnected', (r) => void (this.lobbyOn || this.onPeerBack(r.playerId, r.quiet))));
     offs.push(h.on('result', (r) => this.onResult(r.result)));
     offs.push(h.on('transferProposed', () => this.push()));
     offs.push(
@@ -1632,14 +1796,28 @@ export class MatchController {
       }),
     );
     // A6 (2026-10-31): the host re-sent HELLO_ACK in the lobby (a rig or a table changed; A11: a start countdown).
+    // A17 step 7: in a lobby it comes in every phase, and is the lobby as it is now.
     offs.push(c.on('roster', (ack) => this.onClientAck(ack)));
     offs.push(c.on('nextGame', (p) => this.onNextGame(p)));
-    offs.push(c.on('matchEnded', (p) => this.onSeriesOver(`The host ended the match after ${p.games} game${p.games === 1 ? '' : 's'}`)));
+    offs.push(c.on('matchEnded', (p) => (this.lobbyOn ? this.onMatchEnded(p) : this.onSeriesOver(`The host ended the match after ${p.games} game${p.games === 1 ? '' : 's'}`))));
     offs.push(
       c.on('hostGone', () => {
-        if (this.phase === 'over') this.onSeriesOver('The host left; the match is over');
+        // A17 step 7: in a lobby `lobbyClosed` follows at once and says it.
+        if (!this.lobbyOn && this.phase === 'over') this.onSeriesOver('The host left; the match is over');
       }),
     );
+    // A17 step 7: the lobby is over for this PC: its PC closed it, did not come back in time, or the shell ended the wait.
+    offs.push(
+      c.on('lobbyClosed', (x) => {
+        // Design 11.8a: "The lobby is closed: MekelburgJ's PC did not come back"; the shell's own reasons are whole sentences.
+        const why = x.reason === "the lobby's PC did not come back" ? `${possessive(this.nameOf(this.hostId))} PC did not come back` : x.reason;
+        this.onLobbyOver(why.startsWith('The lobby') ? why : `The lobby is closed: ${why}`);
+      }),
+    );
+    // This PC's place was gone when it came back: what it held of a match is put away, and it joins again as a newcomer.
+    offs.push(c.on('rejoining', () => this.onRejoining()));
+    // A member who joined, or came back, while a match is open holds its whole log now.
+    offs.push(c.on('caughtUp', () => this.onCaughtUp()));
     offs.push(c.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     offs.push(c.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
     offs.push(c.on('midnightMode', (m) => this.onMidnightMode(m.playerId, m.mode)));
@@ -1680,12 +1858,21 @@ export class MatchController {
       c.on('peerLeft', (id) => {
         // A RESUME sent into a link that then dropped is lost: the next reconnect sends its own.
         this.resumeSent = false;
-        this.onPeerLeft(id);
+        // A17 step 7: in a lobby the lobby's PC is away, and nothing closes for it.
+        if (this.lobbyOn) this.onHostAway(id);
+        else this.onPeerLeft(id);
       }),
     );
     offs.push(
       c.on('reconnected', (r) => {
         this.resumeSent = false;
+        if (this.lobbyOn) {
+          // A17 step 7: the lobby's PC is back. The table is what the lobby and the turn say now (`relock`).
+          this.onHostBack();
+          this.relock();
+          this.resumeAfterMyDrop(c);
+          return;
+        }
         this.onPeerBack(r.host, r.quiet);
         // A15: a match picked up after a restart left the table as it was for a grant the log said was this player's;
         // the host's answer is in now, and without that grant the table locks.
@@ -1743,6 +1930,15 @@ export class MatchController {
   }
 
   private onClientAck(ack: PayloadOf<'HELLO_ACK'>): void {
+    // B26.4 and the rest below are the same in a lobby; what differs is in `onLobbyAck`.
+    if (this.lobbyOn) {
+      const said = new Set(ack.midnightModes.map((x) => x.playerId));
+      for (const id of [...this.midnightModes.keys()]) if (!said.has(id)) this.midnightModes.delete(id);
+      for (const x of ack.midnightModes) this.onMidnightMode(x.playerId, { enabled: x.enabled, adjustment: x.adjustment });
+      this.sendMidnightMode();
+      this.onLobbyAck(ack);
+      return;
+    }
     this.noteLoading(ack.loading);
     this.noteWait3d(ack.stream3dWait);
     this.noteBallEndReady(Object.fromEntries(ack.ballEndReady.map((x) => [x.playerId, x.ready])));
@@ -1776,7 +1972,8 @@ export class MatchController {
     this.scores.clear();
     this.result = null;
     this.message = null;
-    this.setLocked(true);
+    if (this.lobbyOn) this.beginLobbyGame(p.playerOrder);
+    else this.setLocked(true);
     this.opts.log(`match: game ${p.game} begins: ${p.playerOrder.map((id) => this.nameOf(id)).join(', ')}`);
     this.showMidnightSetting();
     this.push();
@@ -1825,6 +2022,10 @@ export class MatchController {
   }
 
   private onReady(p: PayloadOf<'MATCH_READY'>): void {
+    if (this.lobbyOn) {
+      this.onLobbyReady(p);
+      return;
+    }
     this.clearCountdown();
     this.clearWait3d();
     this.startArmed = false;
@@ -1880,7 +2081,7 @@ export class MatchController {
       this.holding = g;
       this.setLocked(false);
       if (!was) {
-        this.opts.cue.play('your_turn');
+        if (!this.replaying()) this.opts.cue.play('your_turn');
         this.sendingOffSaid = false;
         this.opts.media?.setSending(true);
         this.settleOwed();
@@ -1893,8 +2094,10 @@ export class MatchController {
         this.clearPending();
         this.opts.media?.setSending(false);
       }
-      this.setLocked(true);
-      if (changed) this.opts.cue.play('opponent_turn');
+      // A17 step 7: a member who is not in this game is locked while it is played, unless a game of their own runs.
+      if (this.lobbyOn && !this.inThisGame()) this.syncLobbyLock();
+      else this.setLocked(true);
+      if (changed && !this.replaying()) this.opts.cue.play('opponent_turn');
     }
     this.push();
     // A18: the first grant of a game whose start from this table was held: what the table said meanwhile, now.
@@ -1939,6 +2142,13 @@ export class MatchController {
       if (lost.byHand) this.owedSeqs = this.owedSeqs.filter((seq) => seq !== lost.grantSeq);
       this.unansweredEnd = null;
     }
+    // A17 step 7: the lobby's answer to something this player asked is a sentence written to be shown as it is.
+    if (this.lobbyOn && LOBBY_REQUESTS.has(r.refType)) {
+      this.opts.log(`match: the lobby's PC did not take ${r.refType}: ${r.message}`);
+      if (r.refType === 'START_REQUEST' && this.tableAsk === 'asked') this.settleTableAsk('own', r.message);
+      else this.flash(r.message);
+      return;
+    }
     this.message = `The host rejected ${r.refType}: ${r.message}`;
     this.opts.log(`match: ${this.message} (${r.code})`);
     this.push();
@@ -1968,7 +2178,7 @@ export class MatchController {
    * closed, as every dropped player's was before, and made again when that player is back.
    */
   private closeDeadMedia(id: PlayerId): void {
-    if (this.phase === 'lobby' || this.mediaClosed.has(id) || this.mediaUp(id)) return;
+    if ((this.phase === 'lobby' && !this.lobbyOn) || this.mediaClosed.has(id) || this.mediaUp(id)) return;
     this.mediaClosed.add(id);
     this.dropVoice(id);
   }
@@ -1991,7 +2201,9 @@ export class MatchController {
 
   /** In the lobby the roster is the whole list: a player who is no longer in it is let go. */
   private followLobbyVoice(ids: PlayerId[]): void {
-    this.voiceWanted = new Set(ids.filter((id) => id !== this.localId));
+    // A17 step 7: a member who is away and whose connection was closed because it was not up (A18) is made again at
+    // their return, not by the next word of the lobby.
+    this.voiceWanted = new Set(ids.filter((id) => id !== this.localId && !this.mediaClosed.has(id)));
     this.syncVoice();
   }
 
@@ -2088,8 +2300,12 @@ export class MatchController {
       .sort((a, b) => a.rank - b.rank || b.score - a.score)
       .map((e) => ({ id: e.playerId, name: name(e.playerId), score: e.score, place: e.rank }));
     for (const e of r.entries) this.scores.set(e.playerId, e.score);
-    this.setLocked(!isHostRole(this.role) && !this.seriesOver);
-    this.opts.cue.play('match_over');
+    // A17 step 7: between games the lock is the lobby's (the players of the open match but the starter).
+    if (this.lobbyOn) {
+      this.syncLobbyLock();
+      this.syncOwnGame();
+    } else this.setLocked(!isHostRole(this.role) && !this.seriesOver);
+    if (!this.replaying()) this.opts.cue.play('match_over');
     this.opts.log(`match: game ${r.game} result ${this.result.map((x) => `${x.place}. ${x.name} ${x.score}`).join(', ')}`);
     if (r.series.length > 0) this.opts.log(`match: series ${[...r.series].sort((a, b) => a.rank - b.rank).map((x) => `${x.rank}. ${name(x.playerId)} ${x.wins} win(s), ${x.totalScore}`).join(', ')}`);
     this.push();
@@ -2469,7 +2685,8 @@ export class MatchController {
   private setLocked(want: boolean): void {
     this.wantLocked = want;
     const on = want && !this.spentUnlock && !this.initialsHold;
-    if (this.locked === on) return;
+    if (this.locked === on && !this.lockStale) return;
+    this.lockStale = false;
     this.locked = on;
     try {
       if (on) this.opts.lock.lock();
@@ -2499,12 +2716,726 @@ export class MatchController {
   }
 
   // ------------------------------------------------------------------------------------------
+  // A17 step 7 (2026-11-25): the lobby
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * The lobby as its PC just said it (HELLO_ACK: the host's own `lobby` event, a client's `joined` / `roster`), in
+   * every phase: the members, who is away, the voice (it follows the members), the announced start and its
+   * countdown, the word on a game this table asked a start with, and the lock outside a turn.
+   */
+  private onLobbyAck(ack: PayloadOf<'HELLO_ACK'>): void {
+    const me = this.localId;
+    this.ack = ack;
+    this.hostId = ack.hostPlayerId;
+    this.lobby = ack.participants.map((p) => ({ ...p }));
+    this.noteLoading(ack.loading);
+    this.noteWait3d(ack.stream3dWait);
+    this.noteBallEndReady(Object.fromEntries(ack.ballEndReady.map((x) => [x.playerId, x.ready])));
+    const mine = ack.stances?.find((x) => x.playerId === me)?.stance;
+    if (mine) this.myStance = mine;
+    // Away is not gone (A18, in every phase): the row stays; the voice stays while its own connection is up.
+    const members = new Set(ack.participants.map((p) => p.playerId));
+    const away = new Set((ack.away ?? []).filter((id) => id !== me));
+    if (this.hostIsAway && this.hostId !== null) away.add(this.hostId);
+    for (const id of away) {
+      if (this.left.has(id)) continue;
+      this.left.add(id);
+      this.closeDeadMedia(id);
+    }
+    for (const id of [...this.left]) {
+      if (away.has(id)) continue;
+      this.left.delete(id);
+      if (members.has(id)) this.mediaBack(id);
+    }
+    for (const id of [...this.mediaClosed]) if (!members.has(id)) this.mediaClosed.delete(id);
+    // The voice is the lobby's: everyone in it, from the join to the leave, whatever is played.
+    if (!this.seriesOver) this.followLobbyVoice([...members]);
+    const s = ack.start ?? null;
+    this.setCountdown(s !== null && s.waitsFor === null ? (s.leftMs ?? ack.startsInMs ?? 0) : null);
+    if (ack.startOff) this.flash(ack.startOff);
+    // A game on this table that asked for a start: it is the match's first once a start names this player first; a
+    // start that was taken away again leaves it a game of this player's own (A12's rule).
+    if (this.tableAsk === 'asked' && s !== null && s.players[0] === me) this.settleTableAsk('match', null);
+    else if (this.tableAsk === 'match' && s === null && (this.phase === 'lobby' || this.phase === 'over')) this.settleTableAsk('own', null);
+    this.syncOwnGame();
+    this.syncLobbyLock();
+    this.push();
+  }
+
+  /** The lobby as its PC would say it now, read from the engine (before its first `lobby` event). */
+  private lobbyOf(h: LobbyHostRole): PayloadOf<'HELLO_ACK'> {
+    const members = h.members();
+    const table = h.table();
+    return {
+      hostPlayerId: h.localId,
+      hostPublicKey: h.publicKey,
+      participants: members,
+      hostGame: table.game,
+      tableMismatches: [],
+      startsInMs: null,
+      loading: h.loading(),
+      ballEndReady: Object.entries(h.ballEndReadiness()).map(([playerId, ready]) => ({ playerId, ready })),
+      midnightModes: [],
+      stream3dWait: h.stream3dWaiting(),
+      hostTableObjects: null,
+      stances: members.map((m) => ({ playerId: m.playerId, stance: h.stanceOf(m.playerId) ?? 'play' })),
+      away: [],
+      noCopy: [],
+      ownGame: [],
+      otherTable: [],
+      tablePickedBy: table.pickedBy,
+      ballsPerGame: this.opts.ballsPerGame ?? null,
+      starter: h.starter(),
+      match: h.openMatch(),
+      start: h.announcedStart(),
+    };
+  }
+
+  /** A member is here again: a connection that was closed while they were away is opened, one that is not up is made again. */
+  private mediaBack(id: PlayerId): void {
+    if (this.mediaClosed.delete(id)) this.wantVoice([id]);
+    else if (this.voiceHeld.has(id) && !this.mediaUp(id)) this.remakeVoice(id);
+  }
+
+  /** This PC plays the game that is being played (it is in its order). A watcher, and the lobby's PC that only watches, is not. */
+  private inThisGame(): boolean {
+    return this.role.state.playerOrder.includes(this.localId);
+  }
+
+  /** A client that is being sent the log of a match it joined in the middle of: the events are old news, and make no sound. */
+  private replaying(): boolean {
+    const r = this.role;
+    return this.lobbyOn && !isHostRole(r) && (r as LobbyClientRole).holdsOpenLog === false;
+  }
+
+  /** MATCH_READY of a match of the lobby: a new log, new scores, a new series; the members and their voice stay as they are. */
+  private onLobbyReady(p: PayloadOf<'MATCH_READY'>): void {
+    this.clearCountdown();
+    this.clearMatchOver();
+    this.clearPending();
+    this.clearStateTimer();
+    this.phase = 'playing';
+    this.hostId = p.hostPlayerId;
+    this.message = null;
+    this.holding = null;
+    this.upPlayer = null;
+    this.upBall = null;
+    this.myBallsDone = 0;
+    this.myScore = null;
+    this.clearOwed();
+    this.unansweredEnd = null;
+    this.scores.clear();
+    this.result = null;
+    this.series = null;
+    this.resultGame = 0;
+    // The game this table asked the start with is the match's first: it is running already (as A10's next game).
+    this.tableStarted = this.heldTableStart;
+    this.heldTableStart = false;
+    this.beginLobbyGame(p.playerOrder);
+    // Not while the log of a match that is already being played is replayed to this PC: the shell attaches the
+    // media once its panel is up (`open`).
+    if (!this.replaying()) void this.ensureAttached();
+    this.showMidnightSetting();
+    this.opts.log(`match: ${p.matchId} begins: ${p.playerOrder.map((id) => this.nameOf(id)).join(', ')}${this.inThisGame() ? '' : ' (this PC watches)'}`);
+    this.push();
+  }
+
+  /**
+   * A game of the lobby begins (MATCH_READY or NEXT_GAME), played by `order`. A member who is not in it reports
+   * nothing from its table and is locked while it is played, unless a game of their own is running (design 11.3). Of
+   * its players only the first keeps the table: their grant follows at once, and a game they began on it is this
+   * game's first (a lock for the moment in between would swallow a flipper press).
+   */
+  private beginLobbyGame(order: readonly PlayerId[]): void {
+    const me = this.localId;
+    const inGame = order.includes(me);
+    const first = order[0] === me;
+    if (!first) {
+      this.tableStarted = false;
+      this.heldFeed = [];
+    }
+    this.tableAsk = 'none';
+    if (this.tableAskTimer !== null) this.opts.clearTimeout(this.tableAskTimer);
+    this.tableAskTimer = null;
+    this.myGameOver = !inGame;
+    if (inGame) this.setLocked(!first);
+    else this.syncLobbyLock();
+    this.syncOwnGame();
+  }
+
+  /** What was counted for a match is forgotten; the members, the voice and the series on the panel are not. */
+  private backToLobby(): void {
+    this.clearCountdown();
+    this.phase = 'lobby';
+    this.holding = null;
+    this.upPlayer = null;
+    this.upBall = null;
+    this.myBallsDone = 0;
+    this.myScore = null;
+    this.myGameOver = false;
+    this.clearOwed();
+    this.unansweredEnd = null;
+    this.tableStarted = false;
+    this.scores.clear();
+    this.result = null;
+    this.message = null;
+    // The match's share (a ball end waiting for its bonus, an initials hold, the lock, "this rig sends").
+    this.releaseMatch();
+  }
+
+  /**
+   * MATCH_END in a lobby (design 11.2, 11.6): the match is over and everyone is back in the lobby. Nobody leaves and
+   * no connection closes. `abandoned`: the game that was being played was ended for everyone and has no result.
+   */
+  private onMatchEnded(p: PayloadOf<'MATCH_END'>): void {
+    const abandoned = p.abandoned ?? null;
+    const line = abandoned !== null ? `Match ended · game ${abandoned} not finished` : `Match over after ${p.games} game${p.games === 1 ? '' : 's'}`;
+    this.opts.log(`match: ${line} (${p.reason}); everyone is back in the lobby`);
+    this.backToLobby();
+    this.clearMatchOver();
+    this.matchOver = { line, until: this.opts.now() + MATCH_OVER_LINE_MS };
+    this.matchOverTimer = this.opts.setTimeout(() => {
+      this.matchOverTimer = null;
+      this.matchOver = null;
+      this.push();
+    }, MATCH_OVER_LINE_MS);
+    this.syncLobbyLock();
+    this.syncOwnGame();
+    this.push();
+  }
+
+  private clearMatchOver(): void {
+    if (this.matchOverTimer !== null) this.opts.clearTimeout(this.matchOverTimer);
+    this.matchOverTimer = null;
+    this.matchOver = null;
+  }
+
+  /**
+   * The lobby is over for this PC: its PC closed it, or did not come back, or the shell ended the wait. Nothing
+   * follows: every voice connection is let go at once (nobody's microphone is sent to a person once the lobby they
+   * shared is over), every table is its owner's, and a game that was being played reports nothing more.
+   */
+  private onLobbyOver(line: string): void {
+    if (this.seriesOver) return;
+    this.clearCountdown();
+    this.clearLobbyTimers();
+    this.hostIsAway = false;
+    this.tableAsk = 'none';
+    this.heldTableStart = false;
+    this.heldFeed = [];
+    this.clearPending();
+    this.clearStateTimer();
+    this.holding = null;
+    this.myGameOver = true;
+    this.opts.media?.setSending(false);
+    this.onSeriesOver(line);
+  }
+
+  /** This PC's place in the lobby was gone when it came back: what it held of a match is put away, and `joined` follows. */
+  private onRejoining(): void {
+    this.opts.log("match: this PC's place in the lobby was gone when it came back; it joins again as a newcomer");
+    if (this.phase !== 'lobby') this.backToLobby();
+    this.hostIsAway = false;
+    this.push();
+  }
+
+  /**
+   * A client holds the whole log of the open match now (it joined, or came back, in the middle of it). The events
+   * of the log have been played to this controller as they would have come live; what a player's own reports would
+   * have counted is taken from the log.
+   */
+  private onCaughtUp(): void {
+    const st = this.role.state;
+    const me = st.players[this.localId];
+    if (me) {
+      this.myBallsDone = Math.max(this.myBallsDone, me.ballsPlayed);
+      if (this.myScore === null && (me.score > 0 || me.ballsPlayed > 0)) this.myScore = me.score;
+      if (me.status !== 'playing') this.myGameOver = true;
+      if (me.ballsPlayed > 0 || this.tableGameRunning) this.tableStarted = true;
+    }
+    for (const x of Object.values(st.players)) if (!this.scores.has(x.playerId) && (x.score > 0 || x.ballsPlayed > 0)) this.scores.set(x.playerId, x.score);
+    this.relock();
+    this.syncOwnGame();
+    this.push();
+  }
+
+  /** A client: the link to the lobby's PC has been down for longer than the grace. Nothing closes; a ball in play goes on. */
+  private onHostAway(id: PlayerId): void {
+    if (id !== this.hostId || this.seriesOver || this.hostIsAway) return;
+    this.hostIsAway = true;
+    if (!this.left.has(id)) {
+      this.left.add(id);
+      this.closeDeadMedia(id);
+    }
+    this.opts.log("match: the lobby's PC is away (the link to it dropped and did not come back within the grace); waiting for it. A ball in play goes on, and its end is reported when the lobby's PC is back");
+    this.tickHostAway();
+    this.push();
+  }
+
+  /** The minutes left on the "away" line move by themselves. */
+  private tickHostAway(): void {
+    if (this.hostAwayTimer !== null) this.opts.clearTimeout(this.hostAwayTimer);
+    this.hostAwayTimer = this.opts.setTimeout(() => {
+      this.hostAwayTimer = null;
+      if (this.closed || !this.hostIsAway) return;
+      this.push();
+      this.tickHostAway();
+    }, 30_000);
+  }
+
+  private onHostBack(): void {
+    const id = this.hostId;
+    if (this.hostAwayTimer !== null) this.opts.clearTimeout(this.hostAwayTimer);
+    this.hostAwayTimer = null;
+    if (this.hostIsAway) this.opts.log("match: the lobby's PC is back");
+    this.hostIsAway = false;
+    if (id !== null && this.left.delete(id)) this.mediaBack(id);
+    this.push();
+  }
+
+  /** Design 11.8a: the one line every panel shows while the lobby's PC is away. */
+  private hostAwayLine(): string {
+    const r = this.role;
+    const a = isHostRole(r) ? null : (r as LobbyClientRole).hostAway();
+    const whole = a?.until != null ? Math.max(1, Math.round((a.until - a.since) / 60_000)) : null;
+    const left = a?.until != null ? Math.max(1, Math.ceil((a.until - this.opts.now()) / 60_000)) : null;
+    const what = this.phase === 'playing' || this.phase === 'paused' ? 'The match goes on when it is back' : 'The lobby goes on when it is back';
+    return `${possessive(this.nameOf(this.hostId))} PC is away. ${what}${whole !== null ? `: waiting up to ${whole} minute${whole === 1 ? '' : 's'} (${left} min left)` : ''}. You can keep talking; Leave lobby ends the wait for you.`;
+  }
+
+  /** After a return: the table is what the lobby and the turn say now. */
+  private relock(): void {
+    const want = this.lobbyLockWanted();
+    if (want !== null) this.setLocked(want);
+    else if (!this.holding) this.setLocked(true);
+  }
+
+  /**
+   * The lock outside a turn (design 11.2, the table "whose table is whose"). Null: this PC plays the game that is
+   * being played, and its lock follows the turn as it always did.
+   * - no game is played, and a start counts down that this player is in: locked, unless a game runs on the table
+   *   (the starter's own, which asked for the start; or a game of one's own, which the lobby is told);
+   * - between games: the players of the open match are locked but the starter, who starts the next game on theirs;
+   * - a game is played that this PC is not in (a watcher; the lobby's PC that only watches; a player who sits this
+   *   game out): locked while it is played, unless a game of their own is running;
+   * - anything else: the table is its owner's.
+   */
+  private lobbyLockWanted(): boolean | null {
+    if (this.seriesOver) return false;
+    const a = this.ack;
+    const me = this.localId;
+    const ownRunning = this.tableGameRunning && !this.spentTableGame;
+    if (this.phase === 'playing' || this.phase === 'paused') return this.inThisGame() ? null : !ownRunning;
+    const s = a?.start ?? null;
+    if (s !== null && s.waitsFor === null && s.players.includes(me)) return !ownRunning;
+    if (this.phase === 'over' && a?.match?.players.includes(me)) return (a.starter ?? null) !== me;
+    return false;
+  }
+
+  private syncLobbyLock(): void {
+    if (!this.lobbyOn || this.closed) return;
+    const want = this.lobbyLockWanted();
+    if (want !== null) this.setLocked(want);
+  }
+
+  /**
+   * A game began on this table while no grant is held (design 11.4; the handoff's item 6). The starter's, while no
+   * game is played, asks for a start (`fromTable`); it is the match's first only when the lobby's PC then announces
+   * a start with this player first. Anybody else's, and the starter's that is refused, is a game of their own.
+   */
+  private onLobbyTableStart(replay = false): void {
+    const me = this.localId;
+    const r = this.role;
+    const noGame = this.phase === 'lobby' || this.phase === 'over';
+    // A `game_start` that is not news of this moment (the witness read the journal again: Castcade or the witness
+    // started in the middle of a game) is the start of a game the table has been in all along: never a request.
+    if (replay || !noGame || this.seriesOver || this.tableAsk !== 'none' || (this.ack?.starter ?? null) !== me) {
+      this.syncOwnGame();
+      this.syncLobbyLock();
+      return;
+    }
+    this.tableAsk = 'asked';
+    // What the table says while the start counts down is this player's first ball: kept for the first grant (A18).
+    this.heldTableStart = true;
+    this.heldFeed = [];
+    this.opts.log('match: a game started on this table, and this player is the starter: asking the lobby for a start');
+    if (isHostRole(r)) {
+      let no: string | null = 'the start could not be asked for';
+      this.call(() => {
+        no = (r as LobbyHostRole).requestStart({ fromTable: true });
+      }, 'the start');
+      const first = no === null && (r as LobbyHostRole).announcedStart()?.players[0] === me;
+      this.settleTableAsk(first ? 'match' : 'own', no);
+      return;
+    }
+    let sent = false;
+    this.call(() => {
+      sent = (r as LobbyClientRole).requestStart({ fromTable: true });
+    }, 'the start');
+    if (!sent) {
+      this.settleTableAsk('own', null);
+      return;
+    }
+    this.tableAskTimer = this.opts.setTimeout(() => {
+      this.tableAskTimer = null;
+      if (this.tableAsk === 'asked') this.settleTableAsk('own', null);
+    }, TABLE_ASK_WAIT_MS);
+  }
+
+  /** The lobby's word on the game this table asked a start with: the match's first (`match`), or this player's own. */
+  private settleTableAsk(verdict: 'match' | 'own', sentence: string | null): void {
+    if (this.tableAskTimer !== null) this.opts.clearTimeout(this.tableAskTimer);
+    this.tableAskTimer = null;
+    if (verdict === 'match') {
+      if (this.tableAsk === 'match') return;
+      this.tableAsk = 'match';
+      this.opts.log("match: the start is announced with this player first: the game on this table is the match's");
+    } else {
+      if (this.tableAsk === 'none') return;
+      this.tableAsk = 'none';
+      this.heldTableStart = false;
+      this.heldFeed = [];
+      this.opts.log(`match: the game on this table is this player's own, not the match's${sentence ? ` (${sentence})` : ''}`);
+      if (sentence) this.flash(sentence);
+      this.syncOwnGame();
+    }
+    this.syncLobbyLock();
+    this.push();
+  }
+
+  /** A game on this table ended, or the table closed (once the event itself has been handled). */
+  private afterTableGameEnd(): void {
+    if (this.closed) return;
+    if (this.tableAsk !== 'none') {
+      // The game a start was asked with is over before the start came to anything: the start is off (A12: the next
+      // Start asks again). The lobby's PC takes it away when it hears `ownGame: false` for that table.
+      this.tableAsk = 'none';
+      if (this.tableAskTimer !== null) this.opts.clearTimeout(this.tableAskTimer);
+      this.tableAskTimer = null;
+      this.heldTableStart = false;
+      this.heldFeed = [];
+      const r = this.role;
+      try {
+        if (isHostRole(r)) (r as LobbyHostRole).updateLocal({ ownGame: false });
+        else if (!(r as LobbyClientRole).updateParticipant({ ownGame: false }) && this.ack?.start?.players[0] === this.localId) (r as LobbyClientRole).cancelStart();
+      } catch (e) {
+        this.opts.log(`match: the lobby was not told that the game on this table ended: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      this.ownGameSaid = false;
+      this.opts.log('match: the game on this table that asked for the start has ended: the start is off');
+    }
+    this.syncOwnGame();
+    this.syncLobbyLock();
+    this.push();
+  }
+
+  /**
+   * The lobby is told when a game the match does not own runs on this table, and when it is over (`ownGame`): a
+   * start waits for it, and the roster says OWN GAME. Not the game this player plays in the match, not the game that
+   * asked for a start, and not the rest of a table game this player already finished (A16: a start never waited for it).
+   */
+  private syncOwnGame(): void {
+    if (!this.lobbyOn || this.closed) return;
+    const r = this.role;
+    const playing = (this.phase === 'playing' || this.phase === 'paused') && !this.myGameOver;
+    const own = this.tableGameRunning && !this.spentTableGame && this.tableAsk === 'none' && !playing && !this.seriesOver;
+    if (own === this.ownGameSaid) return;
+    try {
+      if (isHostRole(r)) (r as LobbyHostRole).updateLocal({ ownGame: own });
+      else {
+        // Not in yet: said at the lobby's first word.
+        if (!(r as LobbyClientRole).isJoined) return;
+        (r as LobbyClientRole).updateParticipant({ ownGame: own });
+      }
+    } catch (e) {
+      this.opts.log(`match: the lobby was not told about the game on this table: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    this.ownGameSaid = own;
+    this.opts.log(own ? "match: a game of this player's own is running on this table: the lobby is told, and a start waits for it to end" : "match: no game of this player's own is running on this table any more: the lobby is told");
+  }
+
+  /** A sentence of the lobby's for this player, on the panel's line for a while, and to the shell for the Match tab. */
+  private flash(sentence: string): void {
+    if (this.noticeTimer !== null) this.opts.clearTimeout(this.noticeTimer);
+    this.notice = sentence;
+    this.message = sentence;
+    this.noticeTimer = this.opts.setTimeout(() => {
+      this.noticeTimer = null;
+      if (this.message === this.notice) this.message = null;
+      this.notice = null;
+      this.push();
+    }, NOTICE_MS);
+    try {
+      this.opts.onNotice?.(sentence);
+    } catch {
+      /* the shell's own business */
+    }
+    this.push();
+  }
+
+  private clearLobbyTimers(): void {
+    for (const t of [this.tableAskTimer, this.hostAwayTimer, this.matchOverTimer, this.noticeTimer]) if (t !== null) this.opts.clearTimeout(t);
+    this.tableAskTimer = null;
+    this.hostAwayTimer = null;
+    this.matchOverTimer = null;
+    this.noticeTimer = null;
+  }
+
+  /**
+   * Who a start asked now would be played by, as this PC can tell from the lobby's word: the members set to Play who
+   * are here and have the table; `next`: with a match open, its own players only (its next game).
+   */
+  private wouldPlay(next: boolean): PlayerId[] {
+    const a = this.ack;
+    if (!a) return [];
+    const stance = new Map((a.stances ?? []).map((x) => [x.playerId, x.stance]));
+    const out = new Set([...(a.away ?? []), ...(a.noCopy ?? [])]);
+    const ids = a.participants.map((x) => x.playerId).filter((id) => stance.get(id) !== 'watch' && !out.has(id));
+    const match = a.match ?? null;
+    return next && match ? ids.filter((id) => match.players.includes(id)) : ids;
+  }
+
+  private namesOf(ids: readonly PlayerId[], me = 'you'): string {
+    const names = ids.map((id) => (id === this.localId ? me : this.nameOf(id)));
+    return names.length <= 1 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  }
+
+  /** "MekelburgJ 1 win, Krobs 1": the open match's tally, or '' before its first result. */
+  private tallyWords(): string {
+    const s = this.series;
+    if (!s || s.length === 0) return '';
+    return [...s]
+      .sort((a, b) => a.rank - b.rank || b.wins - a.wins)
+      .map((x, i) => `${this.nameOf(x.playerId)} ${x.wins}${i === 0 ? (x.wins === 1 ? ' win' : ' wins') : ''}`)
+      .join(', ');
+  }
+
+  /** The announced start in one line (design 11.9): who starts what with whom, or what it waits for. Null: none. */
+  private startLine(): string | null {
+    const s = this.ack?.start ?? null;
+    if (!s) return null;
+    const me = this.localId;
+    const by = s.by === me ? 'You start' : `${this.nameOf(s.by)} starts`;
+    const what = s.newMatch ? 'the match' : 'the next game';
+    if (s.waitsFor === null) return `${by} ${what}: ${s.players.map((id) => (id === me ? 'you' : this.nameOf(id))).join(', ')}`;
+    const on = s.waitsOn;
+    const whose = on.map((id) => (id === me ? 'your' : possessive(this.nameOf(id)))).join(', ');
+    const many = on.length > 1;
+    switch (s.waitsFor) {
+      case 'result':
+        return `${by} ${what} once the last game's result is out`;
+      case 'tables':
+        return `${by} ${what} once ${whose} table${many ? 's are' : ' is'} open`;
+      case 'other_tables':
+        return `${by} ${what} once ${this.namesOf(on)} ${many || on[0] === me ? 'have' : 'has'} the lobby's table open (another table is open there)`;
+      case 'own_games':
+        return `${by} ${what} once the game on ${whose} table${many ? 's' : ''} has ended`;
+      default:
+        // I11.4.9's words: for whose connection, for how long at most, and what a second press costs.
+        return `${by} ${what} once ${this.wait3dWords(on)} is up (${Math.round(this.holdMs() / 1000)} s at most; started without it, the first turn may be the 2D video)`;
+    }
+  }
+
+  /** The lobby's line while no game is played and no start counts down (design 11.9): who starts, and how. */
+  private lobbyLine(): string {
+    const a = this.ack;
+    const me = this.localId;
+    const over = this.matchOver !== null && this.opts.now() < this.matchOver.until ? `${this.matchOver.line} · ` : '';
+    if (!a) return 'Joining the lobby';
+    const waiting = this.startLine();
+    if (waiting !== null) return `${over}${waiting}`;
+    const between = this.phase === 'over' && (a.match ?? null) !== null;
+    const players = this.wouldPlay(between);
+    const warn = this.unreadableLines();
+    const warned = warn.length > 0 ? ` · ${warn.join(' · ')}` : '';
+    const loading = players.filter((id) => this.loadingIds.includes(id)).map((id) => (id === me ? 'your' : possessive(this.nameOf(id))));
+    const loads = loading.length > 0 ? ` · ${loading.join(', ')} table${loading.length > 1 ? 's are' : ' is'} not open yet` : '';
+    if (players.length < 2) {
+      const only = players.length === 1 ? (players[0] === me ? 'only you are' : `only ${this.nameOf(players[0] as PlayerId)} is`) : 'nobody is';
+      return `${over}Waiting for a second player: ${only} set to Play${between ? ' in this match' : ''}${warned}`;
+    }
+    if (this.myStance === 'watch') return `${over}You are set to Watch: the ${between ? 'next game' : 'match'} starts without you${loads}`;
+    if (!players.includes(me)) {
+      const why = (a.noCopy ?? []).includes(me) ? "Castcade found no copy of the lobby's table on this PC: you can watch" : between ? 'You are watching this match: you are in when somebody starts a new match' : 'You are not in the next match';
+      return `${over}${why}${loads}`;
+    }
+    const starter = a.starter ?? null;
+    const word = between ? 'Next game' : 'Start match';
+    // A12's rule, for the starter: a game that is running on their table is their own; the next Start on it asks.
+    if (starter === me && this.ownGameSaid) return `${over}${between ? 'Next game' : 'Everyone in?'}${between ? ':' : ''} Finish the game on your table, then start a game on it (or ${word} in the menu)${loads}${warned}`;
+    if (starter === me) return `${over}${between ? 'Next game: start a game on your table' : 'Everyone in? Start a game on your table'} (or ${word} in the menu)${loads}${warned}`;
+    if (starter !== null) {
+      const who = this.nameOf(starter);
+      return `${over}${between ? `Next game: ${who} starts a game on their table` : `${who} starts the match from their table`}. To start it yourself: ${word} in the menu${loads}${warned}`;
+    }
+    return `${over}${word} in the menu starts it${loads}${warned}`;
+  }
+
+  /** The lobby for the Match tab and the menu (`ControllerStatus.lobby`); null when the role is no lobby's. */
+  private lobbyStatus(): LobbyStatus | null {
+    if (!this.lobbyOn) return null;
+    const a = this.ack;
+    const me = this.localId;
+    const r = this.role;
+    const stanceOf = new Map((a?.stances ?? []).map((x) => [x.playerId, x.stance]));
+    const has = (list: readonly PlayerId[] | undefined, id: PlayerId): boolean => (list ?? []).includes(id);
+    const match = a?.match ?? null;
+    const starter = a?.starter ?? null;
+    const members = this.lobby.map((p) => {
+      const id = p.playerId;
+      const flags: LobbyFlag[] = [];
+      if (this.left.has(id) || has(a?.away, id)) flags.push('away');
+      if (has(a?.noCopy, id)) flags.push('no_table');
+      else if (has(a?.otherTable, id)) flags.push('other_table');
+      else if (this.loadingIds.includes(id)) flags.push('loading');
+      if (has(a?.ownGame, id)) flags.push('own_game');
+      return { id, name: p.displayName, rig: p.rig, stance: id === me ? this.myStance : (stanceOf.get(id) ?? 'play'), opener: id === this.hostId, me: id === me, starter: starter === id, inMatch: match?.players.includes(id) ?? false, flags };
+    });
+    const game = this.phase === 'playing' || this.phase === 'paused';
+    const between = this.phase === 'over' && match !== null;
+    const s = a?.start ?? null;
+    const players = this.wouldPlay(between);
+    const everyone = this.wouldPlay(false);
+    const watchers = this.lobby.map((p) => p.playerId).filter((id) => !players.includes(id));
+    const outside = between && match ? everyone.filter((id) => !match.players.includes(id)) : [];
+    const tally = this.tallyWords();
+    let off: string | null = null;
+    if (this.seriesOver) off = 'The lobby is closed.';
+    else if (this.hostIsAway) off = "The lobby's PC is away.";
+    else if (!a) off = 'Joining the lobby.';
+    else if (game) off = 'A game is being played.';
+    else if (s !== null) off = 'A start is under way.';
+    else if (players.length < 2) off = between ? 'Two players of this match have to be set to Play.' : 'Two people have to be set to Play.';
+    const line = between && match ? `Game ${match.game + 1} of this match.${tally ? ` ${tally}.` : ''}` : players.length >= 2 ? `${this.namesOf(players, 'You')} play.${watchers.length > 0 ? ` ${this.namesOf(watchers, 'You')} ${watchers.length === 1 && watchers[0] !== me ? 'watches' : 'watch'}.` : ''}` : '';
+    return {
+      stance: this.myStance,
+      starter,
+      members,
+      match: match ? { id: match.matchId, game: match.game, state: match.state, players: [...match.players] } : null,
+      start: s ? { by: s.by, players: [...s.players], newMatch: s.newMatch, waitsFor: s.waitsFor, waitsOn: [...s.waitsOn], seconds: s.waitsFor === null ? this.countdownSeconds() : null, line: this.startLine() ?? '' } : null,
+      startButton: { label: between ? 'Next game' : 'Start match', line, off },
+      newMatch: outside.length > 0 && everyone.length >= 2 && s === null && !this.seriesOver && !this.hostIsAway ? { line: `${this.namesOf(outside, 'You')} ${outside.length === 1 && outside[0] !== me ? 'plays' : 'play'} too. The match that is open ends${tally ? ` at ${tally}` : ''}.` } : null,
+      startWithout: s !== null && s.waitsFor !== null && s.waitsFor !== 'result' ? (s.waitsFor === '3d' ? 'Start without 3D' : `Start without ${this.namesOf(s.waitsOn)}`) : null,
+      end: this.seriesOver || this.hostIsAway ? null : between ? 'match' : game && isHostRole(r) ? 'everyone' : null,
+      giveUp: game && this.inPlay() && !this.myGameDone(),
+      hostAway: this.hostIsAway && !isHostRole(r) ? (r as LobbyClientRole).hostAway() : null,
+      over: this.seriesOver,
+    };
+  }
+
+  /** The lobby's rows, the starter and this player's own choice on the panel (nothing without a lobby). */
+  private panelLobby(): Pick<PanelState, 'members' | 'starter' | 'stance'> {
+    const l = this.lobbyStatus();
+    if (!l) return {};
+    return { members: l.members.map((m) => ({ id: m.id, name: m.name, stance: m.stance, flags: [...m.flags], inMatch: m.inMatch })), starter: l.starter, stance: l.stance };
+  }
+
+  /**
+   * A17 step 7 (design 11.4): ask for a start (the Match tab's button, the menu's line): the match, the next game
+   * of the open match, a new match (`newMatch`), with a table that cannot report ball ends (`anyway`), or without
+   * what an announced start waits for (`now`). Null: asked (the lobby's PC announces the start, or answers with a
+   * sentence that comes as a notice); a sentence: not taken, and why (the lobby's PC knows at once).
+   */
+  requestStart(ask: StartAsk = {}): string | null {
+    if (!this.lobbyOn || this.closed) return 'There is no lobby';
+    if (this.seriesOver) return 'The lobby is closed.';
+    const r = this.role;
+    let no: string | null = 'The start could not be asked for';
+    this.call(() => {
+      if (isHostRole(r)) no = (r as LobbyHostRole).requestStart(ask);
+      else no = (r as LobbyClientRole).requestStart(ask) ? null : 'This PC is not in the lobby yet';
+    }, 'the start');
+    if (no !== null) this.opts.log(`match: the start was not taken: ${no}`);
+    return no;
+  }
+
+  /** A17 step 7: take back the start that counts down or waits (anybody may). Null: asked; a sentence: there was none. */
+  cancelStart(): string | null {
+    if (!this.lobbyOn || this.closed || this.seriesOver) return 'There is no lobby';
+    const r = this.role;
+    let no: string | null = 'The start could not be cancelled';
+    this.call(() => {
+      if (isHostRole(r)) no = (r as LobbyHostRole).cancelStart();
+      else no = (r as LobbyClientRole).cancelStart() ? null : 'This PC is not in the lobby yet';
+    }, 'the cancel');
+    return no;
+  }
+
+  /**
+   * A17 step 7 (design 11.2): End match. Between games anyone may: the tally is final and everyone stays in the
+   * lobby. During a game only the lobby's PC, and it is End match for everyone: that game has no result (the shell
+   * confirms the press). Null: asked; a sentence: why not.
+   */
+  requestEnd(): string | null {
+    if (!this.lobbyOn || this.closed || this.seriesOver) return 'There is no lobby';
+    const r = this.role;
+    let no: string | null = 'The match could not be ended';
+    this.call(() => {
+      if (isHostRole(r)) no = (r as LobbyHostRole).requestEnd();
+      else no = (r as LobbyClientRole).requestEnd() ? null : 'This PC is not in the lobby yet';
+    }, 'the end of the match');
+    return no;
+  }
+
+  /** A17 step 7 (design 11.3): this player's own choice, Play or Watch; it counts from the next start. */
+  setStance(stance: Stance): void {
+    if (!this.lobbyOn || this.closed || this.seriesOver || stance === this.myStance) return;
+    const r = this.role;
+    this.call(() => {
+      if (isHostRole(r)) (r as LobbyHostRole).updateLocal({ stance });
+      else (r as LobbyClientRole).updateParticipant({ stance });
+    }, 'Play / Watch');
+    this.myStance = stance;
+    this.opts.log(`match: this player is set to ${stance === 'play' ? 'Play' : 'Watch'}; it counts from the next start`);
+    this.push();
+  }
+
+  /** A17 step 7: a sentence of the shell's for this player, on the panel's line for a while (as the lobby's own sentences are). */
+  notify(sentence: string): void {
+    if (this.closed) return;
+    this.flash(sentence);
+  }
+
+  /**
+   * A17 step 7: a Castcade that started again is back in the match it was in (the shell checked that it is the same
+   * match): what its table still owed that match (`owedTableEnds` of the saved record) counts again, checked against
+   * the log at its first use, as after `restore`.
+   */
+  takeOwed(seqs: readonly number[]): void {
+    if (this.closed) return;
+    this.owedSeqs = [...seqs].filter((n) => Number.isSafeInteger(n) && n > 0).slice(0, 16);
+    this.owedFromRecord = this.owedSeqs.length > 0;
+  }
+
+  /**
+   * A17 step 7: the lobby's PC passed this player's turn while Castcade was closed (a TURN_PASS the saved log did
+   * not hold yet). The same rule as for a pass that arrives live (`onTurnPassed`): with this table's ball still in
+   * play, the table owes the match that ball's end, and its drain reports nothing.
+   */
+  passedWhileAway(p: { grantSeq: number; ballNumber: number }): void {
+    if (this.closed || this.owedSeqs.includes(p.grantSeq) || !this.tableOwesAfter(p.ballNumber)) return;
+    this.owedSeqs.push(p.grantSeq);
+    this.opts.log("match: the turn was passed with this table's ball still in play, while Castcade was closed: the table owes the match that ball end; the ball is played out at this player's next turn, and its end reports nothing");
+    this.push();
+  }
+
+  /** A17 step 7 (design 11.2): Give up this game: this player's own game ends with a FORFEIT; they stay in the lobby and watch. */
+  giveUp(): boolean {
+    if (this.closed || !this.inPlay() || this.myGameDone()) return false;
+    this.forfeit('gave up the game');
+    return true;
+  }
+
+  // ------------------------------------------------------------------------------------------
   // Panel
   // ------------------------------------------------------------------------------------------
 
   private participants(): ParticipantInfo[] {
     const st = this.role.state;
-    if (st.phase === 'lobby') return this.lobby;
+    // A17 step 7: in a lobby the people are the members, in every phase (the lobby's own word has their rigs as they are).
+    if (st.phase === 'lobby' || this.lobbyOn) return this.lobby;
     if (this.liveRigs.size === 0) return st.participants;
     return st.participants.map((p) => {
       const rig = this.liveRigs.get(p.playerId);
@@ -2514,12 +3445,20 @@ export class MatchController {
 
   private nameOf(id: PlayerId | null): string {
     if (id === null) return '?';
-    return this.participants().find((p) => p.playerId === id)?.displayName ?? id;
+    // A17 step 7: a player of the open match who has left the lobby is still named in its roster.
+    return this.participants().find((p) => p.playerId === id)?.displayName ?? this.role.state.participants.find((p) => p.playerId === id)?.displayName ?? id;
+  }
+
+  /** The panel's rows: the players of the open match (A17 step 7: a lobby's members while no match is open). */
+  private panelRows(): ParticipantInfo[] {
+    const st = this.role.state;
+    if (!this.lobbyOn || st.phase === 'lobby') return this.participants();
+    return st.participants.map((p) => this.lobby.find((m) => m.playerId === p.playerId) ?? p);
   }
 
   panel(): PanelState {
     const st = this.role.state;
-    const players = this.participants().map((p) => {
+    const players = this.panelRows().map((p) => {
       const prog = st.players[p.playerId];
       const flags: PanelState['players'][number]['flags'] = [];
       const words = mismatchWords(this.mismatch.get(p.playerId) ?? []);
@@ -2554,7 +3493,7 @@ export class MatchController {
       playerUp: this.phase === 'over' ? null : this.upPlayer,
       myTurn,
       ball: this.phase === 'over' ? null : this.upBall,
-      ballsPerGame: st.ballsPerGame || (this.opts.ballsPerGame ?? 0),
+      ballsPerGame: st.ballsPerGame || (this.opts.ballsPerGame ?? this.ack?.ballsPerGame ?? 0),
       players,
       phase,
       // B26: the result row of a player with a flagged ball is marked (the key is absent otherwise).
@@ -2563,12 +3502,17 @@ export class MatchController {
       mic: this.opts.media?.status().mic ?? 'unavailable',
       // A17 step 4: who a disconnect pause waits for (the key is absent otherwise).
       ...(this.phase === 'paused' && st.paused?.reason === 'disconnect' && st.paused.player ? { pausedFor: st.paused.player } : {}),
+      // A17 step 7: the lobby's rows, the starter and this player's own choice (the keys are absent without a lobby).
+      ...this.panelLobby(),
     };
   }
 
   private panelMessage(): string | null {
     // A17 step 1: a lobby this PC has lost says so, over anything else (`onLobbyLost`).
     if (this.phase === 'lobby' && this.seriesOver) return this.seriesOverLine;
+    // A17 step 7: a lobby that is over says so in every phase; and the lobby's PC away is the line that matters.
+    if (this.lobbyOn && this.seriesOver) return this.seriesOverLine;
+    if (this.lobbyOn && this.hostIsAway) return this.hostAwayLine();
     if (this.message) return this.message;
     // A16.2: the one thing to do right now, over the turn and result lines.
     if (this.initialsHold) return INITIALS_HOLD_MESSAGE;
@@ -2584,6 +3528,8 @@ export class MatchController {
     // this line: it would hold the line for the whole match and hide the turn prompts (D2.5, 2026-10-31).
     const byWhat = new Map<string, string[]>();
     for (const [id, fields] of this.mismatch) {
+      // A17 step 7: a member whose table is not open has no table that could differ: their row says LOADING.
+      if (this.lobbyOn && this.loadingIds.includes(id)) continue;
       const what = mismatchWords(fields).table;
       if (what) byWhat.set(what, [...(byWhat.get(what) ?? []), id === this.localId ? 'you' : this.nameOf(id)]);
     }
@@ -2592,7 +3538,13 @@ export class MatchController {
     const note = this.phase === 'lobby' && this.lobbyNote ? ` · ${this.lobbyNote}` : '';
     // A11: the countdown is the one line that matters in the lobby, over a table note.
     const count = this.countdownSeconds();
+    if (count !== null && this.lobbyOn) return this.startLine() ?? 'A match is starting';
     if (count !== null) return `Starting the match: ${this.participants().map((p) => (p.playerId === this.localId ? 'you' : p.displayName)).join(', ')}`;
+    // A17 step 7: outside a game a lobby's line says who starts and how; a table that differs is said after it.
+    if (this.lobbyOn && (this.phase === 'lobby' || this.phase === 'over')) {
+      const tables = [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
+      return `${this.lobbyLine()}${tables ? ` · ${tables}${this.phase === 'lobby' && this.files3d ? ` · ${FILES_GIVE_3D}` : ''}` : ''}${this.lobbyNote ? ` · ${this.lobbyNote}` : ''}`;
+    }
     // A13: in the lobby a table that cannot report ball ends is the line that matters (the lobby line names it).
     if (byWhat.size > 0 && this.phase !== 'over' && !(this.phase === 'lobby' && (this.loadingIds.length > 0 || this.unreadableIds().length > 0 || (this.wait3dStatus().armed !== null && this.wait3dNow().ids.length > 0)))) {
       const line = [...byWhat].map(([what, who]) => `${what}: ${who.join(', ')}`).join(' · ');
@@ -2608,9 +3560,12 @@ export class MatchController {
     }
     if (this.phase === 'paused') {
       const who = st.paused?.player ?? null;
+      // A17 step 7 (design 11.8): the words of a lobby; the place is kept, and the game waits at their own turn.
+      if (this.lobbyOn && st.paused?.reason === 'disconnect' && who) return who === this.localId ? 'The game waits for you: this PC was away from the lobby' : `Waiting for ${this.nameOf(who)} to come back`;
       return st.paused?.reason === 'disconnect' && who ? `Paused: waiting for ${this.nameOf(who)} to reconnect` : 'Paused';
     }
     if (pressStart) return PRESS_START_MESSAGE;
+    if (this.phase === 'playing' && this.lobbyOn && !this.inThisGame()) return null;
     if (this.phase === 'playing' && this.myGameDone() && this.upPlayer !== this.localId) return 'Your game is over; the others are still playing';
     // Nothing about the match to say: say what is wrong with video or voice (no window to send, no microphone).
     return this.opts.media?.status().lastError ?? null;
@@ -2653,7 +3608,7 @@ export class MatchController {
     const text = JSON.stringify(panel);
     // A8: a transfer proposal is on the Match tab only, not the panel; the tab hears of it all the same. A13: so are
     // the ball-end readiness of each player and the turn the host may pass.
-    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus(), this.endBallInfo(), this.owedSeqs]);
+    const transfer = JSON.stringify([this.transfer(), this.ballEnds(), this.passInfo(), this.initialsHold, this.advisoryLines(), this.wait3dStatus(), this.endBallInfo(), this.owedSeqs, this.lobbyOn ? this.lobbyStatus() : null, this.ownGameSaid]);
     if (!force && text === this.lastPanel && transfer === this.lastTransfer) return;
     this.lastTransfer = transfer;
     if (force || text !== this.lastPanel) this.opts.media?.setPanelState(panel);

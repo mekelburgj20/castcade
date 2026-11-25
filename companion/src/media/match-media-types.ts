@@ -67,6 +67,17 @@ export interface PanelState {
    * watching keep their picture for as long as it arrives (`vrViewMode`'s `upAway`), and the scoreboard says who is away.
    */
   pausedFor?: MatchPlayerId | null;
+  /**
+   * A17 step 7 (2026-11-25, alpha-match.md section 11.9): the lobby's rows: every member, the lobby's PC first, with
+   * their choice (Play or Watch), what is wrong or special about their row, and whether they are in the open match.
+   * `players` stays the players of the match (the members while none is open), so the score strip, the scoreboard
+   * and the tally do not change. Absent when the match has no lobby. The panel page draws them from step 9 on.
+   */
+  members?: Array<{ id: MatchPlayerId; name: string; stance: 'play' | 'watch'; flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game'>; inMatch: boolean }>;
+  /** A17 step 7: the one member whose Start on their own table asks for a game; null: nobody. Absent without a lobby. */
+  starter?: MatchPlayerId | null;
+  /** A17 step 7: this player's own choice at the next start. Absent without a lobby. */
+  stance?: 'play' | 'watch';
 }
 
 /**

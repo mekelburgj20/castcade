@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MATCH_SETTINGS, patchMatchSettings } from '../main/match-setup.js';
 import { DEFAULT_VR_VIEW, vrViewMode } from './controller.js';
-import { MENU_CLOSED, cleanShortcut, endBallQuestion, menuItems, menuPress, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuState } from './match-menu.js';
+import { MENU_CLOSED, cleanShortcut, endBallQuestion, menuItems, menuPress, menuView, readMenuKey, shortcutWords, steppedVolume, type MenuFacts, type MenuKey, type MenuLobby, type MenuState } from './match-menu.js';
 
 const facts = (over: Partial<MenuFacts> = {}): MenuFacts => ({
   role: 'host',
@@ -232,5 +232,113 @@ describe('the headset view with the menu and a quiet lobby (D8.9 / D8.10)', () =
     expect(vrViewMode(at('over', false, null), DEFAULT_VR_VIEW, { lobbyQuiet: true })).toBe('panel');
     expect(vrViewMode(at('paused', false, 'krobs'), DEFAULT_VR_VIEW, { lobbyQuiet: true })).toBe('panel');
     expect(vrViewMode(at('playing', false, 'krobs'), DEFAULT_VR_VIEW, { lobbyQuiet: true })).toBe('theater');
+  });
+});
+
+describe("the in-game menu in a lobby (A17 step 7, 2026-11-25, alpha-match.md section 11.9)", () => {
+  const lobby = (over: Partial<MenuLobby> = {}): MenuLobby => ({
+    opener: false,
+    stance: 'play',
+    start: { label: 'Start match', off: null },
+    announced: null,
+    newMatch: false,
+    end: null,
+    giveUp: false,
+    waitedFor: null,
+    awayQuestion: null,
+    ...over,
+  });
+  const inLobby = (l: Partial<MenuLobby> = {}, f: Partial<MenuFacts> = {}): MenuFacts => facts({ role: 'client', lobby: lobby(l), ...f });
+  const ids = (f: MenuFacts) => menuItems(f).map((i) => i.id);
+  const line = (f: MenuFacts, id: string) => menuItems(f).find((i) => i.id === id);
+
+  it('anybody starts: the start line is on every PC, with its words, and is not there while a game is played', () => {
+    expect(ids(inLobby())).toEqual(['start', 'stance', 'voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
+    expect(line(inLobby(), 'start')).toMatchObject({ label: 'Start match', off: null, confirm: null });
+    expect(line(inLobby({ start: { label: 'Next game', off: null } }, { phase: 'over' }), 'start')?.label).toBe('Next game');
+    expect(ids(inLobby({}, { phase: 'playing' }))).toEqual(['stance', 'voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
+    expect(ids(inLobby({}, { phase: 'paused' }))).not.toContain('start');
+    // One choose starts; a start that cannot be made says why and stays open.
+    expect(run(inLobby(), ['menu', 'choose'])).toEqual({ state: MENU_CLOSED, effects: [{ kind: 'start', anyway: false }] });
+    const off = run(inLobby({ start: { label: 'Start match', off: 'Waiting for a second player: only you are set to Play' } }), ['menu', 'choose']);
+    expect(off.effects).toEqual([]);
+    expect(off.state).toMatchObject({ open: true, note: 'Waiting for a second player: only you are set to Play' });
+    // A table that differs is asked about first (the warnings are the lobby's as they were the match's).
+    const warned = inLobby({}, { startWarnings: ['Krobs has another build of the table'] });
+    expect(run(warned, ['menu', 'choose']).effects).toEqual([]);
+    expect(run(warned, ['menu', 'choose', 'choose']).effects).toEqual([{ kind: 'start', anyway: true }]);
+  });
+
+  it('a start that is announced: Cancel the start for anybody; while it waits, the second choose starts without what it waits for', () => {
+    const counting = inLobby({ announced: { without: null } });
+    expect(ids(counting).slice(0, 2)).toEqual(['cancelStart', 'stance']);
+    expect(run(counting, ['menu', 'choose']).effects).toEqual([{ kind: 'cancelStart' }]);
+    const waiting = inLobby({ announced: { without: 'Start without Dana' } });
+    expect(menuItems(waiting).slice(0, 2).map((i) => [i.id, i.label])).toEqual([
+      ['start', 'Start without Dana'],
+      ['cancelStart', 'Cancel the start'],
+    ]);
+    expect(run(waiting, ['menu', 'choose']).effects).toEqual([{ kind: 'start', anyway: false, now: true }]);
+    expect(run(waiting, ['menu', 'down', 'choose']).effects).toEqual([{ kind: 'cancelStart' }]);
+  });
+
+  it('Play or watch switches with one choose and keeps the menu open; Start a new match and End match ask first', () => {
+    const sw = run(inLobby(), ['menu', 'down', 'choose']);
+    expect(sw.effects).toEqual([{ kind: 'stance', to: 'watch' }]);
+    expect(sw.state).toMatchObject({ open: true, at: 'stance' });
+    expect(line(inLobby({ stance: 'watch' }), 'stance')?.value).toBe('WATCH');
+    expect(run(inLobby({ stance: 'watch' }), ['menu', 'down', 'choose']).effects).toEqual([{ kind: 'stance', to: 'play' }]);
+
+    const between = inLobby({ start: { label: 'Next game', off: null }, newMatch: true, end: 'match' }, { phase: 'over' });
+    expect(ids(between)).toEqual(['start', 'newMatch', 'stance', 'voice', 'theirTable', 'myTable', 'mic', 'endMatch', 'leave', 'close']);
+    const asked = run(between, ['menu', 'down', 'choose']);
+    expect(asked.effects).toEqual([]);
+    expect(asked.state).toMatchObject({ confirming: 'newMatch', note: 'Choose again: the open match ends' });
+    expect(run(between, ['menu', 'down', 'choose', 'choose']).effects).toEqual([{ kind: 'newMatch' }]);
+    expect(line(between, 'endMatch')).toMatchObject({ label: 'End match', confirm: 'Choose again to end the match; everyone stays in the lobby' });
+    // During a game only the lobby's PC ends the match, and its line says what that costs.
+    expect(line(inLobby({ opener: true, end: 'everyone' }, { role: 'host', phase: 'playing' }), 'endMatch')).toMatchObject({
+      label: 'End match for everyone',
+      confirm: 'Choose again to end the match for everyone: the game being played gets no result',
+    });
+    expect(ids(inLobby({}, { phase: 'playing' }))).not.toContain('endMatch');
+  });
+
+  it("leaving: a member's line is Leave lobby, the opener's is Close lobby, and each says what it does before it does it", () => {
+    expect(line(inLobby(), 'leave')).toMatchObject({ label: 'Leave lobby', confirm: 'Choose again to leave the lobby' });
+    expect(line(inLobby({ opener: true }, { role: 'host' }), 'leave')).toMatchObject({ label: 'Close lobby', confirm: 'Choose again to close the lobby for everyone' });
+    const f = inLobby({ opener: true }, { role: 'host' });
+    const at = ids(f).indexOf('leave');
+    const downs = Array.from({ length: at }, () => 'down' as const);
+    expect(run(f, ['menu', ...downs, 'choose']).effects).toEqual([]);
+    expect(run(f, ['menu', ...downs, 'choose', 'choose']).effects).toEqual([{ kind: 'leave' }]);
+  });
+
+  it("the lobby's PC and a player who is away: Play on without them at their own turn; the three answers when they are up and still seen playing; Give up this game for a player of the game", () => {
+    const waited = inLobby({ opener: true, waitedFor: 'Chuck', end: 'everyone' }, { role: 'host', phase: 'paused' });
+    expect(line(waited, 'playOn')).toMatchObject({ label: 'Play on without Chuck', confirm: 'Choose again: Chuck is out of this game' });
+    const asked = inLobby({ opener: true, waitedFor: 'Krobs', awayQuestion: { name: 'Krobs', score: 1_234_500 }, end: 'everyone' }, { role: 'host', phase: 'paused' });
+    expect(ids(asked)).not.toContain('playOn');
+    expect(menuItems(asked).filter((i) => i.id.startsWith('away')).map((i) => [i.label, i.confirm])).toEqual([
+      ['Keep waiting for Krobs', null],
+      ["End Krobs's ball", "Choose again to end Krobs's ball at 1,234,500; the turn passes"],
+      ['Play on without Krobs', 'Choose again: Krobs is out of this game'],
+    ]);
+    const to = (id: string): MenuKey[] => ['menu', ...Array.from({ length: ids(asked).indexOf(id as never) }, () => 'down' as const)];
+    expect(run(asked, [...to('awayWait'), 'choose']).effects).toEqual([{ kind: 'away', answer: 'wait' }]);
+    expect(run(asked, [...to('awayEnd'), 'choose']).effects).toEqual([]);
+    expect(run(asked, [...to('awayEnd'), 'choose', 'choose']).effects).toEqual([{ kind: 'away', answer: 'end_ball' }]);
+    expect(run(asked, [...to('awayPlayOn'), 'choose', 'choose']).effects).toEqual([{ kind: 'away', answer: 'play_on' }]);
+    // A member never has these lines: the question is the lobby PC's.
+    expect(ids(inLobby({}, { phase: 'paused' })).filter((i) => i.startsWith('away') || i === 'playOn')).toEqual([]);
+
+    const playing = inLobby({ giveUp: true }, { phase: 'playing' });
+    expect(line(playing, 'giveUp')).toMatchObject({ label: 'Give up this game', confirm: 'Choose again to give up this game' });
+    expect(ids(inLobby({ stance: 'watch' }, { phase: 'playing' }))).not.toContain('giveUp');
+  });
+
+  it('without a lobby the menu is the one of a match, line for line (the option-off path)', () => {
+    expect(menuItems(facts({ lobby: null }))).toEqual(menuItems(facts()));
+    expect(menuItems(facts({ lobby: null })).map((i) => i.id)).toEqual(['start', 'voice', 'theirTable', 'myTable', 'mic', 'leave', 'close']);
   });
 });

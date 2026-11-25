@@ -144,6 +144,27 @@ export interface RejoinPolicy {
 /** Five asks over about 18 s from the first miss; three misses are left for the player's own tries. */
 export const DEFAULT_REJOIN: RejoinPolicy = { gapsMs: [1_500, 3_000, 5_000, 8_000], maxMisses: 5, windowMs: 10 * 60_000 };
 
+/**
+ * A17 step 7 (2026-11-25, alpha-match.md section 11.8a; it replaces the shell's `HOST_WAIT_REJOIN` of A15, five asks
+ * in 88 s and then none): how a member of a lobby asks for a room that is gone, while it waits for the lobby's PC
+ * (twenty minutes, `LOBBY_HOST_WAIT_MS` in client.ts): at once, 2 s after the first miss, 6 s after the second, and
+ * then every 150 s for as long as the engine goes on trying. That is six asks in the first ten minutes and four in
+ * every ten after, under the server's lockout (eight misses in ten minutes); `maxMisses` is the cap that keeps it
+ * under whatever happens to the clock. So a lobby's PC that comes back is found within two and a half minutes at
+ * the worst, before its turn clock (three minutes from its return) can forfeit anyone.
+ */
+export const LOBBY_REJOIN: RejoinPolicy = { gapsMs: [2_000, 6_000, 150_000], maxMisses: 7, windowMs: 10 * 60_000 };
+
+/**
+ * How long the next ask for a room waits after a miss, when `misses` of them (this one included) fall inside the
+ * policy's window: `gapsMs[misses - 1]`, the last gap repeating. A17 step 7: on its own so that a policy can be
+ * checked against ArcAid's lockout without ten minutes of real time (`transport-relay.test.ts`: a lobby's slow asks).
+ */
+export function rejoinGapAfter(policy: RejoinPolicy, misses: number): number {
+  const gaps = policy.gapsMs;
+  return gaps[Math.min(Math.max(1, misses), gaps.length) - 1] ?? 0;
+}
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 5_000;
 const DEFAULT_ACK_TIMEOUT_MS = 4_000;
 /** After a reconnect, `match:host` is tried again until it is accepted: after this long, then twice as long each time. */
@@ -1017,8 +1038,7 @@ export class RelayClientTransport extends RelayBase implements Transport {
       if (again && e instanceof RelayError && e.code === 'no_such_match') {
         const now = Date.now();
         this.misses.push(now);
-        const gaps = this.rejoin.gapsMs;
-        this.nextJoinAt = now + (gaps[Math.min(this.misses.length, gaps.length) - 1] ?? 0);
+        this.nextJoinAt = now + rejoinGapAfter(this.rejoin, this.misses.length);
       }
       if (again && e instanceof RelayError) {
         // A lock is never lifted, and a device ArcAid no longer accepts mid-match is out: the engine's remaining
@@ -1064,6 +1084,15 @@ export class RelayClientTransport extends RelayBase implements Transport {
   /** The server's id for this socket in the room, once joined. */
   get peerId(): string | null {
     return this.relayPeer;
+  }
+
+  /**
+   * A17 step 7 (the handoff's item 13): why this transport does not ask for the room again, when ArcAid said the
+   * room is gone for good (`host_left`: its host closed it; `replaced`: another device hosts the code now); null
+   * while the room may come back. The shell ends a lobby's wait for its PC on it (`ClientMatch.hostLeft`).
+   */
+  get roomEnded(): string | null {
+    return this.ended !== null && FINAL_FOR_CLIENT.has(this.ended) ? this.ended : null;
   }
 
   /**
