@@ -111,6 +111,49 @@ const watch = (t: { onMessage: RelayHostTransport['onMessage']; onPeerJoin: Rela
   return seen;
 };
 
+
+/**
+ * Review of PR 127: frames of every shape, as anybody who reaches the port (or holds a seat in the room) can send
+ * them. `answer`: what comes back, if anything: only a HELLO or a RECONNECT of another version is answered.
+ */
+const X600 = 'x'.repeat(600);
+const GARBAGE: Array<{ what: string; text: string; answer: 'REFUSE' | 'RECONNECT_ACK' | null }> = [
+  { what: 'a HELLO whose v is 600 characters', text: JSON.stringify({ v: X600, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose v and match id are 20 KB each', text: JSON.stringify({ v: 'x'.repeat(20_000), type: 'RECONNECT', matchId: 'x'.repeat(20_000) }), answer: 'RECONNECT_ACK' },
+  { what: 'v an object', text: JSON.stringify({ v: { a: X600 }, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v an array', text: JSON.stringify({ v: [1, 2, 3], type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v negative', text: JSON.stringify({ v: -3, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v a fraction', text: JSON.stringify({ v: 6.5, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v beyond a number', text: '{"v":1e400,"type":"HELLO"}', answer: 'REFUSE' },
+  { what: 'v null', text: JSON.stringify({ v: null, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'no v at all', text: JSON.stringify({ type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose match id is an object', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: { x: X600 } }), answer: 'RECONNECT_ACK' },
+  { what: 'a RECONNECT whose match id has a line break and quotes', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: 'M"\n<x>' }), answer: 'RECONNECT_ACK' },
+  { what: 'type an object', text: JSON.stringify({ v: 5, type: { toString: 'HELLO' } }), answer: null },
+  { what: 'a REFUSE of another version (an answer is never answered)', text: JSON.stringify({ v: 5, type: 'REFUSE', matchId: null, seq: 1, ts: 1, from: 'x', payload: { code: 'protocol_version', message: 'm', mismatches: [] } }), answer: null },
+  { what: 'a RECONNECT_ACK of another version', text: JSON.stringify({ v: 5, type: 'RECONNECT_ACK', matchId: 'M', seq: 1, ts: 1, from: 'x', payload: {} }), answer: null },
+  { what: 'our own version with nothing in it', text: JSON.stringify({ v: PROTOCOL_VERSION, type: 'HELLO' }), answer: null },
+  { what: 'not JSON', text: 'HELLO', answer: null },
+  { what: 'nothing', text: '', answer: null },
+  { what: 'a number', text: '7', answer: null },
+  { what: 'null', text: 'null', answer: null },
+  { what: 'an array', text: '[{"v":5,"type":"HELLO"}]', answer: null },
+  { what: 'a string', text: '"HELLO"', answer: null },
+  { what: 'ten thousand open brackets', text: '['.repeat(10_000), answer: null },
+  { what: 'two hundred thousand of one letter', text: 'a'.repeat(200_000), answer: null },
+];
+/** An answer holds nothing of the frame it answers but its whole-number version and a plain match id. */
+const checkAnswer = (text: string, want: 'REFUSE' | 'RECONNECT_ACK'): void => {
+  expect(text.length).toBeLessThan(1000);
+  expect(text).not.toContain('xxxx');
+  expect(text).not.toContain('<x>');
+  const f = JSON.parse(text) as { v: unknown; type: string; matchId: unknown; payload: { message?: string } };
+  expect(f.type).toBe(want);
+  expect(Number.isSafeInteger(f.v)).toBe(true);
+  expect(f.matchId).toBeNull();
+  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This match needs Castcade 0\.2\.46 or newer \(protocol 6; this PC sent (another version|\d+)\)\. /);
+};
+
 describe('relay transports (D10.8)', () => {
   it('host and two clients: a link opens with HELLO, frames arrive in order both ways, a client that goes is a leave', async () => {
     const r = (relay = await startFakeRelay({ devices: DEVICES }));
@@ -421,6 +464,49 @@ describe('relay transports (D10.8)', () => {
     expect(foreign[1]?.message).toBe(`The host's PC runs another version of Castcade (protocol ${newer}; this PC has 6). Both need the same: update Castcade on this PC (Settings, Check for updates), then join again.`);
   });
 
+  it('review of PR 127: no frame of any shape from a relay peer that has not joined throws in the host\'s process; only a HELLO or a RECONNECT of another version is answered, and an answer is never answered', async () => {
+    const uncaught: string[] = [];
+    const onUncaught = (e: unknown): void => void uncaught.push(String(e));
+    process.on('uncaughtException', onUncaught);
+    try {
+      const r = (relay = await startFakeRelay({ devices: DEVICES }));
+      const h = hostOn(r);
+      let hErrors = 0;
+      h.onError(() => void hErrors++);
+      const hSeen = watch(h);
+      await h.host('RELAYA');
+      const a = clientOn(r, 'a');
+      a.onError(() => undefined);
+      await a.connect('RELAYA');
+      const raw = a as unknown as { socket: { emit(ev: string, p: unknown): void; on(ev: string, cb: (p: { data?: unknown }) => void): void } };
+      const got: string[] = [];
+      raw.socket.on('match:relay', (p) => void (typeof p.data === 'string' && p.data.startsWith('{') && got.push(p.data)));
+      for (const g of GARBAGE) {
+        const before = { got: got.length, errors: hErrors };
+        raw.socket.emit('match:relay', { data: g.text });
+        // The host has handled the frame once it has reported it; an answer, if one is due, is on its way then.
+        await until(() => hErrors === before.errors + 1, 4000);
+        if (g.answer !== null) await until(() => got.length === before.got + 1, 4000);
+        else await sleep(30);
+        expect([g.what, got.length - before.got]).toEqual([g.what, g.answer === null ? 0 : 1]);
+        if (g.answer !== null) checkAnswer(got.at(-1)!, g.answer);
+      }
+      expect(hSeen).toEqual([]);
+      expect(uncaught).toEqual([]);
+      // A first frame that does decode, on which a listener of ours throws: reported, not thrown out of the socket.
+      const seen: string[] = [];
+      h.onError((e) => void seen.push(e.message));
+      h.onMessage(() => {
+        throw new Error('a listener threw');
+      });
+      raw.socket.emit('match:relay', { data: JSON.stringify(hello('a')) });
+      await until(() => seen.includes('a listener threw'), 4000);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
+  }, 30_000);
+
   it('A17 step 1: foreignVersionRefusal answers only a HELLO or a RECONNECT of another version', () => {
     const frame = (o: Record<string, unknown>): string => JSON.stringify({ v: 5, type: 'HELLO', matchId: null, seq: 1, ts: 1, from: 'a', payload: {}, ...o });
     expect(foreignVersionRefusal('not json', 'h', 1)).toBeNull();
@@ -430,8 +516,19 @@ describe('relay transports (D10.8)', () => {
     expect(foreignVersionRefusal(frame({ type: 'STATE' }), 'h', 1)).toBeNull();
     // A HELLO opens a new connection: its REFUSE keeps the caller's counter.
     expect(JSON.parse(foreignVersionRefusal(frame({}), 'h', 3) ?? '{}')).toMatchObject({ v: 5, type: 'REFUSE', seq: 3, from: 'h' });
-    // A version that is not a whole number is nobody's: answered in ours, as before.
-    expect(JSON.parse(foreignVersionRefusal(frame({ v: 'six' }), 'h', 1) ?? '{}')).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    // A version that is not a whole number is nobody's: answered in ours, as before, and nothing of it is repeated.
+    expect(JSON.parse(foreignVersionRefusal(frame({ v: 'six' }), 'h', 1) ?? '{}')).toMatchObject({
+      v: PROTOCOL_VERSION,
+      type: 'REFUSE',
+      payload: { message: 'This match needs Castcade 0.2.46 or newer (protocol 6; this PC sent another version). Update Castcade on this PC (Settings, Check for updates) and join again.' },
+    });
+    // Review of PR 127: a `v` of any length or kind makes no answer the schema refuses (it threw in the socket's handler).
+    for (const v of ['x'.repeat(600), 'x'.repeat(100_000), { a: 1 }, [1], -1, 1.5, null, true]) {
+      const text = foreignVersionRefusal(frame({ v }), 'h', 1);
+      expect(text).not.toBeNull();
+      expect(text!.length).toBeLessThan(600);
+      expect(JSON.parse(text!)).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
+    }
     expect(JSON.parse(foreignVersionRefusal(frame({ v: undefined }), 'h', 1) ?? '{}')).toMatchObject({ v: PROTOCOL_VERSION, type: 'REFUSE' });
     // A RECONNECT with no usable match id is answered with none.
     expect(JSON.parse(foreignVersionRefusal(frame({ type: 'RECONNECT', matchId: 7 }), 'h', 1) ?? '{}')).toMatchObject({ v: 5, type: 'RECONNECT_ACK', matchId: null });

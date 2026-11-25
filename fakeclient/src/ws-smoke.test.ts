@@ -9,6 +9,49 @@ import { WsClientTransport, WsHostTransport, WsPeerTransport } from '@castcade/c
 import { FakePlayer } from './lib.js';
 import { generateScenario } from './scenario.js';
 
+
+/**
+ * Review of PR 127: frames of every shape, as anybody who reaches the port (or holds a seat in the room) can send
+ * them. `answer`: what comes back, if anything: only a HELLO or a RECONNECT of another version is answered.
+ */
+const X600 = 'x'.repeat(600);
+const GARBAGE: Array<{ what: string; text: string; answer: 'REFUSE' | 'RECONNECT_ACK' | null }> = [
+  { what: 'a HELLO whose v is 600 characters', text: JSON.stringify({ v: X600, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose v and match id are 20 KB each', text: JSON.stringify({ v: 'x'.repeat(20_000), type: 'RECONNECT', matchId: 'x'.repeat(20_000) }), answer: 'RECONNECT_ACK' },
+  { what: 'v an object', text: JSON.stringify({ v: { a: X600 }, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v an array', text: JSON.stringify({ v: [1, 2, 3], type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v negative', text: JSON.stringify({ v: -3, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v a fraction', text: JSON.stringify({ v: 6.5, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'v beyond a number', text: '{"v":1e400,"type":"HELLO"}', answer: 'REFUSE' },
+  { what: 'v null', text: JSON.stringify({ v: null, type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'no v at all', text: JSON.stringify({ type: 'HELLO' }), answer: 'REFUSE' },
+  { what: 'a RECONNECT whose match id is an object', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: { x: X600 } }), answer: 'RECONNECT_ACK' },
+  { what: 'a RECONNECT whose match id has a line break and quotes', text: JSON.stringify({ v: 5, type: 'RECONNECT', matchId: 'M"\n<x>' }), answer: 'RECONNECT_ACK' },
+  { what: 'type an object', text: JSON.stringify({ v: 5, type: { toString: 'HELLO' } }), answer: null },
+  { what: 'a REFUSE of another version (an answer is never answered)', text: JSON.stringify({ v: 5, type: 'REFUSE', matchId: null, seq: 1, ts: 1, from: 'x', payload: { code: 'protocol_version', message: 'm', mismatches: [] } }), answer: null },
+  { what: 'a RECONNECT_ACK of another version', text: JSON.stringify({ v: 5, type: 'RECONNECT_ACK', matchId: 'M', seq: 1, ts: 1, from: 'x', payload: {} }), answer: null },
+  { what: 'our own version with nothing in it', text: JSON.stringify({ v: PROTOCOL_VERSION, type: 'HELLO' }), answer: null },
+  { what: 'not JSON', text: 'HELLO', answer: null },
+  { what: 'nothing', text: '', answer: null },
+  { what: 'a number', text: '7', answer: null },
+  { what: 'null', text: 'null', answer: null },
+  { what: 'an array', text: '[{"v":5,"type":"HELLO"}]', answer: null },
+  { what: 'a string', text: '"HELLO"', answer: null },
+  { what: 'ten thousand open brackets', text: '['.repeat(10_000), answer: null },
+  { what: 'two hundred thousand of one letter', text: 'a'.repeat(200_000), answer: null },
+];
+/** An answer holds nothing of the frame it answers but its whole-number version and a plain match id. */
+const checkAnswer = (text: string, want: 'REFUSE' | 'RECONNECT_ACK'): void => {
+  expect(text.length).toBeLessThan(1000);
+  expect(text).not.toContain('xxxx');
+  expect(text).not.toContain('<x>');
+  const f = JSON.parse(text) as { v: unknown; type: string; matchId: unknown; payload: { message?: string } };
+  expect(f.type).toBe(want);
+  expect(Number.isSafeInteger(f.v)).toBe(true);
+  expect(f.matchId).toBeNull();
+  if (want === 'REFUSE') expect(f.payload.message).toMatch(/^This match needs Castcade 0\.2\.46 or newer \(protocol 6; this PC sent (another version|\d+)\)\. /);
+};
+
 describe('WebSocket loopback', () => {
   it('host + 1 client complete a 2-player 1-ball match', async () => {
     const scenario = generateScenario({ players: 2, ballsPerGame: 1, matchId: 'WS-1' });
@@ -151,6 +194,64 @@ describe('WebSocket loopback', () => {
       expect(x.errors).toHaveLength(1);
     }
   });
+
+  it('review of PR 127: no frame of any shape from a socket that has not joined throws in the host\'s process; only a HELLO or a RECONNECT of another version is answered, in a few hundred bytes, and the socket is closed', async () => {
+    const uncaught: string[] = [];
+    const onUncaught = (e: unknown): void => void uncaught.push(String(e));
+    process.on('uncaughtException', onUncaught);
+    const peer = new WsPeerTransport({ localId: 'p1' });
+    const fixed = new WsHostTransport({ localId: 'p1', port: 0 });
+    const errors = { peer: 0, fixed: 0 };
+    const delivered: string[] = [];
+    peer.onError(() => void errors.peer++);
+    fixed.onError(() => void errors.fixed++);
+    peer.onMessage((_f, m) => void delivered.push(m.type));
+    fixed.onMessage((_f, m) => void delivered.push(m.type));
+    const urls = { peer: await peer.listen(0, '127.0.0.1'), fixed: `ws://127.0.0.1:${await fixed.listen()}` };
+    /** One frame on a socket of its own; what came back before the host closed it, or within a moment. */
+    const send = async (url: string, text: string): Promise<string[]> => {
+      const socket = new WebSocket(url);
+      const got: string[] = [];
+      socket.on('message', (d) => void got.push(d.toString()));
+      socket.on('error', () => undefined);
+      await new Promise<void>((resolve) => socket.once('open', () => resolve()));
+      const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      socket.send(text);
+      await Promise.race([closed, new Promise((r) => setTimeout(r, 120))]);
+      socket.terminate();
+      return got;
+    };
+    try {
+      for (const which of ['peer', 'fixed'] as const) {
+        for (const g of GARBAGE) {
+          const got = await send(urls[which], g.text);
+          expect([which, g.what, got.length]).toEqual([which, g.what, g.answer === null ? 0 : 1]);
+          if (g.answer !== null) checkAnswer(got[0]!, g.answer);
+        }
+        // Each frame was reported once to whoever listens for errors; none reached an engine.
+        expect(errors[which]).toBe(GARBAGE.length);
+      }
+      expect(delivered).toEqual([]);
+      expect(uncaught).toEqual([]);
+
+      // And a first frame that does decode, on which a listener of ours throws (a fault of this program): reported
+      // and the socket closed, not an error box over the host's game.
+      const off = peer.onMessage(() => {
+        throw new Error('a listener threw');
+      });
+      const seen: string[] = [];
+      peer.onError((e) => void seen.push(e.message));
+      const hello = { v: PROTOCOL_VERSION, type: 'RESUME', matchId: 'M', seq: 1, ts: 1, from: 'p9', payload: {} };
+      await send(urls.peer, JSON.stringify({ ...hello, type: 'RECONNECT', payload: { player: 'p9', logHash: '0'.repeat(64), logLength: 0, signature: 'c2ln' } }));
+      off();
+      expect(seen).toContain('a listener threw');
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', onUncaught);
+      peer.close();
+      fixed.close();
+    }
+  }, 30_000);
 
   it('A17 step 1: a host that answers in its own, other version (every host up to 0.2.50): the joining PC says which versions the two have instead of waiting for an answer', async () => {
     // The host of an older build: whatever comes, it answers REFUSE with its own `v`.

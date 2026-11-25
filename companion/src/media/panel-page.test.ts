@@ -38,6 +38,10 @@ describe('panel text (D2)', () => {
     expect(headerText(state())).toBe('KROBS IS UP');
     expect(headerText(state({ phase: 'paused' }))).toBe('PAUSED · KROBS IS UP');
     expect(headerText(state({ phase: 'idle', playerUp: null, ball: null }))).toBe('WAITING FOR THE START');
+    // A17 step 1 (the review of PR 127): a lobby this PC has lost (its host is gone) says that it is over, whatever was counting down.
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: true }))).toBe('LOBBY OVER');
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: true, countdown: 3 }))).toBe('LOBBY OVER');
+    expect(headerText(state({ phase: 'idle', playerUp: null, ball: null, seriesOver: false }))).toBe('WAITING FOR THE START');
     expect(headerText(state({ phase: 'over' }))).toBe('MATCH OVER');
     expect(headerText(state({ playerUp: null, ball: null }))).toBe('WAITING');
   });
@@ -446,6 +450,36 @@ describe('panel page script (D2)', () => {
     p.emit(PANEL_CHANNELS.menu, null);
     expect(p.el('menu').className).toBe('');
     expect(p.el('menuitems').children).toEqual([]);
+  });
+
+  it("A17 step 1 (the review of PR 127): a peer named while attach() still opens the microphone and the capture is added after them, with the attach's own peers: its connection is made with the microphone on it, and the timer's resend is the one that backs off", async () => {
+    const p = loadPage({ mic: true, capture: true });
+    // The join on this build: main posts the attach with no peers and names the lobby's players right behind it.
+    p.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: [], ice: [], capture: CAP, micDeviceId: null, muted: false, sending: false });
+    p.emit(PANEL_CHANNELS.addPeer, 'krobs');
+    p.emit(PANEL_CHANNELS.addPeer, 'third');
+    p.emit(PANEL_CHANNELS.addPeer, 'krobs'); // named twice: once on the page
+    p.emit(PANEL_CHANNELS.removePeer, 'third'); // left again before the page was up: never connected
+    // Nothing is connected while the microphone is not there: a connection made now would offer without it, offer
+    // again when it comes, and a PC on 0.2.50 answers the first offer many times over.
+    expect(FakePeerConnection.all).toHaveLength(0);
+    await settle();
+    expect(FakePeerConnection.all).toHaveLength(1);
+    expect(FakePeerConnection.all[0]?.senders.map((s) => s.track.kind)).toEqual(['audio', 'video']);
+    // Once the page is up a peer is added the moment it is named, as before.
+    p.emit(PANEL_CHANNELS.addPeer, 'fourth');
+    expect(FakePeerConnection.all).toHaveLength(2);
+    expect(FakePeerConnection.all[1]?.senders.map((s) => s.track.kind)).toEqual(['audio', 'video']);
+    // A page that is replaced while it waits adds nothing for the attach that is gone.
+    const q = loadPage({ mic: true, capture: true });
+    q.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['krobs'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    q.emit(PANEL_CHANNELS.attach, { localId: 'owner', peers: ['chuck'], ice: [], capture: null, micDeviceId: null, muted: false, sending: false });
+    await settle();
+    expect(FakePeerConnection.all).toHaveLength(1);
+    // The 5 s timer while a connection is not up asks the negotiator's `resendWaitingOffer` (less and less often to a
+    // peer that has never answered), not `resendOffer` at every look.
+    expect(q.script).toContain('n.resendWaitingOffer()');
+    expect(q.script).not.toMatch(/completed'\) n\.resendOffer\(\)/);
   });
 
   it('attach: mic and capture on every connection, video enabled only while sending, 2.5 Mbps cap, offers addressed to the peer', async () => {
