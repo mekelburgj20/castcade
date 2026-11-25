@@ -1523,16 +1523,16 @@ function LobbyInvite({ bridge, st, one }: { bridge: CastcadeBridge; st: MatchSta
           </button>
         </span>
         <span className="cc-row">
-          <Button size="sm" variant="secondary" onClick={() => void navigator.clipboard.writeText(invite).then(() => done('code'), failed)}>
+          <Button size="xs" variant="secondary" onClick={() => void navigator.clipboard.writeText(invite).then(() => done('code'), failed)}>
             {copied === 'code' ? 'Copied' : st.via === 'relay' ? 'Copy code' : 'Copy invite'}
           </Button>
           {link && (
-            <Button size="sm" variant="secondary" title={link} onClick={() => copy('link')}>
+            <Button size="xs" variant="secondary" title={link} onClick={() => copy('link')}>
               {copied === 'link' ? 'Copied' : 'Copy link'}
             </Button>
           )}
           {link && one?.message && (
-            <Button size="sm" variant="secondary" title={one.message} onClick={() => copy('message')}>
+            <Button size="xs" variant="secondary" title={one.message} onClick={() => copy('message')}>
               {copied === 'message' ? 'Copied' : 'Copy for chat'}
             </Button>
           )}
