@@ -14,6 +14,7 @@ const PRESS: Record<string, string[]> = {
   'stream-custom': ['Advanced'],
   'settings-saved': ['Local', 'Save URL'],
   'settings-plan': ['Preview what will change'],
+  'settings-plan-empty': ['Preview what will change'],
   'settings-applied': ['Patch my tables'],
   'settings-removed': ['Remove all Castcade patches'],
   'settings-logs': ['Send logs to Arcaid support'],

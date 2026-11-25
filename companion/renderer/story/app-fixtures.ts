@@ -175,6 +175,8 @@ export const STATUS_BASIC: any = {
       { id: 'Zt5rY1mKc6', label: '1.1 (Dana)' },
       { id: 'Pq2sD7hJv3', label: 'VPW 1.0 (VPin Workshop)' },
     ],
+    tableInfo: { tableName: 'Congo', authorName: 'Dana', tableVersion: '1.1', releaseDate: null, saveDate: null, saveRev: 96, manufacturer: 'Williams', year: 1995, raw: {} },
+    saveRev: 96,
   }),
   currentAttestation: attestation({
     ini: { ...attestation().ini, physicsSet: 2, physicsSetName: 'Chuck tuned', physicsFlippersOverridden: true, difficultyOverride: 0.7, effectiveDifficulty: 0.7 },
@@ -186,7 +188,20 @@ export const STATUS_BASIC: any = {
   attempt: { key: 'congo', state: 'no_match', n: null, of: null, remaining: null, late: false, game: 'Congo', text: 'This table needs Start attempts: press the button on Status, then start a new game.', needsStart: true },
   attemptStart: { at: at(-3), status: 'not_open', text: 'No tournament of yours limits attempts on this table right now' },
   queued: 2,
-  lastCapture: lastCapture({ table: 'Attack from Mars (Bally 1995)', rom: 'afm_113b', score: 3_120_455_870, outcome: 'rejected', detail: 'the tournament closed at 20:00', mode: 'basic', attempt: null }),
+  lastCapture: lastCapture({
+    table: 'Attack from Mars (Bally 1995)',
+    rom: 'afm_113b',
+    score: 3_120_455_870,
+    outcome: 'rejected',
+    detail: 'the tournament closed at 20:00',
+    mode: 'basic',
+    attempt: null,
+    identity: identity({
+      filePath: `${TABLES_DIR}\\Attack from Mars (Bally 1995).vpx`,
+      vpsGame: { id: 'Af2mR8sKq4', name: 'Attack from Mars', manufacturer: 'Bally', year: 1995 },
+      vpsTable: { id: 'Wd6nP3cHx9', label: '2.1 (Chuck)' },
+    }),
+  }),
   lastError: 'heartbeat: ArcAid error: 503 Service Unavailable',
 };
 
@@ -369,6 +384,12 @@ export const FIXTURES: Record<string, AppFixture> = {
   settings: { says: 'Settings, paired, Start with Windows on', tab: 'Settings', status: STATUS_LIVE },
   'settings-saved': { says: 'Settings, the ArcAid URL changed and Save URL pressed: what says it was saved', tab: 'Settings', status: STATUS_LIVE },
   'settings-plan': { says: 'Settings, Import tables: Preview what will change pressed (the list)', tab: 'Settings', status: STATUS_LIVE, answers: { plan: PLAN } },
+  'settings-plan-empty': {
+    says: 'Settings, Import tables: Preview what will change pressed on a folder with no .vpx file (the empty result)',
+    tab: 'Settings',
+    status: STATUS_LIVE,
+    answers: { plan: { dir: String.raw`C:\Games\Visual Pinball\Media`, items: [], counts: { patch: 0, repatch: 0, already: 0, skip: 0, foreign: 0, unsupported: 0, unreadable: 0 } } },
+  },
   'settings-applied': { says: 'Settings, Import tables: Patch my tables pressed (done, one table failed)', tab: 'Settings', status: STATUS_LIVE, answers: { apply: APPLIED } },
   'settings-removed': { says: 'Settings, Import tables: Remove all Castcade patches pressed', tab: 'Settings', status: STATUS_LIVE, answers: { removeAll: REMOVED } },
   'settings-logs': { says: 'Settings, Send logs to Arcaid support pressed: sent', tab: 'Settings', status: STATUS_LIVE, answers: { sendLogs: { ok: true, text: 'Logs sent to Arcaid support: 9 files, 4,318 KB.' } } },
