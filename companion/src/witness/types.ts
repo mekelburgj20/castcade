@@ -179,6 +179,14 @@ export interface WitnessStatus {
   currentPid?: number | null;
   currentVpxExe?: string | null;
   vpxOpen?: number;
+  /**
+   * A17 step 10 (review of PR 139): the witness is watching: it runs, and it has looked at this PC's processes at
+   * least once since it was started. Only then is "no table, no VPX" something it knows, and only then can
+   * `gamesSeen` be true. False while watching is paused (what the status names is then what was open at the pause),
+   * and in the moment a witness that was just made, or made again after a settings change, has not looked yet.
+   * Whoever would close or start a table by itself asks this first, and asks the person when it is false.
+   */
+  watching?: boolean;
   /** The game in progress on a limited-attempts board (live mode only); null otherwise. */
   attempt: AttemptStatus | null;
   /**
@@ -334,6 +342,8 @@ export interface Witness {
    * it gone, which is seconds before `status()` lets go of its table (the close-time capture comes between).
    */
   holdsVpx(pid: number): boolean;
+  /** The witness is watching (`WitnessStatus.watching`): only then does `holdsVpx` answering false mean the process has ended. */
+  watching(): boolean;
   /**
    * B26.4: how the adjustment that enables Midnight Madness reads on the open table (the journal's NVRAM, which
    * starts as the hook's snapshot at table load and follows the bytes after): ON or OFF, and which adjustment. Null

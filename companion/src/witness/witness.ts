@@ -532,6 +532,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     currentPid: null,
     currentVpxExe: null,
     vpxOpen: 0,
+    watching: false,
     attempt: null,
     attemptStart: null,
     patchNow: null,
@@ -871,8 +872,12 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     return best;
   };
 
+  /** The process watch has run a whole poll since this witness was last started, and what it found has been taken in. */
+  let looked = false;
+
   const refreshTableStatus = () => {
     const active = activeSession();
+    status.watching = status.running && looked;
     status.currentTable = active?.launch.table ?? null;
     status.currentIdentity = active?.identity ?? null;
     status.currentAttestation = active?.attestation ?? null;
@@ -889,7 +894,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     // an original the import manifest says the patch is whole (a partial one may journal no game start at all).
     const live = active?.live ?? null;
     const wholePatch = live !== null && (live.recipe === 'A' || (live.manifest !== null && (live.manifest.partial ?? []).length === 0));
-    status.gamesSeen = !active ? null : following && live !== null && live.accepted && live.recipe !== null && liveBallEnds === true && wholePatch;
+    // (Review of PR 139: and only while the witness is watching. Paused, no journal line is read, and a game begun
+    // since the pause is not seen.)
+    status.gamesSeen = !active ? null : status.watching && following && live !== null && live.accepted && live.recipe !== null && liveBallEnds === true && wholePatch;
     status.currentPid = active?.launch.pid ?? null;
     status.currentVpxExe = active?.launch.exe ?? null;
     status.vpxOpen = sessions.size;
@@ -2108,6 +2115,15 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
   watch.on('title', (t) => serial(() => onTitle(t)));
   watch.on('exit', (e) => serial(() => onExit(e)));
   watch.on('error', (err) => fail(`process watch: ${err.message}`));
+  // Behind the launches and exits of the same poll: from here "no VPX" is something this witness knows.
+  watch.on('polled', () =>
+    serial(async () => {
+      if (looked || !status.running) return;
+      looked = true;
+      refreshTableStatus();
+      emitStatus();
+    }),
+  );
 
   // -------------------------------------------------------------------------------- public --
 
@@ -2115,6 +2131,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     async start() {
       if (status.running) return;
       status.running = true;
+      looked = false;
       status.mapsVersion = await corpus.version().catch(() => null);
       await vpsRefresh?.start().catch((err: unknown) => log(`witness: VPS index refresh not started: ${errText(err)}`));
       await updateVpsStatus();
@@ -2135,6 +2152,9 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
     async stop() {
       if (!status.running) return;
       status.running = false;
+      // Not watching from here: what the status names is what was open now, and no game on it is seen any more.
+      looked = false;
+      refreshTableStatus();
       watch.stop();
       stopHeartbeat();
       stopRomMap();
@@ -2259,6 +2279,7 @@ export function createWitness(store: WitnessSettingsStore, deps: WitnessDeps = {
 
     // A17 step 3: the session map itself: a process is dropped from it at the top of `onExit`.
     holdsVpx: (pid) => sessions.has(pid),
+    watching: () => status.running && looked,
 
     // A17 step 3: the same check, with "no list to compare with" kept apart from "does not qualify".
     highScoreKnown(score) {

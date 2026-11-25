@@ -310,6 +310,8 @@ export interface ProcessWatchEvents extends Record<string, unknown> {
   /** The main window title changed (editor table loaded, player up/down). */
   title: VpxTitle;
   error: Error;
+  /** A poll ran to its end (the lister answered, and every launch, title and exit of it was emitted before this): when it started. */
+  polled: number;
 }
 
 export interface ProcessWatchOptions {
@@ -432,6 +434,7 @@ export class ProcessWatch {
     }
     // A hidden process that ended leaves nothing behind (its pid may come back as an ordinary one).
     for (const pid of [...this.hidden]) if (!seen.has(pid)) this.hidden.delete(pid);
+    this.emitter.emit('polled', now);
   }
 
   /** `hide`'s answer; a hide that throws hides nothing (the process is watched as before). */
