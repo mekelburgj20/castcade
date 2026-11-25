@@ -14,9 +14,17 @@
  *   1. the foreground window must belong to Castcade (`ownerPid`). If the player has switched to a third program
  *      since, nothing is touched: the foreground is theirs.
  *   2. VPX's player window is looked for: a visible top-level window of a `VPinballX*` process titled
- *      "Visual Pinball Player" (on a VR rig that is the preview window; it takes the keys there too).
+ *      "Visual Pinball Player" (on a VR rig that is the preview window; it takes the keys there too). With two VPX
+ *      running, the one the match plays on is preferred (`vpxPid`: the pid the match's table sound already goes by);
+ *      another one's window is taken only when that pid has none.
  *   3. `SetForegroundWindow`, then a look at whether it took.
  * The answer is one JSON line. Nothing is typed, clicked or moved, and a minimized window is only brought back.
+ *
+ * A grant must not take the keyboard from a player who is typing in Castcade (review 2 of PR 126, A): the rest of
+ * what they type would go to the table, where Enter plunges and the exit key ends the game. So at a grant the match
+ * host first asks what the player is doing in the window (`VpxForeground.typing`, `typingReason`): a text field, a
+ * list or a slider has the keyboard, or a key was pressed in a Castcade window in the last `TYPING_QUIET_MS`: then
+ * nothing is handed on. Start match is the player's own click and is not asked.
  */
 import { spawn } from 'node:child_process';
 
@@ -32,8 +40,41 @@ export interface ForegroundResult {
 export interface VpxForeground {
   /** A window of this Castcade is the active one right now. */
   castcadeActive(): boolean;
-  /** Hand the foreground from Castcade to VPX's player window. Never rejects. */
-  give(): Promise<ForegroundResult>;
+  /** Hand the foreground from Castcade to VPX's player window (`vpxPid`: the match's own VPX, when known). Never rejects. */
+  give(vpxPid?: number | null): Promise<ForegroundResult>;
+  /** What the player is doing in the active Castcade window; absent: never asked (a build or a test without it). */
+  typing?(): Promise<TypingState>;
+}
+
+/** `inField`: a control that takes keys has the keyboard (null: it could not be read); `lastKeyAgoMs`: null = no key yet. */
+export interface TypingState {
+  inField: boolean | null;
+  lastKeyAgoMs: number | null;
+}
+
+/** A key pressed in a Castcade window less than this ago means the player is typing there. */
+export const TYPING_QUIET_MS = 3000;
+
+/**
+ * What the active element of a Castcade page is, for `webContents.executeJavaScript`: true when keys typed now would
+ * go into it (a text or number field, a slider, a list, a text area, editable text). A button is not one: the click
+ * that left it focused is over, and it is the very case this is for (a click in Castcade, then the ball stood still).
+ */
+export const FOCUS_IN_FIELD_JS = `(() => {
+  const e = document.activeElement;
+  if (!e) return false;
+  const tag = e.tagName;
+  if (tag === 'TEXTAREA' || tag === 'SELECT' || e.isContentEditable) return true;
+  if (tag !== 'INPUT') return false;
+  return !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'color'].includes(String(e.type || 'text').toLowerCase());
+})()`;
+
+/** Why the foreground is not handed on at a grant, in plain words; null: the player is not typing in Castcade. */
+export function typingReason(t: TypingState | null, quietMs: number = TYPING_QUIET_MS): string | null {
+  if (t === null || t.inField === null) return 'what has the keyboard in the Castcade window could not be read';
+  if (t.inField) return 'a field in the Castcade window has the keyboard';
+  if (t.lastKeyAgoMs !== null && t.lastKeyAgoMs < quietMs) return `a key was pressed in the Castcade window ${Math.max(0, Math.round(t.lastKeyAgoMs / 100) / 10)} s ago`;
+  return null;
 }
 
 /** The script's words for each way it can end. */
@@ -85,7 +126,7 @@ public static class CastcadeForeground {
     return "{\"ok\":" + (ok ? "true" : "false") + ",\"title\":" + J(title) + ",\"why\":" + J(why) + "}";
   }
 
-  public static string Run(uint ownerPid) {
+  public static string Run(uint ownerPid, uint preferPid) {
     uint fgPid = 0;
     IntPtr fg = GetForegroundWindow();
     if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
@@ -94,7 +135,9 @@ public static class CastcadeForeground {
     foreach (var p in Process.GetProcesses()) {
       if (p.ProcessName.StartsWith("VPinballX", StringComparison.OrdinalIgnoreCase)) pids.Add((uint)p.Id);
     }
+    // The match's own VPX first; the first other player window only when that one has none.
     IntPtr found = IntPtr.Zero;
+    IntPtr other = IntPtr.Zero;
     EnumWindows(delegate (IntPtr h, IntPtr l) {
       uint pid;
       GetWindowThreadProcessId(h, out pid);
@@ -102,9 +145,11 @@ public static class CastcadeForeground {
       var sb = new StringBuilder(256);
       GetWindowText(h, sb, sb.Capacity);
       if (sb.ToString() != "Visual Pinball Player") return true;
-      found = h;
-      return false;
+      if (preferPid == 0 || pid == preferPid) { found = h; return false; }
+      if (other == IntPtr.Zero) other = h;
+      return true;
     }, IntPtr.Zero);
+    if (found == IntPtr.Zero) found = other;
     if (found == IntPtr.Zero) return Out(false, "", "no_window");
     if (IsIconic(found)) ShowWindow(found, 9);
     SetForegroundWindow(found);
@@ -113,7 +158,7 @@ public static class CastcadeForeground {
   }
 }
 '@
-[Console]::Out.WriteLine([CastcadeForeground]::Run([uint32]$env:CASTCADE_OWNER_PID))
+[Console]::Out.WriteLine([CastcadeForeground]::Run([uint32]$env:CASTCADE_OWNER_PID, [uint32]$env:CASTCADE_VPX_PID))
 `;
 
 type SpawnFn = typeof spawn;
@@ -121,9 +166,11 @@ type SpawnFn = typeof spawn;
 /**
  * Run the script once for `ownerPid` (the process that owns Castcade's windows: the Electron main process). Resolves
  * with what it said; a script that does not start, says nothing or takes longer than `timeoutMs` is a "could not",
- * with the reason. Never rejects.
+ * with the reason. Never rejects. `vpxPid`: the VPX the match plays on, when known (0 or null: any).
+ * The reason of a script that failed is the exit code and nothing else: what PowerShell writes to its error stream is
+ * a serialized error (CLIXML) that says nothing in one line and can hold a path under the user's profile.
  */
-export function giveForegroundToVpx(ownerPid: number, o: { spawn?: SpawnFn; timeoutMs?: number } = {}): Promise<ForegroundResult> {
+export function giveForegroundToVpx(ownerPid: number, o: { spawn?: SpawnFn; timeoutMs?: number; vpxPid?: number | null } = {}): Promise<ForegroundResult> {
   const run = o.spawn ?? spawn;
   const timeoutMs = o.timeoutMs ?? 6000;
   return new Promise<ForegroundResult>((resolve) => {
@@ -136,7 +183,6 @@ export function giveForegroundToVpx(ownerPid: number, o: { spawn?: SpawnFn; time
     };
     const fail = (why: string): void => finish({ ok: false, title: null, why });
     let out = '';
-    let err = '';
     const timer = setTimeout(() => {
       fail(`the window helper did not answer in ${timeoutMs} ms`);
       try {
@@ -151,14 +197,14 @@ export function giveForegroundToVpx(ownerPid: number, o: { spawn?: SpawnFn; time
       ps = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, CASTCADE_OWNER_PID: String(ownerPid) },
+        env: { ...process.env, CASTCADE_OWNER_PID: String(ownerPid), CASTCADE_VPX_PID: String(typeof o.vpxPid === 'number' && Number.isInteger(o.vpxPid) && o.vpxPid > 0 ? o.vpxPid : 0) },
       });
     } catch (e) {
       fail(`the window helper did not start (${e instanceof Error ? e.message : String(e)})`);
       return;
     }
     ps.stdout?.on('data', (b: Buffer) => (out = (out + b.toString('utf8')).slice(-2000)));
-    ps.stderr?.on('data', (b: Buffer) => (err = (err + b.toString('utf8')).slice(-300)));
+    ps.stderr?.on('data', () => undefined);
     ps.on('error', (e) => fail(`the window helper did not start (${e.message})`));
     ps.on('close', (code) => {
       const said = out
@@ -166,7 +212,53 @@ export function giveForegroundToVpx(ownerPid: number, o: { spawn?: SpawnFn; time
         .map(parseForegroundLine)
         .find((x): x is ForegroundResult => x !== null);
       if (said) finish(said);
-      else fail(`the window helper ended without an answer (exit ${String(code)}${err.trim() ? `: ${err.trim().split(/\r?\n/)[0]?.slice(0, 120) ?? ''}` : ''})`);
+      else fail(`the window helper ended without an answer (exit ${String(code)})`);
     });
   });
+}
+
+/** The page of a window, as far as `createVpxForeground` needs it (an Electron `WebContents` is one). */
+export interface FocusedPage {
+  executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
+}
+
+export interface VpxForegroundDeps {
+  /** The page of the Castcade window that is the active one, or null when none of its windows is. */
+  focusedPage(): FocusedPage | null;
+  /** The process that owns Castcade's windows (the Electron main process). */
+  ownerPid: number;
+  now?: () => number;
+  /** Test seams: the handover itself, and how long the page is given to say what has the keyboard (default 500 ms). */
+  give?: (ownerPid: number, o: { vpxPid?: number | null }) => Promise<ForegroundResult>;
+  askMs?: number;
+}
+
+/**
+ * The window interface as the app has it. `keyPressed` is called for every key that goes down in a Castcade window
+ * (the main process hears them: `before-input-event`); `typing` asks the active window's page what has the keyboard.
+ * A page that does not answer in time, or cannot, reads as "could not be read", which hands nothing on.
+ */
+export function createVpxForeground(deps: VpxForegroundDeps): VpxForeground & { keyPressed(): void } {
+  const now = deps.now ?? (() => Date.now());
+  const give = deps.give ?? ((ownerPid, o) => giveForegroundToVpx(ownerPid, o));
+  let lastKeyAt: number | null = null;
+  return {
+    castcadeActive: () => deps.focusedPage() !== null,
+    give: (vpxPid) => give(deps.ownerPid, { vpxPid: vpxPid ?? null }),
+    keyPressed() {
+      lastKeyAt = now();
+    },
+    async typing() {
+      const lastKeyAgoMs = lastKeyAt === null ? null : Math.max(0, now() - lastKeyAt);
+      const page = deps.focusedPage();
+      if (!page) return { inField: null, lastKeyAgoMs };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), deps.askMs ?? 500);
+      });
+      const said = await Promise.race([page.executeJavaScript(FOCUS_IN_FIELD_JS, false).catch(() => null), late]);
+      clearTimeout(timer);
+      return { inField: typeof said === 'boolean' ? said : null, lastKeyAgoMs };
+    },
+  };
 }

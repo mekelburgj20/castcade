@@ -99,7 +99,10 @@ import { openPort, portMappingLine, type PortMapping, type PortMapResult } from 
 import type { MatchStream3d, Stream3dHost, Stream3dView } from './stream3d-host.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
-import type { VpxForeground } from './vpx-foreground.js';
+import { typingReason, type VpxForeground } from './vpx-foreground.js';
+
+/** I11.4.18: the panel's and the Match tab's line while this PC's turn waits for VPX to be the active window. */
+export const CLICK_TABLE_HINT = 'Your turn: click the table to play (VPX holds the table still while another window is the active one)';
 import {
   cleanName,
   cleanPort,
@@ -1173,24 +1176,66 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    * while the in-game menu is open. One log line when it was done, one when it could not be.
    */
   let givingFocus = false;
-  const giveVpxFocus = (why: string): void => {
-    const fg = opts.foreground;
-    if (!fg || givingFocus || menu.open) return;
+  /** A handover that was skipped because the in-game menu was open on a Castcade window: tried again when it closes. */
+  let focusOwed = false;
+  /** The match whose panel line carries `CLICK_TABLE_HINT` now (it comes off when the turn or the window changes). */
+  let hintOn: Active | null = null;
+  const castcadeInFront = (): boolean => {
     try {
-      // VPX itself, or a third program the player switched to, is in front: nothing to hand on, nothing touched.
-      if (!fg.castcadeActive()) return;
+      return opts.foreground?.castcadeActive() ?? false;
     } catch {
+      return false;
+    }
+  };
+  /**
+   * VPX did not get the foreground and it is this PC's turn: the Match tab and the panel say what to do. It is the
+   * player's only word of it, so a line that is already up (ball 1's "Press Start on the table", a table-file note)
+   * keeps its place and the hint follows it.
+   */
+  let hintText: string | null = null;
+  const showClickHint = (): void => {
+    const a = active;
+    if (!a || !a.controller.status().myTurn) return;
+    const line = a.controller.status().panel.message;
+    if (line !== null && line.includes(CLICK_TABLE_HINT)) return;
+    hintOn = a;
+    hintText = line === null ? CLICK_TABLE_HINT : `${line} · ${CLICK_TABLE_HINT}`;
+    a.controller.setMessage(hintText);
+  };
+  /**
+   * `atGrant` (review 2 of PR 126, A): nobody clicked for this one, so it must not take the keyboard from a player who
+   * is typing in Castcade: asked first (`VpxForeground.typing`), and left alone, with one log line, when they are.
+   */
+  const giveVpxFocus = (why: string, atGrant = false): void => {
+    const fg = opts.foreground;
+    if (!fg || givingFocus) return;
+    // VPX itself, or a third program the player switched to, is in front: nothing to hand on, nothing touched.
+    if (!castcadeInFront()) return;
+    if (menu.open) {
+      focusOwed = true;
       return;
     }
     givingFocus = true;
-    void fg
-      .give()
-      .catch((e: unknown) => ({ ok: false, title: null, why: describeError(e) }))
-      .then((r) => {
-        givingFocus = false;
-        if (r.ok) log.info(`match: gave VPX the foreground (${why}; a Castcade window was the active one, and VPX holds the table still while its own window is not)`);
-        else log.warn(`match: could not give VPX the foreground (${why}): ${r.why ?? 'no reason given'}. Click the table to play`);
-      });
+    void (async () => {
+      if (atGrant && fg.typing) {
+        const busy = typingReason(await fg.typing().catch(() => null));
+        if (busy !== null) {
+          log.info(`match: VPX was not given the foreground (${why}): ${busy}, and what the player types must not go to the table. Click the table to play`);
+          showClickHint();
+          return;
+        }
+      }
+      // The match's own VPX, when it is known (the pid its table sound goes by): with two VPX open, not the other one.
+      const pid = tableAudioPid(opts.media?.capturePid?.(), witness.vpxPid?.());
+      const r = await fg.give(pid).catch(() => ({ ok: false, title: null, why: 'the window helper failed' }));
+      if (r.ok) log.info(`match: gave VPX the foreground (${why}; a Castcade window was the active one, and VPX holds the table still while its own window is not)`);
+      else {
+        log.warn(`match: could not give VPX the foreground (${why}): ${r.why ?? 'no reason given'}. Click the table to play`);
+        showClickHint();
+      }
+    })().finally(() => {
+      givingFocus = false;
+    });
   };
   const emit = (): void => {
     if (active) {
@@ -1201,8 +1246,21 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) {
       // I11.4.18: a grant has just reached this PC: its table is the one to play now.
       const mine = active.controller.status().myTurn;
-      if (mine && !active.turnSeen) giveVpxFocus('the turn came to this PC');
+      if (mine && !active.turnSeen) giveVpxFocus('the turn came to this PC', true);
+      else if (mine && focusOwed && !menu.open) {
+        // The in-game menu was open on a Castcade window when the turn came, and has closed since.
+        focusOwed = false;
+        giveVpxFocus('the in-game menu closed on this PC\'s turn', true);
+      }
+      if (!mine) focusOwed = false;
       active.turnSeen = mine;
+      // The hint comes off when it is no longer true: the turn is over, or the Castcade window is not in front any more.
+      if (hintOn === active && (!mine || !castcadeInFront())) {
+        const a = hintOn;
+        hintOn = null;
+        if (a.controller.status().panel.message === hintText) queueMicrotask(() => a.controller.setMessage(null));
+        hintText = null;
+      }
     }
     if (active) {
       // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
@@ -1418,6 +1476,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         if (active !== a || engine.state.phase === 'lobby') return;
         const up = engine.state.currentGrant?.grant.player ?? null;
         log.warn(`match: ${name(id)} is away (its link to this host dropped and did not come back within the grace); ${up === id ? 'it holds the turn, so the match waits for it' : 'nothing is paused for it: the match waits for it when its own turn comes'}`);
+      }),
+    );
+    // A held next game that is called off (nobody left to play it) is said where the host pressed for it, at once.
+    a.offs.push(
+      engine.on('nextGameOff', (x) => {
+        if (active !== a) return;
+        lastError = `The next game did not start: ${x.reason}.`;
+        emit();
       }),
     );
     a.offs.push(
@@ -2743,7 +2809,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         const why = a.controller.status().series.nextGameBlocker;
         if (why !== null || !a.controller.nextGame()) return fail(new Error(`No next game now: ${why ?? 'the host could not start it'}`));
         lastError = null;
-        log.info(`match: ${a.code} game ${r.state.gameNumber} started from the Match tab`);
+        // A18: held for a player whose link dropped a moment ago: not started yet, and the panel's line says so.
+        if (r.nextGamePending) log.info(`match: ${a.code} the next game was asked for from the Match tab and is held for a few seconds: a player's link dropped a moment ago, and it starts when that player is back or counted as away`);
+        else log.info(`match: ${a.code} game ${r.state.gameNumber} started from the Match tab`);
         emit();
         return status();
       }
@@ -2761,6 +2829,11 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         emit();
         return status();
       }
+      // I11.4.18: a press on the Match tab left Castcade's window the active one, and the host's first ball is on its
+      // table. Asked for BEFORE the start: the start issues this host's grant inside it, and the request a grant makes
+      // (which is not handed on while the player types) would take the one flight; a Start match pressed with Enter or
+      // Space, or just after typing, would then hand nothing on. The press is the player's own: never asked.
+      if (r.roster().length >= 2) giveVpxFocus('Start match was pressed');
       try {
         r.start();
       } catch (e) {
@@ -2771,8 +2844,6 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
       if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
-      // I11.4.18: a press on the Match tab left Castcade's window the active one; the host's first ball is on its table.
-      giveVpxFocus('Start match was pressed');
       emit();
       return status();
     },

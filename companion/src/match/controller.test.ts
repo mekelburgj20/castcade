@@ -689,6 +689,100 @@ describe('A18 (2026-11-24): a control link that drops is not the media connectio
     expect(s.C.ctl.status().phase).toBe('playing');
     expect(s.H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
   });
+
+  it("a start from the host's table that is held for a player inside the grace: the panel says so, and a ball that drains on the host's table meanwhile is its ball 1 when the game starts (review 2 of PR 126, D)", async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    // The engines' own grace, on the manual clock.
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const [a, b] = ['a', 'b'].map((id) => {
+      const k = generateKeys();
+      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+      c.join();
+      return c;
+    });
+    const H = seat(host, clock, 1);
+    await H.ctl.open();
+    await flush();
+    host.start();
+    await flush();
+    // Game 1, one ball each.
+    host.localBallEnd(100, 'nvram');
+    await flush();
+    a!.reportBallEnd(200, 'nvram');
+    await flush();
+    b!.reportBallEnd(300, 'nvram');
+    await flush();
+    expect(H.ctl.status().phase).toBe('over');
+    // b's link drops; a second later the host starts a game on its table.
+    bus.disconnect('b');
+    await flush();
+    clock.advance(1000);
+    H.ctl.feed({ kind: 'game_start', t: 0, players: 1 } as ControllerFeed);
+    expect(host.nextGamePending).toBe(true);
+    expect(host.state.gameNumber).toBe(1);
+    expect(H.ctl.panel().message).toBe("Next game: starting in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)");
+    // The host's ball drains at once, inside the hold: the match has no grant for it yet.
+    H.ctl.feed(scores(900));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(scores(950));
+    expect(host.state.gameNumber).toBe(1);
+    // The grace is over, b is away: game 2 starts with the host and a; the ball the table already played is the
+    // host's ball 1, reported at its grant, and the turn is a's.
+    clock.advance(4000);
+    await flush();
+    expect(host.state.gameNumber).toBe(2);
+    expect(host.state.playerOrder).toEqual(['h', 'a']);
+    expect(host.state.players['h']).toMatchObject({ ballsPlayed: 1, score: 950 });
+    expect(host.state.currentGrant?.grant).toMatchObject({ player: 'a', ballNumber: 1, game: 2 });
+    expect(H.logs.some((l) => l.includes("table event(s) from the seconds the game's start was held go to the match now (1 ball end(s))"))).toBe(true);
+    expect(H.ctl.panel().message ?? '').not.toContain('Press Start');
+  });
+
+  it("a second game_start on the host's table inside the hold (the game started again, no end between): what was kept of the first is dropped, so its ball end is not ball 1 of the new one (review 3 of PR 126)", async () => {
+    const bus = new MemoryBus();
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const host = new HostMatch({ transport: bus.transport('h'), keys: hk, matchId: 'M', ballsPerGame: 1, hostParticipant: participant('h', hk), hostGame: game, clock });
+    const [a, b] = ['a', 'b'].map((id) => {
+      const k = generateKeys();
+      const c = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+      c.join();
+      return c;
+    });
+    const H = seat(host, clock, 1);
+    await H.ctl.open();
+    await flush();
+    host.start();
+    await flush();
+    host.localBallEnd(100, 'nvram');
+    await flush();
+    a!.reportBallEnd(200, 'nvram');
+    await flush();
+    b!.reportBallEnd(300, 'nvram');
+    await flush();
+    bus.disconnect('b');
+    await flush();
+    clock.advance(1000);
+    const start = { kind: 'game_start', t: 0, players: 1 } as ControllerFeed;
+    H.ctl.feed(start);
+    expect(host.nextGamePending).toBe(true);
+    // The ball drains, and the host starts the table's game again at once.
+    H.ctl.feed(scores(900));
+    H.ctl.feed(ballEnd(1));
+    H.ctl.feed(start);
+    H.ctl.feed(scores(50));
+    clock.advance(4000);
+    await flush();
+    // Game 2 starts: the host holds ball 1 of it, with the new table game's score; the first game's ball end is gone.
+    expect(host.state.gameNumber).toBe(2);
+    expect(host.state.currentGrant?.grant).toMatchObject({ player: 'h', ballNumber: 1, game: 2 });
+    expect(host.state.players['h']).toMatchObject({ ballsPlayed: 0 });
+    expect(H.ctl.status()).toMatchObject({ myTurn: true, locked: false });
+    expect(H.ctl.panel().players.find((p) => p.id === 'h')?.score).toBe(50);
+    expect(H.logs.some((l) => l.includes('(0 ball end(s))'))).toBe(true);
+  });
 });
 
 describe('A17 step 1 (2026-11-24): the voice from the join on', () => {

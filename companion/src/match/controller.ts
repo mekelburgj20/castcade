@@ -440,6 +440,12 @@ export class MatchController {
    * moment ago (`HostMatch.nextGame`): when it starts, this host's own game is the one already running on its table.
    */
   private heldTableStart = false;
+  /**
+   * A18: what the host's table said of that game while its start was held (scores, a ball end): fed again at the
+   * game's first grant, so a ball that drained inside those seconds is this host's ball 1 and not a ball the match
+   * never heard of (the table would be one ball ahead of the match for the rest of the game).
+   */
+  private heldFeed: ControllerFeed[] = [];
   /** A11: the lobby start countdown (local deadline and tick timer), and a start from the table waiting for a table. */
   private countdownEnd: number | null = null;
   private countdownTimer: unknown = null;
@@ -769,7 +775,15 @@ export class MatchController {
     this.call(() => {
       ok = r.nextGame();
     }, 'NEXT_GAME');
+    // A18: held for a player inside the engine's grace: the panel says so until it starts or is called off.
+    if (ok && r.nextGamePending) this.push();
     return ok;
+  }
+
+  /** A18: this host asked for the next game and the engine holds it for a player whose link dropped a moment ago. */
+  get nextGameHeld(): boolean {
+    const r = this.role;
+    return !this.closed && isHostRole(r) && r.nextGamePending;
   }
 
   /** A10: the host's End match, between games: MATCH_END to everyone; the series is over. */
@@ -948,6 +962,22 @@ export class MatchController {
       }
       this.endSpentGame(ev.kind === 'game_start' ? "a new game started on the table; the finished one's end was not seen" : 'the table closed');
     }
+    // A18: the table's game is running and the match's next game, which it will be, is held for a moment: what it
+    // says meanwhile is kept for that game's first grant. If it ends first, it was no game of the match.
+    if (this.heldTableStart) {
+      // A second start with no end between (the host started the table's game again): what was kept is the first
+      // game's, and would count as ball 1 of this one.
+      if (ev.kind === 'game_start') this.heldFeed = [];
+      if (ev.kind === 'current_scores' || ev.kind === 'ball_end') {
+        this.heldFeed.push(ev);
+        if (this.heldFeed.length > 200) this.heldFeed.splice(0, this.heldFeed.length - 200);
+        return;
+      }
+      if (ev.kind === 'game_end' || ev.kind === 'game_abandoned' || ev.kind === 'table_exit') {
+        this.heldTableStart = false;
+        this.heldFeed = [];
+      }
+    }
     switch (ev.kind) {
       case 'game_start':
         this.onTableGameStart();
@@ -1084,6 +1114,7 @@ export class MatchController {
       if (ok && r.nextGamePending) {
         this.heldTableStart = true;
         this.opts.log("match: the next game waits a few seconds: a player's link dropped a moment ago, and who plays it is decided when that player is back or away");
+        this.push();
       } else if (ok) {
         this.tableStarted = true;
         this.push();
@@ -1296,6 +1327,7 @@ export class MatchController {
     offs.push(
       h.on('nextGameOff', (x) => {
         this.heldTableStart = false;
+        this.heldFeed = [];
         this.opts.log(`match: the next game does not start: ${x.reason}`);
         this.push();
       }),
@@ -1566,6 +1598,12 @@ export class MatchController {
       if (changed) this.opts.cue.play('opponent_turn');
     }
     this.push();
+    // A18: the first grant of a game whose start from this table was held: what the table said meanwhile, now.
+    if (mine && this.heldFeed.length > 0) {
+      const kept = this.heldFeed.splice(0);
+      this.opts.log(`match: ${kept.length} table event(s) from the seconds the game's start was held go to the match now (${kept.filter((e) => e.kind === 'ball_end').length} ball end(s))`);
+      for (const ev of kept) this.feed(ev);
+    }
   }
 
   private onBallEndMsg(from: PlayerId, finalScore: number): void {
@@ -2229,6 +2267,8 @@ export class MatchController {
     if (this.phase === 'lobby') return `${this.lobbyMessage()}${note}`;
     if (this.phase === 'over') {
       if (this.seriesOver) return this.seriesOverLine;
+      // A18: asked for, and held for a player whose link dropped a moment ago.
+      if (this.nextGameHeld) return "Next game: starting in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)";
       return isHostRole(this.role) ? 'Next game: start a game on your table (or press Next game)' : `Next game: ${this.nameOf(this.hostId)} starts a game on the table`;
     }
     if (this.phase === 'paused') {

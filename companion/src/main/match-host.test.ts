@@ -23,7 +23,7 @@ vi.mock('electron', () => {
   return { BrowserWindow, ipcMain: { on: () => undefined } };
 });
 
-const { ballEndsFrom, createMatchHost } = await import('./match-host.js');
+const { ballEndsFrom, CLICK_TABLE_HINT, createMatchHost } = await import('./match-host.js');
 const { createMediaSettingsStore } = await import('../media/media-settings.js');
 const { matchSignalling } = await import('./match-setup.js');
 const { startFakeRelay } = await import('../match/relay-fake.test-support.js');
@@ -1985,12 +1985,19 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
 describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026-11-24)', () => {
   /** A faked window interface: whether a Castcade window is the active one, and what a handover answers. */
   const windows = (answer: { ok: boolean; title: string | null; why: string | null } = { ok: true, title: 'Visual Pinball Player', why: null }) => {
-    const w = { active: true, gives: 0, answer };
+    // `typing`: what the player is doing in the Castcade window (in a field; the last key, ms ago); `pids`: the VPX
+    // each handover was asked for.
+    const w = { active: true, gives: 0, answer, typing: { inField: false as boolean | null, lastKeyAgoMs: null as number | null }, asked: 0, pids: [] as Array<number | null> };
     const foreground = {
       castcadeActive: () => w.active,
-      give: async () => {
+      give: async (pid?: number | null) => {
         w.gives += 1;
+        w.pids.push(pid ?? null);
         return w.answer;
+      },
+      typing: async () => {
+        w.asked += 1;
+        return { ...w.typing };
       },
     };
     return { w, foreground };
@@ -2014,12 +2021,19 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     const hl = logLines();
     const { H, C } = await pair({ foreground: hw.foreground, log: hl.log });
     expect(hw.w.gives).toBe(0); // hosting and a lobby give nothing: the table is not this match's to play yet
+    // The press itself was a key (Enter or Space on the button), or came half a second after typing: it is still the
+    // player's own press, and it is not asked what they are typing (review 3 of PR 126: the grant the start issues
+    // used to take the one handover, and that one is asked).
+    hw.w.typing = { inField: false, lastKeyAgoMs: 500 };
     await H.mh.start();
     await until(() => H.mh.status().panel?.myTurn === true && C.mh.status().phase === 'playing');
     await until(() => hl.lines.some((l) => l.startsWith('match: gave VPX the foreground (')));
-    // The press and the grant it brings are one moment: one handover.
+    // The press and the grant it brings are one moment: one handover, and it is the press's.
     expect(hw.w.gives).toBe(1);
-    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toHaveLength(1);
+    expect(hw.w.asked).toBe(0);
+    expect(hl.lines.filter((l) => l.includes('VPX') && l.includes('foreground'))).toEqual([
+      'match: gave VPX the foreground (Start match was pressed; a Castcade window was the active one, and VPX holds the table still while its own window is not)',
+    ]);
   }, 20_000);
 
   it('a grant that reaches this PC while a Castcade window is the active one gives VPX the foreground; while VPX or a third program is in front nothing is touched', async () => {
@@ -2050,21 +2064,119 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     const { H } = await pair({ foreground: hw.foreground, log: hl.log });
     await H.mh.start();
     await until(() => hl.lines.some((l) => l.includes('could not give VPX the foreground')));
-    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toEqual(['match: could not give VPX the foreground (the turn came to this PC): no "Visual Pinball Player" window was found. Click the table to play']);
+    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toEqual(['match: could not give VPX the foreground (Start match was pressed): no "Visual Pinball Player" window was found. Click the table to play']);
     expect(hw.w.gives).toBe(1);
   }, 20_000);
 
-  it('never while the in-game menu is open', async () => {
+  it('never while the in-game menu is open; when it closes on this PC\'s turn with Castcade still the active window, VPX gets the foreground then', async () => {
     const hw = windows();
+    const hl = logLines();
     const held = new Map<string, () => void>();
     const shortcuts = { register: (acc: string, cb: () => void) => (held.set(acc, cb), true), unregister: (acc: string) => void held.delete(acc) };
     let t = 1_000_000;
-    const { H } = await pair({ foreground: hw.foreground, shortcuts, now: () => t });
-    t += 1000;
-    held.get('Control+Alt+M')!();
+    const press = (acc: string): void => {
+      t += 1000;
+      held.get(acc)!();
+    };
+    const { H } = await pair({ foreground: hw.foreground, shortcuts, now: () => t, log: hl.log });
+    press('Control+Alt+M');
     await H.mh.start();
     await until(() => H.mh.status().panel?.myTurn === true);
     await new Promise((r) => setTimeout(r, 50));
     expect(hw.w.gives).toBe(0);
+    // The menu closes (its last line, Close menu): it is still this PC's turn and Castcade's window is still in front.
+    for (let i = 0; i < 12 && hw.w.gives === 0 && held.has('Up'); i++) {
+      press('Up');
+      press('Control+Alt+K');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    await until(() => hw.w.gives === 1);
+    await until(() => hl.lines.some((l) => l.startsWith("match: gave VPX the foreground (the in-game menu closed on this PC's turn")));
+    expect(hw.w.gives).toBe(1);
   }, 20_000);
+
+  it('a grant while a Castcade window is the active one and the player is typing in it gives nothing: one log line, and the panel says to click the table (review 2 of PR 126, A)', async () => {
+    const hw = windows();
+    const cw = windows();
+    const cl = logLines();
+    hw.w.active = false;
+    cw.w.active = false;
+    const { H, C } = await pair({ foreground: hw.foreground }, { foreground: cw.foreground, log: cl.log });
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    // The guest is in a field of the Match tab when its turn comes.
+    cw.w.active = true;
+    cw.w.typing = { inField: true, lastKeyAgoMs: 40_000 };
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true);
+    await until(() => cl.lines.some((l) => l.includes('VPX was not given the foreground')));
+    expect(cw.w.asked).toBe(1);
+    expect(cw.w.gives).toBe(0);
+    expect(cl.lines.filter((l) => l.includes('VPX') && l.includes('foreground'))).toEqual([
+      'match: VPX was not given the foreground (the turn came to this PC): a field in the Castcade window has the keyboard, and what the player types must not go to the table. Click the table to play',
+    ]);
+    // The first ball's own prompt keeps its place and the hint follows it: it is the player's only word of this.
+    await until(() => C.mh.status().panel?.message === `Press Start on the table to begin your game · ${CLICK_TABLE_HINT}`);
+    // The next turn: no field now, but a key 1.2 s ago: the same. This time the panel's line is free and carries the hint.
+    await H.mh.passTurn();
+    await until(() => H.mh.status().panel?.myTurn === true);
+    cw.w.typing = { inField: false, lastKeyAgoMs: 1200 };
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().panel?.ball === 2);
+    await until(() => cl.lines.filter((l) => l.includes('VPX was not given the foreground')).length === 2);
+    expect(cl.lines.at(-1)).toContain('a key was pressed in the Castcade window 1.2 s ago');
+    expect(cw.w.gives).toBe(0);
+    await until(() => C.mh.status().panel?.message === CLICK_TABLE_HINT);
+    // The player clicks the table: the hint comes off at the next thing the match says.
+    cw.w.active = false;
+    C.mh.setSettings({ cueVolume: 55 });
+    await until(() => C.mh.status().panel?.message === null);
+    // Start match is the player's own click: it is not asked what they are typing.
+    expect(hw.w.asked).toBe(0);
+  }, 30_000);
+
+  it('the foreground goes to the VPX the match plays on: the handover is asked for that pid', async () => {
+    const hw = windows();
+    const withPid = { ...witness('ab'.repeat(32)), vpxPid: () => 4321 } as unknown as WitnessHost;
+    const { H } = await pair({ foreground: hw.foreground, witness: withPid });
+    await H.mh.start();
+    await until(() => hw.w.gives === 1);
+    expect(hw.w.pids).toEqual([4321]);
+  }, 20_000);
+});
+
+describe('match host: a next game asked for while a player is inside the grace (A18; review 2 of PR 126, D)', () => {
+  it('Next game on the Match tab is held, and says so, not "started"; when the player turns out to be away and nobody is left, the tab says why at once', async () => {
+    const lines: string[] = [];
+    const log = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
+    const H = make('held-host', 'ab'.repeat(32), { ephemeralPort: true, disconnectGraceMs: 900, log });
+    const C = make('held-client', 'ab'.repeat(32), { disconnectGraceMs: 900 });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    // Game 1, every ball passed by the host.
+    for (let ball = 0; ball < 6; ball++) {
+      await until(() => H.mh.status().pass !== null);
+      const before = H.mh.status().pass;
+      await H.mh.passTurn();
+      await until(() => H.mh.status().phase === 'over' || JSON.stringify(H.mh.status().pass) !== JSON.stringify(before));
+    }
+    await until(() => H.mh.status().phase === 'over' && H.mh.status().series?.nextGameBlocker === null);
+    // The guest goes (the host sees only a link that dropped); the host presses Next game a moment later.
+    await C.mh.leave();
+    await new Promise((r) => setTimeout(r, 150));
+    const st = await H.mh.start();
+    expect(st.lastError).toBeNull();
+    expect(lines.filter((l) => l.includes('started from the Match tab'))).toEqual([]);
+    expect(lines.some((l) => l.includes('the next game was asked for from the Match tab and is held for a few seconds'))).toBe(true);
+    expect(H.mh.status().panel?.message).toBe("Next game: starting in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)");
+    expect(H.mh.status().series?.game).toBe(1);
+    // The grace is over: the guest is away, nobody is left to play, and the tab says so without another press.
+    await until(() => H.mh.status().lastError !== null, 5000);
+    expect(H.mh.status().lastError).toBe('The next game did not start: fewer than two players are still connected.');
+    expect(lines.some((l) => l === 'match: the next game does not start: fewer than two players are still connected')).toBe(true);
+    expect(H.mh.status().series?.game).toBe(1);
+    expect(H.mh.status().panel?.message ?? '').not.toContain('starting in a few seconds');
+  }, 30_000);
 });
