@@ -16,9 +16,11 @@
  * - **The setting**: the operator adjustment that enables the mode ("Special Mode", NO / YES, factory YES). Read from
  *   the same journal's NVRAM and shown to every player of a match before and during play.
  *
- * What is inferred and not yet confirmed on a rig: that the "Special Modes" audit counts Midnight Madness (the names
- * say so: adjustment "Special Mode", audit "Special Modes", and these ROMs have no other special-mode text). A game
- * with no known counter is NOT monitored: nothing is flagged and nothing is guessed from the clock.
+ * That the "Special Modes" audit counts Midnight Madness is seen on `congo_21` only (B26.1: it went up on the ball
+ * that crossed midnight in a live match on 2026-11-23, and that machine's service menu read 02 the day after). On the
+ * other titles it is inferred from the names (adjustment "Special Mode", audit "Special Modes", and these ROMs have
+ * no other special-mode text). A game with no known counter is NOT monitored: nothing is flagged and nothing is
+ * guessed from the clock.
  *
  * Read-only: nothing here, or anywhere in Castcade, writes a table's NVRAM. Pure: maps and bytes in, values out.
  */
