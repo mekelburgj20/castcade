@@ -326,9 +326,16 @@ export const ParticipantUpdate = z
     tableChange: TableChange.nullable()
       .optional()
       .describe("A17: what the sender's PC is doing about a change of the lobby's table (`TableChange`); null: nothing any more (its table is the lobby's, or it has no copy: `noCopy`)."),
+    pickCopy: z
+      .object({ pick: z.string().min(1).max(200), tableName: z.string().min(1).max(200), tableHash: Sha256Hex })
+      .nullable()
+      .optional()
+      .describe(
+        "A17: the sender's open table (`tableName` and `tableHash` as its `game` says them) is its PC's own copy of the lobby's table named `pick`, by the rules that PC finds a copy with (the ROM its table list knows, which `game` does not carry). While the lobby's table has that name and the sender's `game` is that table, the host does not list the sender in `otherTable`. Null: no longer.",
+      ),
   })
   .describe(
-    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy` and `ownGame`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said.",
+    "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy`, `ownGame`, `tableChange` and `pickCopy`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said.",
   );
 
 export const Refuse = z

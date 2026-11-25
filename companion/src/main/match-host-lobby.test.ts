@@ -1113,17 +1113,38 @@ describe('A17 step 10: the table changes in a lobby', () => {
     }
     // The person who has to act reads it on their own panel (the headset), not only on the Match tab.
     expect(H.mh.status().panel?.message).toBe(`Close the table on this PC: Castcade opens ${AFM} when it is closed.`);
-    // A start asked for meanwhile waits for the tables, and says for whose.
+    // The lobby's PC logged the pick with who made it (review of PR 139).
+    expect(H.lines.some((l) => l.includes(`the lobby's table was picked by Krobs (${A.id()}): ${AFM}`))).toBe(true);
+    // A member who keeps picking the table the lobby has changes nothing, and does not fill that log either.
+    for (let i = 0; i < 6; i++) await A.mh.pickTable({ game: pickOf(AFM, AFM_SHA, 'afm_113b'), objects: OBJECTS });
+    await sleep(200);
+    expect(H.lines.filter((l) => l.includes(`Krobs (${A.id()}) picked the table the lobby already has (${AFM}): nothing changes`))).toHaveLength(1);
+    expect(H.mh.status().lobby?.table).toMatchObject({ name: AFM, pickedBy: A.id() });
+    // A start asked for meanwhile waits for the tables, and says for whose: first for the PC whose table is closing
+    // (it has none for this start, whatever its row still names), then for the one with another table open.
     await A.mh.start();
-    await until(() => H.mh.status().lobby?.start?.waitsFor === 'other_tables');
-    expect(H.mh.status().lobby?.start?.waitsOn.sort()).toEqual([H.id(), A.id()].sort());
+    await until(() => H.mh.status().lobby?.start?.waitsFor === 'tables');
+    expect(H.mh.status().lobby?.start?.waitsOn).toEqual([A.id()]);
     await A.mh.cancelStart();
     await until(() => H.mh.status().lobby?.start === null);
 
-    // Both tables are closed and the new one opened; each PC has nothing more to say.
+    // The member's table is closed and the new one opened: that PC has nothing more to say.
     A.r.setTable(AFM, AFM_SHA);
     A.mh.setTableChange('opening', null);
     A.mh.setTableChange(null, null);
+    await until(() => [flags(H, 'Krobs'), flags(A, 'Krobs')].every((f) => f.length === 0));
+    // Review of PR 139 (finding 9): the lobby's PC still waits for its person. Its row keeps saying so, and the
+    // header of every panel is no longer CHANGING TABLE: no PC is closing or opening anything.
+    for (const s of [H, A]) {
+      expect(flags(s, 'Owner')).toContain('close_table');
+      expect(s.mh.status().lobby?.table.changing).toBe(false);
+      expect(headerText(s.mh.status().panel!)).not.toMatch(/CHANGING TABLE/);
+    }
+    await A.mh.start();
+    await until(() => H.mh.status().lobby?.start?.waitsFor === 'other_tables');
+    expect(H.mh.status().lobby?.start?.waitsOn).toEqual([H.id()]);
+    await A.mh.cancelStart();
+    await until(() => H.mh.status().lobby?.start === null);
     H.r.setTable(AFM, AFM_SHA);
     H.mh.setTableChange(null, null);
     await until(() => [flags(H, 'Owner'), flags(H, 'Krobs'), flags(A, 'Owner'), flags(A, 'Krobs')].every((f) => f.length === 0));

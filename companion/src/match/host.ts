@@ -171,7 +171,7 @@ import { Emitter } from './events.js';
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { GENESIS_HASH, type LogHead, type MatchLog } from './log.js';
 import { helloProofBody, lobbyReconnectSignBody, logSignBody, pickWinner, rankEntries, reconnectSignBody, seriesOf } from './result.js';
-import { compareWithPick, pickName, pickOf, samePick, tableRelation } from './table-identity.js';
+import { compareWithPick, pickCopyHolds, pickName, pickOf, refinedPick, samePick, sameTableAs, tableRelation, tableWords, type PickCopyWord } from './table-identity.js';
 import { Session } from './session.js';
 import {
   cloneState,
@@ -447,6 +447,13 @@ export interface HostEvents extends Record<string, unknown> {
   startOff: { reason: string };
   /** A17 step 6: the lobby's table was picked (`pickTable`, a member's TABLE_PICK). */
   tablePicked: { by: PlayerId; game: GameFingerprint };
+  /**
+   * A17 step 10 (review of PR 139): every pick that reached this PC, taken or not: who asked (`byName` cleaned), for
+   * which table (cleaned), and what became of it: `changed` (the lobby's table is another now), `added` (the table
+   * the lobby has, with something that was not known of it), `same` (the table the lobby has: nothing changed) or
+   * `refused`, with the sentence the asker was given. For the log of the lobby's PC.
+   */
+  tablePickJudged: { by: PlayerId; byName: string; table: string; outcome: 'changed' | 'added' | 'same' | 'refused'; why: string | null };
   /** A17 step 6: the place of a member who was away ran out (`lobby.placeMs`): their row is gone. */
   memberRemoved: PlayerId;
   /**
@@ -619,6 +626,8 @@ export class HostMatch {
   private readonly pickMemberGapMs: number;
   /** A17 step 10: where each member's PC stands on its way to the lobby's table (`PARTICIPANT_UPDATE.tableChange`). */
   private readonly changing = new Map<PlayerId, NonNullable<PayloadOf<'PARTICIPANT_UPDATE'>['tableChange']>>();
+  /** A17 step 10: the members whose PC said that its open table is its own copy of the lobby's table (`PARTICIPANT_UPDATE.pickCopy`). */
+  private readonly copies = new Map<PlayerId, PickCopyWord>();
   private pending: PendingStart | null = null;
   /** A17 step 6: why the announced start went away, for the next HELLO_ACK (`startOff`), once. */
   private startOffNote: string | null = null;
@@ -947,18 +956,19 @@ export class HostMatch {
 
   /**
    * A17 step 10: the Castcade VPX build's identity of the lobby's table (HELLO_ACK `hostTableObjects` in a lobby):
-   * what its picker said with the pick; else this PC's own table's (`setHostTableObjects`) while this PC's table is
-   * the picked file, or the pick is this PC's own table by default. Null: not known. It follows the pick, never a
-   * table this PC opened beside it.
+   * this PC's own table's (`setHostTableObjects`: what its VPX says) while this PC's table is the picked file; else
+   * what the pick's maker (or this PC) said with the pick; else this PC's own while the pick is its own table by
+   * default. Null: not known. It follows the pick, never a table this PC opened beside it.
    */
   tableObjects(): { editables: number; hash: string } | null {
     if (!this.lobbyOn) return this.hostTableObjects ? { ...this.hostTableObjects } : null;
-    if (this.pickObjects) return { ...this.pickObjects };
-    if (!this.hostTableObjects || !this.pickFixed) return null;
     const mine = this.selfGame;
-    const sameFile = !UNHASHED.test(this.hostGame.tableHash) && this.hostGame.tableHash.toLowerCase() === mine.tableHash.toLowerCase();
+    const own = this.hostTableObjects && this.pickFixed ? this.hostTableObjects : null;
+    // What this PC's own VPX says of the picked file itself comes before anything a pick said of it.
+    if (own && !UNHASHED.test(this.hostGame.tableHash) && this.hostGame.tableHash.toLowerCase() === mine.tableHash.toLowerCase()) return { ...own };
+    if (this.pickObjects) return { ...this.pickObjects };
     const ownByName = this.pickDefault && UNHASHED.test(this.hostGame.tableHash) && this.hostGame.tableName === pickName(mine.tableName);
-    return sameFile || ownByName ? { ...this.hostTableObjects } : null;
+    return own && ownByName ? { ...own } : null;
   }
 
   /** A17 step 10: where each member's PC stands on its way to the lobby's table; a member not listed has nothing to say. */
@@ -1137,7 +1147,7 @@ export class HostMatch {
       .map((p) => p.playerId)
       .filter((id) => {
         const g = this.tableOf(id);
-        return g !== undefined && this.tableOpen(g) && tableRelation(this.hostGame, g) === 'other';
+        return g !== undefined && this.tableOpen(g) && tableRelation(this.hostGame, g, pickCopyHolds(this.copies.get(id), this.hostGame, g)) === 'other';
       });
   }
 
@@ -2387,6 +2397,17 @@ export class HostMatch {
       else this.changing.set(id, u.tableChange);
       changed = true;
     }
+    // Step 10 (review of PR 139): this member's PC says its open table is its own copy of the lobby's table (null:
+    // no longer). Whether the word holds is asked when the rows are read (`otherTableIds`).
+    if (u.pickCopy !== undefined) {
+      const was = this.copies.get(id);
+      const now = u.pickCopy;
+      if (now === null ? was !== undefined : !was || was.pick !== now.pick || was.tableName !== now.tableName || was.tableHash !== now.tableHash) {
+        if (now === null) this.copies.delete(id);
+        else this.copies.set(id, { pick: now.pick, tableName: now.tableName, tableHash: now.tableHash });
+        changed = true;
+      }
+    }
     // Step 6: a start from the table belongs to the game that asked for it. That game ended on its table before the
     // start came to anything (the PC says `ownGame: false`): the start is off, and the next one asks again (A12).
     if (u.ownGame === false && this.pending?.tableOf === id) {
@@ -2417,6 +2438,7 @@ export class HostMatch {
     this.withoutCopy.delete(peer);
     this.inOwnGame.delete(peer);
     this.changing.delete(peer);
+    this.copies.delete(peer);
     if (this.stream3dWait.delete(peer)) this.armStream3dTimer();
     const inGrace = this.grace.has(peer);
     const held: TimerHandle | null | undefined = this.grace.get(peer);
@@ -2608,34 +2630,57 @@ export class HostMatch {
    * kept (`pickOf`). Every member's own table is compared with it again; an open match ends at that moment ("the
    * table changed": a tally is for one table). What each PC then does about its own VPX is the shell's. Null when
    * the pick stands (also when it is the table the lobby had), or the sentence why not.
+   *
+   * Step 10 (review of PR 139): a pick that names the table the lobby already has (`sameTableAs`: the same name,
+   * letter case aside, and no known file hash or ROM that differs) is never a change: it ends no match, moves no
+   * "picked by", and drops nothing that was known. From the member who made the pick, or from this PC, it may add
+   * what was not known (a file hash, a ROM) and say the table objects anew, inside the same limits as a change; from
+   * anybody else it adds nothing. Every pick that comes here is told (`tablePickJudged`), taken or not.
    */
   pickTable(game: GameFingerprint, by: PlayerId = this.localId, objects: { editables: number; hash: string } | null = null): string | null {
     this.assertActive();
+    const r = this.judgePick(game, by, objects);
+    this.events.emit('tablePickJudged', { by, byName: tableWords(this.isMember(by) ? this.nameOf(by) : by), table: tableWords(game.tableName), outcome: r.outcome, why: r.why });
+    return r.why;
+  }
+
+  private judgePick(game: GameFingerprint, by: PlayerId, objects: { editables: number; hash: string } | null): { outcome: 'changed' | 'added' | 'same' | 'refused'; why: string | null } {
+    const refused = (why: string): { outcome: 'refused'; why: string } => ({ outcome: 'refused', why });
     const why = this.pickBlocker();
-    if (why !== null) return why;
-    if (!this.isMember(by)) return `${by} is not in the lobby`;
+    if (why !== null) return refused(why);
+    if (!this.isMember(by)) return refused(`${by} is not in the lobby`);
     // Step 10: the name is kept clean (it is shown and logged on every PC), and a pick has to name a table.
     const next = pickOf({ ...game, tableName: pickName(game.tableName) });
-    if (next.tableName === '' || !this.tableOpen(next)) return 'That is not a table: pick one from the list.';
-    if (this.pickFixed && samePick(next, this.hostGame)) {
-      // The table it already is: nothing changes. What is now known of it is kept (a pick made by default says none).
-      if (objects && !this.pickObjects && this.tableObjects() === null) {
-        this.pickObjects = { editables: objects.editables, hash: objects.hash };
-        this.resendAck();
-      }
-      return null;
+    if (next.tableName === '' || !this.tableOpen(next)) return refused('That is not a table: pick one from the list.');
+    const same = this.pickFixed && sameTableAs(this.hostGame, next);
+    let refined: GameFingerprint | null = null;
+    let said: { editables: number; hash: string } | null = null;
+    if (same) {
+      // The table it already is. Only its picker, or this PC, adds to what is known of it.
+      if (by !== this.pickedBy && by !== this.localId) return { outcome: 'same', why: null };
+      const more = refinedPick(this.hostGame, next);
+      refined = samePick(more, this.hostGame) ? null : more;
+      said = objects && (this.pickObjects === null || this.pickObjects.editables !== objects.editables || this.pickObjects.hash !== objects.hash) ? objects : null;
+      if (refined === null && said === null) return { outcome: 'same', why: null };
     }
-    // Step 10: limits on how often the lobby's table can change.
+    // Step 10: limits on how often the lobby's table can change (and on how often what is known of it can).
     const now = this.s.clock.now();
     const left = (since: number | null | undefined, gap: number): number => (since === null || since === undefined ? 0 : Math.ceil((since + gap - now) / 1000));
     const mine = left(this.lastPickBy.get(by), this.pickMemberGapMs);
-    if (mine > 0) return `You changed the lobby's table a moment ago: you can change it again in ${mine} s.`;
+    if (mine > 0) return refused(`You changed the lobby's table a moment ago: you can change it again in ${mine} s.`);
     const anyone = left(this.lastPickAt, this.pickGapMs);
-    if (anyone > 0) return `The lobby's table was changed a moment ago: it can be changed again in ${anyone} s.`;
+    if (anyone > 0) return refused(`The lobby's table was changed a moment ago: it can be changed again in ${anyone} s.`);
     this.lastPickAt = now;
     // (A member's own time runs on whether they are in the lobby or not, and is forgotten once it is over.)
     for (const [id, at] of this.lastPickBy) if (at + this.pickMemberGapMs <= now) this.lastPickBy.delete(id);
     this.lastPickBy.set(by, now);
+    if (same) {
+      if (refined !== null) this.hostGame = refined;
+      if (said !== null) this.pickObjects = { editables: said.editables, hash: said.hash };
+      this.recompareAll();
+      this.resendAck();
+      return { outcome: 'added', why: null };
+    }
     this.hostGame = next;
     this.pickFixed = true;
     this.pickDefault = false;
@@ -2647,7 +2692,7 @@ export class HostMatch {
     this.events.emit('tablePicked', { by, game: { ...next } });
     if (this.s.state.phase === 'ended') this.closeMatch('the table changed');
     else this.resendAck();
-    return null;
+    return { outcome: 'changed', why: null };
   }
 
   /** Who a start asked now would be played by, the asker first when they are one of them. */
@@ -2684,7 +2729,9 @@ export class HostMatch {
     if (st.phase === 'ended' && !this.resultSent) return { kind: 'wait', waitsFor: 'result', on: [] };
     const few = this.tooFew(p.players, p.newMatch);
     if (few !== null) return { kind: 'refuse', message: few };
-    const loading = p.players.filter((id) => !this.tableIsOpen(id));
+    // Step 10 (review of PR 139): a PC that says its table is closing (a close request is out there) has no table
+    // for this start, whatever its row still names: the start waits until it has one again.
+    const loading = p.players.filter((id) => !this.tableIsOpen(id) || this.changing.get(id) === 'closing');
     if (loading.length > 0) return { kind: 'wait', waitsFor: 'tables', on: loading };
     const elsewhere = this.otherTableIds();
     const other = p.players.filter((id) => elsewhere.includes(id));
@@ -3130,6 +3177,7 @@ export class HostMatch {
     this.withoutCopy.delete(id);
     this.inOwnGame.delete(id);
     this.changing.delete(id);
+    this.copies.delete(id);
     this.setMismatch(id, compareWithPick(this.hostGame, p.game, this.localId));
     this.events.emit('reconnected', { playerId: id, entries: 0, quiet });
     // HELLO_ACK first (it is this member's answer), then the open match's log from entry 0.

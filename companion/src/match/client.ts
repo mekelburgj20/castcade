@@ -99,7 +99,7 @@ import { compareFingerprints, DEFAULT_DISCONNECT_GRACE_MS, HostMatch, type Outgo
 import { signCanonical, verifyCanonical, type KeyPair } from './keys.js';
 import { hashEntry, type LogEntry, type LogEntryBody, type LogHead, type MatchLog } from './log.js';
 import { helloProofBody, lobbyReconnectSignBody, logSignBody, reconnectSignBody } from './result.js';
-import { compareWithPick, identityOnly } from './table-identity.js';
+import { compareWithPick, identityOnly, type PickCopyWord } from './table-identity.js';
 import { Session } from './session.js';
 import { cloneState, isStrictMajority, remainingParticipants, type MatchState } from './state.js';
 import type { LinkCandidate, Transport } from './transport.js';
@@ -372,6 +372,8 @@ export class ClientMatch {
   private saidOwnGame: boolean | undefined;
   /** A17 step 10: what this client last said of its way to the lobby's table (`PARTICIPANT_UPDATE.tableChange`). */
   private saidTableChange: TableChangeState | null | undefined;
+  /** A17 step 10: what this client last said of its open table being its copy of the lobby's table (`PARTICIPANT_UPDATE.pickCopy`). */
+  private saidPickCopy: PickCopyWord | null | undefined;
   /** A17: the lobby as the host last said it (HELLO_ACK); null before the join. */
   private lobbyAck: PayloadOf<'HELLO_ACK'> | null = null;
   /**
@@ -388,7 +390,7 @@ export class ClientMatch {
   /** A17 step 6: when the link to the host dropped (this session's clock); null while it is up. */
   private downSince: number | null = null;
   /** A17 step 6 (review): `noCopy` / `ownGame` as last said before this client's place was gone, to be said again to the new row. */
-  private rowAfterRejoin: { noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState } | null = null;
+  private rowAfterRejoin: { noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState; pickCopy?: PickCopyWord } | null = null;
   /** A17 step 6 (review): the log being merged is of a match that is over (`RECONNECT_ACK.closed`): no grant in it is this player's turn. */
   private closedMerge = false;
   /** A17 step 6 (review): a `stale_seq` was answered with a new attempt already (one per drop). */
@@ -727,7 +729,7 @@ export class ClientMatch {
    * A13: `ballEndReady` (whether this table can report ball ends) goes the same way, in the lobby only.
    * I11.4.9: so does `stream3dWaitMs` (this PC's 3D connection is still being made; 0: settled), in the lobby only.
    */
-  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null }): boolean {
+  updateParticipant(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null; pickCopy?: PickCopyWord | null }): boolean {
     this.assertActive();
     if (!this.joined) return false;
     // A17: in a lobby every key counts in every phase, and three more are read: `stance`, `noCopy`, `ownGame`.
@@ -754,7 +756,7 @@ export class ClientMatch {
   }
 
   /** A17: `updateParticipant` in a lobby: what changed, in any phase, under the lobby's code. */
-  private updateInLobby(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null }): boolean {
+  private updateInLobby(u: { rig?: ParticipantInfo['rig']; game?: GameFingerprint; ballEndReady?: boolean; stream3dWaitMs?: number; stance?: Stance; noCopy?: boolean; ownGame?: boolean; tableChange?: TableChangeState | null; pickCopy?: PickCopyWord | null }): boolean {
     const payload: PayloadOf<'PARTICIPANT_UPDATE'> = {};
     if (u.rig !== undefined && u.rig !== this.participant.rig) payload.rig = u.rig;
     if (u.game !== undefined && compareFingerprints(this.game, u.game, this.localId).length > 0) payload.game = { ...u.game };
@@ -766,6 +768,8 @@ export class ClientMatch {
     if (u.ownGame !== undefined && u.ownGame !== this.saidOwnGame) payload.ownGame = u.ownGame;
     // A17 step 10: where this PC stands on its way to the lobby's table (null: nothing to say any more).
     if (u.tableChange !== undefined && u.tableChange !== this.saidTableChange) payload.tableChange = u.tableChange;
+    // A17 step 10: this PC's open table is its own copy of the lobby's table (null: no longer).
+    if (u.pickCopy !== undefined && JSON.stringify(u.pickCopy) !== JSON.stringify(this.saidPickCopy)) payload.pickCopy = u.pickCopy === null ? null : { pick: u.pickCopy.pick, tableName: u.pickCopy.tableName, tableHash: u.pickCopy.tableHash };
     if (Object.keys(payload).length === 0) return false;
     if (payload.rig !== undefined) this.participant = { ...this.participant, rig: payload.rig };
     if (payload.game !== undefined) this.game = { ...payload.game };
@@ -774,6 +778,7 @@ export class ClientMatch {
     if (payload.noCopy !== undefined) this.saidNoCopy = payload.noCopy;
     if (payload.ownGame !== undefined) this.saidOwnGame = payload.ownGame;
     if (payload.tableChange !== undefined) this.saidTableChange = payload.tableChange;
+    if (payload.pickCopy !== undefined) this.saidPickCopy = payload.pickCopy;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', payload, this.lobbyIdForWire()));
     // A6.1: this player's own rig after a match's start is told here as it always was.
     if (payload.rig !== undefined && this.s.state.phase !== 'lobby') this.events.emit('rigUpdated', { playerId: this.localId, rig: payload.rig });
@@ -1100,6 +1105,7 @@ export class ClientMatch {
     if (this.saidNoCopy !== undefined) row.noCopy = this.saidNoCopy;
     if (this.saidOwnGame !== undefined) row.ownGame = this.saidOwnGame;
     if (this.saidTableChange !== undefined) row.tableChange = this.saidTableChange;
+    if (this.saidPickCopy !== undefined) row.pickCopy = this.saidPickCopy;
     this.sendToHost(this.s.build('PARTICIPANT_UPDATE', row, this.lobbyIdForWire()));
   }
 
@@ -1746,10 +1752,12 @@ export class ClientMatch {
           ...(this.saidNoCopy !== undefined ? { noCopy: this.saidNoCopy } : {}),
           ...(this.saidOwnGame !== undefined ? { ownGame: this.saidOwnGame } : {}),
           ...(this.saidTableChange != null ? { tableChange: this.saidTableChange } : {}),
+          ...(this.saidPickCopy != null ? { pickCopy: this.saidPickCopy } : {}),
         };
         this.saidNoCopy = undefined;
         this.saidOwnGame = undefined;
         this.saidTableChange = undefined;
+        this.saidPickCopy = undefined;
         this.events.emit('rejoining', want.host);
         if (this.s.transport.connectTo) this.openLinkTo(want.host, { endpoint: want.endpoint, replacing: want.host }, true);
         else this.join();

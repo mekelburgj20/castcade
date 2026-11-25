@@ -126,7 +126,7 @@
  *   - **away is not gone** (A18's rule in every phase): a member whose link dropped keeps the voice while that
  *     connection is itself up; the lobby's PC away is said on a client's panel, and nothing closes.
  */
-import { pickName } from './table-identity.js';
+import { tableWords, type PickCopyWord } from './table-identity.js';
 import type { GameFingerprint, GrantBody, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId, Stance, TableChange } from '@castcade/protocol';
 import type { MatchMedia, MediaSignal, MediaSignalling, PanelState, VrViewMode } from '../media/match-media-types.js';
 import type { GameEvent, HighScoreEvent, MidnightEvent } from '../witness/journal-detector.js';
@@ -161,6 +161,9 @@ export function isLobbyRole(role: MatchRole): boolean {
  * when its person says so), `changing` (the open table was asked to close, or the lobby's table is being opened).
  * A PC that waits for a game or its initials says `own_game`.
  */
+/** A17 step 10: picks of one member that change nothing are logged this far apart at most (the ones between are counted). */
+export const PICK_LOG_GAP_MS = 2_000;
+
 export type LobbyFlag = 'away' | 'loading' | 'no_table' | 'other_table' | 'own_game' | 'close_table' | 'asked' | 'changing';
 
 /** A17 step 7: the lobby as this controller knows it, for the Match tab and the in-game menu. Null without a lobby. */
@@ -176,7 +179,8 @@ export interface LobbyStatus {
   /**
    * A17 step 10: the lobby's table: its name (null: none is named yet), who picked it, why it cannot be changed now
    * (`off`; null: it can), and whether a change ends the open match (`endsMatch`: asked before the press).
-   * `changing`: some member's PC is on its way to it (the header says CHANGING TABLE).
+   * `changing`: some member's PC is closing its table or opening the lobby's (the header says CHANGING TABLE); a PC
+   *   that waits for its person or for a game says so on its own row, and is not counted here.
    */
   table: { name: string | null; pickedBy: PlayerId | null; pickedByName: string | null; off: string | null; endsMatch: boolean; changing: boolean };
   /**
@@ -703,6 +707,10 @@ export class MatchController {
   /** A17 step 10: where this PC stands on its way to the lobby's table, as the lobby was last told, and the sentence for its own panel. */
   private tableChangeSaid: TableChange | null = null;
   private tableChangeLine: string | null = null;
+  /** A17 step 10: what the lobby was last told about this PC's open table being its copy of the lobby's table; undefined: nothing yet. */
+  private pickCopySaid: string | undefined;
+  /** A17 step 10: when a pick by each member was last logged on the lobby's PC, and how many since were not (`PICK_LOG_GAP_MS`). */
+  private readonly pickLogged = new Map<PlayerId, { at: number; more: number }>();
   /** A client: its link to the lobby's PC has been down for longer than the grace. */
   private hostIsAway = false;
   private hostAwayTimer: unknown = null;
@@ -1804,6 +1812,31 @@ export class MatchController {
     offs.push(h.on('midnightMode', (m) => this.onMidnightMode(m.playerId, m.mode)));
     // A host in `advise` mode accepted a different table file (§3): flagged, never refused.
     offs.push(h.on('tableMismatch', (m) => this.noteTableMismatch(m.playerId, m.mismatches.map((x) => x.field))));
+    // A17 step 10 (review of PR 139): the lobby's PC logs every pick that reached it, taken or not, and by whom.
+    offs.push(
+      h.on('tablePickJudged', (j) => {
+        const who = `${j.byName} (${j.by})`;
+        // A pick that changed nothing is logged once in `PICK_LOG_GAP_MS` per member, with the number left out, so
+        // that a member who keeps asking does not fill the log. A pick that was taken is always logged.
+        const taken = j.outcome === 'changed' || j.outcome === 'added';
+        let more = '';
+        if (!taken) {
+          const now = this.opts.now();
+          const last = this.pickLogged.get(j.by);
+          if (last && now - last.at < PICK_LOG_GAP_MS) {
+            last.more += 1;
+            return;
+          }
+          if (last && last.more > 0) more = ` (${last.more} more from them before this were not logged)`;
+          if (this.pickLogged.size > 32) for (const [id, l] of this.pickLogged) if (now - l.at > 60_000) this.pickLogged.delete(id);
+          this.pickLogged.set(j.by, { at: now, more: 0 });
+        }
+        if (j.outcome === 'refused') this.opts.log(`match: a pick of the lobby's table by ${who} was refused: ${j.table}: ${j.why ?? ''}${more}`);
+        else if (j.outcome === 'changed') this.opts.log(`match: the lobby's table was picked by ${who}: ${j.table}${more}`);
+        else if (j.outcome === 'added') this.opts.log(`match: ${who} picked the table the lobby has (${j.table}): what was not known of it is added; nothing else changes${more}`);
+        else this.opts.log(`match: ${who} picked the table the lobby already has (${j.table}): nothing changes${more}`);
+      }),
+    );
     offs.push(h.on('ready', (p) => this.onReady(p)));
     offs.push(h.on('grant', (g) => this.onGrant(g, g.player === this.localId)));
     offs.push(h.on('ballEnd', (m) => this.onBallEndMsg(m.from, m.payload.finalScore)));
@@ -3351,8 +3384,10 @@ export class MatchController {
       case 'other_tables': {
         // Design 11.4: "…once Krobs has Monster Bash open (he has Congo open)": by name where this PC was told both
         // names (one person, and the lobby said which table differs); never a guess at "he" or "she".
-        const wanted = this.ack?.hostGame?.tableName ?? null;
-        const open = !many && on[0] !== undefined ? (this.ack?.tableMismatches.find((x) => x.playerId === on[0])?.mismatches.find((x) => x.field === 'tableName')?.received ?? null) : null;
+        // (Both names come from other PCs: cleaned before they are shown.)
+        const clean = (name: string | null | undefined): string | null => (name ? tableWords(name) || null : null);
+        const wanted = clean(this.ack?.hostGame?.tableName);
+        const open = !many && on[0] !== undefined ? clean(this.ack?.tableMismatches.find((x) => x.playerId === on[0])?.mismatches.find((x) => x.field === 'tableName')?.received) : null;
         if (wanted !== null && open !== null && open !== wanted) return `${by} ${what} once ${this.namesOf(on)} ${on[0] === me ? 'have' : 'has'} ${wanted} open (${open} is open there)`;
         return `${by} ${what} once ${this.namesOf(on)} ${many || on[0] === me ? 'have' : 'has'} the lobby's table open (another table is open there)`;
       }
@@ -3449,7 +3484,7 @@ export class MatchController {
     // (While nobody has picked, `hostGame` is whatever the lobby's PC says of a table it has not open: no table.)
     const pick = a?.hostGame ?? null;
     const pickedBy = a?.tablePickedBy ?? null;
-    const named = pick !== null && pickedBy !== null && pick.tableName.trim() !== '' ? pickName(pick.tableName).slice(0, 80).trim() : null;
+    const named = pick !== null && pickedBy !== null && pick.tableName.trim() !== '' ? tableWords(pick.tableName) : null;
     let pickOff: string | null = null;
     if (this.seriesOver) pickOff = 'The lobby is closed.';
     else if (this.hostIsAway) pickOff = "The lobby's PC is away.";
@@ -3461,7 +3496,7 @@ export class MatchController {
       starter,
       members,
       match: match ? { id: match.matchId, game: match.game, state: match.state, players: [...match.players] } : null,
-      table: { name: named, pickedBy, pickedByName: pickedBy !== null && this.lobby.some((p) => p.playerId === pickedBy) ? this.nameOf(pickedBy) : null, off: pickOff, endsMatch: between, changing: !game && (a?.tableChange ?? []).length > 0 },
+      table: { name: named, pickedBy, pickedByName: pickedBy !== null && this.lobby.some((p) => p.playerId === pickedBy) ? this.nameOf(pickedBy) : null, off: pickOff, endsMatch: between, changing: !game && (a?.tableChange ?? []).some((x) => x.state === 'closing' || x.state === 'opening') },
       gameKey: match ? `${match.matchId}/${match.game}/${match.state}` : '',
       start: s ? { by: s.by, players: [...s.players], newMatch: s.newMatch, waitsFor: s.waitsFor, waitsOn: [...s.waitsOn], seconds: s.waitsFor === null ? this.countdownSeconds() : null, line: this.startLine() ?? '' } : null,
       startButton: { label: between ? 'Next game' : 'Start match', line, off },
@@ -3584,6 +3619,32 @@ export class MatchController {
       }
     }
     if (changed) this.push();
+  }
+
+  /**
+   * A17 step 10 (review of PR 139, finding 1): this PC's open table is its own copy of the lobby's table (`word`: the
+   * lobby's table by its name, and this PC's table as its row names it), or is not (null). The shell knows: it finds
+   * the copy, by rules a row cannot carry (a ROM its lists know). The lobby is told when the word changed; a client
+   * that is not in yet is not recorded as having said it, and the shell says it again at its next look.
+   */
+  setPickCopy(word: PickCopyWord | null): void {
+    if (!this.lobbyOn || this.closed || this.seriesOver) return;
+    const text = JSON.stringify(word);
+    if (text === this.pickCopySaid || (word === null && this.pickCopySaid === undefined)) return;
+    const r = this.role;
+    let said = false;
+    this.call(() => {
+      if (isHostRole(r)) {
+        (r as LobbyHostRole).updateLocal({ pickCopy: word });
+        said = true;
+      } else if ((r as LobbyClientRole).isJoined) {
+        (r as LobbyClientRole).updateParticipant({ pickCopy: word });
+        said = true;
+      }
+    }, 'the copy of the table');
+    if (!said) return;
+    this.pickCopySaid = text;
+    this.opts.log(word === null ? "match: this PC's open table is no longer said to be its copy of the lobby's table" : `match: the lobby is told that this PC's open table (${tableWords(word.tableName)}) is its copy of ${tableWords(word.pick)}`);
   }
 
   /** A17 step 7 (design 11.3): this player's own choice, Play or Watch; it counts from the next start. */

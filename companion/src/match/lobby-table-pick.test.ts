@@ -8,8 +8,8 @@ import { describe, expect, it } from 'vitest';
 import type { GameFingerprint } from '@castcade/protocol';
 import type { ClientMatch } from './client.js';
 import { PICK_GAP_MS, PICK_MEMBER_GAP_MS } from './host.js';
-import { countDown, flush, NO_TABLE, starLobby, TABLE, type StarRig } from './lobby.test-support.js';
-import { compareWithPick, pickName, pickOf } from './table-identity.js';
+import { countDown, flush, NO_TABLE, OTHER_GAME as OTHER, playGame, starLobby, TABLE, type StarRig } from './lobby.test-support.js';
+import { compareWithPick, pickName, pickOf, sameTableAs, tableWords } from './table-identity.js';
 
 const client = (r: StarRig, id: string): ClientMatch => r.clients[id] as ClientMatch;
 const table = (tableName: string, hash: string, romName: string | null = null): GameFingerprint => ({ ...TABLE, tableName, tableHash: hash.repeat(32), romName });
@@ -132,10 +132,14 @@ describe('A17 step 10: what a pick is made of', () => {
     r.host.updateLocal({ game: AFM });
     await flush();
     expect(r.lobby('a').hostTableObjects).toBeNull();
-    // The table it already is, picked again with its objects known: they are kept, and nothing else changes.
+    // The table it already is, picked again by somebody who did not pick it: nothing is taken from them.
     expect(r.host.pickTable(MM, 'a', CC)).toBeNull();
     await flush();
-    expect(r.lobby('b').hostTableObjects).toEqual(CC);
+    expect(r.lobby('b').hostTableObjects).toBeNull();
+    // By its picker, with its objects known now: they are kept, and nothing else changes.
+    expect(r.host.pickTable(MM, 'b', CC)).toBeNull();
+    await flush();
+    expect(r.lobby('a').hostTableObjects).toEqual(CC);
     expect(r.host.table().pickedBy).toBe('b');
   });
 
@@ -187,8 +191,8 @@ describe('A17 step 10: a row is compared with the pick on what both sides know',
     // A pick whose file was never hashed says nothing of anybody's bytes; another name is still another table.
     expect(compareWithPick(pickOf({ ...TABLE, tableHash: UNHASHED }), mine, 'h')).toEqual([]);
     expect(compareWithPick(pickOf({ ...TABLE, tableHash: UNHASHED }), AFM, 'h').map((m) => m.field)).toEqual(['tableName']);
-    // Two ROMs that are both known and differ are a difference.
-    expect(compareWithPick(pickOf(pick), { ...mine, romName: 'mb_10' }, 'h').map((m) => m.field)).toEqual(['romName']);
+    // Two ROMs that are both known and differ are a difference (of another file: the same bytes are the same table).
+    expect(compareWithPick(pickOf(pick), { ...mine, tableHash: '77'.repeat(32), romName: 'mb_10' }, 'h').map((m) => m.field)).toEqual(['tableHash', 'romName']);
   });
 });
 
@@ -260,5 +264,222 @@ describe('A17 step 10: where each PC stands on its way to the new table', () => 
     await countDown(r);
     expect(r.host.state.game).toEqual(AFM);
     expect(r.host.openMatch()?.matchId).toBe('JHDFEF-1');
+  });
+});
+
+describe("A17 step 10, review of PR 139: the table the lobby already has, and a PC's own copy of it", () => {
+  /** The shell counts a named table as open (`isTableOpen`): a pick can be by name alone. */
+  const named = (g: GameFingerprint): boolean => g.tableHash !== UNHASHED || g.tableName !== NO_TABLE.tableName;
+  const FALSE = { editables: 1, hash: 'ffffffffffffffff' };
+
+  it('a pick that differs from the lobby`s table only in letter case, or adds a file hash, a ROM or the table objects, is no change: it ends no match, moves no "picked by" and drops nothing that was known', async () => {
+    const r = await starLobby(['a', 'b'], { lobby: { pickGapMs: 0, pickMemberGapMs: 0 }, tableOpen: named });
+    const picked: string[] = [];
+    r.host.on('tablePicked', (p) => picked.push(p.by));
+    r.host.setHostTableObjects(CONGO);
+    r.host.requestStart();
+    await countDown(r);
+    await playGame(r);
+    expect(r.host.openMatch()?.matchId).toBe('JHDFEF-1');
+    const before = r.host.table();
+    expect(before).toEqual({ game: pickOf(TABLE), pickedBy: 'h' });
+    // Another member, by name only, in capitals: the same table. The hash, the ROM and the objects the lobby had stay.
+    expect(r.host.pickTable({ ...TABLE, tableName: TABLE.tableName.toUpperCase(), tableHash: UNHASHED, romName: null }, 'a', FALSE)).toBeNull();
+    client(r, 'b').pickTable({ ...TABLE, tableName: ` ${TABLE.tableName.toLowerCase()} `, romName: null });
+    await flush();
+    expect(r.host.table()).toEqual(before);
+    expect(r.host.tableObjects()).toEqual(CONGO);
+    expect(r.lobby('a').hostGame).toEqual(pickOf(TABLE));
+    expect(r.host.openMatch()?.matchId).toBe('JHDFEF-1');
+    expect(picked).toEqual([]);
+    expect(r.said['b'] ?? []).toEqual([]);
+    // The same name with another file's hash is another file: that is a pick, and it ends the match.
+    expect(r.host.pickTable({ ...TABLE, tableHash: '77'.repeat(32) }, 'a')).toBeNull();
+    expect(picked).toEqual(['a']);
+    expect(r.host.openMatch()).toBeNull();
+  });
+
+  it('a pick made by name alone takes its file hash and its ROM when its picker says them later, and keeps them when somebody else picks it by name', async () => {
+    const byName = { ...TABLE, tableHash: UNHASHED, romName: null };
+    const r = await starLobby(['a', 'b'], { tables: { h: NO_TABLE }, lobby: { pickGapMs: 0, pickMemberGapMs: 0 }, tableOpen: named });
+    client(r, 'a').pickTable(byName);
+    await flush();
+    expect(r.host.table()).toEqual({ game: pickOf(byName), pickedBy: 'a' });
+    // Somebody else adds nothing to another person's pick.
+    client(r, 'b').pickTable(TABLE, FALSE);
+    await flush();
+    expect(r.host.table().game.tableHash).toBe(UNHASHED);
+    expect(r.host.tableObjects()).toBeNull();
+    // Its picker does: the hash, the ROM, the table objects.
+    client(r, 'a').pickTable(TABLE, CC);
+    await flush();
+    expect(r.host.table()).toEqual({ game: pickOf(TABLE), pickedBy: 'a' });
+    expect(r.lobby('b').hostGame).toEqual(pickOf(TABLE));
+    expect(r.lobby('b').hostTableObjects).toEqual(CC);
+    // By name alone again, by anyone: nothing is erased.
+    client(r, 'b').pickTable(byName);
+    client(r, 'a').pickTable(byName);
+    await flush();
+    expect(r.host.table()).toEqual({ game: pickOf(TABLE), pickedBy: 'a' });
+    expect(r.lobby('b').hostTableObjects).toEqual(CC);
+  });
+
+  it("the table objects of the table the lobby has: only from the member who picked it or from the lobby's PC, inside the limits; the owner corrects a wrong value; the lobby PC's own VPX word replaces them while its table is the picked file", async () => {
+    const r = await starLobby(['a', 'b']);
+    client(r, 'b').pickTable(MM);
+    await flush();
+    // A member who did not make the pick names the lobby's table with table objects of their choosing: not taken.
+    client(r, 'a').pickTable(MM, FALSE);
+    await flush();
+    expect(r.host.tableObjects()).toBeNull();
+    expect(r.lobby('b').hostTableObjects).toBeNull();
+    expect(r.said['a'] ?? []).toEqual([]);
+    // The picker at once: inside the limits, like a change.
+    client(r, 'b').pickTable(MM, CC);
+    await flush();
+    expect(r.said['b']).toEqual(["You changed the lobby's table a moment ago: you can change it again in 30 s."]);
+    expect(r.host.tableObjects()).toBeNull();
+    await r.tick(30_000);
+    client(r, 'b').pickTable(MM, FALSE);
+    await flush();
+    expect(r.lobby('a').hostTableObjects).toEqual(FALSE);
+    // The lobby's PC is held by the lobby's own 10 s too, then corrects the value; "picked by" stays.
+    expect(r.host.pickTable(MM, 'h', CC)).toBe("The lobby's table was changed a moment ago: it can be changed again in 10 s.");
+    await r.tick(10_000);
+    expect(r.host.pickTable(MM, 'h', CC)).toBeNull();
+    await flush();
+    expect(r.lobby('a').hostTableObjects).toEqual(CC);
+    expect(r.host.table().pickedBy).toBe('b');
+    // The lobby PC's own VPX has the picked file open and says what it holds: that word is the lobby's while it stands.
+    r.host.updateLocal({ game: MM });
+    expect(r.host.setHostTableObjects(CONGO)).toBe(true);
+    await flush();
+    expect(r.lobby('a').hostTableObjects).toEqual(CONGO);
+    // Its table is another one again: what was said with the pick.
+    r.host.updateLocal({ game: AFM });
+    await flush();
+    expect(r.lobby('a').hostTableObjects).toEqual(CC);
+  });
+
+  it("every pick that reaches the lobby's PC is told with who made it and what became of it, taken or not", async () => {
+    const r = await starLobby(['a', 'b']);
+    const judged: string[] = [];
+    r.host.on('tablePickJudged', (j) => judged.push(`${j.byName} (${j.by}) ${j.outcome} ${j.table}${j.why ? `: ${j.why}` : ''}`));
+    client(r, 'a').pickTable({ ...AFM, tableName: 'Attack\r\nfrom\tMars' }, CC);
+    await flush();
+    client(r, 'a').pickTable(MM);
+    client(r, 'b').pickTable(AFM);
+    await flush();
+    await r.tick(30_000);
+    client(r, 'a').pickTable(AFM, CONGO);
+    await flush();
+    r.host.requestStart();
+    await flush();
+    client(r, 'b').pickTable(MM);
+    await flush();
+    expect(judged).toEqual([
+      'A (a) changed Attack from Mars',
+      "A (a) refused Medieval Madness: You changed the lobby's table a moment ago: you can change it again in 30 s.",
+      'B (b) same Attack from Mars',
+      'A (a) added Attack from Mars',
+      'B (b) refused Medieval Madness: A match is starting: cancel the start to change the table.',
+    ]);
+  });
+
+  it("finding 1: a PC says that its open table is its own copy of the lobby's table: the lobby does not call it another table, for as long as the word names the lobby's table and the table that row names", async () => {
+    const pick = table('Attack from Mars', 'cd', 'afm_113b');
+    // A copy whose file and names share nothing with the title: the PC found it by the ROM its own list knows.
+    const copy = table('AFM_VPW_v1.2', '77');
+    const word = { pick: 'Attack from Mars', tableName: copy.tableName, tableHash: copy.tableHash };
+    const r = await starLobby(['a', 'b'], { lobby: { pickGapMs: 0, pickMemberGapMs: 0 } });
+    expect(r.host.pickTable(pick, 'b')).toBeNull();
+    r.host.updateLocal({ game: { ...pick, romName: null } });
+    client(r, 'b').updateParticipant({ game: { ...pick, romName: null } });
+    client(r, 'a').updateParticipant({ game: copy });
+    await flush();
+    // What the review found: the row names another table, and a start waits for that person for ever.
+    expect(r.lobby('b').otherTable).toEqual(['a']);
+    r.host.requestStart();
+    await flush();
+    expect(r.lobby('a').start).toMatchObject({ waitsFor: 'other_tables', waitsOn: ['a'] });
+    // The PC says it: the start waits no longer. The lobby still says that the file differs (the advisory).
+    client(r, 'a').updateParticipant({ pickCopy: word });
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual([]);
+    expect(r.lobby('b').start).toMatchObject({ waitsFor: null });
+    expect(r.lobby('b').tableMismatches.find((t) => t.playerId === 'a')?.mismatches.map((x) => x.field)).toEqual(['tableName', 'tableHash']);
+    r.host.cancelStart();
+    await flush();
+    // The word is about one table: another table in that row is another table again.
+    client(r, 'a').updateParticipant({ game: OTHER });
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual(['a']);
+    client(r, 'a').updateParticipant({ game: copy });
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual([]);
+    // And about one pick: the lobby's table changes, and the copy of the table before is no copy of it.
+    expect(r.host.pickTable(MM, 'b')).toBeNull();
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual(['h', 'a', 'b']);
+    expect(r.host.pickTable(pick, 'a')).toBeNull();
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual([]);
+    // Taken back with null; and the lobby PC's own row says it the same way.
+    client(r, 'a').updateParticipant({ pickCopy: null });
+    r.host.updateLocal({ game: copy });
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual(['h', 'a']);
+    r.host.updateLocal({ pickCopy: word });
+    await flush();
+    expect(r.lobby('b').otherTable).toEqual(['a']);
+    // A newcomer with such a copy has said nothing yet.
+    await r.join('c', { game: copy });
+    expect(r.lobby('b').otherTable).toEqual(['a', 'c']);
+  });
+
+  it('finding 1: the word is said again by itself when the member comes back after a dropped link', async () => {
+    const pick = table('Attack from Mars', 'cd', 'afm_113b');
+    const copy = table('AFM_VPW_v1.2', '77');
+    const r = await starLobby(['a', 'b'], { lobby: { pickGapMs: 0, pickMemberGapMs: 0, placeMs: 10_000 } });
+    expect(r.host.pickTable(pick, 'b')).toBeNull();
+    client(r, 'a').updateParticipant({ game: copy, pickCopy: { pick: pick.tableName, tableName: copy.tableName, tableHash: copy.tableHash } });
+    await flush();
+    expect(r.lobby('b').otherTable).not.toContain('a');
+    // The place runs out while the link is down; the member joins again as a newcomer and says its row again.
+    await r.cut('a');
+    await r.tick(5_000);
+    await r.tick(10_000);
+    expect(r.host.members().map((p) => p.playerId)).not.toContain('a');
+    await r.mend('a');
+    await flush();
+    expect(r.host.members().map((p) => p.playerId)).toContain('a');
+    expect(r.lobby('b').otherTable).not.toContain('a');
+  });
+
+  it('finding 6: a PC that says its table is closing has no table for a start, whatever its row still names', async () => {
+    const r = await starLobby(['a']);
+    client(r, 'a').updateParticipant({ tableChange: 'closing' });
+    await flush();
+    r.host.requestStart();
+    await flush();
+    expect(r.lobby('a').start).toMatchObject({ waitsFor: 'tables', waitsOn: ['a'] });
+    // It has closed, and the table is open again: the start counts down.
+    client(r, 'a').updateParticipant({ game: NO_TABLE, tableChange: 'opening' });
+    await flush();
+    expect(r.lobby('a').start).toMatchObject({ waitsFor: 'tables', waitsOn: ['a'] });
+    client(r, 'a').updateParticipant({ game: TABLE, tableChange: null });
+    await flush();
+    expect(r.lobby('a').start).toMatchObject({ waitsFor: null });
+  });
+
+  it('finding 8: the same bytes are the same table whatever the pick is named; names are compared as they are shown', () => {
+    const mine = { ...TABLE, romName: null };
+    // A pick named from the file where the row is named from the table's own name: the identical file.
+    expect(compareWithPick(pickOf({ ...TABLE, tableName: 'mb_vpw_1.1' }), mine, 'h')).toEqual([]);
+    // Two spaces, a line break, other letter case: one name.
+    expect(compareWithPick(pickOf({ ...TABLE, tableHash: UNHASHED, tableName: 'Monster  Bash\n(Williams 1998) 2.1' }), { ...mine, tableName: 'monster bash (williams 1998) 2.1' }, 'h')).toEqual([]);
+    expect(sameTableAs(pickOf(TABLE), { ...TABLE, tableName: TABLE.tableName.toUpperCase(), tableHash: UNHASHED, romName: null })).toBe(true);
+    expect(sameTableAs(pickOf(TABLE), { ...TABLE, romName: 'mb_10' })).toBe(false);
+    expect(tableWords(`  Attack\u0007 from\r\nMars ${'x'.repeat(200)}`)).toHaveLength(80);
   });
 });
