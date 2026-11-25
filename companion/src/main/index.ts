@@ -85,6 +85,7 @@ import { createLayerAgeWatch, readRegisteredAt, sha256File, stageVrLayer, versio
 import { createVrOverlay, resolveVrOverlay } from '../media/vr-overlay.js';
 import { watchFocus } from '../media/focus-watch.js';
 import { probeWindows } from '../media/window-geometry.js';
+import { giveForegroundToVpx } from './vpx-foreground.js';
 
 const here = dirname(fileURLToPath(import.meta.url)); // <companion>/dist/main
 const companionDir = resolve(here, '..', '..');
@@ -1042,6 +1043,12 @@ async function main(): Promise<void> {
       relay: () => {
         const cur = store.get();
         return cur.token ? { baseUrl: cur.arcaidBaseUrl, deviceId: cur.deviceId, deviceToken: cur.token } : null;
+      },
+      // I11.4.18: VPX gets the foreground back when a Castcade window (this one, the desktop panel) holds it and this
+      // PC's table is the one to play. This process owns those windows, so Windows lets it hand the foreground on.
+      foreground: {
+        castcadeActive: () => BrowserWindow.getFocusedWindow() !== null,
+        give: () => giveForegroundToVpx(process.pid),
       },
       appVersion,
       log: logger,

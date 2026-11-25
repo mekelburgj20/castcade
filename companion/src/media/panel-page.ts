@@ -1954,10 +1954,14 @@ function openPeer(peer) {
   attachVideo(r);
   attachTable(r);
   // An offer lost on the way (the peer attached late, a reconnect) is sent again until the connection is up.
+  // A18: and on a connection that is up, an offer that has waited for its answer since the last look (one made while
+  // the match's link was away: this connection is kept through that now, so nothing else would ever send it again).
   r.retry = setInterval(() => {
     const n = mesh && mesh.get(peer);
     const st = pc.iceConnectionState;
-    if (n && n.pc === pc && st !== 'connected' && st !== 'completed') n.resendOffer();
+    if (!n || n.pc !== pc) return;
+    if (st !== 'connected' && st !== 'completed') n.resendOffer();
+    else if (n.resendStuckOffer(Date.now())) logLine('peer ' + peer + ': an offer had no answer for ' + Math.round(PeerNegotiator.STUCK_OFFER_MS / 1000) + ' s or more on a connected link: sent again');
   }, 5000);
   sendStereo(peer);
   return pc;

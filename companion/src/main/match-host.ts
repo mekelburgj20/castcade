@@ -99,6 +99,7 @@ import { openPort, portMappingLine, type PortMapping, type PortMapResult } from 
 import type { MatchStream3d, Stream3dHost, Stream3dView } from './stream3d-host.js';
 import type { Logger } from './log.js';
 import { describeError } from './log.js';
+import type { VpxForeground } from './vpx-foreground.js';
 import {
   cleanName,
   cleanPort,
@@ -448,6 +449,11 @@ export interface MatchHostOptions {
   relayRejoin?: Partial<RejoinPolicy>;
   /** A18 test seam: the engines' grace before a dropped link is a disconnect (ms). Default: theirs (5 s). */
   disconnectGraceMs?: number;
+  /**
+   * I11.4.18 (2026-11-24): how VPX gets the foreground back from a Castcade window (`vpx-foreground.ts`); absent: it is
+   * never tried (the tests that are not about it, a build without it).
+   */
+  foreground?: VpxForeground;
 }
 
 /**
@@ -568,6 +574,8 @@ interface Active {
   byHandSaid?: boolean;
   /** I11.4.11: the launch's word for the lobby line (the host's identical file is on this PC, not imported), or null. */
   launchNote?: string | null;
+  /** I11.4.18: this PC held the turn at the last look (`emit`), so the next look knows a turn that has just come. */
+  turnSeen?: boolean;
   /** A15: the invite a client joined with (saved for a rejoin); null on a host. */
   joinInvite: string | null;
   /** A15: the table's events the log has not answered yet (`TableBacklog`), and the witness's mark when it last was. */
@@ -1157,11 +1165,44 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       });
     }, SERIES_OVER_LINGER_MS);
   };
+  /**
+   * I11.4.18 (2026-11-24): VPX holds a table still while its window is not the active one. When this PC's table is the
+   * one to play (Start match was pressed here; a grant reached this PC) and a Castcade window is the active one, the
+   * foreground is handed on to VPX, so the ball moves without a click in VPX first. Never from a third program the
+   * player has switched to (`castcadeActive` is false then, and the helper looks again before it acts), and never
+   * while the in-game menu is open. One log line when it was done, one when it could not be.
+   */
+  let givingFocus = false;
+  const giveVpxFocus = (why: string): void => {
+    const fg = opts.foreground;
+    if (!fg || givingFocus || menu.open) return;
+    try {
+      // VPX itself, or a third program the player switched to, is in front: nothing to hand on, nothing touched.
+      if (!fg.castcadeActive()) return;
+    } catch {
+      return;
+    }
+    givingFocus = true;
+    void fg
+      .give()
+      .catch((e: unknown) => ({ ok: false, title: null, why: describeError(e) }))
+      .then((r) => {
+        givingFocus = false;
+        if (r.ok) log.info(`match: gave VPX the foreground (${why}; a Castcade window was the active one, and VPX holds the table still while its own window is not)`);
+        else log.warn(`match: could not give VPX the foreground (${why}): ${r.why ?? 'no reason given'}. Click the table to play`);
+      });
+  };
   const emit = (): void => {
     if (active) {
       // A15: a match that is over for good leaves nothing to go back to; a reconnect's replay runs once the grant is settled.
       if (!active.recordOff && active.controller.status().series.over) dropRecord(active);
       tryReconcile(active);
+    }
+    if (active) {
+      // I11.4.18: a grant has just reached this PC: its table is the one to play now.
+      const mine = active.controller.status().myTurn;
+      if (mine && !active.turnSeen) giveVpxFocus('the turn came to this PC');
+      active.turnSeen = mine;
     }
     if (active) {
       // I11.4.2: the fork follows the turn first: the headset mode reads whether the player up is shown in 3D.
@@ -2708,6 +2749,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // start until it is settled (each PC stops waiting by itself after its own limit); a second press starts now.
       if (o?.anyway !== true && o?.held !== true && a.controller.holdTabStart()) {
         lastError = null;
+        // I11.4.18: the press was a click in Castcade's window: the table gets the foreground back while the start waits.
+        giveVpxFocus('Start match was pressed');
         emit();
         return status();
       }
@@ -2721,6 +2764,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       a.relay?.lock().catch((e: unknown) => log.warn(`match: ArcAid did not lock ${a.code} against new joins: ${describeError(e)}`));
       log.info(`match: ${a.code} started with ${r.state.participants.map((p) => p.displayName).join(', ')}`);
       if (warnings.length > 0) log.warn(`match: started anyway (the host confirmed): ${warnings.join(' · ')}`);
+      // I11.4.18: a press on the Match tab left Castcade's window the active one; the host's first ball is on its table.
+      giveVpxFocus('Start match was pressed');
       emit();
       return status();
     },

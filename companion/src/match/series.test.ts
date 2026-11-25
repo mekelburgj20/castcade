@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { GameFingerprint, GrantBody, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch, type ResultInfo } from './client.js';
 import { ManualClock } from './clock.js';
-import { HostMatch } from './host.js';
+import { DEFAULT_DISCONNECT_GRACE_MS, HostMatch } from './host.js';
 import { generateKeys, verifyCanonical, type KeyPair } from './keys.js';
 import { logSignBody, seriesStandings } from './result.js';
 import { MemoryBus } from './transport.js';
@@ -43,18 +43,18 @@ interface Rig {
   clientResults: Record<string, ResultInfo[]>;
 }
 
-async function rig(ids: string[], balls = 1, clientGames: Record<string, GameFingerprint> = {}): Promise<Rig> {
+async function rig(ids: string[], balls = 1, clientGames: Record<string, GameFingerprint> = {}, graceMs = 0): Promise<Rig> {
   const bus = new MemoryBus();
   const clock = new ManualClock();
   const hk = generateKeys();
-  const host = new HostMatch({ disconnectGraceMs: 0, transport: bus.transport('h'), keys: hk, matchId: 'S', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
+  const host = new HostMatch({ disconnectGraceMs: graceMs, transport: bus.transport('h'), keys: hk, matchId: 'S', ballsPerGame: balls, hostParticipant: participant('h', hk), hostGame: game, fingerprintPolicy: 'advise', clock });
   const hostResults: PayloadOf<'RESULT'>[] = [];
   host.on('result', (r) => hostResults.push(r.result));
   const clients: Record<string, ClientMatch> = {};
   const clientResults: Record<string, ResultInfo[]> = {};
   for (const id of ids) {
     const k = generateKeys();
-    const c = new ClientMatch({ disconnectGraceMs: 0, transport: bus.transport(id), keys: k, participant: participant(id, k), game: clientGames[id] ?? game, throwdownCode: 'S', hostId: 'h', clock });
+    const c = new ClientMatch({ disconnectGraceMs: graceMs, transport: bus.transport(id), keys: k, participant: participant(id, k), game: clientGames[id] ?? game, throwdownCode: 'S', hostId: 'h', clock });
     clients[id] = c;
     clientResults[id] = [];
     c.on('result', (r) => clientResults[id]?.push(r));
@@ -194,6 +194,58 @@ describe('A10: a series of games in one match', () => {
     await flush();
     expect(host.nextGameBlocker()).toBe('fewer than two players are still connected');
     expect(host.nextGame()).toBe(false);
+  });
+
+  it('A18, at the default grace: a next game asked for within 5 s of a player leaving is held until the grace settles, and that player is not put into it', async () => {
+    const r = await rig(['a', 'b'], 1, {}, DEFAULT_DISCONNECT_GRACE_MS);
+    const { host, bus, clock } = r;
+    host.start();
+    await flush();
+    await ballEnd(r, 100);
+    await ballEnd(r, 200);
+    await ballEnd(r, 300);
+    expect(r.hostResults).toHaveLength(1);
+    // b leaves between games (the host sees only a dropped link); the host starts a game on its table 2 s later.
+    bus.disconnect('b');
+    await flush();
+    clock.advance(2000);
+    expect(host.nextGameBlocker()).toBeNull();
+    expect(host.nextGame()).toBe(true);
+    await flush();
+    // Held: b may be back in a moment, or not; nothing is logged or granted yet.
+    expect(host.nextGamePending).toBe(true);
+    expect(host.state.phase).toBe('ended');
+    expect(host.state.gameNumber).toBe(1);
+    clock.advance(3000);
+    await flush();
+    // The grace is over and b is away: game 2 starts without it, the host up.
+    expect(host.nextGamePending).toBe(false);
+    expect(host.state.gameNumber).toBe(2);
+    expect(host.state.playerOrder).toEqual(['h', 'a']);
+    expect(r.clients['a']?.state.playerOrder).toEqual(['h', 'a']);
+    expect(host.state.currentGrant?.grant).toMatchObject({ player: 'h', ballNumber: 1, game: 2 });
+    expect(host.state.paused).toBeNull();
+  });
+
+  it('A18, at the default grace: when the player who left was the only other one, the held game does not start, and the host can still end the match', async () => {
+    const r = await rig(['a'], 1, {}, DEFAULT_DISCONNECT_GRACE_MS);
+    const { host, bus, clock } = r;
+    host.start();
+    await flush();
+    await ballEnd(r, 100);
+    await ballEnd(r, 200);
+    const off: string[] = [];
+    host.on('nextGameOff', (x) => off.push(x.reason));
+    bus.disconnect('a');
+    await flush();
+    clock.advance(2000);
+    expect(host.nextGame()).toBe(true);
+    clock.advance(3000);
+    await flush();
+    expect(off).toEqual(['fewer than two players are still connected']);
+    expect(host.state.gameNumber).toBe(1);
+    expect(host.state.paused).toBeNull();
+    expect(host.endMatch()).toBe(true);
   });
 
   it('a host transfer mid-series keeps the series: the new host finishes game 2 and starts game 3', async () => {

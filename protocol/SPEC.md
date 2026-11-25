@@ -159,11 +159,22 @@ the three fields is logged.
     mode has no grant holder: there the drop pauses once the grace is over.
   - A host from before A18 pauses at the drop itself, for any player; a client must take either (it does: a `PAUSE`
     is a `PAUSE`).
+  - Inside the grace the peer is still a player of the match in every other respect: a game that ends waits for its
+    `LOG_SIGN` like anyone's (the log-sign timeout bounds it), and a `NEXT_GAME` the host wants meanwhile is held
+    until the grace is over one way or the other, so that `playerOrder` lists the peer when it is back and leaves it
+    out when it is not.
 - What a player reported into a link that had just dropped is not lost: after an accepted `RECONNECT` a client
   sends again, each in a new envelope, its own `BALL_END` when the grant it answers is still the outstanding one
-  and no `BALL_END` or `TURN_PASS` for it is in the log, and its own `GAME_OVER` or `FORFEIT` when the log still has
-  its game as being played; before any `RESUME` it sends for a pause its drop caused, so the host takes the ball end
-  inside the pause and the `RESUME` moves the rotation on. A report the host answered with `REJECT` is not sent again.
+  and no `BALL_END` or `TURN_PASS` for it is in the log, its own `GAME_OVER` or `FORFEIT` when the log still has
+  its game as being played, and its `LOG_SIGN` for a game that has ended and whose `RESULT` it has not received;
+  before any `RESUME` it sends for a pause its drop caused, so the host takes the ball end inside the pause and the
+  `RESUME` moves the rotation on. A report the host answered with `REJECT` is not sent again.
+- `RECONNECT.resends` (optional, never logged, not in the signed body; a peer that does not know the key drops it)
+  is `true` from a client that does this. A client that does not say so (a companion up to 0.2.50) reports a ball
+  that ended while its link was away only for a grant issued again, so for such a client, when it holds the
+  outstanding grant, the host commits `PAUSE(disconnect, player)` before the `RECONNECT_ACK` even inside the grace:
+  the client finds the pause in what it missed, sends `RESUME` as it always did, and the grant is issued again. A
+  client that says `resends`, and a player of any build that does not hold the grant, is not paused for.
 - In `RESULT`, a forfeited player whose connection was still up has status `forfeit`; one whose
   connection was gone has status `disconnected`.
 
@@ -615,6 +626,7 @@ client -> host. First frame on a new socket to the current host, after a drop or
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | Hash of the last log entry this participant holds; 64 zeros when it holds none. |
 | `logLength` | integer | yes |  |
 | `signature` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. |
+| `resends` | boolean | no | A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME). |
 
 ### `RECONNECT_ACK`
 

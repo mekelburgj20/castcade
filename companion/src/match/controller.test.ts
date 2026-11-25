@@ -608,6 +608,79 @@ describe('A18 (2026-11-24): a control link that drops is not the media connectio
     expect(s.H.media.added).toEqual(['c']);
     expect(s.H.media.removed).toEqual([]);
   });
+
+  it('a guest who dropped in the lobby and joined again is not away once the match starts, and its connection, still being made, is not closed (review of PR 126)', async () => {
+    const clock = new ManualClock();
+    const hk = generateKeys();
+    const ck = generateKeys();
+    const ht = new WsPeerTransport({ localId: 'h' });
+    const url = await ht.listen(0, '127.0.0.1');
+    const host = new HostMatch({ transport: ht, keys: hk, matchId: 'M', ballsPerGame: 3, hostParticipant: participant('h', hk), hostGame: game });
+    const H = seat(host, clock, 3);
+    const opened: { close(): void }[] = [ht, host];
+    const until = async (cond: () => boolean, ms = 5000): Promise<void> => {
+      const end = Date.now() + ms;
+      while (!cond()) {
+        if (Date.now() > end) throw new Error('timed out');
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    };
+    const join = async (): Promise<{ ct: WsPeerTransport; client: ClientMatch }> => {
+      const ct = new WsPeerTransport({ localId: 'c' });
+      await ct.connect(url);
+      const client = new ClientMatch({ transport: ct, keys: ck, participant: participant('c', ck), game, throwdownCode: 'M' });
+      opened.push(ct, client);
+      client.join();
+      await until(() => host.roster().length === 2);
+      return { ct, client };
+    };
+    try {
+      await H.ctl.open();
+      // The guest joins, its link drops in the lobby (the host takes it off the roster), and it joins again: the same
+      // player id, a fresh HELLO.
+      const first = await join();
+      first.client.close();
+      first.ct.close();
+      await until(() => host.roster().length === 1);
+      await join();
+      host.start();
+      await until(() => H.media.added.includes('c'));
+      expect(H.ctl.panel().players.find((p) => p.id === 'c')?.flags).not.toContain('disconnected');
+      // The page reports the new connection while it is still being made; every such word used to reach the players
+      // the controller thought were away.
+      const removed = H.media.removed.length;
+      H.media.ice.c = 'checking';
+      H.ctl.refresh();
+      H.media.ice.c = 'connected';
+      H.ctl.refresh();
+      expect(H.media.removed.length).toBe(removed);
+      expect(H.media.added.filter((p) => p === 'c')).toHaveLength(1);
+      expect(H.ctl.panel().players.find((p) => p.id === 'c')?.flags).not.toContain('disconnected');
+    } finally {
+      for (const x of opened.reverse()) x.close();
+    }
+  });
+
+  it('a pause for my own drop that reaches me on a live link (the host could not tell I was back): I resume it myself, once', async () => {
+    const s = await rig();
+    s.host.start();
+    await flush();
+    // The host's own ball; the pause names the client although its link is up (it was back before the host knew:
+    // several players dropped at once, or its RECONNECT crossed the end of its grace).
+    s.host.pause('disconnect', 'c');
+    await flush();
+    expect(s.C.ctl.status().phase).toBe('paused');
+    // The resume is deferred by one turn of the controller's own clock (a pause that comes with a RECONNECT_ACK is
+    // the `reconnected` handler's).
+    s.clock.advance(0);
+    await flush();
+    expect(s.host.state.paused).toBeNull();
+    expect(s.C.logs.filter((l) => l === 'match: back after a drop; resuming the match')).toHaveLength(1);
+    const types = s.host.log.entries().map((e) => (e.message ? `${e.message.type}:${e.message.from}` : e.event?.type));
+    expect(types.slice(-3)).toEqual(['PAUSE:h', 'RESUME:c', 'TURN_GRANT:h']);
+    expect(s.C.ctl.status().phase).toBe('playing');
+    expect(s.H.ctl.status()).toMatchObject({ phase: 'playing', myTurn: true, locked: false });
+  });
 });
 
 describe('vrViewMode (D7.4, 2026-10-31)', () => {

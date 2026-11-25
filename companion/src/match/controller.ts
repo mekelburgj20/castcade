@@ -112,7 +112,7 @@ import { START_WAIT_MS } from './stream3d.js';
 /** What a host-side role must offer (structurally a HostMatch; tests may pass the real one). */
 export type HostRole = Pick<
   HostMatch,
-  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'endMatch' | 'startIn' | 'loading' | 'stream3dWaiting' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
+  'localId' | 'state' | 'roster' | 'on' | 'localBallEnd' | 'localState' | 'localGameOver' | 'forfeit' | 'nextGame' | 'nextGameBlocker' | 'nextGamePending' | 'endMatch' | 'startIn' | 'loading' | 'stream3dWaiting' | 'ballEndReadiness' | 'passTurn' | 'passTurnBlocker' | 'localAdvisory' | 'localMidnightMode' | 'midnightModes'
 >;
 /** What a client-side role must offer (structurally a ClientMatch). */
 export type ClientRole = Pick<ClientMatch, 'localId' | 'state' | 'on' | 'reportBallEnd' | 'reportState' | 'reportGameOver' | 'forfeit' | 'resume' | 'reportAdvisory' | 'reportMidnightMode'>;
@@ -425,6 +425,11 @@ export class MatchController {
   private seriesOverLine: string | null = null;
   /** A10: a game was started on this player's table in the current game (the "press Start" prompt is then moot). */
   private tableStarted = false;
+  /**
+   * A18: the host's `game_start` asked for the next game and the engine holds it for a player whose link dropped a
+   * moment ago (`HostMatch.nextGame`): when it starts, this host's own game is the one already running on its table.
+   */
+  private heldTableStart = false;
   /** A11: the lobby start countdown (local deadline and tick timer), and a start from the table waiting for a table. */
   private countdownEnd: number | null = null;
   private countdownTimer: unknown = null;
@@ -1067,7 +1072,11 @@ export class MatchController {
         ok = r.nextGame();
       }, 'NEXT_GAME');
       // nextGame resets the per-game state (onNextGame); this host's own game is already running on its table.
-      if (ok) {
+      // A18: held for a player inside the engine's grace: the same is noted for when it does start.
+      if (ok && r.nextGamePending) {
+        this.heldTableStart = true;
+        this.opts.log("match: the next game waits a few seconds: a player's link dropped a moment ago, and who plays it is decided when that player is back or away");
+      } else if (ok) {
         this.tableStarted = true;
         this.push();
       }
@@ -1255,7 +1264,15 @@ export class MatchController {
     for (const [id, mode] of Object.entries(h.midnightModes())) if (id !== this.localId) this.midnightModes.set(id, mode);
     this.syncLobby(h);
     const offs = this.offs;
-    offs.push(h.on('joined', () => this.onHostLobby(h)));
+    offs.push(
+      h.on('joined', (p) => {
+        // A18: a player who left this lobby and joined again is here: no longer away, whatever an earlier leave said
+        // (`left` was only ever emptied by a reconnect, which a fresh join is not).
+        this.left.delete(p.playerId);
+        this.mediaClosed.delete(p.playerId);
+        this.onHostLobby(h);
+      }),
+    );
     // A6 (2026-10-31): a lobby rig / table correction (a client's PARTICIPANT_UPDATE, or this host's own).
     offs.push(h.on('participantUpdated', () => this.onHostLobby(h)));
     offs.push(h.on('countdown', (c) => this.setCountdown(c.startsInMs)));
@@ -1268,6 +1285,13 @@ export class MatchController {
       }),
     );
     offs.push(h.on('nextGame', (p) => this.onNextGame(p)));
+    offs.push(
+      h.on('nextGameOff', (x) => {
+        this.heldTableStart = false;
+        this.opts.log(`match: the next game does not start: ${x.reason}`);
+        this.push();
+      }),
+    );
     offs.push(h.on('matchEnded', (p) => this.onSeriesOver(`Match over after ${p.games} game${p.games === 1 ? '' : 's'}`)));
     offs.push(h.on('rigUpdated', (r) => this.onRigUpdated(r.playerId, r.rig)));
     offs.push(h.on('advisory', (a) => this.onAdvisory(a.playerId, a.advisory)));
@@ -1452,7 +1476,8 @@ export class MatchController {
     this.myBallsDone = 0;
     this.myScore = null;
     this.myGameOver = false;
-    this.tableStarted = false;
+    this.tableStarted = this.heldTableStart;
+    this.heldTableStart = false;
     this.scores.clear();
     this.result = null;
     this.message = null;
@@ -1491,6 +1516,8 @@ export class MatchController {
     this.hostId = p.hostPlayerId;
     this.lobby = p.participants.map((x) => ({ ...x }));
     this.message = null;
+    // A18: MATCH_READY's roster is who is here now: nobody in it is away, whatever the lobby saw come and go.
+    this.left.clear();
     this.mediaClosed.clear();
     // Locked from the start: each player begins their own game when their first grant arrives (§1 step 4).
     this.setLocked(true);

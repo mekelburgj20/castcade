@@ -278,8 +278,14 @@ describe('a client restarted in the middle of a match (A15)', () => {
     expect(scoreOf(H.mh, 'Guest')).toBe(180);
   }, 40_000);
 
-  it("during another player's ball: the table stays locked through the restart, the host's turn goes on, and this player's turn comes as usual", async () => {
-    const { hr, cr, H, C } = await started();
+  // A18: once with no grace (the host shows the guest as away before the rejoin) and once at the engines' own five
+  // seconds, the way the app runs (the rejoin lands inside the host's grace, so nobody was told anything; and on the
+  // guest's side a rejoin is not a drop: its log must not say its link "was away for a moment").
+  it.each([
+    ['with no grace', 0],
+    ["at the engines' own grace", undefined],
+  ] as const)("during another player's ball (%s): the table stays locked through the restart, the host's turn goes on, and this player's turn comes as usual", async (_name, graceMs) => {
+    const { hr, cr, H, C } = await started({ disconnectGraceMs: graceMs });
     hr.gameStart();
     hr.score(1, 200);
     await until(() => scoreOf(C.mh, 'Host') === 200);
@@ -289,15 +295,24 @@ describe('a client restarted in the middle of a match (A15)', () => {
     crashed(C);
     // The lock a closing Castcade takes off is the crash's to keep: put it back as a crash leaves it.
     writeFileSync(C.lock, '');
-    // A18: it is the host's ball: the guest is shown as away and nothing pauses for it.
-    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Guest')?.flags.includes('disconnected') === true);
+    // A18: it is the host's ball: the guest is shown as away (once the grace is over) and nothing pauses for it.
+    const guestAway = (): boolean => H.mh.status().panel?.players.find((p) => p.name === 'Guest')?.flags.includes('disconnected') === true;
+    if (graceMs === 0) await until(() => guestAway());
+    else await sleep(200);
     expect(H.mh.status()).toMatchObject({ phase: 'playing', locked: false });
-    const C2 = castcade('guest', cr.w, C.dir);
+    const C2 = castcade('guest', cr.w, C.dir, { disconnectGraceMs: graceMs });
     expect(existsSync(C2.lock)).toBe(true);
     expect(C2.mh.status().locked).toBe(true);
     cr.castcadeStarts();
     await C2.mh.rejoin();
-    await until(() => H.mh.status().phase === 'playing' && up(H.mh, 1));
+    await until(() => H.mh.status().phase === 'playing' && up(H.mh, 1) && !guestAway());
+    // The rejoin is the guest's own doing, not a link that blinked: its log does not call it one. The host, which saw
+    // the link drop and come back inside its grace, does.
+    expect(C2.logs.filter((l) => l.includes('was away for a moment'))).toEqual([]);
+    if (graceMs !== 0) {
+      expect(H.logs).toContain("match: Guest's link to this host was away for a moment and is back; nothing was paused or shown");
+      expect(H.logs.filter((l) => l.includes('is away ('))).toEqual([]);
+    }
     expect(C2.mh.status().panel).toMatchObject({ myTurn: false, ball: 1 });
     expect(existsSync(C2.lock)).toBe(true);
 

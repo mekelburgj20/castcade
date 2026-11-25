@@ -419,6 +419,37 @@ describe('perfect negotiation (D2)', () => {
     expect(net.meshes['a']?.get('b')?.resendOffer()).toBe(false); // stable: nothing outstanding
   });
 
+  it('A18: an offer lost while the connection is up (ICE connected) is sent again once it has waited a few seconds, and only then', async () => {
+    const net = network(['a', 'b']);
+    net.meshes['a']?.add('b');
+    net.meshes['b']?.add('a');
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await net.run();
+    expect(paired(net.pc('a', 'b'), net.pc('b', 'a'))).toBe(true);
+    const n = net.meshes['a']?.get('b');
+    if (!n) throw new Error('no negotiator');
+    // Nothing waits: the timer's look changes nothing.
+    expect(n.resendStuckOffer(1_000)).toBe(false);
+    // A track is added while the match's link is away: the offer goes nowhere, and the connection stays connected.
+    net.pc('a', 'b').onnegotiationneeded?.();
+    await settle();
+    expect(net.queue.length).toBeGreaterThan(0);
+    net.queue.length = 0;
+    expect(net.pc('a', 'b').signalingState).toBe('have-local-offer');
+    // The first look notes it; a look too soon after sends nothing; one a few seconds on sends the offer again.
+    expect(n.resendStuckOffer(10_000)).toBe(false);
+    expect(n.resendStuckOffer(12_000)).toBe(false);
+    expect(net.queue).toHaveLength(0);
+    expect(n.resendStuckOffer(10_000 + PeerNegotiator.STUCK_OFFER_MS)).toBe(true);
+    await net.run();
+    expect(net.pc('a', 'b').signalingState).toBe('stable');
+    expect(net.pc('a', 'b').errors).toEqual([]);
+    expect(net.pc('b', 'a').errors).toEqual([]);
+    // Answered: the next look finds nothing waiting, and a later offer starts its own count.
+    expect(n.resendStuckOffer(60_000)).toBe(false);
+    expect(n.offerSince).toBeNull();
+  });
+
   it('signals from a peer that is not added yet are held and replayed when it is', async () => {
     const net = network(['a', 'b']);
     net.meshes['a']?.add('b');

@@ -76,6 +76,10 @@ export class PeerNegotiator {
   static MAX_QUEUED_ICE = 200;
   /** D2.12: how long the polite peer waits for the impolite one's first offer before it offers itself. */
   static FIRST_OFFER_WAIT_MS = 3000;
+  /** A18: an offer of ours that has waited this long for its answer is sent again, whatever ICE says (`resendStuckOffer`). */
+  static STUCK_OFFER_MS = 4000;
+  /** A18: when an offer of ours was first seen waiting for its answer; null while none waits. */
+  offerSince: number | null = null;
   /** D2.12: an offer is being answered (rollback, remote description, answer): no offer of ours in between. */
   answering = false;
   /** D2.12: the polite peer's wait for the first offer; `waited` once it ran out. */
@@ -160,6 +164,28 @@ export class PeerNegotiator {
     if (this.closed || this.makingOffer || this.pc.signalingState !== 'have-local-offer' || !d || d.type !== 'offer') return false;
     this.send({ kind: 'offer', sdp: d.sdp });
     return true;
+  }
+
+  /**
+   * A18 (2026-11-24): the same for a connection that IS up. Since a peer whose match link drops keeps its media
+   * connection, an offer made while that link was away (a track added when a capture or a microphone opened, an ICE
+   * restart) is lost with nobody to notice: `resendOffer` is only called while ICE is not connected, so the
+   * connection would sit in `have-local-offer`, and an impolite side in that state ignores every offer of the peer's.
+   * Call it on a timer with the clock: the first call that finds an offer waiting notes the time, and one that finds
+   * it still waiting `afterMs` later sends it again (and again every `afterMs` while it waits).
+   */
+  resendStuckOffer(now: number, afterMs: number = PeerNegotiator.STUCK_OFFER_MS): boolean {
+    if (this.closed || this.pc.signalingState !== 'have-local-offer') {
+      this.offerSince = null;
+      return false;
+    }
+    if (this.offerSince === null) {
+      this.offerSince = now;
+      return false;
+    }
+    if (now - this.offerSince < afterMs) return false;
+    this.offerSince = now;
+    return this.resendOffer();
   }
 
   /**

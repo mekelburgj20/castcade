@@ -33,7 +33,9 @@
  * not. What this player reported into the dead link is not lost: a BALL_END, GAME_OVER or FORFEIT of its own that the
  * host has not answered (no echo in the log, no REJECT) is sent again after an accepted RECONNECT, before
  * `reconnected` is raised (so before the RESUME a listener sends for a pause the drop caused: a BALL_END is taken
- * during a pause, and the RESUME then moves on instead of granting a finished ball again).
+ * during a pause, and the RESUME then moves on instead of granting a finished ball again). So is its LOG_SIGN for a
+ * game whose RESULT has not come. The RECONNECT says so (`resends: true`, optional and never logged or signed), which
+ * is how a host knows it need not pause and issue the grant again for this client, as it must for one up to 0.2.50.
  */
 import type { AnyMessage, GameFingerprint, GrantBody, Message, MessageType, MidnightMode, ParticipantInfo, PayloadOf, PlayerAdvisory, PlayerId } from '@castcade/protocol';
 import { parseMessage, PROTOCOL_VERSION } from '@castcade/protocol';
@@ -245,6 +247,8 @@ export class ClientMatch {
    * sent into a link that had just dropped goes out again after the reconnect.
    */
   private unanswered: { ballEnd: PayloadOf<'BALL_END'> | null; gameOver: PayloadOf<'GAME_OVER'> | null; forfeit: PayloadOf<'FORFEIT'> | null } = { ballEnd: null, gameOver: null, forfeit: null };
+  /** A18: this player's LOG_SIGN for the game whose RESULT has not come yet, sent again after a reconnect. */
+  private logSignSent: { game: number; payload: PayloadOf<'LOG_SIGN'> } | null = null;
   /** A10: the games whose RESULT arrived (each raises `result` once). */
   private readonly resultsReceived = new Set<number>();
   /** A10: MATCH_END arrived. */
@@ -628,11 +632,15 @@ export class ClientMatch {
     this.events.emit('peerLeft', d.peer);
   }
 
-  /** A18: the link is back (or the match is over for this player). True when nobody had been told of the drop. */
+  /**
+   * A18: the link is back (or the match is over for this player). True when a drop was noted and nobody had been told
+   * of it. With no drop noted (a rejoin after a restart, a relink at a host transfer) there was nothing to be quiet
+   * about: false.
+   */
   private clearDown(): boolean {
     const d = this.down;
     this.down = null;
-    if (!d) return this.graceMs > 0;
+    if (!d) return false;
     if (d.timer !== null) this.s.clock.clearTimeout(d.timer);
     return !d.told;
   }
@@ -646,7 +654,9 @@ export class ClientMatch {
     const head = this.s.log.head();
     const matchId = this.matchIdForWire();
     const signature = signCanonical(reconnectSignBody(matchId, this.localId, head.hash, head.length), this.s.keys.privateKey);
-    return this.s.build('RECONNECT', { player: this.localId, logHash: head.hash, logLength: head.length, signature }, matchId);
+    // A18: `resends`: this client sends its unanswered reports again after the answer (`resendUnanswered`), so a host
+    // need not pause and issue the grant again to hear of a ball that ended while the link was away.
+    return this.s.build('RECONNECT', { player: this.localId, logHash: head.hash, logLength: head.length, signature, resends: true }, matchId);
   }
 
   // ------------------------------------------------------------------------------------------
@@ -910,6 +920,7 @@ export class ClientMatch {
       logLength: head.length,
       signature: signCanonical(logSignBody(st.matchId, head.hash, head.length), this.s.keys.privateKey),
     };
+    this.logSignSent = { game: st.gameNumber, payload };
     this.sendToHost(this.s.build('LOG_SIGN', payload, st.matchId));
     this.events.emit('logSigned', payload);
   }
@@ -928,6 +939,7 @@ export class ClientMatch {
     const signatureValid = key !== null && verifyCanonical(logSignBody(r.matchId, r.logHash, r.logLength), r.hostSignature, key);
     if (!logMatches) this.events.emit('desync', { context: 'result.logHash', expected: r.logHash, actual: atEnd ?? head.hash });
     this.resultsReceived.add(r.game);
+    if (this.logSignSent?.game === r.game) this.logSignSent = null;
     this.events.emit('result', { result: r, logMatches, signatureValid });
   }
 
@@ -1105,6 +1117,11 @@ export class ClientMatch {
     else u.gameOver = null;
     if (u.forfeit && playing) this.sendToHost(this.s.build('FORFEIT', u.forfeit, this.matchIdForWire()));
     else u.forfeit = null;
+    // The signature of a game that ended, when the host's RESULT for it has not come: the host waits for it (for its
+    // log-sign timeout), and one that went into the dead link would never arrive. A second one changes nothing there.
+    const ls = this.logSignSent;
+    if (ls && st.phase === 'ended' && ls.game === st.gameNumber && !this.resultsReceived.has(ls.game) && st.matchId) this.sendToHost(this.s.build('LOG_SIGN', ls.payload, st.matchId));
+    else if (ls && ls.game !== st.gameNumber) this.logSignSent = null;
   }
 
   /**
@@ -1264,6 +1281,7 @@ export class ClientMatch {
       session: this.s,
       gone: this.gone,
       tableMismatches: this.tableMismatches(),
+      disconnectGraceMs: this.graceMs,
       ...this.hostTimeouts,
     });
     this.events.emit('hostChanged', { from: done.oldHost, to: done.newHost });

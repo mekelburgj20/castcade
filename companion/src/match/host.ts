@@ -57,6 +57,14 @@
  *     ball-end timer untouched. Its absence counts when its own grant comes due: the rotation then pauses for it
  *     (`advance`, as it always did for a player known to be gone) and waits for its RESUME or the host's forfeit.
  *   Simultaneous mode has no player up, so a drop there pauses as before (after the grace).
+ *   Three things follow from "inside the grace it is not a disconnect" (review of PR 126, 2026-11-24):
+ *   - a game that ends meanwhile waits for that player's LOG_SIGN like anyone's (the 10 s log-sign timer bounds it);
+ *   - a next game asked for meanwhile is held until the grace settles (`nextGame`), so its order holds who is there:
+ *     a player who left between games is not put into it, one whose link only blinked is;
+ *   - a client up to 0.2.50 does not send a lost ball end again by itself (`RECONNECT.resends` absent): it reports it
+ *     only for a grant issued again. For such a client that holds the grant, the pause it always got is committed
+ *     before its RECONNECT_ACK, also inside the grace, so its own RESUME has the grant issued again. A client that
+ *     says `resends` is not paused for, and a waiting player of any build never is.
  */
 import {
   PROTOCOL_VERSION,
@@ -213,6 +221,8 @@ export interface HostEvents extends Record<string, unknown> {
   nextGame: PayloadOf<'NEXT_GAME'>;
   /** A10: MATCH_END went out; the series is over. */
   matchEnded: PayloadOf<'MATCH_END'>;
+  /** A18: a next game that was held for a player inside the grace does not start after all (`reason`: the blocker). */
+  nextGameOff: { reason: string };
   /** A11: a start countdown began (`startIn`); MATCH_READY follows after `startsInMs` unless the lobby fell below two. */
   countdown: { startsInMs: number };
   /** A11: the countdown ran out with fewer than two players; nothing started. */
@@ -291,6 +301,8 @@ export class HostMatch {
   /** A18: of those, the ones still inside the grace (the timer that ends it): not yet a disconnect for anyone. */
   private readonly grace = new Map<PlayerId, TimerHandle>();
   private readonly graceMs: number;
+  /** A18: `nextGame()` was asked for while a player was inside the grace: it starts when the grace settles. */
+  private nextGameHeld = false;
   private transferAccepts = new Set<PlayerId>();
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
@@ -652,6 +664,34 @@ export class HostMatch {
   nextGame(): boolean {
     this.assertActive();
     if (this.nextGameBlocker() !== null) return false;
+    // A18: who plays it is not known while a player's link dropped a moment ago: back in time, they are in it; gone,
+    // they are not (and with only them left there is no next game). Held until the grace settles (`settleNextGame`).
+    if (this.grace.size > 0) {
+      this.nextGameHeld = true;
+      return true;
+    }
+    this.startNextGame();
+    return true;
+  }
+
+  /** A18: a next game is held for a player inside the grace (asked for, not started yet). */
+  get nextGamePending(): boolean {
+    return this.nextGameHeld;
+  }
+
+  /** A18: the grace of a player ended, one way or the other: a next game that was held for it starts now, or is off. */
+  private settleNextGame(): void {
+    if (!this.nextGameHeld || this.grace.size > 0 || this.detached) return;
+    this.nextGameHeld = false;
+    const why = this.nextGameBlocker();
+    if (why !== null) {
+      this.events.emit('nextGameOff', { reason: why });
+      return;
+    }
+    this.startNextGame();
+  }
+
+  private startNextGame(): void {
     const st = this.s.state;
     const msg = this.s.build('NEXT_GAME', { game: st.gameNumber + 1, playerOrder: this.nextGameOrder() }, this.matchId);
     this.finalHead = null;
@@ -665,7 +705,6 @@ export class HostMatch {
     this.broadcast(msg);
     this.events.emit('nextGame', msg.payload);
     this.advance();
-    return true;
   }
 
   /**
@@ -677,6 +716,7 @@ export class HostMatch {
     const st = this.s.state;
     if (this.ended || st.phase !== 'ended' || !this.resultSent) return false;
     this.ended = true;
+    this.nextGameHeld = false;
     const msg = this.s.build('MATCH_END', { games: Math.max(1, st.gameNumber), reason: reason.slice(0, 200) }, this.matchId);
     this.broadcast(msg);
     this.events.emit('matchEnded', msg.payload);
@@ -1063,9 +1103,8 @@ export class HostMatch {
       return;
     }
     this.gone.add(peer);
-    // A game that has ended does not wait for the signature of a player it cannot reach, as before.
-    if (st.phase === 'ended') this.maybeSendResult();
     // A18: not a disconnect yet. Nothing is sent to the peer from here on; what it misses is in its RECONNECT_ACK.
+    // (A game that ended waits for this player's signature until the grace is over: `confirmLeave`.)
     if (final || this.graceMs <= 0) {
       this.confirmLeave(peer);
       return;
@@ -1089,6 +1128,13 @@ export class HostMatch {
     this.events.emit('peerLeft', peer);
     const st = this.s.state;
     const p = st.players[peer];
+    if (st.phase === 'ended') {
+      // A game that has ended does not wait any longer for the signature of a player it cannot reach, and a next
+      // game that was held for this player is decided now.
+      this.maybeSendResult();
+      this.settleNextGame();
+      return;
+    }
     if (st.phase !== 'running' || !p || p.status !== 'playing' || st.pendingTransfer) return;
     if (st.turnMode === 'simultaneous' || st.currentGrant?.grant.player === peer) {
       this.clearBallEndTimer();
@@ -1429,8 +1475,9 @@ export class HostMatch {
     }
   }
 
+  /** A18: a player inside the grace still signs (it is not a disconnect yet); one who is away does not. */
   private expectedSigners(): PlayerId[] {
-    return this.s.state.playerOrder.filter((id) => id !== this.localId && !this.gone.has(id) && this.s.state.players[id]?.connected);
+    return this.s.state.playerOrder.filter((id) => id !== this.localId && !this.away(id) && this.s.state.players[id]?.connected);
   }
 
   private onLogSign(msg: Message<'LOG_SIGN'>): void {
@@ -1533,6 +1580,7 @@ export class HostMatch {
       companionVersion: this.companionVersion,
       gone: this.gone,
       tableMismatches: this.tableMismatches(),
+      disconnectGraceMs: this.graceMs,
     });
     this.events.emit('hostTransfer', { from, to: pt.newHost, client });
     if (trigger && linkFrom !== null) client.handle(linkFrom, trigger, { seqChecked: true });
@@ -1558,6 +1606,16 @@ export class HostMatch {
       if (this.isParticipant(linkFrom)) this.onPeerLeave(linkFrom, true);
       return;
     }
+    // A18: a client that does not send a lost ball end again (up to 0.2.50: no `resends`) and holds the grant gets the
+    // pause it always got, before its answer and also inside the grace: its RESUME then has the grant issued again,
+    // which is the one way such a client reports a ball that ended while its link was away.
+    const st0 = this.s.state;
+    const held = this.grace.get(msg.from);
+    if (held !== undefined && msg.payload.resends !== true && st0.phase === 'running' && st0.turnMode !== 'simultaneous' && st0.currentGrant?.grant.player === msg.from) {
+      this.s.clock.clearTimeout(held);
+      this.grace.delete(msg.from);
+      this.confirmLeave(msg.from);
+    }
     const entries = this.s.log.entries().slice(msg.payload.logLength);
     this.s.transport.send(
       linkFrom,
@@ -1577,8 +1635,12 @@ export class HostMatch {
     // A fresh envelope for each: the receiver drops a frame whose seq is not above the last it took from this host,
     // and the RECONNECT_ACK just went out with a newer one (A10: the payload, signatures and all, is the same).
     for (const r of this.resultMsgs) this.s.transport.send(linkFrom, this.s.build('RESULT', r.payload, matchId));
-    // A18: a grant that waited for this player's grace goes out now, after the RECONNECT_ACK it follows in the log.
-    if (quiet) this.advance();
+    // A18: a grant that waited for this player's grace goes out now, after the RECONNECT_ACK it follows in the log;
+    // so does a next game that was held for it.
+    if (quiet) {
+      this.advance();
+      this.settleNextGame();
+    }
   }
 
   private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {

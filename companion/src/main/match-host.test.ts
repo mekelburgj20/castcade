@@ -1497,7 +1497,11 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
    * page holds them, whatever the match's control link does), the table sound and the native video sender.
    */
   const a18Seat = (name: string, id: 'h' | 'c', r: { url: string }, pid: number, graceMs: number) => {
-    const withPid = (sha: string): WitnessHost => ({ ...witness(sha), vpxPid: () => pid }) as unknown as WitnessHost;
+    // The table's hook, as the witness passes it on: `feed` is the table saying something.
+    type TableEvent = Parameters<Parameters<WitnessHost['onEvent']>[0]>[0];
+    const heard = new Set<(ev: TableEvent) => void>();
+    const withPid = (sha: string): WitnessHost => ({ ...witness(sha), vpxPid: () => pid, onEvent: (cb: (ev: TableEvent) => void) => (heard.add(cb), () => heard.delete(cb)) }) as unknown as WitnessHost;
+    const feed = (ev: Record<string, unknown>): void => heard.forEach((cb) => cb({ t: 0, player: 1, ...ev } as unknown as TableEvent));
     const page = { added: [] as string[], removed: [] as string[] };
     const base = fakeMedia().media as unknown as Record<string, unknown> & { status(): Record<string, unknown> };
     const media = {
@@ -1523,8 +1527,44 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     // Every status this seat raised: the phase, whether its table is locked, the panel's line and who it shows as away.
     const seen: Array<{ phase: string; locked: boolean; message: string | null; away: string[] }> = [];
     seat.mh.onStatus((s) => seen.push({ phase: s.phase, locked: s.locked, message: s.panel?.message ?? null, away: (s.panel?.players ?? []).filter((p) => p.flags.includes('disconnected')).map((p) => p.name) }));
-    return { ...seat, page, audio, video, lines: log.lines, seen };
+    return { ...seat, page, audio, video, lines: log.lines, seen, feed };
   };
+
+  it("A18: the ball of the player who is up ends while ArcAid is away for a moment: the ball end it reported into the dead link counts, once, and the turn passes on with no pause", async () => {
+    const r = await fakeRelay();
+    const H = a18Seat('a18c-host', 'h', r, 111, 4000);
+    const C = a18Seat('a18c-client', 'c', r, 222, 4000);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
+    C.feed({ kind: 'game_start', players: 1 });
+    C.feed({ kind: 'current_scores', scores: [1200], ball: 1 });
+    await until(() => H.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.score === 1200);
+    const before = { hSeen: H.seen.length, cSeen: C.seen.length };
+
+    // ArcAid loses the host; the client does not know yet. Its ball drains: the BALL_END goes to a relay that has
+    // nobody to hand it to.
+    r.dropDevice('dev-h');
+    await until(() => H.lines.some((l) => l.includes('ArcAid is not carrying this match for the moment')));
+    C.feed({ kind: 'current_scores', scores: [4200], ball: 1 });
+    C.feed({ kind: 'ball_end', ball: 1, extraBalls: 0 });
+    C.feed({ kind: 'current_scores', scores: [4250], ball: 1 });
+    expect(C.lines.filter((l) => l.startsWith('match: BALL_END ball 1 score 4250'))).toHaveLength(1);
+    // Everybody is back by themselves; the ball end is sent again, the host takes it, and its own ball 2 is next.
+    await until(() => H.mh.status().panel?.myTurn === true && H.mh.status().panel?.ball === 2, 10_000);
+    const krobs = H.mh.status().panel?.players.find((p) => p.name === 'Krobs');
+    expect(krobs).toMatchObject({ score: 4250, ballsDone: 1 });
+    await until(() => C.mh.status().panel?.players.find((p) => p.name === 'Krobs')?.ballsDone === 1 && C.mh.status().locked === true);
+    // One ball end, reported once by the table's side, never rejected, and no pause or away on either PC.
+    expect(C.lines.filter((l) => l.includes('BALL_END ball 1'))).toHaveLength(1);
+    expect(H.lines.concat(C.lines).filter((l) => l.includes('rejected') || l.includes('table event(s) since the log last grew'))).toEqual([]);
+    expect(H.seen.slice(before.hSeen).filter((x) => x.phase !== 'playing' || x.away.length > 0)).toEqual([]);
+    expect(C.seen.slice(before.cSeen).filter((x) => x.phase !== 'playing' || x.away.length > 0 || (x.message ?? '').includes('link'))).toEqual([]);
+  }, 30_000);
 
   it("A18 (match ECVYGP, 2026-11-23): ArcAid drops the match for a moment in the host's ball: no pause on either PC, nobody shown as away, the table sound and the picture as they were, and the voice connection is not made again", async () => {
     const r = await fakeRelay();
@@ -1891,4 +1931,91 @@ describe('match host: the in-game menu and the quiet lobby (D8.9 / D8.10, 2026-1
     await H.mh.leave();
     expect(H.mh.status().menuKeyProblem).toBeNull();
   });
+});
+
+describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026-11-24)', () => {
+  /** A faked window interface: whether a Castcade window is the active one, and what a handover answers. */
+  const windows = (answer: { ok: boolean; title: string | null; why: string | null } = { ok: true, title: 'Visual Pinball Player', why: null }) => {
+    const w = { active: true, gives: 0, answer };
+    const foreground = {
+      castcadeActive: () => w.active,
+      give: async () => {
+        w.gives += 1;
+        return w.answer;
+      },
+    };
+    return { w, foreground };
+  };
+  const logLines = () => {
+    const lines: string[] = [];
+    const log = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
+    return { lines, log };
+  };
+  const pair = async (hostExtra: Parameters<typeof make>[2], clientExtra: Parameters<typeof make>[2] = {}) => {
+    const H = make('fg-host', 'ab'.repeat(32), { ephemeralPort: true, ...hostExtra });
+    const C = make('fg-client', 'ab'.repeat(32), clientExtra);
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    return { H, C };
+  };
+
+  it('Start match pressed on the Match tab while Castcade is the active window: VPX is given the foreground, once, with one log line', async () => {
+    const hw = windows();
+    const hl = logLines();
+    const { H, C } = await pair({ foreground: hw.foreground, log: hl.log });
+    expect(hw.w.gives).toBe(0); // hosting and a lobby give nothing: the table is not this match's to play yet
+    await H.mh.start();
+    await until(() => H.mh.status().panel?.myTurn === true && C.mh.status().phase === 'playing');
+    await until(() => hl.lines.some((l) => l.startsWith('match: gave VPX the foreground (')));
+    // The press and the grant it brings are one moment: one handover.
+    expect(hw.w.gives).toBe(1);
+    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toHaveLength(1);
+  }, 20_000);
+
+  it('a grant that reaches this PC while a Castcade window is the active one gives VPX the foreground; while VPX or a third program is in front nothing is touched', async () => {
+    const hw = windows();
+    const cw = windows();
+    const cl = logLines();
+    hw.w.active = false; // the host is in VPX (or elsewhere): never touched
+    cw.w.active = false; // the guest is elsewhere when the match starts
+    const { H, C } = await pair({ foreground: hw.foreground }, { foreground: cw.foreground, log: cl.log });
+    await H.mh.start();
+    await until(() => C.mh.status().phase === 'playing');
+    expect(hw.w.gives).toBe(0);
+    // The guest clicks into Castcade (the Match tab) while it waits; then its turn comes.
+    cw.w.active = true;
+    await H.mh.passTurn();
+    await until(() => C.mh.status().panel?.myTurn === true);
+    await until(() => cw.w.gives === 1);
+    await until(() => cl.lines.some((l) => l.startsWith('match: gave VPX the foreground (the turn came to this PC')));
+    // The same turn, later status changes: not again.
+    C.mh.setSettings({ cueVolume: 60 });
+    expect(cw.w.gives).toBe(1);
+    expect(hw.w.gives).toBe(0);
+  }, 20_000);
+
+  it('when it cannot be done the log says why and what to do, once', async () => {
+    const hw = windows({ ok: false, title: null, why: 'no "Visual Pinball Player" window was found' });
+    const hl = logLines();
+    const { H } = await pair({ foreground: hw.foreground, log: hl.log });
+    await H.mh.start();
+    await until(() => hl.lines.some((l) => l.includes('could not give VPX the foreground')));
+    expect(hl.lines.filter((l) => l.includes('VPX the foreground'))).toEqual(['match: could not give VPX the foreground (the turn came to this PC): no "Visual Pinball Player" window was found. Click the table to play']);
+    expect(hw.w.gives).toBe(1);
+  }, 20_000);
+
+  it('never while the in-game menu is open', async () => {
+    const hw = windows();
+    const held = new Map<string, () => void>();
+    const shortcuts = { register: (acc: string, cb: () => void) => (held.set(acc, cb), true), unregister: (acc: string) => void held.delete(acc) };
+    let t = 1_000_000;
+    const { H } = await pair({ foreground: hw.foreground, shortcuts, now: () => t });
+    t += 1000;
+    held.get('Control+Alt+M')!();
+    await H.mh.start();
+    await until(() => H.mh.status().panel?.myTurn === true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hw.w.gives).toBe(0);
+  }, 20_000);
 });

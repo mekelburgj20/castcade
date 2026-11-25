@@ -155,6 +155,10 @@ describe('A3: client reconnect after a drop', () => {
     try {
       const run = await runWsScenario(scenario, transports, {
         reconnect: { delayMs: 50, attempts: 20 },
+        // A18: no grace, as the test was written: p3 is forfeited at its own grant and the match is over before p3's
+        // first RECONNECT lands. (With the grace that grant waits for the RECONNECT, the match ends some 25 ms before
+        // p3's second try, and the one rejection this test counts becomes two on a slow run.)
+        disconnectGraceMs: 0,
         players: (list) => {
           fakes = list;
           // Listen on the host engine itself, not the FakePlayer trace: with p3 forfeited the match

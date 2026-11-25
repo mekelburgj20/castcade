@@ -471,6 +471,12 @@ export const Reconnect = z
     logHash: Sha256Hex.describe('Hash of the last log entry this participant holds; 64 zeros when it holds none.'),
     logLength: z.number().int().min(0),
     signature: Signature.describe("The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key."),
+    // A18 (2026-11-24): optional, never logged, not in the signed body; a peer that does not know it strips it, and
+    // absent reads as "does not" (a companion up to 0.2.50).
+    resends: z
+      .boolean()
+      .optional()
+      .describe('A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME).'),
   })
   .describe('client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO.');
 

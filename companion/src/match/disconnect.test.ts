@@ -8,7 +8,7 @@
  * at the RECONNECT, and a ball end reported into the dead link is sent again.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { GameFingerprint, ParticipantInfo, PayloadOf } from '@castcade/protocol';
+import type { GameFingerprint, Message, ParticipantInfo, PayloadOf } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import { ManualClock } from './clock.js';
 import { DEFAULT_DISCONNECT_GRACE_MS, HostMatch } from './host.js';
@@ -45,7 +45,7 @@ async function mesh(ids: string[], opts: { balls?: number; graceMs?: number } = 
   const clients: Record<string, ClientMatch> = {};
   for (const id of ids) {
     const k = generateKeys();
-    clients[id] = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock });
+    clients[id] = new ClientMatch({ transport: bus.transport(id), keys: k, participant: participant(id, k), game, throwdownCode: 'M', hostId: 'h', clock, disconnectGraceMs: opts.graceMs });
     clients[id]!.join();
   }
   await flush();
@@ -175,12 +175,12 @@ describe('A18: the host and a player whose link drops (MemoryBus, manual clock)'
 });
 
 /** A started two-player match over WebSockets, 2 balls, the host up. `graceMs` for both engines; the client retries every `retryMs`. */
-async function wsMatch(graceMs: number, retryMs: number) {
+async function wsMatch(graceMs: number, retryMs: number, extra: { balls?: number; logSignTimeoutMs?: number } = {}) {
   const hk = generateKeys();
   const ck = generateKeys();
   const ht = new WsPeerTransport({ localId: 'h' });
   const endpoint = await ht.listen(0, '127.0.0.1');
-  const host = new HostMatch({ transport: ht, keys: hk, matchId: 'ABCDEF', ballsPerGame: 2, hostParticipant: participant('h', hk), hostGame: game, disconnectGraceMs: graceMs });
+  const host = new HostMatch({ transport: ht, keys: hk, matchId: 'ABCDEF', ballsPerGame: extra.balls ?? 2, hostParticipant: participant('h', hk), hostGame: game, disconnectGraceMs: graceMs, logSignTimeoutMs: extra.logSignTimeoutMs });
   const ct = new WsPeerTransport({ localId: 'c' });
   await ct.connect(endpoint);
   const client = new ClientMatch({ transport: ct, keys: ck, participant: participant('c', ck), game, throwdownCode: 'ABCDEF', reconnect: { delayMs: retryMs, attempts: 50 }, disconnectGraceMs: graceMs });
@@ -268,5 +268,135 @@ describe('A18: a link that comes back (real WebSockets)', () => {
     expect(types(m.host).slice(-5)).toEqual(['TURN_GRANT:h', 'PAUSE:h', 'BALL_END:c', 'RESUME:c', 'TURN_GRANT:h']);
     expect(m.host.state.players.c).toMatchObject({ score: 900, ballsPlayed: 1 });
     await until(() => m.client.log.head().hash === m.host.log.head().hash);
+  });
+
+  it('a client that says `resends` and holds the grant is not paused for when it is back inside the grace: the same grant, nothing in the log', async () => {
+    const m = await wsMatch(2000, 30);
+    m.host.localBallEnd(100, 'nvram');
+    await until(() => m.client.myGrant?.ballNumber === 1);
+    const grant = m.client.myGrant!.grantSeq;
+    const head = m.host.log.head();
+    m.ct.dropLinks('h');
+    await until(() => m.seen.includes('h:reconnected:quiet') && m.seen.includes('c:reconnected:quiet'));
+    await sleep(50);
+    expect(m.seen.sort()).toEqual(['c:reconnected:quiet', 'h:reconnected:quiet']);
+    expect(m.host.log.head()).toEqual(head);
+    expect(m.client.myGrant?.grantSeq).toBe(grant);
+    expect(m.client.inputUnlocked).toBe(true);
+  });
+});
+
+/**
+ * A client as 0.2.46 to 0.2.50 are: its RECONNECT has no `resends`, and it sends nothing again by itself. (Those
+ * builds report a ball that ended while the link was away only for a grant the host issues again: their shell's
+ * `tryReconcile` waits for `myTurn`.)
+ */
+function asBefore(client: ClientMatch): void {
+  const c = client as unknown as { resendUnanswered(): void; buildReconnect(): Message<'RECONNECT'> };
+  const build = c.buildReconnect.bind(client);
+  c.resendUnanswered = () => undefined;
+  c.buildReconnect = () => {
+    const msg = build();
+    delete (msg.payload as { resends?: boolean }).resends;
+    return msg;
+  };
+}
+
+describe('A18: what follows from "inside the grace it is not a disconnect" (review of PR 126)', () => {
+  it('a client from before A18 holds the grant and its ball ends inside the grace: the pause it always got comes with its answer, its RESUME has the grant issued again, and the ball is in the log', async () => {
+    const m = await wsMatch(2000, 60);
+    asBefore(m.client);
+    m.host.localBallEnd(100, 'nvram');
+    await until(() => m.client.myGrant?.ballNumber === 1);
+    const grant = m.client.myGrant!.grantSeq;
+    m.ct.dropLinks('h');
+    await until(() => m.host.snapshot().gone.includes('c'));
+    // The ball drains while the link is away: this frame goes nowhere, and this client will not send it again.
+    m.client.reportBallEnd(4200, 'nvram');
+    // The host commits the pause before the RECONNECT_ACK, so the client finds it in what it missed. (The client's own
+    // side raised no leave, its grace had not run out: its `reconnected` says quiet; the host's does not.)
+    await until(() => m.seen.includes('c:reconnected:quiet'));
+    expect(m.client.state.paused).toEqual({ reason: 'disconnect', player: 'c' });
+    expect(m.seen).toEqual(['h:peerLeft:c', 'h:pause:c', 'h:reconnected:told', 'c:pause:c', 'c:reconnected:quiet']);
+    // What that client's controller does: RESUME for its own drop; the grant comes again under a new number, and its
+    // shell reports the table's ball end for it (`tryReconcile`).
+    m.client.resume();
+    await until(() => (m.client.myGrant?.grantSeq ?? 0) > grant);
+    m.client.reportBallEnd(4200, 'nvram');
+    await until(() => m.host.state.players.c?.ballsPlayed === 1 && m.host.state.currentGrant?.grant.player === 'h');
+    expect(m.host.state.players.c?.score).toBe(4200);
+    expect(types(m.host).slice(-6)).toEqual(['TURN_GRANT:h', 'PAUSE:h', 'RESUME:c', 'TURN_GRANT:h', 'BALL_END:c', 'TURN_GRANT:h']);
+    await until(() => m.client.log.head().hash === m.host.log.head().hash);
+  });
+
+  it('a client from before A18 that is only waiting is not paused for, inside the grace or after it', async () => {
+    const m = await wsMatch(2000, 60);
+    asBefore(m.client);
+    const head = m.host.log.head();
+    m.ct.dropLinks('h');
+    await until(() => m.seen.includes('h:reconnected:quiet'));
+    expect(m.seen.filter((x) => x.includes('pause'))).toEqual([]);
+    expect(m.host.log.head()).toEqual(head);
+  });
+
+  it('a game that ends while a player is inside the grace waits for that player\'s signature: the RESULT carries it', async () => {
+    const m = await wsMatch(2000, 150, { balls: 1, logSignTimeoutMs: 5000 });
+    const results: PayloadOf<'RESULT'>[] = [];
+    m.host.on('result', (x) => results.push(x.result));
+    // The client's own game is over (its table's game ended early); the host has the last ball.
+    m.client.reportGameOver(0, 0);
+    await until(() => m.host.state.players.c?.status === 'finished');
+    m.ct.dropLinks('h');
+    await until(() => m.host.snapshot().gone.includes('c'));
+    m.host.localBallEnd(100, 'nvram');
+    expect(m.host.state.phase).toBe('ended');
+    // The client's link dropped a moment ago: the RESULT does not go out without it.
+    await sleep(40);
+    expect(results).toEqual([]);
+    // Back inside the grace: the game's end is in what it missed, it signs, and the RESULT has its signature.
+    await until(() => results.length === 1);
+    expect(results[0]?.signatures.map((s) => s.playerId)).toEqual(['c']);
+    expect(results[0]?.signatures[0]).toMatchObject({ logHash: m.host.log.head().hash, logLength: m.host.log.length });
+    expect(m.seen.filter((x) => !x.includes('reconnected'))).toEqual([]);
+  });
+
+  it('a LOG_SIGN that went into the dropped link is sent again after the reconnect, and the RESULT carries it', async () => {
+    const m = await wsMatch(2000, 60, { balls: 1, logSignTimeoutMs: 5000 });
+    const results: PayloadOf<'RESULT'>[] = [];
+    m.host.on('result', (x) => results.push(x.result));
+    // The link eats the client's first LOG_SIGN (it was on its way when the link dropped).
+    let eaten = 0;
+    const send = m.ct.send.bind(m.ct);
+    m.ct.send = (to, msg) => {
+      if (msg.type === 'LOG_SIGN' && eaten === 0) {
+        eaten += 1;
+        m.ct.dropLinks('h');
+        return;
+      }
+      send(to, msg);
+    };
+    m.host.localBallEnd(100, 'nvram');
+    await until(() => m.client.myGrant?.ballNumber === 1);
+    m.client.reportBallEnd(250, 'nvram');
+    await until(() => results.length === 1);
+    expect(eaten).toBe(1);
+    expect(results[0]?.signatures.map((s) => s.playerId)).toEqual(['c']);
+    expect(m.seen.filter((x) => !x.includes('reconnected'))).toEqual([]);
+  });
+
+  it('the grace is carried through a host transfer: a host that took over from an engine made with none has none', async () => {
+    const r = await mesh(['a', 'b'], { balls: 2, graceMs: 0 });
+    let taken: HostMatch | null = null;
+    r.clients['a']!.on('becameHost', (h) => (taken = h));
+    r.host.transferHost('a');
+    await flush();
+    const host = taken as HostMatch | null;
+    if (!host) throw new Error('a did not become host');
+    const left: string[] = [];
+    host.on('peerLeft', (id) => left.push(id));
+    r.bus.disconnect('b');
+    await flush();
+    // With the default five seconds on this manual clock nothing would have been raised.
+    expect(left).toEqual(['b']);
   });
 });
