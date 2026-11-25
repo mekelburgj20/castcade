@@ -3,9 +3,9 @@
 // (so it never joins a browser that is already open), drives that browser over its DevTools connection (loopback,
 // a port the browser picks), and closes both again. No dependency: Node's own WebSocket.
 //
-//   cd companion && node renderer/story/shoot.mjs <out folder> [name filter]
+//   cd companion && node renderer/story/shoot.mjs <out folder> [name filter[,another]]
 //
-// The list of pictures is shots.ts. Each is taken as tall as its page, so nothing is cut off; the ones marked
+// The list of pictures is app-shots.ts (the app's other tabs) and shots.ts (the lobby's). Each is taken as tall as its page, so nothing is cut off; the ones marked
 // `window` are also taken at the app's own window sizes (420 x 640 as it opens, 380 x 520 at its smallest).
 // STORY_BROWSER names another browser exe.
 /* global WebSocket */
@@ -84,7 +84,11 @@ await server.listen();
 // The list is TypeScript beside the fixtures it names: the story server reads it.
 // STORY_SHEETS=1: the side-by-side sheets in place of the single pictures.
 const shots = await server.ssrLoadModule('/story/shots.ts');
-const SHOTS = process.env.STORY_SHEETS ? shots.SHEETS : shots.SHOTS;
+// The Arcaid look (2026-11-25): the app's other tabs (app-shots.ts) come first, the lobby's pictures after them.
+const appShots = await server.ssrLoadModule('/story/app-shots.ts');
+const SHOTS = process.env.STORY_SHEETS ? shots.SHEETS : [...appShots.SHOTS, ...shots.SHOTS];
+// The name filter may be several, with commas between them: a picture is taken when its name holds any of them.
+const filters = filter.split(',').filter(Boolean);
 const index = [];
 const browser = await openBrowser(profile);
 try {
@@ -94,7 +98,7 @@ try {
   const size = (width, height) => page('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
   const value = async (expression) => (await page('Runtime.evaluate', { expression, returnByValue: true })).result.value;
   for (const shot of SHOTS) {
-    if (filter && !shot.name.includes(filter)) continue;
+    if (filters.length > 0 && !filters.some((f) => shot.name.includes(f))) continue;
     const width = shot.width ?? 420;
     const low = shot.height ?? 640;
     await size(width, low);
@@ -152,4 +156,5 @@ try {
     process.exitCode = 1;
   }
 }
-if (!filter) writeFileSync(join(out, 'index.txt'), `${index.join('\n')}\n`);
+// What this run took (with a filter, only those).
+writeFileSync(join(out, 'index.txt'), `${index.join('\n')}\n`);
