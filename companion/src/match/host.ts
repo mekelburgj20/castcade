@@ -1607,14 +1607,21 @@ export class HostMatch {
       return;
     }
     // A18: a client that does not send a lost ball end again (up to 0.2.50: no `resends`) and holds the grant gets the
-    // pause it always got, before its answer and also inside the grace: its RESUME then has the grant issued again,
-    // which is the one way such a client reports a ball that ended while its link was away.
+    // pause it always got, before its answer: its RESUME then has the grant issued again, which is the one way such
+    // a client reports a ball that ended while its link was away. Inside the grace, and also when no drop was ever
+    // noted here (a relay peer of the same player that replaced the old one with no leave in between): frames may
+    // have been lost either way. Not when the match is already paused for that player (the pause is in its answer).
     const st0 = this.s.state;
-    const held = this.grace.get(msg.from);
-    if (held !== undefined && msg.payload.resends !== true && st0.phase === 'running' && st0.turnMode !== 'simultaneous' && st0.currentGrant?.grant.player === msg.from) {
-      this.s.clock.clearTimeout(held);
-      this.grace.delete(msg.from);
-      this.confirmLeave(msg.from);
+    const pausedForIt = st0.paused?.reason === 'disconnect' && st0.paused.player === msg.from;
+    let legacyPause = false;
+    if (msg.payload.resends !== true && st0.phase === 'running' && st0.turnMode !== 'simultaneous' && !st0.pendingTransfer && !pausedForIt && st0.currentGrant?.grant.player === msg.from) {
+      const held = this.grace.get(msg.from);
+      if (held !== undefined) {
+        this.s.clock.clearTimeout(held);
+        this.grace.delete(msg.from);
+      }
+      this.pauseBehind(msg.from);
+      legacyPause = true;
     }
     const entries = this.s.log.entries().slice(msg.payload.logLength);
     this.s.transport.send(
@@ -1625,8 +1632,9 @@ export class HostMatch {
     // pause; until then the rotation pauses again rather than grant to it.
     // A18: back inside the grace: nobody was told it had left, and nothing was paused for it.
     const timer = this.grace.get(msg.from);
-    const quiet = timer !== undefined;
-    if (quiet) {
+    // (A return that had to be paused for, above, is not a quiet one: the others were told to wait.)
+    const quiet = timer !== undefined && !legacyPause;
+    if (timer !== undefined) {
       this.s.clock.clearTimeout(timer);
       this.grace.delete(msg.from);
     }
@@ -1641,6 +1649,21 @@ export class HostMatch {
       this.advance();
       this.settleNextGame();
     }
+  }
+
+  /**
+   * A18: `PAUSE(disconnect, player)` committed while that player's RECONNECT is being answered. It goes to everyone
+   * but that player, who finds it in the RECONNECT_ACK's entries, as it always did from a host that paused at the
+   * drop. Sent live as well, it would arrive ahead of the answer on the new link, and that client's controller would
+   * resume twice: once for the live pause, once at `reconnected` (the second is rejected, "not paused", and that
+   * line stays on its panel).
+   */
+  private pauseBehind(player: PlayerId): void {
+    const msg = this.s.build('PAUSE', { reason: 'disconnect', player }, this.matchId);
+    this.clearBallEndTimer();
+    this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
+    for (const p of this.s.state.participants) if (p.playerId !== this.localId && p.playerId !== player) this.s.transport.send(p.playerId, msg);
+    this.events.emit('pause', msg.payload);
   }
 
   private checkReconnect(msg: Message<'RECONNECT'>): ReconnectCode | null {

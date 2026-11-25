@@ -168,8 +168,10 @@ the three fields is logged.
 - `RECONNECT.resends` (optional, never logged, not in the signed body; a peer that does not know the key drops it)
   is `true` from a client that does this. A client that does not say so (a companion up to 0.2.50) reports a ball
   that ended while its link was away only for a grant issued again, so for such a client, when it holds the
-  outstanding grant, the host commits `PAUSE(disconnect, player)` before the `RECONNECT_ACK` even inside the grace:
-  the client finds the pause in what it missed, sends `RESUME` as it always did, and the grant is issued again. A
+  outstanding grant and the match is not already paused for it, the host commits `PAUSE(disconnect, player)` before
+  the `RECONNECT_ACK`: inside the grace, and also when the host never saw that client's link drop (a relayed peer
+  replaced with no leave). That `PAUSE` is sent to every other participant and not to the reconnecting one, which
+  finds it in the `RECONNECT_ACK`'s entries, sends `RESUME` as it always did, and gets the grant issued again. A
   client that says `resends`, and a player of any build that does not hold the grant, is not paused for.
 - In `RESULT`, a forfeited player whose connection was still up has status `forfeit`; one whose
   connection was gone has status `disconnected`.
