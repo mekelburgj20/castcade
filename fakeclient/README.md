@@ -22,6 +22,12 @@ companion until the lobby is turned on). It has `matches` (who plays each, how m
 `src/lobby.test.ts`: every match's log is one hash chain from its own entry 0, the same on every PC that was in
 the lobby for it, watchers included.
 
+Step 6 (same day): a match of a lobby scenario can be asked for (`start`: who, from a button or from their own
+table; `alsoStart`, `startWithout`), ended for everyone (`endForEveryone`), and a member's link can drop and
+come back (`drops`, on links the test can cut). `src/lobby-requests.test.ts` runs those ten scenarios,
+`src/lobby-relay.test.ts` a lobby through the relay double with the relay gone for a moment, and
+`lobbyProblems` (`src/lobby.ts`) is what must hold after any of them.
+
 A scripted Castcade participant that speaks the protocol with no emulator present. It lets the host
 arbiter, the match log, host transfer and the ArcAid result path be tested on Linux CI long before
 a real VPX table is connected, and it stays useful afterwards as the opponent in a one-PC match test.

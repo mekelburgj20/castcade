@@ -8,6 +8,11 @@
  * a default that is filled in, a frame more or less, a different order: any of them fails it.
  *
  * So a build with the lobby off still plays with 0.2.46 to 0.2.50, which is why the protocol version did not change.
+ *
+ * Step 6 changed one string of the script and of the recording together: the made-up ICE candidate of its one `ice`
+ * signal named a reserved documentation address, and now names none. A MEDIA_SIGNAL is passed on as it is and is in
+ * no log, so nothing else depends on it; and the engine and schemas of 55ff0a0 were run on the new script once more
+ * to confirm that they send exactly the frames in the file.
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
