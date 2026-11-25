@@ -32,6 +32,28 @@ export interface PlayerScript {
    * 'manual'` where the scripted player otherwise says `script`. Nothing else about its play changes.
    */
   endsByHand?: boolean;
+  /** A17 step 5 (2026-11-25), a lobby scenario: this member's choice at the join, Play or Watch (default play). */
+  stance?: 'play' | 'watch';
+  /**
+   * A17 step 5, a lobby scenario: this member is not there from the start: it joins while match `match` (1-based) is
+   * played, when the lobby's PC has issued `afterGrants` grants of it. It is sent that match's log and watches.
+   */
+  joinsAt?: { match: number; afterGrants: number };
+}
+
+/** A17 step 5 (2026-11-25): one match of a lobby scenario. The lobby's PC starts and ends it; who plays is said here. */
+export interface LobbyMatchScript {
+  /** Choices that change before this match starts, by member; each says its own to the lobby's PC. */
+  stances?: Record<PlayerId, 'play' | 'watch'>;
+  /** Who plays, the first to go first. Omitted: everyone set to Play, in the lobby's order (the engine's rule). */
+  players?: PlayerId[];
+  /** Games in the match (default 1): the next game follows each RESULT, with the match's own players. */
+  games?: number;
+  /**
+   * How it ends: `end` (default): End match, back to the lobby, and the next match starts from there; `new`: the
+   * next match's start ends it (Start a new match). The last match of a scenario is always ended.
+   */
+  closes?: 'end' | 'new';
 }
 
 export interface TransferScript {
@@ -62,6 +84,15 @@ export interface Scenario {
   /** Host timeout before PAUSE(ball_end_timeout); scenarios with a silent player set it short. */
   ballEndTimeoutMs?: number;
   logSignTimeoutMs?: number;
+  /**
+   * A17 step 5 (2026-11-25): the scenario is a lobby (`HostOptions.lobby` / `ClientOptions.lobby` on): `host` is the
+   * lobby's PC, `matchId` the lobby's code, `matches` what is played in it, one after the other, and every player
+   * has a `stance`. Run by `runLobbyScenario` (`lobby.ts`), not by `runLocalScenario`. The object form sets the
+   * lobby's own numbers (`logPageSize`, `logPageGapMs`: a join in the middle of a match gets the log in pages).
+   */
+  lobby?: boolean | { size?: number; logPageSize?: number; logPageGapMs?: number };
+  /** A17 step 5: the matches of a lobby scenario, in order. */
+  matches?: LobbyMatchScript[];
   expect?: {
     winner?: PlayerId | null;
     ranks?: Record<PlayerId, number>;
@@ -95,6 +126,17 @@ export const SCENARIO_NAMES = [
 ] as const;
 export type ScenarioName = (typeof SCENARIO_NAMES)[number];
 
+/** A17 step 5 (2026-11-25): the bundled lobby scenarios (`lobby: true`), run by `runLobbyScenario`. */
+export const LOBBY_SCENARIO_NAMES = [
+  'lobby-two-matches',
+  'lobby-watcher',
+  'lobby-host-watches',
+  'lobby-join-mid-game',
+  'lobby-long-log',
+  'lobby-series-then-new-match',
+] as const;
+export type LobbyScenarioName = (typeof LOBBY_SCENARIO_NAMES)[number];
+
 function scenariosDir(): URL {
   // Works from src/ (tsx, vitest) and from dist/ (built CLI): both sit one level below the package root.
   return new URL('../scenarios/', import.meta.url);
@@ -124,6 +166,27 @@ export function validateScenario(raw: unknown, source = '<inline>'): Scenario {
     if (!Array.isArray(p.scores)) throw new Error(`${source}: ${p.playerId} needs a scores array`);
   }
   if (!s.players.some((p) => p.playerId === s.host)) throw new Error(`${source}: host ${s.host} is not a player`);
+  // A17 step 5: the lobby's keys. A scenario without `lobby` has none of them.
+  const ids = new Set(s.players.map((p) => p.playerId));
+  const isStance = (v: unknown): boolean => v === 'play' || v === 'watch';
+  for (const p of s.players) {
+    if (p.stance !== undefined && !isStance(p.stance)) throw new Error(`${source}: ${p.playerId}: stance is play or watch`);
+    if (p.joinsAt !== undefined && (!s.lobby || typeof p.joinsAt.match !== 'number' || typeof p.joinsAt.afterGrants !== 'number' || p.joinsAt.match < 1 || p.joinsAt.afterGrants < 1 || p.playerId === s.host)) {
+      throw new Error(`${source}: ${p.playerId}: joinsAt needs a lobby, a match and a grant count, and is not for the lobby's PC`);
+    }
+  }
+  if (s.lobby) {
+    if (!Array.isArray(s.matches) || s.matches.length < 1) throw new Error(`${source}: a lobby scenario needs matches`);
+    for (const [i, m] of s.matches.entries()) {
+      if (typeof m !== 'object' || m === null) throw new Error(`${source}: match ${i + 1} must be an object`);
+      for (const id of m.players ?? []) if (!ids.has(id)) throw new Error(`${source}: match ${i + 1}: ${id} is not a player`);
+      for (const [id, v] of Object.entries(m.stances ?? {})) if (!ids.has(id) || !isStance(v)) throw new Error(`${source}: match ${i + 1}: a stance is play or watch, for a player of the scenario`);
+      if (m.games !== undefined && (typeof m.games !== 'number' || m.games < 1)) throw new Error(`${source}: match ${i + 1}: games must be >= 1`);
+      if (m.closes !== undefined && m.closes !== 'end' && m.closes !== 'new') throw new Error(`${source}: match ${i + 1}: closes is end or new`);
+    }
+  } else if (s.matches !== undefined) {
+    throw new Error(`${source}: matches needs lobby: true`);
+  }
   return s as Scenario;
 }
 

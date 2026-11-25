@@ -1,0 +1,16 @@
+{
+  "name": "lobby-watcher",
+  "description": "A17 step 5: three in the lobby, two set to Play and one to Watch. The match is played by the two; the watcher gets every broadcast, keeps the same log, verifies the RESULT, and sends nothing of a player's.",
+  "matchId": "WATCHR",
+  "ballsPerGame": 3,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000, 3000] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000, 4500] },
+    { "playerId": "p3", "displayName": "Watcher", "stance": "watch", "scores": [9, 9, 9] }
+  ],
+  "matches": [
+    {}
+  ]
+}

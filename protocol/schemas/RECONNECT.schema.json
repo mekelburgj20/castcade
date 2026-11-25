@@ -28,6 +28,20 @@
     "resends": {
       "description": "A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME).",
       "type": "boolean"
+    },
+    "match": {
+      "description": "A17: the match the sender holds a log of; null: none. Absent: a RECONNECT from before the lobby, whose envelope names the match.",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

@@ -5,13 +5,27 @@
   "properties": {
     "games": {
       "type": "integer",
-      "minimum": 1,
+      "minimum": 0,
       "maximum": 999,
-      "description": "How many games the series had."
+      "description": "How many games of the match have a RESULT."
     },
     "reason": {
       "type": "string",
       "maxLength": 200
+    },
+    "abandoned": {
+      "description": "A17: the game that was being played and was ended for everyone: no RESULT, a win for nobody. Null or absent: none.",
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999,
+          "description": "1-based game number within a match (a series, A10)."
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -19,5 +33,5 @@
     "reason"
   ],
   "additionalProperties": false,
-  "description": "host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards."
+  "description": "host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. In a lobby (A17) it means \"this match is over, back to the lobby\": nobody leaves, no connection closes, and the next match starts a log of its own."
 }

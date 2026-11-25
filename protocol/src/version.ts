@@ -36,4 +36,18 @@
  *   strips the keys (zod objects are not strict): as the host it lists nobody and waits for nobody, which is what it
  *   did; as a client it never says it is waiting and is never waited for, and it ignores the list.
  */
+/*
+ * A17 step 5 (2026-11-25), the lobby's schemas, and STILL 6. The lobby (alpha-match.md §11.7) will be protocol 7, in
+ * the build whose shell turns it on; until then the engine's lobby sits behind an option that is off
+ * (`HostOptions.lobby`, `ClientOptions.lobby`), and what is added here is never on the wire of a match:
+ * - six new message types (START_REQUEST, START_CANCEL, END_REQUEST, TABLE_PICK, LOBBY_CLOSED, MATCH_LOG): only a
+ *   lobby sends them. A peer up to 0.2.50 could not decode one (the envelope's `type` is a closed list there), so
+ *   none may be sent to it, and none is;
+ * - new keys on HELLO (`stance`), PARTICIPANT_UPDATE (`stance`, `noCopy`, `ownGame`), HELLO_ACK (the lobby as it is),
+ *   MATCH_END (`abandoned`), RECONNECT (`match`) and RECONNECT_ACK (`match`, `restart`, `more`): every one optional,
+ *   with no default, so a frame built without a lobby is byte for byte the frame 0.2.50 builds
+ *   (`companion/src/match/lobby-off.test.ts` compares a whole match against frames recorded before this step);
+ * - MATCH_END `games` may be 0 (it was 1 or more): the message is never logged, and no match without a lobby sends 0.
+ * So every build before the one that says 7 plays with 0.2.46 to 0.2.50, and a fix can still be released on 6.
+ */
 export const PROTOCOL_VERSION = 6 as const;

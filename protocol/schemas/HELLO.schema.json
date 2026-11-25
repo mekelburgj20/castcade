@@ -163,6 +163,14 @@
     "ballEndReady": {
       "description": "A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13).",
       "type": "boolean"
+    },
+    "stance": {
+      "description": "A17: Play or Watch at the next start. Absent: play.",
+      "type": "string",
+      "enum": [
+        "play",
+        "watch"
+      ]
     }
   },
   "required": [

@@ -1,0 +1,8 @@
+{
+  "$id": "https://castcade.dev/protocol/v6/START_CANCEL.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby. Take back the start that counts down or waits; answered by the HELLO_ACK without it, or by REJECT."
+}

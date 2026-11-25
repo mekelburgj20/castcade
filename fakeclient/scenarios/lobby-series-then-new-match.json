@@ -1,0 +1,17 @@
+{
+  "name": "lobby-series-then-new-match",
+  "description": "A17 step 5: two play a series of two games; a third person joins during game 1, set to Play, and is NOT pulled into game 2 (the next game is for the match's own players). Start a new match ends the series (MATCH_END, two games) and starts a match with all three.",
+  "matchId": "SERNEW",
+  "ballsPerGame": 2,
+  "lobby": true,
+  "host": "p1",
+  "players": [
+    { "playerId": "p1", "displayName": "Lobby PC", "stance": "play", "scores": [1000, 2000], "seriesScores": [[1000, 2000], [3000, 6000]] },
+    { "playerId": "p2", "displayName": "Player Two", "stance": "play", "scores": [1500, 3000], "seriesScores": [[1500, 3000], [1000, 2500]] },
+    { "playerId": "p3", "displayName": "Third", "stance": "play", "scores": [4000, 9000], "joinsAt": { "match": 1, "afterGrants": 2 } }
+  ],
+  "matches": [
+    { "games": 2, "closes": "new" },
+    {}
+  ]
+}

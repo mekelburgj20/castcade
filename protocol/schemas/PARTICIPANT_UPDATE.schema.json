@@ -178,8 +178,24 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 120000
+    },
+    "stance": {
+      "description": "A17: the sender's choice now, Play or Watch at the next start. It changes nothing in a game that is being played.",
+      "type": "string",
+      "enum": [
+        "play",
+        "watch"
+      ]
+    },
+    "noCopy": {
+      "description": "A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has.",
+      "type": "boolean"
+    },
+    "ownGame": {
+      "description": "A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended.",
+      "type": "boolean"
     }
   },
   "additionalProperties": false,
-  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged."
+  "description": "client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy` and `ownGame`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said."
 }

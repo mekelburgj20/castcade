@@ -147,6 +147,28 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 9007199254740991
+    },
+    "match": {
+      "description": "A17: the match that is open now; null: none. Absent: not said (no lobby).",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "The Throwdown code from ArcAid, or any unique string in a local/fake match."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "restart": {
+      "description": "A17: true: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG. Absent: false.",
+      "type": "boolean"
+    },
+    "more": {
+      "description": "A17: true: `entries` holds only the first page (at most 100); the rest follows in MATCH_LOG, and the sender is current at its last page. Absent: false.",
+      "type": "boolean"
     }
   },
   "required": [

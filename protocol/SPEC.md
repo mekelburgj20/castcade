@@ -56,7 +56,7 @@ base64-encoded.
    that message is logged verbatim, and a peer that does not know a field drops it (or adds its default) when
    it parses, so the two sides would hash different logs.
 4. When the host starts the match it sends `MATCH_READY` to everyone. The roster is then final; later
-   `HELLO`s are refused with `match_started`.
+   `HELLO`s are refused with `match_started`. (Not in a lobby, below: there a `HELLO` is taken in every phase.)
 
 Starting from the host's table (A11, protocol 3): a host may announce the start before it sends `MATCH_READY`.
 It re-sends `HELLO_ACK` to every client with `startsInMs`, the time left until it starts (a duration, since the
@@ -338,7 +338,90 @@ to confirm the start); the host still may start, and such a match is played with
 - `MATCH_END {games, reason}` (host -> all, never logged) ends the series between games; the last `RESULT`
   stands, nothing more is appended, and the host closes the match. A client does not reconnect to a host after
   it, and a host that leaves between games without one ends the series for the others too (no transfer happens
-  between games: there is no game to hand over).
+  between games: there is no game to hand over). In a lobby (below) `MATCH_END` closes the match and nothing
+  else.
+
+## The lobby (A17)
+
+**Status, 2026-11-25.** The shapes below are in the schemas and both engines know the rules, behind an option
+that is off (`HostOptions.lobby`, `ClientOptions.lobby`). The protocol is still 6: a build with the option off
+sends none of the new messages and none of the new keys, so its frames are byte for byte those of 0.2.46 to
+0.2.50, and it plays with them. The version becomes 7 in the build that turns the lobby on; from then on a host
+is a lobby. What is marked *not built yet* has its shape here and no behaviour.
+
+A **lobby** is one connection per PC for an evening: one code, the people in it (**members**), what each has
+chosen (`Stance`: `play` or `watch`), and any number of matches, one after the other. The host is the lobby's
+PC; it arbitrates every match in the lobby, also one it does not play in. A **player** is a member who is in
+the match being played; a **watcher** is a member who is not.
+
+- **Watch is a fact of the lobby, never of a match.** A match's log holds its players and nothing else, exactly
+  as a log without a lobby does: `MATCH_READY.participants` and `playerOrder` are the players, `RESULT.entries`
+  the players, `LOG_SIGN` from the players. No logged message changes shape, and the fold over the log is the
+  same. Never logged: who is in the lobby, who watches, who is away, joins and leaves of members.
+- **Joining.** `HELLO.throwdownCode` is the lobby's code, and `HELLO.stance` the sender's choice (absent:
+  `play`). A lobby takes a `HELLO` in every phase while there is room (four people in all): it never refuses
+  with `match_started`, and `match_full` reads "This lobby is full (four people)."
+- **`HELLO_ACK` is the lobby as it is now**, sent to every member on every change, in every phase, also while a
+  match is played: `participants` is the members (the host first, then in the order they joined), with
+  `stances`, `away`, `noCopy`, `ownGame`, `ballsPerGame` and `match` (the open match: its id, the players it
+  started with, the game number, and `game` or `between`; null when none is open). Every one of these keys is
+  optional and absent from a host that is not a lobby. `otherTable`, `tablePickedBy`, `starter` and `start` are
+  *not built yet*.
+- **`PARTICIPANT_UPDATE` counts in every phase** for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`,
+  `noCopy` and `ownGame`; the host answers with `HELLO_ACK` to every member and does not pass the update on
+  (an `advisory`, a flag about one ball, is still passed on as it came). A choice takes effect at the next
+  start: it changes nothing in a game that is being played.
+- **A match of a lobby.** The host starts it with the members set to Play who are on a link and have the
+  table, or with the players it names; two to four, and the host need not be one of them. `MATCH_READY.matchId`
+  is `<lobby code>-<n>`, `n` counting the lobby's matches from 1; grants, `RESULT` and the signatures carry
+  that id. `hostPlayerId` is the lobby's PC, which need not be in `playerOrder`; `game` is the fingerprint of
+  the first player's open table. `NEXT_GAME.playerOrder` is the open match's own players who are set to Play
+  and here: a member who is not in the open match comes into play only by a new match, never by a next game.
+- **Where one match's log ends and the next begins.** A match's log ends at the entry that ends its last game.
+  `MATCH_END` (never logged) means "this match is over, back to the lobby": nobody leaves and no connection
+  closes; `games` is how many of its games have a `RESULT`. The next match's log starts from nothing: index 0,
+  `prevHash` 64 zeros, its own `MATCH_READY`, `grantSeq` from 1. Nothing chains one match to the next. The
+  envelope's `seq` is per sender for the whole lobby and never starts over. A new match started while one is
+  open between games ends that one first (`MATCH_END`), then `MATCH_READY` follows. (`MATCH_END.abandoned`, a
+  game ended for everyone with no result, is *not built yet*.)
+- **A watcher** receives what a player receives: every logged message, `STATE`, `DMD_FRAME`, `RESULT`. It keeps
+  the same log and checks the same `RESULT`. It reports nothing and signs nothing: the host rejects a
+  `BALL_END`, `GAME_OVER`, `FORFEIT`, `PAUSE`, `RESUME` or `LOG_SIGN` from a member who is not in the game
+  (`unexpected_state`) and drops their `STATE` and `DMD_FRAME`. It is never granted. `STATE`, `DMD_FRAME` and
+  `MEDIA_SIGNAL` go to every member, not to a match's roster.
+- **The log, unasked and in pages.** A member who joins while a match is open is sent `HELLO_ACK` (whose
+  `match` names it) and then that match's whole log in `MATCH_LOG` messages of at most 100 entries (about
+  50 KB; the relay takes 256 KB a frame). The first says `restart`: the receiver starts an empty log for
+  `match`. Each entry is checked against the hash chain as it is appended, as a `RECONNECT_ACK`'s entries are.
+  At the page that says `more: false` the receiver's head must be `logHash` / `logLength`; then it is current,
+  and the `RESULT`s of the match that are out follow.
+  **The host sends a logged message only to members whose log it has sent in full**: an entry committed while
+  the pages go out is in a later page, never on the wire beside them. **A client takes a logged message, and a
+  `RESULT`, only into a log it holds in full for the match the envelope names**, and drops any other. Without
+  these two rules a `BALL_END` that falls between the `HELLO_ACK` and the log would be entry 0 of the
+  newcomer's log, and the log that follows would not fit on it.
+- **A long reconnect.** In a lobby a `RECONNECT_ACK` that would hold more than 100 entries holds the first 100
+  and says `more`; the rest follows in `MATCH_LOG` (`restart: false`), and the client is back, and sends again
+  what the host never answered, at the last page. (`RECONNECT.match`, `RECONNECT_ACK.match` and `restart`, a
+  `RECONNECT` in every phase and its signed `seq` are *not built yet*: a member comes back as before, while a
+  match it plays in is open.)
+- **The envelope's `matchId`**: the lobby's code on what is said to the lobby (`PARTICIPANT_UPDATE`,
+  `MEDIA_SIGNAL`, `MATCH_LOG`, `LOBBY_CLOSED`, and the four requests below), the open match's id on the
+  messages of a match. The host takes the open match's id on a lobby message too. A match frame with the id of
+  a match that is over, or with none open, is dropped by whoever receives it (the host says so with a
+  `REJECT`, except for `STATE` and `DMD_FRAME`). And because `grantSeq` starts at 1 in every match, a client
+  also checks a grant against the `matchId` inside it, which is signed, and forgets the last `grantSeq` it saw
+  when a match ends.
+- **`LOBBY_CLOSED`** (host -> all, never logged): the lobby is over. A match that is open between games is
+  ended first (`MATCH_END`). Every member tears down, and nobody reconnects afterwards.
+- **No host transfer in a lobby**: the host never proposes one, and a client drops a `HOST_TRANSFER` and never
+  proposes itself. (The transfer of a match without a lobby is unchanged.)
+- *Not built yet*, shapes only: `START_REQUEST` (a member asks for a start: `fromTable`, `newMatch`, `anyway`,
+  `now`), `START_CANCEL`, `END_REQUEST` and `TABLE_PICK` (client -> host; a host of this build answers each
+  with `REJECT` `unexpected_state`); until they are, the lobby's PC starts and ends the matches. A member whose
+  link drops is out of the lobby at once unless they are a player of the open match (then the rules of Pauses
+  and timeouts apply, and their place goes when that match is closed while they are still gone); `away` with
+  a place kept for three minutes replaces this.
 
 ## Simultaneous mode (arcade)
 
@@ -355,7 +438,7 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | Type | Direction | Summary |
 |---|---|---|
 | `HELLO` | client->host | client -> host. First message on a connection. |
-| `HELLO_ACK` | host->client | host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint. |
+| `HELLO_ACK` | host->client | host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint. In a lobby (A17) it is the lobby as it is now, and is sent to every member on every change in every phase, also while a match is played. |
 | `REFUSE` | host->client | host -> client. The HELLO was rejected; the host closes the connection after sending. |
 | `MATCH_READY` | host->all | host -> all. The roster is final; grants follow. |
 | `TURN_GRANT` | host->all | host -> all. Names the player whose input unlocks; every participant logs it. Verified by the companion before the lock is released. |
@@ -375,16 +458,22 @@ byte pairs `(count, value)` with `count` 1..255, then base64. Text displays use 
 | `RECONNECT` | client->host | client -> host. First frame on a new socket to the current host, after a drop or a host transfer; never a fresh HELLO. |
 | `RECONNECT_ACK` | host->client | host -> client. Answers RECONNECT. A rejected client must re-join with a fresh HELLO; the host closes the socket after a rejection. |
 | `MEDIA_SIGNAL` | any | any -> `to`, through the host: it forwards the frame to `to` only, `from` preserved. Sets up the peer-to-peer video and voice between two participants; never logged, never trusted for anything but media. |
-| `PARTICIPANT_UPDATE` | client->host | client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. |
+| `PARTICIPANT_UPDATE` | client->host | client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy` and `ownGame`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said. |
 | `NEXT_GAME` | host->all | host -> all, logged. Only after the previous game's RESULT went out. Every listed player starts a fresh game: grant 1 follows, ball counts and scores start again. |
-| `MATCH_END` | host->all | host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. |
+| `MATCH_END` | host->all | host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. In a lobby (A17) it means "this match is over, back to the lobby": nobody leaves, no connection closes, and the next match starts a log of its own. |
+| `START_REQUEST` | client->host | client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown. |
+| `START_CANCEL` | client->host | client -> host, in a lobby. Take back the start that counts down or waits; answered by the HELLO_ACK without it, or by REJECT. |
+| `END_REQUEST` | client->host | client -> host, in a lobby, between games. End the open match; answered by MATCH_END, or by REJECT. |
+| `TABLE_PICK` | client->host | client -> host, in a lobby, outside a game. A member picks the lobby's table; answered by the HELLO_ACK that carries it (`hostGame`, `tablePickedBy`), or by REJECT. |
+| `LOBBY_CLOSED` | host->all | host -> all. The lobby is closed: every member tears down, and nobody reconnects afterwards. Never logged. |
+| `MATCH_LOG` | host->client | host -> client, in a lobby. The open match's log, to a member who does not hold it (it joined while the match was open, or its RECONNECT_ACK said `more`), in pages. The host sends such a member no logged message until the last page went out. Never logged. |
 
 ### Envelope
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `v` | const `6` | yes | Protocol version; peers with a different value refuse each other. |
-| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"TURN_PASS"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` \| `"MEDIA_SIGNAL"` \| `"PARTICIPANT_UPDATE"` \| `"NEXT_GAME"` \| `"MATCH_END"` | yes |  |
+| `type` | `"HELLO"` \| `"HELLO_ACK"` \| `"REFUSE"` \| `"MATCH_READY"` \| `"TURN_GRANT"` \| `"STATE"` \| `"DMD_FRAME"` \| `"BALL_END"` \| `"TURN_PASS"` \| `"GAME_OVER"` \| `"HOST_TRANSFER"` \| `"HOST_TRANSFER_ACK"` \| `"LOG_SIGN"` \| `"RESULT"` \| `"PAUSE"` \| `"RESUME"` \| `"FORFEIT"` \| `"REJECT"` \| `"RECONNECT"` \| `"RECONNECT_ACK"` \| `"MEDIA_SIGNAL"` \| `"PARTICIPANT_UPDATE"` \| `"NEXT_GAME"` \| `"MATCH_END"` \| `"START_REQUEST"` \| `"START_CANCEL"` \| `"END_REQUEST"` \| `"TABLE_PICK"` \| `"LOBBY_CLOSED"` \| `"MATCH_LOG"` | yes |  |
 | `matchId` | string \| null | yes |  |
 | `seq` | integer | yes | Per-sender, strictly increasing within a connection. |
 | `ts` | integer | yes | Sender's clock, ms since epoch. Informational. |
@@ -405,12 +494,13 @@ client -> host. First message on a connection.
 | `participant` | object | yes |  |
 | `game` | object | yes | Everything that must match between participants for a fair match. The host compares these at HELLO. |
 | `ballEndReady` | boolean | no | A13: whether the sender's companion can report this table's ball ends (it follows the table's hook journal): false when a table is open and it cannot (not patched, an original table, an unreadable machine). Absent: unknown (no table open yet, or a companion from before A13). |
+| `stance` | `"play"` \| `"watch"` | no | A17: Play or Watch at the next start. Absent: play. |
 
 ### `HELLO_ACK`
 
 Direction: host->client.
 
-host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint.
+host -> client. The HELLO was accepted; the match is not ready until MATCH_READY. Sent again to every client while in the lobby when a PARTICIPANT_UPDATE (or the host itself) changed the roster or the host fingerprint. In a lobby (A17) it is the lobby as it is now, and is sent to every member on every change in every phase, also while a match is played.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -423,6 +513,16 @@ host -> client. The HELLO was accepted; the match is not ready until MATCH_READY
 | `loading` | array of string (`^[A-Za-z0-9_.:-]+$`) | yes | Accepted participants whose table is not open yet, as the host judges from their fingerprint (A11): the match does not start from the table until this is empty. |
 | `ballEndReady` | array of object | yes | A13: what each participant (the host included) said about its table's ball ends (`HELLO.ballEndReady`, then `PARTICIPANT_UPDATE.ballEndReady`): `ready` false = that player's table cannot report ball ends, so its turn would never end by itself. A participant not listed is unknown. Defaulted and never logged. |
 | `midnightModes` | array of object | yes | B26.4: what each participant (the host included) said about the Midnight Madness setting on its table (`PARTICIPANT_UPDATE.midnightMode`). A participant not listed said nothing: no table open, a game with no known setting, or a companion from before B26.4. Defaulted and never logged. |
+| `stances` | array of object | no | A17: what each member wants at the next start (`HELLO.stance`, then `PARTICIPANT_UPDATE.stance`), the host included. Absent: not a lobby; a member not listed: play. |
+| `away` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members whose link is down and whose place is kept. Absent: nobody. |
+| `noCopy` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members whose PC has no copy of the lobby's table (`PARTICIPANT_UPDATE.noCopy`): they do not play a match that starts. Absent: nobody. |
+| `ownGame` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members on whose table a game the match does not own is running (`PARTICIPANT_UPDATE.ownGame`). Absent: nobody. |
+| `otherTable` | array of string (`^[A-Za-z0-9_.:-]+$`) | no | A17: members whose open table is another game than the lobby's table. Absent: nobody. |
+| `tablePickedBy` | string (`^[A-Za-z0-9_.:-]+$`) \| null | no | A17: who picked the lobby's table (`hostGame`); null or absent: the table is whatever the lobby's PC has open. |
+| `ballsPerGame` | integer \| null | no | A17: the balls per game of a match started in this lobby. Null or absent: not said. |
+| `starter` | string (`^[A-Za-z0-9_.:-]+$`) \| null | no | A17: the one member whose Start on their own table asks for a game. Null or absent: nobody is named. |
+| `match` | object \| null | no | A17: the match that is open in the lobby; null or absent: none. A member who joins while one is open is sent its log in MATCH_LOG right after this message, and holds no log of it until the last page. |
+| `start` | object \| null | no | A17: the start that is announced, counting down or waiting; null or absent: none. Each PC in `players` locks its table when it counts down, unless a game runs on it. |
 | `stream3dWait` | array of object | yes | I11.4.9: the participants (the host included) whose PC is still making its 3D connection (`PARTICIPANT_UPDATE.stream3dWaitMs`), each with the ms after which the host stops waiting for it. A start from the host's table waits until this is empty, as it waits for `loading`. A duration, not a time. A participant not listed is not waited for: its 3D connection is settled, it has none, or its companion is from before I11.4.9. Defaulted and never logged. |
 
 ### `REFUSE`
@@ -661,6 +761,7 @@ client -> host. First frame on a new socket to the current host, after a drop or
 | `logLength` | integer | yes |  |
 | `signature` | string (`^[A-Za-z0-9+/]+={0,2}$`) | yes | The participant's signature over canonicalJson({matchId, player, logHash, logLength}) with its roster key. |
 | `resends` | boolean | no | A18: true when the sender sends again, right after an accepted RECONNECT, its own BALL_END, GAME_OVER, FORFEIT and LOG_SIGN that the host never answered. Absent or false: it does not, and a ball end it reported into the dropped link comes back only for a grant the host issues again (after a PAUSE and its RESUME). |
+| `match` | string \| null | no | A17: the match the sender holds a log of; null: none. Absent: a RECONNECT from before the lobby, whose envelope names the match. |
 
 ### `RECONNECT_ACK`
 
@@ -675,6 +776,9 @@ host -> client. Answers RECONNECT. A rejected client must re-join with a fresh H
 | `entries` | array of object | yes | Every log entry after the one the client named, in order; empty when it is current or rejected. |
 | `logHash` | string (`^[0-9a-f]{64}$`) | yes | The host's log head after these entries. |
 | `logLength` | integer | yes |  |
+| `match` | string \| null | no | A17: the match that is open now; null: none. Absent: not said (no lobby). |
+| `restart` | boolean | no | A17: true: the sender's log is not of the open match (or none is open): drop it. The open match's log follows in MATCH_LOG. Absent: false. |
+| `more` | boolean | no | A17: true: `entries` holds only the first page (at most 100); the rest follows in MATCH_LOG, and the sender is current at its last page. Absent: false. |
 
 ### `MEDIA_SIGNAL`
 
@@ -696,7 +800,7 @@ any -> `to`, through the host: it forwards the frame to `to` only, `from` preser
 
 Direction: client->host.
 
-client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged.
+client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `game`; the host compares the fingerprint again and re-sends HELLO_ACK to every client; (I11.4.9) `stream3dWaitMs` says whether the sender's 3D connection is still being made. After MATCH_READY (A6.1, 2026-11-01) only `rig`, (B26) `advisory` and (B26.4) `midnightMode` count: the roster in the log stays final, and the host passes the update on to every other participant (`from` preserved) and sends its own the same way, so each Match tab and panel shows the rig each player has now. Never logged. In a lobby (A17) it counts in every phase for `rig`, `game`, `ballEndReady`, `midnightMode`, `stance`, `noCopy` and `ownGame`: the host answers with HELLO_ACK to every member, and a match's logged roster and fingerprint stay what its MATCH_READY said.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -706,6 +810,9 @@ client -> host in the lobby: replaces the sender's HELLO `participant.rig` and `
 | `advisory` | object | no | B26: after MATCH_READY only: a flag about one of the sender's own balls (see `PlayerAdvisory`). The host passes the update on to every other participant like a rig change (`from` preserved) and sends its own the same way. A peer from before B26 ignores it. |
 | `midnightMode` | object | no | B26.4: the Midnight Madness setting on the sender's table (see `MidnightMode`), when its companion could read it, in any phase. In the lobby the host lists it in HELLO_ACK `midnightModes`; after MATCH_READY it passes the update on like a rig change. A peer from before B26.4 ignores it. |
 | `stream3dWaitMs` | integer | no | I11.4.9: lobby only: the sender's PC is still making its 3D connection (its VPX build has not connected to its Castcade yet, or nothing has been heard from another player's PC over the state stream's data connection), and stops waiting for it in at most this many ms; 0: settled (or given up). The host lists it in HELLO_ACK `stream3dWait` and holds a start from its table meanwhile. Absent: no change. A peer from before I11.4.9 ignores it. |
+| `stance` | `"play"` \| `"watch"` | no | A17: the sender's choice now, Play or Watch at the next start. It changes nothing in a game that is being played. |
+| `noCopy` | boolean | no | A17: true: the sender's PC has no copy of the lobby's table (`HELLO_ACK.hostGame`); false: it has. |
+| `ownGame` | boolean | no | A17: true: a game the match does not own is running on the sender's table (played alone, in the lobby or as a watcher); false: it has ended. |
 
 ### `NEXT_GAME`
 
@@ -722,12 +829,77 @@ host -> all, logged. Only after the previous game's RESULT went out. Every liste
 
 Direction: host->all.
 
-host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards.
+host -> all, between games: the series is over; the last RESULT stands. Never logged; the host closes the match afterwards. In a lobby (A17) it means "this match is over, back to the lobby": nobody leaves, no connection closes, and the next match starts a log of its own.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `games` | integer | yes | How many games the series had. |
+| `games` | integer | yes | How many games of the match have a RESULT. |
 | `reason` | string | yes |  |
+| `abandoned` | integer \| null | no | A17: the game that was being played and was ended for everyone: no RESULT, a win for nobody. Null or absent: none. |
+
+### `START_REQUEST`
+
+Direction: client->host.
+
+client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `fromTable` | boolean | yes | True: the sender's own game began on its table (A11). Taken from the starter only. |
+| `newMatch` | boolean | yes | True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`). |
+| `anyway` | boolean | yes | A13: the sender confirmed a start with a table that cannot report ball ends. |
+| `now` | boolean | yes | Do not wait: start without the 3D connections and without the people whose table is not ready (a second press). |
+
+### `START_CANCEL`
+
+Direction: client->host.
+
+client -> host, in a lobby. Take back the start that counts down or waits; answered by the HELLO_ACK without it, or by REJECT.
+
+_No fields._
+
+### `END_REQUEST`
+
+Direction: client->host.
+
+client -> host, in a lobby, between games. End the open match; answered by MATCH_END, or by REJECT.
+
+_No fields._
+
+### `TABLE_PICK`
+
+Direction: client->host.
+
+client -> host, in a lobby, outside a game. A member picks the lobby's table; answered by the HELLO_ACK that carries it (`hostGame`, `tablePickedBy`), or by REJECT.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `game` | object | yes | The picked table: its identity keys (`kind`, `tableName`, `tableHash`, `romName`); the other keys are facts of one PC's copy and are null or empty in a pick. |
+
+### `LOBBY_CLOSED`
+
+Direction: host->all.
+
+host -> all. The lobby is closed: every member tears down, and nobody reconnects afterwards. Never logged.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reason` | string | yes |  |
+
+### `MATCH_LOG`
+
+Direction: host->client.
+
+host -> client, in a lobby. The open match's log, to a member who does not hold it (it joined while the match was open, or its RECONNECT_ACK said `more`), in pages. The host sends such a member no logged message until the last page went out. Never logged.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `match` | string | yes | The match the entries belong to. |
+| `restart` | boolean | yes | True on the first page of a whole log: the receiver starts an empty log for `match`. False: the entries follow the ones the receiver holds. |
+| `entries` | array of object | yes | The next entries of the log, in order, verbatim. |
+| `logHash` | string (`^[0-9a-f]{64}$`) | yes | The host's log head when this page was sent; after the last page it is the receiver's head too. |
+| `logLength` | integer | yes |  |
+| `more` | boolean | yes | Another page follows. False: the receiver is current, and the logged messages reach it live from here on. |
 
 ## Shared objects
 

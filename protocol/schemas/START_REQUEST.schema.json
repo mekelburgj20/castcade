@@ -1,0 +1,34 @@
+{
+  "$id": "https://castcade.dev/protocol/v6/START_REQUEST.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "fromTable": {
+      "type": "boolean",
+      "description": "True: the sender's own game began on its table (A11). Taken from the starter only."
+    },
+    "newMatch": {
+      "default": false,
+      "description": "True: end the open match and start one with everyone set to Play (the explicit press, never set with `fromTable`).",
+      "type": "boolean"
+    },
+    "anyway": {
+      "default": false,
+      "description": "A13: the sender confirmed a start with a table that cannot report ball ends.",
+      "type": "boolean"
+    },
+    "now": {
+      "default": false,
+      "description": "Do not wait: start without the 3D connections and without the people whose table is not ready (a second press).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "fromTable",
+    "newMatch",
+    "anyway",
+    "now"
+  ],
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby. A member asks for a start. The host announces it (HELLO_ACK `start`) or answers REJECT (`unexpected_state`) whose `message` is the sentence the asker is shown."
+}

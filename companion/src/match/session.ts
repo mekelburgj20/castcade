@@ -28,7 +28,11 @@ export class Session {
   readonly transport: Transport;
   readonly keys: KeyPair;
   readonly clock: Clock;
-  readonly log: MatchLog;
+  /**
+   * The log of the match this session is in. One for the session's life, except in a lobby (A17, 2026-11-25), where
+   * each match has a log of its own from its first entry: `newMatch()` puts this one away and starts the next.
+   */
+  log: MatchLog;
   state: MatchState;
   /**
    * A15: called inside `commit`, after the entry is in the log and folded into the state, before the caller sends
@@ -79,6 +83,20 @@ export class Session {
     applyEntry(this.state, entry);
     this.onCommit?.(entry);
     return entry;
+  }
+
+  /**
+   * A17 (2026-11-25): a match of a lobby is over, or another one begins: the log is put away as it stands (returned;
+   * nothing is appended to it any more) and the session holds an empty one, with the state of a lobby in which no
+   * match is open. Nothing chains one match's log to the next: index 0, `prevHash` 64 zeros. What does NOT start
+   * over is the outgoing `seq` and the last `seq` taken from each sender: they are the connection's, and the lobby's
+   * connections outlive its matches.
+   */
+  newMatch(): MatchLog {
+    const done = this.log;
+    this.log = new MatchLog();
+    this.state = initialState();
+    return done;
   }
 
   /** Rebuild state from the log (used by resumeFromLog to prove the log is sufficient). */

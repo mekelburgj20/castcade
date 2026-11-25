@@ -34,7 +34,13 @@
         "MEDIA_SIGNAL",
         "PARTICIPANT_UPDATE",
         "NEXT_GAME",
-        "MATCH_END"
+        "MATCH_END",
+        "START_REQUEST",
+        "START_CANCEL",
+        "END_REQUEST",
+        "TABLE_PICK",
+        "LOBBY_CLOSED",
+        "MATCH_LOG"
       ]
     },
     "matchId": {

@@ -1,0 +1,8 @@
+{
+  "$id": "https://castcade.dev/protocol/v6/END_REQUEST.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "description": "client -> host, in a lobby, between games. End the open match; answered by MATCH_END, or by REJECT."
+}

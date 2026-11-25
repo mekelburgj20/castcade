@@ -1,0 +1,3256 @@
+[
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "HELLO",
+   "matchId": null,
+   "seq": 1,
+   "ts": 1795000000000,
+   "from": "a",
+   "payload": {
+    "protocolVersion": 6,
+    "companionVersion": "0.2.50",
+    "throwdownCode": "GOLDEN",
+    "participant": {
+     "playerId": "a",
+     "displayName": "Player a",
+     "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+     "rig": "pc"
+    },
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "1212121212121212121212121212121212121212121212121212121212121212",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": null,
+     "emulatorVersion": "10.8.0"
+    },
+    "ballEndReady": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 1,
+   "ts": 1795000000100,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [
+     {
+      "playerId": "a",
+      "mismatches": [
+       {
+        "field": "tableHash",
+        "expected": "abababababababababababababababababababababababababababababababab",
+        "received": "1212121212121212121212121212121212121212121212121212121212121212",
+        "expectedFrom": "h"
+       },
+       {
+        "field": "sidecarHash",
+        "expected": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "received": null,
+        "expectedFrom": "h"
+       }
+      ]
+     }
+    ],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": false
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "HELLO",
+   "matchId": null,
+   "seq": 1,
+   "ts": 1795000000100,
+   "from": "b",
+   "payload": {
+    "protocolVersion": 6,
+    "companionVersion": "0.2.50",
+    "throwdownCode": "GOLDEN",
+    "participant": {
+     "playerId": "b",
+     "displayName": "Player b",
+     "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+     "rig": "pc"
+    },
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "ballEndReady": true
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 2,
+   "ts": 1795000000200,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [
+     {
+      "playerId": "a",
+      "mismatches": [
+       {
+        "field": "tableHash",
+        "expected": "abababababababababababababababababababababababababababababababab",
+        "received": "1212121212121212121212121212121212121212121212121212121212121212",
+        "expectedFrom": "h"
+       },
+       {
+        "field": "sidecarHash",
+        "expected": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "received": null,
+        "expectedFrom": "h"
+       }
+      ]
+     }
+    ],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": false
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 2,
+   "ts": 1795000000200,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [
+     {
+      "playerId": "a",
+      "mismatches": [
+       {
+        "field": "tableHash",
+        "expected": "abababababababababababababababababababababababababababababababab",
+        "received": "1212121212121212121212121212121212121212121212121212121212121212",
+        "expectedFrom": "h"
+       },
+       {
+        "field": "sidecarHash",
+        "expected": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "received": null,
+        "expectedFrom": "h"
+       }
+      ]
+     }
+    ],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": false
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "x",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "HELLO",
+   "matchId": null,
+   "seq": 1,
+   "ts": 1795000000200,
+   "from": "x",
+   "payload": {
+    "protocolVersion": 6,
+    "companionVersion": "0.2.50",
+    "throwdownCode": "ELSEWHERE",
+    "participant": {
+     "playerId": "x",
+     "displayName": "Player x",
+     "publicKey": "ypOsFwUYcHHWe4PH/w7+gQjo7EUwV113JoeTM9vavnw=",
+     "rig": "pc"
+    },
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "x",
+  "msg": {
+   "v": 6,
+   "type": "REFUSE",
+   "matchId": null,
+   "seq": 3,
+   "ts": 1795000000300,
+   "from": "h",
+   "payload": {
+    "code": "unknown_throwdown",
+    "message": "this host runs GOLDEN, not ELSEWHERE",
+    "mismatches": []
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 2,
+   "ts": 1795000000300,
+   "from": "a",
+   "payload": {
+    "rig": "vr_headset",
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "ballEndReady": true,
+    "stream3dWaitMs": 5000
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 4,
+   "ts": 1795000000400,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": [
+     {
+      "playerId": "a",
+      "leftMs": 5000
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 4,
+   "ts": 1795000000400,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": [
+     {
+      "playerId": "a",
+      "leftMs": 5000
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 3,
+   "ts": 1795000000400,
+   "from": "a",
+   "payload": {
+    "stream3dWaitMs": 0
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 5,
+   "ts": 1795000000500,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 5,
+   "ts": 1795000000500,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 2,
+   "ts": 1795000000500,
+   "from": "b",
+   "payload": {
+    "midnightMode": {
+     "enabled": true,
+     "adjustment": "A.2 14 Special Mode"
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 6,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 6,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "pc"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 7,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 7,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 8,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     },
+     {
+      "playerId": "h",
+      "enabled": false,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 8,
+   "ts": 1795000000600,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": null,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     },
+     {
+      "playerId": "h",
+      "enabled": false,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "MEDIA_SIGNAL",
+   "matchId": "GOLDEN",
+   "seq": 4,
+   "ts": 1795000000700,
+   "from": "a",
+   "payload": {
+    "to": "b",
+    "kind": "offer",
+    "sdp": "v=0 offer a to b",
+    "channel": "rtc"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "MEDIA_SIGNAL",
+   "matchId": "GOLDEN",
+   "seq": 9,
+   "ts": 1795000000700,
+   "from": "h",
+   "payload": {
+    "to": "a",
+    "kind": "ice",
+    "candidate": {
+     "candidate": "candidate:1 1 udp 1 192.0.2.1 9 typ host",
+     "sdpMid": "0",
+     "sdpMLineIndex": 0
+    },
+    "channel": "video"
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "MEDIA_SIGNAL",
+   "matchId": "GOLDEN",
+   "seq": 3,
+   "ts": 1795000000700,
+   "from": "b",
+   "payload": {
+    "to": "h",
+    "kind": "answer",
+    "sdp": "v=0 answer b to h",
+    "channel": "stream"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "MEDIA_SIGNAL",
+   "matchId": "GOLDEN",
+   "seq": 4,
+   "ts": 1795000000700,
+   "from": "a",
+   "payload": {
+    "to": "b",
+    "kind": "offer",
+    "sdp": "v=0 offer a to b",
+    "channel": "rtc"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 10,
+   "ts": 1795000000800,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": 3000,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     },
+     {
+      "playerId": "h",
+      "enabled": false,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "HELLO_ACK",
+   "matchId": null,
+   "seq": 10,
+   "ts": 1795000000800,
+   "from": "h",
+   "payload": {
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostGame": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "tableMismatches": [],
+    "startsInMs": 3000,
+    "loading": [],
+    "ballEndReady": [
+     {
+      "playerId": "h",
+      "ready": true
+     },
+     {
+      "playerId": "a",
+      "ready": true
+     },
+     {
+      "playerId": "b",
+      "ready": true
+     }
+    ],
+    "midnightModes": [
+     {
+      "playerId": "b",
+      "enabled": true,
+      "adjustment": "A.2 14 Special Mode"
+     },
+     {
+      "playerId": "h",
+      "enabled": false,
+      "adjustment": "A.2 14 Special Mode"
+     }
+    ],
+    "stream3dWait": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "MATCH_READY",
+   "matchId": "GOLDEN",
+   "seq": 11,
+   "ts": 1795000003800,
+   "from": "h",
+   "payload": {
+    "matchId": "GOLDEN",
+    "ballsPerGame": 2,
+    "playerOrder": [
+     "h",
+     "a",
+     "b"
+    ],
+    "participants": [
+     {
+      "playerId": "h",
+      "displayName": "Player h",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "a",
+      "displayName": "Player a",
+      "publicKey": "gTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q=",
+      "rig": "vr_headset"
+     },
+     {
+      "playerId": "b",
+      "displayName": "Player b",
+      "publicKey": "7UkoxijRwsbq6QM4kFmVYSlZJzpcY/k2NsFGFKyHN9E=",
+      "rig": "pc"
+     }
+    ],
+    "hostPlayerId": "h",
+    "hostPublicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    },
+    "seed": null,
+    "turnMode": "alternating"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 12,
+   "ts": 1795000003800,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "h",
+     "ballNumber": 1,
+     "grantSeq": 1,
+     "issuedAt": 1795000003800,
+     "logHash": "0e8f33277b29cf184724e475a17937c65c1231ba5942f8ffa1b4bc70262bbfca",
+     "game": 1
+    },
+    "grantSig": "GTvkZNmiUta9rMk7KWQ5RZ49dTJlNmyijaqUuSjYKm/M2Kf9EFSwMa7WAYn6xPlFnxOQIGDH1vN2vKOo+LqKBA=="
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 13,
+   "ts": 1795000003800,
+   "from": "h",
+   "payload": {
+    "ballNumber": 1,
+    "score": 50,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 0
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 13,
+   "ts": 1795000003800,
+   "from": "h",
+   "payload": {
+    "ballNumber": 1,
+    "score": 50,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 0
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 14,
+   "ts": 1795000004300,
+   "from": "h",
+   "payload": {
+    "grantSeq": 1,
+    "ballNumber": 1,
+    "finalScore": 100,
+    "detectorReason": "nvram",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 15,
+   "ts": 1795000004300,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "a",
+     "ballNumber": 1,
+     "grantSeq": 2,
+     "issuedAt": 1795000004300,
+     "logHash": "316caac5c1f0ebc2228bf4fa82f1efd18c709da5caa8460d60987aebad8a01c0",
+     "game": 1
+    },
+    "grantSig": "tkWGjKmxsZzwug8MaiMEFVXeDleZzPED7a/ZzJNZECKf+GgUcfEy1CXKbv5w2Od+wUzZGEyAaUOaFMQF5qD+Ag=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 5,
+   "ts": 1795000004800,
+   "from": "a",
+   "payload": {
+    "ballNumber": 1,
+    "score": 150,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 1
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "DMD_FRAME",
+   "matchId": "GOLDEN",
+   "seq": 6,
+   "ts": 1795000004800,
+   "from": "a",
+   "payload": {
+    "kind": "text",
+    "lines": [
+     "EXTRA BALL",
+     "150"
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 5,
+   "ts": 1795000004800,
+   "from": "a",
+   "payload": {
+    "ballNumber": 1,
+    "score": 150,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 1
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "DMD_FRAME",
+   "matchId": "GOLDEN",
+   "seq": 6,
+   "ts": 1795000004800,
+   "from": "a",
+   "payload": {
+    "kind": "text",
+    "lines": [
+     "EXTRA BALL",
+     "150"
+    ]
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 7,
+   "ts": 1795000005300,
+   "from": "a",
+   "payload": {
+    "grantSeq": 2,
+    "ballNumber": 1,
+    "finalScore": 200,
+    "detectorReason": "script",
+    "shootAgain": true
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 7,
+   "ts": 1795000005300,
+   "from": "a",
+   "payload": {
+    "grantSeq": 2,
+    "ballNumber": 1,
+    "finalScore": 200,
+    "detectorReason": "script",
+    "shootAgain": true
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 16,
+   "ts": 1795000005800,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "a",
+     "ballNumber": 1,
+     "grantSeq": 3,
+     "issuedAt": 1795000005800,
+     "logHash": "bf7739a06fd1bee5c59920ec7bc71b37e730766b4a3183616820cb0de4489f36",
+     "game": 1
+    },
+    "grantSig": "xg2DPAbIRzGauC5Hsh7A8gJa+UwQI/m5XeW1HuUC9L+M3FkaiciKz3bdL7DNcraR6g8zhyj8ZJP+BqcB1U52CA=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 8,
+   "ts": 1795000005800,
+   "from": "a",
+   "payload": {
+    "grantSeq": 3,
+    "ballNumber": 1,
+    "finalScore": 300,
+    "detectorReason": "manual",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 8,
+   "ts": 1795000005800,
+   "from": "a",
+   "payload": {
+    "grantSeq": 3,
+    "ballNumber": 1,
+    "finalScore": 300,
+    "detectorReason": "manual",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 17,
+   "ts": 1795000006300,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 1,
+     "grantSeq": 4,
+     "issuedAt": 1795000006300,
+     "logHash": "b540d3905cd565f7a837a5dbacdda353f6482fffc0a1363170c180c086084c4a",
+     "game": 1
+    },
+    "grantSig": "FdgunMfBEP4d+L/BqxZeihTrrMHu+omLiI78dMD59PkSbFurI5TBWmhst4p3yRaikhaHEjL+HCTcTKBhNhfhBA=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PAUSE",
+   "matchId": "GOLDEN",
+   "seq": 4,
+   "ts": 1795000006300,
+   "from": "b",
+   "payload": {
+    "reason": "requested",
+    "player": "b"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "PAUSE",
+   "matchId": "GOLDEN",
+   "seq": 4,
+   "ts": 1795000006300,
+   "from": "b",
+   "payload": {
+    "reason": "requested",
+    "player": "b"
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "RESUME",
+   "matchId": "GOLDEN",
+   "seq": 5,
+   "ts": 1795000006800,
+   "from": "b",
+   "payload": {}
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "RESUME",
+   "matchId": "GOLDEN",
+   "seq": 5,
+   "ts": 1795000006800,
+   "from": "b",
+   "payload": {}
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 18,
+   "ts": 1795000007300,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 1,
+     "grantSeq": 5,
+     "issuedAt": 1795000007300,
+     "logHash": "a8e3ca0bcb724146fc565fcc958658d11e70d880ddd182d5ca96c19e9ed558b9",
+     "game": 1
+    },
+    "grantSig": "C31rSSsEJG7MREo2q8MtfEdXtoFNFtmnSsvvAA0HVvT+i7/d/o5XV7DtnndLwIEmu6b3NwdqoNCvaTvmsPEiCA=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 6,
+   "ts": 1795000007300,
+   "from": "b",
+   "payload": {
+    "ballNumber": 1,
+    "score": 40,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 0
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "STATE",
+   "matchId": "GOLDEN",
+   "seq": 6,
+   "ts": 1795000007300,
+   "from": "b",
+   "payload": {
+    "ballNumber": 1,
+    "score": 40,
+    "ballInPlay": true,
+    "tilt": false,
+    "extraBalls": 0
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_PASS",
+   "matchId": "GOLDEN",
+   "seq": 19,
+   "ts": 1795000007800,
+   "from": "h",
+   "payload": {
+    "grantSeq": 5,
+    "player": "b",
+    "ballNumber": 1,
+    "score": 50
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 20,
+   "ts": 1795000007800,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "h",
+     "ballNumber": 2,
+     "grantSeq": 6,
+     "issuedAt": 1795000007800,
+     "logHash": "0daba2cee4db7d0f2258ef1abf890e424e68846ea99a5a562f660f8de125a27d",
+     "game": 1
+    },
+    "grantSig": "Nc3wh5CCYDwVgTtFsmkvuufBnPaXn6W1Mwnp+cZyuD4rCc50kbtfafLFCg9zpV091d2y9xWlHV2RR0FzI/SADQ=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 9,
+   "ts": 1795000008300,
+   "from": "a",
+   "payload": {
+    "rig": "pc"
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 10,
+   "ts": 1795000008300,
+   "from": "a",
+   "payload": {
+    "advisory": {
+     "kind": "midnight",
+     "game": 1,
+     "ballNumber": 1
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 21,
+   "ts": 1795000008300,
+   "from": "h",
+   "payload": {
+    "advisory": {
+     "kind": "midnight",
+     "game": 1,
+     "ballNumber": 1
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 21,
+   "ts": 1795000008300,
+   "from": "h",
+   "payload": {
+    "advisory": {
+     "kind": "midnight",
+     "game": 1,
+     "ballNumber": 1
+    }
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 7,
+   "ts": 1795000008300,
+   "from": "b",
+   "payload": {
+    "midnightMode": {
+     "enabled": false,
+     "adjustment": "A.2 14 Special Mode"
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 22,
+   "ts": 1795000008300,
+   "from": "h",
+   "payload": {
+    "rig": "pc"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 22,
+   "ts": 1795000008300,
+   "from": "h",
+   "payload": {
+    "rig": "pc"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 9,
+   "ts": 1795000008300,
+   "from": "a",
+   "payload": {
+    "rig": "pc"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 10,
+   "ts": 1795000008300,
+   "from": "a",
+   "payload": {
+    "advisory": {
+     "kind": "midnight",
+     "game": 1,
+     "ballNumber": 1
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "PARTICIPANT_UPDATE",
+   "matchId": "GOLDEN",
+   "seq": 7,
+   "ts": 1795000008300,
+   "from": "b",
+   "payload": {
+    "midnightMode": {
+     "enabled": false,
+     "adjustment": "A.2 14 Special Mode"
+    }
+   }
+  }
+ },
+ {
+  "by": "late",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "HELLO",
+   "matchId": null,
+   "seq": 1,
+   "ts": 1795000008400,
+   "from": "late",
+   "payload": {
+    "protocolVersion": 6,
+    "companionVersion": "0.2.50",
+    "throwdownCode": "GOLDEN",
+    "participant": {
+     "playerId": "late",
+     "displayName": "Player late",
+     "publicKey": "bnoc3Smwt4/ROvTFWY/v9O8qlxZuPKby5Pv8zYBQW/E=",
+     "rig": "pc"
+    },
+    "game": {
+     "kind": "vpx",
+     "tableName": "Monster Bash (Williams 1998)",
+     "tableHash": "abababababababababababababababababababababababababababababababab",
+     "romName": "mb_106b",
+     "romHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "physicsHash": null,
+     "recipeVersion": "0.5.0",
+     "sidecarHash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+     "emulatorVersion": "10.8.0"
+    }
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "late",
+  "msg": {
+   "v": 6,
+   "type": "REFUSE",
+   "matchId": null,
+   "seq": 23,
+   "ts": 1795000008500,
+   "from": "h",
+   "payload": {
+    "code": "match_started",
+    "message": "the roster is final",
+    "mismatches": []
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 24,
+   "ts": 1795000008500,
+   "from": "h",
+   "payload": {
+    "grantSeq": 6,
+    "ballNumber": 2,
+    "finalScore": 400,
+    "detectorReason": "nvram",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 25,
+   "ts": 1795000008500,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "a",
+     "ballNumber": 2,
+     "grantSeq": 7,
+     "issuedAt": 1795000008500,
+     "logHash": "abcb949989ee5e190f5b63c8bf91a0b31c0872992b94fd1d04828bde27a1790d",
+     "game": 1
+    },
+    "grantSig": "yoYhzKaNQWiByUOWyIfUuKtDeWiKJhIHrjitMTBLAn0jxn+GYtwW7wx9polOovbKt3zgXX3poyLtCIRtt9SYBQ=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 11,
+   "ts": 1795000009000,
+   "from": "a",
+   "payload": {
+    "grantSeq": 2,
+    "ballNumber": 2,
+    "finalScore": 1,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 8,
+   "ts": 1795000009000,
+   "from": "b",
+   "payload": {
+    "grantSeq": 7,
+    "ballNumber": 2,
+    "finalScore": 1,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "REJECT",
+   "matchId": "GOLDEN",
+   "seq": 26,
+   "ts": 1795000009500,
+   "from": "h",
+   "payload": {
+    "refSeq": 11,
+    "refType": "BALL_END",
+    "code": "stale_grant",
+    "message": "current grantSeq is 7"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "REJECT",
+   "matchId": "GOLDEN",
+   "seq": 27,
+   "ts": 1795000009500,
+   "from": "h",
+   "payload": {
+    "refSeq": 8,
+    "refType": "BALL_END",
+    "code": "not_grant_holder",
+    "message": "a holds the grant"
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "GAME_OVER",
+   "matchId": "GOLDEN",
+   "seq": 12,
+   "ts": 1795000009500,
+   "from": "a",
+   "payload": {
+    "finalScore": 900,
+    "ballsPlayed": 2
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "GAME_OVER",
+   "matchId": "GOLDEN",
+   "seq": 12,
+   "ts": 1795000009500,
+   "from": "a",
+   "payload": {
+    "finalScore": 900,
+    "ballsPlayed": 2
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 28,
+   "ts": 1795000010000,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 2,
+     "grantSeq": 8,
+     "issuedAt": 1795000010000,
+     "logHash": "367b3a05ad2fac30547c7fa4d4c0631845ef476a888905937940151008ec2f15",
+     "game": 1
+    },
+    "grantSig": "Ux1K6An9PqLHeZkk0tfaOxXpDoHgt/8AFLxktA5QWKPXE529PRa4vubdODrCj2abQ+1EcHmWBZa6tSmg6/pXCA=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "FORFEIT",
+   "matchId": "GOLDEN",
+   "seq": 9,
+   "ts": 1795000010000,
+   "from": "b",
+   "payload": {
+    "player": "b",
+    "reason": "gave up"
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "FORFEIT",
+   "matchId": "GOLDEN",
+   "seq": 9,
+   "ts": 1795000010000,
+   "from": "b",
+   "payload": {
+    "player": "b",
+    "reason": "gave up"
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "LOG_SIGN",
+   "matchId": "GOLDEN",
+   "seq": 13,
+   "ts": 1795000010500,
+   "from": "a",
+   "payload": {
+    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logLength": 18,
+    "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "LOG_SIGN",
+   "matchId": "GOLDEN",
+   "seq": 10,
+   "ts": 1795000010500,
+   "from": "b",
+   "payload": {
+    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logLength": 18,
+    "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA=="
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "RESULT",
+   "matchId": "GOLDEN",
+   "seq": 29,
+   "ts": 1795000010500,
+   "from": "h",
+   "payload": {
+    "matchId": "GOLDEN",
+    "entries": [
+     {
+      "playerId": "h",
+      "score": 400,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "score": 900,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "score": 50,
+      "ballsPlayed": 1,
+      "status": "forfeit",
+      "rank": 3
+     }
+    ],
+    "winner": "a",
+    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logLength": 18,
+    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "signatures": [
+     {
+      "playerId": "a",
+      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     },
+     {
+      "playerId": "b",
+      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     }
+    ],
+    "hostTransfers": 0,
+    "startedAt": 1795000003800,
+    "finishedAt": 1795000010000,
+    "game": 1,
+    "series": [
+     {
+      "playerId": "h",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 400,
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "games": 1,
+      "wins": 1,
+      "totalScore": 900,
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 50,
+      "rank": 3
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "NEXT_GAME",
+   "matchId": "GOLDEN",
+   "seq": 30,
+   "ts": 1795000011000,
+   "from": "h",
+   "payload": {
+    "game": 2,
+    "playerOrder": [
+     "h",
+     "a",
+     "b"
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 31,
+   "ts": 1795000011000,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "h",
+     "ballNumber": 1,
+     "grantSeq": 9,
+     "issuedAt": 1795000011000,
+     "logHash": "a510fbdf6e05aefb9c21b285b34495d7c6150b1bcf024862b0e42d69ce389c3e",
+     "game": 2
+    },
+    "grantSig": "ti9KG8hqQS7+4uWVUxjHs8bjubSEqRtFvaVI6JZkGRtBUJiM9aQupxPYEplPqCZN/BrCdKN1uwZhvoF/x744Dg=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "RECONNECT",
+   "matchId": "GOLDEN",
+   "seq": 14,
+   "ts": 1795000012500,
+   "from": "a",
+   "payload": {
+    "player": "a",
+    "logHash": "14f762899f70a3d22a17bd69fbc4fde950ba3f140e17bc927ff295f08d4b7b1c",
+    "logLength": 20,
+    "signature": "+9fdxn39FH6F/gVgWZ049NGobim1JvMDMcBqbjczbRoSfC8eKTM2DSGouhS7FCcztm+2HPuK5Zc6ESfhbwf3AA==",
+    "resends": true
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "RECONNECT_ACK",
+   "matchId": "GOLDEN",
+   "seq": 32,
+   "ts": 1795000012500,
+   "from": "h",
+   "payload": {
+    "accept": true,
+    "code": null,
+    "entries": [],
+    "logHash": "14f762899f70a3d22a17bd69fbc4fde950ba3f140e17bc927ff295f08d4b7b1c",
+    "logLength": 20
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "a",
+  "msg": {
+   "v": 6,
+   "type": "RESULT",
+   "matchId": "GOLDEN",
+   "seq": 33,
+   "ts": 1795000012500,
+   "from": "h",
+   "payload": {
+    "matchId": "GOLDEN",
+    "entries": [
+     {
+      "playerId": "h",
+      "score": 400,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "score": 900,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "score": 50,
+      "ballsPlayed": 1,
+      "status": "forfeit",
+      "rank": 3
+     }
+    ],
+    "winner": "a",
+    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logLength": 18,
+    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "signatures": [
+     {
+      "playerId": "a",
+      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     },
+     {
+      "playerId": "b",
+      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     }
+    ],
+    "hostTransfers": 0,
+    "startedAt": 1795000003800,
+    "finishedAt": 1795000010000,
+    "game": 1,
+    "series": [
+     {
+      "playerId": "h",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 400,
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "games": 1,
+      "wins": 1,
+      "totalScore": 900,
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 50,
+      "rank": 3
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 34,
+   "ts": 1795000013000,
+   "from": "h",
+   "payload": {
+    "grantSeq": 9,
+    "ballNumber": 1,
+    "finalScore": 1000,
+    "detectorReason": "nvram",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 35,
+   "ts": 1795000013000,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "a",
+     "ballNumber": 1,
+     "grantSeq": 10,
+     "issuedAt": 1795000013000,
+     "logHash": "3f2ed06216a85ef125447bf373e528fe316df714cb82f7c51f634050a01a7987",
+     "game": 2
+    },
+    "grantSig": "0KOE8W7vMkk3U+1A6mdkYBZMW4Ki2t3btRLO4Rn2GG5bLlzu9ojp5FI7FHhw5VcSrI0NAQtNF3uO7ck9NKSHAg=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 15,
+   "ts": 1795000013500,
+   "from": "a",
+   "payload": {
+    "grantSeq": 10,
+    "ballNumber": 1,
+    "finalScore": 1100,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 15,
+   "ts": 1795000013500,
+   "from": "a",
+   "payload": {
+    "grantSeq": 10,
+    "ballNumber": 1,
+    "finalScore": 1100,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 36,
+   "ts": 1795000014000,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 1,
+     "grantSeq": 11,
+     "issuedAt": 1795000014000,
+     "logHash": "399819f3e30afd6266597530c07fa93685265a4c1027b9443a4414f95fd70e6b",
+     "game": 2
+    },
+    "grantSig": "bNd0t2LLNn54FC4ykvZhifuda+J0ygDoSWrzt68cgheWKo8GNhaabXtBcj0N6KTgt+ivENmGoU5mV+82vWUbBQ=="
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "PAUSE",
+   "matchId": "GOLDEN",
+   "seq": 37,
+   "ts": 1795000019000,
+   "from": "h",
+   "payload": {
+    "reason": "disconnect",
+    "player": "b"
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "RECONNECT",
+   "matchId": "GOLDEN",
+   "seq": 11,
+   "ts": 1795000020000,
+   "from": "b",
+   "payload": {
+    "player": "b",
+    "logHash": "3467bc97b76746c6dcff884551437da3e568aec169597cb7c57ff83b5ccfb3e8",
+    "logLength": 24,
+    "signature": "jA2Q3H6PQAqk4BQohj0NeEl4Ou7JJCE4tYCKH+iJ8ix3SydNXDjBm78e90IVvOfBOAuN31tunDoHXafOaB6gAA==",
+    "resends": true
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "RECONNECT_ACK",
+   "matchId": "GOLDEN",
+   "seq": 38,
+   "ts": 1795000020000,
+   "from": "h",
+   "payload": {
+    "accept": true,
+    "code": null,
+    "entries": [
+     {
+      "index": 24,
+      "prevHash": "3467bc97b76746c6dcff884551437da3e568aec169597cb7c57ff83b5ccfb3e8",
+      "ts": 1795000019000,
+      "kind": "msg",
+      "from": "h",
+      "message": {
+       "v": 6,
+       "type": "PAUSE",
+       "matchId": "GOLDEN",
+       "seq": 37,
+       "ts": 1795000019000,
+       "from": "h",
+       "payload": {
+        "reason": "disconnect",
+        "player": "b"
+       }
+      },
+      "hash": "9d714a057d58b8412c1b5a208fe3e3403c2ad5ea824c61a9b79e1c2a8d715de1"
+     }
+    ],
+    "logHash": "9d714a057d58b8412c1b5a208fe3e3403c2ad5ea824c61a9b79e1c2a8d715de1",
+    "logLength": 25
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "b",
+  "msg": {
+   "v": 6,
+   "type": "RESULT",
+   "matchId": "GOLDEN",
+   "seq": 39,
+   "ts": 1795000020000,
+   "from": "h",
+   "payload": {
+    "matchId": "GOLDEN",
+    "entries": [
+     {
+      "playerId": "h",
+      "score": 400,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "score": 900,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "score": 50,
+      "ballsPlayed": 1,
+      "status": "forfeit",
+      "rank": 3
+     }
+    ],
+    "winner": "a",
+    "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+    "logLength": 18,
+    "hostSignature": "mj0krnd2mx9gA91uw4COxYwCc4RhSpbbJakmMs62Sbbws1jQY3VD3i1ONBjPoP5YMW4OKeMpHSyEVbKJs7DyCw==",
+    "signatures": [
+     {
+      "playerId": "a",
+      "signature": "NXChrWFHUxQ4/gGYogOMQmMGFH0gXb6/ovgjWE73DMWswnXHbr9xZVXjL3Gvf5D6UIhVi6SCZ4XQhaHxmjY4CA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     },
+     {
+      "playerId": "b",
+      "signature": "+KuR7G47DkXi4q7Bm0uLu41zjifHWSArbmyBKLRkn7xbZR33rZr3g++366tZ6FGjdVfqHsbmh4bHCqjTGB0vCA==",
+      "logHash": "46e10adb3829bd9e325fc355080a2ee0e6c9b6d42090f9b503fbe8c7ccf9b101",
+      "logLength": 18
+     }
+    ],
+    "hostTransfers": 0,
+    "startedAt": 1795000003800,
+    "finishedAt": 1795000010000,
+    "game": 1,
+    "series": [
+     {
+      "playerId": "h",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 400,
+      "rank": 2
+     },
+     {
+      "playerId": "a",
+      "games": 1,
+      "wins": 1,
+      "totalScore": 900,
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "games": 1,
+      "wins": 0,
+      "totalScore": 50,
+      "rank": 3
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "RESUME",
+   "matchId": "GOLDEN",
+   "seq": 12,
+   "ts": 1795000020500,
+   "from": "b",
+   "payload": {}
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "RESUME",
+   "matchId": "GOLDEN",
+   "seq": 12,
+   "ts": 1795000020500,
+   "from": "b",
+   "payload": {}
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 40,
+   "ts": 1795000021000,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 1,
+     "grantSeq": 12,
+     "issuedAt": 1795000021000,
+     "logHash": "d9df774edb5626e9c8ea8e92e236721688452e283031c1e2f147833b5886dfeb",
+     "game": 2
+    },
+    "grantSig": "w1I5MGssVFEmBSCgvLHRNpvJOyhiaRk6JEM7QIiiBW+zTxc0latDSDc10L2OwaA+gRz25cHaIulH/pZf5xyeAw=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 13,
+   "ts": 1795000021000,
+   "from": "b",
+   "payload": {
+    "grantSeq": 12,
+    "ballNumber": 1,
+    "finalScore": 1200,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 13,
+   "ts": 1795000021000,
+   "from": "b",
+   "payload": {
+    "grantSeq": 12,
+    "ballNumber": 1,
+    "finalScore": 1200,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 41,
+   "ts": 1795000021500,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "h",
+     "ballNumber": 2,
+     "grantSeq": 13,
+     "issuedAt": 1795000021500,
+     "logHash": "9681476e44bc35317156a30e18f79669fe897c85d6f25b05fadaf6419dabde90",
+     "game": 2
+    },
+    "grantSig": "S/hhCQqeiv5ZIfq5ECGzdyjGNeGvb3v5KMKbLZOAxttE7v09NmU+lE9rGzaa40fWPa3SxHywfvt7Q3vEPHOFBg=="
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 42,
+   "ts": 1795000021500,
+   "from": "h",
+   "payload": {
+    "grantSeq": 13,
+    "ballNumber": 2,
+    "finalScore": 2000,
+    "detectorReason": "nvram",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 43,
+   "ts": 1795000021500,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "a",
+     "ballNumber": 2,
+     "grantSeq": 14,
+     "issuedAt": 1795000021500,
+     "logHash": "c2af5917b8815bdad9695ee5a81480fe995d2a87b3ad846cb90c206fe6328634",
+     "game": 2
+    },
+    "grantSig": "IwqoCqL9D2RjjkUKLXmTDntDDQcXFLiIUgqvU/KfxSFXyJwU7QrCsTzTPP7SWX79TIfZC/7fP4vqOmKAjD9gDg=="
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 16,
+   "ts": 1795000022000,
+   "from": "a",
+   "payload": {
+    "grantSeq": 14,
+    "ballNumber": 2,
+    "finalScore": 2100,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 16,
+   "ts": 1795000022000,
+   "from": "a",
+   "payload": {
+    "grantSeq": 14,
+    "ballNumber": 2,
+    "finalScore": 2100,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "TURN_GRANT",
+   "matchId": "GOLDEN",
+   "seq": 44,
+   "ts": 1795000022500,
+   "from": "h",
+   "payload": {
+    "grant": {
+     "matchId": "GOLDEN",
+     "player": "b",
+     "ballNumber": 2,
+     "grantSeq": 15,
+     "issuedAt": 1795000022500,
+     "logHash": "35a2a3e908ac9afc0cfd981f95f5c7e11f4136ea275f3eba147b94bba2e0778b",
+     "game": 2
+    },
+    "grantSig": "jp27QsemusJgPT0PinkxwESRjy+W4JfIwMjCPKEQZJaU/+u4fdU7sHXmbvFLFDwgYtdlHLgfUtB9tlt+2RWlAQ=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 14,
+   "ts": 1795000022500,
+   "from": "b",
+   "payload": {
+    "grantSeq": 15,
+    "ballNumber": 2,
+    "finalScore": 2200,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "BALL_END",
+   "matchId": "GOLDEN",
+   "seq": 14,
+   "ts": 1795000022500,
+   "from": "b",
+   "payload": {
+    "grantSeq": 15,
+    "ballNumber": 2,
+    "finalScore": 2200,
+    "detectorReason": "script",
+    "shootAgain": false
+   }
+  }
+ },
+ {
+  "by": "a",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "LOG_SIGN",
+   "matchId": "GOLDEN",
+   "seq": 17,
+   "ts": 1795000023000,
+   "from": "a",
+   "payload": {
+    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logLength": 34,
+    "signature": "spV98XoqGxuHj1CuY3Qc111fa4q6glISSGFkf4YpDGUIWl99adbyml/CRHFAZdXD0Lz2KM/GaCZibJI6yHWwAg=="
+   }
+  }
+ },
+ {
+  "by": "b",
+  "to": "h",
+  "msg": {
+   "v": 6,
+   "type": "LOG_SIGN",
+   "matchId": "GOLDEN",
+   "seq": 15,
+   "ts": 1795000023000,
+   "from": "b",
+   "payload": {
+    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logLength": 34,
+    "signature": "oC7wo7SIq9wqJZ7OrLV2pvOJuPAeJjXwII0JJ/qhBgWwY9K12Ahd47DhiT/gPB98NrNFrtjezg1UYGwSnkHABw=="
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "RESULT",
+   "matchId": "GOLDEN",
+   "seq": 45,
+   "ts": 1795000023000,
+   "from": "h",
+   "payload": {
+    "matchId": "GOLDEN",
+    "entries": [
+     {
+      "playerId": "h",
+      "score": 2000,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 3
+     },
+     {
+      "playerId": "a",
+      "score": 2100,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 2
+     },
+     {
+      "playerId": "b",
+      "score": 2200,
+      "ballsPlayed": 2,
+      "status": "finished",
+      "rank": 1
+     }
+    ],
+    "winner": "b",
+    "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+    "logLength": 34,
+    "hostSignature": "2G9bn2tlDvt2b1gr4Zn0DeAJYn/wTAs4qLVSzq6HKlvtp/KuuVCFtAOT41wUPPn6bV9hvBsxcYXwCeZGZnzGCQ==",
+    "signatures": [
+     {
+      "playerId": "a",
+      "signature": "spV98XoqGxuHj1CuY3Qc111fa4q6glISSGFkf4YpDGUIWl99adbyml/CRHFAZdXD0Lz2KM/GaCZibJI6yHWwAg==",
+      "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+      "logLength": 34
+     },
+     {
+      "playerId": "b",
+      "signature": "oC7wo7SIq9wqJZ7OrLV2pvOJuPAeJjXwII0JJ/qhBgWwY9K12Ahd47DhiT/gPB98NrNFrtjezg1UYGwSnkHABw==",
+      "logHash": "e022a4f77c073b5033b1c6e439ed81f3b12b2b421983b3f0b23a4fbd6b377068",
+      "logLength": 34
+     }
+    ],
+    "hostTransfers": 0,
+    "startedAt": 1795000011000,
+    "finishedAt": 1795000022500,
+    "game": 2,
+    "series": [
+     {
+      "playerId": "h",
+      "games": 2,
+      "wins": 0,
+      "totalScore": 2400,
+      "rank": 3
+     },
+     {
+      "playerId": "a",
+      "games": 2,
+      "wins": 1,
+      "totalScore": 3000,
+      "rank": 1
+     },
+     {
+      "playerId": "b",
+      "games": 2,
+      "wins": 1,
+      "totalScore": 2250,
+      "rank": 2
+     }
+    ]
+   }
+  }
+ },
+ {
+  "by": "h",
+  "to": "all",
+  "msg": {
+   "v": 6,
+   "type": "MATCH_END",
+   "matchId": "GOLDEN",
+   "seq": 46,
+   "ts": 1795000023500,
+   "from": "h",
+   "payload": {
+    "games": 2,
+    "reason": "the evening is over"
+   }
+  }
+ }
+]

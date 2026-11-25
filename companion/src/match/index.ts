@@ -65,6 +65,7 @@ export {
   HostMatch,
   compareFingerprints,
   type HostOptions,
+  type LobbyOptions,
   type ResumeOptions,
   type HostEvents,
   type RejectInfo,

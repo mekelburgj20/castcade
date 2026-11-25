@@ -65,8 +65,39 @@
  *     only for a grant issued again. For such a client that holds the grant, the pause it always got is committed
  *     before its RECONNECT_ACK, also inside the grace, so its own RESUME has the grant issued again. A client that
  *     says `resends` is not paused for, and a waiting player of any build never is.
+ * - A17 step 5 (2026-11-25, docs/design/alpha-match.md section 11: "a lobby that outlives a match"), behind
+ *   `HostOptions.lobby`, which is OFF by default: with it off nothing in this file behaves or sends differently
+ *   (`lobby-off.test.ts` compares a whole match, frame by frame, with one recorded before this step). With it on
+ *   this engine is a LOBBY for its whole life, and a match is something that happens in it, any number of times:
+ *   - **members, not a roster.** Everyone who said HELLO is a member until they leave, the lobby's PC (this one)
+ *     like any other, each with a choice (`stance`: Play or Watch). HELLO is taken in every phase while there is
+ *     room (`lobby.size`, four). HELLO_ACK is the lobby as it is now, sent to every member on every change in every
+ *     phase (`lobbyFacts`: the choices, who is away, who has no copy of the table, the open match).
+ *   - **a match has players, and they are a choice.** `start()` / `startMatch(players?)` starts one with the people
+ *     set to Play who are here and have the table, or with the players given; this PC need not be one of them
+ *     (it still arbitrates: grants, the log, the RESULT). MATCH_READY's roster is the players and nobody else, so a
+ *     match's log is what it would be without a lobby. Its id is `<lobby code>-<n>`, n counting from 1.
+ *   - **matches in sequence.** MATCH_END means "back to the lobby": the log is put away (`Session.newMatch`) and the
+ *     next match starts one from nothing: index 0, `prevHash` 64 zeros, `grantSeq` from 1. The envelope's `seq` goes
+ *     on. `nextGame()` is the match's own players (those set to Play and here); anyone else comes in only by a new
+ *     match, which `startMatch` between games makes by ending the open one first.
+ *   - **watchers.** A member who is not in the game being played gets every broadcast and keeps the same log, and
+ *     nothing is taken from them: a BALL_END, GAME_OVER, FORFEIT, PAUSE, RESUME or LOG_SIGN of theirs is rejected, a
+ *     STATE or DMD_FRAME dropped. STATE, DMD_FRAME and MEDIA_SIGNAL go to every member.
+ *   - **the log, unasked and in pages.** A member who joins while a match is open is sent HELLO_ACK and then that
+ *     match's whole log in MATCH_LOG pages (100 entries; the relay takes 256 KB a frame), and no logged message
+ *     goes to a member whose log has not been sent in full (`logAudience`): what is committed meanwhile is in a
+ *     later page. A RECONNECT_ACK that would hold more than one page says `more` and the rest follows the same way.
+ *   - **no host transfer** (`transferHost` refuses).
+ *   Left for the next step (start requests and their checks, the starter, the countdown on every start, the away
+ *   clocks, RECONNECT in every phase, the table pick, a game ended for everyone), and stubbed here by the rule that
+ *   was there: a member the open match does not hold drops out when their link drops; a player of the open match
+ *   keeps A18's rules and today's RECONNECT, and is dropped when the match closes while they are still gone;
+ *   START_REQUEST, START_CANCEL, END_REQUEST and TABLE_PICK are answered with REJECT; the lobby's table is still
+ *   whatever this PC has open (`hostGame`).
  */
 import {
+  MATCH_LOG_PAGE_SIZE,
   PROTOCOL_VERSION,
   type AnyMessage,
   type GameFingerprint,
@@ -79,6 +110,7 @@ import {
   type PayloadOf,
   type PlayerAdvisory,
   type PlayerId,
+  type Stance,
 } from '@castcade/protocol';
 import { ClientMatch } from './client.js';
 import type { Clock, TimerHandle } from './clock.js';
@@ -100,6 +132,20 @@ import type { Transport } from './transport.js';
 export type RejectCode = PayloadOf<'REJECT'>['code'];
 export type RefuseCode = PayloadOf<'REFUSE'>['code'];
 export type ReconnectCode = NonNullable<PayloadOf<'RECONNECT_ACK'>['code']>;
+
+/** A17 (2026-11-25): what a lobby can be told at its start. Every key has a default. */
+export interface LobbyOptions {
+  /** How many people the lobby holds, its own PC included. Default 4 (five or more is A17.1). */
+  size?: number;
+  /** This PC's own choice, Play or Watch, until `updateLocal` changes it. Default play. */
+  stance?: Stance;
+  /** The number of the first match started here (`<code>-<n>`). Default 1; a lobby opened again goes on counting. */
+  firstMatch?: number;
+  /** Log entries in one MATCH_LOG. Default, and the most: 100 (`MATCH_LOG_PAGE_SIZE`). */
+  logPageSize?: number;
+  /** ms between two pages to one member. Default 0: the whole log in the turn that took the HELLO. */
+  logPageGapMs?: number;
+}
 
 export interface HostOptions {
   transport: Transport;
@@ -130,6 +176,11 @@ export interface HostOptions {
   ballEndReady?: boolean;
   /** A18: how long a dropped link is not yet a disconnect (the file header). Default 5 s; 0: at once. */
   disconnectGraceMs?: number;
+  /**
+   * A17 step 5 (2026-11-25): this engine is a lobby that outlives its matches (the file header). Off by default, and
+   * off it changes nothing. `matchId` is then the lobby's code, and each match gets `<code>-<n>`.
+   */
+  lobby?: boolean | LobbyOptions;
 }
 
 export interface ResumeOptions {
@@ -227,6 +278,16 @@ export interface HostEvents extends Record<string, unknown> {
   countdown: { startsInMs: number };
   /** A11: the countdown ran out with fewer than two players; nothing started. */
   countdownCancelled: { reason: string };
+  /** A17: the lobby as every member was just told (the HELLO_ACK that went out), this PC's own row included. Lobby only. */
+  lobby: PayloadOf<'HELLO_ACK'>;
+  /**
+   * A17: a member who did not hold the open match's log has been sent all of it (`pages` MATCH_LOG messages, the
+   * log `entries` long at the end, `during` of them committed while the pages went out); the logged messages reach
+   * it live from here on.
+   */
+  caughtUp: { playerId: PlayerId; entries: number; pages: number; during: number };
+  /** A17: LOBBY_CLOSED went out (`closeLobby`). */
+  lobbyClosed: PayloadOf<'LOBBY_CLOSED'>;
 }
 
 /**
@@ -252,13 +313,18 @@ export const STREAM3D_WAIT_MAX_MS = 120_000;
 const HOST_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['HELLO_ACK', 'REFUSE', 'MATCH_READY', 'TURN_GRANT', 'TURN_PASS', 'RESULT', 'REJECT', 'NEXT_GAME', 'MATCH_END']);
 const ZERO_HASH = '0'.repeat(64);
 const defaultTableOpen = (g: GameFingerprint): boolean => g.tableHash !== ZERO_HASH;
+/** A17: what a member says to the lobby and not to a match: the envelope carries the lobby's code (the open match's id is taken too). */
+const LOBBY_TYPES: ReadonlySet<MessageType> = new Set(['PARTICIPANT_UPDATE', 'MEDIA_SIGNAL', 'START_REQUEST', 'START_CANCEL', 'END_REQUEST', 'TABLE_PICK']);
+/** A17: what only a player of the game being played may send; a watcher reports nothing and signs nothing. */
+const PLAYER_ONLY_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'BALL_END', 'GAME_OVER', 'FORFEIT', 'PAUSE', 'RESUME', 'LOG_SIGN']);
 /** Frames a host passes on with `from` preserved on a star transport. MEDIA_SIGNAL goes to its `to` only (D2). */
 const RELAYED_TYPES: ReadonlySet<MessageType> = new Set(['STATE', 'DMD_FRAME', 'HOST_TRANSFER_ACK', 'MEDIA_SIGNAL', 'PARTICIPANT_UPDATE']);
 
 export class HostMatch {
   readonly events = new Emitter<HostEvents>();
   private readonly s: Session;
-  private readonly matchId: string;
+  /** The id on match frames. Without a lobby it never changes; in a lobby it is the open match's, and the code when none is open. */
+  private matchId: string;
   private readonly ballEndTimeoutMs: number;
   private readonly logSignTimeoutMs: number;
   private readonly companionVersion: string;
@@ -306,10 +372,42 @@ export class HostMatch {
   private transferAccepts = new Set<PlayerId>();
   private detached = false;
   private readonly unsubscribe: (() => void)[] = [];
+  /** A17: this engine is a lobby (`HostOptions.lobby`). Everything the lobby adds is behind this flag. */
+  private readonly lobbyOn: boolean;
+  /** A17: the lobby's code: what a HELLO names (`HostOptions.matchId`). */
+  private readonly code: string;
+  private readonly lobbySize: number;
+  /** A17: the number the next match gets. */
+  private matchNumber: number;
+  private readonly logPageSize: number;
+  private readonly logPageGapMs: number;
+  /** A17: each member's choice at the next start; not in it = play. */
+  private readonly stances = new Map<PlayerId, Stance>();
+  /** A17: the members whose PC said it has no copy of the lobby's table. */
+  private readonly withoutCopy = new Set<PlayerId>();
+  /** A17: the members on whose table a game of their own is running. */
+  private readonly inOwnGame = new Set<PlayerId>();
+  /**
+   * A17: the members the open match's log is still being sent to, each with the index of the next entry to send.
+   * Nobody in here is sent a logged message (it would land in a log that is not there yet); the page that follows
+   * carries it.
+   */
+  private readonly catchUps = new Map<PlayerId, { next: number; restart: boolean; pages: number; from: number; timer: TimerHandle | null }>();
+  /** A17: the match that was closed last, with its log as it stood. */
+  private lastMatch: { matchId: string; log: MatchLog } | null = null;
+  /** A17: the order a held next game was asked with (`nextGame(order)`), if any. */
+  private heldOrder: PlayerId[] | undefined;
 
   constructor(opts: HostOptions, session?: Session) {
     this.s = session ?? new Session({ transport: opts.transport, keys: opts.keys, clock: opts.clock });
     this.matchId = opts.matchId;
+    this.code = opts.matchId;
+    const lobby: LobbyOptions | null = opts.lobby === true ? {} : opts.lobby || null;
+    this.lobbyOn = lobby !== null;
+    this.lobbySize = Math.max(2, Math.floor(lobby?.size ?? 4));
+    this.matchNumber = Math.max(1, Math.floor(lobby?.firstMatch ?? 1));
+    this.logPageSize = Math.max(1, Math.min(MATCH_LOG_PAGE_SIZE, Math.floor(lobby?.logPageSize ?? MATCH_LOG_PAGE_SIZE)));
+    this.logPageGapMs = Math.max(0, lobby?.logPageGapMs ?? 0);
     this.ballEndTimeoutMs = opts.ballEndTimeoutMs ?? DEFAULT_BALL_END_TIMEOUT_MS;
     this.logSignTimeoutMs = opts.logSignTimeoutMs ?? DEFAULT_LOG_SIGN_TIMEOUT_MS;
     this.graceMs = Math.max(0, opts.disconnectGraceMs ?? DEFAULT_DISCONNECT_GRACE_MS);
@@ -323,6 +421,7 @@ export class HostMatch {
     }
     this.lobby = [{ ...opts.hostParticipant, publicKey: opts.keys.publicKeyB64 }];
     if (opts.ballEndReady !== undefined) this.ballEndReady.set(this.localId, opts.ballEndReady);
+    if (lobby !== null) this.stances.set(this.localId, lobby.stance ?? 'play');
     this.ballsPerGameInit = opts.ballsPerGame;
     this.attach();
   }
@@ -398,6 +497,51 @@ export class HostMatch {
     return this.events.on(name, cb);
   }
 
+  /** A17: this engine is a lobby (`HostOptions.lobby`). */
+  get isLobby(): boolean {
+    return this.lobbyOn;
+  }
+
+  /** A17: the lobby's code (`HostOptions.matchId`): what a HELLO names, and what the lobby's own messages carry. */
+  get lobbyCode(): string {
+    return this.code;
+  }
+
+  /**
+   * A17: everyone in the lobby, this PC first, then in the order they joined, in every phase. Without a lobby it is
+   * the people who joined before the start (afterwards `roster()` has the match's).
+   */
+  members(): ParticipantInfo[] {
+    return this.lobby.map((p) => ({ ...p }));
+  }
+
+  /** A17: a member's choice at the next start; null for somebody who is not in the lobby (or with no lobby). */
+  stanceOf(id: PlayerId): Stance | null {
+    if (!this.lobbyOn || !this.isMember(id)) return null;
+    return this.stances.get(id) ?? 'play';
+  }
+
+  /**
+   * A17: who a match started now would be played by: the members set to Play who are on a link and whose PC has
+   * the table, in the lobby's order.
+   */
+  playSet(): PlayerId[] {
+    if (!this.lobbyOn) return [];
+    return this.lobby.map((p) => p.playerId).filter((id) => this.stances.get(id) !== 'watch' && !this.gone.has(id) && !this.withoutCopy.has(id));
+  }
+
+  /** A17: the match that is open in the lobby, as HELLO_ACK says it (`match`); null when none is, and without a lobby. */
+  openMatch(): NonNullable<PayloadOf<'HELLO_ACK'>['match']> | null {
+    const st = this.s.state;
+    if (!this.lobbyOn || st.phase === 'lobby' || !st.matchId) return null;
+    return { matchId: st.matchId, players: st.participants.map((p) => p.playerId), game: Math.max(1, st.gameNumber), state: st.phase === 'running' ? 'game' : 'between' };
+  }
+
+  /** A17: the match that was closed last in this lobby, with its log as it stood at MATCH_END; null before any. */
+  previousMatch(): { matchId: string; log: MatchLog } | null {
+    return this.lastMatch ? { ...this.lastMatch } : null;
+  }
+
   /** Who joined with a differing fingerprint (`fingerprintPolicy: 'advise'`) and what differed. Advisory only. */
   tableMismatches(): Record<PlayerId, PayloadOf<'REFUSE'>['mismatches']> {
     return Object.fromEntries([...this.mismatched].map(([id, m]) => [id, m.map((x) => ({ ...x }))]));
@@ -435,6 +579,9 @@ export class HostMatch {
    */
   updateLocal(u: PayloadOf<'PARTICIPANT_UPDATE'>): boolean {
     this.assertActive();
+    // A17: in a lobby this PC is a member row like any other, in every phase (and `stance`, `noCopy` and `ownGame`
+    // are its own choice and facts; without a lobby those three keys are not read).
+    if (this.lobbyOn) return this.updateMember(this.localId, u, null);
     if (this.s.state.phase !== 'lobby') {
       if (u.rig === undefined || !this.noteLiveRig(this.localId, u.rig)) return false;
       const msg = this.s.build('PARTICIPANT_UPDATE', { rig: u.rig }, this.matchId);
@@ -466,8 +613,10 @@ export class HostMatch {
   localAdvisory(advisory: PlayerAdvisory): boolean {
     this.assertActive();
     if (this.s.state.phase === 'lobby') return false;
+    // A17: a lobby's PC that is not in the game has no ball of its own to flag.
+    if (this.watchesNow()) return false;
     const msg = this.s.build('PARTICIPANT_UPDATE', { advisory }, this.matchId);
-    for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
+    for (const id of this.updateAudience()) this.s.transport.send(id, msg);
     this.events.emit('advisory', { playerId: this.localId, advisory: msg.payload.advisory! });
     return true;
   }
@@ -480,13 +629,20 @@ export class HostMatch {
   localMidnightMode(mode: MidnightMode): boolean {
     this.assertActive();
     if (!this.noteMidnightMode(this.localId, mode)) return false;
-    if (this.s.state.phase === 'lobby') {
+    // A17: in a lobby HELLO_ACK says it in every phase.
+    if (this.s.state.phase === 'lobby' || this.lobbyOn) {
       this.resendAck();
       return true;
     }
     const msg = this.s.build('PARTICIPANT_UPDATE', { midnightMode: mode }, this.matchId);
-    for (const id of this.s.state.playerOrder) if (id !== this.localId && !this.gone.has(id)) this.s.transport.send(id, msg);
+    for (const id of this.updateAudience()) this.s.transport.send(id, msg);
     return true;
+  }
+
+  /** Who a PARTICIPANT_UPDATE of this host's own goes to after MATCH_READY: the game's players; in a lobby (A17) every member. */
+  private updateAudience(): PlayerId[] {
+    const ids = this.lobbyOn ? this.lobby.map((p) => p.playerId) : this.s.state.playerOrder;
+    return ids.filter((id) => id !== this.localId && !this.gone.has(id));
   }
 
   /** B26.4: records a player's setting and raises `midnightMode`; false when it is the one already known. */
@@ -503,7 +659,8 @@ export class HostMatch {
    * fingerprint), this host included. Empty after the start.
    */
   loading(): PlayerId[] {
-    if (this.s.state.phase !== 'lobby') return [];
+    // A17: a lobby says it in every phase: a member's table can close and open while a match is played.
+    if (this.s.state.phase !== 'lobby' && !this.lobbyOn) return [];
     return this.lobby
       .map((p) => p.playerId)
       .filter((id) => {
@@ -579,15 +736,17 @@ export class HostMatch {
    */
   startIn(ms: number): boolean {
     this.assertActive();
-    if (this.s.state.phase !== 'lobby' || this.startAt !== null || this.lobby.length < 2) return false;
+    if (this.s.state.phase !== 'lobby' || this.startAt !== null || this.startCount() < 2) return false;
     const wait = Math.max(0, Math.min(60_000, Math.round(ms)));
     this.startAt = this.s.clock.now() + wait;
     this.startTimer = this.s.clock.setTimeout(() => {
       this.startTimer = null;
       this.startAt = null;
       if (this.detached || this.s.state.phase !== 'lobby') return;
-      if (this.lobby.length < 2) {
-        this.events.emit('countdownCancelled', { reason: 'fewer than two players are in' });
+      // A17: in a lobby, whatever stops a match from starting now stops this one (the people set to Play changed).
+      const off = this.lobbyOn ? this.startMatchBlocker() : this.lobby.length < 2 ? 'fewer than two players are in' : null;
+      if (off !== null) {
+        this.events.emit('countdownCancelled', { reason: off });
         this.resendAck();
         return;
       }
@@ -604,10 +763,25 @@ export class HostMatch {
     this.startAt = null;
   }
 
-  /** Freeze the roster and start the rotation. Needs at least two participants. Ends a countdown (A11). */
+  /** How many would play a match started now: everyone who joined; in a lobby (A17) the people set to Play (`playSet`). */
+  private startCount(): number {
+    return this.lobbyOn ? this.playSet().length : this.lobby.length;
+  }
+
+  /**
+   * Freeze the roster and start the rotation. Needs at least two participants. Ends a countdown (A11).
+   * A17: in a lobby it starts a match with `playSet()` (two to four people), and only while no match is open: with
+   * one open, `nextGame()` goes on with its players and `startMatch()` starts a new one.
+   */
   start(): void {
     this.assertActive();
     if (this.s.state.phase !== 'lobby') throw new Error('match already started');
+    if (this.lobbyOn) {
+      const why = this.startMatchBlocker();
+      if (why !== null) throw new Error(why);
+      this.beginMatch(this.playSet());
+      return;
+    }
     if (this.lobby.length < 2) throw new Error('need at least two participants to start');
     this.clearStartTimer();
     // I11.4.9: only the first start waits for a 3D connection, and this is it (or the host's "start now").
@@ -631,17 +805,155 @@ export class HostMatch {
   }
 
   /**
+   * A17 (2026-11-25): why a NEW match cannot start now with `players` (default `playSet()`), or null when it can: no
+   * game may be running, the last game's RESULT must be out, and the players must be two to four members who are on
+   * a link. Who is set to Play is the caller's business when it names the players itself.
+   */
+  startMatchBlocker(players?: readonly PlayerId[]): string | null {
+    const st = this.s.state;
+    if (!this.lobbyOn) return 'this match has no lobby';
+    if (this.detached) return 'this companion is not the host any more';
+    if (this.ended) return 'the lobby is closed';
+    if (st.phase === 'running') return 'a game is being played';
+    if (st.phase === 'ended' && !this.resultSent) return "the last game's result has not gone out yet";
+    const order = players ?? this.playSet();
+    if (new Set(order).size !== order.length) return 'a player is named twice';
+    for (const id of order) {
+      if (!this.isMember(id)) return `${id} is not in the lobby`;
+      if (this.gone.has(id)) return `${id} is away`;
+    }
+    if (order.length < 2) return 'a match needs two people set to Play';
+    if (order.length > 4) return 'a match has at most four players';
+    return null;
+  }
+
+  /**
+   * A17 (2026-11-25): start a new match in the lobby with `players`, the first to go first (default: `playSet()`).
+   * This PC need not be one of them. With a match open between games it ends that one first (MATCH_END, "a new
+   * match was started") and the new one follows at once: the one way a person who is not in the open match comes
+   * into play. False, with nothing done, when `startMatchBlocker` says why not.
+   */
+  startMatch(players?: readonly PlayerId[]): boolean {
+    this.assertActive();
+    if (this.startMatchBlocker(players) !== null) return false;
+    const order = players ? [...players] : this.playSet();
+    if (this.s.state.phase === 'ended') this.closeMatch('a new match was started');
+    this.beginMatch(order);
+    return true;
+  }
+
+  /** A17: MATCH_READY for a match of the lobby: a new log, the next id, the players and nobody else in its roster. */
+  private beginMatch(order: PlayerId[]): void {
+    this.clearStartTimer();
+    this.clearStream3dWait();
+    this.resetMatch();
+    this.matchId = `${this.code}-${this.matchNumber}`;
+    this.matchNumber += 1;
+    const first = order[0] as PlayerId;
+    const payload: PayloadOf<'MATCH_READY'> = {
+      matchId: this.matchId,
+      ballsPerGame: this.ballsPerGameInit,
+      playerOrder: [...order],
+      participants: order.map((id) => ({ ...(this.lobby.find((p) => p.playerId === id) as ParticipantInfo) })),
+      hostPlayerId: this.localId,
+      hostPublicKey: this.publicKey,
+      // The table of the first player in the order, as their PC has it open.
+      game: { ...(first === this.localId ? this.hostGame : (this.lobbyGames.get(first) ?? this.hostGame)) },
+      seed: null,
+      turnMode: this.turnMode,
+    };
+    const msg = this.s.build('MATCH_READY', payload, this.matchId);
+    this.s.commit({ ts: msg.ts, kind: 'msg', from: this.localId, message: msg });
+    // Every member holds this log in full: it begins here. MATCH_READY first, then the lobby that has a match open
+    // (a member told of an open match before its MATCH_READY would wait for a log to be sent).
+    this.broadcast(msg);
+    this.events.emit('ready', msg.payload);
+    this.resendAck();
+    this.advance();
+  }
+
+  /** A17: what belongs to one match is forgotten: its end, its signatures, its RESULTs, its timers. */
+  private resetMatch(): void {
+    this.clearBallEndTimer();
+    if (this.logSignTimer !== null) {
+      this.s.clock.clearTimeout(this.logSignTimer);
+      this.logSignTimer = null;
+    }
+    this.finalHead = null;
+    this.resultSent = false;
+    this.signatures.clear();
+    this.resultMsgs.length = 0;
+    this.liveRigs.clear();
+    this.nextGameHeld = false;
+    this.heldOrder = undefined;
+  }
+
+  /**
+   * A17: the open match is over and everyone is back in the lobby: MATCH_END to every member (also one whose log
+   * was still on its way), the log put away, and the lobby said again with no match in it. Nobody leaves and no
+   * connection closes, with one exception that is this step's stub for "away": a player of that match whose link is
+   * still down is dropped from the lobby, as a link that drops in a lobby always was.
+   */
+  private closeMatch(reason: string): void {
+    const closed = this.matchId;
+    const msg = this.s.build('MATCH_END', { games: this.resultMsgs.length, reason: reason.slice(0, 200) }, closed);
+    this.stopCatchUps();
+    for (const id of this.reachable()) this.s.transport.send(id, msg);
+    this.resetMatch();
+    this.lastMatch = { matchId: closed, log: this.s.newMatch() };
+    this.matchId = this.code;
+    for (const id of [...this.gone]) this.dropMember(id, false);
+    this.gone.clear();
+    this.events.emit('matchEnded', msg.payload);
+    this.resendAck();
+  }
+
+  /**
+   * A17 (2026-11-25): close the lobby for everyone: a match open between games is ended first (MATCH_END), then
+   * every member is told LOBBY_CLOSED and nothing more can happen here; the caller closes the engine. A game that
+   * is being played is not ended by a message of its own yet (the next step ends it for everyone, with no result):
+   * its log stops where it stands. False without a lobby, or when it is closed already.
+   */
+  closeLobby(reason = 'the lobby was closed'): boolean {
+    this.assertActive();
+    if (!this.lobbyOn || this.ended) return false;
+    if (this.s.state.phase === 'ended' && this.resultSent) this.closeMatch('the lobby was closed');
+    this.ended = true;
+    // Nothing of a game that was being played acts after this: no ball-end timeout, no grace running out.
+    this.clearStartTimer();
+    this.clearStream3dWait();
+    this.stopCatchUps();
+    this.resetMatch();
+    for (const t of this.grace.values()) this.s.clock.clearTimeout(t);
+    this.grace.clear();
+    const msg = this.s.build('LOBBY_CLOSED', { reason: reason.slice(0, 200) }, this.code);
+    for (const id of this.reachable()) this.s.transport.send(id, msg);
+    this.events.emit('lobbyClosed', msg.payload);
+    return true;
+  }
+
+  /**
    * A10 (2026-11-02): why the next game cannot start now, or null when it can: the current game must have ended and
    * its RESULT gone out, the series not be over, and two of the roster still be connected.
+   * A17: in a lobby the next game is for the open match's own players: `order`, when given, must name only them
+   * (anyone else takes a new match, `startMatch`); without it, those of them who are set to Play and here.
    */
-  nextGameBlocker(): string | null {
+  nextGameBlocker(order?: readonly PlayerId[]): string | null {
     const st = this.s.state;
     if (this.detached) return 'this companion is not the host any more';
-    if (this.ended) return 'the match has ended';
+    if (this.ended) return this.lobbyOn ? 'the lobby is closed' : 'the match has ended';
     if (st.phase === 'lobby') return 'the match has not started';
     if (st.phase !== 'ended') return 'the current game is still being played';
     if (!this.resultSent) return "the last game's result has not gone out yet";
-    if (this.nextGameOrder().length < 2) return 'fewer than two players are still connected';
+    if (this.lobbyOn && order) {
+      if (new Set(order).size !== order.length) return 'a player is named twice';
+      for (const id of order) {
+        if (!st.participants.some((p) => p.playerId === id)) return `${id} is not a player of this match: that takes a new match`;
+        if (!this.isMember(id) || this.away(id)) return `${id} is away`;
+      }
+      if (order.length > 4) return 'a game has at most four players';
+    }
+    if (this.nextGameOrder(order).length < 2) return this.lobbyOn ? 'fewer than two players of this match are set to Play and here' : 'fewer than two players are still connected';
     return null;
   }
 
@@ -650,8 +962,18 @@ export class HostMatch {
     return this.gone.has(id) && !this.grace.has(id);
   }
 
-  /** The next game's players: the roster still connected, in roster order, this host first. */
-  private nextGameOrder(): PlayerId[] {
+  /**
+   * The next game's players: the roster still connected, in roster order, this host first.
+   * A17: in a lobby, `order` as given, else the open match's players who are still members, on a link, set to Play
+   * and with the table, in the match's order; this PC first when it is one of them (its table starts the game,
+   * until a start can be asked for by anyone).
+   */
+  private nextGameOrder(order?: readonly PlayerId[]): PlayerId[] {
+    if (this.lobbyOn) {
+      if (order) return [...order];
+      const ids = this.s.state.participants.map((p) => p.playerId).filter((id) => this.isMember(id) && !this.away(id) && this.stances.get(id) !== 'watch' && !this.withoutCopy.has(id));
+      return ids.includes(this.localId) ? [this.localId, ...ids.filter((id) => id !== this.localId)] : ids;
+    }
     const ids = this.s.state.participants.map((p) => p.playerId).filter((id) => id !== this.localId && !this.away(id));
     return [this.localId, ...ids];
   }
@@ -661,16 +983,19 @@ export class HostMatch {
    * nothing done, when `nextGameBlocker()` says why not: a `game_start` on the table before the last RESULT went out
    * is ignored this way.
    */
-  nextGame(): boolean {
+  nextGame(order?: readonly PlayerId[]): boolean {
     this.assertActive();
-    if (this.nextGameBlocker() !== null) return false;
+    // A17: `order` (who plays it, the first to go first) is read in a lobby only.
+    const asked = this.lobbyOn && order ? [...order] : undefined;
+    if (this.nextGameBlocker(asked) !== null) return false;
     // A18: who plays it is not known while a player's link dropped a moment ago: back in time, they are in it; gone,
     // they are not (and with only them left there is no next game). Held until the grace settles (`settleNextGame`).
     if (this.grace.size > 0) {
       this.nextGameHeld = true;
+      this.heldOrder = asked;
       return true;
     }
-    this.startNextGame();
+    this.startNextGame(asked);
     return true;
   }
 
@@ -683,17 +1008,19 @@ export class HostMatch {
   private settleNextGame(): void {
     if (!this.nextGameHeld || this.grace.size > 0 || this.detached) return;
     this.nextGameHeld = false;
-    const why = this.nextGameBlocker();
+    const asked = this.heldOrder;
+    this.heldOrder = undefined;
+    const why = this.nextGameBlocker(asked);
     if (why !== null) {
       this.events.emit('nextGameOff', { reason: why });
       return;
     }
-    this.startNextGame();
+    this.startNextGame(asked);
   }
 
-  private startNextGame(): void {
+  private startNextGame(order?: readonly PlayerId[]): void {
     const st = this.s.state;
-    const msg = this.s.build('NEXT_GAME', { game: st.gameNumber + 1, playerOrder: this.nextGameOrder() }, this.matchId);
+    const msg = this.s.build('NEXT_GAME', { game: st.gameNumber + 1, playerOrder: this.nextGameOrder(order) }, this.matchId);
     this.finalHead = null;
     this.resultSent = false;
     this.signatures.clear();
@@ -704,6 +1031,8 @@ export class HostMatch {
     this.s.commit({ ts: msg.ts, kind: 'msg', from: this.localId, message: msg });
     this.broadcast(msg);
     this.events.emit('nextGame', msg.payload);
+    // A17: the lobby's open match is in another game now.
+    if (this.lobbyOn) this.resendAck();
     this.advance();
   }
 
@@ -715,6 +1044,11 @@ export class HostMatch {
     this.assertActive();
     const st = this.s.state;
     if (this.ended || st.phase !== 'ended' || !this.resultSent) return false;
+    // A17: in a lobby the end of a match is not the end of anything else: back to the lobby, and another can start.
+    if (this.lobbyOn) {
+      this.closeMatch(reason);
+      return true;
+    }
     this.ended = true;
     this.nextGameHeld = false;
     const msg = this.s.build('MATCH_END', { games: Math.max(1, st.gameNumber), reason: reason.slice(0, 200) }, this.matchId);
@@ -764,6 +1098,8 @@ export class HostMatch {
     override: { grantSeq?: number; ballNumber?: number } = {},
   ): void {
     this.assertActive();
+    // A17: a lobby's PC that is not in the game reports nothing from its own table, as any watcher.
+    if (this.watchesNow()) return;
     const g = this.s.state.currentGrant?.grant;
     const msg = this.s.build(
       'BALL_END',
@@ -814,6 +1150,7 @@ export class HostMatch {
 
   localState(state: Omit<PayloadOf<'STATE'>, 'extraBalls'> & { extraBalls?: number }): void {
     this.assertActive();
+    if (this.watchesNow()) return;
     const msg = this.s.build('STATE', state, this.matchId);
     this.mirror(msg);
     this.events.emit('state', msg);
@@ -837,6 +1174,7 @@ export class HostMatch {
 
   localDmd(frame: PayloadOf<'DMD_FRAME'>): void {
     this.assertActive();
+    if (this.watchesNow()) return;
     const msg = this.s.build('DMD_FRAME', frame, this.matchId);
     this.mirror(msg);
     this.events.emit('dmd', msg);
@@ -844,6 +1182,7 @@ export class HostMatch {
 
   localGameOver(finalScore: number, ballsPlayed: number): void {
     this.assertActive();
+    if (this.watchesNow()) return;
     this.onGameOver(this.s.build('GAME_OVER', { finalScore, ballsPlayed }, this.matchId));
   }
 
@@ -869,6 +1208,8 @@ export class HostMatch {
    */
   transferHost(to: PlayerId, opts: { endpoint?: string } = {}): void {
     this.assertActive();
+    // A17: the lobby's PC arbitrates every match in it; the hand-over of a lobby is work of its own (design 11.8a).
+    if (this.lobbyOn) throw new Error('transferHost: a lobby does not change hands');
     const st = this.s.state;
     if (st.phase !== 'running') throw new Error('transferHost: match is not running');
     if (st.pendingTransfer) throw new Error('transferHost: a transfer is already pending');
@@ -920,6 +1261,7 @@ export class HostMatch {
     this.clearStream3dWait();
     this.clearBallEndTimer();
     this.clearStartTimer();
+    this.stopCatchUps();
     for (const t of this.grace.values()) this.s.clock.clearTimeout(t);
     this.grace.clear();
     if (this.logSignTimer !== null) {
@@ -932,13 +1274,47 @@ export class HostMatch {
     if (this.detached) throw new Error('this HostMatch has stepped down or been closed');
   }
 
+  /**
+   * The logged stream, and RESULT. A17: in a lobby it goes to the members who hold the open match's log in full and
+   * to nobody else (`logAudience`); `send('all')` reaches any socket that is connected, also one whose log is still
+   * being sent, and a logged message that lands in a log that is not there yet cannot be put right.
+   */
   private broadcast(msg: AnyMessage): void {
+    if (this.lobbyOn) {
+      for (const id of this.logAudience()) this.s.transport.send(id, msg);
+      return;
+    }
     this.s.transport.send('all', msg);
   }
 
-  /** STATE / DMD_FRAME: to every other participant, `from` preserved, never logged. */
+  /** A17: is in the lobby. */
+  private isMember(id: PlayerId): boolean {
+    return this.lobby.some((p) => p.playerId === id);
+  }
+
+  /** A17: every member but this PC whose link is up. */
+  private reachable(): PlayerId[] {
+    return this.lobby.map((p) => p.playerId).filter((id) => id !== this.localId && !this.gone.has(id));
+  }
+
+  /** A17: the members a logged message goes to: on a link, and not in the middle of being sent the log. */
+  private logAudience(): PlayerId[] {
+    return this.reachable().filter((id) => !this.catchUps.has(id));
+  }
+
+  /** A17: `id` is in the game that is being played (or was played last). */
+  private playsNow(id: PlayerId): boolean {
+    return this.s.state.phase !== 'lobby' && this.s.state.players[id] !== undefined;
+  }
+
+  /** A17: this PC is a lobby's PC and not a player of the game: it has nothing of its own to report. */
+  private watchesNow(): boolean {
+    return this.lobbyOn && !this.playsNow(this.localId);
+  }
+
+  /** STATE / DMD_FRAME: to every other participant, `from` preserved, never logged. A17: in a lobby, to every member. */
   private mirror(msg: AnyMessage): void {
-    const ids = this.s.state.phase === 'lobby' ? this.lobby.map((p) => p.playerId) : this.s.state.playerOrder;
+    const ids = this.s.state.phase === 'lobby' || this.lobbyOn ? this.lobby.map((p) => p.playerId) : this.s.state.playerOrder;
     for (const id of ids) {
       if (id === msg.from || id === this.localId || this.gone.has(id)) continue;
       this.s.transport.send(id, msg);
@@ -986,6 +1362,8 @@ export class HostMatch {
   /** Public so a client that just won a transfer can hand over the RECONNECTs it held (A2). */
   handle(linkFrom: PlayerId, msg: AnyMessage, opts: { seqChecked?: boolean } = {}): void {
     if (this.detached) return;
+    // A17: a closed lobby reads nothing more; only somebody who still tries to join is told so (`onHello`).
+    if (this.lobbyOn && this.ended && msg.type !== 'HELLO') return;
     if (msg.from !== linkFrom) {
       // On a star the old host relays acks and mirrors frames until it steps down; one that
       // reaches this host after the transfer is stale, not an impersonation (A2, 2026-10-30).
@@ -1018,7 +1396,9 @@ export class HostMatch {
       this.commitTransfer(linkFrom, msg);
       return;
     }
-    if (msg.matchId !== this.matchId) {
+    if (this.lobbyOn) {
+      if (!this.takesInLobby(msg)) return;
+    } else if (msg.matchId !== this.matchId) {
       this.reject(msg, 'schema', `matchId ${String(msg.matchId)} is not this match`);
       return;
     }
@@ -1065,13 +1445,49 @@ export class HostMatch {
       case 'HOST_TRANSFER_ACK':
         this.onTransferAck(msg);
         return;
+      case 'START_REQUEST':
+      case 'START_CANCEL':
+      case 'END_REQUEST':
+      case 'TABLE_PICK':
+        // A17: what a member asks of the lobby. The engine learns to answer them in the next step; until then the
+        // asker is told so, and the lobby's PC starts and ends matches itself.
+        this.reject(msg, 'unexpected_state', this.lobbyOn ? `${msg.type} is not answered by this build yet` : `${msg.type} is not a client -> host message`);
+        return;
       default:
         this.reject(msg, 'unexpected_state', `${msg.type} is not a client -> host message`);
     }
   }
 
+  /**
+   * A17: the two things a lobby checks on a member's frame before it is read. The envelope's `matchId`: the lobby's
+   * code on what is said to the lobby (the open match's id is taken too), the open match's id on what is said to a
+   * match; a frame for a match that is over, or for none, is dropped (a STATE or DMD_FRAME without a word, anything
+   * else with a REJECT that changes nothing). And the watcher's rule: what only a player may send is taken from
+   * nobody else.
+   */
+  private takesInLobby(msg: AnyMessage): boolean {
+    const open = this.s.state.matchId;
+    const quiet = msg.type === 'STATE' || msg.type === 'DMD_FRAME';
+    if (LOBBY_TYPES.has(msg.type)) {
+      if (msg.matchId === this.code || (open !== null && msg.matchId === open)) return true;
+      this.reject(msg, 'schema', `matchId ${String(msg.matchId)} is not this lobby`);
+      return false;
+    }
+    if (open === null || msg.matchId !== open) {
+      if (!quiet) this.reject(msg, 'unexpected_state', open === null ? 'no match is open' : `match ${String(msg.matchId)} is over`);
+      return false;
+    }
+    if (PLAYER_ONLY_TYPES.has(msg.type) && !this.playsNow(msg.from)) {
+      if (!quiet) this.reject(msg, 'unexpected_state', `${msg.from} is not a player of this game`);
+      return false;
+    }
+    return true;
+  }
+
   /** In the roster (A10: a player out of the current game of a series is still a participant: media, reconnect). */
   private isParticipant(id: PlayerId): boolean {
+    // A17: in a lobby, a member: a watcher sends media signals and updates, and is in no match's roster.
+    if (this.lobbyOn) return this.isMember(id);
     return this.s.state.phase === 'lobby' ? this.lobby.some((p) => p.playerId === id) : this.s.state.participants.some((p) => p.playerId === id);
   }
 
@@ -1079,6 +1495,18 @@ export class HostMatch {
   private onPeerLeave(peer: PlayerId, final = false): void {
     if (this.detached) return;
     const st = this.s.state;
+    if (this.lobbyOn && this.ended) return;
+    if (this.lobbyOn) {
+      // A17 step 5, the stub for "away" (the next step keeps a place for three minutes): a member the open match
+      // does not hold is out when their link drops, in every phase, as in a lobby before. A player of the open
+      // match is kept and follows A18 below, also one who sits this game out (their place in the next is theirs).
+      if (!this.isMember(peer)) return;
+      if (st.phase === 'lobby' || !st.participants.some((p) => p.playerId === peer)) {
+        this.dropMember(peer, true);
+        return;
+      }
+      this.stopCatchUp(peer);
+    }
     if (st.phase === 'lobby') {
       const wasIn = this.lobby.some((p) => p.playerId === peer);
       this.lobby = this.lobby.filter((p) => p.playerId !== peer);
@@ -1093,7 +1521,7 @@ export class HostMatch {
       return;
     }
     const p = st.players[peer];
-    if (!p) return;
+    if (!p && !this.lobbyOn) return;
     if (this.gone.has(peer)) {
       const timer = this.grace.get(peer);
       if (!final || timer === undefined) return;
@@ -1126,6 +1554,8 @@ export class HostMatch {
   private confirmLeave(peer: PlayerId): void {
     if (this.detached || !this.gone.has(peer)) return;
     this.events.emit('peerLeft', peer);
+    // A17: the lobby hears that this member is away.
+    if (this.lobbyOn) this.resendAck();
     const st = this.s.state;
     const p = st.players[peer];
     if (st.phase === 'ended') {
@@ -1156,23 +1586,32 @@ export class HostMatch {
       this.refuse(msg, 'protocol_version', `host speaks protocol ${PROTOCOL_VERSION}`);
       return;
     }
-    if (this.s.state.phase !== 'lobby') {
+    // A17: a lobby takes a HELLO in every phase while there is room; only a closed one refuses.
+    if (this.s.state.phase !== 'lobby' && !this.lobbyOn) {
       this.refuse(msg, 'match_started', 'the roster is final');
+      return;
+    }
+    if (this.lobbyOn && this.ended) {
+      this.refuse(msg, 'other', 'this lobby is closed');
       return;
     }
     if (p.participant.playerId !== msg.from) {
       this.refuse(msg, 'other', 'participant.playerId must equal the envelope from');
       return;
     }
-    if (p.throwdownCode !== this.matchId) {
-      this.refuse(msg, 'unknown_throwdown', `this host runs ${this.matchId}, not ${p.throwdownCode}`);
+    if (p.throwdownCode !== this.code) {
+      this.refuse(msg, 'unknown_throwdown', `this host runs ${this.code}, not ${p.throwdownCode}`);
       return;
     }
     if (this.lobby.some((x) => x.playerId === p.participant.playerId)) {
       this.refuse(msg, 'duplicate_player', `${p.participant.playerId} is already in the match`);
       return;
     }
-    if (this.lobby.length >= 4) {
+    if (this.lobbyOn && this.lobby.length >= this.lobbySize) {
+      this.refuse(msg, 'match_full', `This lobby is full (${this.lobbySize === 4 ? 'four' : this.lobbySize} people).`);
+      return;
+    }
+    if (!this.lobbyOn && this.lobby.length >= 4) {
       this.refuse(msg, 'match_full', 'four participants already');
       return;
     }
@@ -1186,6 +1625,7 @@ export class HostMatch {
     this.lobby.push(participant);
     this.lobbyGames.set(participant.playerId, { ...p.game });
     if (p.ballEndReady !== undefined) this.ballEndReady.set(participant.playerId, p.ballEndReady);
+    if (this.lobbyOn) this.stances.set(participant.playerId, p.stance ?? 'play');
     if (mismatches.length > 0) {
       this.mismatched.set(participant.playerId, mismatches);
       this.events.emit('tableMismatch', { playerId: participant.playerId, mismatches });
@@ -1193,7 +1633,173 @@ export class HostMatch {
     // The newcomer's answer, and (A8, 2026-10-31) the roster again for everyone already in: with 3-4 players each
     // client sees who else joined, and whose table differs, before MATCH_READY.
     this.resendAck();
+    // A17: a match is open: its log follows the answer, unasked, in the same turn (or page by page), and until the
+    // last page this member is sent no logged message.
+    if (this.lobbyOn && this.s.state.phase !== 'lobby') this.sendLog(participant.playerId, 0, true);
     this.events.emit('joined', participant);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // A17: the lobby's members, and the log for a member who does not hold it
+  // ------------------------------------------------------------------------------------------
+
+  /**
+   * A17: one member's facts or choice changed (their PARTICIPANT_UPDATE, or `updateLocal` for this PC), in any
+   * phase: the row is replaced and HELLO_ACK goes to every member. A match's logged roster and fingerprint stay
+   * what its MATCH_READY said. `msg` is the member's frame (null for this PC). False when nothing changed.
+   */
+  private updateMember(id: PlayerId, u: PayloadOf<'PARTICIPANT_UPDATE'>, msg: Message<'PARTICIPANT_UPDATE'> | null): boolean {
+    const i = this.lobby.findIndex((p) => p.playerId === id);
+    if (i < 0) return false;
+    const st = this.s.state;
+    let changed = false;
+    if (u.game !== undefined && id === this.localId) {
+      if (!sameGame(u.game, this.hostGame)) {
+        this.hostGame = { ...u.game };
+        for (const [other, g] of this.lobbyGames) this.setMismatch(other, compareFingerprints(this.hostGame, g, this.localId));
+        changed = true;
+      }
+    } else if (u.game !== undefined && !sameGame(u.game, this.lobbyGames.get(id))) {
+      const mismatches = compareFingerprints(this.hostGame, u.game, this.localId);
+      if (mismatches.length > 0 && this.fingerprintPolicy === 'refuse') {
+        if (msg) this.reject(msg, 'unexpected_state', `game fingerprint differs in: ${mismatches.map((m) => m.field).join(', ')}`);
+        return false;
+      }
+      this.lobbyGames.set(id, { ...u.game });
+      this.setMismatch(id, mismatches);
+      changed = true;
+    }
+    if (u.rig !== undefined && u.rig !== (this.lobby[i] as ParticipantInfo).rig) {
+      this.lobby[i] = { ...(this.lobby[i] as ParticipantInfo), rig: u.rig };
+      // A6.1: whoever follows the rigs of a match that is open hears it as it always did.
+      if (st.phase !== 'lobby') this.noteLiveRig(id, u.rig);
+      changed = true;
+    }
+    if (u.ballEndReady !== undefined && u.ballEndReady !== this.ballEndReady.get(id)) {
+      this.ballEndReady.set(id, u.ballEndReady);
+      changed = true;
+    }
+    if (u.midnightMode !== undefined && this.noteMidnightMode(id, u.midnightMode)) changed = true;
+    // I11.4.9: counted while no match is open, as before a match's first start (a start between games is the next step's).
+    if (u.stream3dWaitMs !== undefined && st.phase === 'lobby' && this.noteStream3dWait(id, u.stream3dWaitMs)) changed = true;
+    if (u.stance !== undefined && u.stance !== (this.stances.get(id) ?? 'play')) {
+      this.stances.set(id, u.stance);
+      changed = true;
+    }
+    if (u.noCopy !== undefined && u.noCopy !== this.withoutCopy.has(id)) {
+      if (u.noCopy) this.withoutCopy.add(id);
+      else this.withoutCopy.delete(id);
+      changed = true;
+    }
+    if (u.ownGame !== undefined && u.ownGame !== this.inOwnGame.has(id)) {
+      if (u.ownGame) this.inOwnGame.add(id);
+      else this.inOwnGame.delete(id);
+      changed = true;
+    }
+    // B26: a flag about one of a player's own balls is no fact of the lobby: it is passed on as it came.
+    if (msg && u.advisory !== undefined && st.phase !== 'lobby' && this.playsNow(id)) {
+      this.events.emit('advisory', { playerId: id, advisory: u.advisory });
+      this.mirror(msg);
+    }
+    if (!changed) return false;
+    this.events.emit('participantUpdated', { ...(this.lobby[i] as ParticipantInfo) });
+    this.resendAck();
+    return true;
+  }
+
+  /** A17: a member is out of the lobby: the row and everything kept for it go; `tell`: the others hear it now. */
+  private dropMember(peer: PlayerId, tell: boolean): void {
+    if (!this.isMember(peer) || peer === this.localId) return;
+    this.lobby = this.lobby.filter((p) => p.playerId !== peer);
+    this.lobbyGames.delete(peer);
+    this.ballEndReady.delete(peer);
+    this.midnightModeOf.delete(peer);
+    this.stances.delete(peer);
+    this.withoutCopy.delete(peer);
+    this.inOwnGame.delete(peer);
+    if (this.stream3dWait.delete(peer)) this.armStream3dTimer();
+    const held = this.grace.get(peer);
+    if (held !== undefined) this.s.clock.clearTimeout(held);
+    this.grace.delete(peer);
+    const told = this.gone.delete(peer) && held === undefined;
+    this.stopCatchUp(peer);
+    this.setMismatch(peer, []);
+    // A member already known to be away has had its `peerLeft`.
+    if (!told) this.events.emit('peerLeft', peer);
+    if (tell) this.resendAck();
+  }
+
+  /** A17: what HELLO_ACK says in a lobby beyond a match's lobby of before. */
+  private lobbyFacts(): Pick<PayloadOf<'HELLO_ACK'>, 'stances' | 'away' | 'noCopy' | 'ownGame' | 'ballsPerGame' | 'match'> {
+    const ids = this.lobby.map((p) => p.playerId);
+    return {
+      stances: ids.map((playerId) => ({ playerId, stance: this.stances.get(playerId) ?? 'play' })),
+      away: ids.filter((id) => this.away(id)),
+      noCopy: ids.filter((id) => this.withoutCopy.has(id)),
+      ownGame: ids.filter((id) => this.inOwnGame.has(id)),
+      ballsPerGame: this.ballsPerGameInit,
+      match: this.openMatch(),
+    };
+  }
+
+  /**
+   * A17: send `member` the open match's log from entry `from` on, in pages of `logPageSize` (`restart`: the first
+   * page says the receiver starts an empty log). All in this turn, or one page every `logPageGapMs`. The pages are
+   * cut from the log as it is when each goes out, so what was committed meanwhile is in them, and the member is
+   * current at the page that says `more: false`; the RESULTs of the match (never logged) follow it.
+   */
+  private sendLog(member: PlayerId, from: number, restart: boolean): void {
+    this.stopCatchUp(member);
+    this.catchUps.set(member, { next: from, restart, pages: 0, from: this.s.log.length, timer: null });
+    this.pumpLog(member);
+  }
+
+  private pumpLog(member: PlayerId): void {
+    const c = this.catchUps.get(member);
+    const matchId = this.s.state.matchId;
+    if (!c || this.detached || !matchId) return;
+    c.timer = null;
+    for (;;) {
+      const all = this.s.log.entries();
+      const page = all.slice(c.next, c.next + this.logPageSize);
+      c.next += page.length;
+      c.pages += 1;
+      const more = c.next < all.length;
+      const head = this.s.log.head();
+      this.s.transport.send(
+        member,
+        this.s.build('MATCH_LOG', { match: matchId, restart: c.restart, entries: page.map((e) => ({ ...e })), logHash: head.hash, logLength: head.length, more }, this.code),
+      );
+      c.restart = false;
+      if (!more) break;
+      if (this.logPageGapMs > 0) {
+        c.timer = this.s.clock.setTimeout(() => this.pumpLog(member), this.logPageGapMs);
+        return;
+      }
+    }
+    this.catchUps.delete(member);
+    this.events.emit('caughtUp', { playerId: member, entries: this.s.log.length, pages: c.pages, during: this.s.log.length - c.from });
+    this.sendResults(member);
+  }
+
+  private stopCatchUp(member: PlayerId): void {
+    const c = this.catchUps.get(member);
+    if (!c) return;
+    if (c.timer !== null) this.s.clock.clearTimeout(c.timer);
+    this.catchUps.delete(member);
+  }
+
+  private stopCatchUps(): void {
+    for (const id of [...this.catchUps.keys()]) this.stopCatchUp(id);
+  }
+
+  /**
+   * Every RESULT of the match as sent, oldest first, to one member. A fresh envelope for each: the receiver drops a
+   * frame whose seq is not above the last it took from this host (A10: the payload, signatures and all, is the same).
+   */
+  private sendResults(to: PlayerId): void {
+    const matchId = this.s.state.matchId ?? this.matchId;
+    for (const r of this.resultMsgs) this.s.transport.send(to, this.s.build('RESULT', r.payload, matchId));
   }
 
   /**
@@ -1205,6 +1811,11 @@ export class HostMatch {
    * `midnightMode` (the Midnight Madness setting on the sender's table); in the lobby it goes into HELLO_ACK.
    */
   private onParticipantUpdate(msg: Message<'PARTICIPANT_UPDATE'>): void {
+    // A17: in a lobby an update counts in every phase, and HELLO_ACK answers it.
+    if (this.lobbyOn) {
+      this.updateMember(msg.from, msg.payload, msg);
+      return;
+    }
     if (this.s.state.phase !== 'lobby') {
       const rigChanged = msg.payload.rig !== undefined && this.noteLiveRig(msg.from, msg.payload.rig);
       const advisory = msg.payload.advisory;
@@ -1274,6 +1885,8 @@ export class HostMatch {
         hostPublicKey: this.publicKey,
         participants: this.lobby.map((x) => ({ ...x })),
         hostGame: { ...this.hostGame },
+        // A17: the lobby as it is; nothing of it is sent without a lobby.
+        ...(this.lobbyOn ? this.lobbyFacts() : {}),
         tableMismatches: [...this.mismatched].map(([playerId, mismatches]) => ({ playerId, mismatches: mismatches.map((x) => ({ ...x })) })),
         startsInMs: this.countdownRemaining(),
         loading: this.loading(),
@@ -1283,6 +1896,12 @@ export class HostMatch {
       },
       null,
     );
+    if (this.lobbyOn) {
+      // A17: in every phase, so to the members whose link is up; and this PC's own row is news to its own shell.
+      for (const id of this.reachable()) this.s.transport.send(id, ack);
+      this.events.emit('lobby', ack.payload);
+      return;
+    }
     for (const p of this.lobby) if (p.playerId !== this.localId) this.s.transport.send(p.playerId, ack);
   }
 
@@ -1536,6 +2155,8 @@ export class HostMatch {
     this.resultMsgs.push(msg);
     this.broadcast(msg);
     this.events.emit('result', { result: msg.payload, signatures: [...this.signatures.values()] });
+    // A17: the lobby's open match is between games now, and the next start can be asked for.
+    if (this.lobbyOn && !this.detached) this.resendAck();
   }
 
   // ------------------------------------------------------------------------------------------
@@ -1624,9 +2245,13 @@ export class HostMatch {
       legacyPause = true;
     }
     const entries = this.s.log.entries().slice(msg.payload.logLength);
+    // A17: in a lobby an answer of more than one page says `more` and the rest follows in MATCH_LOG (a log of 600
+    // entries is over the relay's 256 KB as one frame). Without a lobby the answer is one frame, as it was.
+    const paged = this.lobbyOn && entries.length > this.logPageSize;
+    const first = paged ? entries.slice(0, this.logPageSize) : entries;
     this.s.transport.send(
       linkFrom,
-      this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: entries.map((e) => ({ ...e })), logHash: head.hash, logLength: head.length }, matchId),
+      this.s.build('RECONNECT_ACK', { accept: true, code: null, entries: first.map((e) => ({ ...e })), logHash: head.hash, logLength: head.length, ...(paged ? { more: true } : {}) }, matchId),
     );
     // Back on a link (A3). Its log still says disconnected until a RESUME clears the disconnect
     // pause; until then the rotation pauses again rather than grant to it.
@@ -1640,9 +2265,16 @@ export class HostMatch {
     }
     this.gone.delete(msg.from);
     this.events.emit('reconnected', { playerId: msg.from, entries: entries.length, quiet });
-    // A fresh envelope for each: the receiver drops a frame whose seq is not above the last it took from this host,
-    // and the RECONNECT_ACK just went out with a newer one (A10: the payload, signatures and all, is the same).
-    for (const r of this.resultMsgs) this.s.transport.send(linkFrom, this.s.build('RESULT', r.payload, matchId));
+    // A17: a member the lobby was told is away is back.
+    if (this.lobbyOn && !quiet) this.resendAck();
+    if (paged) {
+      // The rest of the log, then the RESULTs (`pumpLog`).
+      this.sendLog(msg.from, msg.payload.logLength + first.length, false);
+    } else {
+      // A fresh envelope for each: the receiver drops a frame whose seq is not above the last it took from this host,
+      // and the RECONNECT_ACK just went out with a newer one (A10: the payload, signatures and all, is the same).
+      for (const r of this.resultMsgs) this.s.transport.send(linkFrom, this.s.build('RESULT', r.payload, matchId));
+    }
     // A18: a grant that waited for this player's grace goes out now, after the RECONNECT_ACK it follows in the log;
     // so does a next game that was held for it.
     if (quiet) {
@@ -1662,7 +2294,9 @@ export class HostMatch {
     const msg = this.s.build('PAUSE', { reason: 'disconnect', player }, this.matchId);
     this.clearBallEndTimer();
     this.s.commit({ ts: msg.ts, kind: 'msg', from: msg.from, message: msg });
-    for (const p of this.s.state.participants) if (p.playerId !== this.localId && p.playerId !== player) this.s.transport.send(p.playerId, msg);
+    // A17: in a lobby, to the members who hold the log (the watchers too), as any logged message.
+    const to = this.lobbyOn ? this.logAudience() : this.s.state.participants.map((p) => p.playerId).filter((id) => id !== this.localId);
+    for (const id of to) if (id !== player) this.s.transport.send(id, msg);
     this.events.emit('pause', msg.payload);
   }
 
