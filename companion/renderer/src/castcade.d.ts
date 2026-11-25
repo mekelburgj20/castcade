@@ -694,7 +694,8 @@ interface MatchStatus {
   /** D7.6: the VR test bench while it runs, else null. */
   bench: BenchStatus | null;
   /** A15: a match this PC was in when Castcade last closed and can go back to; `auto`: it is rejoined without asking. */
-  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean } | null;
+  /** `match`: a match was open then. `lost` (the lobby's PC): the record did not read in full, so the lobby can only be opened again empty. */
+  resume: { code: string; role: 'host' | 'client'; names: string[]; auto: boolean; match: boolean; lost: boolean } | null;
 }
 
 /** A14 (2026-11-12): mirrors `OneStepStatus` in main/one-step.ts. */

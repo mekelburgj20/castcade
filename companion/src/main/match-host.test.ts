@@ -1795,8 +1795,9 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(endMatch).not.toBeNull();
     endMatch!();
 
-    // What ends with a match: the saved record, the turn lock, and the table sound is this rig's own again.
-    expect(existsSync(C.resume)).toBe(false);
+    // What ends with a match: the turn lock, and the table sound is this rig's own again. A17 step 8: the saved
+    // record does not (it is the lobby's, and ends with the lobby: Leave lobby below).
+    expect(existsSync(C.resume)).toBe(true);
     expect(existsSync(C.lock)).toBe(false);
     expect(C.audio.wants.slice(before.sound)).toEqual([{ mutePid: null, tapPid: null }]);
     expect(C.page.sending).toEqual([false]);
@@ -1814,11 +1815,11 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
     expect(C.page.sending).toEqual([false]);
     expect(C.page.removed).toEqual([]);
 
-    // The link to the host, the engine and its listeners are the lobby's too: the match goes on over them, the
-    // client's turn comes, and the log that grows writes no record any more.
+    // The link to the host, the engine and its listeners are the lobby's too: the match goes on over them, and the
+    // client's turn comes. A17 step 8: the record is the lobby's as well, and goes on being written.
     await H.mh.passTurn();
     await until(() => C.mh.status().panel?.myTurn === true && C.mh.status().locked === false, 8000);
-    expect(existsSync(C.resume)).toBe(false);
+    expect(existsSync(C.resume)).toBe(true);
     expect(C.calls).not.toContain('detach');
     expect(C.o.stops()).toBe(0);
 
@@ -2073,9 +2074,10 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
   }, 30_000);
 
   it("the review of PR 127, as a lobby has it (A17 step 7): the host's Castcade quits: the lobby is closed for the client; ArcAid closes the room, or this PC's own link drops: nobody is let go, and the client is back by itself", async () => {
-    // (1) The host quits Castcade (the tray's Quit: Close lobby, which every member is told). A crash is NOT the same
-    // to a member in a lobby (the review of PR 136): it is told nothing, so it waits for the lobby's PC as for one
-    // that is away; `match-host-lobby.test.ts`, "a lobby's PC that vanishes with no match open and never returns".
+    // (1) The owner closes the lobby (Close lobby, which every member is told). A17 step 8: quitting Castcade on the
+    // lobby's PC is NOT that any more: with somebody in the lobby it keeps the lobby for the next start, and the
+    // members read that its PC is away (`match-restart.test.ts`, "the lobby's PC is quit (not closed) ..."); a crash
+    // is the same to them (`match-host-lobby.test.ts`, "a lobby's PC that vanishes with no match open ...").
     {
       const r = await fakeRelay();
       const H = lobbySeat('lobby-quit-host', paired(r, 'h'));
@@ -2083,7 +2085,7 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
       const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
       await C.mh.join(hs.invite!, 'Krobs');
       await until(() => C.held().length === 1 && H.held().length === 1);
-      await H.mh.stop();
+      await H.mh.leave();
       await lobbyLostOn(C);
     }
     // (2) ArcAid closes the room under both (`expired`; a deploy loses it the same way). A17 step 7: in a lobby
@@ -2679,6 +2681,23 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
       'the turn came to this PC',
     ]);
   }, 30_000);
+
+  it('Start match pressed by somebody who is set to Watch hands nothing over: the start is not theirs to play (A17 step 7; the review of PR 136, T8)', async () => {
+    const hw = windows();
+    const hl = logLines();
+    const { H, C } = await pair({ foreground: hw.foreground, log: hl.log });
+    const D = make('fg-third', 'ab'.repeat(32));
+    await D.mh.join(H.mh.status().invite!, 'Chuck');
+    await until(() => H.mh.status().participants.length === 3);
+    H.mh.setStance('watch');
+    await until(() => C.mh.status().lobby?.members.find((m) => m.name === 'Owner')?.stance === 'watch');
+    // The owner, on the Match tab (a Castcade window is the active one), starts the match of the other two.
+    await H.mh.start();
+    await until(() => H.mh.status().phase === 'playing' && (C.mh.status().panel?.myTurn === true || D.mh.status().panel?.myTurn === true));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(hw.w.gives).toBe(0);
+    expect(hl.lines.filter((l) => l.includes('VPX') && l.includes('foreground'))).toEqual([]);
+  }, 20_000);
 
   it('a grant that reaches this PC while a Castcade window is the active one gives VPX the foreground; while VPX or a third program is in front nothing is touched', async () => {
     const hw = windows();

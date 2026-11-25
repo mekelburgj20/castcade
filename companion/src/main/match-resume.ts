@@ -1,18 +1,42 @@
 /**
- * A15 (2026-11-12): what a restart of Castcade needs to pick a match up again, kept in `<userData>/match-resume.json`
- * while a started match is on. Written whole and atomically (tmp + rename) at every entry of the match log, and every
- * 15 s as a sign of life; removed when the match ends or is left on purpose.
+ * A15 (2026-11-12): what a restart of Castcade needs to pick a match up again, kept in `<userData>/match-resume.json`.
+ * A17 step 8 (2026-11-26, alpha-match.md section 11.8): **version 2**, the record of a lobby. It is written from the
+ * moment a lobby is opened or joined until the lobby ends for this PC (Leave lobby, Close lobby, the lobby's PC did
+ * not come back, a way back that was refused for good), whole and atomically (tmp + rename): at every entry of the
+ * open match's log, at every word of the lobby (somebody joined or left, Play / Watch, the table, a match begun or
+ * ended, a result), every 15 s as a sign of life, and, on the lobby's PC, before a frame's number passes the last
+ * one written (`SeqGuard`).
  *
- * What is in the file: the match code; for a client the invite it joined with (the code, or the host's address and
- * port for a direct match); for a host the port it listened on and whether ArcAid carried the match; this player's id
- * and name; the other players' names; the match log so far (the roster with names, ids and public keys, the table
- * fingerprints, grants, ball ends and scores, each as it went over the wire); where in the table's journal the match
- * had read to. What is not: no private key (that stays in `match-keys.json`, as before), no pairing token, nothing
- * of the voice or video. The file alone lets nobody back into the match: a RECONNECT is signed with the private key.
+ * What is in the file, for everybody: the lobby's code; for a member the invite it joined with (the code, or the
+ * address and port of the lobby's PC for a direct lobby); for the lobby's PC the port it listened on and whether
+ * ArcAid carried the lobby; this person's id, name, choice (Play or Watch) and PUBLIC match key; the names of the
+ * others; the open match's id and its log so far when one is open and this PC holds it (the roster with names, ids
+ * and public keys, the table fingerprints, grants, ball ends and scores, each as it went over the wire); where in
+ * the table's journal the match had read to; the ball ends the table still owes.
+ *
+ * And what only the lobby's PC knows (`lobby`): every member's row as HELLO_ACK says it (id, name, rig, PUBLIC key)
+ * with their choice; the picked table and who picked it; the number of the next match; the balls per game; the
+ * RESULTs of the open match's games; and the counters' ceilings (the last number that may have been taken from each
+ * member, and that this PC may have used).
+ *
+ * What is not: no private key (that stays in `match-keys.json`, as before), no pairing token, no network address
+ * but the one in a direct invite (which the person typed or was sent), nothing of the voice or video. The file alone
+ * lets nobody into the lobby as this person or as the lobby's PC: a HELLO back, a RECONNECT and every grant are
+ * signed with the private key.
+ *
+ * `check` is a SHA-256 of the rest of the file: a record that does not agree with its own check is not trusted for
+ * what cannot be checked another way (the lobby PC's part); the log carries its own chain.
+ *
+ * A version 1 file (Castcade 0.2.50 or older) is of a match on protocol 6, which this build cannot go back into: it
+ * is recognised (`oldRecordOf`), said in a sentence, and removed.
  */
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance } from '@castcade/protocol';
+import type { SavedLobby } from '../match/host.js';
 import { MatchLog, type LogEntry } from '../match/log.js';
+import type { SeqCeilings } from '../match/session.js';
 import type { JournalMark } from '../witness/types.js';
 
 export const RESUME_FILE = 'match-resume.json';
@@ -38,8 +62,13 @@ export const CLIENT_RESUME_MAX_MS = 20 * 60_000;
  */
 export const AUTO_RESUME_MS = 60_000 + RESUME_HEARTBEAT_MS;
 
+/** A17 step 8: what only the lobby's PC knows, beside the open match's log (`HostMatch.savedLobby`, `Session.seqCeilings`). */
+export interface SavedLobbyPart extends SavedLobby {
+  seq: SeqCeilings;
+}
+
 export interface ResumeRecord {
-  version: 1;
+  version: 2;
   role: 'host' | 'client';
   code: string;
   /** A client: the invite it joined with. */
@@ -49,9 +78,23 @@ export interface ResumeRecord {
   relay: boolean;
   playerId: string;
   displayName: string;
-  /** The other players, for "Rejoin the match with …". */
+  /** A17 step 8: this PC's PUBLIC match key when the record was written: a record is this PC's when it is still the key. */
+  publicKey: string;
+  /** A17 step 8: this person's choice, Play or Watch. */
+  stance: Stance;
+  /** The others in the lobby, for "You were in a lobby with …". */
   names: string[];
+  /** A17 step 8: the open match's id; null: no match is open (or this PC holds no log of it). */
+  matchId: string | null;
+  /** The open match's log; empty when `matchId` is null. */
   log: LogEntry[];
+  /**
+   * A17 step 8: the lobby PC's own part. Null on a member's record; null on the lobby PC's record when that part
+   * did not read or the record failed its own check (`damaged`): the lobby can then only be opened again empty.
+   */
+  lobby: SavedLobbyPart | null;
+  /** A17 step 8: the record failed its own check, or its lobby part did not read. Never written; set by `parseResume`. */
+  damaged?: boolean;
   /** Where the witness had read to in the table's journal when the log last grew (`Witness.journalMark`). */
   mark: JournalMark | null;
   /** Epoch ms of the last write. */
@@ -77,7 +120,68 @@ function parseMark(v: unknown): JournalMark | null {
   return { path, session, loaded, offset };
 }
 
-/** The record from the file's text; null for anything that is not one (a torn file, another version, a broken log chain). */
+const isStr = (v: unknown, max = 200): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+
+/** The SHA-256 a record carries over the rest of itself (`check`): the JSON as written, without that key. */
+export function resumeCheck(rec: object): string {
+  const rest = { ...(rec as Record<string, unknown>) };
+  delete rest['check'];
+  delete rest['damaged'];
+  return createHash('sha256').update(JSON.stringify(rest)).digest('hex');
+}
+
+function parseParticipant(v: unknown): ParticipantInfo | null {
+  if (!isObj(v)) return null;
+  const { playerId, displayName, publicKey, rig } = v;
+  if (!isStr(playerId, 64) || typeof displayName !== 'string' || displayName.length > 64 || !isStr(publicKey, 128)) return null;
+  if (rig !== 'vr_headset' && rig !== 'real_cabinet' && rig !== 'pc') return null;
+  return { playerId, displayName, publicKey, rig };
+}
+
+/** The lobby PC's part of a record; null when anything in it does not read (the lobby is then not restored from it). */
+function parseLobbyPart(v: unknown, code: string): SavedLobbyPart | null {
+  if (!isObj(v) || v.code !== code) return null;
+  const { members, table, nextMatch, match, ballsPerGame, seq } = v;
+  if (!Array.isArray(members) || members.length > 15) return null;
+  const rows: SavedLobbyPart['members'] = [];
+  for (const m of members) {
+    const participant = isObj(m) ? parseParticipant(m.participant) : null;
+    if (!isObj(m) || !participant || (m.stance !== 'play' && m.stance !== 'watch')) return null;
+    rows.push({ participant, stance: m.stance });
+  }
+  if (!isObj(table) || !isObj(table.game) || !isStr(table.game.tableHash, 64) || typeof table.game.tableName !== 'string' || typeof table.fixed !== 'boolean') return null;
+  if (table.pickedBy !== null && !isStr(table.pickedBy, 64)) return null;
+  if (!isCount(nextMatch) || nextMatch < 1 || !isCount(ballsPerGame) || ballsPerGame < 1 || ballsPerGame > 10) return null;
+  let open: SavedLobbyPart['match'] = null;
+  if (match !== null) {
+    if (!isObj(match) || !isStr(match.matchId, 64) || !Array.isArray(match.results) || match.results.length > 200) return null;
+    if (!match.results.every((r) => isObj(r) && r.matchId === match.matchId && isCount(r.game) && Array.isArray(r.entries) && isStr(r.logHash, 64) && isCount(r.logLength))) return null;
+    open = { matchId: match.matchId, results: match.results as PayloadOf<'RESULT'>[] };
+  }
+  if (!isObj(seq) || !isObj(seq.taken) || !isCount(seq.sent)) return null;
+  const taken: Record<string, number> = {};
+  for (const [id, n] of Object.entries(seq.taken)) {
+    if (!isCount(n)) return null;
+    taken[id] = n;
+  }
+  return {
+    code,
+    members: rows,
+    table: { game: table.game as unknown as GameFingerprint, fixed: table.fixed, pickedBy: table.pickedBy as string | null },
+    nextMatch,
+    match: open,
+    ballsPerGame,
+    seq: { taken, sent: seq.sent },
+  };
+}
+
+/**
+ * The record from the file's text; null for anything that is not one (a torn file, another version, a broken log
+ * chain, a log that is not the match the record names). A record of the lobby's PC whose own part does not read, or
+ * that does not agree with its own check, is still a record (the code, the port, the others' names), marked
+ * `damaged` and with `lobby` null: the lobby can be opened again under its code, empty.
+ */
 export function parseResume(text: string | null): ResumeRecord | null {
   if (text === null) return null;
   let raw: unknown;
@@ -86,13 +190,15 @@ export function parseResume(text: string | null): ResumeRecord | null {
   } catch {
     return null;
   }
-  if (!isObj(raw) || raw.version !== 1) return null;
+  if (!isObj(raw) || raw.version !== 2) return null;
   if (raw.role !== 'host' && raw.role !== 'client') return null;
-  const { code, invite, port, playerId, displayName, names, log, aliveAt } = raw;
+  const { code, invite, port, playerId, displayName, publicKey, names, log, aliveAt, matchId } = raw;
   if (typeof code !== 'string' || !/^[A-Z]{6}$/.test(code)) return null;
-  if (typeof playerId !== 'string' || !playerId || typeof displayName !== 'string') return null;
+  if (typeof playerId !== 'string' || !playerId || typeof displayName !== 'string' || !isStr(publicKey, 128)) return null;
   if (typeof aliveAt !== 'number' || !Number.isFinite(aliveAt)) return null;
-  if (!Array.isArray(log) || log.length === 0) return null;
+  if (!Array.isArray(log)) return null;
+  if (matchId !== null && !isStr(matchId, 64)) return null;
+  if ((matchId === null) !== (log.length === 0)) return null;
   if (raw.role === 'client' && typeof invite !== 'string') return null;
   if (port !== null && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) return null;
   try {
@@ -100,8 +206,10 @@ export function parseResume(text: string | null): ResumeRecord | null {
   } catch {
     return null;
   }
-  return {
-    version: 1,
+  const checked = raw.check === resumeCheck(raw);
+  const lobby = raw.role === 'host' && checked ? parseLobbyPart(raw.lobby, code) : null;
+  const rec: ResumeRecord = {
+    version: 2,
     role: raw.role,
     code,
     invite: typeof invite === 'string' ? invite : null,
@@ -109,13 +217,51 @@ export function parseResume(text: string | null): ResumeRecord | null {
     relay: raw.relay === true,
     playerId,
     displayName,
-    names: Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string').slice(0, 8) : [],
+    publicKey,
+    stance: raw.stance === 'watch' ? 'watch' : 'play',
+    names: Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string').slice(0, 16) : [],
+    matchId: matchId as string | null,
     log: log as LogEntry[],
+    lobby,
     mark: parseMark(raw.mark),
     aliveAt,
     restart: raw.restart === 'update' ? 'update' : null,
     owed: Array.isArray(raw.owed) ? raw.owed.filter((n): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0).slice(0, 16) : [],
   };
+  if (!checked || (raw.role === 'host' && lobby === null)) rec.damaged = true;
+  return rec;
+}
+
+/** A17 step 8: what a file of version 1 (Castcade 0.2.50 or older, protocol 6) says of itself, for the sentence about it. */
+export interface OldRecord {
+  version: 1;
+  code: string | null;
+  role: 'host' | 'client' | null;
+  names: string[];
+}
+
+/** The file is a record of version 1: a match on protocol 6, which this build cannot go back into. Null: it is not one. */
+export function oldRecordOf(text: string | null): OldRecord | null {
+  if (text === null) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isObj(raw) || raw.version !== 1) return null;
+  return {
+    version: 1,
+    code: typeof raw.code === 'string' && /^[A-Z]{6}$/.test(raw.code) ? raw.code : null,
+    role: raw.role === 'host' || raw.role === 'client' ? raw.role : null,
+    names: Array.isArray(raw.names) ? raw.names.filter((n): n is string => typeof n === 'string' && n.length <= 64).slice(0, 8) : [],
+  };
+}
+
+/** The sentence for a version 1 record: what it was, and that this build cannot go back into it. */
+export function oldRecordSentence(old: OldRecord): string {
+  const withWhom = old.names.length > 0 ? ` with ${old.names.length <= 1 ? old.names[0] : `${old.names.slice(0, -1).join(', ')} and ${old.names[old.names.length - 1]}`}` : '';
+  return `Castcade closed during the match${old.code ? ` ${old.code}` : ''}${withWhom}, which was played on an older Castcade (protocol 6). This version cannot go back into it: open a lobby, or join one, and play on from there.`;
 }
 
 /**
@@ -130,6 +276,8 @@ export function resumeFreshness(rec: Pick<ResumeRecord, 'role' | 'aliveAt' | 're
 
 export interface ResumeStore {
   read(): ResumeRecord | null;
+  /** A17 step 8: the file is a record of version 1 (`oldRecordOf`); null when it is not, or there is none. */
+  readOld(): OldRecord | null;
   /** Never throws: a record that cannot be written only means no rejoin after a crash. Returns false then. */
   write(rec: ResumeRecord): boolean;
   remove(): void;
@@ -144,11 +292,21 @@ export function createResumeStore(file: string, warn: (line: string) => void): R
         return null;
       }
     },
+    readOld() {
+      try {
+        return oldRecordOf(readFileSync(file, 'utf8'));
+      } catch {
+        return null;
+      }
+    },
     write(rec) {
       try {
         mkdirSync(dirname(file), { recursive: true });
         const tmp = `${file}.tmp`;
-        writeFileSync(tmp, JSON.stringify(rec));
+        // The check is over the record as it is written (the JSON of everything but the check itself).
+        const { damaged: _damaged, ...plain } = rec;
+        const body = JSON.parse(JSON.stringify(plain)) as Record<string, unknown>;
+        writeFileSync(tmp, JSON.stringify({ ...body, check: resumeCheck(body) }));
         renameSync(tmp, file);
         return true;
       } catch (e) {

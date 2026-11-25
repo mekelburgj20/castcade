@@ -11,7 +11,7 @@
  * for by a client, from the button and from the starter's own table; a waiting player whose link drops; the lobby's
  * PC whose connection to ArcAid is away for a while during a ball; a member who leaves; the lobby closed.
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -350,7 +350,8 @@ describe('A17 step 7: one lobby, many matches', () => {
     expect([H, A, B].map((s) => s.mh.status().locked)).toEqual([false, false, false]);
     expect([H, A, B].map((s) => s.mh.status().role)).toEqual(['host', 'client', 'client']);
     expect(H.mh.status().panel?.message).toMatch(/^Match over after 1 game · /);
-    expect(existsSync(join(A.dir, RESUME_FILE))).toBe(false);
+    // A17 step 8: the record is the lobby's: it stays when a match ends, and says that no match is open.
+    expect(JSON.parse(readFileSync(join(A.dir, RESUME_FILE), 'utf8'))).toMatchObject({ version: 2, role: 'client', code: hs.code, matchId: null, log: [] });
 
     // The watcher sets themselves to Play, the opener to Watch: match 2 is the other two, started by B.
     B.mh.setStance('play');
@@ -899,7 +900,8 @@ describe('A17 step 7: one lobby, many matches', () => {
       expect(x.mh.status().panel?.message).toMatch(/^Owner's PC is away\. The lobby goes on when it is back: waiting up to 1 minute \(1 min left\)\. You can keep talking; Leave lobby ends the wait for you\.$/);
       expect(x.mh.status().lobby?.startButton.off).toBe("The lobby's PC is away.");
       expect(member(x, 'Owner')?.flags).toContain('away');
-      expect(existsSync(join(x.dir, RESUME_FILE))).toBe(false);
+      // A17 step 8: the record of the lobby is there for as long as this PC is in it.
+      expect(existsSync(join(x.dir, RESUME_FILE))).toBe(true);
     }
     // Nothing can be started or cancelled meanwhile: it is said at once, not sent into a link that is down.
     await expect(A.mh.start()).rejects.toThrow("The lobby's PC is away: this has to wait until it is back.");
@@ -923,7 +925,16 @@ describe('A17 step 7: one lobby, many matches', () => {
     // ArcAid was asked for the room a handful of times by each in all that time, far under its limit.
     expect(r.misses.get('dev-a') ?? 0).toBeGreaterThanOrEqual(2);
     expect(r.misses.get('dev-a') ?? 0).toBeLessThanOrEqual(6);
-  }, 60_000);
+    // A17 step 8: on the lobby's PC itself, whose pairing ArcAid no longer accepts: it asked for its room three
+    // times, a few seconds apart, and then closed the lobby for itself, with what happened and where to pair again.
+    // Its record is gone with it. (Until this step it went on asking for ever, and nothing ended.)
+    await until(() => H.mh.status().role === 'none', 30_000);
+    expect(H.mh.status().lastError).toBe(
+      `The lobby ${hs.code} is closed on this PC: this PC is no longer paired with ArcAid, so the others cannot reach it. Pair it again in Settings (Pair with ArcAid), then open a new lobby and send the new code.`,
+    );
+    expect(existsSync(join(H.dir, RESUME_FILE))).toBe(false);
+    expect(H.lines.filter((l) => l.includes('ArcAid did not accept this device'))).toHaveLength(3);
+  }, 90_000);
 
   it("the review of PR 136: ArcAid's room is gone for good while somebody is connected to the lobby PC's own port: the lobby goes on for them (a game they play is not ended), the owner is told, and whoever came through ArcAid is away", async () => {
     const r = await relay({ hostGraceMs: 100 });

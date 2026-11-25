@@ -189,20 +189,24 @@ export function Match({ state }: { state: CastcadeState }) {
       {/* A14: a link that waits for a click, the join link while hosting, and what the table start is doing. */}
       <OneStepCard bridge={bridge} one={one} role={st.role} phase={st.phase} />
 
-      {/* A15: Castcade closed during a match that is still worth going back to. A17 step 7 (2026-11-25): the match was
-          in a lobby. A member goes back into the lobby and, when the match is still open, into the match where it is
-          now. The lobby's PC opens the lobby again under its code; the match that was open is lost (step 8 restores it),
-          and the card says so before the button is pressed. */}
+      {/* A15: Castcade closed in a lobby that is still worth going back to. A17 step 8 (2026-11-26): for everybody, with
+          a match open or none. A member goes back into the lobby and, when the match is still open, into the match
+          where it is now. The lobby's PC opens the same lobby again, with its match where it stood. Only when its
+          record did not read in full is the lobby opened again empty, and a match that was open lost: the card says
+          so before the button is pressed. */}
       {!inMatch && st.phase !== 'connecting' && st.resume && (
         <div className="card">
           <strong>
             You were in a lobby{st.resume.names.length > 0 ? ` with ${listOf(st.resume.names)}` : ''}
           </strong>
           <p>
-            Castcade closed during a match in the lobby {st.resume.code}.{' '}
+            Castcade closed in the lobby {st.resume.code}
+            {st.resume.match ? ' during a match' : ''}.{' '}
             {st.resume.role === 'host'
-              ? 'Open it again and the others come back into it by themselves, if they are still waiting (they wait 20 minutes). The match that was being played is lost: start a new one when everyone is back.'
-              : 'Rejoin and you are back in the lobby, and in the match where it is now if it is still open. Your microphone goes on again for the others.'}
+              ? st.resume.lost
+                ? `What Castcade saved of the lobby did not read in full: opening it again gives an empty lobby under the same code. The others come back as newcomers, if they are still waiting${st.resume.match ? ', and the match that was being played is lost' : ''}.`
+                : `Open it again and it is the lobby it was${st.resume.match ? ', with the match where it stood' : ''}: the others come back into it by themselves, if they are still waiting (they wait 20 minutes).`
+              : `Rejoin and you are back in the lobby${st.resume.match ? ', and in the match where it is now if it is still open' : ''}. Your microphone goes on again for the others.`}
           </p>
           <div className="row">
             <button type="button" className="primary" disabled={busy} onClick={() => void run(() => bridge.match.rejoin())}>
@@ -1400,7 +1404,10 @@ function memberWords(st: MatchStatus, id: string, now: number): string {
     other_table: 'OTHER TABLE',
     own_game: 'OWN GAME',
   };
-  return ` · ${m.stance === 'play' ? 'PLAY' : 'WATCH'}${m.starter && st.phase !== 'playing' && st.phase !== 'paused' ? ' · starts from the table' : ''}${m.flags.map((f) => ` · ${flag[f]}`).join('')}`;
+  // PLAY and WATCH are the choice for the NEXT start. While a match is open, somebody whose choice is not what they
+  // do in it is said so (`inMatch`): set to Play and not in it (they joined during it), or set to Watch and still in it.
+  const inIt = st.lobby?.match ? (m.inMatch && m.stance === 'watch' ? ' · plays this match' : !m.inMatch && m.stance === 'play' ? ' · watches this match' : '') : '';
+  return ` · ${m.stance === 'play' ? 'PLAY' : 'WATCH'}${inIt}${m.starter && st.phase !== 'playing' && st.phase !== 'paused' ? ' · starts from the table' : ''}${m.flags.map((f) => ` · ${flag[f]}`).join('')}`;
 }
 
 /**

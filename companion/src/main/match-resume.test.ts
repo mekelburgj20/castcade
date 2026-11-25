@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AnyMessage } from '@castcade/protocol';
 import { MatchLog, type LogEntry } from '../match/log.js';
 import type { JournalMark } from '../witness/types.js';
-import { AUTO_RESUME_MS, CLIENT_RESUME_MAX_MS, HOST_WAIT_MS, TableBacklog, createResumeStore, parseResume, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord } from './match-resume.js';
+import { AUTO_RESUME_MS, CLIENT_RESUME_MAX_MS, HOST_WAIT_MS, TableBacklog, createResumeStore, oldRecordOf, oldRecordSentence, parseResume, resumeCheck, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord, type SavedLobbyPart } from './match-resume.js';
 
 /** A log entry carrying just what `turnEndsOf` reads. */
 const msg = (type: string, from: string, payload: Record<string, unknown> = {}): AnyMessage => ({ type, from, payload }) as unknown as AnyMessage;
@@ -16,7 +16,7 @@ function logOf(...messages: AnyMessage[]): LogEntry[] {
 }
 
 const record = (patch: Partial<ResumeRecord> = {}): ResumeRecord => ({
-  version: 1,
+  version: 2,
   role: 'client',
   code: 'ABCDEF',
   invite: 'ABCDEF',
@@ -24,8 +24,12 @@ const record = (patch: Partial<ResumeRecord> = {}): ResumeRecord => ({
   relay: true,
   playerId: 'p1',
   displayName: 'Guest',
+  publicKey: 'cHVibGljLWtleS1vZi1wMQ==',
+  stance: 'play',
   names: ['Host'],
+  matchId: 'ABCDEF-1',
   log: logOf(msg('MATCH_READY', 'h')),
+  lobby: null,
   mark: { path: '/journal/t.jsonl', session: 's1', loaded: 50, offset: 120 },
   aliveAt: 1_000_000,
   restart: null,
@@ -33,44 +37,135 @@ const record = (patch: Partial<ResumeRecord> = {}): ResumeRecord => ({
   ...patch,
 });
 
+/** What only the lobby's PC saves. */
+const lobbyPart = (patch: Partial<SavedLobbyPart> = {}): SavedLobbyPart => ({
+  code: 'ABCDEF',
+  members: [
+    { participant: { playerId: 'p1', displayName: 'Krobs', publicKey: 'a2V5LW9mLWtyb2Jz', rig: 'vr_headset' }, stance: 'play' },
+    { participant: { playerId: 'p2', displayName: 'Chuck', publicKey: 'a2V5LW9mLWNodWNr', rig: 'pc' }, stance: 'watch' },
+  ],
+  table: { game: { kind: 'vpx', tableName: 'Monster Bash', tableHash: 'ab'.repeat(32), romName: 'mb_106b', romHash: null, physicsHash: null, recipeVersion: '0.5.0', sidecarHash: null, emulatorVersion: '10.8.0' }, fixed: true, pickedBy: 'h' },
+  nextMatch: 2,
+  ballsPerGame: 3,
+  match: { matchId: 'ABCDEF-1', results: [] },
+  seq: { taken: { p1: 1_795_000_000_500, p2: 1_795_000_000_900 }, sent: 1_795_000_001_024 },
+  ...patch,
+});
+const hostRecord = (patch: Partial<ResumeRecord> = {}): ResumeRecord => record({ role: 'host', invite: null, port: 47100, playerId: 'h', displayName: 'Owner', names: ['Krobs', 'Chuck'], lobby: lobbyPart(), ...patch });
+
+/** The file's text for a record, as the store writes it: with its own check. */
+const text = (rec: object): string => {
+  const body = JSON.parse(JSON.stringify(rec)) as Record<string, unknown>;
+  return JSON.stringify({ ...body, check: resumeCheck(body) });
+};
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-describe('the saved match record (A15)', () => {
-  it('round-trips through the file, written whole; remove leaves nothing', () => {
+describe('the saved lobby record (A15; version 2 since A17 step 8)', () => {
+  it('round-trips through the file, written whole, for a member and for the lobby\'s PC, with a match open and with none; remove leaves nothing; no private key and no pairing token is in it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'castcade-resume-'));
     dirs.push(dir);
     const file = join(dir, 'sub', 'match-resume.json');
     const store = createResumeStore(file, () => undefined);
     expect(store.read()).toBeNull();
-    expect(store.write(record())).toBe(true);
-    expect(store.read()).toEqual(record());
-    expect(readFileSync(file, 'utf8')).not.toMatch(/privateKey|token/i);
+    for (const rec of [record(), record({ matchId: null, log: [], stance: 'watch' }), hostRecord(), hostRecord({ matchId: null, log: [], lobby: lobbyPart({ match: null }) })]) {
+      expect(store.write(rec)).toBe(true);
+      expect(store.read()).toEqual(rec);
+      expect(store.readOld()).toBeNull();
+      const written = readFileSync(file, 'utf8');
+      expect(written).not.toMatch(/privateKey|private_key|token|secret/i);
+      // What a record is made of, key by key: nothing else is written.
+      expect(Object.keys(JSON.parse(written) as object).sort()).toEqual(
+        ['aliveAt', 'check', 'code', 'displayName', 'invite', 'lobby', 'log', 'mark', 'matchId', 'names', 'owed', 'playerId', 'port', 'publicKey', 'relay', 'restart', 'role', 'stance', 'version'].sort(),
+      );
+    }
+    const part = (JSON.parse(readFileSync(file, 'utf8')) as { lobby: Record<string, unknown> }).lobby;
+    expect(Object.keys(part).sort()).toEqual(['ballsPerGame', 'code', 'match', 'members', 'nextMatch', 'seq', 'table']);
     store.remove();
     expect(store.read()).toBeNull();
   });
 
-  it('refuses what is not a record: torn text, another version, a bad code, no log, a log whose chain is broken, a client without an invite', () => {
-    const ok = JSON.stringify(record());
-    expect(parseResume(ok)).not.toBeNull();
+  it('refuses what is not a record: torn text, another version, a bad code, a log whose chain is broken, a log with no match named or a match with no log, a member without an invite, no key', () => {
+    expect(parseResume(text(record()))).toEqual(record());
     expect(parseResume(null)).toBeNull();
+    const ok = text(record());
     expect(parseResume(ok.slice(0, ok.length - 20))).toBeNull();
-    expect(parseResume(JSON.stringify({ ...record(), version: 2 }))).toBeNull();
-    expect(parseResume(JSON.stringify({ ...record(), code: 'abc' }))).toBeNull();
-    expect(parseResume(JSON.stringify({ ...record(), log: [] }))).toBeNull();
-    expect(parseResume(JSON.stringify({ ...record(), invite: null }))).toBeNull();
-    expect(parseResume(JSON.stringify({ ...record(), port: 70000 }))).toBeNull();
+    expect(parseResume(text({ ...record(), version: 3 }))).toBeNull();
+    expect(parseResume(text({ ...record(), version: 1 }))).toBeNull();
+    expect(parseResume(text({ ...record(), code: 'abc' }))).toBeNull();
+    expect(parseResume(text({ ...record(), log: [] }))).toBeNull();
+    expect(parseResume(text({ ...record(), matchId: null }))).toBeNull();
+    expect(parseResume(text({ ...record(), invite: null }))).toBeNull();
+    expect(parseResume(text({ ...record(), port: 70000 }))).toBeNull();
+    expect(parseResume(text({ ...record(), publicKey: '' }))).toBeNull();
     const broken = record();
     broken.log = [{ ...broken.log[0]!, ts: 5 }];
-    expect(parseResume(JSON.stringify(broken))).toBeNull();
-    // A mark that does not read is dropped, not the record.
-    expect(parseResume(JSON.stringify({ ...record(), mark: { path: 1 } }))?.mark).toBeNull();
+    expect(parseResume(text(broken))).toBeNull();
+    // A mark that does not read is dropped, not the record; a choice that does not read is Play.
+    expect(parseResume(text({ ...record(), mark: { path: 1 } }))?.mark).toBeNull();
+    expect(parseResume(text({ ...record(), stance: 'spectate' }))?.stance).toBe('play');
     const dir = mkdtempSync(join(tmpdir(), 'castcade-resume-'));
     dirs.push(dir);
     writeFileSync(join(dir, 'r.json'), '{');
     expect(createResumeStore(join(dir, 'r.json'), () => undefined).read()).toBeNull();
+  });
+
+  it("A17 step 8: a record that does not agree with its own check, or whose lobby part does not read, is still a record (the code, the port, the names) and is marked: the lobby cannot be restored from it, only opened again", () => {
+    const whole = hostRecord();
+    expect(parseResume(text(whole))).toEqual(whole);
+    // One character of the file changed after it was written: the check no longer agrees.
+    const edited = text(whole).replace('"nextMatch":2', '"nextMatch":7');
+    expect(parseResume(edited)).toMatchObject({ role: 'host', code: 'ABCDEF', port: 47100, names: ['Krobs', 'Chuck'], lobby: null, damaged: true });
+    // No check at all (a file written by hand): the same.
+    expect(parseResume(JSON.stringify(whole))).toMatchObject({ lobby: null, damaged: true });
+    // The check agrees and the part itself does not read.
+    const bad = (part: unknown): ResumeRecord | null => parseResume(text({ ...whole, lobby: part }));
+    for (const part of [
+      null,
+      'x',
+      { ...lobbyPart(), code: 'OTHERX' },
+      { ...lobbyPart(), members: [{ participant: { playerId: 'p1', displayName: 'Krobs', publicKey: '', rig: 'pc' }, stance: 'play' }] },
+      { ...lobbyPart(), members: [{ participant: { playerId: 'p1', displayName: 'Krobs', publicKey: 'a2V5', rig: 'pc' }, stance: 'maybe' }] },
+      { ...lobbyPart(), nextMatch: 0 },
+      { ...lobbyPart(), ballsPerGame: 0 },
+      { ...lobbyPart(), table: { game: null, fixed: true, pickedBy: null } },
+      { ...lobbyPart(), match: { matchId: 'ABCDEF-1', results: [{ matchId: 'OTHERX-1' }] } },
+      { ...lobbyPart(), seq: { taken: { p1: -4 }, sent: 1 } },
+      { ...lobbyPart(), seq: { taken: {}, sent: 'many' } },
+    ]) {
+      expect(bad(part)).toMatchObject({ role: 'host', code: 'ABCDEF', lobby: null, damaged: true });
+    }
+    // A member's record has no such part, and is not marked for it; one that fails its check is marked.
+    expect(parseResume(text(record()))?.damaged).toBeUndefined();
+    expect(parseResume(JSON.stringify(record()))).toMatchObject({ role: 'client', lobby: null, damaged: true });
+    // `damaged` is never written.
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-resume-'));
+    dirs.push(dir);
+    const store = createResumeStore(join(dir, 'r.json'), () => undefined);
+    store.write({ ...whole, damaged: true });
+    expect(store.read()).toEqual(whole);
+  });
+
+  it('A17 step 8: a file of version 1 (Castcade 0.2.50 or older) is no record of this version and is known for what it is: a match on protocol 6, said in a sentence', () => {
+    const v1 = { version: 1, role: 'client', code: 'JHDFEF', invite: 'JHDFEF', port: null, relay: true, playerId: 'p1', displayName: 'Guest', names: ['Krobs', 'Chuck'], log: logOf(msg('MATCH_READY', 'h')), mark: null, aliveAt: 1_000_000, restart: null, owed: [] };
+    expect(parseResume(JSON.stringify(v1))).toBeNull();
+    expect(oldRecordOf(JSON.stringify(v1))).toEqual({ version: 1, code: 'JHDFEF', role: 'client', names: ['Krobs', 'Chuck'] });
+    expect(oldRecordSentence(oldRecordOf(JSON.stringify(v1))!)).toBe(
+      'Castcade closed during the match JHDFEF with Krobs and Chuck, which was played on an older Castcade (protocol 6). This version cannot go back into it: open a lobby, or join one, and play on from there.',
+    );
+    // Whatever else is in such a file, nothing of it is trusted, and nothing throws.
+    expect(oldRecordOf(JSON.stringify({ version: 1, code: 7, role: 'king', names: 'x' }))).toEqual({ version: 1, code: null, role: null, names: [] });
+    expect(oldRecordSentence({ version: 1, code: null, role: null, names: [] })).toMatch(/^Castcade closed during the match, which was played on an older Castcade \(protocol 6\)\./);
+    for (const not of [null, '', '{', '[]', JSON.stringify(record()), JSON.stringify({ version: 0 })]) expect(oldRecordOf(not)).toBeNull();
+    const dir = mkdtempSync(join(tmpdir(), 'castcade-resume-'));
+    dirs.push(dir);
+    writeFileSync(join(dir, 'r.json'), JSON.stringify(v1));
+    const store = createResumeStore(join(dir, 'r.json'), () => undefined);
+    expect(store.read()).toBeNull();
+    expect(store.readOld()).toMatchObject({ version: 1, code: 'JHDFEF' });
   });
 
   it('is rejoined without asking for a minute (or after an update restart), offered after that, and dropped when nobody can be waiting', () => {
@@ -107,13 +202,13 @@ describe('the saved match record (A15)', () => {
   });
 
   it('A17 step 4 (the review of PR 131): the table ball ends still owed are kept with the record; one from before has none, and anything that is not a grant number is dropped', () => {
-    const text = (owed: unknown): string => JSON.stringify({ ...record(), owed });
-    expect(parseResume(text([7, 12]))?.owed).toEqual([7, 12]);
-    expect(parseResume(text([7, 'x', -1, 2.5, null, 9]))?.owed).toEqual([7, 9]);
-    expect(parseResume(text('7'))?.owed).toEqual([]);
+    const withOwed = (owed: unknown): string => text({ ...record(), owed });
+    expect(parseResume(withOwed([7, 12]))?.owed).toEqual([7, 12]);
+    expect(parseResume(withOwed([7, 'x', -1, 2.5, null, 9]))?.owed).toEqual([7, 9]);
+    expect(parseResume(withOwed('7'))?.owed).toEqual([]);
     const before = { ...record() } as Partial<ResumeRecord>;
     delete before.owed;
-    expect(parseResume(JSON.stringify(before))?.owed).toEqual([]);
+    expect(parseResume(text(before))?.owed).toEqual([]);
   });
 
   it("A17 step 4 (the review of PR 131): the grants of this player's turn ends in the current game, as `turnEndsOf` counts them", () => {
