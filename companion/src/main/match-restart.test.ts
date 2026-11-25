@@ -701,6 +701,21 @@ describe("the lobby's PC restarted in the middle of a match (A15, as A17 step 7 
     await H2.mh.start();
     await until(() => up(H2.mh, 1) && C.mh.status().phase === 'playing');
     expect(H2.mh.status().lobby?.match?.id).toBe(`${code}-2`);
+    // The review of PR 136: what the client kept of the lost match (the end of its ball 1 at 260, which was never
+    // taken, and what its table said meanwhile) is that match's. At the client's first grant of the new match
+    // nothing of it is reported: the turn waits for a ball that is played now.
+    hr.gameStart();
+    hr.ball(1, 700);
+    await until(() => up(C.mh, 1));
+    await sleep(400);
+    expect(up(C.mh, 1)).toBe(true);
+    expect(scoreOf(H2.mh, 'Guest') ?? 0).toBe(0);
+    expect(C.logs.filter((l) => l.startsWith('match: BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 260']);
+    cr.gameStart();
+    cr.ball(1, 90);
+    await until(() => up(H2.mh, 2));
+    expect(scoreOf(H2.mh, 'Guest')).toBe(90);
+    expect(C.logs.filter((l) => l.startsWith('match: BALL_END ball'))).toEqual(['match: BALL_END ball 1 score 260', 'match: BALL_END ball 1 score 90']);
   }, 60_000);
 
   it('between games: the same; the record is the lobby PC\'s also when it only watched the match', async () => {
@@ -850,7 +865,7 @@ describe('a match through ArcAid, restarted (A15)', () => {
       await H2.mh.rejoin();
       expect(H2.mh.status()).toMatchObject({ role: 'host', code: m.code, via: 'relay', phase: 'lobby' });
       expect(m.r.rooms()).toEqual([m.code]);
-      // The client asks for the room again (at once, after 2 s, after 6 s, then every 150 s: `LOBBY_REJOIN`), finds
+      // The client asks for the room again (at once, 5 s and 30 s later, then every 150 s: `LOBBY_REJOIN`), finds
       // it, and is in the lobby again as a newcomer; the match that was open is lost.
       await until(() => H2.mh.status().participants.length === 2 && m.C.mh.status().phase === 'lobby' && m.C.mh.status().lobby?.hostAway === null, 40_000);
       expect(m.r.locked(m.code)).toBe(false);

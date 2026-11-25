@@ -92,7 +92,7 @@ import { dirname, join } from 'node:path';
 import type { GameFingerprint, ParticipantInfo, PayloadOf, Stance } from '@castcade/protocol';
 import { ClientMatch, LOBBY_HOST_WAIT_MS } from '../match/client.js';
 import { MatchController, TABLE_BY_HAND_NOTE, TABLE_FORK_FAILED_NOTE, lobbyLineKey, mismatchWords, tableObjectsNote, vrViewMode, type ControllerStatus, type CueKind, type LobbyStatus } from '../match/controller.js';
-import { MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
+import { menuSettle, MENU_CLOSED, menuItems, menuPress, menuView, readMenuKey, shortcutWords, type MenuEffect, type MenuFacts, type MenuKey, type MenuState } from '../match/match-menu.js';
 import { HostMatch, STREAM3D_WAIT_MAX_MS, type LobbyOptions } from '../match/host.js';
 import { MatchLog } from '../match/log.js';
 import { Session } from '../match/session.js';
@@ -103,7 +103,7 @@ import type { GameEvent } from '../witness/journal-detector.js';
 import type { JournalMark } from '../witness/types.js';
 import { RESUME_FILE, RESUME_HEARTBEAT_MS, TableBacklog, createResumeStore, resumeFreshness, turnEndSeqsOf, turnEndsOf, type ResumeRecord } from './match-resume.js';
 import type { Transport } from '../match/transport.js';
-import { CompositeTransport, LOBBY_REJOIN, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
+import { CompositeTransport, LOBBY_REJOIN, LOBBY_RETURN_ALLOW_MS, RelayClientTransport, RelayError, RelayHostTransport, type RejoinPolicy } from '../match/transport-relay.js';
 import { ForeignVersionError, WsPeerTransport, type ErrorHandler } from '../match/transport-ws.js';
 // A17 step 4: on a line of its own, away from the controller's other names above (another branch edits that line).
 import { pausedForPlayerUp } from '../match/controller.js';
@@ -354,20 +354,31 @@ export interface MatchHost {
   /**
    * A17 step 7 (design 11.2): End match. Between games, anyone: the tally is final, everyone stays in the lobby.
    * During a game, the lobby's PC only: End match for everyone, and the game being played gets no result (the Match
-   * tab and the menu confirm first).
+   * tab and the menu confirm first). The review of PR 136: the two are two requests. `everyone` says which one the
+   * press was (false: End match, between games; true: End match for everyone, during a game), and the other is
+   * never done in its place: an End match pressed as a countdown runs out is refused, it does not end the game that
+   * has just begun. `about` (`lobby.gameKey` when the press, or its question, was made): refused when the match or
+   * its game is another by now.
    */
-  endMatch(): Promise<MatchStatus>;
+  endMatch(o: { everyone: boolean; about?: string | null }): Promise<MatchStatus>;
   /** A17 step 7 (design 11.3): this person's own choice for the next start, Play or Watch (saved in match.json). */
   setStance(stance: Stance): MatchStatus;
-  /** A17 step 7 (design 11.2): Give up this game: this player's own game ends (FORFEIT); they stay in the lobby and watch. */
-  giveUp(): Promise<MatchStatus>;
+  /**
+   * A17 step 7 (design 11.2): Give up this game: this player's own game ends (FORFEIT); they stay in the lobby and
+   * watch. `about` (`lobby.gameKey` at the press): refused when another game is being played by now.
+   */
+  giveUp(o?: { about?: string | null }): Promise<MatchStatus>;
   /**
    * A17 step 7 (design 11.8): the lobby's PC, about the player `lobby.awayQuestion` names: keep waiting, end their
-   * ball at the score as it stands (Pass the turn), or play on without them. Throws when no question is open.
+   * ball at the score as it stands (Pass the turn), or play on without them. Throws when no question is open, and
+   * when `player` (whom the press was about) is not the one asked about now.
    */
-  answerAway(answer: 'wait' | 'end_ball' | 'play_on'): Promise<MatchStatus>;
-  /** A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`): they are forfeited now. */
-  playOnWithout(): Promise<MatchStatus>;
+  answerAway(answer: 'wait' | 'end_ball' | 'play_on', o?: { player?: string | null }): Promise<MatchStatus>;
+  /**
+   * A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`): they are
+   * forfeited now. `player`: whom the press was about; refused when the game waits for somebody else by now.
+   */
+  playOnWithout(o?: { player?: string | null }): Promise<MatchStatus>;
   /**
    * A13 (2026-11-12): host only, during a game: end the turn holder's ball at its last known score and grant the next
    * turn, as if its BALL_END had arrived (TURN_PASS in the match log). The Match tab confirms first.
@@ -557,7 +568,7 @@ export interface MatchHostOptions {
   /** A18 test seam: the engines' grace before a dropped link is a disconnect (ms). Default: theirs (5 s). */
   disconnectGraceMs?: number;
   /** A17 step 7 test seam: the lobby's clocks (the countdown of a start, the place and the turn of a member who is away, the 3D wait). Default: the engine's. */
-  lobby?: Pick<LobbyOptions, 'countdownMs' | 'placeMs' | 'turnMs' | 'start3dMaxMs'>;
+  lobby?: Pick<LobbyOptions, 'countdownMs' | 'placeMs' | 'turnMs' | 'start3dMaxMs' | 'returnAllowMs'>;
   /**
    * I11.4.18 (2026-11-24): how VPX gets the foreground back from a Castcade window (`vpx-foreground.ts`); absent: it is
    * never tried (the tests that are not about it, a build without it).
@@ -569,6 +580,8 @@ export interface MatchHostOptions {
 export { LOBBY_REJOIN };
 /** A15: how long a rejoin waits for the lobby's answer (and the open match's log) before it gives up (the saved match is kept). */
 const REJOIN_TIMEOUT_MS = 20_000;
+/** A17 step 7 (the review of PR 136): what a member is told who asks the lobby's PC for something while it is away. */
+const LOBBY_PC_AWAY = "The lobby's PC is away: this has to wait until it is back.";
 
 /** D2.10: what `globalShortcut` offers: `register` is false when another app holds the key. */
 export interface ShortcutRegistrar {
@@ -850,6 +863,12 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   let bench: Bench | null = null;
   const framesRoot = (): string => opts.framesDir ?? join(dirname(opts.file), 'logs', 'frames');
   let lastError: string | null = null;
+  /**
+   * A17 step 7 (the review of PR 136): every time ArcAid answered this PC that a code names no room, since Castcade
+   * started (a mistyped code as much as an ask for a lobby whose PC is away): ArcAid counts them per device, so the
+   * asks of a member that waits for its lobby are held back by all of them (`RelayOptions.missLog`).
+   */
+  const relayMisses: number[] = [];
   let busy = false;
 
   // ---- the turn lock (the hook checks it at each key press) ----
@@ -1525,6 +1544,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
    */
   let pressFocusAt: number | null = null;
   const PRESS_FOCUS_MS = 20_000;
+  /** The review of PR 136: the start that press asked for has been seen announced (it then counts for that start alone). */
+  let pressStartSeen = false;
   /** A handover that was skipped because the in-game menu was open on a Castcade window: tried again when it closes. */
   let focusOwed = false;
   /** The match whose panel line carries `CLICK_TABLE_HINT` now (it comes off when the turn or the window changes). */
@@ -1597,6 +1618,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active) {
       // I11.4.18: a grant has just reached this PC: its table is the one to play now.
       const mine = active.controller.status().myTurn;
+      // The review of PR 136: the start that was pressed here was announced and is gone again with no game begun
+      // (somebody cancelled it, or it fell through): the press is over, and a turn that another start brings within
+      // the same seconds hands the table the foreground as any turn does.
+      if (pressFocusAt !== null) {
+        const cs = active.controller.status();
+        if (cs.lobby?.start) pressStartSeen = true;
+        else if (pressStartSeen && (cs.phase === 'lobby' || cs.phase === 'over')) pressFocusAt = null;
+      }
       const pressed = pressFocusAt !== null && clock() - pressFocusAt < PRESS_FOCUS_MS;
       if (mine && !active.turnSeen) pressFocusAt = null;
       if (mine && !active.turnSeen && !pressed) giveVpxFocus('the turn came to this PC', true);
@@ -1915,7 +1944,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       engine.on('reconnectFailed', (f) => {
         if (active !== a) return;
         const n = (a.failedAttempts = (a.failedAttempts ?? 0) + 1);
-        if (n === 1 || n % 20 === 0) log.info(`match: the lobby's PC cannot be reached yet (attempt ${n}: ${describeError(f.error)}); ${f.nextInMs == null ? 'no further attempt' : `next attempt in ${Math.round(f.nextInMs / 1000)} s`}`);
+        if (n === 1 || n % 20 === 0) log.info(`match: the lobby's PC cannot be reached yet (attempt ${n}: ${f.error instanceof Error ? f.error.message : String(f.error)}); ${f.nextInMs == null ? 'no further attempt' : `next attempt in ${Math.round(f.nextInMs / 1000)} s`}`);
         if (n === 1 || n % 20 === 0) emit();
       }),
     );
@@ -2470,7 +2499,10 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       stance: l.stance,
       start: { label: l.startButton.label, off: l.startButton.off },
       announced: l.start ? { without: l.startWithout } : null,
-      newMatch: l.newMatch !== null,
+      newMatch: l.newMatch ? { warnings: l.newMatch.warnings } : null,
+      game: l.gameKey,
+      hostAway: l.hostAway !== null,
+      over: l.over,
       end: l.end,
       giveUp: l.giveUp,
       waitedFor: l.waitedFor?.name ?? null,
@@ -2490,6 +2522,17 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     if (active && menu.open && menu.confirming === 'endBall' && (menu.confirmFor ?? null) !== (menuFacts(active).endBall?.grantSeq ?? null)) {
       menu = { ...menu, confirming: null, confirmFor: null, note: null };
       menuAskedAt = null;
+    }
+    // The review of PR 136: so it is with every question: when its line is gone, or asks something else, or is about
+    // another game by now, it is closed (`menuSettle`); a choose that was on its way to it is then forgotten too
+    // (`pressMenu` answers only the menu it saw).
+    if (active && menu.open && menu.confirming !== null) {
+      const settled = menuSettle(menu, menuItems(menuFacts(active)));
+      if (settled !== menu) {
+        menu = settled;
+        menuAskedAt = null;
+        dropMenuAnswer();
+      }
     }
     const view = active ? menuView(menu, menuItems(menuFacts(active)), menuHint()) : null;
     const text = JSON.stringify(view);
@@ -2529,9 +2572,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
   const runMenuEffect = (effect: MenuEffect): void => {
     // A refusal (the lobby is not complete, no next game yet) comes back onto the menu, on the line that asked.
     const refused =
-      (at: 'start' | 'next') =>
+      (at: 'start' | 'next' | 'startNow') =>
       (e: unknown): void => {
         if (!active) return;
+        // The review of PR 136: on the line that asked only while it is still there; else the sentence is the panel's.
+        if (!menuItems(menuFacts(active)).some((it) => it.id === at)) {
+          active.controller.notify(e instanceof Error ? e.message : String(e));
+          return;
+        }
         menu = { open: true, at, confirming: null, note: describeError(e) };
         holdArrows(true);
         armMenuTimer();
@@ -2547,15 +2595,15 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     switch (effect.kind) {
       case 'start':
         log.info(`match: ${effect.now ? 'Start without what the start waits for' : 'Start'} chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
-        void api.start({ anyway: effect.anyway, now: effect.now === true }).catch(refused('start'));
+        void api.start({ anyway: effect.anyway, now: effect.now === true }).catch(refused(effect.now ? 'startNow' : 'start'));
         return;
       case 'cancelStart':
         log.info('match: Cancel the start chosen in the menu');
         void api.cancelStart().catch(said('Cancel the start'));
         return;
       case 'newMatch':
-        log.info('match: Start a new match chosen in the menu');
-        void api.start({ newMatch: true }).catch(said('Start a new match'));
+        log.info(`match: Start a new match chosen in the menu${effect.anyway ? ' (anyway)' : ''}`);
+        void api.start({ newMatch: true, anyway: effect.anyway }).catch(said('Start a new match'));
         return;
       case 'stance':
         log.info(`match: ${effect.to === 'play' ? 'Play' : 'Watch'} chosen in the menu`);
@@ -2566,8 +2614,8 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         void api.giveUp().catch(said('Give up this game'));
         return;
       case 'endMatch':
-        log.info('match: End match chosen in the menu');
-        void api.endMatch().catch(said('End match'));
+        log.info(`match: End match${effect.everyone ? ' for everyone' : ''} chosen in the menu`);
+        void api.endMatch({ everyone: effect.everyone, about: active?.controller.status().lobby?.gameKey ?? null }).catch(said(effect.everyone ? 'End match for everyone' : 'End match'));
         return;
       case 'away':
         log.info(`match: the answer about the player who is away, chosen in the menu: ${effect.answer}`);
@@ -3043,7 +3091,9 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         // A13: whether this PC's own table can report ball ends, when a table is open.
         ...(ballEnds !== null ? { ballEndReady: ballEnds } : {}),
         disconnectGraceMs: opts.disconnectGraceMs,
-        lobby: { stance: settings.stance, firstMatch, stillSeen, ...(opts.lobby ?? {}) },
+        // The review of PR 136: a member who was away when this PC's ArcAid connection came back is given the time
+        // its own schedule of asks needs (`LOBBY_REJOIN`) before a clock counts against them.
+        lobby: { stance: settings.stance, firstMatch, stillSeen, returnAllowMs: LOBBY_RETURN_ALLOW_MS, ...(opts.lobby ?? {}) },
       },
       new Session({ transport, keys: matchIdentity().keys, seqStart: Date.now() }),
     );
@@ -3060,11 +3110,33 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
         if (active !== a) return;
         if (st === 'reconnecting') {
           engine.setCutOff(true);
+          a.relayNote = 'ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted). Castcade is taking it back; nobody is paused or counted as away for it';
           log.warn('match: ArcAid is not carrying this lobby for the moment (the connection dropped, or ArcAid restarted); taking it back. Nobody is paused or counted as away for it, and a ball in play goes on');
         } else if (st === 'registered') {
           engine.setCutOff(false);
+          a.relayNote = null;
           log.info(`match: ArcAid carries ${a.code} again; the members come back by themselves`);
         } else if (st === 'closed') {
+          // The review of PR 136: ArcAid's room is gone for good (the code is taken, the pairing was revoked, this
+          // device opened another room). Whoever came through ArcAid cannot be reached again. Somebody connected to
+          // this PC's own port can: for them nothing happened, and a game they play is not ended for it. The
+          // lobby goes on for them, on the listener alone; with nobody there it is closed, as the handoff asks.
+          const direct = (a.ws?.peers() ?? []).filter((id) => id !== engine.localId);
+          if (direct.length > 0) {
+            const cs = a.controller.status();
+            const who = direct.map((id) => nameIn(cs, id));
+            const names = who.length <= 1 ? (who[0] ?? '') : `${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`;
+            engine.setCutOff(false);
+            a.via = 'direct';
+            a.relayNote = 'ArcAid closed the room of this lobby';
+            if (a.directInvite) a.invite = a.directInvite;
+            log.warn(`match: ArcAid closed ${a.code} and it cannot be opened again; the lobby goes on for the ${direct.length} member(s) connected to this PC directly, and whoever came through ArcAid is away from now on`);
+            // The panel's line first (a notice is also the tab's last word); then the tab's own, which says what to do.
+            a.controller.notify("ArcAid closed this lobby's room: it goes on for the people connected to this PC directly");
+            lastError = `ArcAid closed the room of the lobby ${a.code} and it could not be opened again. The lobby goes on for ${names}, connected to this PC directly. Whoever came through ArcAid cannot come back, and the code no longer works: for a new code, close the lobby and open a new one.`;
+            emit();
+            return;
+          }
           log.warn(`match: ArcAid closed ${a.code} and it cannot be opened again; the lobby is closed`);
           void closeLobby(a, 'ArcAid closed the room of this lobby and it could not be opened again').then(() => {
             lastError = `The lobby ${a.code} is closed: ArcAid closed its room and it could not be opened again. Open a new lobby and send the new code.`;
@@ -3144,7 +3216,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     }
     const c = opts.relay?.() ?? null;
     if (!c) throw new Error(RELAY_NOT_PAIRED);
-    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs, rejoin: opts.relayRejoin ?? LOBBY_REJOIN });
+    const t = new RelayClientTransport({ localId: me, baseUrl: c.baseUrl, auth: { deviceId: c.deviceId, deviceToken: c.deviceToken }, connectTimeoutMs: opts.relayTimeouts?.connectMs, ackTimeoutMs: opts.relayTimeouts?.ackMs, rejoin: opts.relayRejoin ?? LOBBY_REJOIN, missLog: relayMisses });
     return {
       transport: t,
       connect: () => t.connect(invite.code),
@@ -3668,13 +3740,18 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const a = active;
       if (!a) return fail(new Error('No lobby: open or join one first'));
       const st = a.controller.status();
+      // The review of PR 136: with the lobby's PC away the request would go into a link that is down and say nothing.
+      if (st.lobby?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
       // A13: a table that cannot report ball ends holds its turn for ever: whoever asks confirms such a start. (The
       // lobby's PC makes the same check and answers with its own sentence; this one is at hand on every PC.)
-      const warnings = st.startWarnings;
+      // The review of PR 136: a new match is checked for ITS players (everyone set to Play), not the next game's.
+      const warnings = o?.newMatch === true ? (st.lobby?.newMatch?.warnings ?? st.startWarnings) : st.startWarnings;
       if (warnings.length > 0 && o?.anyway !== true && !st.lobby?.start) {
         // A17 step 4: the player concerned ends such a ball themselves (End my ball); Pass the turn stays the lobby PC's.
         return fail(new Error(`${warnings.join(' · ')}. Start anyway to play it by hand: that player ends each ball with End my ball (the in-game menu or the Match tab), or the lobby's PC ends it with Pass the turn.`));
       }
+      // A start that is not there any more cannot be started "without what it waits for": that press was about it.
+      if (o?.now === true && !st.lobby?.start) return fail(new Error('That start is no longer announced: nothing was started.'));
       const no = a.controller.requestStart({ anyway: o?.anyway === true, newMatch: o?.newMatch === true, now: o?.now === true });
       if (no !== null) return fail(new Error(no));
       lastError = null;
@@ -3682,6 +3759,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       // they play: the table gets the foreground back while the start counts down. The press is the player's own.
       if (st.lobby?.stance === 'play') {
         pressFocusAt = clock();
+        pressStartSeen = false;
         giveVpxFocus('Start match was pressed');
       }
       log.info(`match: ${a.code}: a start was asked for on this PC${o?.newMatch ? ' (a new match)' : ''}${o?.now ? ' (now: without what the announced start waits for)' : ''}`);
@@ -3692,6 +3770,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
     async cancelStart() {
       const a = active;
       if (!a) return fail(new Error('No lobby'));
+      if (a.controller.status().lobby?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
       const no = a.controller.cancelStart();
       if (no !== null) return fail(new Error(no));
       lastError = null;
@@ -3699,14 +3778,25 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       emit();
       return status();
     },
-    async endMatch() {
+    async endMatch(o) {
       const a = active;
       if (!a) return fail(new Error('No lobby'));
-      const during = a.engine.state.phase === 'running';
+      const l = a.controller.status().lobby;
+      // The review of PR 136: what is ended is what the press said, and only while that is still what there is.
+      const everyone = o?.everyone === true;
+      if (l?.hostAway) return fail(new Error(LOBBY_PC_AWAY));
+      if (!l?.match) return fail(new Error('No match is open: nothing was ended.'));
+      if (o?.about != null && o.about !== l.gameKey) return fail(new Error(everyone ? 'The match was not ended: the game that press was about is over.' : 'The match was not ended: a game has begun since that press.'));
+      if (everyone) {
+        if (!(a.engine instanceof HostMatch)) return fail(new Error("During a game only the lobby's PC ends the match."));
+        if (l.end !== 'everyone') return fail(new Error('The match was not ended for everyone: no game is being played now. Between games it is End match.'));
+      } else if (l.end !== 'match') {
+        return fail(new Error(l.match.state === 'game' ? "The match was not ended: a game is being played. The lobby's PC can end it for everyone." : 'The match cannot be ended now.'));
+      }
       const no = a.controller.requestEnd();
       if (no !== null) return fail(new Error(no));
       lastError = null;
-      log.info(during ? `match: ${a.code}: End match for everyone, on the lobby's PC: the game being played gets no result` : `match: ${a.code}: End match was asked for on this PC`);
+      log.info(everyone ? `match: ${a.code}: End match for everyone, on the lobby's PC: the game being played gets no result` : `match: ${a.code}: End match was asked for on this PC`);
       emit();
       return status();
     },
@@ -3720,21 +3810,23 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       emit();
       return status();
     },
-    async giveUp() {
+    async giveUp(o) {
       const a = active;
       if (!a) return fail(new Error('No lobby'));
+      if (o?.about != null && o.about !== a.controller.status().lobby?.gameKey) return fail(new Error('Nothing was given up: the game that press was about is over.'));
       if (!a.controller.giveUp()) return fail(new Error('You are not playing a game now'));
       lastError = null;
       log.info(`match: ${a.code}: this player gave up the game; they stay in the lobby and watch`);
       emit();
       return status();
     },
-    async answerAway(answer) {
+    async answerAway(answer, o) {
       const a = active;
       if (!a) return fail(new Error('No lobby'));
       const r = a.engine;
       const q = status().lobby?.awayQuestion ?? null;
       if (!(r instanceof HostMatch) || !q) return fail(new Error('Nobody is asked about now: they came back, or the game went on another way'));
+      if (o?.player != null && o.player !== q.player) return fail(new Error(`That answer was about another player: the question is about ${q.name} now.`));
       // "End their ball" ends it at the score as it stands (that player's last STATE), not at their last logged score.
       let ok: boolean;
       try {
@@ -3748,13 +3840,14 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       emit();
       return status();
     },
-    async playOnWithout() {
+    async playOnWithout(o) {
       const a = active;
       if (!a) return fail(new Error('No lobby'));
       const r = a.engine;
       const w = r instanceof HostMatch ? r.waitedFor() : null;
       if (!(r instanceof HostMatch) || !w) return fail(new Error('The game is not waiting for anybody'));
       const who = nameIn(a.controller.status(), w.player);
+      if (o?.player != null && o.player !== w.player) return fail(new Error(`That press was about another player: the game waits for ${who} now.`));
       let ok: boolean;
       try {
         ok = r.playOnWithout(w.player);
@@ -3788,7 +3881,7 @@ export function createMatchHost(opts: MatchHostOptions): MatchHost {
       const r = a.controller.currentRole;
       if (!(r instanceof HostMatch)) return fail(new Error("Only the lobby's PC passes the turn"));
       const p = a.controller.status().pass;
-      if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? 'the host could not pass it'}`));
+      if (!p || !a.controller.passTurn()) return fail(new Error(`The turn cannot be passed now: ${r.passTurnBlocker() ?? "the lobby's PC could not pass it"}`));
       lastError = null;
       log.info(`match: ${a.code} turn passed from the Match tab: ${p.name}'s ball ${p.ball} ended at ${p.score}`);
       emit();

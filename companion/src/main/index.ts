@@ -62,6 +62,7 @@ import { createOverlayServer, overlayStateFrom, type OverlayServer } from '../me
 import { resolveFfmpeg } from '../media/ffmpeg-path.js';
 import { createStreamHost, type StreamHost } from './stream-host.js';
 import { createMatchHost, type MatchHost } from './match-host.js';
+import { readAbout, readAwayAnswer, readEndMatch, readPlayer, readStance } from './match-ipc.js';
 import { matchSignalling } from './match-setup.js';
 import { linkFromArgv, linkIsTrusted, looksLikePastedLink, registerLinkProtocol } from './deep-link.js';
 import { createOneStep, type OneStep } from './one-step.js';
@@ -719,11 +720,16 @@ function registerIpc(
     return mh().start({ anyway: x.anyway === true, newMatch: x.newMatch === true, now: x.now === true });
   });
   ipcMain.handle(IPC.matchCancelStart, () => mh().cancelStart());
-  ipcMain.handle(IPC.matchEnd, () => mh().endMatch());
-  ipcMain.handle(IPC.matchStance, (_e, stance: unknown) => mh().setStance(stance === 'watch' ? 'watch' : 'play'));
-  ipcMain.handle(IPC.matchGiveUp, () => mh().giveUp());
-  ipcMain.handle(IPC.matchAnswerAway, (_e, answer: unknown) => mh().answerAway(answer === 'end_ball' ? 'end_ball' : answer === 'play_on' ? 'play_on' : 'wait'));
-  ipcMain.handle(IPC.matchPlayOnWithout, () => mh().playOnWithout());
+  // The review of PR 136: a value that is not one of the choices is refused (`match-ipc.ts`), never read as one of
+  // them; and each press says what it was made against, which the match host checks before it does anything.
+  ipcMain.handle(IPC.matchEnd, (_e, o: unknown) => mh().endMatch(readEndMatch(o)));
+  ipcMain.handle(IPC.matchStance, (_e, stance: unknown) => mh().setStance(readStance(stance)));
+  ipcMain.handle(IPC.matchGiveUp, (_e, o: unknown) => mh().giveUp(readAbout(o, 'Give up this game')));
+  ipcMain.handle(IPC.matchAnswerAway, (_e, answer: unknown, o: unknown) => {
+    const r = readAwayAnswer(answer, o);
+    return mh().answerAway(r.answer, { player: r.player });
+  });
+  ipcMain.handle(IPC.matchPlayOnWithout, (_e, o: unknown) => mh().playOnWithout(readPlayer(o, 'Play on without')));
   ipcMain.handle(IPC.matchPassTurn, () => mh().passTurn());
   // The review of PR 131: the grant the Match tab's question was about; anything else names no grant and ends nothing.
   ipcMain.handle(IPC.matchEndMyBall, (_e, grantSeq: unknown) => mh().endMyBall(typeof grantSeq === 'number' && Number.isSafeInteger(grantSeq) ? grantSeq : -1));

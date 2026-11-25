@@ -66,14 +66,14 @@ export function TablePicker({
   }, [bridge]);
 
   if (tableOpen) {
-    return <p className="muted">Open now: {tableOpen}. Host uses this table and starts nothing.</p>;
+    return <p className="muted">Open now: {tableOpen}. Open lobby uses this table and starts nothing.</p>;
   }
   if (tables === null) return null;
   const all = [...tables, ...(others ?? [])];
   if (all.length === 0) {
     return (
       <p className="muted">
-        {others === null ? 'Castcade knows no table yet (Settings → Import tables). ' : 'No table file found in your tables folder. '}Host still works: open the table in VPX
+        {others === null ? 'Castcade knows no table yet (Settings → Import tables). ' : 'No table file found in your tables folder. '}Open lobby still works: open the table in VPX
         yourself, before or after.{' '}
         {others === null && (
           <button type="button" className="small" disabled={browsing} onClick={browse}>
@@ -102,7 +102,7 @@ export function TablePicker({
       </select>
       <small>
         {picked
-          ? `${startOnHost ? `Host starts VPX on ${picked.name} and copies the invite link.` : `Host copies the invite link. Send it, then press Start the table to open ${picked.name} in VPX.`}${picked.imported ? '' : ' Castcade has not patched this table: if it cannot report ball ends, the lobby says so and Start asks you to confirm.'}`
+          ? `${startOnHost ? `Open lobby starts VPX on ${picked.name} and copies the invite link.` : `Open lobby copies the invite link. Send it, then press Start the table to open ${picked.name} in VPX.`}${picked.imported ? '' : ' Castcade has not patched this table: if it cannot report ball ends, the lobby says so and Start asks you to confirm.'}`
           : 'Pick a table and Castcade starts it in VPX for you.'}
       </small>
       {others === null ? (
@@ -127,7 +127,7 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
     setTimeout(() => setCopied(null), 2000);
   };
   const { pending, launch } = one;
-  const showLink = role === 'host' && phase === 'lobby' && one.link !== null;
+  const showLink = role === 'host' && phase !== 'none' && phase !== 'connecting' && one.link !== null;
   const showLaunch = launch.state !== 'idle' && launch.detail !== null;
   // A14.7: the picked table waits here until the invite is sent.
   const toStart = role === 'host' ? one.tableToStart : null;
@@ -136,10 +136,10 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
     <div className="card">
       {pending && (
         <>
-          <strong>Join this match?</strong>
+          <strong>Join this lobby?</strong>
           <p>
-            A link asks Castcade to join match {pending.code}
-            {pending.address ? ` at ${pending.address}` : ' through ArcAid'}. Joining turns your microphone on for the other players and starts the host&apos;s table in VPX.
+            A link asks Castcade to join the lobby {pending.code}
+            {pending.address ? ` at ${pending.address}` : ' through ArcAid'}. Joining turns your microphone on for the people in it and starts the lobby&apos;s table in VPX.
             Only join a match someone you know sent you.
           </p>
           <button type="button" className="primary" onClick={() => call(bridge.launch.confirm())}>
@@ -160,7 +160,7 @@ export function OneStepCard({ bridge, one, role, phase }: { bridge: CastcadeBrid
               {copied === 'link' ? 'Copied' : 'Copy'}
             </button>
           </div>
-          <p className="muted">{one.copied ? 'Invite link copied. ' : ''}A player with Castcade opens it and lands in this match with the table started.</p>
+          <p className="muted">{one.copied ? 'Invite link copied. ' : ''}Anyone with Castcade opens it and lands in this lobby with the table started.</p>
           <div className="row">
             <code className="mono invite">{one.message}</code>
             <button type="button" className="small" onClick={() => copy('message')}>

@@ -1582,7 +1582,7 @@ describe('A17 step 2 (2026-11-24): what ends with a match, what ends with the lo
     await until(() => existsSync(C.lock) === false, 8000, "Chuck's table unlocked");
 
     // End match: back to the lobby. Not one tunnel was closed or made again.
-    await K.mh.endMatch();
+    await K.mh.endMatch({ everyone: false });
     await until(() => [H, K, C].every((x) => x.mh.status().phase === 'lobby'), 8000, 'the lobby again');
     expect([H, K, C].map((x) => x.tunnel())).toEqual(tunnels);
     expect(tunnels.map((t) => t?.closed)).toEqual([false, false, false]);

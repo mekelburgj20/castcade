@@ -294,16 +294,20 @@ export interface CastcadeApi {
     start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
     /** A17 step 7: take back the start that counts down or waits (anybody in the lobby). */
     cancelStart(): Promise<MatchStatus>;
-    /** A17 step 7: End match (between games: anyone, everyone stays in the lobby; during a game: the lobby's PC, for everyone, no result). */
-    endMatch(): Promise<MatchStatus>;
+    /**
+     * A17 step 7: End match (`everyone: false`; between games: anyone, everyone stays in the lobby) or End match for
+     * everyone (`true`; during a game: the lobby's PC, no result). The review of PR 136: two requests, and `about` is
+     * `lobby.gameKey` at the press: the main process does nothing when the match or its game is another by now.
+     */
+    endMatch(o: { everyone: boolean; about: string | null }): Promise<MatchStatus>;
     /** A17 step 7: this person's choice for the next start, Play or Watch. */
     setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
     /** A17 step 7: Give up this game: this player's own game ends; they stay in the lobby and watch. */
-    giveUp(): Promise<MatchStatus>;
+    giveUp(o: { about: string | null }): Promise<MatchStatus>;
     /** A17 step 7: the lobby's PC, about the player who is up and out of reach (`lobby.awayQuestion`). */
-    answerAway(answer: 'wait' | 'end_ball' | 'play_on'): Promise<MatchStatus>;
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on', o: { player: string | null }): Promise<MatchStatus>;
     /** A17 step 7: the lobby's PC: Play on without the player the game waits for (`lobby.waitedFor`). */
-    playOnWithout(): Promise<MatchStatus>;
+    playOnWithout(o: { player: string | null }): Promise<MatchStatus>;
     /** A13: host only, during a game: end the turn holder's ball at its last known score and grant the next turn (TURN_PASS). */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4 (2026-11-24): the player who is up ends their own ball at the score as it stands; the turn passes (BALL_END, `manual`). */

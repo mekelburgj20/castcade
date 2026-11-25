@@ -22,7 +22,7 @@ export const RESUME_HEARTBEAT_MS = 15_000;
  * How long a client waits for a host that is gone before the match ends for it, and so how old a host's record may be:
  * after it nobody is waiting. A17 step 7 (2026-11-25, alpha-match.md section 11.8a): twenty minutes, the wait of a
  * lobby's member for the lobby's PC (`LOBBY_HOST_WAIT_MS` in match/client.ts; it was three minutes for a match's
- * host), and how a member asks ArcAid for a room that is gone meanwhile is `LOBBY_REJOIN` (main/match-host.ts).
+ * host), and how a member asks ArcAid for a room that is gone meanwhile is `LOBBY_REJOIN` (match/transport-relay.ts).
  */
 export const HOST_WAIT_MS = 20 * 60_000;
 /**

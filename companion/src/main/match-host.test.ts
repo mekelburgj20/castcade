@@ -1262,7 +1262,7 @@ describe('match host: a series (A10, 2026-11-02)', () => {
     expect(C.mh.status().panel?.series?.map((x) => x.games)).toEqual([2, 2]);
     // A17 step 7: End match, by either player between games: the tally is closed and both are back in the lobby, on
     // the same link, with both tables free. Nothing tears down (a client used to close 20 s after MATCH_END).
-    await C.mh.endMatch();
+    await C.mh.endMatch({ everyone: false });
     await until(() => C.mh.status().phase === 'lobby' && H.mh.status().phase === 'lobby');
     expect([H.mh.status().role, C.mh.status().role]).toEqual(['host', 'client']);
     expect(C.mh.status()).toMatchObject({ locked: false, series: { over: false }, lobby: { match: null } });
@@ -2073,7 +2073,9 @@ describe('D10.8 (2026-11-12): match control through ArcAid, and the router port 
   }, 30_000);
 
   it("the review of PR 127, as a lobby has it (A17 step 7): the host's Castcade quits: the lobby is closed for the client; ArcAid closes the room, or this PC's own link drops: nobody is let go, and the client is back by itself", async () => {
-    // (1) The host quits Castcade (the tray's Quit: a leave; a crash is the same to a client: the link is gone).
+    // (1) The host quits Castcade (the tray's Quit: Close lobby, which every member is told). A crash is NOT the same
+    // to a member in a lobby (the review of PR 136): it is told nothing, so it waits for the lobby's PC as for one
+    // that is away; `match-host-lobby.test.ts`, "a lobby's PC that vanishes with no match open and never returns".
     {
       const r = await fakeRelay();
       const H = lobbySeat('lobby-quit-host', paired(r, 'h'));
@@ -2655,6 +2657,29 @@ describe('match host: VPX gets the foreground back from Castcade (I11.4.18, 2026
     ]);
   }, 20_000);
 
+  it('the review of PR 136: a start that was pressed here and then cancelled is over: the turn that somebody else\'s start brings a few seconds later hands VPX the foreground as any turn does', async () => {
+    const hw = windows();
+    const hl = logLines();
+    // A countdown long enough to be cancelled in.
+    const { H, C } = await pair({ foreground: hw.foreground, log: hl.log, lobby: { countdownMs: 1500 } });
+    await H.mh.start();
+    await until(() => hw.w.gives === 1 && C.mh.status().lobby?.start != null);
+    // The other person takes the start back. The owner is on the Match tab again (Castcade is the active window).
+    await C.mh.cancelStart();
+    await until(() => H.mh.status().lobby?.start == null && H.mh.status().phase === 'lobby');
+    // Their own start follows; they go first; then the turn comes to this PC, well inside 20 s of the press here.
+    await C.mh.start();
+    await until(() => C.mh.status().panel?.myTurn === true, 10_000);
+    expect(hw.w.gives).toBe(1);
+    await H.mh.passTurn();
+    await until(() => H.mh.status().panel?.myTurn === true);
+    await until(() => hw.w.gives === 2 && hl.lines.filter((l) => l.startsWith('match: gave VPX the foreground (')).length === 2);
+    expect(hl.lines.filter((l) => l.startsWith('match: gave VPX the foreground (')).map((l) => l.slice('match: gave VPX the foreground ('.length).split(';')[0])).toEqual([
+      'Start match was pressed',
+      'the turn came to this PC',
+    ]);
+  }, 30_000);
+
   it('a grant that reaches this PC while a Castcade window is the active one gives VPX the foreground; while VPX or a third program is in front nothing is touched', async () => {
     const hw = windows();
     const cw = windows();
@@ -2768,8 +2793,8 @@ describe('match host: a next game asked for while a player is inside the grace (
   it('A17 step 7: Next game asked for while a player\'s link dropped a moment ago: that player is still counted, the start is held when its countdown runs out, and when they turn out to be away the tab says the start is off, without another press', async () => {
     const lines: string[] = [];
     const log = { info: (l: string) => void lines.push(l), warn: (l: string) => void lines.push(l), error: (l: string) => void lines.push(l), file: '' } as unknown as Logger;
-    const H = make('held-host', 'ab'.repeat(32), { ephemeralPort: true, disconnectGraceMs: 900, log });
-    const C = make('held-client', 'ab'.repeat(32), { disconnectGraceMs: 900 });
+    const H = make('held-host', 'ab'.repeat(32), { ephemeralPort: true, disconnectGraceMs: 2500, log });
+    const C = make('held-client', 'ab'.repeat(32), { disconnectGraceMs: 2500 });
     const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
     await C.mh.join(hs.invite!, 'Krobs');
     await until(() => H.mh.status().participants.length === 2);
@@ -2797,10 +2822,39 @@ describe('match host: a next game asked for while a player is inside the grace (
     await new Promise((r) => setTimeout(r, 250));
     expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 } });
     expect(H.mh.status().lobby?.start).not.toBeNull();
+    // The review of PR 136: and it is said, as it was before the lobby: nobody looks at a countdown standing at 0.
+    const held = "You start the next game in a few seconds (a player's link dropped a moment ago: waiting to see whether they are back)";
+    await until(() => H.mh.status().lobby?.start?.line === held, 3000);
+    expect(H.mh.status().panel?.message).toContain(held);
+    expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 } });
     // The grace is over: the guest is away, and the tab says the start is off without another press.
     await until(() => H.mh.status().lastError !== null, 5000);
     expect(H.mh.status().lastError).toBe('Krobs is away: the start is off.');
     expect(lines.some((l) => l === 'match: the announced start is off: Krobs is away: the start is off.')).toBe(true);
     expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 }, lobby: { start: null } });
+    expect(H.mh.status().panel?.message ?? '').not.toContain('in a few seconds');
+  }, 30_000);
+
+  it('A17 step 7 (the review of PR 136): a player who leaves the lobby between games is gone at once: Next game is refused there and then, with the reason, and no start is announced', async () => {
+    const H = make('left-host', 'ab'.repeat(32), { ephemeralPort: true, disconnectGraceMs: 2500 });
+    const C = make('left-client', 'ab'.repeat(32), { disconnectGraceMs: 2500 });
+    const hs = await H.mh.host({ port: 0, ballsPerGame: 3, displayName: 'Owner' });
+    await C.mh.join(hs.invite!, 'Krobs');
+    await until(() => H.mh.status().participants.length === 2);
+    await H.mh.start();
+    for (let ball = 0; ball < 6; ball++) {
+      await until(() => H.mh.status().pass !== null);
+      const before = H.mh.status().pass;
+      await H.mh.passTurn();
+      await until(() => H.mh.status().phase === 'over' || JSON.stringify(H.mh.status().pass) !== JSON.stringify(before));
+    }
+    await until(() => H.mh.status().phase === 'over' && H.mh.status().series?.nextGameBlocker === null);
+    await C.mh.leave();
+    await until(() => H.mh.status().participants.length === 1);
+    // No grace for somebody who said they leave: the button is off with the reason, and a press says it.
+    expect(H.mh.status().lobby?.startButton).toMatchObject({ label: 'Next game', off: 'Two players of this match have to be set to Play.' });
+    await expect(H.mh.start()).rejects.toThrow(/two/i);
+    expect(H.mh.status().lobby?.start ?? null).toBeNull();
+    expect(H.mh.status()).toMatchObject({ phase: 'over', series: { game: 1 } });
   }, 30_000);
 });

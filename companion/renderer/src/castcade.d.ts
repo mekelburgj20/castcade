@@ -600,11 +600,15 @@ interface LobbyView {
     starter: boolean;
     inMatch: boolean;
     flags: Array<'away' | 'loading' | 'no_table' | 'other_table' | 'own_game'>;
+    /** Since when this PC has known the member to be away (ms, this PC's clock); null: here. */
+    awaySince: number | null;
   }>;
   match: { id: string; game: number; state: 'game' | 'between'; players: string[] } | null;
   start: { by: string; players: string[]; newMatch: boolean; waitsFor: 'result' | 'tables' | 'other_tables' | 'own_games' | '3d' | null; waitsOn: string[]; seconds: number | null; line: string } | null;
   startButton: { label: 'Start match' | 'Next game'; line: string; off: string | null };
-  newMatch: { line: string } | null;
+  newMatch: { line: string; warnings: string[] } | null;
+  /** What a press about the match is made against: the open match, its game, and whether it is being played ('' : no match). */
+  gameKey: string;
   startWithout: string | null;
   end: 'match' | 'everyone' | null;
   giveUp: boolean;
@@ -777,11 +781,16 @@ interface CastcadeBridge {
     start(opts?: { anyway?: boolean; newMatch?: boolean; now?: boolean }): Promise<MatchStatus>;
     /** A17 step 7: the lobby's other calls (see main/ipc-types.ts). */
     cancelStart(): Promise<MatchStatus>;
-    endMatch(): Promise<MatchStatus>;
+    /**
+     * The review of PR 136: End match (`everyone: false`, between games) and End match for everyone (`true`, during a
+     * game, the lobby's PC) are two requests, and each press says what it was made against (`about`:
+     * `lobby.gameKey` then; `player`: whom it was about): the main process does nothing when that has changed.
+     */
+    endMatch(o: { everyone: boolean; about: string | null }): Promise<MatchStatus>;
     setStance(stance: 'play' | 'watch'): Promise<MatchStatus>;
-    giveUp(): Promise<MatchStatus>;
-    answerAway(answer: 'wait' | 'end_ball' | 'play_on'): Promise<MatchStatus>;
-    playOnWithout(): Promise<MatchStatus>;
+    giveUp(o: { about: string | null }): Promise<MatchStatus>;
+    answerAway(answer: 'wait' | 'end_ball' | 'play_on', o: { player: string | null }): Promise<MatchStatus>;
+    playOnWithout(o: { player: string | null }): Promise<MatchStatus>;
     /** A13: host only: end the turn holder's ball at its last known score and grant the next turn. */
     passTurn(): Promise<MatchStatus>;
     /** A17 step 4: the player who is up ends their own ball at the score as it stands; the turn passes. */

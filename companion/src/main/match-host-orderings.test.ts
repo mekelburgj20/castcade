@@ -268,13 +268,13 @@ describe('any order works (A14 step 3)', () => {
     hr.open();
     cr.open();
     // A client's Start starts nothing (its table is locked anyway); the host's starts game 2 for everyone. A17
-    // step 7: the host is the starter here because it went first in game 1; and were a game to run on the other
-    // player's table, it would be that player's own and the start would wait for it, so it ends here first.
+    // step 7: the host is the starter here because it went first in game 1. The game that began on the other
+    // player's locked table is not a game of their own (the review of PR 136): nothing says OWN GAME, and the
+    // starter's start does not wait for it.
     cr.gameStart();
     await new Promise((r) => setTimeout(r, 50));
     expect(H.mh.status().series?.game).toBe(1);
-    cr.gameEnd(0);
-    await until(() => H.mh.status().lobby?.members.every((m) => !m.flags.includes('own_game')) === true);
+    expect(H.mh.status().lobby?.members.flatMap((m) => m.flags)).not.toContain('own_game');
     hr.gameStart();
     await until(() => H.mh.status().series?.game === 2 && C.mh.status().series?.game === 2 && C.mh.status().phase === 'playing');
     expect(H.mh.status().panel).toMatchObject({ myTurn: true, ball: 1 });
